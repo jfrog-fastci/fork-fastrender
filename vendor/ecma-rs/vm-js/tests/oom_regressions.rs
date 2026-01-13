@@ -93,6 +93,13 @@ fn array_map_large_length_does_not_abort_on_oom() {
 }
 
 #[test]
+fn throw_string_formatting_does_not_abort_on_oom() {
+  // Formatting a thrown string for host-visible reporting (Agent::format_vm_error) must not abort
+  // when the UTF-16→UTF-8 conversion cannot allocate under RLIMIT_AS pressure.
+  run_oom_harness("throw_string_format", 15_000_000);
+}
+
+#[test]
 fn get_prototype_of_proxy_chain_does_not_abort_on_oom() {
   // `Object.getPrototypeOf(proxy)` walks proxy chains and uses a `HashSet` for cycle detection.
   // Ensure allocator OOM does not abort the process.

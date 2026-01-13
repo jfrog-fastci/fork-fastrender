@@ -1,7 +1,41 @@
 use crate::source::format_stack_trace;
 use crate::property::{PropertyKey, PropertyKind};
+use crate::fallible_format;
 use crate::{Budget, Heap, HeapLimits, JsRuntime, Realm, SourceText, Termination, Value, Vm, VmError, VmOptions};
 use std::sync::Arc;
+
+const OOM_PLACEHOLDER: &str = "<oom>";
+const INVALID_STRING_PLACEHOLDER: &str = "<invalid string>";
+const UNCAUGHT_EXCEPTION_PLACEHOLDER: &str = "uncaught exception";
+
+#[inline]
+fn string_from_str_best_effort(s: &str) -> String {
+  let mut out = String::new();
+  if out.try_reserve_exact(s.len()).is_ok() {
+    out.push_str(s);
+  }
+  out
+}
+
+#[inline]
+fn push_str_best_effort(out: &mut String, s: &str) -> bool {
+  if out.try_reserve(s.len()).is_err() {
+    return false;
+  }
+  out.push_str(s);
+  true
+}
+
+#[inline]
+fn push_char_best_effort(out: &mut String, ch: char) -> bool {
+  let mut buf = [0u8; 4];
+  let encoded = ch.encode_utf8(&mut buf);
+  if out.try_reserve(encoded.len()).is_err() {
+    return false;
+  }
+  out.push(ch);
+  true
+}
 
 /// Host integration hooks for [`Agent`] script execution.
 ///
@@ -160,19 +194,36 @@ impl Agent {
       Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => {
         return self.value_to_error_string(v);
       }
-      Err(_) => {
-        let mut out = String::new();
-        // Best-effort debug formatting; ignore fmt errors (only possible on OOM).
-        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{value:?}"));
-        return out;
-      }
+      // Best-effort: avoid debug formatting (`format_args!` into a `String`) since it may allocate
+      // infallibly and abort on OOM. Return a small placeholder instead.
+      Err(_) => return string_from_str_best_effort(UNCAUGHT_EXCEPTION_PLACEHOLDER),
     };
 
-    self
-      .heap()
-      .get_string(s)
-      .map(|js| js.to_utf8_lossy())
-      .unwrap_or_else(|_| String::from("<invalid string>"))
+    let Ok(js) = self.heap().get_string(s) else {
+      return string_from_str_best_effort(INVALID_STRING_PLACEHOLDER);
+    };
+
+    // Bound attacker-controlled strings; host-visible error formatting should never allocate
+    // unbounded Rust `String`s.
+    match crate::string::utf16_to_utf8_lossy_bounded(
+      js.as_code_units(),
+      fallible_format::MAX_ERROR_MESSAGE_BYTES,
+    ) {
+      Ok((mut out, truncated)) => {
+        if truncated {
+          // Best-effort truncation marker. If we can't allocate even a few bytes, return the
+          // truncated prefix without the marker.
+          let marker = "...";
+          if out.len().saturating_add(marker.len()) <= fallible_format::MAX_ERROR_MESSAGE_BYTES {
+            if out.try_reserve(marker.len()).is_ok() {
+              out.push_str(marker);
+            }
+          }
+        }
+        out
+      }
+      Err(_) => string_from_str_best_effort(OOM_PLACEHOLDER),
+    }
   }
 
   /// Formats a VM error into a host-visible string.
@@ -185,19 +236,76 @@ impl Agent {
           msg
         } else {
           let stack_trace = format_stack_trace(stack);
+          if stack_trace.is_empty() {
+            return msg;
+          }
           let mut out = msg;
+          if out.try_reserve(1 + stack_trace.len()).is_err() {
+            // If we can't allocate enough space for the stack trace, fall back to the exception
+            // message alone.
+            return out;
+          }
           out.push('\n');
           out.push_str(&stack_trace);
           out
         }
       }
       VmError::Termination(term) => format_termination(term),
-      other => {
+      VmError::OutOfMemory => string_from_str_best_effort("out of memory"),
+      VmError::InvariantViolation(msg) => fallible_format::try_format_error_message(
+        "invariant violation: ",
+        msg,
+        "",
+      )
+      .unwrap_or_default(),
+      VmError::LimitExceeded(msg) => {
+        fallible_format::try_format_error_message("limit exceeded: ", msg, "").unwrap_or_default()
+      }
+      VmError::InvalidHandle { location } => {
+        // Mirror the `Display` impl ("invalid handle ({location})") without infallible formatting.
         let mut out = String::new();
-        // Best-effort formatting; ignore fmt errors (only possible on OOM).
-        let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{other}"));
+        if fallible_format::try_push_str(&mut out, "invalid handle (").is_err() {
+          return String::new();
+        }
+        if fallible_format::try_push_str(&mut out, location.file()).is_err() {
+          return String::new();
+        }
+        if fallible_format::try_push_char(&mut out, ':').is_err() {
+          return String::new();
+        }
+        if fallible_format::try_write_u32(&mut out, location.line()).is_err() {
+          return String::new();
+        }
+        if fallible_format::try_push_char(&mut out, ':').is_err() {
+          return String::new();
+        }
+        if fallible_format::try_write_u32(&mut out, location.column()).is_err() {
+          return String::new();
+        }
+        if fallible_format::try_push_char(&mut out, ')').is_err() {
+          return String::new();
+        }
         out
       }
+      VmError::PrototypeCycle => string_from_str_best_effort("prototype cycle"),
+      VmError::PrototypeChainTooDeep => string_from_str_best_effort("prototype chain too deep"),
+      VmError::Unimplemented(msg) => {
+        fallible_format::try_format_error_message("unimplemented: ", msg, "").unwrap_or_default()
+      }
+      VmError::InvalidPropertyDescriptorPatch => string_from_str_best_effort(
+        "invalid property descriptor patch: cannot mix data and accessor fields",
+      ),
+      VmError::PropertyNotFound => string_from_str_best_effort("property not found"),
+      VmError::PropertyNotData => string_from_str_best_effort("property is not a data property"),
+      VmError::TypeError(msg) => {
+        fallible_format::try_format_error_message("type error: ", msg, "").unwrap_or_default()
+      }
+      VmError::RangeError(msg) => {
+        fallible_format::try_format_error_message("range error: ", msg, "").unwrap_or_default()
+      }
+      VmError::NotCallable => string_from_str_best_effort("value is not callable"),
+      VmError::NotConstructable => string_from_str_best_effort("value is not a constructor"),
+      VmError::Syntax(_) => string_from_str_best_effort("syntax error"),
     }
   }
 
@@ -286,17 +394,30 @@ impl Agent {
 
 /// Formats a termination error into a stable, host-visible string, including stack frames.
 pub fn format_termination(term: &Termination) -> String {
+  let reason = match term.reason {
+    crate::TerminationReason::OutOfFuel => "execution terminated: out of fuel",
+    crate::TerminationReason::DeadlineExceeded => "execution terminated: deadline exceeded",
+    crate::TerminationReason::Interrupted => "execution terminated: interrupted",
+    crate::TerminationReason::OutOfMemory => "execution terminated: out of memory",
+    crate::TerminationReason::StackOverflow => "execution terminated: stack overflow",
+  };
+
   if term.stack.is_empty() {
-    let mut out = String::new();
-    // Best-effort formatting; ignore fmt errors (only possible on OOM).
-    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{term}"));
-    out
-  } else {
-    let stack_trace = format_stack_trace(&term.stack);
-    let mut out = String::new();
-    let _ = std::fmt::Write::write_fmt(&mut out, format_args!("{term}"));
-    out.push('\n');
-    out.push_str(&stack_trace);
-    out
+    return string_from_str_best_effort(reason);
   }
+
+  let stack_trace = format_stack_trace(&term.stack);
+  if stack_trace.is_empty() {
+    return string_from_str_best_effort(reason);
+  }
+
+  let mut out = String::new();
+  if !push_str_best_effort(&mut out, reason) {
+    return String::new();
+  }
+  if !push_char_best_effort(&mut out, '\n') {
+    return String::new();
+  }
+  let _ = push_str_best_effort(&mut out, &stack_trace);
+  out
 }

@@ -1,4 +1,5 @@
 use crate::heap::ExternalMemoryToken;
+use crate::fallible_format;
 use crate::{Heap, VmError};
 use core::mem;
 use std::fmt::Display;
@@ -226,9 +227,41 @@ impl Display for StackFrame {
 
 /// Format stack frames into a stable stack trace string.
 pub fn format_stack_trace(frames: &[StackFrame]) -> String {
-  frames
-    .iter()
-    .map(ToString::to_string)
-    .collect::<Vec<_>>()
-    .join("\n")
+  fn try_push_stack_frame(out: &mut String, frame: &StackFrame) -> Result<(), VmError> {
+    match &frame.function {
+      Some(function) => {
+        fallible_format::try_push_str(out, "at ")?;
+        fallible_format::try_push_str(out, function)?;
+        fallible_format::try_push_str(out, " (")?;
+        fallible_format::try_push_str(out, &frame.source)?;
+        fallible_format::try_push_char(out, ':')?;
+        fallible_format::try_write_u32(out, frame.line)?;
+        fallible_format::try_push_char(out, ':')?;
+        fallible_format::try_write_u32(out, frame.col)?;
+        fallible_format::try_push_char(out, ')')?;
+      }
+      None => {
+        fallible_format::try_push_str(out, "at ")?;
+        fallible_format::try_push_str(out, &frame.source)?;
+        fallible_format::try_push_char(out, ':')?;
+        fallible_format::try_write_u32(out, frame.line)?;
+        fallible_format::try_push_char(out, ':')?;
+        fallible_format::try_write_u32(out, frame.col)?;
+      }
+    }
+    Ok(())
+  }
+
+  let mut out = String::new();
+  for (i, frame) in frames.iter().enumerate() {
+    if i != 0 {
+      if fallible_format::try_push_char(&mut out, '\n').is_err() {
+        return out;
+      }
+    }
+    if try_push_stack_frame(&mut out, frame).is_err() {
+      return out;
+    }
+  }
+  out
 }

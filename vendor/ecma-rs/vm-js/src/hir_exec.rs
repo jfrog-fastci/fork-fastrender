@@ -1,6 +1,7 @@
 use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::{ResolvedBinding, RuntimeEnv};
+use crate::fallible_format;
 use crate::function::ThisMode;
 use crate::for_in::ForInEnumerator;
 use crate::iterator;
@@ -1611,7 +1612,8 @@ impl<'vm> HirEvaluator<'vm> {
         {
           Some(v) => Ok(v),
           None => {
-            let msg = format!("{} is not defined", name);
+            let msg =
+              fallible_format::try_format_error_message("", name.as_str(), " is not defined")?;
             Err(throw_reference_error(self.vm, scope, &msg)?)
           }
         }

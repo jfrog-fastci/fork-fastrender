@@ -39,7 +39,10 @@ impl JsString {
   }
 
   pub fn to_utf8_lossy(&self) -> String {
-    String::from_utf16_lossy(self.as_code_units())
+    // Avoid `String::from_utf16_lossy`: it may allocate infallibly and abort the host process on
+    // allocator OOM. This is an infallible API surface (used primarily in tests / debug helpers),
+    // so we fall back to an empty string if the fallible conversion cannot allocate.
+    utf16_to_utf8_lossy(self.as_code_units()).unwrap_or_default()
   }
 
   pub fn stable_hash64(&self) -> u64 {
@@ -131,6 +134,95 @@ pub(crate) fn utf16_to_utf8_lossy_with_tick(
   }
 
   Ok(out)
+}
+
+/// [`utf16_to_utf8_lossy_with_tick`] with a hard UTF-8 output cap.
+///
+/// This is intended for best-effort formatting paths (error messages, stack traces) where:
+/// - inputs are attacker-controlled and may be extremely large,
+/// - host allocations must be fallible (no abort on OOM), and
+/// - the output should be bounded to avoid allocating arbitrarily large host `String`s.
+///
+/// Returns `(string, truncated)` where `truncated` indicates whether the input was longer than the
+/// cap and was therefore cut off early.
+pub(crate) fn utf16_to_utf8_lossy_bounded_with_tick(
+  units: &[u16],
+  max_bytes: usize,
+  mut tick: impl FnMut() -> Result<(), VmError>,
+) -> Result<(String, bool), VmError> {
+  const TICK_EVERY: usize = 1024;
+  const RESERVE_CHUNK: usize = 8 * 1024;
+
+  if max_bytes == 0 {
+    return Ok((String::new(), !units.is_empty()));
+  }
+
+  let mut out = String::new();
+  let mut truncated = false;
+
+  let mut i = 0usize;
+  while i < units.len() {
+    if i % TICK_EVERY == 0 {
+      tick()?;
+    }
+
+    let u = units[i];
+
+    // Decode UTF-16, replacing invalid surrogate sequences with U+FFFD.
+    let (code_point, consumed) = if (0xD800..=0xDBFF).contains(&u) {
+      // High surrogate.
+      if i + 1 < units.len() {
+        let u2 = units[i + 1];
+        if (0xDC00..=0xDFFF).contains(&u2) {
+          let high = (u as u32) - 0xD800;
+          let low = (u2 as u32) - 0xDC00;
+          (0x10000 + ((high << 10) | low), 2)
+        } else {
+          (0xFFFD, 1)
+        }
+      } else {
+        (0xFFFD, 1)
+      }
+    } else if (0xDC00..=0xDFFF).contains(&u) {
+      // Unpaired low surrogate.
+      (0xFFFD, 1)
+    } else {
+      (u as u32, 1)
+    };
+    i = i.saturating_add(consumed);
+
+    let ch = char::from_u32(code_point).unwrap_or('\u{FFFD}');
+    let mut buf = [0u8; 4];
+    let encoded = ch.encode_utf8(&mut buf);
+    let needed = encoded.len();
+
+    // Ensure we never exceed the cap; if the next code point doesn't fit, truncate.
+    if out.len().saturating_add(needed) > max_bytes {
+      truncated = true;
+      break;
+    }
+
+    if out.capacity().saturating_sub(out.len()) < needed {
+      // Reserve at most the remaining cap to avoid attempting huge allocations.
+      let remaining = max_bytes.saturating_sub(out.len());
+      let reserve = RESERVE_CHUNK.min(remaining).max(needed);
+      out
+        .try_reserve(reserve)
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+    out.push_str(encoded);
+  }
+
+  Ok((out, truncated))
+}
+
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn utf16_to_utf8_lossy_bounded(
+  units: &[u16],
+  max_bytes: usize,
+) -> Result<(String, bool), VmError> {
+  utf16_to_utf8_lossy_bounded_with_tick(units, max_bytes, || Ok(()))
 }
 
 impl PartialEq for JsString {

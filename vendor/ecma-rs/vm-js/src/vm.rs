@@ -40,6 +40,7 @@ use parse_js::error::SyntaxErrorType;
 use parse_js::{parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -48,6 +49,9 @@ use std::time::Instant;
 use std::{mem, ops};
 
 const ARG_HANDLING_CHUNK_SIZE: usize = 256;
+// Stack traces are best-effort: never allow attacker-controlled function names to force unbounded
+// host allocations while capturing frames.
+const MAX_STACK_FRAME_FUNCTION_NAME_BYTES: usize = 256;
 
 #[derive(Debug, Clone)]
 struct CallSite {
@@ -1812,7 +1816,16 @@ impl Vm {
   pub fn capture_stack(&self) -> Vec<StackFrame> {
     // `self.stack` is maintained in call-stack order (outermost → innermost). Stack traces are
     // conventionally rendered with the most recent frame first, so reverse during capture.
-    self.stack.iter().cloned().rev().collect()
+    let mut out: Vec<StackFrame> = Vec::new();
+    // Best-effort: stack capture must never abort the process on allocator OOM. If we can't
+    // allocate a fresh stack snapshot, return an empty stack trace instead.
+    if out.try_reserve_exact(self.stack.len()).is_err() {
+      return out;
+    }
+    for frame in self.stack.iter().rev() {
+      out.push(frame.clone());
+    }
+    out
   }
 
   fn update_top_frame_location(&mut self, call_site: &CallSite) {
@@ -2595,9 +2608,19 @@ impl Vm {
       .get_function_name(callee_obj)
       .ok()
       .and_then(|name| scope.heap().get_string(name).ok())
-      .map(|name| name.to_utf8_lossy())
-      .filter(|name| !name.is_empty())
-      .map(Arc::<str>::from);
+      .and_then(|name| {
+        // Best-effort: if UTF-16→UTF-8 conversion fails (OOM) or exceeds a small cap, drop the
+        // function name rather than turning the throw into an OOM/abort.
+        let (utf8, truncated) = crate::string::utf16_to_utf8_lossy_bounded(
+          name.as_code_units(),
+          MAX_STACK_FRAME_FUNCTION_NAME_BYTES,
+        )
+        .ok()?;
+        if truncated || utf8.is_empty() {
+          return None;
+        }
+        Arc::<str>::try_from(utf8).ok()
+      });
 
     let (source, line, col) = if let Some(call_site) = call_site.as_ref() {
       (call_site.source.clone(), call_site.line, call_site.col)
@@ -3165,9 +3188,17 @@ impl Vm {
       .get_function_name(callee_obj)
       .ok()
       .and_then(|name| scope.heap().get_string(name).ok())
-      .map(|name| name.to_utf8_lossy())
-      .filter(|name| !name.is_empty())
-      .map(Arc::<str>::from);
+      .and_then(|name| {
+        let (utf8, truncated) = crate::string::utf16_to_utf8_lossy_bounded(
+          name.as_code_units(),
+          MAX_STACK_FRAME_FUNCTION_NAME_BYTES,
+        )
+        .ok()?;
+        if truncated || utf8.is_empty() {
+          return None;
+        }
+        Arc::<str>::try_from(utf8).ok()
+      });
 
     let (source, line, col) = if let Some(call_site) = call_site.as_ref() {
       (call_site.source.clone(), call_site.line, call_site.col)

@@ -1,13 +1,13 @@
+use std::process;
 use vm_js::{
   Agent, Budget, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, VmError, VmOptions,
   MAX_PROTOTYPE_CHAIN,
 };
-use std::process;
 
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check"
   );
   process::exit(2);
 }
@@ -246,7 +246,8 @@ fn main() {
     | "parseFloat"
     | "regexp_compile"
     | "regexp"
-    | "arrayMap" => {
+    | "arrayMap"
+    | "throw_string_format" => {
       let script = match scenario.as_str() {
         "eval" => "eval(S)",
         "function" => "Function(S, 'return 1;')",
@@ -254,6 +255,9 @@ fn main() {
         "number" => "Number(S)",
         "parseFloat" => "parseFloat(S)",
         "regexp_compile" | "regexp" => "new RegExp(S)",
+        // Exercise host-visible error formatting (`Agent::format_vm_error`) on a thrown string value
+        // that is too large to stringify under RLIMIT_AS pressure.
+        "throw_string_format" => "throw S",
         // Trigger per-iteration array index key formatting (`ToString(k)` for each `k < length`) under
         // memory pressure. Previously this used intermediate Rust heap `String` allocations, which can
         // abort the process on allocator OOM.
@@ -271,6 +275,27 @@ fn main() {
       process::exit(2);
     }
   };
+
+  if scenario == "throw_string_format" {
+    match &result {
+      Ok(v) => {
+        eprintln!("oom_harness: unexpected success: {v:?}");
+        process::exit(1);
+      }
+      Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+        // Force host formatting of the thrown value/stack under memory pressure. The important
+        // invariant is that this must not abort the process (it is allowed to return a placeholder
+        // string if it cannot allocate).
+        let _ = agent.format_vm_error(err);
+        process::exit(0);
+      }
+      Err(err) => {
+        eprintln!("oom_harness: unexpected error: {err:?}");
+        process::exit(1);
+      }
+    }
+  }
+
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
     // `parseFloat` is allowed to succeed here: upstream implementations may parse directly from

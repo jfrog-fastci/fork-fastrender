@@ -1,4 +1,5 @@
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
+use crate::fallible_format;
 use crate::heap::ModuleNamespaceExportValue;
 use crate::function::ThisMode;
 use crate::property_descriptor_ops;
@@ -578,8 +579,16 @@ impl<'a> Scope<'a> {
           let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
             "module namespace access requires intrinsics for ReferenceError",
           ))?;
-          let export_name = self.heap().get_string(export.name)?.to_utf8_lossy();
-          let message = format!("Cannot access '{}' before initialization", export_name);
+          let export_js = self.heap().get_string(export.name)?;
+          let (export_name, _) = crate::string::utf16_to_utf8_lossy_bounded(
+            export_js.as_code_units(),
+            fallible_format::MAX_ERROR_MESSAGE_BYTES,
+          )?;
+          let message = fallible_format::try_format_error_message(
+            "Cannot access '",
+            &export_name,
+            "' before initialization",
+          )?;
           let err_obj = crate::new_reference_error(self, intr, &message)?;
           Err(VmError::Throw(err_obj))
         }
