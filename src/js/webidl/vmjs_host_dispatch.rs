@@ -1,6 +1,7 @@
 use crate::api::BrowserDocumentDom2;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, NodeId, NodeKind};
+use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
 use crate::js::dom_platform::{DomInterface, DomPlatform};
@@ -554,6 +555,23 @@ fn normalize_timer_id(value: Value) -> TimerId {
   } else {
     n as i32
   }
+}
+
+fn finite_f64_to_f32_or_zero(n: f64) -> f32 {
+  if !n.is_finite() {
+    return 0.0;
+  }
+  let min = f32::MIN as f64;
+  let max = f32::MAX as f64;
+  n.clamp(min, max) as f32
+}
+
+fn layout_metric_f32_to_f64_or_zero(n: f32) -> f64 {
+  if n.is_finite() { n as f64 } else { 0.0 }
+}
+
+fn layout_metric_nonneg_f32_to_f64_or_zero(n: f32) -> f64 {
+  if n.is_finite() { n.max(0.0) as f64 } else { 0.0 }
 }
 
 fn get_capture_option(scope: &mut Scope<'_>, value: Value) -> Result<bool, VmError> {
@@ -3468,6 +3486,223 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
         }
       }
+      ("Element", "getBoundingClientRect", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+
+        let rect = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let any = host.as_any_mut();
+          if let Some(document) = any.downcast_mut::<BrowserDocumentDom2>() {
+            Ok(
+              document
+                .geometry_context()
+                .ok()
+                .and_then(|ctx| ctx.border_box_in_viewport(node_id))
+                .unwrap_or(Rect::ZERO),
+            )
+          } else {
+            Ok(Rect::ZERO)
+          }
+        })?
+        .unwrap_or(Rect::ZERO);
+
+        let global = if let Some(global) = self.global {
+          global
+        } else {
+          vm
+            .user_data_mut::<WindowRealmUserData>()
+            .and_then(|data| data.window_obj())
+            .ok_or(VmError::TypeError("Illegal invocation"))?
+        };
+
+        let rect_obj = crate::js::window_dom_rect::alloc_dom_rect_read_only_from_global(
+          scope,
+          global,
+          rect.x() as f64,
+          rect.y() as f64,
+          rect.width() as f64,
+          rect.height() as f64,
+        )?;
+        Ok(Value::Object(rect_obj))
+      }
+      ("Element", "offsetWidth", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let width = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let rect = match document.border_box_rect_page(node_id) {
+            Ok(Some(rect)) => rect,
+            _ => return Ok(0.0),
+          };
+          Ok(layout_metric_nonneg_f32_to_f64_or_zero(rect.width()))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(width))
+      }
+      ("Element", "offsetHeight", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let height = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let rect = match document.border_box_rect_page(node_id) {
+            Ok(Some(rect)) => rect,
+            _ => return Ok(0.0),
+          };
+          Ok(layout_metric_nonneg_f32_to_f64_or_zero(rect.height()))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(height))
+      }
+      ("Element", "offsetLeft", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let left = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let rect = match document.border_box_rect_page(node_id) {
+            Ok(Some(rect)) => rect,
+            _ => return Ok(0.0),
+          };
+          Ok(layout_metric_f32_to_f64_or_zero(rect.x()))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(left))
+      }
+      ("Element", "offsetTop", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let top = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let rect = match document.border_box_rect_page(node_id) {
+            Ok(Some(rect)) => rect,
+            _ => return Ok(0.0),
+          };
+          Ok(layout_metric_f32_to_f64_or_zero(rect.y()))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(top))
+      }
+      ("Element", "clientWidth", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let width = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let Some(size) = document.client_size(node_id) else {
+            return Ok(0.0);
+          };
+          Ok(layout_metric_nonneg_f32_to_f64_or_zero(size.width))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(width))
+      }
+      ("Element", "clientHeight", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let height = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let Some(size) = document.client_size(node_id) else {
+            return Ok(0.0);
+          };
+          Ok(layout_metric_nonneg_f32_to_f64_or_zero(size.height))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(height))
+      }
+      ("Element", "scrollWidth", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let width = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let Some(size) = document.scroll_size(node_id) else {
+            return Ok(0.0);
+          };
+          Ok(layout_metric_nonneg_f32_to_f64_or_zero(size.width))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(width))
+      }
+      ("Element", "scrollHeight", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let height = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+          let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+            return Ok(0.0);
+          };
+          let Some(size) = document.scroll_size(node_id) else {
+            return Ok(0.0);
+          };
+          Ok(layout_metric_nonneg_f32_to_f64_or_zero(size.height))
+        })?
+        .unwrap_or(0.0);
+        Ok(Value::Number(height))
+      }
+      ("Element", "scrollTop", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        if args.is_empty() {
+          let y = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+            let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+              return Ok(0.0);
+            };
+            Ok(layout_metric_f32_to_f64_or_zero(document.scroll_offset(node_id).y))
+          })?
+          .unwrap_or(0.0);
+          Ok(Value::Number(y))
+        } else {
+          let mut y = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
+            Value::Number(n) => n,
+            _ => 0.0,
+          };
+          if !y.is_finite() {
+            y = 0.0;
+          }
+          let y = finite_f64_to_f32_or_zero(y);
+
+          let _ = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+            if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+              let old = document.scroll_offset(node_id);
+              let _ = document.set_scroll_offset(node_id, Point::new(old.x, y));
+            }
+            Ok(())
+          })?;
+          Ok(Value::Undefined)
+        }
+      }
+      ("Element", "scrollLeft", 0) => {
+        let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        if args.is_empty() {
+          let x = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+            let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() else {
+              return Ok(0.0);
+            };
+            Ok(layout_metric_f32_to_f64_or_zero(document.scroll_offset(node_id).x))
+          })?
+          .unwrap_or(0.0);
+          Ok(Value::Number(x))
+        } else {
+          let mut x = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
+            Value::Number(n) => n,
+            _ => 0.0,
+          };
+          if !x.is_finite() {
+            x = 0.0;
+          }
+          let x = finite_f64_to_f32_or_zero(x);
+
+          let _ = with_active_vm_host_and_hooks(vm, |_vm, host, _hooks| {
+            if let Some(document) = host.as_any_mut().downcast_mut::<BrowserDocumentDom2>() {
+              let old = document.scroll_offset(node_id);
+              let _ = document.set_scroll_offset(node_id, Point::new(x, old.y));
+            }
+            Ok(())
+          })?;
+          Ok(Value::Undefined)
+        }
+      }
+
       ("Element", "id", 0) => {
         let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
         if args.is_empty() {
