@@ -7,7 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use win_sandbox::{restricted_token, RestrictedToken, SpawnConfig};
+use win_sandbox::{mitigations, restricted_token, RestrictedToken, SpawnConfig};
 use windows_sys::Win32::Foundation::{
   CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
 };
@@ -205,6 +205,10 @@ fn restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile() {
       integrity_rid == 0 || integrity_rid == 4096,
       "expected integrity RID to be Untrusted(0) or Low(4096); got {integrity_rid}"
     );
+
+    mitigations::verify_renderer_mitigations_current_process()
+      .expect("child mitigation verification");
+
     let path = std::env::var_os(ENV_TEST_FILE).expect("missing userprofile test file path");
 
     // Attempt to read a file in USERPROFILE; should fail under the restricted token.
@@ -269,7 +273,7 @@ fn restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile() {
     inherit_handles: Vec::new(),
     appcontainer: None,
     job: None,
-    mitigation_policy: None,
+    mitigation_policy: Some(mitigations::renderer_mitigation_policy()),
     all_application_packages_hardened: true,
   };
 
