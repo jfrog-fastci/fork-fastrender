@@ -592,6 +592,27 @@ pub enum UiToWorker {
     tab_id: TabId,
     text: String,
   },
+  /// Assistive-tech hook: replace the full value of a text control (`<input>`/`<textarea>`) by DOM
+  /// pre-order id.
+  ///
+  /// This is intended for screen readers and other accessibility clients that send a single "set
+  /// value" request rather than synthesizing a stream of key events.
+  A11ySetTextValue {
+    tab_id: TabId,
+    /// Pre-order DOM node id of the target `<input>`/`<textarea>`.
+    node_id: usize,
+    value: String,
+  },
+  /// Assistive-tech hook: set the selection range for a focused text control.
+  ///
+  /// The worker clamps indices into the current value length.
+  A11ySetTextSelection {
+    tab_id: TabId,
+    /// Pre-order DOM node id of the focused `<input>`/`<textarea>`.
+    node_id: usize,
+    start: usize,
+    end: usize,
+  },
   /// IME preedit update for the focused page text control (input/textarea).
   ///
   /// This represents an in-progress composition string that should be rendered at the caret
@@ -1126,6 +1147,30 @@ mod tests {
       UiToWorker::GoForward { tab_id },
       UiToWorker::Reload { tab_id },
       UiToWorker::StopLoading { tab_id },
+    ];
+
+    for msg in msgs {
+      let formatted = format!("{msg:?}");
+      assert!(!formatted.is_empty());
+    }
+  }
+
+  #[test]
+  fn ui_to_worker_a11y_text_actions_are_debug_constructible() {
+    let tab_id = TabId(1);
+
+    let msgs = [
+      UiToWorker::A11ySetTextValue {
+        tab_id,
+        node_id: 42,
+        value: "hello".to_string(),
+      },
+      UiToWorker::A11ySetTextSelection {
+        tab_id,
+        node_id: 42,
+        start: 0,
+        end: 5,
+      },
     ];
 
     for msg in msgs {

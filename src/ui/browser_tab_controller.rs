@@ -271,6 +271,17 @@ impl BrowserTabController {
       UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => {
         self.handle_text_input(&text)
       }
+      UiToWorker::A11ySetTextValue {
+        tab_id,
+        node_id,
+        value,
+      } if tab_id == self.tab_id => self.handle_a11y_set_text_value(node_id, &value),
+      UiToWorker::A11ySetTextSelection {
+        tab_id,
+        node_id,
+        start,
+        end,
+      } if tab_id == self.tab_id => self.handle_a11y_set_text_selection(node_id, start, end),
       UiToWorker::Copy { tab_id } if tab_id == self.tab_id => self.handle_copy(),
       UiToWorker::Cut { tab_id } if tab_id == self.tab_id => self.handle_cut(),
       UiToWorker::Paste { tab_id, text } if tab_id == self.tab_id => self.handle_paste(&text),
@@ -1204,6 +1215,35 @@ impl BrowserTabController {
       out.extend(self.paint_if_needed()?);
     }
     Ok(out)
+  }
+
+  fn handle_a11y_set_text_value(&mut self, node_id: usize, value: &str) -> Result<Vec<WorkerToUi>> {
+    let changed = self
+      .document
+      .mutate_dom(|dom| self.interaction.set_text_control_value(dom, node_id, value));
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
+  fn handle_a11y_set_text_selection(
+    &mut self,
+    node_id: usize,
+    start: usize,
+    end: usize,
+  ) -> Result<Vec<WorkerToUi>> {
+    let changed = self.document.mutate_dom(|dom| {
+      self
+        .interaction
+        .a11y_set_text_selection_range(dom, node_id, start, end)
+    });
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
   }
 
   fn handle_select_all(&mut self) -> Result<Vec<WorkerToUi>> {

@@ -2704,6 +2704,48 @@ impl BrowserRuntime {
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
       }
+      UiToWorker::A11ySetTextValue {
+        tab_id,
+        node_id,
+        value,
+      } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let Some(doc) = tab.document.as_mut() else {
+          return;
+        };
+
+        let changed =
+          doc.mutate_dom(|dom| tab.interaction.set_text_control_value(dom, node_id, &value));
+        if changed {
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
+        }
+      }
+      UiToWorker::A11ySetTextSelection {
+        tab_id,
+        node_id,
+        start,
+        end,
+      } => {
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let Some(doc) = tab.document.as_mut() else {
+          return;
+        };
+
+        let changed = doc.mutate_dom(|dom| {
+          tab
+            .interaction
+            .a11y_set_text_selection_range(dom, node_id, start, end)
+        });
+        if changed {
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
+        }
+      }
       UiToWorker::ImePreedit {
         tab_id,
         text,
