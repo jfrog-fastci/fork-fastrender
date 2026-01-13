@@ -877,6 +877,14 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
     .any(|track| track.min_track_sizing_function.is_max_content());
   let any_flexible_max_content_min_track_sizing_function =
     axis_tracks.iter().any(|track| track.is_flexible() && track.min_track_sizing_function.is_max_content());
+  let any_auto_min_track_sizing_function = axis_tracks.iter().any(|track| {
+    track.min_track_sizing_function.is_auto() && !track.max_track_sizing_function.is_min_content()
+  });
+  let any_flexible_auto_min_track_sizing_function = axis_tracks.iter().any(|track| {
+    track.is_flexible()
+      && track.min_track_sizing_function.is_auto()
+      && !track.max_track_sizing_function.is_min_content()
+  });
   let any_intrinsic_max_track_sizing_function = axis_tracks.iter().any(|track| {
     !track
       .max_track_sizing_function
@@ -1212,51 +1220,79 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
         track.min_track_sizing_function.is_max_content()
       }
 
-      for item in batch.iter_mut() {
-        let axis_max_content_size = item_sizer.max_content_contribution(item);
-        let limit =
-          item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
-            item_sizer.calc(val, basis)
-          });
-        let space = axis_max_content_size.maybe_min(limit);
-        let tracks = &mut axis_tracks[item.track_range_excluding_lines(axis)];
-        if space > 0.0 {
-          // If any of the tracks spanned by the item have a MaxContent min track sizing function then
-          // distribute space only to those tracks. Otherwise distribute space to tracks with an Auto min
-          // track sizing function.
-          //
-          // Note: this prioritisation of MaxContent over Auto is not mentioned in the spec (which suggests that
-          // we ought to distribute space evenly between MaxContent and Auto tracks). But it is implemented like
-          // this in both Chrome and Firefox (and it does have a certain logic to it), so we implement it too for
-          // compatibility.
-          //
-          // See: https://www.w3.org/TR/css-grid-1/#track-size-max-content-min
-          if tracks.iter().any(has_max_content_min_track_sizing_function) {
-            distribute_item_space_to_base_size(
-              is_flex,
-              use_flex_factor_for_distribution,
-              space,
-              tracks,
-              has_max_content_min_track_sizing_function,
-              |_| f32::INFINITY,
-              IntrinsicContributionType::Maximum,
-            );
-          } else {
-            let fit_content_limited_growth_limit =
-              |track: &GridTrack| track.fit_content_limited_growth_limit(percentage_basis(track));
-            distribute_item_space_to_base_size(
-              is_flex,
-              use_flex_factor_for_distribution,
-              space,
-              tracks,
-              has_auto_min_track_sizing_function,
-              fit_content_limited_growth_limit,
-              IntrinsicContributionType::Maximum,
-            );
+      let any_track_affected_by_step = if is_flex {
+        any_flexible_max_content_min_track_sizing_function || any_flexible_auto_min_track_sizing_function
+      } else {
+        any_max_content_min_track_sizing_function || any_auto_min_track_sizing_function
+      };
+
+      if any_track_affected_by_step {
+        for item in batch.iter_mut() {
+          let item_track_range = item.track_range_excluding_lines(axis);
+          let (prioritize_max_content_minimums, item_spans_affected_track) = {
+            let item_axis_tracks = &axis_tracks[item_track_range.clone()];
+            let prioritize = item_axis_tracks.iter().any(has_max_content_min_track_sizing_function);
+            let spans_affected_track = if prioritize {
+              item_axis_tracks.iter().any(|track| {
+                has_max_content_min_track_sizing_function(track) && (!is_flex || track.is_flexible())
+              })
+            } else {
+              item_axis_tracks.iter().any(|track| {
+                has_auto_min_track_sizing_function(track) && (!is_flex || track.is_flexible())
+              })
+            };
+            (prioritize, spans_affected_track)
+          };
+
+          if !item_spans_affected_track {
+            continue;
+          }
+
+          let axis_max_content_size = item_sizer.max_content_contribution(item);
+          let limit =
+            item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
+              item_sizer.calc(val, basis)
+            });
+          let space = axis_max_content_size.maybe_min(limit);
+          let tracks = &mut axis_tracks[item_track_range];
+          if space > 0.0 {
+            // If any of the tracks spanned by the item have a MaxContent min track sizing function then
+            // distribute space only to those tracks. Otherwise distribute space to tracks with an Auto min
+            // track sizing function.
+            //
+            // Note: this prioritisation of MaxContent over Auto is not mentioned in the spec (which suggests that
+            // we ought to distribute space evenly between MaxContent and Auto tracks). But it is implemented like
+            // this in both Chrome and Firefox (and it does have a certain logic to it), so we implement it too for
+            // compatibility.
+            //
+            // See: https://www.w3.org/TR/css-grid-1/#track-size-max-content-min
+            if prioritize_max_content_minimums {
+              distribute_item_space_to_base_size(
+                is_flex,
+                use_flex_factor_for_distribution,
+                space,
+                tracks,
+                has_max_content_min_track_sizing_function,
+                |_| f32::INFINITY,
+                IntrinsicContributionType::Maximum,
+              );
+            } else {
+              let fit_content_limited_growth_limit =
+                |track: &GridTrack| track.fit_content_limited_growth_limit(percentage_basis(track));
+              distribute_item_space_to_base_size(
+                is_flex,
+                use_flex_factor_for_distribution,
+                space,
+                tracks,
+                has_auto_min_track_sizing_function,
+                fit_content_limited_growth_limit,
+                IntrinsicContributionType::Maximum,
+              );
+            }
           }
         }
+        flush_planned_base_size_increases(axis_tracks);
       }
-      flush_planned_base_size_increases(axis_tracks);
     }
 
     // In all cases, continue to increase the base size of tracks with a min track sizing function of max-content by distributing
@@ -2564,5 +2600,64 @@ mod tests {
     // intrinsic sizes (not whichever item happens to come first in the sorted grid item slice).
     assert_eq!(compute_grid_width(10.0, 20.0), 20.0);
     assert_eq!(compute_grid_width(20.0, 10.0), 20.0);
+
+  }
+
+  #[test]
+  fn max_content_constraint_without_auto_or_max_content_min_tracks_should_not_measure_max_content() {
+    // Under a max-content sizing constraint, step 11.5.3 ("max-content minimums") only affects tracks
+    // whose *min* track sizing function is `auto` or `max-content`. If no such tracks exist, the step is a
+    // no-op and should not trigger max-content contribution probes.
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        grid_column: Line {
+          start: line(1),
+          end: span(2),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let track = minmax(
+      MinTrackSizingFunction::length(0.0),
+      MaxTrackSizingFunction::min_content(),
+    );
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          grid_template_columns: vec![track; 2],
+          grid_template_rows: vec![length(10.0); 1],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let mut max_content_probe_count = 0usize;
+    taffy
+      .compute_layout_with_measure(
+        root,
+        Size {
+          width: AvailableSpace::MaxContent,
+          height: AvailableSpace::Definite(100.0),
+        },
+        |known_dimensions, available_space, _, _, _| {
+          // `known_dimensions` is `Size::NONE` for PerformLayout (final layout), but is forwarded for
+          // RunMode::ComputeSize intrinsic probes. Filter to avoid counting final layout measurements.
+          if known_dimensions != Size::NONE
+            && (matches!(available_space.width, AvailableSpace::MaxContent)
+              || matches!(available_space.height, AvailableSpace::MaxContent))
+          {
+            max_content_probe_count += 1;
+          }
+          MeasureOutput::from_size(Size { width: 10.0, height: 10.0 })
+        },
+      )
+      .unwrap();
+
+    assert_eq!(max_content_probe_count, 0);
   }
 }
