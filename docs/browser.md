@@ -73,7 +73,7 @@ app uses the same `UiToWorker`/`WorkerToUi` message protocol via the browser UI 
 
 ### Still incomplete (non-exhaustive)
 
-- select dropdown UI is basic (no typeahead/multi-select yet)
+- select dropdown UI is basic (keyboard navigation and simple typeahead are supported; no multi-select yet)
 - richer text editing + selection/caret movement
 - full focus traversal + keyboard activation parity
 
