@@ -10785,22 +10785,28 @@ fn sync_child_nodes_array(
   children
     .try_reserve(dom.node(node_id).children.len())
     .map_err(|_| VmError::OutOfMemory)?;
+  let node_ref = dom.node(node_id);
   // `dom2` stores a `ShadowRoot` as a child of its host element (often at index 0) so that the
   // renderer can traverse the composed tree. Node traversal APIs (`childNodes`, `firstChild`, etc)
   // must never expose that shadow root through the light-DOM child list.
-  let filter_shadow_roots = !matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. });
-  for &child in dom.node(node_id).children.iter() {
-    if child.index() >= dom.nodes_len() {
-      continue;
+  let filter_shadow_roots = !matches!(node_ref.kind, NodeKind::ShadowRoot { .. });
+  // `<template>` contents are represented as children of the `<template>` element with
+  // `inert_subtree=true`. They must not be exposed via Node traversal APIs (they live in the
+  // template's `content` document fragment in the DOM Standard).
+  if !(filter_shadow_roots && node_ref.inert_subtree) {
+    for &child in node_ref.children.iter() {
+      if child.index() >= dom.nodes_len() {
+        continue;
+      }
+      let child_node = dom.node(child);
+      if child_node.parent != Some(node_id) {
+        continue;
+      }
+      if filter_shadow_roots && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+        continue;
+      }
+      children.push(child);
     }
-    let child_node = dom.node(child);
-    if child_node.parent != Some(node_id) {
-      continue;
-    }
-    if filter_shadow_roots && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
-      continue;
-    }
-    children.push(child);
   }
 
   // Root objects while allocating property keys.
@@ -27949,13 +27955,25 @@ fn node_parent_node_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Opti
   if node_is_shadow_root(dom, node_id) {
     return None;
   }
-  dom.parent_node(node_id)
+  let parent = dom.parent_node(node_id)?;
+  // `<template>` contents are stored under the template element with `inert_subtree=true`. Those
+  // descendants must behave disconnected for traversal (NodeIterator/TreeWalker) and Node traversal
+  // accessors.
+  if dom.node(parent).inert_subtree {
+    return None;
+  }
+  Some(parent)
 }
 
 fn node_first_child_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
   // ShadowRoot exposes its shadow tree children normally.
   if node_is_shadow_root(dom, node_id) {
     return dom.first_child(node_id);
+  }
+  // Nodes with `inert_subtree=true` (currently `<template>`) behave as leaves for traversal: their
+  // descendants live in a separate DOM tree and must not be exposed via Node traversal APIs.
+  if dom.node(node_id).inert_subtree {
+    return None;
   }
 
   // Light DOM traversal: skip ShadowRoot nodes stored under their host element.
@@ -27978,6 +27996,9 @@ fn node_first_child_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Opti
 fn node_last_child_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
   if node_is_shadow_root(dom, node_id) {
     return dom.last_child(node_id);
+  }
+  if dom.node(node_id).inert_subtree {
+    return None;
   }
 
   for &child in dom.node(node_id).children.iter().rev() {
@@ -28002,7 +28023,7 @@ fn node_previous_sibling_for_traversal(dom: &dom2::Document, node_id: NodeId) ->
     return None;
   }
 
-  let parent = dom.parent_node(node_id)?;
+  let parent = node_parent_node_for_traversal(dom, node_id)?;
   let parent_is_shadow_root = node_is_shadow_root(dom, parent);
   let parent_node = dom.node(parent);
   let pos = parent_node.children.iter().position(|&c| c == node_id)?;
@@ -28027,7 +28048,7 @@ fn node_next_sibling_for_traversal(dom: &dom2::Document, node_id: NodeId) -> Opt
     return None;
   }
 
-  let parent = dom.parent_node(node_id)?;
+  let parent = node_parent_node_for_traversal(dom, node_id)?;
   let parent_is_shadow_root = node_is_shadow_root(dom, parent);
   let parent_node = dom.node(parent);
   let pos = parent_node.children.iter().position(|&c| c == node_id)?;
