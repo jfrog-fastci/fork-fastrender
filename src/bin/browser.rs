@@ -400,6 +400,56 @@ mod open_typed_in_new_tab_tests {
       "expected no cancel token to be created on error"
     );
   }
+
+  #[test]
+  fn typed_search_query_open_in_new_tab_resolves_to_search_url() {
+    let mut browser_state = BrowserAppState::new();
+    let tab_a = TabId(1);
+    browser_state.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+
+    let mut cancels = HashMap::new();
+    let (new_tab_id, msgs) =
+      open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "cats")
+        .expect("search query should resolve");
+
+    let new_tab = browser_state
+      .tab(new_tab_id)
+      .expect("new tab state should exist");
+    assert_eq!(
+      new_tab.current_url.as_deref(),
+      Some("https://duckduckgo.com/?q=cats")
+    );
+
+    assert!(
+      msgs.iter().any(|msg| matches!(
+        msg,
+        UiToWorker::Navigate { tab_id, url, reason }
+          if *tab_id == new_tab_id
+            && url == "https://duckduckgo.com/?q=cats"
+            && *reason == NavigationReason::TypedUrl
+      )),
+      "expected Navigate(TypedUrl) to search URL for {new_tab_id:?}, got {msgs:?}"
+    );
+  }
+
+  #[test]
+  fn typed_open_in_new_tab_rejects_empty_input() {
+    let mut browser_state = BrowserAppState::new();
+    let tab_a = TabId(1);
+    browser_state.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+
+    let mut cancels = HashMap::new();
+    let result = open_typed_in_new_tab_state(&mut browser_state, &mut cancels, "   ");
+    assert!(result.is_err(), "expected empty input to error");
+    assert_eq!(browser_state.tabs.len(), 1);
+    assert!(cancels.is_empty());
+  }
 }
 
 #[cfg(feature = "browser_ui")]
