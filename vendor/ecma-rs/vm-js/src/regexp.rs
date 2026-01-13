@@ -3943,6 +3943,53 @@ mod tests {
   }
 
   #[test]
+  fn regexp_unicode_restricted_patterns_throw() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // Unescaped `]` is only tolerated in non-Unicode mode (Annex B). In unicode mode it is a
+    // SyntaxError both via the constructor and via RegExp literals.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("]", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { eval("/]/u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+
+    // In Unicode mode, `{` must only appear as part of a valid quantifier after an atom.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("{", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{1", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{1,", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{1,2", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+
+    // Legacy (non-unicode) mode should continue treating these as literal PatternCharacters.
+    assert!(eval_bool(&mut rt, r#"(new RegExp("]").test("]"))"#)?);
+    assert!(eval_bool(&mut rt, r#"(new RegExp("{").test("{"))"#)?);
+    assert!(eval_bool(&mut rt, r#"(new RegExp("a{").test("a{"))"#)?);
+
+    Ok(())
+  }
+
+  #[test]
   fn regexp_flags_v_is_accepted_and_mutually_exclusive_with_u() {
     let mut tick = || Ok(());
     let v = RegExpFlags::parse(&[b'v' as u16], &mut tick).expect("v should parse");
