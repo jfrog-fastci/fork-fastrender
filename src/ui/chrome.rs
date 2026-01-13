@@ -3816,7 +3816,9 @@ mod tests {
     ChromeAction,
   };
   use crate::ui::a11y_test_util;
-  use crate::ui::browser_app::{BrowserAppState, BrowserTabState, OpenTabContextMenuState};
+  use crate::ui::browser_app::{
+    BrowserAppState, BrowserTabState, OpenTabContextMenuState, UiFocusToken,
+  };
   use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
 
   fn new_context() -> egui::Context {
@@ -8305,6 +8307,58 @@ frame={idx} repaint_after={:?}\n",
         .iter()
         .any(|action| matches!(action, ChromeAction::DuplicateTab(id) if *id == tab_a)),
       "expected ChromeAction::DuplicateTab({tab_a:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn escape_closing_tab_context_menu_restores_focus_to_opener_tab() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 0: open the context menu and render once so the menu populates its focus id list.
+    app.chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
+      tab_id: tab_a,
+      anchor_points: (50.0, 50.0),
+      opener_focus: Some(UiFocusToken(tab_a.0)),
+    });
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    // Grab the menu's known focusable widget ids and focus one to simulate keyboard navigation
+    // inside the popup.
+    let menu_id = egui::Id::new(("tab_context_menu", tab_a));
+    let popup_focus_ids = ctx
+      .data(|d| d.get_temp::<Vec<egui::Id>>(menu_id.with("popup_focus_ids")))
+      .unwrap_or_default();
+    let first_focus_id = *popup_focus_ids
+      .first()
+      .expect("expected tab context menu to store popup focus ids");
+    ctx.memory_mut(|mem| mem.request_focus(first_focus_id));
+
+    // Frame 1: press Escape to close. Focus should return to the tab strip opener widget.
+    begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      app.chrome.open_tab_context_menu.is_none(),
+      "expected tab context menu to be closed"
+    );
+
+    let opener_id = super::tab_strip::tab_strip_tab_widget_id(tab_a);
+    assert!(
+      ctx.memory(|mem| mem.has_focus(opener_id)),
+      "expected focus to be restored to tab opener widget after Escape"
     );
   }
 
