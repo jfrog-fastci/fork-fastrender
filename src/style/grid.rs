@@ -1271,6 +1271,27 @@ fn parse_line_name_list(
   parser: &mut TrackListParser<'_>,
   require_non_empty: bool,
 ) -> Option<Vec<Vec<String>>> {
+  fn parse_line_names_group(input: &str) -> Option<Vec<Vec<String>>> {
+    let mut parser = TrackListParser::new(input);
+    let mut line_names: Vec<Vec<String>> = Vec::new();
+    while !parser.is_eof() {
+      parser.skip_whitespace();
+      if parser.is_eof() {
+        break;
+      }
+      if let Some(names) = parser.consume_bracketed_names() {
+        line_names.push(names);
+        continue;
+      }
+      return None;
+    }
+    if line_names.is_empty() {
+      None
+    } else {
+      Some(line_names)
+    }
+  }
+
   let mut out: Vec<Vec<String>> = Vec::new();
 
   while !parser.is_eof() {
@@ -1297,12 +1318,11 @@ fn parse_line_name_list(
         return None;
       }
 
-      let mut pattern_parser = TrackListParser::new(pattern_str);
-      let pattern = parse_line_name_list(&mut pattern_parser, true)?;
-
-      if pattern.is_empty() {
-        return None;
-      }
+      // CSS Grid 2: `repeat(<integer>, <line-names>+)` in subgrid line name lists.
+      //
+      // Note: `repeat()` is not allowed to be nested, so `pattern_str` must contain only bracketed
+      // line-name lists.
+      let pattern = parse_line_names_group(pattern_str)?;
 
       // Expand the repeat inline.
       out.reserve(pattern.len().saturating_mul(count));

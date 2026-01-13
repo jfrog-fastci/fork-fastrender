@@ -39,6 +39,14 @@ fn subgrid_line_names_rejects_invalid_token_order_or_duplicates() {
   assert!(parse_subgrid_line_names("subgrid 10px").is_none());
   assert!(parse_subgrid_line_names("subgrid subgrid").is_none());
   assert!(parse_subgrid_line_names("subgrid [a] junk").is_none());
+  assert!(
+    parse_subgrid_line_names("subgrid repeat(2, repeat(2, [a]))").is_none(),
+    "nested repeat() is not allowed in a subgrid line-name-list"
+  );
+  assert!(
+    parse_subgrid_line_names("subgrid repeat(2, [a] repeat(2, [b]))").is_none(),
+    "repeat() patterns must contain only bracketed line-name lists"
+  );
 
   // `subgridsubgrid` is a single identifier token and must not be treated as the `subgrid` keyword.
   assert!(parse_subgrid_line_names("subgridsubgrid").is_none());
