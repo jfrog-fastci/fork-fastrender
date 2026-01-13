@@ -673,6 +673,21 @@ impl BrowserDocumentDom2 {
     self.paint_dirty = true;
   }
 
+  /// Marks the layout stage dirty without invalidating style.
+  ///
+  /// This is intended for dynamic sources whose intrinsic sizing information can change between
+  /// frames without any DOM mutations (for example: video metadata becoming available, or aspect
+  /// ratio updates). Calling this ensures the next [`render_if_needed`](Self::render_if_needed)
+  /// recomputes layout (and then paints) while allowing cached style artifacts to be reused when
+  /// possible.
+  ///
+  /// This sets `layout_dirty = true` and `paint_dirty = true` while leaving `style_dirty`
+  /// unchanged, and does not clear any existing dirtiness flags.
+  pub fn invalidate_layout(&mut self) {
+    self.layout_dirty = true;
+    self.paint_dirty = true;
+  }
+
   /// Returns true when style/layout must be recomputed before painting.
   pub fn needs_layout(&self) -> bool {
     self.prepared.is_none()
