@@ -242,7 +242,7 @@ timeline) to be driven by the same injected clock.
 
 ## Deterministic tests: `EventLoop::with_clock(...)` + `VirtualClock`
 
-The event loop (timers + rAF timestamp argument) uses an injectable monotonic clock:
+The event loop (timers + rAF timestamp argument + `requestIdleCallback` deadlines) uses an injectable monotonic clock:
 
 - `js::RealClock` (default): backed by `Instant`,
 - `js::VirtualClock`: only advances when you call `advance(...)` / `set_now(...)`.
@@ -258,7 +258,8 @@ use fastrender::js::{Clock, EventLoop, VirtualClock};
 fn main() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
 
-    // The event loop clock drives timers and the rAF timestamp argument.
+    // The event loop clock drives timers, the rAF timestamp argument, and `requestIdleCallback`
+    // deadlines (`IdleDeadline.timeRemaining()`).
     //
     // (The explicit `Arc<dyn Clock>` cast is just to make the trait-object boundary obvious.)
     let clock_for_loop: Arc<dyn Clock> = clock.clone();
@@ -271,7 +272,7 @@ fn main() -> Result<()> {
         event_loop,
     )?;
 
-    // If you want CSS animation sampling to use the same clock as timers/rAF too, set it
+    // If you want CSS animation sampling to use the same clock as timers/rAF/idle callbacks too, set it
     // explicitly:
     //
     // tab.set_animation_clock(clock_for_loop.clone());

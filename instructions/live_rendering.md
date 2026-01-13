@@ -104,7 +104,7 @@ Parse HTML → Style → Layout → Paint → Display
 The **one-shot** render APIs (`FastRender::render_*`) do not include an HTML event loop.
 
 JS-capable containers (`BrowserTab`, `BrowserDocumentJs`) do include an event loop (tasks +
-microtasks + timers + rAF), but **embedders must drive it** (see `docs/live_rendering_loop.md`).
+microtasks + timers + rAF + `requestIdleCallback`), but **embedders must drive it** (see `docs/live_rendering_loop.md`).
 
 ## Architecture changes needed
 
