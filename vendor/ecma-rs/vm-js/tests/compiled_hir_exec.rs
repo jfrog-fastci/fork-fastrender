@@ -974,6 +974,85 @@ fn compiled_numeric_literal_object_key_is_canonicalized() -> Result<(), VmError>
 }
 
 #[test]
+fn compiled_class_declaration_basic() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        class C { constructor() { this.x = 2; } }
+        return (new C()).x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+
+    let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    assert_eq!(result, Value::Number(2.0));
+  }
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn compiled_class_expression_basic() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let C = class {
+          constructor() { this.x = 1; }
+          m() { return this.x; }
+        };
+        return (new C()).m();
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+
+    let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    assert_eq!(result, Value::Number(1.0));
+  }
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn compiled_function_length_counts_params_before_first_default() -> Result<(), VmError> {
   let source = r#"
     function f(a, b = 1, c) {}

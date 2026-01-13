@@ -6,7 +6,7 @@ use crate::function::ThisMode;
 use crate::for_in::ForInEnumerator;
 use crate::iterator;
 use crate::module_loading;
-use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
+use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
@@ -14,6 +14,104 @@ use std::collections::HashSet;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use parse_js::num::JsNumber;
+
+fn compiled_constructor_body_construct(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  args: &[Value],
+  new_target: Value,
+) -> Result<Value, VmError> {
+  // Extract the hidden compiled body function from the wrapper's native slots.
+  let body_func = {
+    let func = scope.heap().get_function(callee)?;
+    func
+      .native_slots
+      .as_deref()
+      .and_then(|slots| slots.first().copied())
+  };
+  let Some(Value::Object(body_func)) = body_func else {
+    return Err(VmError::InvariantViolation(
+      "compiled constructor wrapper missing body function slot",
+    ));
+  };
+
+  let (func_ref, is_strict, realm, outer) = {
+    let call_handler = scope.heap().get_function_call_handler(body_func)?;
+    let crate::function::CallHandler::User(func_ref) = call_handler else {
+      return Err(VmError::InvariantViolation(
+        "compiled constructor body slot is not a compiled user function",
+      ));
+    };
+    let f = scope.heap().get_function(body_func)?;
+    (func_ref, f.is_strict, f.realm, f.closure_env)
+  };
+
+  // Determine the global object for the constructor body.
+  let global_object = match realm {
+    Some(obj) => obj,
+    None => {
+      // Match `Vm::call_user_function`'s best-effort behaviour: synthesize a minimal global object.
+      // Root the body function across allocation so it isn't collected before we attach the realm.
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(Value::Object(body_func))?;
+      let global_object = init_scope.alloc_object()?;
+      init_scope.push_root(Value::Object(global_object))?;
+      init_scope
+        .heap_mut()
+        .set_function_realm(body_func, global_object)?;
+      global_object
+    }
+  };
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Allocate the instance using `OrdinaryCreateFromConstructor(newTarget, %Object.prototype%)`.
+  //
+  // Root inputs across allocation in case it triggers GC.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(body_func), new_target])?;
+  let this_obj = crate::spec_ops::ordinary_create_from_constructor_with_host_and_hooks(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    new_target,
+    intr.object_prototype(),
+    &[],
+    |scope| scope.alloc_object(),
+  )?;
+
+  // Root the newly-created `this` across environment creation and body execution.
+  scope.push_root(Value::Object(this_obj))?;
+
+  let func_env = scope.env_create(outer)?;
+  let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+
+  let result = run_compiled_function(
+    vm,
+    &mut scope,
+    host,
+    hooks,
+    &mut env,
+    func_ref,
+    is_strict,
+    Value::Object(this_obj),
+    new_target,
+    args,
+  );
+
+  env.teardown(scope.heap_mut());
+
+  match result? {
+    Value::Object(o) => Ok(Value::Object(o)),
+    _ => Ok(Value::Object(this_obj)),
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Flow {
@@ -673,8 +771,11 @@ impl<'vm> HirEvaluator<'vm> {
       let stmt = self.get_stmt(body, *stmt_id)?;
       match &stmt.kind {
         hir_js::StmtKind::Decl(def_id) => {
-          // Only hoist function declarations. Class declarations are currently unimplemented in the
-          // compiled path.
+          // Only hoist function declarations.
+          //
+          // Class declarations have TDZ semantics and are evaluated as statements (they create the
+          // binding during lexical instantiation, and initialize it when the declaration executes),
+          // so we intentionally do not hoist them here.
           let def = self
             .hir()
             .def(*def_id)
@@ -1415,8 +1516,7 @@ impl<'vm> HirEvaluator<'vm> {
         Ok(Flow::empty())
       }
       hir_js::StmtKind::Decl(def_id) => {
-        // Function declarations are handled during instantiation. Class declarations are currently
-        // unimplemented in the compiled path.
+        // Function declarations are handled during instantiation.
         let def = self
           .hir()
           .def(*def_id)
@@ -1424,9 +1524,49 @@ impl<'vm> HirEvaluator<'vm> {
         let Some(body_id) = def.body else {
           return Ok(Flow::empty());
         };
-        let decl_body = self.get_body(body_id)?;
+        // Avoid borrowing the body through `self` across calls that mutably borrow `self` (class
+        // evaluation mutates the runtime environment). Clone the HIR Arc so the body reference is
+        // independent of `self`.
+        let hir = self.script.hir.clone();
+        let decl_body = hir
+          .body(body_id)
+          .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+
         if decl_body.kind == hir_js::BodyKind::Function {
           // Already hoisted.
+          Ok(Flow::empty())
+        } else if decl_body.kind == hir_js::BodyKind::Class {
+          let name = self.resolve_name(def.name)?;
+
+          // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
+          // outer is the surrounding lexical environment. That environment contains an immutable
+          // binding for the class name so class element functions can reference the class even if the
+          // outer binding is later reassigned.
+          let outer = self.env.lexical_env();
+          let class_env = scope.env_create(Some(outer))?;
+          self.env.set_lexical_env(scope.heap_mut(), class_env);
+
+          // Evaluate the class definition with an inner immutable name binding.
+          let result = self.eval_class(scope, decl_body, Some(name.as_str()), name.as_str());
+          // Restore the outer environment regardless of how class evaluation completes.
+          self.env.set_lexical_env(scope.heap_mut(), outer);
+          let func_obj = result?;
+
+          // Initialize the outer (mutable) class binding in the surrounding environment.
+          //
+          // Root the class constructor object first: creating the binding may allocate and trigger
+          // GC.
+          let mut init_scope = scope.reborrow();
+          init_scope.push_root(Value::Object(func_obj))?;
+
+          if !init_scope.heap().env_has_binding(outer, name.as_str())? {
+            // Non-block statement contexts may not have performed lexical hoisting yet.
+            init_scope.env_create_mutable_binding(outer, name.as_str())?;
+          }
+          init_scope
+            .heap_mut()
+            .env_initialize_binding(outer, name.as_str(), Value::Object(func_obj))?;
+
           Ok(Flow::empty())
         } else {
           Err(VmError::Unimplemented("non-function declaration (hir-js compiled path)"))
@@ -2175,9 +2315,17 @@ impl<'vm> HirEvaluator<'vm> {
           self.alloc_user_function_object(scope, *func_body, name_str.as_str(), *is_arrow)?;
         Ok(Value::Object(func_obj))
       }
+      hir_js::ExprKind::ClassExpr { body: class_body, name, .. } => {
+        let name_str = name
+          .as_ref()
+          .and_then(|id| self.hir().names.resolve(*id))
+          .unwrap_or("")
+          .to_owned();
+
+        self.eval_class_expr(scope, *class_body, name.as_ref().map(|_| name_str.as_str()))
+      }
       hir_js::ExprKind::Template(tpl) => self.eval_template_literal(scope, body, tpl),
       other => Err(match other {
-        hir_js::ExprKind::ClassExpr { .. } => VmError::Unimplemented("class expression (hir-js compiled path)"),
         hir_js::ExprKind::TaggedTemplate { .. } => VmError::Unimplemented("template literal (hir-js compiled path)"),
         hir_js::ExprKind::Await { .. } => VmError::Unimplemented("await (hir-js compiled path)"),
         hir_js::ExprKind::Yield { .. } => VmError::Unimplemented("yield (hir-js compiled path)"),
@@ -4431,6 +4579,375 @@ impl<'vm> HirEvaluator<'vm> {
       this_value,
       args.as_slice(),
     )
+  }
+
+  fn eval_class_expr(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body_id: hir_js::BodyId,
+    name: Option<&str>,
+  ) -> Result<Value, VmError> {
+    // Avoid borrowing the body through `self` across calls that mutably borrow `self`.
+    let hir = self.script.hir.clone();
+    let class_body = hir
+      .body(body_id)
+      .ok_or(VmError::InvariantViolation("hir body id missing from compiled script"))?;
+    if class_body.kind != hir_js::BodyKind::Class {
+      return Err(VmError::InvariantViolation("class expr body is not a class"));
+    }
+    let Some(class_meta) = class_body.class.as_ref() else {
+      return Err(VmError::InvariantViolation("class body missing class metadata"));
+    };
+    if class_meta.extends.is_some() {
+      return Err(VmError::Unimplemented("class inheritance"));
+    }
+
+    let outer = self.env.lexical_env();
+    if let Some(name) = name {
+      // Named class expressions introduce an inner immutable binding for the class name.
+      let class_env = scope.env_create(Some(outer))?;
+      self.env.set_lexical_env(scope.heap_mut(), class_env);
+
+      let result = self.eval_class(scope, class_body, Some(name), name);
+      self.env.set_lexical_env(scope.heap_mut(), outer);
+      Ok(Value::Object(result?))
+    } else {
+      let result = self.eval_class(scope, class_body, None, "");
+      Ok(Value::Object(result?))
+    }
+  }
+
+  fn eval_class(
+    &mut self,
+    scope: &mut Scope<'_>,
+    class_body: &hir_js::Body,
+    binding_name: Option<&str>,
+    func_name: &str,
+  ) -> Result<GcObject, VmError> {
+    // Per ECMA-262, class definitions are always strict mode code.
+    let saved_strict = self.strict;
+    self.strict = true;
+
+    let result = (|| {
+      let Some(class_meta) = class_body.class.as_ref() else {
+        return Err(VmError::InvariantViolation("class body missing class metadata"));
+      };
+      if class_meta.extends.is_some() {
+        return Err(VmError::Unimplemented("class inheritance"));
+      }
+
+      let class_env = self.env.lexical_env();
+
+      // Ensure the requested class binding exists before creating any class element closures.
+      if let Some(name) = binding_name {
+        if scope.heap().env_has_binding(class_env, name)? {
+          return Err(VmError::InvariantViolation(
+            "class binding already exists in class environment",
+          ));
+        }
+        scope.env_create_immutable_binding(class_env, name)?;
+      }
+
+      // Find an explicit constructor, if present.
+      let mut ctor_member: Option<&hir_js::ClassMember> = None;
+      for member in class_meta.members.iter() {
+        self.vm.tick()?;
+        if member.static_ {
+          continue;
+        }
+        if matches!(member.kind, hir_js::ClassMemberKind::Constructor { .. }) {
+          if ctor_member.is_some() {
+            return Err(VmError::TypeError("A class may only have one constructor"));
+          }
+          ctor_member = Some(member);
+        }
+      }
+
+      // Allocate the optional hidden constructable constructor body.
+      let mut ctor_length: u32 = 0;
+      let ctor_body_func = if let Some(member) = ctor_member {
+        let hir_js::ClassMemberKind::Constructor { body, .. } = &member.kind else {
+          unreachable!();
+        };
+        if let Some(body_id) = *body {
+          let ctor_body = self.get_body(body_id)?;
+          let Some(func_meta) = ctor_body.function.as_ref() else {
+            return Err(VmError::InvariantViolation(
+              "class constructor body missing function metadata",
+            ));
+          };
+          ctor_length = u32::try_from(func_meta.params.len()).unwrap_or(u32::MAX);
+
+          // Allocate the compiled function object for the constructor body.
+          let body_func =
+            self.alloc_user_function_object(scope, body_id, "constructor", /* is_arrow */ false)?;
+
+          // Wrap it in a constructable native function so `class_constructor_construct` can delegate
+          // via `vm.construct`.
+          let intr = self
+            .vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+          // Root the body function across wrapper allocation in case it triggers GC.
+          let mut wrapper_scope = scope.reborrow();
+          wrapper_scope.push_root(Value::Object(body_func))?;
+          let wrapper_name = wrapper_scope.alloc_string("constructor")?;
+          wrapper_scope.push_root(Value::String(wrapper_name))?;
+
+          let construct_id = self
+            .vm
+            .register_native_construct(compiled_constructor_body_construct)?;
+          let wrapper = wrapper_scope.alloc_native_function_with_slots(
+            intr.class_constructor_call(),
+            Some(construct_id),
+            wrapper_name,
+            ctor_length,
+            &[Value::Object(body_func)],
+          )?;
+
+          // Best-effort `[[Prototype]]` / `[[Realm]]` metadata.
+          wrapper_scope.push_root(Value::Object(wrapper))?;
+          wrapper_scope
+            .heap_mut()
+            .object_set_prototype(wrapper, Some(intr.function_prototype()))?;
+          wrapper_scope
+            .heap_mut()
+            .set_function_realm(wrapper, self.env.global_object())?;
+          if let Some(realm) = self.vm.current_realm() {
+            wrapper_scope.heap_mut().set_function_job_realm(wrapper, realm)?;
+          }
+          if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+            let token = self.vm.intern_script_or_module(script_or_module)?;
+            wrapper_scope
+              .heap_mut()
+              .set_function_script_or_module_token(wrapper, Some(token))?;
+          }
+          Some(wrapper)
+        } else {
+          None
+        }
+      } else {
+        None
+      };
+
+      let func_obj = self.create_class_constructor_object(scope, func_name, ctor_length, ctor_body_func)?;
+
+      // Initialize the requested binding now that the class constructor object exists.
+      if let Some(name) = binding_name {
+        let mut init_scope = scope.reborrow();
+        init_scope.push_root(Value::Object(func_obj))?;
+        init_scope
+          .heap_mut()
+          .env_initialize_binding(class_env, name, Value::Object(func_obj))?;
+      }
+
+      // Extract the prototype object created by `make_constructor`.
+      let mut class_scope = scope.reborrow();
+      class_scope.push_root(Value::Object(func_obj))?;
+      let prototype_key_s = class_scope.alloc_string("prototype")?;
+      class_scope.push_root(Value::String(prototype_key_s))?;
+      let prototype_key = PropertyKey::from_string(prototype_key_s);
+      let Some(prototype_desc) = class_scope.heap().get_own_property(func_obj, prototype_key)? else {
+        return Err(VmError::InvariantViolation(
+          "class constructor missing prototype property",
+        ));
+      };
+      let crate::property::PropertyKind::Data { value, .. } = prototype_desc.kind else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not a data property",
+        ));
+      };
+      let Value::Object(prototype_obj) = value else {
+        return Err(VmError::InvariantViolation(
+          "class constructor prototype property is not an object",
+        ));
+      };
+      class_scope.push_root(Value::Object(prototype_obj))?;
+
+      // Per ECMAScript, class constructors have a non-writable `prototype` property.
+      class_scope.define_property_or_throw(
+        func_obj,
+        prototype_key,
+        PropertyDescriptorPatch {
+          writable: Some(false),
+          ..Default::default()
+        },
+      )?;
+
+      // Define prototype and static methods/accessors.
+      for member in class_meta.members.iter() {
+        self.vm.tick()?;
+
+        match &member.kind {
+          hir_js::ClassMemberKind::Constructor { .. } => {
+            // The actual `constructor(...) { ... }` body is represented by the class constructor
+            // object itself (and its hidden body function).
+            continue;
+          }
+          hir_js::ClassMemberKind::Field { .. } => {
+            return Err(VmError::Unimplemented("class fields"));
+          }
+          hir_js::ClassMemberKind::StaticBlock { .. } => {
+            return Err(VmError::Unimplemented("class static blocks"));
+          }
+          hir_js::ClassMemberKind::Method {
+            body,
+            key,
+            kind,
+            ..
+          } => {
+            let target_obj = if member.static_ { func_obj } else { prototype_obj };
+
+            let mut member_scope = class_scope.reborrow();
+            member_scope.push_root(Value::Object(target_obj))?;
+
+            let key = self.eval_class_member_key(&mut member_scope, class_body, key)?;
+            root_property_key(&mut member_scope, key)?;
+
+            let Some(body_id) = body else {
+              return Err(VmError::Unimplemented(
+                "class methods without bodies (hir-js compiled path)",
+              ));
+            };
+
+            // Allocate the method function object (non-constructable).
+            let method_name = match key {
+              PropertyKey::String(s) => member_scope.heap().get_string(s)?.to_utf8_lossy(),
+              PropertyKey::Symbol(_) => String::new(),
+            };
+            let func_obj_member = self.alloc_user_function_object(
+              &mut member_scope,
+              *body_id,
+              method_name.as_str(),
+              /* is_arrow */ false,
+            )?;
+
+            match kind {
+              hir_js::ClassMethodKind::Method => {
+                member_scope.define_property_or_throw(
+                  target_obj,
+                  key,
+                  PropertyDescriptorPatch {
+                    value: Some(Value::Object(func_obj_member)),
+                    writable: Some(true),
+                    enumerable: Some(false),
+                    configurable: Some(true),
+                    ..Default::default()
+                  },
+                )?;
+              }
+              hir_js::ClassMethodKind::Getter => {
+                member_scope.define_property_or_throw(
+                  target_obj,
+                  key,
+                  PropertyDescriptorPatch {
+                    get: Some(Value::Object(func_obj_member)),
+                    enumerable: Some(false),
+                    configurable: Some(true),
+                    ..Default::default()
+                  },
+                )?;
+              }
+              hir_js::ClassMethodKind::Setter => {
+                member_scope.define_property_or_throw(
+                  target_obj,
+                  key,
+                  PropertyDescriptorPatch {
+                    set: Some(Value::Object(func_obj_member)),
+                    enumerable: Some(false),
+                    configurable: Some(true),
+                    ..Default::default()
+                  },
+                )?;
+              }
+            }
+          }
+        }
+      }
+
+      Ok(func_obj)
+    })();
+
+    self.strict = saved_strict;
+    result
+  }
+
+  fn eval_class_member_key(
+    &mut self,
+    scope: &mut Scope<'_>,
+    class_body: &hir_js::Body,
+    key: &hir_js::ClassMemberKey,
+  ) -> Result<PropertyKey, VmError> {
+    match key {
+      hir_js::ClassMemberKey::Ident(name_id) => {
+        let name = self.resolve_name(*name_id)?;
+        Ok(PropertyKey::from_string(scope.alloc_string(name.as_str())?))
+      }
+      hir_js::ClassMemberKey::String(s) => Ok(PropertyKey::from_string(scope.alloc_string(s)?)),
+      hir_js::ClassMemberKey::Number(s) => Ok(PropertyKey::from_string(scope.alloc_string(s)?)),
+      hir_js::ClassMemberKey::Computed(expr_id) => {
+        let v = self.eval_expr(scope, class_body, *expr_id)?;
+        let key = scope.heap_mut().to_property_key(v)?;
+        Ok(key)
+      }
+      hir_js::ClassMemberKey::Private(_) => Err(VmError::Unimplemented("class private elements")),
+    }
+  }
+
+  fn create_class_constructor_object(
+    &mut self,
+    scope: &mut Scope<'_>,
+    name: &str,
+    length: u32,
+    constructor_body: Option<GcObject>,
+  ) -> Result<GcObject, VmError> {
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    // Root the optional constructor body function before allocating any strings/function objects in
+    // case those allocations trigger GC.
+    let mut init_scope = scope.reborrow();
+    if let Some(body) = constructor_body {
+      init_scope.push_root(Value::Object(body))?;
+    }
+
+    let name_s = init_scope.alloc_string(name)?;
+    let slots_buf;
+    let slots = if let Some(body) = constructor_body {
+      slots_buf = [Value::Object(body)];
+      &slots_buf[..]
+    } else {
+      &[][..]
+    };
+
+    let func_obj = init_scope.alloc_native_function_with_slots(
+      intr.class_constructor_call(),
+      Some(intr.class_constructor_construct()),
+      name_s,
+      length,
+      slots,
+    )?;
+    init_scope.push_root(Value::Object(func_obj))?;
+
+    init_scope
+      .heap_mut()
+      .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+    init_scope
+      .heap_mut()
+      .set_function_realm(func_obj, self.env.global_object())?;
+    if let Some(realm) = self.vm.current_realm() {
+      init_scope.heap_mut().set_function_job_realm(func_obj, realm)?;
+    }
+    if let Some(script_or_module) = self.vm.get_active_script_or_module() {
+      let token = self.vm.intern_script_or_module(script_or_module)?;
+      init_scope
+        .heap_mut()
+        .set_function_script_or_module_token(func_obj, Some(token))?;
+    }
+    Ok(func_obj)
   }
 }
 
