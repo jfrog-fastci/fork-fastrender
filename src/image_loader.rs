@@ -6058,22 +6058,6 @@ fn url_ends_with_svgz(url: &str) -> bool {
     .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".svgz"))
 }
 
-fn url_looks_like_gif(url: &str) -> bool {
-  let trimmed = trim_ascii_whitespace(url);
-  let lower = trimmed.to_ascii_lowercase();
-  if let Some(rest) = lower.strip_prefix("data:") {
-    return rest.starts_with("image/gif");
-  }
-  if let Ok(parsed) = Url::parse(trimmed) {
-    return parsed.path().to_ascii_lowercase().ends_with(".gif");
-  }
-  let without_query = trimmed
-    .split(|ch| ch == '?' || ch == '#')
-    .next()
-    .unwrap_or(trimmed);
-  without_query.to_ascii_lowercase().ends_with(".gif")
-}
-
 fn svg_text_looks_like_markup(text: &str) -> bool {
   let without_bom = text.strip_prefix('\u{feff}').unwrap_or(text);
   let trimmed = trim_ascii_whitespace_start(without_bom);
