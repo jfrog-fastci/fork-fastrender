@@ -1,14 +1,16 @@
 #![cfg(windows)]
 
-use std::ffi::OsString;
+use std::ffi::{c_void, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::os::windows::process::ExitStatusExt;
 
 use win_sandbox::RendererSandbox;
-use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
 use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Security::{GetTokenInformation, TokenIsAppContainer, TOKEN_QUERY};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const CHILD_ENV: &str = "FASTR_WIN_SANDBOX_TEST_CHILD";
 const PATH_ENV: &str = "FASTR_WIN_SANDBOX_TEST_PATH";
@@ -137,6 +139,11 @@ fn wait_process(handle: HANDLE, timeout_ms: u32) -> std::io::Result<std::process
 }
 
 fn run_child() -> ! {
+  if !current_process_is_appcontainer() {
+    eprintln!("sandbox regression: child is not running inside an AppContainer token");
+    std::process::exit(1);
+  }
+
   let path = std::env::var_os(PATH_ENV).expect("child must receive file path in env");
   let path = Path::new(&path);
 
@@ -162,5 +169,28 @@ fn run_child() -> ! {
       );
       std::process::exit(1);
     }
+  }
+}
+
+fn current_process_is_appcontainer() -> bool {
+  unsafe {
+    let mut token: HANDLE = std::ptr::null_mut();
+    let ok = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token);
+    if ok == 0 || token.is_null() {
+      return false;
+    }
+
+    let mut is_appcontainer: u32 = 0;
+    let mut returned: u32 = 0;
+    let ok = GetTokenInformation(
+      token,
+      TokenIsAppContainer,
+      (&mut is_appcontainer as *mut u32).cast::<c_void>(),
+      std::mem::size_of::<u32>() as u32,
+      &mut returned,
+    );
+    CloseHandle(token);
+
+    ok != 0 && is_appcontainer != 0
   }
 }
