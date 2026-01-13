@@ -344,6 +344,9 @@ fn mp4_fill_peeked<R: Read + Seek>(
 
     cursor.peeked = Some(MediaPacket {
       track_id: u64::from(cursor.id),
+      // The `mp4` crate doesn't currently expose a separate DTS/CTTS-derived composition timestamp
+      // for samples. For now we treat the track time as both decode and presentation timestamp.
+      dts_ns: pts_ns,
       pts_ns,
       duration_ns: 0,
       data: sample.bytes.to_vec(),
