@@ -1951,20 +1951,24 @@ pub fn chrome_ui_with_bookmarks(
                 40,
               );
               let warn_bg = with_alpha(warn_bg_base, warn_t);
-              let a11y_label = warn_msg
-                .map(|warn| {
-                  let first_line = warn.lines().next().unwrap_or(warn).trim();
-                  if first_line.chars().count() > 160 {
-                    format!(
-                      "Warning: {}…",
-                      first_line.chars().take(160).collect::<String>()
-                    )
-                  } else {
-                    format!("Warning: {first_line}")
-                  }
+              let (badge_icon, a11y_label) = warn_msg
+                .and_then(|warn| crate::ui::classify_warning_toast(Some(warn)))
+                .map(|presentation| {
+                  let summary = presentation
+                    .summary
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|summary| format!("{}: {summary}", presentation.title))
+                    .unwrap_or_else(|| presentation.title.clone());
+                  let icon = match presentation.icon {
+                    crate::ui::WarningToastIcon::Info => BrowserIcon::Info,
+                    crate::ui::WarningToastIcon::ViewportClamp => BrowserIcon::ZoomOut,
+                    crate::ui::WarningToastIcon::WarningInsecure => BrowserIcon::WarningInsecure,
+                  };
+                  (icon, summary)
                 })
                 // The badge can still be visible while fading out (warn_msg already cleared).
-                .unwrap_or_else(|| "Warning".to_string());
+                .unwrap_or_else(|| (BrowserIcon::Info, "Warning".to_string()));
               let resp = egui::Frame::none()
                 .fill(warn_bg)
                 .rounding(badge_rounding)
@@ -1972,7 +1976,7 @@ pub fn chrome_ui_with_bookmarks(
                 .show(ui, |ui| {
                   let icon_resp = icon_tinted(
                     ui,
-                    BrowserIcon::WarningInsecure,
+                    badge_icon,
                     ui.spacing().icon_width,
                     warn_fg,
                   );
