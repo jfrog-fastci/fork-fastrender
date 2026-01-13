@@ -4101,7 +4101,19 @@ impl Vm {
       Value::Object(o) => Ok(Value::Object(o)),
       _ => match final_this {
         Value::Object(o) => Ok(Value::Object(o)),
-        _ => Err(VmError::TypeError("Derived constructor did not initialize `this` via super()")),
+        // ECMA-262 requires a ReferenceError when a derived constructor returns a non-object
+        // without having initialized `this` via `super()`.
+        _ => {
+          let intr = self
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let err = crate::new_reference_error(
+            &mut this_scope,
+            intr,
+            "Derived constructor did not initialize `this` via super()",
+          )?;
+          Err(VmError::Throw(err))
+        }
       },
     }
   }
