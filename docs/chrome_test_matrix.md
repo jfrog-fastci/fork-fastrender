@@ -20,7 +20,7 @@ cycling should be tested with <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<
 
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
 |---|---|---|---|
-| Focus address bar (select all) | Ctrl+L / Ctrl+K / F6 / Alt+D | Cmd+L / Cmd+K / F6 | Focus moves to address bar and current text is selected. Typing replaces selection. |
+| Focus address bar (select all) | Ctrl+L / Ctrl+K / F6 / Alt+D (or click) | Cmd+L / Cmd+K / F6 (or click) | Focus moves to address bar and current text is selected. Typing replaces selection. |
 | Navigate | Enter | Enter | Navigates to URL (or search). Address bar updates after commit. |
 | Cancel suggestion dropdown | Esc | Esc | If dropdown open (or a suggestion is selected), Esc closes it and restores original input. |
 | Cancel editing / blur | Esc (when dropdown already closed) | Esc (when dropdown already closed) | Exits editing and restores the active tab URL. |
@@ -33,16 +33,16 @@ cycling should be tested with <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<
 |---|---|---|---|
 | Back / Forward buttons | Click toolbar buttons | Click toolbar buttons | Enabled/disabled state matches history availability. |
 | Back / Forward shortcuts | Alt+Left / Alt+Right | Cmd+[ / Cmd+] | Matches toolbar buttons. |
-| Reload | Ctrl+R or F5 | Cmd+R (F5 optional) | Reloads current URL. |
-| Stop loading | Esc (while loading) | Esc (while loading) | Cancels in-flight navigation/load. |
-| Home | Alt+Home | Cmd+Shift+H | Navigates to configured home page. |
+| Reload | Click reload button, or Ctrl+R / F5 | Click reload button, or Cmd+R (F5 optional) | Reloads current URL. |
+| Stop loading | Click stop button (while loading), or Esc | Click stop button (while loading), or Esc | Cancels in-flight navigation/load. |
+| Home | Click home button, or Alt+Home | Click home button, or Cmd+Shift+H | Navigates to configured home page. |
 
 ## Tabs (create/close/switch/reopen)
 
 | Test | Win/Linux shortcut | macOS shortcut | Expected / parity notes |
 |---|---|---|---|
-| New tab | Ctrl+T | Cmd+T | Creates a new foreground tab (typically `about:newtab`). |
-| Close tab | Ctrl+W | Cmd+W | Closes active tab. If only one tab exists, close is a no-op. |
+| New tab | Ctrl+T (or “+” button) | Cmd+T (or “+” button) | Creates a new foreground tab (typically `about:newtab`). |
+| Close tab | Ctrl+W (or tab close “×” / middle-click tab) | Cmd+W (or tab close “×” / middle-click tab) | Closes active tab. If only one tab exists, close is a no-op. |
 | Switch tabs (next/prev) | Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab | Tab cycling is stable and updates active highlight + address bar. |
 | Switch tabs by number | Ctrl+1..9 | Cmd+1..9 | 1..8 activates that index; 9 activates the last tab. |
 | Reopen closed tab | Ctrl+Shift+T | Cmd+Shift+T | Restores the most recently closed tab (repeatable). |
