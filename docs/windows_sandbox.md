@@ -272,8 +272,8 @@ Notes:
 
 If the parent process is already running inside a Windows Job (common in CI/supervisors):
 
-- `spawn_sandboxed(...)` may try `CREATE_BREAKAWAY_FROM_JOB` first, then retry without breakaway on
-  `ERROR_ACCESS_DENIED`.
+- `src/sandbox/windows.rs::spawn_sandboxed` (and `win_sandbox::renderer::RendererSandbox`) may try
+  `CREATE_BREAKAWAY_FROM_JOB` first, then retry without breakaway on `ERROR_ACCESS_DENIED`.
 - Assigning the child to our new Job can still fail (nested jobs/breakaway restrictions).
   - **Default:** fail closed. The spawner terminates the child process and returns an error (so we
     don’t silently lose `kill-on-close` / active-process limits).
@@ -281,8 +281,9 @@ If the parent process is already running inside a Windows Job (common in CI/supe
     (`SandboxedChild.job == None`) and prints a warning: **kill-on-close + active process limit are
     not enforced**.
 
-Note: `crates/win-sandbox::spawn_sandboxed` does not currently have a “jobless” mode; it always
-errors out if the child cannot be assigned to the Job.
+Note: `win_sandbox::spawn_sandboxed` (the low-level `CreateProcessW` helper) does not currently
+implement `CREATE_BREAKAWAY_FROM_JOB` retry logic or a “jobless” mode. If you set `SpawnConfig.job`,
+it returns an error if process creation fails due to job/nested-job restrictions.
 
 ## Handle inheritance allowlisting (critical)
 
