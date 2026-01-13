@@ -34,6 +34,9 @@ const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_RENDERER_CHROME: &str = "FASTR_BROWSER_RENDERER_CHROME";
 
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_LOG_SURFACE_CONFIGURE: &str = "FASTR_BROWSER_LOG_SURFACE_CONFIGURE";
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -4546,6 +4549,9 @@ struct App {
   device: std::sync::Arc<wgpu::Device>,
   queue: std::sync::Arc<wgpu::Queue>,
   surface_config: wgpu::SurfaceConfiguration,
+  surface_needs_configure: bool,
+  surface_configure_count: u64,
+  log_surface_configure: bool,
 
   egui_ctx: egui::Context,
   egui_state: egui_winit::State,
@@ -5165,6 +5171,17 @@ impl App {
 
     let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1);
     let debug_log_ui_enabled = debug_log_ui_enabled();
+    let log_surface_configure =
+      parse_env_bool(std::env::var(ENV_BROWSER_LOG_SURFACE_CONFIGURE).ok().as_deref());
+    let surface_configure_count = 1u64;
+    if log_surface_configure {
+      eprintln!(
+        "[window:{:?}] surface.configure #{surface_configure_count} ({}x{}) [startup]",
+        window.id(),
+        surface_config.width,
+        surface_config.height
+      );
+    }
 
     let mut browser_state = fastrender::ui::BrowserAppState::new();
     browser_state.history = history;
@@ -5179,6 +5196,9 @@ impl App {
       device,
       queue,
       surface_config,
+      surface_needs_configure: false,
+      surface_configure_count,
+      log_surface_configure,
       egui_ctx,
       egui_state,
       egui_renderer,
@@ -5854,11 +5874,30 @@ impl App {
       return;
     }
 
+    if new_size.width == self.surface_config.width && new_size.height == self.surface_config.height {
+      return;
+    }
+
     self.surface_config.width = new_size.width;
     self.surface_config.height = new_size.height;
-    self.surface.configure(&self.device, &self.surface_config);
+    self.surface_needs_configure = true;
     // Invalidate the cached viewport so the worker sees the new dimensions on the next frame.
     self.viewport_cache_tab = None;
+  }
+
+  fn configure_surface(&mut self, reason: &'static str) {
+    self.surface.configure(&self.device, &self.surface_config);
+    self.surface_needs_configure = false;
+    self.surface_configure_count = self.surface_configure_count.saturating_add(1);
+    if self.log_surface_configure {
+      eprintln!(
+        "[window:{:?}] surface.configure #{} ({}x{}) [{reason}]",
+        self.window.id(),
+        self.surface_configure_count,
+        self.surface_config.width,
+        self.surface_config.height
+      );
+    }
   }
 
   fn destroy_all_textures(&mut self) {
@@ -13366,10 +13405,27 @@ impl App {
         .update_texture(&self.device, &self.queue, *id, image_delta);
     }
 
-    let surface_texture = match self.surface.get_current_texture() {
+    let mut surface_configured_this_frame = false;
+    if self.surface_needs_configure {
+      self.configure_surface("resize");
+      surface_configured_this_frame = true;
+    }
+
+    let mut surface_texture_result = self.surface.get_current_texture();
+    if matches!(
+      surface_texture_result,
+      Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)
+    ) {
+      if !surface_configured_this_frame {
+        self.configure_surface("lost/outdated");
+        surface_configured_this_frame = true;
+      }
+      surface_texture_result = self.surface.get_current_texture();
+    }
+
+    let surface_texture = match surface_texture_result {
       Ok(frame) => frame,
       Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-        self.surface.configure(&self.device, &self.surface_config);
         return session_dirty;
       }
       Err(wgpu::SurfaceError::Timeout) => {
