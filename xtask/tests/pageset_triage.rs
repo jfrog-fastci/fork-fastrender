@@ -87,10 +87,8 @@ fn pageset_triage_markdown_is_deterministic() {
       progress_dir.to_str().unwrap(),
       "--report",
       report_path.to_str().unwrap(),
-      "--top-worst-accuracy",
-      "1",
-      "--top-slowest",
-      "1",
+      "--only",
+      "example.com,example.invalid",
       "--out",
       out_path.to_str().unwrap(),
     ])
@@ -110,6 +108,13 @@ fn pageset_triage_markdown_is_deterministic() {
 This is an editable template. Fill in the **Brokenness inventory** section for each page.
 
 Pages: 2
+
+## Summary
+
+| stem | status | hotspot | total_ms | diff% | perceptual |
+| --- | --- | --- | ---: | ---: | ---: |
+| example.com | ok | paint | 200.00 | 50.0000% | 0.5000 |
+| example.invalid | error | fetch | 300.00 | n/a | n/a |
 
 ## example.com
 
@@ -295,5 +300,153 @@ fn pageset_triage_includes_first_mismatch_when_present() {
       "  - first_mismatch: (10, 20) baseline_rgba=[5, 6, 7, 8] rendered_rgba=[9, 10, 11, 12]\n"
     ),
     "expected diff report first_mismatch to be rendered.\nreport:\n{report}"
+  );
+}
+
+#[test]
+fn pageset_triage_top_worst_perceptual_orders_by_perceptual_then_diff_then_stem() {
+  let tmp = tempdir().expect("create tempdir");
+  let progress_dir = tmp.path().join("progress_pages");
+  fs::create_dir_all(&progress_dir).expect("create progress dir");
+
+  let pages = [
+    // Highest perceptual should always win.
+    ("zeta.com", 0.95, 1.0),
+    // Same perceptual: diff% tie-breaks.
+    ("gamma.com", 0.9, 3.0),
+    // Same perceptual + same diff%: stem tie-breaks.
+    ("alpha.com", 0.9, 2.0),
+    ("beta.com", 0.9, 2.0),
+    // Lower perceptual, even with huge diff%.
+    ("delta.com", 0.8, 99.0),
+  ];
+
+  for (stem, perceptual, diff_percent) in pages {
+    fs::write(
+      progress_dir.join(format!("{stem}.json")),
+      format!(
+        r#"{{
+  "url": "https://{stem}/",
+  "status": "ok",
+  "hotspot": "paint",
+  "total_ms": 1.0,
+  "accuracy": {{
+    "diff_percent": {diff_percent},
+    "perceptual": {perceptual}
+  }}
+}}
+"#
+      ),
+    )
+    .unwrap_or_else(|e| panic!("write progress {stem}: {e}"));
+  }
+
+  // No accuracy block => excluded from perceptual ranking.
+  fs::write(
+    progress_dir.join("noacc.com.json"),
+    r#"{
+  "url": "https://noacc.com/",
+  "status": "ok",
+  "hotspot": "paint",
+  "total_ms": 1.0
+}
+"#,
+  )
+  .expect("write progress noacc.com");
+
+  let out_path = tmp.path().join("report.md");
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args([
+      "pageset-triage",
+      "--progress-dir",
+      progress_dir.to_str().unwrap(),
+      "--top-worst-perceptual",
+      "4",
+      "--out",
+      out_path.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run xtask pageset-triage");
+
+  assert!(
+    output.status.success(),
+    "pageset-triage should exit successfully; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let report = fs::read_to_string(&out_path).expect("read report.md");
+
+  // Table should list diff% + perceptual for selected rows.
+  assert!(
+    report.contains("| zeta.com | ok | paint | 1.00 | 1.0000% | 0.9500 |"),
+    "expected zeta.com row in summary table.\nreport:\n{report}"
+  );
+
+  let idx_zeta = report.find("## zeta.com").expect("zeta.com section");
+  let idx_gamma = report.find("## gamma.com").expect("gamma.com section");
+  let idx_alpha = report.find("## alpha.com").expect("alpha.com section");
+  let idx_beta = report.find("## beta.com").expect("beta.com section");
+
+  assert!(
+    idx_zeta < idx_gamma && idx_gamma < idx_alpha && idx_alpha < idx_beta,
+    "expected perceptual selection ordering zeta -> gamma -> alpha -> beta.\nreport:\n{report}"
+  );
+
+  assert!(
+    !report.contains("## noacc.com"),
+    "expected pages without perceptual metrics to be excluded.\nreport:\n{report}"
+  );
+}
+
+#[test]
+fn pageset_triage_top_worst_perceptual_out_of_range_does_not_error() {
+  let tmp = tempdir().expect("create tempdir");
+  let progress_dir = tmp.path().join("progress_pages");
+  fs::create_dir_all(&progress_dir).expect("create progress dir");
+
+  for (stem, perceptual) in [("a.com", 0.1), ("b.com", 0.2), ("c.com", 0.3)] {
+    fs::write(
+      progress_dir.join(format!("{stem}.json")),
+      format!(
+        r#"{{
+  "url": "https://{stem}/",
+  "status": "ok",
+  "hotspot": "paint",
+  "total_ms": 1.0,
+  "accuracy": {{
+    "diff_percent": 1.0,
+    "perceptual": {perceptual}
+  }}
+}}
+"#
+      ),
+    )
+    .unwrap_or_else(|e| panic!("write progress {stem}: {e}"));
+  }
+
+  let out_path = tmp.path().join("report.md");
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args([
+      "pageset-triage",
+      "--progress-dir",
+      progress_dir.to_str().unwrap(),
+      "--top-worst-perceptual",
+      "10",
+      "--out",
+      out_path.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run xtask pageset-triage");
+
+  assert!(
+    output.status.success(),
+    "pageset-triage should exit successfully; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let report = fs::read_to_string(&out_path).expect("read report.md");
+  assert!(
+    report.contains("Pages: 3\n"),
+    "expected to include all eligible rows even when N is out of range.\nreport:\n{report}"
   );
 }

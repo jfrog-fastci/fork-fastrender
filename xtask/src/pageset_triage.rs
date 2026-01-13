@@ -29,11 +29,27 @@ pub struct PagesetTriageArgs {
   pub only_pages: Option<Vec<String>>,
 
   /// Include the top N worst-accuracy pages (by `accuracy.diff_percent` / diff report `metrics.diff_percentage`).
-  #[arg(long, value_name = "N")]
+  #[arg(
+    long,
+    value_name = "N",
+    conflicts_with_all = ["top_worst_perceptual", "top_slowest"]
+  )]
   pub top_worst_accuracy: Option<usize>,
 
+  /// Include the top N pages with the worst perceptual distance (`accuracy.perceptual` / diff report `metrics.perceptual_distance`).
+  #[arg(
+    long,
+    value_name = "N",
+    conflicts_with_all = ["top_worst_accuracy", "top_slowest"]
+  )]
+  pub top_worst_perceptual: Option<usize>,
+
   /// Include the top N slowest pages (by `total_ms`).
-  #[arg(long, value_name = "N")]
+  #[arg(
+    long,
+    value_name = "N",
+    conflicts_with_all = ["top_worst_accuracy", "top_worst_perceptual"]
+  )]
   pub top_slowest: Option<usize>,
 
   /// Where to write the Markdown report.
@@ -54,11 +70,18 @@ struct PageTriageRow {
 }
 
 impl PageTriageRow {
-  fn progress_accuracy_summary(&self) -> Option<(f64, f64)> {
-    let accuracy = self.accuracy.as_ref()?;
-    let diff_percent = accuracy.diff_percent.filter(|v| v.is_finite())?;
-    let perceptual = accuracy.perceptual.filter(|v| v.is_finite())?;
-    Some((diff_percent, perceptual))
+  fn progress_accuracy_numbers(&self) -> (Option<f64>, Option<f64>) {
+    let diff_percent = self
+      .accuracy
+      .as_ref()
+      .and_then(|acc| acc.diff_percent)
+      .filter(|v| v.is_finite());
+    let perceptual = self
+      .accuracy
+      .as_ref()
+      .and_then(|acc| acc.perceptual)
+      .filter(|v| v.is_finite());
+    (diff_percent, perceptual)
   }
 }
 
@@ -168,6 +191,22 @@ struct DiffFirstMismatch {
 pub fn run_pageset_triage(mut args: PagesetTriageArgs) -> Result<()> {
   let repo_root = crate::repo_root();
 
+  if let Some(n) = args.top_worst_accuracy {
+    if n == 0 {
+      bail!("--top-worst-accuracy must be > 0");
+    }
+  }
+  if let Some(n) = args.top_worst_perceptual {
+    if n == 0 {
+      bail!("--top-worst-perceptual must be > 0");
+    }
+  }
+  if let Some(n) = args.top_slowest {
+    if n == 0 {
+      bail!("--top-slowest must be > 0");
+    }
+  }
+
   if !args.progress_dir.is_absolute() {
     args.progress_dir = repo_root.join(&args.progress_dir);
   }
@@ -190,6 +229,7 @@ pub fn run_pageset_triage(mut args: PagesetTriageArgs) -> Result<()> {
   let selected_pages = select_pages(
     filtered_pages,
     args.top_worst_accuracy,
+    args.top_worst_perceptual,
     args.top_slowest,
     diff_entries.as_ref(),
   );
@@ -279,64 +319,117 @@ fn filter_pages(pages: Vec<PageTriageRow>, only: Option<&[String]>) -> Result<Ve
 fn select_pages(
   pages: Vec<PageTriageRow>,
   top_worst_accuracy: Option<usize>,
+  top_worst_perceptual: Option<usize>,
   top_slowest: Option<usize>,
   diff_entries: Option<&BTreeMap<String, DiffReportEntry>>,
 ) -> Vec<PageTriageRow> {
-  if top_worst_accuracy.is_none() && top_slowest.is_none() {
-    return pages;
-  }
-
-  let mut selected_stems = BTreeSet::<String>::new();
-  let mut selected = Vec::<PageTriageRow>::new();
-
-  if let Some(n) = top_worst_accuracy {
-    let mut ranked: Vec<(f64, f64, &PageTriageRow)> = pages
-      .iter()
-      .filter_map(|p| {
-        if let Some((diff_percent, perceptual)) = p.progress_accuracy_summary() {
-          return Some((diff_percent, perceptual, p));
-        }
-
-        let entry = diff_entries?.get(&p.stem)?;
-        let metrics = entry.metrics.as_ref()?;
-        let diff_percent = metrics.diff_percentage;
-        let perceptual = metrics.perceptual_distance;
-        if !diff_percent.is_finite() || !perceptual.is_finite() {
-          return None;
-        }
-        Some((diff_percent, perceptual, p))
-      })
-      .collect();
-
-    ranked.sort_by(|a, b| {
-      b.0
-        .total_cmp(&a.0)
-        .then_with(|| b.1.total_cmp(&a.1))
-        .then_with(|| a.2.stem.cmp(&b.2.stem))
-    });
-
-    for (_, _, page) in ranked.into_iter().take(n) {
-      if selected_stems.insert(page.stem.clone()) {
-        selected.push(page.clone());
-      }
+  match (top_worst_accuracy, top_worst_perceptual, top_slowest) {
+    (None, None, None) => pages,
+    (Some(n), None, None) => select_top_worst_accuracy(&pages, n, diff_entries),
+    (None, Some(n), None) => select_top_worst_perceptual(&pages, n, diff_entries),
+    (None, None, Some(n)) => select_top_slowest(&pages, n),
+    _ => {
+      // Clap should enforce mutual exclusivity, but keep a deterministic fallback.
+      pages
     }
   }
+}
 
-  if let Some(n) = top_slowest {
-    let mut ranked: Vec<(f64, &PageTriageRow)> = pages
-      .iter()
-      .filter_map(|p| p.total_ms.filter(|v| v.is_finite()).map(|ms| (ms, p)))
-      .collect();
-    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.stem.cmp(&b.1.stem)));
+fn page_accuracy_numbers(
+  page: &PageTriageRow,
+  diff_entries: Option<&BTreeMap<String, DiffReportEntry>>,
+) -> (Option<f64>, Option<f64>) {
+  let (mut diff_percent, mut perceptual) = page.progress_accuracy_numbers();
 
-    for (_, page) in ranked.into_iter().take(n) {
-      if selected_stems.insert(page.stem.clone()) {
-        selected.push(page.clone());
-      }
-    }
+  if diff_percent.is_none() {
+    diff_percent = diff_entries
+      .and_then(|m| m.get(&page.stem))
+      .and_then(|e| e.metrics.as_ref())
+      .map(|m| m.diff_percentage)
+      .filter(|v| v.is_finite());
   }
 
-  selected
+  if perceptual.is_none() {
+    perceptual = diff_entries
+      .and_then(|m| m.get(&page.stem))
+      .and_then(|e| e.metrics.as_ref())
+      .map(|m| m.perceptual_distance)
+      .filter(|v| v.is_finite());
+  }
+
+  (diff_percent, perceptual)
+}
+
+fn select_top_worst_accuracy(
+  pages: &[PageTriageRow],
+  n: usize,
+  diff_entries: Option<&BTreeMap<String, DiffReportEntry>>,
+) -> Vec<PageTriageRow> {
+  let mut ranked: Vec<(f64, f64, &PageTriageRow)> = pages
+    .iter()
+    .filter_map(|p| {
+      let (diff_percent, perceptual) = page_accuracy_numbers(p, diff_entries);
+      let diff_percent = diff_percent?;
+      let perceptual = perceptual.unwrap_or(f64::NEG_INFINITY);
+      Some((diff_percent, perceptual, p))
+    })
+    .collect();
+
+  ranked.sort_by(|a, b| {
+    b.0
+      .total_cmp(&a.0)
+      .then_with(|| b.1.total_cmp(&a.1))
+      .then_with(|| a.2.stem.cmp(&b.2.stem))
+  });
+
+  ranked
+    .into_iter()
+    .take(n)
+    .map(|(_, _, page)| page.clone())
+    .collect()
+}
+
+fn select_top_worst_perceptual(
+  pages: &[PageTriageRow],
+  n: usize,
+  diff_entries: Option<&BTreeMap<String, DiffReportEntry>>,
+) -> Vec<PageTriageRow> {
+  let mut ranked: Vec<(f64, f64, &PageTriageRow)> = pages
+    .iter()
+    .filter_map(|p| {
+      let (diff_percent, perceptual) = page_accuracy_numbers(p, diff_entries);
+      let perceptual = perceptual?;
+      let diff_percent = diff_percent.unwrap_or(f64::NEG_INFINITY);
+      Some((perceptual, diff_percent, p))
+    })
+    .collect();
+
+  ranked.sort_by(|a, b| {
+    b.0
+      .total_cmp(&a.0)
+      .then_with(|| b.1.total_cmp(&a.1))
+      .then_with(|| a.2.stem.cmp(&b.2.stem))
+  });
+
+  ranked
+    .into_iter()
+    .take(n)
+    .map(|(_, _, page)| page.clone())
+    .collect()
+}
+
+fn select_top_slowest(pages: &[PageTriageRow], n: usize) -> Vec<PageTriageRow> {
+  let mut ranked: Vec<(f64, &PageTriageRow)> = pages
+    .iter()
+    .filter_map(|p| p.total_ms.filter(|v| v.is_finite()).map(|ms| (ms, p)))
+    .collect();
+  ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.stem.cmp(&b.1.stem)));
+
+  ranked
+    .into_iter()
+    .take(n)
+    .map(|(_, page)| page.clone())
+    .collect()
 }
 
 fn read_diff_report(report_path: &Path) -> Result<BTreeMap<String, DiffReportEntry>> {
@@ -363,6 +456,9 @@ fn render_markdown(
     "This is an editable template. Fill in the **Brokenness inventory** section for each page.\n\n",
   );
   out.push_str(&format!("Pages: {}\n\n", pages.len()));
+
+  out.push_str("## Summary\n\n");
+  out.push_str(&render_pages_table(pages, diff_entries));
 
   for (idx, page) in pages.iter().enumerate() {
     if idx > 0 {
@@ -437,7 +533,13 @@ fn render_page_section(
   }
 
   match (
-    page.progress_accuracy_summary(),
+    {
+      let (diff_percent, perceptual) = page.progress_accuracy_numbers();
+      match (diff_percent, perceptual) {
+        (Some(diff_percent), Some(perceptual)) => Some((diff_percent, perceptual)),
+        _ => None,
+      }
+    },
     diff.and_then(|e| e.metrics.as_ref()),
   ) {
     (Some((diff_percent, perceptual)), _) => {
@@ -561,5 +663,39 @@ fn render_page_section(
   out.push_str("- Paint:\n  - [ ] ...\n");
   out.push_str("- Resources:\n  - [ ] ...\n");
 
+  out
+}
+
+fn render_pages_table(
+  pages: &[PageTriageRow],
+  diff_entries: Option<&BTreeMap<String, DiffReportEntry>>,
+) -> String {
+  let mut out = String::new();
+  out.push_str("| stem | status | hotspot | total_ms | diff% | perceptual |\n");
+  out.push_str("| --- | --- | --- | ---: | ---: | ---: |\n");
+
+  for page in pages {
+    let status = page.status.as_deref().unwrap_or("n/a");
+    let hotspot = page.hotspot.as_deref().unwrap_or("n/a");
+    let total_ms = match page.total_ms.filter(|v| v.is_finite()) {
+      Some(ms) => format!("{ms:.2}"),
+      None => "n/a".to_string(),
+    };
+
+    let (diff_percent, perceptual) = page_accuracy_numbers(page, diff_entries);
+    let diff_percent = diff_percent
+      .map(|v| format!("{v:.4}%"))
+      .unwrap_or_else(|| "n/a".to_string());
+    let perceptual = perceptual
+      .map(|v| format!("{v:.4}"))
+      .unwrap_or_else(|| "n/a".to_string());
+
+    out.push_str(&format!(
+      "| {} | {} | {} | {} | {} | {} |\n",
+      page.stem, status, hotspot, total_ms, diff_percent, perceptual
+    ));
+  }
+
+  out.push('\n');
   out
 }

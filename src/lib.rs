@@ -217,7 +217,6 @@ pub mod ipc;
 pub(crate) mod testing;
 pub mod js;
 pub mod memory;
-pub mod media;
 pub mod multiprocess;
 pub mod pageset;
 pub mod process_limits;
@@ -225,7 +224,6 @@ pub mod sandbox;
 pub mod site_isolation;
 pub(crate) mod rayon_global;
 pub mod resource;
-pub mod sandbox;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
 pub mod svg;
