@@ -1866,6 +1866,8 @@ impl BrowserAppState {
         let (pix_w, pix_h) = pixmap_px;
         let (vp_w, vp_h) = viewport_css;
 
+        let is_active_tab = self.active_tab_id() == Some(tab_id);
+
         let pixmap_nonzero = pix_w != 0 && pix_h != 0;
         let pixmap_within_limits = pix_w <= limits.max_dim_px
           && pix_h <= limits.max_dim_px
@@ -1896,7 +1898,10 @@ impl BrowserAppState {
               wants_ticks,
             });
 
-            update.request_redraw = true;
+            // Only the active tab's page content is visible, so only its frames should trigger a
+            // UI redraw. Background tabs still emit `frame_ready` so front-ends can coalesce/defer
+            // texture uploads until a later repaint (e.g. when switching tabs).
+            update.request_redraw = is_active_tab;
             update.frame_ready = Some(FrameReadyUpdate {
               tab_id,
               pixmap,
@@ -2578,6 +2583,52 @@ mod browser_app_tests {
       !warning.chars().any(|c| c.is_ascii_control()),
       "sanitized warning must not contain ASCII control characters"
     );
+  }
+
+  #[test]
+  fn background_tab_frame_ready_does_not_request_redraw() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+
+    app.push_tab(BrowserTabState::new(tab_a, "about:blank".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    assert_eq!(app.active_tab_id(), Some(tab_a));
+
+    let viewport_css = (1, 1);
+    let frame = RenderedFrame {
+      pixmap: tiny_skia::Pixmap::new(1, 1).expect("pixmap"),
+      viewport_css,
+      dpr: 1.0,
+      scroll_state: ScrollState::default(),
+      scroll_metrics: ScrollMetrics {
+        viewport_css,
+        scroll_css: (0.0, 0.0),
+        bounds_css: crate::scroll::ScrollBounds {
+          min_x: 0.0,
+          min_y: 0.0,
+          max_x: 0.0,
+          max_y: 0.0,
+        },
+        content_css: (1.0, 1.0),
+      },
+      wants_ticks: false,
+    };
+
+    let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id: tab_b, frame });
+
+    assert!(
+      !update.request_redraw,
+      "expected FrameReady for inactive tab to avoid scheduling a redraw"
+    );
+    assert_eq!(update.frame_ready.as_ref().map(|f| f.tab_id), Some(tab_b));
+
+    let meta = app
+      .tab(tab_b)
+      .and_then(|t| t.latest_frame_meta.as_ref())
+      .expect("expected latest_frame_meta to be updated for inactive tab");
+    assert_eq!(meta.viewport_css, viewport_css);
+    assert_eq!(meta.pixmap_px, (1, 1));
   }
 
   #[test]
