@@ -553,7 +553,13 @@ jobs:
         run: |
           set -euo pipefail
           # Keep this job lightweight: do not enable browser_ui / GUI features.
-          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib windows_renderer_sandbox_test -- --nocapture
+          # AppContainer smoke: spawns the test harness inside an AppContainer and ensures the
+          # renderer can initialize + render a minimal document.
+          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_appcontainer_sandbox_smoke -- --nocapture
+
+          # Security regression: ensure a sandboxed child cannot OpenProcess() the parent with
+          # high-privilege access rights (PROCESS_VM_READ / PROCESS_DUP_HANDLE).
+          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test integration sandbox:: -- --nocapture
 
   # ===========================================================================
   # macOS sandbox - Ensure Seatbelt sandboxing continues to work
