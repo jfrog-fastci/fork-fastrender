@@ -3,6 +3,7 @@
 //! This module currently provides:
 //! - timestamp/timebase helpers used by media playback work
 //! - paint-facing plumbing for supplying decoded media frames (video; audio is currently a stub)
+//! - container demux primitives (track metadata + compressed packets)
 //!
 //! For the intended A/V clocking model (audio master clock, UI tick as wake-up only), see
 //! `docs/media_clocking.md`.
@@ -10,9 +11,11 @@
 use crate::geometry::Size;
 use crate::paint::display_list::ImageData;
 use std::sync::Arc;
+use thiserror::Error;
 
 pub mod audio;
 pub mod clock;
+pub mod demux;
 pub mod timebase;
 
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
@@ -92,4 +95,67 @@ impl MediaFrameProvider for NullMediaFrameProvider {
   ) -> Option<Arc<ImageData>> {
     None
   }
+}
+
+// ============================================================================
+// Demux primitives
+// ============================================================================
+
+pub type MediaResult<T> = std::result::Result<T, MediaError>;
+
+#[derive(Debug, Error)]
+pub enum MediaError {
+  #[error("i/o error: {0}")]
+  Io(#[from] std::io::Error),
+
+  #[error("unsupported: {0}")]
+  Unsupported(&'static str),
+
+  #[error("demux error: {0}")]
+  Demux(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaTrackType {
+  Video,
+  Audio,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaCodec {
+  Vp9,
+  Opus,
+  Unknown(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaVideoInfo {
+  pub width: u32,
+  pub height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MediaAudioInfo {
+  pub sample_rate: u32,
+  pub channels: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaTrackInfo {
+  pub id: u64,
+  pub track_type: MediaTrackType,
+  pub codec: MediaCodec,
+  /// Codec-private data ("extradata").
+  pub codec_private: Vec<u8>,
+  pub codec_delay_ns: u64,
+  pub video: Option<MediaVideoInfo>,
+  pub audio: Option<MediaAudioInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaPacket {
+  pub track_id: u64,
+  pub pts_ns: u64,
+  pub data: Vec<u8>,
+  pub is_keyframe: bool,
 }
