@@ -4119,6 +4119,121 @@ fn compiled_class_prototype_constructor_points_to_class() -> Result<(), VmError>
 }
 
 #[test]
+fn compiled_class_constructor_prototype_descriptor_flags() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        class C {}
+        const d = Object.getOwnPropertyDescriptor(C, "prototype");
+        return d.writable === false && d.enumerable === false && d.configurable === false;
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_methods_have_expected_property_attributes() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        class C {
+          m() { return 1; }
+          static s() { return 2; }
+        }
+
+        const md = Object.getOwnPropertyDescriptor(C.prototype, "m");
+        const sd = Object.getOwnPropertyDescriptor(C, "s");
+
+        return (
+          md.enumerable === false &&
+          md.configurable === true &&
+          md.writable === true &&
+          typeof md.value === "function" &&
+          sd.enumerable === false &&
+          sd.configurable === true &&
+          sd.writable === true &&
+          typeof sd.value === "function"
+        );
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_method_unbound_this_is_undefined() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        class C {
+          m() { return this; }
+        }
+        const m = (new C()).m;
+        return m() === undefined;
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_computed_class_method_symbol_key_works() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        const sym = Symbol("m");
+        class C {
+          [sym]() { return 1; }
+        }
+        return (new C())[sym]();
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_function_length_counts_params_before_first_default() -> Result<(), VmError> {
   let source = r#"
     function f(a, b = 1, c) {}
