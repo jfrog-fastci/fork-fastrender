@@ -3944,7 +3944,6 @@ impl App {
       | UiToWorker::FindStop { tab_id }
       | UiToWorker::RequestRepaint { tab_id, .. }
       | UiToWorker::StartDownload { tab_id, .. }
-      | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::CancelDownload { tab_id, .. } => Some(*tab_id),
     };
 
