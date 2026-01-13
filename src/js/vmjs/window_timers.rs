@@ -4089,6 +4089,53 @@ mod tests {
     out
   }
 
+  fn read_string_array(heap: &mut Heap, realm: &Realm, name: &str) -> Vec<String> {
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
+    let key_s = scope.alloc_string(name).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)
+      .unwrap()
+      .unwrap_or(Value::Undefined);
+    let Value::Object(arr_obj) = value else {
+      panic!("expected {name} to be an object, got {value:?}");
+    };
+    scope
+      .push_root(Value::Object(arr_obj))
+      .expect("push root array");
+    let length_key_s = scope.alloc_string("length").unwrap();
+    let length_key = PropertyKey::from_string(length_key_s);
+    let length_value = scope
+      .heap()
+      .object_get_own_data_property_value(arr_obj, &length_key)
+      .unwrap()
+      .unwrap_or(Value::Undefined);
+    let Value::Number(n) = length_value else {
+      panic!("expected {name}.length to be a number, got {length_value:?}");
+    };
+    let len = n as u32;
+    let mut out = Vec::new();
+    for i in 0..len {
+      let key_s = scope.alloc_string(&i.to_string()).unwrap();
+      let key = PropertyKey::from_string(key_s);
+      let v = scope
+        .heap()
+        .object_get_own_data_property_value(arr_obj, &key)
+        .unwrap()
+        .unwrap_or(Value::Undefined);
+      let Value::String(s) = v else {
+        panic!("expected {name}[{i}] to be a string, got {v:?}");
+      };
+      out.push(scope.heap().get_string(s).unwrap().to_utf8_lossy());
+    }
+    out
+  }
+
   fn make_callback(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -4757,6 +4804,110 @@ mod tests {
       }
     };
     assert!(microtask_this_is_undefined);
+    Ok(())
+  }
+
+  #[test]
+  fn microtask_ordering_between_queue_microtask_and_promise_reactions() -> crate::error::Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let result = window_realm.exec_script_with_hooks(
+        &mut hooks,
+        r#"
+        globalThis.__log = [];
+        queueMicrotask(() => __log.push('qm1'));
+        Promise.resolve().then(() => __log.push('p1'));
+        queueMicrotask(() => __log.push('qm2'));
+        "#,
+      );
+
+      let heap = window_realm.heap_mut();
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+
+      result
+        .map(|_| ())
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let log = {
+      let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_string_array(heap, realm, "__log")
+    };
+    assert_eq!(log, vec!["qm1", "p1", "qm2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn microtask_ordering_nested_queue_microtask_and_promise_reactions_is_fifo(
+  ) -> crate::error::Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (_vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+
+      let result = window_realm.exec_script_with_hooks(
+        &mut hooks,
+        r#"
+        globalThis.__log = [];
+        queueMicrotask(() => {
+          __log.push('qm1');
+          Promise.resolve().then(() => __log.push('p_in_qm'));
+        });
+        Promise.resolve().then(() => {
+          __log.push('p1');
+          queueMicrotask(() => __log.push('qm_in_p'));
+        });
+        "#,
+      );
+
+      let heap = window_realm.heap_mut();
+      if let Some(err) = hooks.finish(heap) {
+        return Err(err);
+      }
+
+      result
+        .map(|_| ())
+        .map_err(|err| vm_error_to_event_loop_error(heap, err))
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let log = {
+      let (_vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      read_string_array(heap, realm, "__log")
+    };
+    assert_eq!(log, vec!["qm1", "p1", "p_in_qm", "qm_in_p"]);
     Ok(())
   }
 
