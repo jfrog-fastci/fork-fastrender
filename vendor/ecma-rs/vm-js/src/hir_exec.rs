@@ -146,6 +146,14 @@ fn vec_try_extend_utf16_from_str_with_ticks(
   Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PatBindingKind {
+  Var,
+  Let,
+  Const,
+  Param,
+}
+
 struct HirEvaluator<'vm> {
   vm: &'vm mut Vm,
   host: &'vm mut dyn VmHost,
@@ -372,23 +380,22 @@ impl<'vm> HirEvaluator<'vm> {
     // Pre-create all parameter bindings before evaluating default initializers so identifier
     // references during parameter evaluation observe TDZ semantics.
     //
-    // Note: this is a best-effort subset; currently only identifier parameters are supported on the
-    // compiled path.
+    // Note: best-effort: we create mutable bindings for all identifiers appearing in parameter
+    // patterns (including destructuring). Binding initialization happens during the later binding
+    // pass.
     let env_rec = self.env.lexical_env();
     for param in &func_meta.params {
       self.vm.tick()?;
       if param.rest {
         return Err(VmError::Unimplemented("rest parameters (hir-js compiled path)"));
       }
-      let pat = self.get_pat(body, param.pat)?;
-      let hir_js::PatKind::Ident(name_id) = pat.kind else {
-        return Err(VmError::Unimplemented(
-          "non-identifier parameters (hir-js compiled path)",
-        ));
-      };
-      let name = self.resolve_name(name_id)?;
-      if !scope.heap().env_has_binding(env_rec, name.as_str())? {
-        scope.env_create_mutable_binding(env_rec, name.as_str())?;
+      let mut names: Vec<hir_js::NameId> = Vec::new();
+      self.collect_pat_idents(body, param.pat, &mut names)?;
+      for name_id in names {
+        let name = self.resolve_name(name_id)?;
+        if !scope.heap().env_has_binding(env_rec, name.as_str())? {
+          scope.env_create_mutable_binding(env_rec, name.as_str())?;
+        }
       }
     }
 
@@ -487,13 +494,6 @@ impl<'vm> HirEvaluator<'vm> {
       if param.rest {
         return Err(VmError::Unimplemented("rest parameters (hir-js compiled path)"));
       }
-      let pat = self.get_pat(body, param.pat)?;
-      let hir_js::PatKind::Ident(name_id) = pat.kind else {
-        return Err(VmError::Unimplemented(
-          "non-identifier parameters (hir-js compiled path)",
-        ));
-      };
-      let name = self.resolve_name(name_id)?;
       let arg_value = args.get(idx).copied().unwrap_or(Value::Undefined);
 
       // Default parameters.
@@ -507,13 +507,7 @@ impl<'vm> HirEvaluator<'vm> {
         arg_value
       };
 
-      // Parameters are mutable bindings in the function environment.
-      if !scope.heap().env_has_binding(env_rec, name.as_str())? {
-        scope.env_create_mutable_binding(env_rec, name.as_str())?;
-      }
-      scope
-        .heap_mut()
-        .env_initialize_binding(env_rec, name.as_str(), value)?;
+      self.bind_pattern(scope, body, param.pat, value, PatBindingKind::Param)?;
     }
 
     // Hoist function declarations (best-effort).
@@ -544,14 +538,12 @@ impl<'vm> HirEvaluator<'vm> {
           if decl.kind == hir_js::VarDeclKind::Var {
             for declarator in &decl.declarators {
               self.vm.tick()?;
-              let pat = self.get_pat(body, declarator.pat)?;
-              let hir_js::PatKind::Ident(name_id) = pat.kind else {
-                return Err(VmError::Unimplemented(
-                  "non-identifier variable declarations (hir-js compiled path)",
-                ));
-              };
-              let name = self.resolve_name(name_id)?;
-              self.env.declare_var(self.vm, scope, name.as_str())?;
+              let mut names: Vec<hir_js::NameId> = Vec::new();
+              self.collect_pat_idents(body, declarator.pat, &mut names)?;
+              for name_id in names {
+                let name = self.resolve_name(name_id)?;
+                self.env.declare_var(self.vm, scope, name.as_str())?;
+              }
             }
           }
         }
@@ -560,14 +552,12 @@ impl<'vm> HirEvaluator<'vm> {
             if decl.kind == hir_js::VarDeclKind::Var {
               for declarator in &decl.declarators {
                 self.vm.tick()?;
-                let pat = self.get_pat(body, declarator.pat)?;
-                let hir_js::PatKind::Ident(name_id) = pat.kind else {
-                  return Err(VmError::Unimplemented(
-                    "non-identifier variable declarations (hir-js compiled path)",
-                  ));
-                };
-                let name = self.resolve_name(name_id)?;
-                self.env.declare_var(self.vm, scope, name.as_str())?;
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                self.collect_pat_idents(body, declarator.pat, &mut names)?;
+                for name_id in names {
+                  let name = self.resolve_name(name_id)?;
+                  self.env.declare_var(self.vm, scope, name.as_str())?;
+                }
               }
             }
           }
@@ -578,14 +568,12 @@ impl<'vm> HirEvaluator<'vm> {
             if decl.kind == hir_js::VarDeclKind::Var {
               for declarator in &decl.declarators {
                 self.vm.tick()?;
-                let pat = self.get_pat(body, declarator.pat)?;
-                let hir_js::PatKind::Ident(name_id) = pat.kind else {
-                  return Err(VmError::Unimplemented(
-                    "non-identifier variable declarations (hir-js compiled path)",
-                  ));
-                };
-                let name = self.resolve_name(name_id)?;
-                self.env.declare_var(self.vm, scope, name.as_str())?;
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                self.collect_pat_idents(body, declarator.pat, &mut names)?;
+                for name_id in names {
+                  let name = self.resolve_name(name_id)?;
+                  self.env.declare_var(self.vm, scope, name.as_str())?;
+                }
               }
             }
           }
@@ -632,6 +620,46 @@ impl<'vm> HirEvaluator<'vm> {
       }
     }
     Ok(())
+  }
+
+  fn collect_pat_idents(
+    &self,
+    body: &hir_js::Body,
+    pat_id: hir_js::PatId,
+    out: &mut Vec<hir_js::NameId>,
+  ) -> Result<(), VmError> {
+    let pat = self.get_pat(body, pat_id)?;
+    match &pat.kind {
+      hir_js::PatKind::Ident(name_id) => {
+        out.push(*name_id);
+        Ok(())
+      }
+      hir_js::PatKind::Array(arr) => {
+        for elem in &arr.elements {
+          if let Some(elem) = elem {
+            self.collect_pat_idents(body, elem.pat, out)?;
+          }
+        }
+        if let Some(rest) = arr.rest {
+          self.collect_pat_idents(body, rest, out)?;
+        }
+        Ok(())
+      }
+      hir_js::PatKind::Object(obj) => {
+        for prop in &obj.props {
+          self.collect_pat_idents(body, prop.value, out)?;
+        }
+        if let Some(rest) = obj.rest {
+          self.collect_pat_idents(body, rest, out)?;
+        }
+        Ok(())
+      }
+      hir_js::PatKind::Rest(inner) => self.collect_pat_idents(body, **inner, out),
+      hir_js::PatKind::Assign { target, .. } => self.collect_pat_idents(body, *target, out),
+      hir_js::PatKind::AssignTarget(_) => Err(VmError::Unimplemented(
+        "assignment target in declaration pattern (hir-js compiled path)",
+      )),
+    }
   }
 
   fn instantiate_function_decls(
@@ -751,23 +779,21 @@ impl<'vm> HirEvaluator<'vm> {
 
     for declarator in &decl.declarators {
       self.vm.tick()?;
-      let pat = self.get_pat(body, declarator.pat)?;
-      let hir_js::PatKind::Ident(name_id) = pat.kind else {
-        return Err(VmError::Unimplemented(
-          "non-identifier variable declarations (hir-js compiled path)",
-        ));
-      };
-      let name = self.resolve_name(name_id)?;
+      let mut names: Vec<hir_js::NameId> = Vec::new();
+      self.collect_pat_idents(body, declarator.pat, &mut names)?;
+      for name_id in names {
+        let name = self.resolve_name(name_id)?;
 
-      // Keep the engine robust against malformed HIR (e.g. a binding already exists).
-      if scope.heap().env_has_binding(env, name.as_str())? {
-        continue;
-      }
+        // Keep the engine robust against malformed HIR (e.g. a binding already exists).
+        if scope.heap().env_has_binding(env, name.as_str())? {
+          continue;
+        }
 
-      match decl.kind {
-        hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
-        hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
-        _ => unreachable!(),
+        match decl.kind {
+          hir_js::VarDeclKind::Let => scope.env_create_mutable_binding(env, name.as_str())?,
+          hir_js::VarDeclKind::Const => scope.env_create_immutable_binding(env, name.as_str())?,
+          _ => unreachable!(),
+        }
       }
     }
     Ok(())
@@ -1660,35 +1686,80 @@ impl<'vm> HirEvaluator<'vm> {
     init_missing: bool,
     value: Value,
   ) -> Result<(), VmError> {
-    let pat = self.get_pat(body, pat_id)?;
-    let hir_js::PatKind::Ident(name_id) = pat.kind else {
-      return Err(VmError::Unimplemented(
-        "non-identifier variable declarations (hir-js compiled path)",
-      ));
-    };
-    let name = self.resolve_name(name_id)?;
-
     match kind {
       hir_js::VarDeclKind::Var => {
-        // `var x;` is a no-op: it does not assign `undefined` if the binding already exists.
-        //
-        // The binding is ensured via the hoisting pass, but `var` declarations can also appear in
-        // runtime-evaluated constructs (e.g. `for (var x; ...)`) so we preserve correct semantics
-        // here as well.
         if init_missing {
-          self.env.declare_var(self.vm, scope, name.as_str())
+          // `var x;` is a no-op: it does not assign `undefined` if the binding already exists.
+          //
+          // The binding is ensured via the hoisting pass, but `var` declarations can also appear in
+          // runtime-evaluated constructs (e.g. `for (var x; ...)`) so we preserve correct semantics
+          // here as well.
+          let pat = self.get_pat(body, pat_id)?;
+          if let hir_js::PatKind::Ident(name_id) = pat.kind {
+            let name = self.resolve_name(name_id)?;
+            self.env.declare_var(self.vm, scope, name.as_str())
+          } else {
+            // `var` destructuring without an initializer should have been rejected as a syntax
+            // error, but keep the VM robust and let destructuring semantics raise a TypeError.
+            self.bind_pattern(scope, body, pat_id, value, PatBindingKind::Var)
+          }
         } else {
-          self.env.set_var(
-            self.vm,
-            &mut *self.host,
-            &mut *self.hooks,
-            scope,
-            name.as_str(),
-            value,
-          )
+          self.bind_pattern(scope, body, pat_id, value, PatBindingKind::Var)
         }
       }
-      hir_js::VarDeclKind::Let => {
+      hir_js::VarDeclKind::Let => self.bind_pattern(scope, body, pat_id, value, PatBindingKind::Let),
+      hir_js::VarDeclKind::Const => {
+        if init_missing {
+          // Should have been caught as a syntax error, but keep the engine robust.
+          return Err(VmError::TypeError("Missing initializer in const declaration"));
+        }
+        self.bind_pattern(scope, body, pat_id, value, PatBindingKind::Const)
+      }
+      hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing => Err(VmError::Unimplemented(
+        "using declarations (hir-js compiled path)",
+      )),
+    }
+  }
+
+  fn bind_identifier(
+    &mut self,
+    scope: &mut Scope<'_>,
+    name_id: hir_js::NameId,
+    value: Value,
+    kind: PatBindingKind,
+  ) -> Result<(), VmError> {
+    let name = self.resolve_name(name_id)?;
+    match kind {
+      PatBindingKind::Var => self.env.set_var(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        scope,
+        name.as_str(),
+        value,
+      ),
+      PatBindingKind::Let => {
+        let env_rec = self.env.lexical_env();
+        if !scope.heap().env_has_binding(env_rec, name.as_str())? {
+          // Non-block statement contexts may not have performed lexical hoisting yet.
+          scope.env_create_mutable_binding(env_rec, name.as_str())?;
+        }
+        scope
+          .heap_mut()
+          .env_initialize_binding(env_rec, name.as_str(), value)
+      }
+      PatBindingKind::Const => {
+        let env_rec = self.env.lexical_env();
+        if !scope.heap().env_has_binding(env_rec, name.as_str())? {
+          // Non-block statement contexts may not have performed lexical hoisting yet.
+          scope.env_create_immutable_binding(env_rec, name.as_str())?;
+        }
+        scope
+          .heap_mut()
+          .env_initialize_binding(env_rec, name.as_str(), value)
+      }
+      PatBindingKind::Param => {
+        // Parameters are mutable bindings in the function environment.
         let env_rec = self.env.lexical_env();
         if !scope.heap().env_has_binding(env_rec, name.as_str())? {
           scope.env_create_mutable_binding(env_rec, name.as_str())?;
@@ -1697,22 +1768,299 @@ impl<'vm> HirEvaluator<'vm> {
           .heap_mut()
           .env_initialize_binding(env_rec, name.as_str(), value)
       }
-      hir_js::VarDeclKind::Const => {
-        if init_missing {
-          // Should have been caught as a syntax error, but keep the engine robust.
-          return Err(VmError::TypeError("Missing initializer in const declaration"));
-        }
-        let env_rec = self.env.lexical_env();
-        if !scope.heap().env_has_binding(env_rec, name.as_str())? {
-          scope.env_create_immutable_binding(env_rec, name.as_str())?;
-        }
-        scope
-          .heap_mut()
-          .env_initialize_binding(env_rec, name.as_str(), value)
+    }
+  }
+
+  fn iterator_close_on_err(
+    &mut self,
+    scope: &mut Scope<'_>,
+    iterator_record: &crate::iterator::IteratorRecord,
+    err: VmError,
+  ) -> Result<(), VmError> {
+    if iterator_record.done {
+      return Err(err);
+    }
+
+    // Root any pending thrown value across `IteratorClose`, which can allocate and trigger GC.
+    if err.is_throw_completion() {
+      if let Some(thrown) = err.thrown_value() {
+        scope.push_root(thrown)?;
       }
-      hir_js::VarDeclKind::Using | hir_js::VarDeclKind::AwaitUsing => Err(VmError::Unimplemented(
-        "using declarations (hir-js compiled path)",
+    }
+
+    match crate::iterator::iterator_close(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      iterator_record,
+      crate::iterator::CloseCompletionKind::Throw,
+    ) {
+      Ok(()) => Err(err),
+      Err(close_err) => Err(if err.is_throw_completion() {
+        close_err
+      } else {
+        err
+      }),
+    }
+  }
+
+  fn bind_pattern(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    pat_id: hir_js::PatId,
+    value: Value,
+    kind: PatBindingKind,
+  ) -> Result<(), VmError> {
+    // Keep temporary roots local to this binding operation.
+    let mut scope = scope.reborrow();
+    // Root the input value so destructuring can allocate without the RHS being collected.
+    let value = scope.push_root(value)?;
+
+    let pat = self.get_pat(body, pat_id)?;
+    match &pat.kind {
+      hir_js::PatKind::Ident(name_id) => self.bind_identifier(&mut scope, *name_id, value, kind),
+      hir_js::PatKind::Array(arr) => self.bind_array_pattern(&mut scope, body, arr, value, kind),
+      hir_js::PatKind::Object(obj) => self.bind_object_pattern(&mut scope, body, obj, value, kind),
+      hir_js::PatKind::Assign {
+        target,
+        default_value,
+      } => {
+        let v = if matches!(value, Value::Undefined) {
+          self.eval_expr(&mut scope, body, *default_value)?
+        } else {
+          value
+        };
+        self.bind_pattern(&mut scope, body, *target, v, kind)
+      }
+      hir_js::PatKind::Rest(inner) => self.bind_pattern(&mut scope, body, **inner, value, kind),
+      hir_js::PatKind::AssignTarget(_) => Err(VmError::Unimplemented(
+        "assignment target pattern in binding context (hir-js compiled path)",
       )),
+    }
+  }
+
+  fn bind_object_pattern(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    pat: &hir_js::ObjectPat,
+    value: Value,
+    kind: PatBindingKind,
+  ) -> Result<(), VmError> {
+    // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
+    // accessors must observe `this = value` (the original RHS value), not the boxed object.
+    //
+    // Root the original RHS value across boxing: `ToObject` can allocate and therefore trigger GC.
+    let src_value = scope.push_root(value)?;
+    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, src_value)?;
+    scope.push_root(Value::Object(obj))?;
+
+    let mut excluded: Vec<PropertyKey> = Vec::new();
+    if pat.rest.is_some() {
+      excluded
+        .try_reserve_exact(pat.props.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+
+    for prop in &pat.props {
+      // Budget object destructuring by pattern size.
+      self.vm.tick()?;
+      let key = self.eval_object_key(scope, body, &prop.key)?;
+      // Ensure keys stored for rest destructuring stay alive.
+      if pat.rest.is_some() {
+        root_property_key(scope, key)?;
+        excluded.push(key);
+      }
+
+      // Keep temporary roots local to each property to avoid unbounded root-stack growth for large
+      // patterns.
+      let mut prop_scope = scope.reborrow();
+      // Root key while performing the get/default evaluation.
+      root_property_key(&mut prop_scope, key)?;
+
+      let mut prop_value =
+        prop_scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, src_value)?;
+      if matches!(prop_value, Value::Undefined) {
+        if let Some(default_expr) = prop.default_value {
+          prop_value = self.eval_expr(&mut prop_scope, body, default_expr)?;
+        }
+      }
+
+      self.bind_pattern(&mut prop_scope, body, prop.value, prop_value, kind)?;
+    }
+
+    let Some(rest_pat_id) = pat.rest else {
+      return Ok(());
+    };
+
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    // `...rest` uses `ObjectCreate(%Object.prototype%)` / `CopyDataProperties`.
+    let rest_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+    scope.push_root(Value::Object(rest_obj))?;
+
+    crate::spec_ops::copy_data_properties_with_host_and_hooks(
+      self.vm,
+      scope,
+      &mut *self.host,
+      &mut *self.hooks,
+      rest_obj,
+      Value::Object(obj),
+      &excluded,
+    )?;
+
+    self.bind_pattern(scope, body, rest_pat_id, Value::Object(rest_obj), kind)
+  }
+
+  fn bind_array_pattern(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    pat: &hir_js::ArrayPat,
+    value: Value,
+    kind: PatBindingKind,
+  ) -> Result<(), VmError> {
+    // RequireObjectCoercible (ECMA-262): array destructuring disallows null/undefined but supports
+    // primitives like String via iterator protocol.
+    if matches!(value, Value::Undefined | Value::Null) {
+      return Err(VmError::TypeError("array destructuring requires object coercible"));
+    }
+
+    let mut iterator_record =
+      crate::iterator::get_iterator(self.vm, &mut *self.host, &mut *self.hooks, scope, value)?;
+    // Root the iterator record across evaluation of defaults / nested bindings, which can allocate.
+    scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+    for elem in &pat.elements {
+      // Budget array destructuring by pattern size.
+      if let Err(err) = self.vm.tick() {
+        return self.iterator_close_on_err(scope, &iterator_record, err);
+      }
+
+      // Keep temporary roots local to each element.
+      let mut elem_scope = scope.reborrow();
+
+      let Some(elem) = elem else {
+        // Elision: still advance the iterator but do not read `value`.
+        if let Err(err) = crate::iterator::iterator_step(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut elem_scope,
+          &mut iterator_record,
+        ) {
+          return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err);
+        }
+        continue;
+      };
+
+      let mut item = match crate::iterator::iterator_step_value(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        &mut elem_scope,
+        &mut iterator_record,
+      ) {
+        Ok(Some(v)) => v,
+        Ok(None) => Value::Undefined,
+        Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+      };
+
+      if matches!(item, Value::Undefined) {
+        if let Some(default_expr) = elem.default_value {
+          item = match self.eval_expr(&mut elem_scope, body, default_expr) {
+            Ok(v) => v,
+            Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+          };
+        }
+      }
+
+      if let Err(err) = self.bind_pattern(&mut elem_scope, body, elem.pat, item, kind) {
+        return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err);
+      }
+    }
+
+    let Some(rest_pat_id) = pat.rest else {
+      // Iterator binding initialization performs IteratorClose on normal completion when the
+      // iterator is not exhausted.
+      if !iterator_record.done {
+        crate::iterator::iterator_close(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::NonThrow,
+        )?;
+      }
+      return Ok(());
+    };
+
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    // Rest element must produce a real Array exotic object.
+    let rest_arr = match scope.alloc_array(0) {
+      Ok(arr) => arr,
+      Err(err) => return self.iterator_close_on_err(scope, &iterator_record, err),
+    };
+    if let Err(err) = scope.push_root(Value::Object(rest_arr)) {
+      return self.iterator_close_on_err(scope, &iterator_record, err);
+    }
+    if let Err(err) = scope
+      .heap_mut()
+      .object_set_prototype(rest_arr, Some(intr.array_prototype()))
+    {
+      return self.iterator_close_on_err(scope, &iterator_record, err);
+    }
+
+    let mut rest_idx: u32 = 0;
+    loop {
+      // Budget rest-element copying: `...rest` can iterate many remaining indices.
+      if let Err(err) = self.vm.tick() {
+        return self.iterator_close_on_err(scope, &iterator_record, err);
+      }
+
+      let next = match crate::iterator::iterator_step_value(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        scope,
+        &mut iterator_record,
+      ) {
+        Ok(v) => v,
+        Err(err) => return self.iterator_close_on_err(scope, &iterator_record, err),
+      };
+      let Some(v) = next else {
+        break;
+      };
+
+      // Root the element value while allocating the property key and defining the property.
+      let create_res = {
+        let mut elem_scope = scope.reborrow();
+        elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
+
+        let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
+        let key = PropertyKey::from_string(key_s);
+        elem_scope.create_data_property_or_throw(rest_arr, key, v)
+      };
+      if let Err(err) = create_res {
+        return self.iterator_close_on_err(scope, &iterator_record, err);
+      }
+      rest_idx = rest_idx.saturating_add(1);
+    }
+
+    let bind_res = self.bind_pattern(scope, body, rest_pat_id, Value::Object(rest_arr), kind);
+    match bind_res {
+      Ok(()) => Ok(()),
+      Err(err) => self.iterator_close_on_err(scope, &iterator_record, err),
     }
   }
 
@@ -3344,9 +3692,382 @@ impl<'vm> HirEvaluator<'vm> {
           )),
         }
       }
-      _ => Err(VmError::Unimplemented(
-        "assignment pattern (hir-js compiled path)",
-      )),
+      _ => self.assign_pattern(scope, body, pat_id, value),
+    }
+  }
+
+  fn assign_to_property_key(
+    &mut self,
+    scope: &mut Scope<'_>,
+    base: Value,
+    key: PropertyKey,
+    value: Value,
+  ) -> Result<(), VmError> {
+    // Root inputs across key allocation and `[[Set]]`, which can allocate and invoke user code.
+    let mut set_scope = scope.reborrow();
+    let key_root = match key {
+      PropertyKey::String(s) => Value::String(s),
+      PropertyKey::Symbol(s) => Value::Symbol(s),
+    };
+    set_scope.push_roots(&[base, key_root, value])?;
+
+    let Value::Object(obj) = base else {
+      return Err(VmError::TypeError("member assignment requires object"));
+    };
+    set_scope.push_root(Value::Object(obj))?;
+
+    let receiver = Value::Object(obj);
+    let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+      self.vm,
+      &mut set_scope,
+      &mut *self.host,
+      &mut *self.hooks,
+      obj,
+      key,
+      value,
+      receiver,
+    )?;
+    if ok {
+      Ok(())
+    } else if self.strict {
+      Err(VmError::TypeError("Cannot assign to read-only property"))
+    } else {
+      Ok(())
+    }
+  }
+
+  fn assign_pattern(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    pat_id: hir_js::PatId,
+    value: Value,
+  ) -> Result<(), VmError> {
+    // Keep temporary roots local to this assignment operation.
+    let mut scope = scope.reborrow();
+    let value = scope.push_root(value)?;
+
+    let pat = self.get_pat(body, pat_id)?;
+    match &pat.kind {
+      hir_js::PatKind::Array(arr) => self.assign_array_pattern(&mut scope, body, arr, value),
+      hir_js::PatKind::Object(obj) => self.assign_object_pattern(&mut scope, body, obj, value),
+      hir_js::PatKind::Assign {
+        target,
+        default_value,
+      } => {
+        let v = if matches!(value, Value::Undefined) {
+          self.eval_expr(&mut scope, body, *default_value)?
+        } else {
+          value
+        };
+        self.assign_to_pat(&mut scope, body, *target, v)
+      }
+      hir_js::PatKind::Rest(inner) => self.assign_to_pat(&mut scope, body, **inner, value),
+      // `assign_to_pat` handles identifier/AssignTarget forms.
+      hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_) => {
+        self.assign_to_pat(&mut scope, body, pat_id, value)
+      }
+    }
+  }
+
+  fn assign_object_pattern(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    pat: &hir_js::ObjectPat,
+    value: Value,
+  ) -> Result<(), VmError> {
+    // Root the original RHS value across boxing: `ToObject` can allocate and therefore trigger GC.
+    let src_value = scope.push_root(value)?;
+    let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, src_value)?;
+    scope.push_root(Value::Object(obj))?;
+
+    let mut excluded: Vec<PropertyKey> = Vec::new();
+    if pat.rest.is_some() {
+      excluded
+        .try_reserve_exact(pat.props.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+    }
+
+    for prop in &pat.props {
+      self.vm.tick()?;
+      let key = self.eval_object_key(scope, body, &prop.key)?;
+      if pat.rest.is_some() {
+        root_property_key(scope, key)?;
+        excluded.push(key);
+      }
+
+      let mut prop_scope = scope.reborrow();
+      root_property_key(&mut prop_scope, key)?;
+
+      // Best-effort assignment target evaluation order: if the LHS is a member target, evaluate it
+      // before reading the source property value.
+      enum PropTarget {
+        PreResolvedMember { base: Value, key: PropertyKey },
+        Pat(hir_js::PatId),
+      }
+      let mut target = PropTarget::Pat(prop.value);
+      {
+        let value_pat = self.get_pat(body, prop.value)?;
+        if let hir_js::PatKind::AssignTarget(expr_id) = value_pat.kind {
+          let target_expr = self.get_expr(body, expr_id)?;
+          if let hir_js::ExprKind::Member(member) = &target_expr.kind {
+            let base = self.eval_expr(&mut prop_scope, body, member.object)?;
+            let base = prop_scope.push_root(base)?;
+            let member_key = self.eval_object_key(&mut prop_scope, body, &member.property)?;
+            root_property_key(&mut prop_scope, member_key)?;
+            target = PropTarget::PreResolvedMember { base, key: member_key };
+          }
+        }
+      }
+
+      let mut prop_value =
+        prop_scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, src_value)?;
+      if matches!(prop_value, Value::Undefined) {
+        if let Some(default_expr) = prop.default_value {
+          prop_value = self.eval_expr(&mut prop_scope, body, default_expr)?;
+        }
+      }
+
+      match target {
+        PropTarget::PreResolvedMember { base, key } => {
+          self.assign_to_property_key(&mut prop_scope, base, key, prop_value)?
+        }
+        PropTarget::Pat(pat_id) => self.assign_to_pat(&mut prop_scope, body, pat_id, prop_value)?,
+      }
+    }
+
+    let Some(rest_pat_id) = pat.rest else {
+      return Ok(());
+    };
+
+    // Rest property assignment should evaluate the LHS before copying properties.
+    enum RestTarget {
+      PreResolvedMember { base: Value, key: PropertyKey },
+      Pat(hir_js::PatId),
+    }
+    let mut rest_target = RestTarget::Pat(rest_pat_id);
+    {
+      let rest_pat = self.get_pat(body, rest_pat_id)?;
+      if let hir_js::PatKind::AssignTarget(expr_id) = rest_pat.kind {
+        let target_expr = self.get_expr(body, expr_id)?;
+        if let hir_js::ExprKind::Member(member) = &target_expr.kind {
+          let base = self.eval_expr(scope, body, member.object)?;
+          let base = scope.push_root(base)?;
+          let member_key = self.eval_object_key(scope, body, &member.property)?;
+          root_property_key(scope, member_key)?;
+          rest_target = RestTarget::PreResolvedMember { base, key: member_key };
+        }
+      }
+    }
+
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    let rest_obj = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+    scope.push_root(Value::Object(rest_obj))?;
+
+    crate::spec_ops::copy_data_properties_with_host_and_hooks(
+      self.vm,
+      scope,
+      &mut *self.host,
+      &mut *self.hooks,
+      rest_obj,
+      Value::Object(obj),
+      &excluded,
+    )?;
+
+    match rest_target {
+      RestTarget::PreResolvedMember { base, key } => {
+        self.assign_to_property_key(scope, base, key, Value::Object(rest_obj))
+      }
+      RestTarget::Pat(pat_id) => self.assign_to_pat(scope, body, pat_id, Value::Object(rest_obj)),
+    }
+  }
+
+  fn assign_array_pattern(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    pat: &hir_js::ArrayPat,
+    value: Value,
+  ) -> Result<(), VmError> {
+    if matches!(value, Value::Undefined | Value::Null) {
+      return Err(VmError::TypeError("array destructuring requires object coercible"));
+    }
+
+    let mut iterator_record =
+      crate::iterator::get_iterator(self.vm, &mut *self.host, &mut *self.hooks, scope, value)?;
+    scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+    for elem in &pat.elements {
+      if let Err(err) = self.vm.tick() {
+        return self.iterator_close_on_err(scope, &iterator_record, err);
+      }
+
+      let mut elem_scope = scope.reborrow();
+
+      let Some(elem) = elem else {
+        if let Err(err) = crate::iterator::iterator_step(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          &mut elem_scope,
+          &mut iterator_record,
+        ) {
+          return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err);
+        }
+        continue;
+      };
+
+      // Best-effort assignment target evaluation order: evaluate member targets before consuming
+      // the iterator.
+      enum ElemTarget {
+        PreResolvedMember { base: Value, key: PropertyKey },
+        Pat(hir_js::PatId),
+      }
+      let mut target = ElemTarget::Pat(elem.pat);
+      {
+        let elem_pat = self.get_pat(body, elem.pat)?;
+        if let hir_js::PatKind::AssignTarget(expr_id) = elem_pat.kind {
+          let target_expr = self.get_expr(body, expr_id)?;
+          if let hir_js::ExprKind::Member(member) = &target_expr.kind {
+            let base = self.eval_expr(&mut elem_scope, body, member.object)?;
+            let base = elem_scope.push_root(base)?;
+            let member_key = self.eval_object_key(&mut elem_scope, body, &member.property)?;
+            root_property_key(&mut elem_scope, member_key)?;
+            target = ElemTarget::PreResolvedMember { base, key: member_key };
+          }
+        }
+      }
+
+      let mut item = match crate::iterator::iterator_step_value(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        &mut elem_scope,
+        &mut iterator_record,
+      ) {
+        Ok(Some(v)) => v,
+        Ok(None) => Value::Undefined,
+        Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+      };
+
+      if matches!(item, Value::Undefined) {
+        if let Some(default_expr) = elem.default_value {
+          item = match self.eval_expr(&mut elem_scope, body, default_expr) {
+            Ok(v) => v,
+            Err(err) => return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err),
+          };
+        }
+      }
+
+      let res = match target {
+        ElemTarget::PreResolvedMember { base, key } => self.assign_to_property_key(&mut elem_scope, base, key, item),
+        ElemTarget::Pat(pat_id) => self.assign_to_pat(&mut elem_scope, body, pat_id, item),
+      };
+      if let Err(err) = res {
+        return self.iterator_close_on_err(&mut elem_scope, &iterator_record, err);
+      }
+    }
+
+    let Some(rest_pat_id) = pat.rest else {
+      if !iterator_record.done {
+        crate::iterator::iterator_close(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          scope,
+          &iterator_record,
+          crate::iterator::CloseCompletionKind::NonThrow,
+        )?;
+      }
+      return Ok(());
+    };
+
+    // Rest element assignment must evaluate the LHS target before consuming the iterator.
+    enum RestTarget {
+      PreResolvedMember { base: Value, key: PropertyKey },
+      Pat(hir_js::PatId),
+    }
+    let mut rest_target = RestTarget::Pat(rest_pat_id);
+    {
+      let rest_pat = self.get_pat(body, rest_pat_id)?;
+      if let hir_js::PatKind::AssignTarget(expr_id) = rest_pat.kind {
+        let target_expr = self.get_expr(body, expr_id)?;
+        if let hir_js::ExprKind::Member(member) = &target_expr.kind {
+          let base = self.eval_expr(scope, body, member.object)?;
+          let base = scope.push_root(base)?;
+          let member_key = self.eval_object_key(scope, body, &member.property)?;
+          root_property_key(scope, member_key)?;
+          rest_target = RestTarget::PreResolvedMember { base, key: member_key };
+        }
+      }
+    }
+
+    let intr = self
+      .vm
+      .intrinsics()
+      .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+    let rest_arr = match scope.alloc_array(0) {
+      Ok(arr) => arr,
+      Err(err) => return self.iterator_close_on_err(scope, &iterator_record, err),
+    };
+    if let Err(err) = scope.push_root(Value::Object(rest_arr)) {
+      return self.iterator_close_on_err(scope, &iterator_record, err);
+    }
+    if let Err(err) = scope
+      .heap_mut()
+      .object_set_prototype(rest_arr, Some(intr.array_prototype()))
+    {
+      return self.iterator_close_on_err(scope, &iterator_record, err);
+    }
+
+    let mut rest_idx: u32 = 0;
+    loop {
+      if let Err(err) = self.vm.tick() {
+        return self.iterator_close_on_err(scope, &iterator_record, err);
+      }
+
+      let next = match crate::iterator::iterator_step_value(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        scope,
+        &mut iterator_record,
+      ) {
+        Ok(v) => v,
+        Err(err) => return self.iterator_close_on_err(scope, &iterator_record, err),
+      };
+      let Some(v) = next else {
+        break;
+      };
+
+      let create_res = {
+        let mut elem_scope = scope.reborrow();
+        elem_scope.push_roots(&[Value::Object(rest_arr), v])?;
+        let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
+        let key = PropertyKey::from_string(key_s);
+        elem_scope.create_data_property_or_throw(rest_arr, key, v)
+      };
+      if let Err(err) = create_res {
+        return self.iterator_close_on_err(scope, &iterator_record, err);
+      }
+      rest_idx = rest_idx.saturating_add(1);
+    }
+
+    let assign_res = match rest_target {
+      RestTarget::PreResolvedMember { base, key } => {
+        self.assign_to_property_key(scope, base, key, Value::Object(rest_arr))
+      }
+      RestTarget::Pat(pat_id) => self.assign_to_pat(scope, body, pat_id, Value::Object(rest_arr)),
+    };
+    match assign_res {
+      Ok(()) => Ok(()),
+      Err(err) => self.iterator_close_on_err(scope, &iterator_record, err),
     }
   }
 
