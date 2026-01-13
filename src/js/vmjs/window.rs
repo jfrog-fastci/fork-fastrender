@@ -1688,6 +1688,35 @@ mod tests {
   }
 
   #[test]
+  fn webidl_dom_wrappers_expose_wrapper_document_for_legacy_shims() -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut exec = |source: &str| -> Result<Value> {
+      match realm.exec_script(source) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+      }
+    };
+
+    assert_eq!(
+      exec(
+        "(() => { const el = document.createElement('div'); return el.__fastrender_wrapper_document === document; })()"
+      )?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      exec("(() => { const el = document.createElement('div'); return el.ownerDocument === document; })()")?,
+      Value::Bool(true)
+    );
+
+    Ok(())
+  }
+
+  #[test]
   fn webidl_dom_backend_node_traversal_does_not_leak_closed_shadow_root() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut event_loop = EventLoop::<WindowHostState>::new();

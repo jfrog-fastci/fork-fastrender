@@ -949,6 +949,25 @@ impl DomPlatform {
       let mut scope = scope.reborrow();
       scope.push_root(Value::Object(wrapper))?;
 
+      let document_wrapper_obj = if node_id.index() != 0 {
+        Some(
+          self
+            .get_existing_wrapper_for_node_key(
+              scope.heap(),
+              DomNodeKey::new(document_id, NodeId::from_index(0)),
+            )
+            .ok_or(VmError::InvariantViolation(
+              "missing wrapper for document node",
+            ))?,
+        )
+      } else {
+        None
+      };
+      if let Some(document_wrapper_obj) = document_wrapper_obj {
+        // Root the document wrapper across string allocations.
+        scope.push_root(Value::Object(document_wrapper_obj))?;
+      }
+
       let node_id_key = PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?);
       scope.define_property(
         wrapper,
@@ -962,6 +981,25 @@ impl DomPlatform {
           },
         },
       )?;
+
+      // Some handwritten DOM shims still rely on wrappers having an own data property pointing at
+      // the owning `Document` wrapper. Ensure WebIDL-created wrappers provide it too.
+      if let Some(document_wrapper_obj) = document_wrapper_obj {
+        let wrapper_document_key =
+          PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+        scope.define_property(
+          wrapper,
+          wrapper_document_key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: false,
+            kind: PropertyKind::Data {
+              value: Value::Object(document_wrapper_obj),
+              writable: true,
+            },
+          },
+        )?;
+      }
     }
 
     self.register_wrapper_for_document_id(
@@ -1559,6 +1597,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
 
     let node_id = NodeId::from_index(1);
     let wrapper1 =
@@ -1586,6 +1631,20 @@ mod tests {
     let doc_key_b = WeakGcObject::from(doc_b);
     let _doc_a_root = scope.heap_mut().add_root(Value::Object(doc_a))?;
     let _doc_b_root = scope.heap_mut().add_root(Value::Object(doc_b))?;
+    platform.register_wrapper(
+      scope.heap(),
+      doc_a,
+      doc_key_a,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+    platform.register_wrapper(
+      scope.heap(),
+      doc_b,
+      doc_key_b,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
 
     let node_id = NodeId::from_index(1);
     let wrapper_a =
@@ -1607,6 +1666,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
 
     let node_id = NodeId::from_index(1);
     let wrapper =
@@ -1636,6 +1702,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
     let document_id = super::document_id_from_key(document_key);
 
     let node_id = NodeId::from_index(1);
@@ -1693,6 +1766,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
     let document_id = super::document_id_from_key(document_key);
 
     let old_id = NodeId::from_index(5);
@@ -1759,25 +1839,13 @@ mod tests {
       platform.get_or_create_wrapper(&mut scope, document_key_a, old_id, DomInterface::Element)?;
     let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
-    // Mirror real `window_realm` node wrappers by associating the wrapper with its originating
-    // document. Cross-document remapping should update this link.
-    {
-      let mut scope = scope.reborrow();
-      scope.push_root(Value::Object(wrapper))?;
-      let key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_WRAPPER_DOCUMENT_KEY)?);
-       scope.define_property(
-         wrapper,
-         key,
-         PropertyDescriptor {
-           enumerable: false,
-           configurable: false,
-           kind: PropertyKind::Data {
-             value: Value::Object(document_a),
-             writable: true,
-           },
-         },
-       )?;
-     }
+    let wrapper_doc_key =
+      PropertyKey::from_string(scope.alloc_string(super::INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+    let wrapper_doc_value = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper, &wrapper_doc_key)?
+      .unwrap_or(Value::Undefined);
+    assert_eq!(wrapper_doc_value, Value::Object(document_a));
 
     let new_id = NodeId::from_index(9);
     let mut mapping: HashMap<NodeId, NodeId> = HashMap::new();
@@ -1844,6 +1912,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
     let document_id = super::document_id_from_key(document_key);
 
     let node_kind = NodeKind::Doctype {
@@ -1881,6 +1956,20 @@ mod tests {
     let document_id_b = super::document_id_from_key(document_key_b);
     let _doc_a_root = scope.heap_mut().add_root(Value::Object(document_a))?;
     let _doc_b_root = scope.heap_mut().add_root(Value::Object(document_b))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_a,
+      document_key_a,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+    platform.register_wrapper(
+      scope.heap(),
+      document_b,
+      document_key_b,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
 
     let old_id = NodeId::from_index(5);
     let wrapper =
@@ -1940,6 +2029,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
 
     let node_id = NodeId::from_index(1);
     let wrapper =
@@ -1979,6 +2075,13 @@ mod tests {
     let document_obj = scope.alloc_object()?;
     let document_key = WeakGcObject::from(document_obj);
     let _doc_root = scope.heap_mut().add_root(Value::Object(document_obj))?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      document_key,
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
 
     let node_id = NodeId::from_index(1);
     let wrapper = platform.get_or_create_wrapper(
