@@ -524,3 +524,103 @@ fn oopif_iframe_referrerpolicy_no_referrer_omits_referer_on_child_subresource_fe
   child_renderer.shutdown();
   let _ = parent_server.shutdown_and_join();
 }
+
+#[test]
+fn oopif_about_blank_site_key_inherits_parent_unless_sandboxed() {
+  let _net_guard = net_test_lock();
+
+  let Some(parent_server) = TestServer::start(
+    "oopif_about_blank_site_key_inherits_parent_unless_sandboxed",
+    |_path| Some((
+      b"<!doctype html><html><body>\
+        <iframe src=\"about:blank\"></iframe>\
+        <iframe sandbox src=\"about:blank\"></iframe>\
+      </body></html>"
+        .to_vec(),
+      "text/html",
+    )),
+  ) else {
+    return;
+  };
+
+  let parent_url = parent_server.url("index.html");
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    url: parent_url.clone(),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key.clone(),
+      sandbox_flags: Default::default(),
+      opaque_origin: false,
+    },
+  });
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+
+  let (got_frame, subframes, err) = parent_renderer.recv_frame_ready(Duration::from_secs(5));
+  assert_eq!(
+    got_frame, parent_frame,
+    "expected FrameReady for parent frame (err={err:?})"
+  );
+  assert_eq!(
+    subframes.len(),
+    2,
+    "expected two iframe subframes (err={err:?}, subframes={subframes:#?})"
+  );
+
+  // Sort deterministically by child id so the test does not depend on renderer enumeration order.
+  let mut subframes = subframes;
+  subframes.sort_by_key(|s| s.child.0);
+
+  let unsandboxed = &subframes[0];
+  assert!(
+    !unsandboxed.opaque_origin,
+    "unsandboxed about:blank should not force opaque origin"
+  );
+  let unsandboxed_ctx = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    "about:blank",
+    Some(&parent_site_key),
+    parent_url.clone(),
+    ReferrerPolicy::default(),
+    unsandboxed,
+  );
+  assert_eq!(
+    unsandboxed_ctx.site_key, parent_site_key,
+    "about:blank should inherit parent site key when not sandboxed"
+  );
+  assert!(!unsandboxed_ctx.opaque_origin);
+
+  let sandboxed = &subframes[1];
+  assert!(
+    sandboxed.opaque_origin,
+    "sandboxed about:blank should force opaque origin"
+  );
+  let sandboxed_ctx = NavigationContext::for_subframe_navigation_from_info(
+    &site_keys,
+    "about:blank",
+    Some(&parent_site_key),
+    parent_url.clone(),
+    ReferrerPolicy::default(),
+    sandboxed,
+  );
+  assert!(
+    sandboxed_ctx.site_key != parent_site_key,
+    "sandboxed about:blank should not inherit parent site key"
+  );
+  assert!(sandboxed_ctx.opaque_origin);
+  assert_eq!(sandboxed_ctx.sandbox_flags, sandboxed.sandbox_flags);
+
+  parent_renderer.shutdown();
+  let _ = parent_server.shutdown_and_join();
+}
