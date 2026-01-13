@@ -353,8 +353,10 @@ fn live_traversal_registry_is_gc_safe_and_sweeps_dead_entries() -> Result<(), vm
   let root = scope.heap_mut().add_root(Value::Object(obj))?;
 
   let mut doc = Document::new(QuirksMode::NoQuirks);
-  let _id = doc.register_live_range(scope.heap(), obj);
+  let id = doc.register_live_range(scope.heap(), obj);
   assert_eq!(doc.live_mutation.live_range_len(), 1);
+  assert_eq!(doc.range_start_container(id).unwrap(), doc.root());
+  assert_eq!(doc.range_start_offset(id).unwrap(), 0);
 
   // Drop the last root and force a GC; the registry must not keep the JS object alive.
   scope.heap_mut().remove_root(root);
@@ -367,6 +369,57 @@ fn live_traversal_registry_is_gc_safe_and_sweeps_dead_entries() -> Result<(), vm
   // After a GC run, sweeping should prune the dead registry entry.
   doc.sweep_dead_live_traversals_if_needed(scope.heap());
   assert_eq!(doc.live_mutation.live_range_len(), 0);
+  assert!(matches!(
+    doc.range_start_container(id),
+    Err(super::DomError::NotFoundError)
+  ));
+  Ok(())
+}
+
+#[test]
+fn live_range_state_is_pruned_without_affecting_other_live_ranges() -> Result<(), vm_js::VmError> {
+  use vm_js::{Heap, HeapLimits, Value, WeakGcObject};
+
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  // Register two independent live ranges.
+  let obj1 = scope.alloc_object()?;
+  let weak1 = WeakGcObject::from(obj1);
+  let root1 = scope.heap_mut().add_root(Value::Object(obj1))?;
+  let id1 = doc.register_live_range(scope.heap(), obj1);
+
+  let obj2 = scope.alloc_object()?;
+  let _root2 = scope.heap_mut().add_root(Value::Object(obj2))?;
+  let id2 = doc.register_live_range(scope.heap(), obj2);
+
+  assert_eq!(doc.live_mutation.live_range_len(), 2);
+  assert!(doc.range_start_container(id1).is_ok());
+  assert!(doc.range_start_container(id2).is_ok());
+
+  // GC only wrapper 1.
+  scope.heap_mut().remove_root(root1);
+  scope.heap_mut().collect_garbage();
+  assert!(weak1.upgrade(scope.heap()).is_none());
+
+  // Sweeping should prune range state for wrapper 1 without touching wrapper 2.
+  doc.sweep_dead_live_traversals_if_needed(scope.heap());
+  assert!(matches!(
+    doc.range_start_container(id1),
+    Err(super::DomError::NotFoundError)
+  ));
+  assert_eq!(doc.range_start_container(id2).unwrap(), doc.root());
+
+  // Register a new range after tombstoning; existing ids must remain valid.
+  let obj3 = scope.alloc_object()?;
+  let _root3 = scope.heap_mut().add_root(Value::Object(obj3))?;
+  let id3 = doc.register_live_range(scope.heap(), obj3);
+
+  assert_eq!(doc.live_mutation.live_range_len(), 2);
+  assert_eq!(doc.range_start_container(id2).unwrap(), doc.root());
+  assert_eq!(doc.range_start_container(id3).unwrap(), doc.root());
   Ok(())
 }
 

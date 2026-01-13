@@ -69,7 +69,7 @@ pub use resize_observer::{
   ResizeObserverBoxOptions, ResizeObserverEntry, ResizeObserverId, ResizeObserverLimits, ResizeObserverSize,
 };
 pub use scripting_parser::parse_html_with_scripting_dom2;
-pub use live_mutation::NodeIteratorId;
+pub use live_mutation::{LiveRangeId, NodeIteratorId};
 #[cfg(test)]
 pub(crate) use live_mutation::{LiveMutationEvent, LiveMutationTestRecorder};
 pub use slotting::SlotAssignmentMode;
@@ -287,7 +287,7 @@ pub struct Document {
   resize_observers: resize_observer::ResizeObserverRegistry,
   node_iterators: FxHashMap<NodeIteratorId, NodeIteratorState>,
   next_node_iterator_id: u64,
-  ranges: Vec<range::Range>,
+  ranges: FxHashMap<LiveRangeId, range::Range>,
 }
 
 impl Clone for Document {
@@ -316,7 +316,7 @@ impl Clone for Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
-      ranges: Vec::new(),
+      ranges: FxHashMap::default(),
     }
   }
 }
@@ -469,7 +469,7 @@ impl Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(self.nodes.len()),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
-      ranges: Vec::new(),
+      ranges: FxHashMap::default(),
     }
   }
 
@@ -562,7 +562,7 @@ impl Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(0),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
-      ranges: Vec::new(),
+      ranges: FxHashMap::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -603,7 +603,7 @@ impl Document {
       resize_observers: resize_observer::ResizeObserverRegistry::new(0),
       node_iterators: FxHashMap::default(),
       next_node_iterator_id: 1,
-      ranges: Vec::new(),
+      ranges: FxHashMap::default(),
     };
     let root = doc.push_node(
       NodeKind::Document {

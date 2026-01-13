@@ -15,7 +15,22 @@ pub(crate) fn utf16_len(s: &str) -> usize {
 ///
 /// Host-side only: the ID is used by the embedding / bindings layer and is not exposed to JS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct LiveRangeId(u64);
+pub struct LiveRangeId(u64);
+
+impl LiveRangeId {
+  /// Construct a `LiveRangeId` from a raw integer.
+  ///
+  /// This is primarily used by JS binding layers to store an id in host slots and reconstruct it
+  /// later without exposing internal `dom2` state.
+  pub fn from_u64(id: u64) -> Self {
+    Self(id)
+  }
+
+  /// Extract the raw integer value of this id.
+  pub fn as_u64(self) -> u64 {
+    self.0
+  }
+}
 
 /// Stable monotonic identifier for a live `NodeIterator` (DOM Standard) registered against a
 /// `dom2::Document`.
@@ -111,13 +126,18 @@ impl LiveMutation {
     self.hook = hook;
   }
 
+  pub(crate) fn alloc_live_range_id(&mut self) -> LiveRangeId {
+    let id = LiveRangeId(self.next_live_range_id);
+    self.next_live_range_id = self.next_live_range_id.wrapping_add(1);
+    id
+  }
+
   pub(crate) fn register_live_range(&mut self, heap: &Heap, wrapper: GcObject) -> LiveRangeId {
     // Note: sweeping is performed by `Document::sweep_dead_live_traversals_if_needed` so the
     // document can also clean up any Rust-side traversal state (e.g. NodeIterator state) associated
     // with collected wrappers.
     let _ = heap;
-    let id = LiveRangeId(self.next_live_range_id);
-    self.next_live_range_id = self.next_live_range_id.wrapping_add(1);
+    let id = self.alloc_live_range_id();
     self.live_ranges.insert(id, WeakGcObject::from(wrapper));
     id
   }
@@ -146,25 +166,21 @@ impl LiveMutation {
     self.last_gc_runs = gc_runs;
 
     let mut dead_live_ranges: Vec<LiveRangeId> = Vec::new();
-    self
-      .live_ranges
-      .retain(|id, weak| {
-        let alive = weak.upgrade(heap).is_some();
-        if !alive {
-          dead_live_ranges.push(*id);
-        }
-        alive
-      });
+    self.live_ranges.retain(|id, weak| {
+      let alive = weak.upgrade(heap).is_some();
+      if !alive {
+        dead_live_ranges.push(*id);
+      }
+      alive
+    });
     let mut dead_node_iterators: Vec<NodeIteratorId> = Vec::new();
-    self
-      .node_iterators
-      .retain(|id, weak| {
-        let alive = weak.upgrade(heap).is_some();
-        if !alive {
-          dead_node_iterators.push(*id);
-        }
-        alive
-      });
+    self.node_iterators.retain(|id, weak| {
+      let alive = weak.upgrade(heap).is_some();
+      if !alive {
+        dead_node_iterators.push(*id);
+      }
+      alive
+    });
     LiveMutationSweepResult {
       dead_live_ranges,
       dead_node_iterators,
@@ -223,7 +239,12 @@ impl Document {
     self.live_mutation.pre_insert(parent, index, count);
   }
 
-  pub(crate) fn live_mutation_pre_remove(&mut self, node: NodeId, old_parent: NodeId, old_index: usize) {
+  pub(crate) fn live_mutation_pre_remove(
+    &mut self,
+    node: NodeId,
+    old_parent: NodeId,
+    old_index: usize,
+  ) {
     self.live_mutation.pre_remove(node, old_parent, old_index);
   }
 
@@ -242,7 +263,11 @@ impl Document {
   pub(crate) fn register_live_range(&mut self, heap: &Heap, wrapper: GcObject) -> LiveRangeId {
     // Ensure we don't accumulate stale weak entries or traversal state across GC cycles.
     self.sweep_dead_live_traversals_if_needed(heap);
-    self.live_mutation.register_live_range(heap, wrapper)
+    let id = self.live_mutation.register_live_range(heap, wrapper);
+    // JS-created live ranges start with both boundary points at (document, 0), matching
+    // `Document.createRange()` in the DOM Standard.
+    self.create_range_for_id(id);
+    id
   }
 
   pub(crate) fn register_node_iterator_wrapper(
@@ -260,6 +285,11 @@ impl Document {
 
   pub(crate) fn sweep_dead_live_traversals_if_needed(&mut self, heap: &Heap) {
     let sweep = self.live_mutation.sweep_dead_if_needed(heap);
+    // Prune Rust-side Range traversal state for JS-collected ranges. This prevents stale range state
+    // from accumulating across GC cycles.
+    for id in sweep.dead_live_ranges {
+      self.remove_range(id);
+    }
     // Prune Rust-side NodeIterator traversal state for JS-collected iterators. This prevents stale
     // iterator state from accumulating across GC cycles.
     for id in sweep.dead_node_iterators {
@@ -305,21 +335,19 @@ impl LiveMutationTestRecorder {
 #[cfg(test)]
 impl LiveMutationHook for LiveMutationTestRecorder {
   fn pre_insert(&mut self, parent: NodeId, index: usize, count: usize) {
-    self
-      .events
-      .borrow_mut()
-      .push(LiveMutationEvent::PreInsert { parent, index, count });
+    self.events.borrow_mut().push(LiveMutationEvent::PreInsert {
+      parent,
+      index,
+      count,
+    });
   }
 
   fn pre_remove(&mut self, node: NodeId, old_parent: NodeId, old_index: usize) {
-    self
-      .events
-      .borrow_mut()
-      .push(LiveMutationEvent::PreRemove {
-        node,
-        old_parent,
-        old_index,
-      });
+    self.events.borrow_mut().push(LiveMutationEvent::PreRemove {
+      node,
+      old_parent,
+      old_index,
+    });
   }
 
   fn replace_data(&mut self, node: NodeId, offset: usize, removed_len: usize, inserted_len: usize) {

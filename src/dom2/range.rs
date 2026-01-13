@@ -1,4 +1,4 @@
-use super::{DomError, DomResult, Document, NodeId, NodeKind};
+use super::{Document, DomError, DomResult, LiveRangeId, NodeId, NodeKind};
 use std::cmp::Ordering;
 
 /// A DOM boundary point (node, offset) used by Range algorithms.
@@ -11,15 +11,11 @@ pub struct BoundaryPoint {
 }
 
 /// Handle to a live [`Range`] stored in a [`Document`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RangeId(usize);
-
-impl RangeId {
-  #[inline]
-  pub fn index(self) -> usize {
-    self.0
-  }
-}
+///
+/// `Range` platform objects are GC-managed in JS. `dom2` therefore keys its range state by a stable
+/// monotonic [`LiveRangeId`], which is tracked weakly by `LiveMutation` and swept when wrappers are
+/// collected.
+pub type RangeId = LiveRangeId;
 
 #[derive(Debug, Clone)]
 pub(super) struct Range {
@@ -43,31 +39,44 @@ fn invert_boundary_point_position(pos: BoundaryPointPosition) -> BoundaryPointPo
 }
 
 impl Document {
-  pub fn create_range(&mut self) -> RangeId {
+  fn insert_range_state(&mut self, id: RangeId) {
     let start_end = BoundaryPoint {
       node: self.root(),
       offset: 0,
     };
-    let id = RangeId(self.ranges.len());
-    self.ranges.push(Range {
-      start: start_end,
-      end: start_end,
-    });
+    let prev = self.ranges.insert(
+      id,
+      Range {
+        start: start_end,
+        end: start_end,
+      },
+    );
+    debug_assert!(
+      prev.is_none(),
+      "range id collision: attempted to insert duplicate Range state"
+    );
+  }
+
+  pub fn create_range(&mut self) -> RangeId {
+    let id = self.live_mutation.alloc_live_range_id();
+    self.insert_range_state(id);
     id
   }
 
+  pub(crate) fn create_range_for_id(&mut self, id: RangeId) {
+    self.insert_range_state(id);
+  }
+
+  pub(crate) fn remove_range(&mut self, id: RangeId) {
+    self.ranges.remove(&id);
+  }
+
   fn range(&self, range: RangeId) -> DomResult<&Range> {
-    self
-      .ranges
-      .get(range.index())
-      .ok_or(DomError::NotFoundError)
+    self.ranges.get(&range).ok_or(DomError::NotFoundError)
   }
 
   fn range_mut(&mut self, range: RangeId) -> DomResult<&mut Range> {
-    self
-      .ranges
-      .get_mut(range.index())
-      .ok_or(DomError::NotFoundError)
+    self.ranges.get_mut(&range).ok_or(DomError::NotFoundError)
   }
 
   pub fn range_start(&self, range: RangeId) -> DomResult<BoundaryPoint> {
@@ -158,7 +167,12 @@ impl Document {
 
   fn node_index(&self, node: NodeId) -> Option<usize> {
     let parent = self.range_parent(node)?;
-    self.nodes.get(parent.index())?.children.iter().position(|&c| c == node)
+    self
+      .nodes
+      .get(parent.index())?
+      .children
+      .iter()
+      .position(|&c| c == node)
   }
 
   fn is_ancestor_for_range(&self, ancestor: NodeId, node: NodeId) -> bool {
@@ -364,35 +378,63 @@ impl Document {
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove
   pub(super) fn live_range_pre_remove_steps(&mut self, node: NodeId, parent: NodeId, index: usize) {
-    let boundary_point = BoundaryPoint { node: parent, offset: index };
+    let boundary_point = BoundaryPoint {
+      node: parent,
+      offset: index,
+    };
+    if self.ranges.is_empty() {
+      return;
+    }
 
-    let ranges_len = self.ranges.len();
+    // The algorithm performs multiple passes over the set of live ranges. Since `FxHashMap` does
+    // not support stable indexed access, snapshot the keys up-front.
+    let range_ids: Vec<RangeId> = self.ranges.keys().copied().collect();
 
-    for idx_range in 0..ranges_len {
-      let start_node = self.ranges[idx_range].start.node;
+    for id in &range_ids {
+      let start_node = match self.ranges.get(id) {
+        Some(range) => range.start.node,
+        None => continue,
+      };
       if self.is_inclusive_descendant_for_range(start_node, node) {
-        self.ranges[idx_range].start = boundary_point;
+        if let Some(range) = self.ranges.get_mut(id) {
+          range.start = boundary_point;
+        }
       }
     }
 
-    for idx_range in 0..ranges_len {
-      let end_node = self.ranges[idx_range].end.node;
+    for id in &range_ids {
+      let end_node = match self.ranges.get(id) {
+        Some(range) => range.end.node,
+        None => continue,
+      };
       if self.is_inclusive_descendant_for_range(end_node, node) {
-        self.ranges[idx_range].end = boundary_point;
+        if let Some(range) = self.ranges.get_mut(id) {
+          range.end = boundary_point;
+        }
       }
     }
 
-    for idx_range in 0..ranges_len {
-      let start = self.ranges[idx_range].start;
+    for id in &range_ids {
+      let start = match self.ranges.get(id) {
+        Some(range) => range.start,
+        None => continue,
+      };
       if start.node == parent && start.offset > index {
-        self.ranges[idx_range].start.offset = start.offset.saturating_sub(1);
+        if let Some(range) = self.ranges.get_mut(id) {
+          range.start.offset = start.offset.saturating_sub(1);
+        }
       }
     }
 
-    for idx_range in 0..ranges_len {
-      let end = self.ranges[idx_range].end;
+    for id in &range_ids {
+      let end = match self.ranges.get(id) {
+        Some(range) => range.end,
+        None => continue,
+      };
       if end.node == parent && end.offset > index {
-        self.ranges[idx_range].end.offset = end.offset.saturating_sub(1);
+        if let Some(range) = self.ranges.get_mut(id) {
+          range.end.offset = end.offset.saturating_sub(1);
+        }
       }
     }
   }
