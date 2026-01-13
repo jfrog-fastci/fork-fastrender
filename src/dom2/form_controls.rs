@@ -48,7 +48,16 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+#[inline]
+fn is_input_type_file(type_attr: Option<&str>) -> bool {
+  type_attr.is_some_and(|ty| trim_ascii_whitespace(ty).eq_ignore_ascii_case("file"))
+}
+
 fn input_default_value(type_attr: Option<&str>, value_attr: Option<&str>) -> String {
+  // HTML: file inputs cannot be prefilled via markup.
+  if is_input_type_file(type_attr) {
+    return String::new();
+  }
   if let Some(value) = value_attr {
     return value.to_string();
   }
@@ -385,7 +394,20 @@ impl Document {
     // attribute update the current value. Once dirty, the attribute only affects the default value
     // and the current value is preserved until form reset.
     if let Some((dirty_value, dirty_checkedness)) = input_dirty {
-      if (name.eq_ignore_ascii_case("value") || name.eq_ignore_ascii_case("type")) && !dirty_value {
+      let is_file = is_input_type_file(self.get_attribute(node, "type")?);
+
+      // HTML: when an input becomes type=file, its `.value` must be the empty string unless set via
+      // a user file selection mechanism (out of scope here). Clear the current value regardless of
+      // the dirty value flag so scripts cannot smuggle a non-empty value by changing `type`.
+      if name.eq_ignore_ascii_case("type") && is_file {
+        if let Some(state) = self
+          .input_states
+          .get_mut(node.index())
+          .and_then(|s| s.as_mut())
+        {
+          state.value.clear();
+        }
+      } else if (name.eq_ignore_ascii_case("value") || name.eq_ignore_ascii_case("type")) && !dirty_value && !is_file {
         let type_attr = self.get_attribute(node, "type")?;
         let value_attr = self.get_attribute(node, "value")?;
         let new_value = input_default_value(type_attr, value_attr);
@@ -477,6 +499,24 @@ impl Document {
 
   pub fn set_input_value(&mut self, input: NodeId, value: &str) -> Result<(), DomError> {
     let _ = self.node_checked(input)?;
+    // Validate node type (must be an HTML <input> with internal state).
+    let _ = self.input_state(input)?;
+
+    // HTML: `<input type=file>.value` is only script-settable to the empty string (to clear an
+    // existing selection). Setting any other value is forbidden for security reasons.
+    if is_input_type_file(self.get_attribute(input, "type")?) {
+      if !value.is_empty() {
+        // No-op: do not mutate state and do not bump mutation generation.
+        return Ok(());
+      }
+      let state = self.input_state_mut(input)?;
+      state.dirty_value = true;
+      state.value.clear();
+      self.record_form_state_mutation(input);
+      self.bump_mutation_generation_classified();
+      return Ok(());
+    }
+
     let state = self.input_state_mut(input)?;
     state.dirty_value = true;
     state.value.clear();

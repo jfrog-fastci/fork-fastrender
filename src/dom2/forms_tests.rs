@@ -600,3 +600,63 @@ fn renderer_subtree_snapshot_reflects_form_control_internal_state() {
     "subtree snapshot should reflect the current input value"
   );
 }
+
+#[test]
+fn file_input_value_is_never_script_settable() {
+  let html = "<!doctype html><html><body><input id=f type=file value=foo></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let input = doc.get_element_by_id("f").expect("file input element");
+
+  // Authored file input state is stripped at parse time.
+  assert_eq!(doc.get_attribute(input, "value").unwrap(), None);
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // Mutating the `value` content attribute must not affect the live `.value` state for file inputs.
+  doc.set_attribute(input, "value", "foo").unwrap();
+  assert_eq!(doc.get_attribute(input, "value").unwrap(), Some("foo"));
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // Non-empty IDL assignments are ignored and must not bump mutation generation.
+  let gen_before = doc.mutation_generation();
+  doc.set_input_value(input, "bar").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+  assert_eq!(doc.mutation_generation(), gen_before);
+
+  // Empty IDL assignments are allowed (to clear an existing selection).
+  doc.set_input_value(input, "").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // Reset keeps file inputs empty regardless of any `value` content attribute.
+  doc.reset_input(input).unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // After reset, dirty flags must be cleared so leaving `type=file` resyncs from the `value`
+  // content attribute when not dirty.
+  doc.set_attribute(input, "value", "baz").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+  doc.set_attribute(input, "type", "text").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "baz");
+
+  // Changing type from text -> file clears the live value state when not dirty.
+  doc.set_attribute(input, "type", "file").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+}
+
+#[test]
+fn file_input_form_reset_clears_value_and_dirty_flags() {
+  let html = "<!doctype html><html><body><form id=f><input id=i type=file></form></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let form = doc.get_element_by_id("f").expect("form element");
+  let input = doc.get_element_by_id("i").expect("file input element");
+
+  doc.set_input_value(input, "").unwrap();
+  doc.set_attribute(input, "value", "foo").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  doc.form_reset(form).unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // Dirty flags must be cleared so type changes away from `file` can sync from the value attribute.
+  doc.set_attribute(input, "type", "text").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "foo");
+}
