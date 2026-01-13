@@ -395,7 +395,120 @@ fn parse_sandbox_flags(raw: &str) -> SandboxFlags {
   flags
 }
 
-fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
+#[derive(Debug, Clone, Copy, Default)]
+struct IframeInteractionStyle {
+  pointer_events_none: bool,
+  visibility_hidden: bool,
+}
+
+fn is_ident_char(b: u8) -> bool {
+  b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
+fn selector_mentions_iframe(selector: &str) -> bool {
+  let lower = selector.to_ascii_lowercase();
+  let bytes = lower.as_bytes();
+  let needle = b"iframe";
+  if needle.len() > bytes.len() {
+    return false;
+  }
+  for i in 0..=bytes.len() - needle.len() {
+    if !bytes[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+      continue;
+    }
+    let before_ok = i == 0 || !is_ident_char(bytes[i - 1]);
+    let after_i = i + needle.len();
+    let after_ok = after_i == bytes.len() || !is_ident_char(bytes[after_i]);
+    if before_ok && after_ok {
+      return true;
+    }
+  }
+  false
+}
+
+fn apply_style_declarations(style: &mut IframeInteractionStyle, decls: &str) {
+  for decl in decls.split(';') {
+    let Some((raw_name, raw_value)) = decl.split_once(':') else {
+      continue;
+    };
+    let name = raw_name.trim().to_ascii_lowercase();
+    let value = raw_value.trim();
+    let token = value.split_ascii_whitespace().next().unwrap_or("");
+    if name == "pointer-events" {
+      style.pointer_events_none = token.eq_ignore_ascii_case("none");
+    } else if name == "visibility" {
+      style.visibility_hidden = token.eq_ignore_ascii_case("hidden");
+    }
+  }
+}
+
+fn parse_iframe_style_rules_from_stylesheet(style: &mut IframeInteractionStyle, css: &str) {
+  // Extremely small CSS "parser" sufficient for tests:
+  // - split into `{ ... }` rule blocks
+  // - treat any selector containing the word `iframe` as applying to iframe elements
+  let mut i = 0usize;
+  while let Some(open_rel) = css[i..].find('{') {
+    let open = i + open_rel;
+    let selector = css[i..open].trim();
+    let Some(close_rel) = css[open + 1..].find('}') else {
+      break;
+    };
+    let close = open + 1 + close_rel;
+    let block = &css[open + 1..close];
+    if selector_mentions_iframe(selector) {
+      apply_style_declarations(style, block);
+    }
+    i = close + 1;
+  }
+}
+
+fn find_style_blocks<'a>(html: &'a str) -> Vec<&'a str> {
+  let bytes = html.as_bytes();
+  let open_pat = b"<style";
+  let close_pat = b"</style>";
+  let mut out = Vec::new();
+  let mut i = 0usize;
+  while i + open_pat.len() <= bytes.len() {
+    if bytes[i] == b'<' && bytes[i..i + open_pat.len()].eq_ignore_ascii_case(open_pat) {
+      let Some(rel_end) = bytes[i..].iter().position(|&b| b == b'>') else {
+        break;
+      };
+      let content_start = i + rel_end + 1;
+      let mut j = content_start;
+      let mut found = None;
+      while j + close_pat.len() <= bytes.len() {
+        if bytes[j] == b'<' && bytes[j..j + close_pat.len()].eq_ignore_ascii_case(close_pat) {
+          found = Some(j);
+          break;
+        }
+        j += 1;
+      }
+      let Some(close_start) = found else {
+        break;
+      };
+      out.push(&html[content_start..close_start]);
+      i = close_start + close_pat.len();
+      continue;
+    }
+    i += 1;
+  }
+  out
+}
+
+fn iframe_interaction_style_defaults_from_html(html: &str) -> IframeInteractionStyle {
+  let mut style = IframeInteractionStyle::default();
+  for css in find_style_blocks(html) {
+    parse_iframe_style_rules_from_stylesheet(&mut style, css);
+  }
+  style
+}
+
+/// Best-effort iframe discovery from an HTML response body.
+///
+/// This is a development-only helper used by the `fastrender-renderer` placeholder implementation.
+/// It is intentionally **not** a full HTML/CSS engine.
+pub fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
+  let defaults = iframe_interaction_style_defaults_from_html(html);
   let iframe_tags = find_start_tags(html, "iframe");
   iframe_tags
     .into_iter()
@@ -415,6 +528,13 @@ fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
         .map(|v| parse_sandbox_flags(v))
         .unwrap_or(SandboxFlags::NONE);
       let opaque_origin = sandbox_present && !sandbox_flags.contains(SandboxFlags::ALLOW_SAME_ORIGIN);
+      let inert = attrs.contains_key("inert");
+
+      let mut style = defaults;
+      if let Some(inline_style) = attrs.get("style") {
+        apply_style_declarations(&mut style, inline_style);
+      }
+      let hit_testable = !style.pointer_events_none && !style.visibility_hidden && !inert;
 
       SubframeInfo {
         child: FrameId(frame_id.0.saturating_mul(1000).saturating_add(idx as u64 + 1)),
@@ -422,6 +542,7 @@ fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
         transform: AffineTransform::IDENTITY,
         clip_stack: Vec::<ClipItem>::new(),
         z_index: idx as u64,
+        hit_testable,
         referrer_policy,
         sandbox_flags,
         opaque_origin,

@@ -512,6 +512,12 @@ pub struct SubframeInfo {
   pub clip_stack: Vec<ClipItem>,
   /// Stable key that defines z-order between subframes.
   pub z_index: u64,
+  /// Whether the embedding `<iframe>` participates in hit testing / pointer events.
+  ///
+  /// When `false`, the browser must treat the embedded subframe as non-interactive and allow input
+  /// to "pass through" to underlying content (e.g. `pointer-events: none`, `visibility: hidden`,
+  /// or `inert` on the `<iframe>` element).
+  pub hit_testable: bool,
   /// Optional `<iframe referrerpolicy>` attribute override.
   pub referrer_policy: Option<ReferrerPolicy>,
   /// Parsed sandbox allowlist flags for the `<iframe sandbox>` attribute.
@@ -810,6 +816,149 @@ pub fn composite_subframes<'a>(
   Ok(parent)
 }
 
+// -----------------------------------------------------------------------------
+// Frame hit testing (browser-side input routing)
+// -----------------------------------------------------------------------------
+
+const MAX_FRAME_HIT_TEST_DEPTH: usize = 64;
+
+#[derive(Debug, Default)]
+struct FrameHitNode {
+  size: Option<(u32, u32)>,
+  /// Child frame embeddings sorted by stable paint order `(z_index, child_id)`.
+  subframes: Vec<SubframeInfo>,
+}
+
+/// Browser-side frame hit tester for routing pointer input to the correct frame.
+///
+/// Hit testing walks the frame tree top-down:
+/// - start at the root frame in root coordinate space,
+/// - find the topmost hit-testable subframe whose embed rect contains the point,
+/// - map the point into the child frame's local space via the inverse transform,
+/// - and repeat until no deeper child matches.
+///
+/// The browser must respect `SubframeInfo::hit_testable` so that iframes with
+/// `pointer-events: none`, `visibility: hidden`, or `inert` do not capture input.
+#[derive(Debug)]
+pub struct FrameHitTester {
+  root: FrameId,
+  nodes: HashMap<FrameId, FrameHitNode>,
+}
+
+impl FrameHitTester {
+  pub fn new(root: FrameId) -> Self {
+    let mut nodes = HashMap::new();
+    nodes.insert(root, FrameHitNode::default());
+    Self { root, nodes }
+  }
+
+  pub fn root(&self) -> FrameId {
+    self.root
+  }
+
+  pub fn set_frame_size(&mut self, frame_id: FrameId, width: u32, height: u32) {
+    self.nodes.entry(frame_id).or_default().size = Some((width, height));
+  }
+
+  /// Replace the subframe list for `parent_frame_id`.
+  pub fn set_subframes(&mut self, parent_frame_id: FrameId, mut subframes: Vec<SubframeInfo>) {
+    // Mirror compositor ordering so hit testing respects paint order (topmost = last composited).
+    subframes.sort_by_key(|info| (info.z_index, info.child.0));
+    let child_ids: Vec<FrameId> = subframes.iter().map(|info| info.child).collect();
+
+    self
+      .nodes
+      .entry(parent_frame_id)
+      .or_default()
+      .subframes = subframes;
+
+    // Ensure child nodes exist so callers can set sizes later.
+    for child in child_ids {
+      self.nodes.entry(child).or_default();
+    }
+  }
+
+  /// Hit test a point in the root frame's coordinate space.
+  pub fn hit_test(&self, x: f32, y: f32) -> FrameId {
+    self.hit_test_in_frame(self.root, x, y, MAX_FRAME_HIT_TEST_DEPTH)
+  }
+
+  fn hit_test_in_frame(&self, frame_id: FrameId, x: f32, y: f32, depth_left: usize) -> FrameId {
+    if depth_left == 0 || !x.is_finite() || !y.is_finite() {
+      return frame_id;
+    }
+    let Some(node) = self.nodes.get(&frame_id) else {
+      return frame_id;
+    };
+
+    for info in node.subframes.iter().rev() {
+      if !info.hit_testable {
+        continue;
+      }
+      let Some(child_node) = self.nodes.get(&info.child) else {
+        continue;
+      };
+      let Some((child_w, child_h)) = child_node.size else {
+        continue;
+      };
+
+      let Some((child_x, child_y)) = hit_test_subframe_point(info, child_w, child_h, x, y) else {
+        continue;
+      };
+
+      return self.hit_test_in_frame(info.child, child_x, child_y, depth_left - 1);
+    }
+
+    frame_id
+  }
+}
+
+fn hit_test_subframe_point(
+  info: &SubframeInfo,
+  child_width: u32,
+  child_height: u32,
+  x: f32,
+  y: f32,
+) -> Option<(f32, f32)> {
+  if !x.is_finite() || !y.is_finite() {
+    return None;
+  }
+
+  let mut t = info.transform;
+  if !t.is_axis_aligned() {
+    return None;
+  }
+  // Mirror compositor behavior: treat tiny shear terms as zero.
+  t.b = 0.0;
+  t.c = 0.0;
+
+  if !t.a.is_finite() || !t.d.is_finite() || !t.e.is_finite() || !t.f.is_finite() {
+    return None;
+  }
+  if t.a == 0.0 || t.d == 0.0 {
+    return None;
+  }
+
+  if !point_in_clip_stack(&info.clip_stack, x, y) {
+    return None;
+  }
+
+  // Inverse axis-aligned transform.
+  let sx = (x - t.e) / t.a;
+  let sy = (y - t.f) / t.d;
+  if !sx.is_finite() || !sy.is_finite() {
+    return None;
+  }
+
+  let w = child_width as f32;
+  let h = child_height as f32;
+  if sx >= 0.0 && sx < w && sy >= 0.0 && sy < h {
+    Some((sx, sy))
+  } else {
+    None
+  }
+}
+
 #[cfg(test)]
 mod compositor_tests {
   use super::*;
@@ -868,6 +1017,7 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -910,6 +1060,7 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -950,6 +1101,7 @@ mod compositor_tests {
         },
       }],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -992,6 +1144,7 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 1,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1011,6 +1164,7 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 2,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1046,6 +1200,7 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1074,6 +1229,7 @@ mod compositor_tests {
         radius: BorderRadius::ZERO,
       }],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1101,6 +1257,7 @@ mod navigation_tests {
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: Some(ReferrerPolicy::NoReferrer),
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1131,6 +1288,7 @@ mod navigation_tests {
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1225,6 +1383,7 @@ mod navigation_tests {
       transform: AffineTransform::IDENTITY,
       clip_stack: vec![],
       z_index: 0,
+      hit_testable: true,
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
@@ -1252,6 +1411,80 @@ mod navigation_tests {
       &sandboxed,
     );
     assert!(matches!(opaque.site_key, SiteKey::Opaque(50)));
+  }
+}
+
+#[cfg(test)]
+mod frame_hit_testing_tests {
+  use super::*;
+
+  #[test]
+  fn non_hit_testable_subframe_is_ignored() {
+    let root = FrameId(1);
+    let child = FrameId(2);
+
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 100, 100);
+    tester.set_frame_size(child, 50, 50);
+    tester.set_subframes(
+      root,
+      vec![SubframeInfo {
+        child,
+        transform: AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: 10.0,
+          f: 10.0,
+        },
+        clip_stack: vec![],
+        z_index: 0,
+        hit_testable: false,
+        referrer_policy: None,
+        sandbox_flags: SandboxFlags::NONE,
+        opaque_origin: false,
+      }],
+    );
+
+    assert_eq!(
+      tester.hit_test(20.0, 20.0),
+      root,
+      "expected hit testing to fall back to the parent frame when the iframe is not hit-testable"
+    );
+  }
+
+  #[test]
+  fn hit_test_returns_topmost_hit_testable_subframe() {
+    let root = FrameId(1);
+    let child = FrameId(2);
+
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 100, 100);
+    tester.set_frame_size(child, 50, 50);
+    tester.set_subframes(
+      root,
+      vec![SubframeInfo {
+        child,
+        transform: AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: 10.0,
+          f: 10.0,
+        },
+        clip_stack: vec![],
+        z_index: 0,
+        hit_testable: true,
+        referrer_policy: None,
+        sandbox_flags: SandboxFlags::NONE,
+        opaque_origin: false,
+      }],
+    );
+
+    assert_eq!(tester.hit_test(20.0, 20.0), child);
+    assert_eq!(tester.hit_test(5.0, 5.0), root, "outside subframe bounds");
   }
 }
 
