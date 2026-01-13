@@ -21,6 +21,10 @@ impl ResourceFetcher for NoNetworkFetcher {
 fn sandboxed_render_smoke_seatbelt_profile() {
   const CHILD_ENV: &str = "FASTR_TEST_SEATBELT_RENDER_SMOKE_CHILD";
   const SENTINEL: &str = "FASTR_SEATBELT_RENDER_SMOKE_OK";
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::sandboxed_render_smoke_seatbelt_profile"
+  );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     // Apply the strictest built-in profile (`pure-computation`) so this smoke test fails if the
@@ -74,7 +78,8 @@ fn sandboxed_render_smoke_seatbelt_profile() {
     .env(CHILD_ENV, "1")
     // Keep test harness output deterministic under strict sandboxing.
     .arg("--test-threads=1")
-    .arg("sandboxed_render_smoke_seatbelt_profile")
+    .arg("--exact")
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .output()
     .expect("spawn sandboxed child test process");
