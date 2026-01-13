@@ -612,10 +612,10 @@ bash scripts/run_limited.sh --as 64G -- \
 
 Current limitations (MVP / in-progress):
 
-- **Action support is partial:** basic **focus** and **activate/press** are supported, but many
-  richer AccessKit actions are not fully plumbed through to DOM interaction yet (for example set
-  value/text, scroll-to, etc.). Expect read-only traversal to work better than interacting with
-  complex controls.
+- **Action support is evolving:** basic **focus** and **activate/press** work, and the worker also
+  supports additional page actions such as **scroll into view**, **set value** (basic form
+  controls), and **set text selection** (text inputs). Other AccessKit actions may still be
+  unsupported or best-effort, especially for complex controls.
 - **Bounds/geometry may be missing or approximate** for some page nodes, which can affect
   hit-testing and “click this element” style commands.
 - **Selection/value reporting may be partial** for some controls (e.g. caret/selection state or

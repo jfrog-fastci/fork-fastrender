@@ -81,7 +81,8 @@ High-level flow:
   the UI as a `PageA11ySnapshot`.
 - The UI merges the snapshot into egui’s `PlatformOutput.accesskit_update` so assistive tech sees a
   web content subtree under the window’s accessibility tree.
-- AccessKit action requests (e.g. focus/activate) are routed back to the worker as DOM interactions.
+- AccessKit action requests are routed back to the worker as DOM interactions (e.g. focus/activate,
+  scroll-into-view, set value for basic controls, set text selection for text inputs).
 
 ### AccessKit integration (browser chrome)
 
