@@ -2334,7 +2334,8 @@ impl BrowserAppState {
         hovered_url,
         cursor,
       } => {
-        let safe_hovered = hovered_url.and_then(|url| validate_untrusted_navigation_url(&url).ok());
+        let safe_hovered =
+          hovered_url.and_then(|url| crate::ui::url::sanitize_worker_url_for_ui(&url));
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.hovered_url = safe_hovered;
           tab.cursor = cursor;
@@ -2833,6 +2834,24 @@ mod browser_app_tests {
       .expect("expected latest_frame_meta to be updated for inactive tab");
     assert_eq!(meta.viewport_css, viewport_css);
     assert_eq!(meta.pixmap_px, (1, 1));
+  }
+
+  #[test]
+  fn hover_changed_sanitizes_hovered_url() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.apply_worker_msg(WorkerToUi::HoverChanged {
+      tab_id,
+      hovered_url: Some("javascript:alert(1)".to_string()),
+      cursor: CursorKind::Pointer,
+    });
+
+    let tab = app.tab(tab_id).expect("tab should exist");
+    assert_eq!(
+      tab.hovered_url, None,
+      "expected disallowed hovered_url to be dropped"
+    );
   }
 
   #[test]

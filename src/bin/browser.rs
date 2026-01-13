@@ -7122,20 +7122,20 @@ impl App {
       if matches_pending {
         let pending = self.pending_context_menu_request.take();
 
-        // Only open the egui menu when the default `contextmenu` was not suppressed and the tab
-        // is still active.
-        if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
-          if let Some(pending) = pending {
-            let link_url = link_url
-              .as_deref()
-              .and_then(|url| fastrender::ui::untrusted::validate_untrusted_navigation_url(url).ok());
-            let image_url = image_url
-              .as_deref()
-              .and_then(|url| fastrender::ui::untrusted::validate_untrusted_navigation_url(url).ok());
-            self.open_context_menu = Some(OpenContextMenu {
-              tab_id: *tab_id,
-              pos_css: *pos_css,
-              anchor_points: pending.anchor_points,
+          // Only open the egui menu when the default `contextmenu` was not suppressed and the tab
+          // is still active.
+          if !*default_prevented && self.browser_state.active_tab_id() == Some(*tab_id) {
+            if let Some(pending) = pending {
+              let link_url = link_url
+                .as_deref()
+                .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
+              let image_url = image_url
+                .as_deref()
+                .and_then(fastrender::ui::url::sanitize_worker_url_for_ui);
+              self.open_context_menu = Some(OpenContextMenu {
+                tab_id: *tab_id,
+                pos_css: *pos_css,
+                anchor_points: pending.anchor_points,
               link_url,
               image_url,
               can_copy: *can_copy,
@@ -9103,61 +9103,112 @@ impl App {
         self.send_worker_msg(UiToWorker::SelectAll { tab_id });
       }
       PageContextMenuAction::CopyImageAddress(url) => {
-        ctx.output_mut(|o| o.copied_text = url);
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          ctx.output_mut(|o| o.copied_text = url);
+        }
       }
       PageContextMenuAction::DownloadImage(url) => {
-        self.send_worker_msg(UiToWorker::StartDownload {
-          tab_id,
-          url,
-          filename_hint: None,
-        });
-        // Downloads are shown in the right-side panel, so close other panels that share that space.
-        self.history_panel_open = false;
-        self.bookmarks_panel_open = false;
-        if !self.downloads_panel_open {
-          self.downloads_panel_request_focus = true;
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          self.send_worker_msg(UiToWorker::StartDownload {
+            tab_id,
+            url,
+            filename_hint: None,
+          });
+          // Downloads are shown in the right-side panel, so close other panels that share that space.
+          self.history_panel_open = false;
+          self.bookmarks_panel_open = false;
+          if !self.downloads_panel_open {
+            self.downloads_panel_request_focus = true;
+          }
+          self.downloads_panel_open = true;
         }
-        self.downloads_panel_open = true;
       }
       PageContextMenuAction::OpenImageInNewTab(url) => {
-        session_dirty |= self.open_url_in_new_tab(url);
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          session_dirty |= self.open_url_in_new_tab(url);
+        }
       }
       PageContextMenuAction::CopyLinkAddress(url) => {
-        ctx.output_mut(|o| o.copied_text = url);
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          ctx.output_mut(|o| o.copied_text = url);
+        }
       }
       PageContextMenuAction::Reload => {
         self.handle_chrome_actions(vec![ChromeAction::Reload]);
       }
       PageContextMenuAction::DownloadLink(url) => {
-        self.send_worker_msg(UiToWorker::StartDownload {
-          tab_id,
-          url,
-          filename_hint: None,
-        });
-        // Downloads are shown in the right-side panel, so close other panels that share that space.
-        self.history_panel_open = false;
-        self.bookmarks_panel_open = false;
-        self.history_panel_request_focus_search = false;
-        self.bookmarks_manager.clear_transient();
-        if !self.downloads_panel_open {
-          self.downloads_panel_request_focus = true;
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          self.send_worker_msg(UiToWorker::StartDownload {
+            tab_id,
+            url,
+            filename_hint: None,
+          });
+          // Downloads are shown in the right-side panel, so close other panels that share that space.
+          self.history_panel_open = false;
+          self.bookmarks_panel_open = false;
+          self.history_panel_request_focus_search = false;
+          self.bookmarks_manager.clear_transient();
+          if !self.downloads_panel_open {
+            self.downloads_panel_request_focus = true;
+          }
+          self.downloads_panel_open = true;
+          self.page_has_focus = false;
         }
-        self.downloads_panel_open = true;
-        self.page_has_focus = false;
       }
       PageContextMenuAction::OpenLinkInNewTab(url) => {
-        session_dirty |= self.open_url_in_new_tab(url);
-      }
-      action @ (PageContextMenuAction::BookmarkLink(_)
-      | PageContextMenuAction::BookmarkPage(_)
-      | PageContextMenuAction::ToggleHistoryPanel
-      | PageContextMenuAction::ToggleBookmarksPanel) => {
-        if matches!(
-          action,
-          PageContextMenuAction::ToggleHistoryPanel | PageContextMenuAction::ToggleBookmarksPanel
-        ) {
-          self.downloads_panel_open = false;
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          session_dirty |= self.open_url_in_new_tab(url);
         }
+      }
+      PageContextMenuAction::BookmarkLink(url) => {
+        if let Some(url) = fastrender::ui::url::sanitize_worker_url_for_ui(&url) {
+          let action = PageContextMenuAction::BookmarkLink(url);
+          let result = apply_page_context_menu_action(
+            &mut self.bookmarks,
+            &mut self.history_panel_open,
+            &mut self.bookmarks_panel_open,
+            &action,
+          );
+          if result.bookmarks_changed {
+            self.autosave_bookmarks();
+            self.sync_about_newtab_bookmarks_snapshot();
+          }
+        }
+      }
+      PageContextMenuAction::BookmarkPage(url) => {
+        // `Bookmark Page` uses the current page URL (also ultimately renderer-supplied); apply the
+        // same scheme allowlist and length limits as other renderer-driven UI URL actions.
+        let action = PageContextMenuAction::BookmarkPage(
+          fastrender::ui::url::sanitize_worker_url_for_ui(&url).unwrap_or_default(),
+        );
+        let result = apply_page_context_menu_action(
+          &mut self.bookmarks,
+          &mut self.history_panel_open,
+          &mut self.bookmarks_panel_open,
+          &action,
+        );
+        if result.bookmarks_changed {
+          self.autosave_bookmarks();
+          self.sync_about_newtab_bookmarks_snapshot();
+        }
+      }
+      PageContextMenuAction::ToggleHistoryPanel => {
+        self.downloads_panel_open = false;
+        let action = PageContextMenuAction::ToggleHistoryPanel;
+        let result = apply_page_context_menu_action(
+          &mut self.bookmarks,
+          &mut self.history_panel_open,
+          &mut self.bookmarks_panel_open,
+          &action,
+        );
+        if result.bookmarks_changed {
+          self.autosave_bookmarks();
+          self.sync_about_newtab_bookmarks_snapshot();
+        }
+      }
+      PageContextMenuAction::ToggleBookmarksPanel => {
+        self.downloads_panel_open = false;
+        let action = PageContextMenuAction::ToggleBookmarksPanel;
         let result = apply_page_context_menu_action(
           &mut self.bookmarks,
           &mut self.history_panel_open,

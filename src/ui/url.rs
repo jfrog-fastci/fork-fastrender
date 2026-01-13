@@ -71,6 +71,35 @@ pub fn validate_user_navigation_url_scheme(url: &str) -> Result<(), String> {
   }
 }
 
+/// Sanitize a URL string received from the render worker before storing it in browser UI state or
+/// acting on it.
+///
+/// This is intended for *untrusted* renderer-supplied URLs that are displayed to the user (status
+/// bar hover URL) or used by UI actions (page context menu open/download/copy/bookmark).
+///
+/// Policy:
+/// - Enforces a hard maximum byte length ([`crate::ui::protocol_limits::MAX_URL_BYTES`]).
+/// - Trims ASCII whitespace.
+/// - Parses with `url::Url` (rejects invalid URLs).
+/// - Allowlists schemes that the browser UI can safely display/act on: http, https, file, about.
+///
+/// Returns a normalized URL string (`Url::to_string()`) on success, otherwise `None`.
+pub fn sanitize_worker_url_for_ui(raw: &str) -> Option<String> {
+  if raw.as_bytes().len() > crate::ui::protocol_limits::MAX_URL_BYTES {
+    return None;
+  }
+  let raw = trim_ascii_whitespace(raw);
+  if raw.is_empty() {
+    return None;
+  }
+
+  let parsed = Url::parse(raw).ok()?;
+  match parsed.scheme().to_ascii_lowercase().as_str() {
+    "http" | "https" | "file" | "about" => Some(parsed.to_string()),
+    _ => None,
+  }
+}
+
 /// Normalize a user-provided address bar input into a canonical URL string.
 ///
 /// This function intentionally performs *minimal* normalization; see
@@ -495,7 +524,8 @@ fn has_explicit_scheme(input: &str) -> bool {
 mod tests {
   use super::{
     normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
-    resolve_omnibox_search_query, validate_user_navigation_url_scheme, OmniboxInputResolution,
+    resolve_omnibox_search_query, sanitize_worker_url_for_ui, validate_user_navigation_url_scheme,
+    OmniboxInputResolution,
   };
 
   #[test]
@@ -549,6 +579,57 @@ mod tests {
   fn user_navigation_scheme_validation_allows_about_and_https() {
     assert!(validate_user_navigation_url_scheme("about:newtab").is_ok());
     assert!(validate_user_navigation_url_scheme("https://example.com/").is_ok());
+  }
+
+  #[test]
+  fn sanitize_worker_url_for_ui_allows_http_https_file_about() {
+    assert_eq!(
+      sanitize_worker_url_for_ui("https://example.com/path").as_deref(),
+      Some("https://example.com/path")
+    );
+    assert_eq!(
+      sanitize_worker_url_for_ui("http://example.com").as_deref(),
+      Some("http://example.com/")
+    );
+    assert_eq!(
+      sanitize_worker_url_for_ui("about:newtab").as_deref(),
+      Some("about:newtab")
+    );
+    assert_eq!(
+      sanitize_worker_url_for_ui("file:///tmp/a.html").as_deref(),
+      Some("file:///tmp/a.html")
+    );
+  }
+
+  #[test]
+  fn sanitize_worker_url_for_ui_rejects_disallowed_schemes_and_invalid_urls() {
+    assert_eq!(
+      sanitize_worker_url_for_ui("javascript:alert(1)"),
+      None,
+      "javascript: must be rejected"
+    );
+    assert_eq!(
+      sanitize_worker_url_for_ui("data:text/plain,hi"),
+      None,
+      "data: must be rejected"
+    );
+    assert_eq!(
+      sanitize_worker_url_for_ui("http://[::1"),
+      None,
+      "invalid URL must be rejected"
+    );
+  }
+
+  #[test]
+  fn sanitize_worker_url_for_ui_enforces_max_length() {
+    let max = crate::ui::protocol_limits::MAX_URL_BYTES;
+    let mut s = String::new();
+    // Ensure we exceed the byte limit even on non-ASCII hosts by using ASCII.
+    s.push_str("https://example.com/");
+    while s.as_bytes().len() <= max {
+      s.push('a');
+    }
+    assert!(sanitize_worker_url_for_ui(&s).is_none());
   }
 
   #[test]
