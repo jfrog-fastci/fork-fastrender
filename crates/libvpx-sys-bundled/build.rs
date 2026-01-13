@@ -292,6 +292,9 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         if !cflags.is_empty() {
             configure_cmd.env("CFLAGS", &cflags);
         }
+        if !ld.is_empty() {
+            configure_cmd.env("LD", &ld);
+        }
         if !ar.is_empty() {
             configure_cmd.env("AR", &ar);
         }
