@@ -169,8 +169,8 @@ fn main() -> Result<()> {
 
 For interactive/live rendering (a tab that never “finishes”), the core integration is a **tick loop**:
 
-- run some amount of event-loop work (tasks + microtasks; plus at most one `requestAnimationFrame`
-  turn when callbacks are queued),
+- run some amount of event-loop work (tasks + microtasks + due timers + `requestIdleCallback`; plus
+  at most one `requestAnimationFrame` turn when callbacks are queued),
 - if the document became dirty, render and display the new frame,
 - repeat, driven by your outer UI loop (vsync, timers, network wakeups, input events).
 
@@ -203,7 +203,8 @@ loop {
     // - when timers/network wake the event loop,
     // - on vsync / a frame budget.
     //
-    // `next_wake_time()` is a convenience helper for sleeping until the next due timer or rAF turn:
+    // `next_wake_time()` is a convenience helper for sleeping until the next due timer/rAF turn
+    // (it returns `Some(now)` when runnable work like tasks/microtasks/idle callbacks are pending):
     // if let Some(wake_at) = tab.next_wake_time() {
     //     sleep_for(wake_at.saturating_sub(tab.now()));
     // }
