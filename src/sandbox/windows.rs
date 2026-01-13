@@ -451,7 +451,12 @@ pub fn spawn_sandboxed(
           Ok(child) => Ok(child),
           Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles, parent_in_job)
           {
-            Ok(child) => Ok(child),
+            Ok(child) => {
+              eprintln!(
+                "warning: Windows renderer sandbox failed (appcontainer={appcontainer_err}, restricted_token={restricted_err}); spawning UNSANDBOXED process (Job Object still applied)"
+              );
+              Ok(child)
+            }
             Err(unsandboxed_err) => Err(io::Error::new(
               unsandboxed_err.kind(),
               format!(
@@ -466,7 +471,12 @@ pub fn spawn_sandboxed(
     {
       Ok(child) => Ok(child),
       Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles, parent_in_job) {
-        Ok(child) => Ok(child),
+        Ok(child) => {
+          eprintln!(
+            "warning: Windows restricted-token sandbox failed ({restricted_err}); spawning UNSANDBOXED process (Job Object still applied)"
+          );
+          Ok(child)
+        }
         Err(unsandboxed_err) => Err(io::Error::new(
           unsandboxed_err.kind(),
           format!(

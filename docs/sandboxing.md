@@ -71,6 +71,9 @@ Limitations of the fallback:
 - **Network may still be available** depending on system policy and what the restricted token
   removes; do not treat this mode as equivalent to AppContainer.
 
+If both AppContainer and restricted-token sandboxing fail, `spawn_sandboxed(...)` falls back to an
+unsandboxed spawn (still inside a Job Object) and prints a warning to stderr.
+
 ### Windows version constraints
 
 - **AppContainer requires Windows 8+**.
