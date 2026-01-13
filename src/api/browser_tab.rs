@@ -614,19 +614,67 @@ impl BrowserTabHost {
     result
   }
 
+  /// Poll the JS executor for any pending `window.location` navigation request and, if one exists,
+  /// decide whether it should proceed by dispatching `beforeunload`.
+  ///
+  /// Returns `true` if a navigation request was produced (even if it was later canceled by
+  /// `beforeunload`).
+  fn poll_navigation_request(&mut self, event_loop: &mut EventLoop<Self>) -> Result<bool> {
+    // If a navigation is already pending, we are about to abandon the current document. Still drain
+    // any additional requests from the executor so it doesn't retain stale state, but do not
+    // override the first request.
+    if self.pending_navigation.is_some() {
+      while self.executor.take_navigation_request().is_some() {}
+      return Ok(false);
+    }
+
+    // Drain in case the executor queues multiple requests before the host polls (unlikely, but keep
+    // this helper robust).
+    let mut req: Option<LocationNavigationRequest> = None;
+    while let Some(next) = self.executor.take_navigation_request() {
+      req = Some(next);
+    }
+    let Some(req) = req else {
+      return Ok(false);
+    };
+
+    // `beforeunload` can cancel navigations; only proceed if not canceled.
+    let should_navigate = {
+      let (executor, document) = (&mut self.executor, &mut self.document);
+      executor.dispatch_beforeunload_event(document.as_mut(), event_loop)?
+    };
+
+    if should_navigate {
+      self.pending_navigation = Some(req);
+      self.pending_navigation_deadline =
+        crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
+    } else {
+      // Ensure the host does not retain any pending navigation state after cancelation.
+      self.pending_navigation = None;
+      self.pending_navigation_deadline = None;
+    }
+
+    Ok(true)
+  }
+
   fn executor_microtask_checkpoint_hook(
     host: &mut BrowserTabHost,
     event_loop: &mut EventLoop<BrowserTabHost>,
   ) -> Result<()> {
-    let BrowserTabHost { executor, document, .. } = host;
-    executor.after_microtask_checkpoint(document.as_mut(), event_loop)
+    {
+      let (executor, document) = (&mut host.executor, &mut host.document);
+      executor.after_microtask_checkpoint(document.as_mut(), event_loop)?;
+    }
+    let _ = host.poll_navigation_request(event_loop)?;
+    Ok(())
   }
 
   fn perform_microtask_checkpoint_and_notify_executor(
     &mut self,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host))?;
+    let checkpoint_result =
+      self.with_installed_document_write_state(|host| event_loop.perform_microtask_checkpoint(host));
     // If the executor was already notified via the event loop's multiplexed microtask checkpoint
     // hooks, avoid double notifications.
     let executor_hook: fn(&mut BrowserTabHost, &mut EventLoop<BrowserTabHost>) -> Result<()> =
@@ -636,12 +684,29 @@ impl BrowserTabHost {
       .iter()
       .any(|&hook| std::ptr::fn_addr_eq(hook, executor_hook))
     {
+      // Navigation requests triggered from microtasks terminate the currently running microtask with
+      // a VM termination error. `BrowserTabHost` polls navigation requests from the executor in the
+      // checkpoint hooks, so treat such termination errors as non-fatal: the caller will observe
+      // `pending_navigation` and commit/abort parsing accordingly.
+      if checkpoint_result.is_err() && self.pending_navigation.is_some() {
+        return Ok(());
+      }
+      checkpoint_result?;
       return Ok(());
     }
 
     // Fall back to the legacy behavior for embeddings/tests that directly call this helper without
     // having installed the executor hook.
-    BrowserTabHost::executor_microtask_checkpoint_hook(self, event_loop)
+    let hook_result = BrowserTabHost::executor_microtask_checkpoint_hook(self, event_loop);
+    if let Err(err) = hook_result {
+      return Err(err);
+    }
+
+    if checkpoint_result.is_err() && self.pending_navigation.is_some() {
+      return Ok(());
+    }
+    checkpoint_result?;
+    Ok(())
   }
 
   fn register_html_source(&mut self, url: String, html: String) {
@@ -697,10 +762,10 @@ impl BrowserTabHost {
     let target = target.normalize();
     let dom: &crate::dom2::Document = self.document.dom();
     let event_invoker = &mut self.event_invoker;
-    if let Some(invoker) = event_invoker.as_any_mut().and_then(|any| {
+    let dispatch_result: Result<bool> = if let Some(invoker) = event_invoker.as_any_mut().and_then(|any| {
       any.downcast_mut::<crate::js::window_realm::WindowRealmDomEventListenerInvoker<Self>>()
     }) {
-      return invoker.with_event_loop(event_loop, |invoker| {
+      invoker.with_event_loop(event_loop, |invoker| {
         let mut event_for_event_obj = Event::new(
           event.type_.clone(),
           EventInit {
@@ -711,21 +776,38 @@ impl BrowserTabHost {
         );
         event_for_event_obj.detail = event.detail.clone();
         event_for_event_obj.storage = event.storage.clone();
-        invoker.with_dispatch_event_object(&event_for_event_obj, |invoker| {
-          crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
-        })
+        invoker
+          .with_dispatch_event_object(&event_for_event_obj, |invoker| {
+            crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
+          })
           .map_err(|err| Error::Other(err.to_string()))
-      });
-    }
+      })
+    } else {
+      crate::web::events::dispatch_event(
+        target,
+        &mut event,
+        dom,
+        dom.events(),
+        event_invoker.as_mut(),
+      )
+      .map_err(|err| Error::Other(err.to_string()))
+    };
 
-    crate::web::events::dispatch_event(
-      target,
-      &mut event,
-      dom,
-      dom.events(),
-      event_invoker.as_mut(),
-    )
-    .map_err(|err| Error::Other(err.to_string()))
+    let default_not_prevented = !event.default_prevented;
+    let navigation_request_seen = self.poll_navigation_request(event_loop)?;
+
+    match dispatch_result {
+      Ok(default_not_prevented_from_dispatch) => Ok(default_not_prevented_from_dispatch),
+      Err(err) => {
+        // Navigation requests interrupt the vm-js VM with a termination error so the host can commit
+        // navigation synchronously. If a request was produced, treat this termination as non-fatal
+        // and let the embedding commit (or cancel) navigation.
+        if navigation_request_seen || self.pending_navigation.is_some() {
+          return Ok(default_not_prevented);
+        }
+        Err(err)
+      }
+    }
   }
 
   fn dispatch_script_event(&mut self, script_node_id: NodeId, type_: &str) -> Result<()> {
@@ -3202,58 +3284,51 @@ impl BrowserTabHost {
         span.arg_bool("parser_inserted", self.spec.parser_inserted);
 
         let current_script = host.current_script_node();
-        // Split the host borrow so we can install a JS-visible `DocumentWriteState` while still
-        // calling into the executor.
-        let BrowserTabHost {
-          executor,
-          document,
-          pending_navigation,
-          pending_navigation_deadline,
-          document_write_state,
-          ..
-        } = host;
-        let result = crate::js::with_document_write_state(document_write_state, || match script_type {
-          ScriptType::Classic => executor.execute_classic_script(
-            self.source_text,
-            self.spec,
-            current_script,
-            document.as_mut(),
-            self.event_loop,
-          ),
-          ScriptType::Module => {
-            let status = executor.execute_module_script(
-              self.script_id,
+        let result = {
+          // Split the host borrow so we can install a JS-visible `DocumentWriteState` while still
+          // calling into the executor.
+          let BrowserTabHost {
+            executor,
+            document,
+            document_write_state,
+            ..
+          } = host;
+          crate::js::with_document_write_state(document_write_state, || match script_type {
+            ScriptType::Classic => executor.execute_classic_script(
               self.source_text,
               self.spec,
               current_script,
               document.as_mut(),
               self.event_loop,
-            )?;
-            self.completion = match status {
-              ModuleScriptExecutionStatus::Completed => ScriptExecutionCompletion::Completed,
-              ModuleScriptExecutionStatus::Pending => {
-                ScriptExecutionCompletion::PendingModuleEvaluation
-              }
-            };
-            Ok(())
-          }
-          ScriptType::ImportMap => executor.execute_import_map_script(
-            self.source_text,
-            self.spec,
-            current_script,
-            document.as_mut(),
-            self.event_loop,
-          ),
-          ScriptType::Unknown => Ok(()),
-        });
-        if let Some(req) = executor.take_navigation_request() {
-          let should_navigate = executor.dispatch_beforeunload_event(document.as_mut(), self.event_loop)?;
-          if should_navigate {
-            *pending_navigation = Some(req);
-            *pending_navigation_deadline =
-              crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
-          }
-        }
+            ),
+            ScriptType::Module => {
+              let status = executor.execute_module_script(
+                self.script_id,
+                self.source_text,
+                self.spec,
+                current_script,
+                document.as_mut(),
+                self.event_loop,
+              )?;
+              self.completion = match status {
+                ModuleScriptExecutionStatus::Completed => ScriptExecutionCompletion::Completed,
+                ModuleScriptExecutionStatus::Pending => {
+                  ScriptExecutionCompletion::PendingModuleEvaluation
+                }
+              };
+              Ok(())
+            }
+            ScriptType::ImportMap => executor.execute_import_map_script(
+              self.source_text,
+              self.spec,
+              current_script,
+              document.as_mut(),
+              self.event_loop,
+            ),
+            ScriptType::Unknown => Ok(()),
+          })
+        };
+        let _ = host.poll_navigation_request(self.event_loop)?;
         result
       }
     }
@@ -3941,17 +4016,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
           .map(|_| ());
       }
     };
-    if let Some(req) = self.executor.take_navigation_request() {
-      let should_navigate = {
-        let (executor, document) = (&mut self.executor, &mut self.document);
-        executor.dispatch_beforeunload_event(document.as_mut(), event_loop)?
-      };
-      if should_navigate {
-        self.pending_navigation = Some(req);
-        self.pending_navigation_deadline =
-          crate::render_control::root_deadline().filter(|deadline| deadline.is_enabled());
-      }
-    }
+    let navigation_request_seen = self.poll_navigation_request(event_loop)?;
     match result {
       Ok(()) => {
         if self.pending_navigation.is_some() {
@@ -3959,7 +4024,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
         }
       }
       Err(err) => {
-        if self.pending_navigation.is_some() {
+        if navigation_request_seen || self.pending_navigation.is_some() {
           return Ok(());
         }
         return Err(err);
@@ -5267,6 +5332,14 @@ impl BrowserTab {
     mut on_error: impl FnMut(Error),
     mut on_render: impl FnMut(),
   ) -> Result<RunUntilIdleOutcome> {
+    // If a navigation is already pending before we start driving the event loop (for example, a
+    // navigation request produced by a host-dispatched DOM event), abandon all pending work for the
+    // current document immediately so we don't run tasks/microtasks that should be discarded once
+    // the new document commits.
+    if self.host.pending_navigation.is_some() {
+      self.event_loop.clear_all_pending_work();
+      return Ok(RunUntilIdleOutcome::Idle);
+    }
     {
       // Ensure scripts inserted outside the event loop (e.g. via host DOM mutations) are detected
       // before we decide the loop is idle.
@@ -11933,6 +12006,123 @@ html, body { margin: 0; padding: 0; }
     assert!(
       !tab.history.can_go_back(),
       "expected replace to not push history"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn click_handler_location_navigation_commits_navigation() -> Result<()> {
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+
+    let page1_html = format!(
+      r#"<!doctype html><html><body>
+        <div id=page1></div>
+        <button id=btn>go</button>
+        <script>
+          document.getElementById("btn").addEventListener("click", () => {{
+            location.href = {page2_url:?};
+          }});
+        </script>
+      </body></html>"#
+    );
+    let page2_html = "<!doctype html><html><body><div id=page2></div></body></html>";
+
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+    let btn = tab
+      .dom()
+      .get_element_by_id("btn")
+      .expect("expected #btn to exist on page1");
+
+    tab.dispatch_click_event(btn)?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      tab.dom().get_element_by_id("page2").is_some(),
+      "expected click-handler navigation to commit page2"
+    );
+    assert!(
+      tab.dom().get_element_by_id("page1").is_none(),
+      "expected click-handler navigation to replace page1 DOM"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn script_onload_location_navigation_commits_navigation() -> Result<()> {
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+    let script_url = "https://example.com/a.js";
+
+    let page1_html = format!(
+      r#"<!doctype html><html><body>
+        <div id=page1></div>
+        <script>
+          const s = document.createElement("script");
+          s.src = {script_url:?};
+          s.onload = () => {{
+            location.href = {page2_url:?};
+          }};
+          document.body.appendChild(s);
+        </script>
+      </body></html>"#
+    );
+    let page2_html = "<!doctype html><html><body><div id=page2></div></body></html>";
+
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+    tab.register_script_source(script_url, "/* loaded */");
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      tab.dom().get_element_by_id("page2").is_some(),
+      "expected script onload navigation to commit page2"
+    );
+    assert!(
+      tab.dom().get_element_by_id("page1").is_none(),
+      "expected script onload navigation to replace page1 DOM"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn microtask_location_navigation_commits_navigation() -> Result<()> {
+    let page1_url = "https://example.com/page1.html";
+    let page2_url = "https://example.com/page2.html";
+
+    let page1_html = format!(
+      r#"<!doctype html><html><body>
+        <div id=page1></div>
+        <script>
+          Promise.resolve().then(() => {{
+            location.href = {page2_url:?};
+          }});
+        </script>
+      </body></html>"#
+    );
+    let page2_html = "<!doctype html><html><body><div id=page2></div></body></html>";
+
+    let mut tab = BrowserTab::from_html_with_vmjs_executor("", RenderOptions::default())?;
+    tab.register_html_source(page1_url, page1_html);
+    tab.register_html_source(page2_url, page2_html);
+
+    tab.navigate_to_url(page1_url, RenderOptions::default())?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      tab.dom().get_element_by_id("page2").is_some(),
+      "expected microtask navigation to commit page2"
+    );
+    assert!(
+      tab.dom().get_element_by_id("page1").is_none(),
+      "expected microtask navigation to replace page1 DOM"
     );
     Ok(())
   }
