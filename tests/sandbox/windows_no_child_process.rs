@@ -5,7 +5,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 
-use fastrender::sandbox::windows::spawn_sandboxed;
+use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
 use windows_sys::Win32::Foundation::{
   SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
@@ -139,6 +139,11 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
   let child = crate::common::with_env_vars(&[(CHILD_ENV, "1")], || {
     spawn_sandboxed(&exe, &args, &inherit_handles).expect("spawn sandboxed child test process")
   });
+  assert_ne!(
+    child.level,
+    WindowsSandboxLevel::None,
+    "spawn_sandboxed returned WindowsSandboxLevel::None; sandbox may be disabled or unavailable"
+  );
 
   let timeout_ms: u32 = 10_000;
   // SAFETY: waiting on a valid process handle.
