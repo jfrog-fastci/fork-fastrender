@@ -375,18 +375,14 @@ fn tab_search_ranked_matches(query: &str, tabs: &[BrowserTabState]) -> Vec<TabSe
   tab_search::ranked_matches(query, tabs)
 }
 
-fn tab_search_secondary_text(tab: &BrowserTabState) -> String {
+fn tab_search_secondary_text(tab: &BrowserTabState) -> &str {
   let url = tab
     .committed_url
     .as_deref()
     .or_else(|| tab.current_url.as_deref())
     .unwrap_or_default();
 
-  if let Some(host) = tab_search::http_host(url) {
-    return host.to_string();
-  }
-
-  url.to_string()
+  tab_search::http_host(url).unwrap_or(url)
 }
 
 fn tab_search_overlay_ui(
