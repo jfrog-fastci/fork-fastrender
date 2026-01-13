@@ -40,8 +40,8 @@ use super::hit_test::{
 use super::image_maps;
 use super::resolve_url;
 use super::state::{
-  DocumentSelectionRanges, DocumentSelectionState, FileSelection, ImePreeditState,
-  InteractionState, TextEditPaintState,
+  DocumentSelectionRanges, DocumentSelectionState, FileSelection, InteractionState,
+  TextEditPaintState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

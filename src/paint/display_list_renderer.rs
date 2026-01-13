@@ -74,8 +74,7 @@ use crate::paint::filter_outset::filter_halo_outset_with_bounds;
 use crate::paint::filter_outset::filter_outset;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
-  get_gradient_lut, gradient_bucket, paint_linear_gradient_src_over,
-  paint_linear_gradient_src_over_mut,
+  get_gradient_lut, gradient_bucket, paint_linear_gradient_src_over_mut,
   rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
   rasterize_linear_gradient_cached, rasterize_radial_gradient, GradientLutCache,
   GradientPixmapCache, GradientPixmapCacheKey, GradientStats,

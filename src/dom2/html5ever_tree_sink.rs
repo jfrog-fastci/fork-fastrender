@@ -771,14 +771,9 @@ impl TreeSink for Dom2TreeSink {
       /* inert_subtree */ false,
     );
     doc.live_mutation.pre_insert(*location, 0, 1);
-    let range_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
-    let inserted_count =
-      doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
-    doc.live_range_pre_insert_steps(
-      *location,
-      range_index,
-      inserted_count,
-    );
+    let range_child_index = doc.tree_child_index_from_raw_index_for_range(*location, 0);
+    let inserted_count = doc.inserted_tree_children_count_for_range(*location, &[shadow_root_id]);
+    doc.live_range_pre_insert_steps(*location, range_child_index, inserted_count);
     doc.node_mut(*location).children.insert(0, shadow_root_id);
     doc.node_mut(shadow_root_id).parent = Some(*location);
 
@@ -1064,13 +1059,12 @@ impl TreeSink for Dom2TreeSink {
       doc
         .live_mutation
         .pre_insert(*new_parent, old_len, moved_children_snapshot.len());
-      let range_index =
-        doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len);
+      let range_child_index = doc.tree_child_index_from_raw_index_for_range(*new_parent, old_len);
       let inserted_count =
         doc.inserted_tree_children_count_for_range(*new_parent, &moved_children_snapshot);
       doc.live_range_pre_insert_steps(
         *new_parent,
-        range_index,
+        range_child_index,
         inserted_count,
       );
     }

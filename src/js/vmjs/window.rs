@@ -796,7 +796,8 @@ impl WindowHostState {
         }
       };
 
-      let ws_env = WindowWebSocketEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone()));
+      let ws_env =
+        WindowWebSocketEnv::for_document(Arc::clone(&host_fetcher), Some(document_url.clone()));
 
       let websocket_bindings = match install_window_websocket_bindings_with_guard::<WindowHostState>(
         vm,

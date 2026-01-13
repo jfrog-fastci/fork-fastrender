@@ -27,6 +27,24 @@ fn scan_html_prefix(html: &str, max_bytes: usize) -> &str {
   &html[..end]
 }
 
+fn find_case_insensitive(bytes: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+  if needle.is_empty() {
+    return Some(start);
+  }
+  if start >= bytes.len() {
+    return None;
+  }
+  let len = needle.len();
+  let mut i = start;
+  while i + len <= bytes.len() {
+    if bytes[i..i + len].eq_ignore_ascii_case(needle) {
+      return Some(i);
+    }
+    i += 1;
+  }
+  None
+}
+
 fn for_each_attribute<'a>(
   tag: &'a str,
   mut visit: impl FnMut(&'a str, &'a str) -> ControlFlow<()>,

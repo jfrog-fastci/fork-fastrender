@@ -6845,7 +6845,6 @@ fn prepare_fragment_tree_paint_state(
                     }
                     text.len()
                   };
-
                   let mut display_text_owned: Option<String> = None;
                   let mut display_text: &str = "";
                   let mut ime_caret_idx: Option<usize> = None;

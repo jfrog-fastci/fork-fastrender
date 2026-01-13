@@ -135,6 +135,8 @@ impl Drop for FrameScaler {
   }
 }
 
+type VideoMap = HashMap<VideoKey, VideoEntry>;
+
 /// A [`MediaFrameProvider`] implementation that:
 ///
 /// - tracks the latest [`MediaFrameSizeHint`] per `<video>` element, and
@@ -145,7 +147,7 @@ impl Drop for FrameScaler {
 /// its own; instead, decoded frames are pushed in via [`Self::update_video_frame`].
 #[derive(Debug)]
 pub struct SizeHintMediaFrameProvider {
-  videos: Arc<Mutex<HashMap<VideoKey, VideoEntry>>>,
+  videos: Arc<Mutex<VideoMap>>,
   scaler: FrameScaler,
 }
 
@@ -240,7 +242,7 @@ impl MediaFrameProvider for SizeHintMediaFrameProvider {
 }
 
 fn video_entry_mut<'a>(
-  map: &'a mut HashMap<VideoKey, VideoEntry>,
+  map: &'a mut VideoMap,
   box_id: Option<usize>,
   src: &str,
 ) -> &'a mut VideoEntry {
