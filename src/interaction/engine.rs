@@ -5271,6 +5271,7 @@ impl InteractionEngine {
     for &id in self.state.active_chain() {
       check_node_id("active_chain", id);
     }
+    self.state.debug_assert_chain_caches_consistent();
     for (&id, _) in &self.state.form_state.file_inputs {
       check_node_id("file_inputs", id);
     }

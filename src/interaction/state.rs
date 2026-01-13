@@ -581,6 +581,63 @@ impl InteractionState {
     self.mark_css_hash_dirty();
   }
 
+  #[cfg(any(debug_assertions, test))]
+  pub(crate) fn debug_assert_chain_caches_consistent(&self) {
+    debug_assert_eq!(
+      self.focus_chain.len(),
+      self.focus_chain_membership.len(),
+      "focus_chain cache out of sync"
+    );
+    for &id in &self.focus_chain {
+      debug_assert!(
+        self.focus_chain_membership.contains(&id),
+        "focus_chain missing cached membership for {id}"
+      );
+    }
+    for &id in &self.focus_chain_membership {
+      debug_assert!(
+        self.focus_chain.contains(&id),
+        "focus_chain_membership contains stale id {id}"
+      );
+    }
+
+    debug_assert_eq!(
+      self.hover_chain.len(),
+      self.hover_chain_membership.len(),
+      "hover_chain cache out of sync"
+    );
+    for &id in &self.hover_chain {
+      debug_assert!(
+        self.hover_chain_membership.contains(&id),
+        "hover_chain missing cached membership for {id}"
+      );
+    }
+    for &id in &self.hover_chain_membership {
+      debug_assert!(
+        self.hover_chain.contains(&id),
+        "hover_chain_membership contains stale id {id}"
+      );
+    }
+
+    debug_assert_eq!(
+      self.active_chain.len(),
+      self.active_chain_membership.len(),
+      "active_chain cache out of sync"
+    );
+    for &id in &self.active_chain {
+      debug_assert!(
+        self.active_chain_membership.contains(&id),
+        "active_chain missing cached membership for {id}"
+      );
+    }
+    for &id in &self.active_chain_membership {
+      debug_assert!(
+        self.active_chain.contains(&id),
+        "active_chain_membership contains stale id {id}"
+      );
+    }
+  }
+
   #[inline]
   pub fn is_focused(&self, node_id: usize) -> bool {
     self.focused == Some(node_id)
