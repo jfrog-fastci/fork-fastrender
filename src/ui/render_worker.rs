@@ -7432,7 +7432,7 @@ impl BrowserRuntime {
       max_wall_time: Some(POST_NAV_JS_PUMP_TIMEOUT),
     };
 
-    let (js_dom_snapshot, js_dom_generation) = {
+    let (js_dom_snapshot, js_dom_mapping, js_dom_generation) = {
       let Some(js_tab) = tab.js_tab.as_mut() else {
         return false;
       };
@@ -7444,13 +7444,20 @@ impl BrowserRuntime {
       }
       // Snapshot the post-pump DOM so we can compare against the renderer DOM without holding a
       // borrow into `tab.js_tab` across the subsequent `tab.document` mutation.
-      let generation = js_tab.dom().mutation_generation();
-      let snapshot = js_tab.dom().to_renderer_dom();
-      (snapshot, generation)
+      let dom2 = js_tab.dom();
+      let generation = dom2.mutation_generation();
+      let snapshot = dom2.to_renderer_dom_with_mapping();
+      let mut dom_snapshot = snapshot.dom;
+      let mapping = snapshot.mapping;
+      patch_dom2_form_control_state_into_renderer_dom(dom2, &mut dom_snapshot, &mapping);
+      (dom_snapshot, mapping, generation)
     };
     // Keep our cached generation in sync with whatever ran during the pump so subsequent ticks
     // don't treat the DOM as "dirty" purely due to this initial execution slice.
     tab.js_dom_mutation_generation = js_dom_generation;
+    tab.js_dom_mapping_generation = js_dom_generation;
+    tab.js_dom_mapping = Some(js_dom_mapping);
+    tab.js_dom_mapping_miss_logged = false;
 
     let Some(doc) = tab.document.as_mut() else {
       return false;
