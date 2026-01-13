@@ -226,7 +226,7 @@ pub fn accent_color_override_from_env() -> Option<Color32> {
     Some(color) => Some(color.to_color32()),
     None => {
       eprintln!(
-        "{ENV_BROWSER_ACCENT}: expected hex like #RRGGBB or #RRGGBBAA, got {raw:?}"
+        "{ENV_BROWSER_ACCENT}: expected hex like #RGB, #RRGGBB, or #RRGGBBAA, got {raw:?}"
       );
       None
     }

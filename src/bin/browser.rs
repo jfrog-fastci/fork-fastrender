@@ -708,7 +708,10 @@ mod viewport_throttle_integration_tests {
     assert_eq!(first.viewport_css, (100, 80));
     assert!((first.dpr() - 2.0).abs() < f32::EPSILON);
 
-    assert_eq!(throttle.push_desired(t0 + Duration::from_millis(5), (120, 90), 2.0), None);
+    assert_eq!(
+      throttle.push_desired(t0 + Duration::from_millis(5), (120, 90), 2.0),
+      None
+    );
 
     assert_eq!(throttle.poll(t0 + Duration::from_millis(54)), None);
     let second = throttle
@@ -734,7 +737,10 @@ fn determine_startup_session(
   let mut loaded_session = match fastrender::ui::session::load_session(session_path) {
     Ok(session) => session,
     Err(err) => {
-      eprintln!("failed to load session from {}: {err}", session_path.display());
+      eprintln!(
+        "failed to load session from {}: {err}",
+        session_path.display()
+      );
       None
     }
   };
@@ -761,9 +767,8 @@ fn determine_startup_session(
     return (session.sanitized(), StartupSessionSource::CliUrl);
   }
 
-  let mut session = fastrender::ui::BrowserSession::single(
-    fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
-  );
+  let mut session =
+    fastrender::ui::BrowserSession::single(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
   session.home_url = home_url;
   (session.sanitized(), StartupSessionSource::DefaultNewTab)
 }
@@ -979,12 +984,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
-  let applied_appearance = startup_session
-    .appearance
+  let startup_appearance = startup_session.appearance.clone();
+  let applied_appearance = startup_appearance
     .clone()
     .with_env_overrides(appearance_env);
   let theme_accent = applied_appearance
-    .accent
+    .accent_color
     .as_deref()
     .and_then(fastrender::ui::theme_parsing::parse_hex_color)
     .map(|c| c.to_color32());
@@ -1000,7 +1005,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   // Keep a single profile autosave worker (bookmarks/history) across all windows.
   let (profile_autosave_tx, mut profile_autosave) =
-    match fastrender::ui::ProfileAutosaveHandle::spawn(bookmarks_path.clone(), history_path.clone()) {
+    match fastrender::ui::ProfileAutosaveHandle::spawn(bookmarks_path.clone(), history_path.clone())
+    {
       Ok(handle) => (Some(handle.sender()), Some(handle)),
       Err(err) => {
         eprintln!("failed to start profile autosave: {err}");
@@ -1041,7 +1047,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   };
   let home_url = startup_session.home_url.clone();
-  let startup_appearance = startup_session.appearance.clone();
   let startup_active_window_index = startup_session.active_window_index;
   let startup_windows = startup_session.windows;
   let window_count = startup_windows.len();
@@ -1131,7 +1136,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut winit_windows: Vec<Option<winit::window::Window>> =
     (0..window_count).map(|_| None).collect();
   for idx in create_order {
-    let window_state = startup_windows.get(idx).and_then(|w| w.window_state.clone());
+    let window_state = startup_windows
+      .get(idx)
+      .and_then(|w| w.window_state.clone());
     winit_windows[idx] = Some(build_window(&event_loop, window_state, None, None)?);
   }
 
@@ -1292,7 +1299,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
       } else {
         // Best-effort fallback: if profile autosave isn't running, persist synchronously on shutdown.
-        if let Err(err) = fastrender::ui::save_bookmarks_atomic(&bookmarks_path, &global_bookmarks) {
+        if let Err(err) = fastrender::ui::save_bookmarks_atomic(&bookmarks_path, &global_bookmarks)
+        {
           eprintln!(
             "failed to save bookmarks to {}: {err}",
             bookmarks_path.display()
@@ -1315,7 +1323,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       if let Err(err) = session_autosave.shutdown(std::time::Duration::from_millis(500)) {
         eprintln!("session autosave shutdown failed: {err}");
         if let Err(err) = fastrender::ui::session::save_session_atomic(&session_path, &session) {
-          eprintln!("failed to save session to {}: {err}", session_path.display());
+          eprintln!(
+            "failed to save session to {}: {err}",
+            session_path.display()
+          );
         }
       }
       return;
@@ -1349,8 +1360,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      let mut session =
-        fastrender::ui::BrowserSession::from_windows(session_windows, active_window_index, appearance);
+      let mut session = fastrender::ui::BrowserSession::from_windows(
+        session_windows,
+        active_window_index,
+        appearance,
+      );
       session.home_url = home_url;
       session.did_exit_cleanly = false;
       session_autosave.request_save(session);
@@ -1743,8 +1757,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &global_bookmarks,
       );
       if let Some(tx) = profile_autosave_tx.as_ref() {
-        let _ =
-          tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(global_bookmarks.clone()));
+        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
+          global_bookmarks.clone(),
+        ));
         if flush {
           let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
           let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
@@ -1763,8 +1778,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &global_history,
       );
       if let Some(tx) = profile_autosave_tx.as_ref() {
-        let _ =
-          tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+          global_history.clone(),
+        ));
         if flush {
           let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
           let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
@@ -1803,7 +1819,9 @@ fn run_headless_vmjs_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
     // Avoid mutating process environment variables (the test harness may reuse this process for
     // other work). Instead, eagerly initialize Rayon's global pool with the desired thread count.
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
+    let _ = rayon::ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build_global();
   }
 
   // Prefer deterministic bundled fonts for this smoke path unless explicitly opted out.
@@ -1923,7 +1941,8 @@ fn run_headless_smoke_mode(
       }
     },
   };
-  let bookmarks_json = serde_json::to_string(&bookmarks_store).unwrap_or_else(|_| "<invalid>".to_string());
+  let bookmarks_json =
+    serde_json::to_string(&bookmarks_store).unwrap_or_else(|_| "<invalid>".to_string());
   println!("HEADLESS_BOOKMARKS source={bookmarks_source} {bookmarks_json}");
 
   const HISTORY_OVERRIDE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON";
@@ -1962,7 +1981,9 @@ fn run_headless_smoke_mode(
   if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
     // Avoid mutating process environment variables (the test harness may reuse this process for
     // other work). Instead, eagerly initialize Rayon's global pool with the desired thread count.
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
+    let _ = rayon::ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build_global();
   }
 
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
@@ -1982,9 +2003,7 @@ fn run_headless_smoke_mode(
   let (ui_to_worker_tx, worker_to_ui_rx, join) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
-  ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory {
-    path: download_dir,
-  })?;
+  ui_to_worker_tx.send(UiToWorker::SetDownloadDirectory { path: download_dir })?;
 
   let mut tab_ids = Vec::with_capacity(active_window.tabs.len());
   for _tab in &active_window.tabs {
@@ -2482,9 +2501,7 @@ available adapters (instance.enumerate_adapters): {available}",
           "wgpu device request failed for adapter {adapter_info:?}.\n\
 requested: backends={:?} power_preference={:?} force_fallback_adapter={}\n\
 error: {err}",
-          wgpu_init.backends,
-          wgpu_init.power_preference,
-          wgpu_init.force_fallback_adapter,
+          wgpu_init.backends, wgpu_init.power_preference, wgpu_init.force_fallback_adapter,
         );
         if !wgpu_init.force_fallback_adapter {
           msg.push_str(&format!(
@@ -2717,7 +2734,10 @@ impl App {
     self.send_worker_msg(UiToWorker::SetMediaPreferences { prefs });
   }
 
-  fn refresh_theme_from_system_theme(&mut self, system_theme: Option<winit::window::Theme>) -> bool {
+  fn refresh_theme_from_system_theme(
+    &mut self,
+    system_theme: Option<winit::window::Theme>,
+  ) -> bool {
     use fastrender::ui::theme::ThemeMode;
 
     let resolved_mode = match self.theme_override.unwrap_or(ThemeMode::System) {
@@ -2731,35 +2751,32 @@ impl App {
     };
 
     let high_contrast = self.applied_appearance.high_contrast;
-    // Accent overrides (env/session) should also trigger a theme rebuild.
-    let default_accent = match resolved_mode {
-      ThemeMode::Dark => egui::Color32::from_rgb(0x60, 0xA5, 0xFA), // blue-400
-      _ => egui::Color32::from_rgb(0x3B, 0x82, 0xF6),              // blue-500
-    };
-    let expected_accent = self.theme_accent.unwrap_or(default_accent);
-    if resolved_mode == self.theme.mode
-      && high_contrast == self.theme.high_contrast
-      && expected_accent == self.theme.colors.accent
-    {
-      return false;
-    }
-
-    self.theme = match resolved_mode {
-      fastrender::ui::theme::ThemeMode::Dark => {
+    let accent = self.theme_accent;
+    let desired_theme = match resolved_mode {
+      ThemeMode::Dark => {
         if high_contrast {
-          fastrender::ui::theme::BrowserTheme::dark_high_contrast(self.theme_accent)
+          fastrender::ui::theme::BrowserTheme::dark_high_contrast(accent)
         } else {
-          fastrender::ui::theme::BrowserTheme::dark(self.theme_accent)
+          fastrender::ui::theme::BrowserTheme::dark(accent)
         }
       }
       _ => {
         if high_contrast {
-          fastrender::ui::theme::BrowserTheme::light_high_contrast(self.theme_accent)
+          fastrender::ui::theme::BrowserTheme::light_high_contrast(accent)
         } else {
-          fastrender::ui::theme::BrowserTheme::light(self.theme_accent)
+          fastrender::ui::theme::BrowserTheme::light(accent)
         }
       }
     };
+
+    if resolved_mode == self.theme.mode
+      && high_contrast == self.theme.high_contrast
+      && desired_theme.colors.accent == self.theme.colors.accent
+    {
+      return false;
+    }
+
+    self.theme = desired_theme;
     // UI scale is applied via `egui_ctx.set_pixels_per_point(system_pixels_per_point * ui_scale)`.
     // Avoid also applying it through the theme system, otherwise text would scale quadratically.
     fastrender::ui::theme::apply_browser_theme(&self.egui_ctx, &self.theme);
@@ -2804,7 +2821,6 @@ impl App {
 
     let prev = self.applied_appearance.clone();
     self.applied_appearance = desired.clone();
-    let accent_changed = desired.accent.as_deref() != prev.accent.as_deref();
 
     let mut needs_redraw = false;
     let mut media_prefs_changed = false;
@@ -2829,16 +2845,23 @@ impl App {
       needs_redraw = true;
     }
 
+    let theme_changed = desired.theme != prev.theme;
+    let high_contrast_changed = desired.high_contrast != prev.high_contrast;
+    let accent_changed = desired.accent_color != prev.accent_color;
+
     if accent_changed {
       self.theme_accent = desired
-        .accent
+        .accent_color
         .as_deref()
         .and_then(fastrender::ui::theme_parsing::parse_hex_color)
         .map(|c| c.to_color32());
     }
 
-    if desired.theme != prev.theme || desired.high_contrast != prev.high_contrast {
+    if theme_changed || high_contrast_changed {
       media_prefs_changed = true;
+    }
+
+    if theme_changed {
       self.theme_override = match desired.theme {
         fastrender::ui::theme_parsing::BrowserTheme::Light => {
           Some(fastrender::ui::theme::ThemeMode::Light)
@@ -2855,14 +2878,12 @@ impl App {
         fastrender::ui::theme_parsing::BrowserTheme::System => None,
       };
       self.window.set_theme(window_theme_override);
+    }
 
+    if theme_changed || high_contrast_changed || accent_changed {
       needs_redraw |= self.refresh_theme_from_system_theme(self.window.theme());
       // Even if the resolved egui theme is unchanged (e.g. switching System→Light while the system
       // is already light), still treat this as a redraw-worthy UI change.
-      needs_redraw = true;
-    } else if accent_changed {
-      // Accent-only change: keep the same theme mode/high-contrast state, but rebuild the palette.
-      needs_redraw |= self.refresh_theme_from_system_theme(self.window.theme());
       needs_redraw = true;
     }
 
@@ -2998,8 +3019,12 @@ impl App {
     let egui_state = egui_winit::State::new(event_loop);
 
     let theme_override = match applied_appearance.theme {
-      fastrender::ui::theme_parsing::BrowserTheme::Light => Some(fastrender::ui::theme::ThemeMode::Light),
-      fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(fastrender::ui::theme::ThemeMode::Dark),
+      fastrender::ui::theme_parsing::BrowserTheme::Light => {
+        Some(fastrender::ui::theme::ThemeMode::Light)
+      }
+      fastrender::ui::theme_parsing::BrowserTheme::Dark => {
+        Some(fastrender::ui::theme::ThemeMode::Dark)
+      }
       fastrender::ui::theme_parsing::BrowserTheme::System => None,
     };
 
@@ -3729,7 +3754,9 @@ impl App {
 
   fn cancel_date_time_picker(&mut self) {
     if let Some(picker) = self.open_date_time_picker.as_ref() {
-      self.send_worker_msg(fastrender::ui::UiToWorker::date_time_picker_cancel(picker.tab_id));
+      self.send_worker_msg(fastrender::ui::UiToWorker::date_time_picker_cancel(
+        picker.tab_id,
+      ));
     }
     self.close_date_time_picker();
   }
@@ -4168,10 +4195,10 @@ impl App {
       pos_css,
       link_url,
     } = &msg
-      {
-        if self.browser_state.active_tab_id() == Some(*tab_id) {
-          if self
-            .pending_context_menu_request
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        if self
+          .pending_context_menu_request
           .as_ref()
           .is_some_and(|pending| pending.tab_id == *tab_id && pending.pos_css == *pos_css)
         {
@@ -4243,9 +4270,9 @@ impl App {
           }
           fastrender::ui::messages::DateTimeInputKind::DateTimeLocal
           | fastrender::ui::messages::DateTimeInputKind::Month
-          | fastrender::ui::messages::DateTimeInputKind::Week => {
-            DateTimePickerState::Text { draft: value.clone() }
-          }
+          | fastrender::ui::messages::DateTimeInputKind::Week => DateTimePickerState::Text {
+            draft: value.clone(),
+          },
         };
 
         self.open_date_time_picker = Some(OpenDateTimePicker {
@@ -4504,11 +4531,10 @@ impl App {
 
     for tab in &self.browser_state.tabs {
       let state = self.tab_notifications.entry(tab.id).or_default();
-      let shown = state.warning_toast.update(
-        tab.warning.as_deref(),
-        now,
-        WARNING_TOAST_DEFAULT_TTL,
-      );
+      let shown =
+        state
+          .warning_toast
+          .update(tab.warning.as_deref(), now, WARNING_TOAST_DEFAULT_TTL);
       if shown {
         state.last_warning_toast = state.warning_toast.toast().map(|toast| toast.text.clone());
         state.warning_toast_expanded = false;
@@ -4544,7 +4570,11 @@ impl App {
         .or_else(|| state.last_warning_toast.as_deref())
         .unwrap_or("")
         .to_string();
-      (toast_text, state.warning_toast_expanded, live_toast_text.is_some())
+      (
+        toast_text,
+        state.warning_toast_expanded,
+        live_toast_text.is_some(),
+      )
     };
 
     let toast_id = egui::Id::new(("fastr_warning_toast", tab_id.0));
@@ -4634,7 +4664,7 @@ impl App {
               let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
               let icon_a11y_label = format!("Warning: {title_text}");
               icon_resp.widget_info({
-                let label = icon_a11y_label;
+                let label = icon_a11y_label.clone();
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
               });
 
@@ -4740,10 +4770,8 @@ impl App {
               ui.separator();
               ui.add_space(6.0);
               ui.add(
-                egui::Label::new(
-                  egui::RichText::new(&toast_text).small().color(title_color),
-                )
-                .wrap(true),
+                egui::Label::new(egui::RichText::new(&toast_text).small().color(title_color))
+                  .wrap(true),
               );
             }
           });
@@ -4776,7 +4804,11 @@ impl App {
       self.error_infobar_rect = None;
       return;
     };
-    let error_now = tab.error.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let error_now = tab
+      .error
+      .as_deref()
+      .map(str::trim)
+      .filter(|s| !s.is_empty());
     let error_is_open = error_now.is_some();
 
     let (last_error, details_open_initial) = self
@@ -4939,10 +4971,7 @@ impl App {
       .and_then(|t| t.load_stage)
       .map(|s| s.as_str())
       .unwrap_or("-");
-    let last_stage = tab
-      .and_then(|t| t.stage)
-      .map(|s| s.as_str())
-      .unwrap_or("-");
+    let last_stage = tab.and_then(|t| t.stage).map(|s| s.as_str()).unwrap_or("-");
 
     let warning = tab.and_then(|t| t.warning.as_deref());
     let viewport_clamped = warning.is_some_and(|w| w.starts_with("Viewport clamped:"));
@@ -5019,7 +5048,10 @@ impl App {
             self.theme.colors.border,
           ))
           .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
-          .inner_margin(egui::Margin::symmetric(self.theme.sizing.padding, self.theme.sizing.padding * 0.75))
+          .inner_margin(egui::Margin::symmetric(
+            self.theme.sizing.padding,
+            self.theme.sizing.padding * 0.75,
+          ))
           .show(ui, |ui| {
             ui.label(
               egui::RichText::new(hud.text_buf.as_str())
@@ -5112,9 +5144,8 @@ impl App {
               "Clear filter",
               true,
             );
-            clear_filter.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear filter")
-            });
+            clear_filter
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear filter"));
             if clear_filter.clicked() {
               self.debug_log_filter.clear();
             }
@@ -5159,7 +5190,11 @@ impl App {
           .stick_to_bottom(true)
           .show(ui, |ui| {
             if total_lines == 0 {
-              ui.label(egui::RichText::new("No debug log lines yet.").italics().small());
+              ui.label(
+                egui::RichText::new("No debug log lines yet.")
+                  .italics()
+                  .small(),
+              );
               return;
             }
 
@@ -5195,13 +5230,13 @@ impl App {
   }
 
   fn render_context_menu(&mut self, ctx: &egui::Context) -> bool {
-    use fastrender::ui::ChromeAction;
-    use fastrender::ui::BrowserIcon;
     use fastrender::ui::context_menu::{
       apply_page_context_menu_action, build_page_context_menu_entries, PageContextMenuAction,
       PageContextMenuBuildInput, PageContextMenuEntry,
     };
     use fastrender::ui::motion::UiMotion;
+    use fastrender::ui::BrowserIcon;
+    use fastrender::ui::ChromeAction;
 
     let motion = UiMotion::from_ctx(ctx);
     let open_t = motion.animate_bool(
@@ -5538,8 +5573,7 @@ impl App {
             if has_focus {
               let focus_stroke = ui.visuals().selection.stroke;
               let focus_rect = rect.shrink(1.0);
-              ui
-                .painter()
+              ui.painter()
                 .rect_stroke(focus_rect, item_rounding, focus_stroke);
             }
 
@@ -5561,8 +5595,10 @@ impl App {
                 );
                 let y = sep_rect.center().y;
                 let inset = 8.0;
-                let separator_color =
-                  Self::with_alpha(ui.visuals().widgets.noninteractive.bg_stroke.color, open_opacity);
+                let separator_color = Self::with_alpha(
+                  ui.visuals().widgets.noninteractive.bg_stroke.color,
+                  open_opacity,
+                );
                 ui.painter().line_segment(
                   [
                     egui::pos2(sep_rect.min.x + inset, y),
@@ -5865,13 +5901,13 @@ impl App {
     // Used for the scale/clip open animation (the actual popup height may be smaller than the
     // placement max height if there are few items).
     let content_height = 26.0 * (control.items.len() as f32);
-    let popup_height = content_height.min(inner_max_height) + popup_margin.top + popup_margin.bottom;
+    let popup_height =
+      content_height.min(inner_max_height) + popup_margin.top + popup_margin.bottom;
     let popup_width = placement.rect.width();
     let popup_rect_target = match placement.direction {
-      fastrender::select_dropdown::SelectDropdownPopupDirection::Down => egui::Rect::from_min_size(
-        popup_pos,
-        egui::vec2(popup_width, popup_height),
-      ),
+      fastrender::select_dropdown::SelectDropdownPopupDirection::Down => {
+        egui::Rect::from_min_size(popup_pos, egui::vec2(popup_width, popup_height))
+      }
       fastrender::select_dropdown::SelectDropdownPopupDirection::Up => egui::Rect::from_min_size(
         egui::pos2(popup_pos.x, popup_pos.y - popup_height),
         egui::vec2(popup_width, popup_height),
@@ -6019,7 +6055,8 @@ impl App {
                   }
 
                   let hovered = response.hovered();
-                  let row_id = egui::Id::new(("fastr_select_dropdown_row", tab_id.0, select_node_id, idx));
+                  let row_id =
+                    egui::Id::new(("fastr_select_dropdown_row", tab_id.0, select_node_id, idx));
                   let hover_t = motion.animate_bool(
                     ui.ctx(),
                     row_id.with("hover"),
@@ -6247,7 +6284,14 @@ impl App {
 
         let mut action: Option<Action> = None;
         match (&picker.kind, &mut picker.state) {
-          (DateTimeInputKind::Date, DateTimePickerState::Date { year, month, selected_day }) => {
+          (
+            DateTimeInputKind::Date,
+            DateTimePickerState::Date {
+              year,
+              month,
+              selected_day,
+            },
+          ) => {
             let header = format!("{:04}-{:02}", *year, *month);
             ui.horizontal(|ui| {
               let prev_resp = fastrender::ui::icon_button(
@@ -6274,9 +6318,8 @@ impl App {
                 "Next month",
                 true,
               );
-              next_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next month")
-              });
+              next_resp
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next month"));
               if next_resp.clicked() {
                 if *month >= 12 {
                   *month = 1;
@@ -6301,7 +6344,8 @@ impl App {
             } else {
               (*year, *month + 1)
             };
-            let Some(first_next_month) = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1) else {
+            let Some(first_next_month) = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)
+            else {
               ui.colored_label(ui.visuals().error_fg_color, "Invalid month/year");
               return action;
             };
@@ -6328,84 +6372,88 @@ impl App {
             };
 
             let week_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-            egui::Grid::new(egui::Id::new(("dt_picker_calendar", tab_id.0, input_node_id)))
-              .num_columns(7)
-              .spacing([4.0, 4.0])
-              .show(ui, |ui| {
-                for label in week_labels {
-                  ui.label(egui::RichText::new(label).small().strong());
+            egui::Grid::new(egui::Id::new((
+              "dt_picker_calendar",
+              tab_id.0,
+              input_node_id,
+            )))
+            .num_columns(7)
+            .spacing([4.0, 4.0])
+            .show(ui, |ui| {
+              for label in week_labels {
+                ui.label(egui::RichText::new(label).small().strong());
+              }
+              ui.end_row();
+
+              let mut col = 0usize;
+              for _ in 0..weekday_idx {
+                ui.label("");
+                col += 1;
+              }
+
+              for day in 1..=days_in_month {
+                let selected = *selected_day == Some(day);
+                let response = ui
+                  .push_id(
+                    ui.make_persistent_id((
+                      "dt_picker_calendar_day",
+                      tab_id.0,
+                      input_node_id,
+                      *year,
+                      *month,
+                      day,
+                    )),
+                    |ui| ui.selectable_label(selected, day.to_string()),
+                  )
+                  .inner;
+                response.widget_info({
+                  let label = date_picker_day_a11y_label(*year, *month, day, selected);
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+                if focus_day == Some(day) {
+                  response.request_focus();
+                }
+
+                // `SelectableLabel` doesn't reliably trigger `clicked()` for keyboard activation
+                // (Enter/Space), so explicitly wire it up for keyboard-only workflows.
+                let mut choose_requested = response.clicked();
+                if response.has_focus() {
+                  choose_requested |= ui.input_mut(|i| {
+                    i.consume_key(Default::default(), egui::Key::Enter)
+                      || i.consume_key(Default::default(), egui::Key::Space)
+                  });
+
+                  // Ensure focus is visible even when the day isn't selected (so there's no
+                  // built-in selection highlight).
+                  let focus_stroke = ui.visuals().selection.stroke;
+                  let expand = 1.0 + focus_stroke.width * 0.5;
+                  let focus_rect = response.rect.expand(expand);
+                  let rounding = ui.visuals().widgets.inactive.rounding;
+                  let focus_rounding = egui::Rounding::same(rounding.nw + expand);
+                  ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
+                }
+
+                if choose_requested {
+                  *selected_day = Some(day);
+                  action = Some(Action::Choose(format!(
+                    "{:04}-{:02}-{:02}",
+                    *year, *month, day
+                  )));
+                }
+                col += 1;
+                if col == 7 {
+                  ui.end_row();
+                  col = 0;
+                }
+              }
+
+              if col != 0 {
+                for _ in col..7 {
+                  ui.label("");
                 }
                 ui.end_row();
-
-                let mut col = 0usize;
-                for _ in 0..weekday_idx {
-                  ui.label("");
-                  col += 1;
-                }
-
-                for day in 1..=days_in_month {
-                  let selected = *selected_day == Some(day);
-                  let response = ui
-                    .push_id(
-                      ui.make_persistent_id((
-                        "dt_picker_calendar_day",
-                        tab_id.0,
-                        input_node_id,
-                        *year,
-                        *month,
-                        day,
-                      )),
-                      |ui| ui.selectable_label(selected, day.to_string()),
-                    )
-                    .inner;
-                  response.widget_info({
-                    let label = date_picker_day_a11y_label(*year, *month, day, selected);
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-                  });
-                  if focus_day == Some(day) {
-                    response.request_focus();
-                  }
-
-                  // `SelectableLabel` doesn't reliably trigger `clicked()` for keyboard activation
-                  // (Enter/Space), so explicitly wire it up for keyboard-only workflows.
-                  let mut choose_requested = response.clicked();
-                  if response.has_focus() {
-                    choose_requested |= ui.input_mut(|i| {
-                      i.consume_key(Default::default(), egui::Key::Enter)
-                        || i.consume_key(Default::default(), egui::Key::Space)
-                    });
-
-                    // Ensure focus is visible even when the day isn't selected (so there's no
-                    // built-in selection highlight).
-                    let focus_stroke = ui.visuals().selection.stroke;
-                    let expand = 1.0 + focus_stroke.width * 0.5;
-                    let focus_rect = response.rect.expand(expand);
-                    let rounding = ui.visuals().widgets.inactive.rounding;
-                    let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-                    ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
-                  }
-
-                  if choose_requested {
-                    *selected_day = Some(day);
-                    action = Some(Action::Choose(format!(
-                      "{:04}-{:02}-{:02}",
-                      *year, *month, day
-                    )));
-                  }
-                  col += 1;
-                  if col == 7 {
-                    ui.end_row();
-                    col = 0;
-                  }
-                }
-
-                if col != 0 {
-                  for _ in col..7 {
-                    ui.label("");
-                  }
-                  ui.end_row();
-                }
-              });
+              }
+            });
           }
           (DateTimeInputKind::Time, DateTimePickerState::Time { hour, minute }) => {
             ui.horizontal(|ui| {
@@ -6464,10 +6512,14 @@ impl App {
                 DateTimeInputKind::DateTimeLocal => {
                   fastrender::dom::parse_input_datetime_local_value(trimmed).is_some()
                 }
-                DateTimeInputKind::Month => fastrender::dom::parse_input_month_value(trimmed).is_some(),
-                DateTimeInputKind::Week => fastrender::dom::parse_input_week_value(trimmed).is_some(),
+                DateTimeInputKind::Month => {
+                  fastrender::dom::parse_input_month_value(trimmed).is_some()
+                }
+                DateTimeInputKind::Week => {
+                  fastrender::dom::parse_input_week_value(trimmed).is_some()
+                }
                 _ => true,
-            };
+              };
             if !valid {
               ui.colored_label(ui.visuals().error_fg_color, "Invalid value");
             }
@@ -6506,7 +6558,11 @@ impl App {
 
     match action {
       Some(Action::Choose(value)) => {
-        self.send_worker_msg(UiToWorker::date_time_picker_choose(tab_id, input_node_id, value));
+        self.send_worker_msg(UiToWorker::date_time_picker_choose(
+          tab_id,
+          input_node_id,
+          value,
+        ));
         self.close_date_time_picker();
         self.window.request_redraw();
       }
@@ -6640,20 +6696,19 @@ impl App {
   }
 
   fn toggle_bookmark_for_active_tab(&mut self) {
-    let Some((url, title)) = self
-      .browser_state
-      .active_tab()
-      .and_then(|tab| {
-        let url = tab.committed_url.as_deref().or(tab.current_url.as_deref())?;
-        let title = tab
-          .committed_title
-          .as_deref()
-          .or(tab.title.as_deref())
-          .filter(|t| !t.trim().is_empty())
-          .map(str::to_string);
-        Some((url.to_string(), title))
-      })
-    else {
+    let Some((url, title)) = self.browser_state.active_tab().and_then(|tab| {
+      let url = tab
+        .committed_url
+        .as_deref()
+        .or(tab.current_url.as_deref())?;
+      let title = tab
+        .committed_title
+        .as_deref()
+        .or(tab.title.as_deref())
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string);
+      Some((url.to_string(), title))
+    }) else {
       return;
     };
 
@@ -7369,12 +7424,16 @@ impl App {
           }
 
           if matches!(key, VirtualKeyCode::PageUp) {
-            self.update_open_select_dropdown_selection_by_enabled_delta(-Self::SELECT_DROPDOWN_PAGE_STEP);
+            self.update_open_select_dropdown_selection_by_enabled_delta(
+              -Self::SELECT_DROPDOWN_PAGE_STEP,
+            );
             self.window.request_redraw();
             return;
           }
           if matches!(key, VirtualKeyCode::PageDown) {
-            self.update_open_select_dropdown_selection_by_enabled_delta(Self::SELECT_DROPDOWN_PAGE_STEP);
+            self.update_open_select_dropdown_selection_by_enabled_delta(
+              Self::SELECT_DROPDOWN_PAGE_STEP,
+            );
             self.window.request_redraw();
             return;
           }
@@ -7382,7 +7441,8 @@ impl App {
           // Typeahead uses `WindowEvent::ReceivedCharacter` (so we get the actual typed character
           // for the current keyboard layout). Do not dismiss the dropdown for plain alphanumeric key
           // presses without modifiers.
-          let has_command_modifiers = self.modifiers.ctrl() || self.modifiers.logo() || self.modifiers.alt();
+          let has_command_modifiers =
+            self.modifiers.ctrl() || self.modifiers.logo() || self.modifiers.alt();
           if !has_command_modifiers
             && matches!(
               key,
@@ -8338,7 +8398,9 @@ impl App {
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
-            self.send_worker_msg(UiToWorker::CloseTab { tab_id: closed_tab_id });
+            self.send_worker_msg(UiToWorker::CloseTab {
+              tab_id: closed_tab_id,
+            });
           }
 
           let new_active = self.browser_state.active_tab_id();
@@ -8383,7 +8445,9 @@ impl App {
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
-            self.send_worker_msg(UiToWorker::CloseTab { tab_id: closed_tab_id });
+            self.send_worker_msg(UiToWorker::CloseTab {
+              tab_id: closed_tab_id,
+            });
           }
 
           let new_active = self.browser_state.active_tab_id();
@@ -8839,8 +8903,7 @@ impl App {
                 fastrender::ui::MenuCommand::Paste => {
                   if let Ok(mut clipboard) = Clipboard::new() {
                     if let Ok(text) = clipboard.get_text() {
-                      self
-                        .send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                      self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
                     }
                   }
                 }
@@ -8849,8 +8912,10 @@ impl App {
             }
           }
           other => {
-            chrome_actions
-              .extend(fastrender::ui::dispatch_menu_command(other, &mut self.browser_state));
+            chrome_actions.extend(fastrender::ui::dispatch_menu_command(
+              other,
+              &mut self.browser_state,
+            ));
           }
         }
       }
@@ -8885,7 +8950,8 @@ impl App {
       ctx.set_style(original_style);
     }
 
-    if self.browser_state.chrome.address_bar_has_focus && self.browser_state.chrome.address_bar_editing
+    if self.browser_state.chrome.address_bar_has_focus
+      && self.browser_state.chrome.address_bar_editing
     {
       if let Ok(fastrender::ui::OmniboxInputResolution::Search { query, .. }) =
         fastrender::ui::resolve_omnibox_input(&self.browser_state.chrome.address_bar_text)
@@ -8935,7 +9001,10 @@ impl App {
       && (!ctx.wants_keyboard_input()
         || (!self.browser_state.chrome.address_bar_has_focus
           && !self.browser_state.chrome.tab_search.open
-          && !self.browser_state.active_tab().is_some_and(|tab| tab.find.open)))
+          && !self
+            .browser_state
+            .active_tab()
+            .is_some_and(|tab| tab.find.open)))
     {
       close_bookmarks_panel |= self.bookmarks_panel_open;
       close_history_panel |= self.history_panel_open;
@@ -9140,18 +9209,15 @@ impl App {
             let drawn_px_w = size_points.x * self.pixels_per_point;
             let drawn_px_h = size_points.y * self.pixels_per_point;
 
-            let one_to_one = if tex_w_px > 0
-              && tex_h_px > 0
-              && drawn_px_w.is_finite()
-              && drawn_px_h.is_finite()
-            {
-              let scale_x = drawn_px_w / tex_w_px as f32;
-              let scale_y = drawn_px_h / tex_h_px as f32;
-              const EPSILON: f32 = 0.01;
-              (scale_x - 1.0).abs() < EPSILON && (scale_y - 1.0).abs() < EPSILON
-            } else {
-              true
-            };
+            let one_to_one =
+              if tex_w_px > 0 && tex_h_px > 0 && drawn_px_w.is_finite() && drawn_px_h.is_finite() {
+                let scale_x = drawn_px_w / tex_w_px as f32;
+                let scale_y = drawn_px_h / tex_h_px as f32;
+                const EPSILON: f32 = 0.01;
+                (scale_x - 1.0).abs() < EPSILON && (scale_y - 1.0).abs() < EPSILON
+              } else {
+                true
+              };
 
             if one_to_one {
               wgpu::FilterMode::Nearest
@@ -9167,10 +9233,7 @@ impl App {
         // The page is currently presented as a rendered image (no document accessibility yet). Give
         // it a stable label so screen readers can identify what this focusable region represents.
         response.widget_info(|| {
-          egui::WidgetInfo::labeled(
-            egui::WidgetType::Label,
-            "Web page content (rendered image)",
-          )
+          egui::WidgetInfo::labeled(egui::WidgetType::Label, "Web page content (rendered image)")
         });
         self.page_rect_points = Some(response.rect);
         self.page_viewport_css = Some(viewport_css_for_mapping);
@@ -9299,9 +9362,7 @@ impl App {
                 }
               };
 
-              let clamp_alpha = |base: u8| {
-                ((base as f32) * alpha).round().clamp(0.0, 255.0) as u8
-              };
+              let clamp_alpha = |base: u8| ((base as f32) * alpha).round().clamp(0.0, 255.0) as u8;
 
               let visuals = ui.visuals();
               // Use theme-aware colors (dark mode uses light thumbs, light mode uses dark thumbs)
@@ -9490,8 +9551,7 @@ impl App {
               ))
               .show(&ctx, |ui| {
                 let fill = ui.visuals().window_fill;
-                let fill =
-                  egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 220);
+                let fill = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 220);
                 egui::Frame::none()
                   .fill(Self::with_alpha(fill, overlay_opacity))
                   .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
@@ -9740,7 +9800,9 @@ impl App {
 }
 
 #[cfg(feature = "browser_ui")]
-fn capture_window_state(window: &winit::window::Window) -> Option<fastrender::ui::BrowserWindowState> {
+fn capture_window_state(
+  window: &winit::window::Window,
+) -> Option<fastrender::ui::BrowserWindowState> {
   let maximized = window.is_maximized();
   let size = window.inner_size();
   let pos = window.outer_position().ok();
@@ -9963,9 +10025,15 @@ mod mouse_button_mapping_tests {
   #[test]
   fn map_mouse_button_back_forward_other() {
     assert_eq!(map_mouse_button(MouseButton::Other(4)), PointerButton::Back);
-    assert_eq!(map_mouse_button(MouseButton::Other(5)), PointerButton::Forward);
+    assert_eq!(
+      map_mouse_button(MouseButton::Other(5)),
+      PointerButton::Forward
+    );
     assert_eq!(map_mouse_button(MouseButton::Other(8)), PointerButton::Back);
-    assert_eq!(map_mouse_button(MouseButton::Other(9)), PointerButton::Forward);
+    assert_eq!(
+      map_mouse_button(MouseButton::Other(9)),
+      PointerButton::Forward
+    );
     assert_eq!(
       map_mouse_button(MouseButton::Other(10)),
       PointerButton::Other(10)

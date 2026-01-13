@@ -78,8 +78,11 @@ pub struct AppearanceSettings {
   ///
   /// Stored as a hex string (e.g. `#RRGGBB` or `#RRGGBBAA`) so the session file stays readable and
   /// does not require any UI toolkit types.
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub accent: Option<String>,
+  ///
+  /// Accepts `RGB` shorthand and optional leading `#` (case-insensitive). Invalid values are
+  /// discarded during [`AppearanceSettings::sanitized`].
+  #[serde(default, skip_serializing_if = "Option::is_none", alias = "accent")]
+  pub accent_color: Option<String>,
 
   /// Browser chrome UI scale multiplier (separate from per-tab page zoom).
   #[serde(default = "default_ui_scale", skip_serializing_if = "is_default_ui_scale")]
@@ -98,7 +101,7 @@ impl Default for AppearanceSettings {
   fn default() -> Self {
     Self {
       theme: BrowserTheme::System,
-      accent: None,
+      accent_color: None,
       ui_scale: DEFAULT_UI_SCALE,
       high_contrast: false,
       reduced_motion: false,
@@ -109,8 +112,8 @@ impl Default for AppearanceSettings {
 impl AppearanceSettings {
   pub fn sanitized(mut self) -> Self {
     self.ui_scale = sanitize_ui_scale(self.ui_scale);
-    self.accent = self
-      .accent
+    self.accent_color = self
+      .accent_color
       .take()
       .and_then(|raw| parse_hex_color(&raw).map(format_hex_color));
     self
@@ -125,7 +128,7 @@ impl AppearanceSettings {
       self.theme = theme;
     }
     if let Some(accent) = env.accent {
-      self.accent = Some(format_hex_color(accent));
+      self.accent_color = Some(format_hex_color(accent));
     }
     if let Some(scale) = env.ui_scale {
       self.ui_scale = scale;
@@ -137,6 +140,46 @@ impl AppearanceSettings {
       self.reduced_motion = reduced_motion;
     }
     self.sanitized()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn sanitized_drops_invalid_accent_color() {
+    let settings = AppearanceSettings {
+      accent_color: Some("not-a-color".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(settings.sanitized().accent_color, None);
+  }
+
+  #[test]
+  fn sanitized_normalizes_valid_accent_color() {
+    let settings = AppearanceSettings {
+      accent_color: Some("  #0f0 ".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(
+      settings.sanitized().accent_color,
+      Some("#00ff00".to_string())
+    );
+  }
+
+  #[test]
+  fn serializes_without_accent_color_when_none() {
+    let settings = AppearanceSettings {
+      theme: BrowserTheme::Dark,
+      accent_color: None,
+      ..Default::default()
+    };
+    let json = serde_json::to_string(&settings).expect("serialize AppearanceSettings");
+    assert!(
+      !json.contains("accent_color"),
+      "expected accent_color to be omitted when None, got: {json}"
+    );
   }
 }
 
@@ -179,42 +222,5 @@ impl AppearanceEnvOverrides {
       high_contrast,
       reduced_motion,
     }
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn sanitized_drops_invalid_accent() {
-    let settings = AppearanceSettings {
-      accent: Some("not-a-color".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(settings.sanitized().accent, None);
-  }
-
-  #[test]
-  fn sanitized_normalizes_valid_accent() {
-    let settings = AppearanceSettings {
-      accent: Some("#0f0".to_string()),
-      ..Default::default()
-    };
-    assert_eq!(settings.sanitized().accent, Some("#00ff00".to_string()));
-  }
-
-  #[test]
-  fn serializes_without_accent_when_none() {
-    let settings = AppearanceSettings {
-      theme: BrowserTheme::Dark,
-      accent: None,
-      ..Default::default()
-    };
-    let json = serde_json::to_string(&settings).expect("serialize AppearanceSettings");
-    assert!(
-      !json.contains("accent"),
-      "expected accent to be omitted when None, got: {json}"
-    );
   }
 }

@@ -20,9 +20,9 @@ fn appearance_env_overrides_take_precedence_over_persisted_settings() {
   with_thread_runtime_toggles(Arc::new(toggles), || {
     let persisted = AppearanceSettings {
       theme: BrowserTheme::Light,
-      accent: None,
       ui_scale: 1.25,
       high_contrast: false,
+      accent_color: None,
       reduced_motion: false,
     };
 

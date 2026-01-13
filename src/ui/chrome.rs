@@ -2863,20 +2863,24 @@ pub fn chrome_ui_with_bookmarks(
         }
 
         ui.add_space(8.0);
-        ui.label("Accent");
+        ui.label("Accent color");
         let env_accent_active = {
           let toggles = runtime_toggles();
           parse_browser_accent_env(toggles.get(ENV_BROWSER_ACCENT)).is_some()
         };
         if env_accent_active {
           ui.label(
-            egui::RichText::new(format!("Accent overridden by {ENV_BROWSER_ACCENT}"))
+            egui::RichText::new(format!("Overridden by env {ENV_BROWSER_ACCENT}"))
               .small()
               .weak(),
           );
         }
 
-        let current_accent = app.appearance.accent.as_deref().and_then(parse_hex_color);
+        let current_accent = app
+          .appearance
+          .accent_color
+          .as_deref()
+          .and_then(parse_hex_color);
 
         const ACCENT_PRESETS: [(&str, RgbaColor); 6] = [
           ("Blue", RgbaColor::new(0x3B, 0x82, 0xF6, 0xFF)),
@@ -2904,7 +2908,7 @@ pub fn chrome_ui_with_bookmarks(
             }
             let resp = resp.on_hover_text(label);
             if resp.clicked() {
-              app.appearance.accent = Some(format_hex_color(rgba));
+              app.appearance.accent_color = Some(format_hex_color(rgba));
             }
           }
         });
@@ -2920,9 +2924,9 @@ pub fn chrome_ui_with_bookmarks(
             egui::color_picker::Alpha::BlendOrAdditive,
           );
           if resp.changed() {
-            app.appearance.accent = Some(format_hex_color(RgbaColor::from(custom)));
+            app.appearance.accent_color = Some(format_hex_color(RgbaColor::from(custom)));
           }
-          if let Some(hex) = app.appearance.accent.as_deref() {
+          if let Some(hex) = app.appearance.accent_color.as_deref() {
             ui.monospace(hex);
           } else {
             ui.label(egui::RichText::new("Default").weak());
@@ -2930,9 +2934,8 @@ pub fn chrome_ui_with_bookmarks(
         });
 
         if ui.button("Reset accent").clicked() {
-          app.appearance.accent = None;
+          app.appearance.accent_color = None;
         }
-
         ui.add_space(8.0);
         ui.label("UI scale");
         let ui_scale_resp = ui.add(

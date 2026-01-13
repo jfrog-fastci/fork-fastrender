@@ -118,9 +118,10 @@ Not all builds implement all of these toggles yet; unsupported values are expect
       - `FASTR_BROWSER_REDUCED_MOTION=1` → `prefers-reduced-motion: reduce`.
     - Explicit renderer overrides (`FASTR_PREFERS_COLOR_SCHEME`, `FASTR_PREFERS_CONTRAST`,
       `FASTR_PREFERS_REDUCED_MOTION`) take precedence over any browser UI preference.
-- `FASTR_BROWSER_ACCENT=#RRGGBB[AA]` – override the browser chrome accent color (links, selection, loading progress line, focus rings).
-  - Takes precedence over the in-app persisted accent color setting (session file).
-  - Accepted formats: `#RGB`, `#RRGGBB`, `#RRGGBBAA` (leading `#` optional).
+- `FASTR_BROWSER_ACCENT=<hex>` – override the browser chrome accent color (links, focus rings,
+  selection highlight, etc).
+  - When set to a valid value, this overrides the persisted in-app accent selection.
+  - Accepted formats: `RGB`, `RRGGBB`, `RRGGBBAA` (leading `#` optional).
   - Invalid values are ignored.
 - `FASTR_BROWSER_UI_SCALE=<float>` – UI scale multiplier for browser chrome widgets.
   - Default: `1.0` (no additional scaling beyond the OS/window scale factor).

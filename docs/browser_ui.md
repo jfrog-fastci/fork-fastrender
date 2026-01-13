@@ -147,8 +147,8 @@ toolbar).
 
 These settings are persisted in the browser session file so they survive restarts.
 
-Environment variables like `FASTR_BROWSER_THEME=...` are still supported as overrides (useful for
-scripting/CI); see [env-vars.md](env-vars.md).
+Environment variables like `FASTR_BROWSER_THEME=...` and `FASTR_BROWSER_ACCENT=...` are still supported
+as overrides (useful for scripting/CI); see [env-vars.md](env-vars.md).
 
 ### Theme mode selection
 
@@ -173,8 +173,8 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 
 - The in-app Appearance popup includes a few accent presets and a custom color picker; the selected
   accent is persisted in the session file.
-- `FASTR_BROWSER_ACCENT=#RRGGBB[AA]` overrides the accent color (useful for scripting/CI; takes
-  precedence over the persisted setting). See [env-vars.md](env-vars.md) for accepted formats.
+- `FASTR_BROWSER_ACCENT=<hex>` overrides the accent color (useful for scripting/CI; takes precedence
+  over the persisted setting). See [env-vars.md](env-vars.md) for accepted formats.
 
 ### High contrast / reduced motion
 

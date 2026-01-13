@@ -1070,7 +1070,7 @@ mod tests {
     let mut session = BrowserSession::single("about:newtab".to_string());
     session.appearance = AppearanceSettings {
       theme: BrowserTheme::Dark,
-      accent: Some("#ff00ff".to_string()),
+      accent_color: Some("#ff00ff".to_string()),
       ui_scale: 1.25,
       high_contrast: true,
       reduced_motion: true,
@@ -1105,7 +1105,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings {
         theme: BrowserTheme::System,
-        accent: None,
+        accent_color: None,
         ui_scale: 999.0,
         high_contrast: false,
         reduced_motion: false,
@@ -1135,7 +1135,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings {
         theme: BrowserTheme::System,
-        accent: None,
+        accent_color: None,
         ui_scale: 0.01,
         high_contrast: false,
         reduced_motion: false,
@@ -1165,7 +1165,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings {
         theme: BrowserTheme::System,
-        accent: None,
+        accent_color: None,
         ui_scale: f32::NAN,
         high_contrast: false,
         reduced_motion: false,
