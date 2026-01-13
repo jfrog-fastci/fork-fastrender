@@ -62,7 +62,7 @@ mod windows {
   use windows_sys::Win32::System::JobObjects::IsProcessInJob;
   use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
-    GetExitCodeProcess, GetProcessMitigationPolicy, InitializeProcThreadAttributeList,
+    GetExitCodeProcess, InitializeProcThreadAttributeList,
     OpenProcessToken,
     ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy,
     ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy, ResumeThread, TerminateProcess,
@@ -1259,10 +1259,44 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     Flags: u32,
   }
 
+  type GetProcessMitigationPolicyFn = unsafe extern "system" fn(
+    windows_sys::Win32::Foundation::HANDLE,
+    PROCESS_MITIGATION_POLICY,
+    *mut c_void,
+    usize,
+  ) -> i32;
+
+  fn get_process_mitigation_policy_fn() -> Option<GetProcessMitigationPolicyFn> {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HMODULE;
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+
+    // `GetProcessMitigationPolicy` is only exported on Windows 8+. Load it dynamically so this probe
+    // can still run on downlevel Windows builds (where mitigations are treated as unsupported).
+    static FN: OnceLock<Option<GetProcessMitigationPolicyFn>> = OnceLock::new();
+    *FN.get_or_init(|| unsafe {
+      let kernel32: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
+      let module: HMODULE = GetModuleHandleW(kernel32.as_ptr());
+      if module.is_null() {
+        return None;
+      }
+
+      let proc = GetProcAddress(module, b"GetProcessMitigationPolicy\0".as_ptr())?;
+      Some(std::mem::transmute::<_, GetProcessMitigationPolicyFn>(proc))
+    })
+  }
+
   fn get_mitigation_policy<T>(policy: PROCESS_MITIGATION_POLICY) -> io::Result<T> {
+    let Some(get_policy) = get_process_mitigation_policy_fn() else {
+      return Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "GetProcessMitigationPolicy unavailable (requires Windows 8+)",
+      ));
+    };
+
     let mut data: T = unsafe { std::mem::zeroed() };
     let ok = unsafe {
-      GetProcessMitigationPolicy(
+      get_policy(
         GetCurrentProcess(),
         policy,
         (&mut data as *mut T).cast::<c_void>(),
