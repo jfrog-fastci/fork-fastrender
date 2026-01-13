@@ -2353,17 +2353,13 @@ fn validate_regex_pattern(
         let value = (ctrl as u32) % 32;
         return Ok((after_esc + ctrl.len_utf8(), RegexClassAtom::Single(value)));
       }
-      if unicode_mode {
-        return Err(RegexError {
-          kind: RegexErrorKind::InvalidPattern,
-          offset: base_offset + escape_start,
-          len: after_esc + ctrl.len_utf8() - escape_start,
-        });
-      }
-      // Non-UnicodeMode: Annex B allows treating `\c` followed by a non-letter as an extended atom.
-      // Approximate this by accepting it as an identity escape of `c` (leaving the following
-      // character to be parsed normally).
-      return Ok((after_esc, RegexClassAtom::Single('c' as u32)));
+      // `\c` is only valid when followed by an ASCII letter (or, in non-UnicodeMode character
+      // classes, a ClassControlLetter digit/underscore per Annex B).
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidPattern,
+        offset: base_offset + escape_start,
+        len: after_esc + ctrl.len_utf8() - escape_start,
+      });
     }
 
     // `\b` is backspace inside character classes.
@@ -2754,11 +2750,19 @@ fn validate_regex_pattern(
             len: after_c + control.len_utf8() - escape_start,
           });
         }
-        // Non-UnicodeMode: accept as an extended atom (effectively an identity escape of `c`).
-        i += esc_len;
-        prev_can_be_quantified = true;
-        quantifier_allows_lazy = false;
-        continue;
+        // In non-UnicodeMode, `\c` is only tolerated when followed by a decimal digit or `_`
+        // (Annex B ClassControlLetter), in which case it falls through as an extended atom.
+        if control.is_ascii_digit() || control == '_' {
+          i += esc_len;
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          continue;
+        }
+        return Err(RegexError {
+          kind: RegexErrorKind::InvalidPattern,
+          offset: base_offset + escape_start,
+          len: after_c + control.len_utf8() - escape_start,
+        });
       }
 
       if unicode_mode {
