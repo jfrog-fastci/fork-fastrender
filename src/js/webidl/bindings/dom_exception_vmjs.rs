@@ -13,6 +13,157 @@ pub struct DomExceptionClassVmJs {
   pub prototype: GcObject,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LegacyDomExceptionCode {
+  legacy_name: &'static str,
+  modern_name: &'static str,
+  code: u16,
+}
+
+// DOMException legacy codes:
+// https://webidl.spec.whatwg.org/#idl-DOMException
+// (plus historical legacy aliases that some test harnesses still use)
+const LEGACY_DOM_EXCEPTION_CODES: &[LegacyDomExceptionCode] = &[
+  LegacyDomExceptionCode {
+    legacy_name: "INDEX_SIZE_ERR",
+    modern_name: "IndexSizeError",
+    code: 1,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "DOMSTRING_SIZE_ERR",
+    modern_name: "DOMStringSizeError",
+    code: 2,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "HIERARCHY_REQUEST_ERR",
+    modern_name: "HierarchyRequestError",
+    code: 3,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "WRONG_DOCUMENT_ERR",
+    modern_name: "WrongDocumentError",
+    code: 4,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "INVALID_CHARACTER_ERR",
+    modern_name: "InvalidCharacterError",
+    code: 5,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "NO_DATA_ALLOWED_ERR",
+    modern_name: "NoDataAllowedError",
+    code: 6,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "NO_MODIFICATION_ALLOWED_ERR",
+    modern_name: "NoModificationAllowedError",
+    code: 7,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "NOT_FOUND_ERR",
+    modern_name: "NotFoundError",
+    code: 8,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "NOT_SUPPORTED_ERR",
+    modern_name: "NotSupportedError",
+    code: 9,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "INUSE_ATTRIBUTE_ERR",
+    modern_name: "InUseAttributeError",
+    code: 10,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "INVALID_STATE_ERR",
+    modern_name: "InvalidStateError",
+    code: 11,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "SYNTAX_ERR",
+    modern_name: "SyntaxError",
+    code: 12,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "INVALID_MODIFICATION_ERR",
+    modern_name: "InvalidModificationError",
+    code: 13,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "NAMESPACE_ERR",
+    modern_name: "NamespaceError",
+    code: 14,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "INVALID_ACCESS_ERR",
+    modern_name: "InvalidAccessError",
+    code: 15,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "VALIDATION_ERR",
+    modern_name: "ValidationError",
+    code: 16,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "TYPE_MISMATCH_ERR",
+    modern_name: "TypeMismatchError",
+    code: 17,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "SECURITY_ERR",
+    modern_name: "SecurityError",
+    code: 18,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "NETWORK_ERR",
+    modern_name: "NetworkError",
+    code: 19,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "ABORT_ERR",
+    modern_name: "AbortError",
+    code: 20,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "URL_MISMATCH_ERR",
+    modern_name: "URLMismatchError",
+    code: 21,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "QUOTA_EXCEEDED_ERR",
+    modern_name: "QuotaExceededError",
+    code: 22,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "TIMEOUT_ERR",
+    modern_name: "TimeoutError",
+    code: 23,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "INVALID_NODE_TYPE_ERR",
+    modern_name: "InvalidNodeTypeError",
+    code: 24,
+  },
+  LegacyDomExceptionCode {
+    legacy_name: "DATA_CLONE_ERR",
+    modern_name: "DataCloneError",
+    code: 25,
+  },
+];
+
+fn legacy_dom_exception_code_from_name(name: &str) -> u16 {
+  LEGACY_DOM_EXCEPTION_CODES
+    .iter()
+    .find_map(|entry| {
+      if entry.modern_name == name || entry.legacy_name == name {
+        Some(entry.code)
+      } else {
+        None
+      }
+    })
+    .unwrap_or(0)
+}
+
 fn data_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: false,
@@ -39,42 +190,6 @@ fn const_desc(value: Value) -> PropertyDescriptor {
 fn method_desc(value: Value) -> PropertyDescriptor {
   // Prototype methods are writable, non-enumerable, configurable.
   data_desc(value)
-}
-
-/// DOMException "legacy codes" as specified by the DOM Standard.
-///
-/// <https://dom.spec.whatwg.org/#dom-domexception-code>
-pub(crate) fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
-  match name {
-    // Keep the mapping table reasonably complete so callers can use `new_instance` for other
-    // DOMException names (e.g. DataCloneError).
-    "IndexSizeError" => 1,
-    "DOMStringSizeError" => 2,
-    "HierarchyRequestError" => 3,
-    "WrongDocumentError" => 4,
-    "InvalidCharacterError" => 5,
-    "NoDataAllowedError" => 6,
-    "NoModificationAllowedError" => 7,
-    "NotFoundError" => 8,
-    "NotSupportedError" => 9,
-    "InUseAttributeError" => 10,
-    "InvalidStateError" => 11,
-    "SyntaxError" => 12,
-    "InvalidModificationError" => 13,
-    "NamespaceError" => 14,
-    "InvalidAccessError" => 15,
-    "ValidationError" => 16,
-    "TypeMismatchError" => 17,
-    "SecurityError" => 18,
-    "NetworkError" => 19,
-    "AbortError" => 20,
-    "URLMismatchError" => 21,
-    "QuotaExceededError" => 22,
-    "TimeoutError" => 23,
-    "InvalidNodeTypeError" => 24,
-    "DataCloneError" => 25,
-    _ => 0,
-  }
 }
 
 impl DomExceptionClassVmJs {
@@ -160,39 +275,18 @@ impl DomExceptionClassVmJs {
       method_desc(Value::Object(to_string_fn)),
     )?;
 
-    // Legacy `DOMException.*_ERR` constants.
-    // These are often used by older libraries.
-    for (name, code) in [
-      ("INDEX_SIZE_ERR", 1u16),
-      ("DOMSTRING_SIZE_ERR", 2u16),
-      ("HIERARCHY_REQUEST_ERR", 3u16),
-      ("WRONG_DOCUMENT_ERR", 4u16),
-      ("INVALID_CHARACTER_ERR", 5u16),
-      ("NO_DATA_ALLOWED_ERR", 6u16),
-      ("NO_MODIFICATION_ALLOWED_ERR", 7u16),
-      ("NOT_FOUND_ERR", 8u16),
-      ("NOT_SUPPORTED_ERR", 9u16),
-      ("INUSE_ATTRIBUTE_ERR", 10u16),
-      ("INVALID_STATE_ERR", 11u16),
-      ("SYNTAX_ERR", 12u16),
-      ("INVALID_MODIFICATION_ERR", 13u16),
-      ("NAMESPACE_ERR", 14u16),
-      ("INVALID_ACCESS_ERR", 15u16),
-      ("VALIDATION_ERR", 16u16),
-      ("TYPE_MISMATCH_ERR", 17u16),
-      ("SECURITY_ERR", 18u16),
-      ("NETWORK_ERR", 19u16),
-      ("ABORT_ERR", 20u16),
-      ("URL_MISMATCH_ERR", 21u16),
-      ("QUOTA_EXCEEDED_ERR", 22u16),
-      ("TIMEOUT_ERR", 23u16),
-      ("INVALID_NODE_TYPE_ERR", 24u16),
-      ("DATA_CLONE_ERR", 25u16),
-    ] {
-      let key_s = scope.alloc_string(name)?;
+    // Legacy DOMException numeric constants.
+    //
+    // WPT's Range harness (`tests/wpt_dom/tests/dom/common.js`) expects these to be enumerable on an
+    // exception instance via prototype-chain enumeration.
+    for entry in LEGACY_DOM_EXCEPTION_CODES {
+      let key_s = scope.alloc_string(entry.legacy_name)?;
       scope.push_root(Value::String(key_s))?;
       let key = PropertyKey::from_string(key_s);
-      scope.define_property(ctor, key, const_desc(Value::Number(code as f64)))?;
+      let value = Value::Number(entry.code as f64);
+      // Expose on both the prototype and constructor (WebIDL-style).
+      scope.define_property(proto, key, const_desc(value))?;
+      scope.define_property(ctor, key, const_desc(value))?;
     }
 
     // Expose DOMException on the global object.
@@ -241,7 +335,8 @@ impl DomExceptionClassVmJs {
     let key_message = PropertyKey::from_string(key_message_s);
     scope.define_property(obj, key_message, data_desc(Value::String(message_s)))?;
 
-    let code = legacy_code_for_dom_exception_name(name);
+    // Legacy `DOMException.code`.
+    let code = legacy_dom_exception_code_from_name(name);
     let key_code_s = scope.alloc_string("code")?;
     scope.push_root(Value::String(key_code_s))?;
     let key_code = PropertyKey::from_string(key_code_s);
@@ -362,8 +457,9 @@ fn dom_exception_create_instance(
   let key_message = PropertyKey::from_string(key_message_s);
   scope.define_property(obj, key_message, data_desc(Value::String(message_s)))?;
 
+  // Legacy `DOMException.code`.
   let name_utf8 = scope.heap().get_string(name_s)?.to_utf8_lossy();
-  let code = legacy_code_for_dom_exception_name(name_utf8.as_ref());
+  let code = legacy_dom_exception_code_from_name(name_utf8.as_ref());
   let key_code_s = scope.alloc_string("code")?;
   scope.push_root(Value::String(key_code_s))?;
   let key_code = PropertyKey::from_string(key_code_s);
@@ -701,6 +797,90 @@ mod tests {
 
     realm.teardown(&mut heap);
 
+    Ok(())
+  }
+
+  #[test]
+  fn dom_exception_has_legacy_code_and_constants() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let class = {
+      let mut scope = heap.scope();
+      DomExceptionClassVmJs::install(&mut vm, &mut scope, &realm)?
+    };
+
+    {
+      let mut scope = heap.scope();
+      let realm_id = realm.id();
+      let mut vm = vm
+        .execution_context_guard(ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
+
+      // Representative legacy constants must exist and be enumerable on the prototype.
+      let key_hierarchy = key(&mut scope, "HIERARCHY_REQUEST_ERR")?;
+      let hierarchy_desc = scope
+        .heap()
+        .object_get_own_property(class.prototype, &key_hierarchy)?
+        .expect("expected HIERARCHY_REQUEST_ERR on DOMException.prototype");
+      assert!(
+        hierarchy_desc.enumerable,
+        "legacy constants must be enumerable for WPT `for..in` discovery"
+      );
+      let PropertyKind::Data { value, .. } = hierarchy_desc.kind else {
+        panic!("expected HIERARCHY_REQUEST_ERR to be a data property");
+      };
+      assert_eq!(as_f64(value), 3.0);
+
+      // `.code` must be derived from the exception name, supporting both modern and legacy names.
+      let code_key = key(&mut scope, "code")?;
+
+      for (name, expected_code) in [
+        ("HierarchyRequestError", 3.0),
+        ("InvalidStateError", 11.0),
+        ("InvalidNodeTypeError", 24.0),
+        ("IndexSizeError", 1.0),
+        // Legacy name passed to the constructor.
+        ("HIERARCHY_REQUEST_ERR", 3.0),
+      ] {
+        let msg_s = scope.alloc_string("m")?;
+        scope.push_root(Value::String(msg_s))?;
+        let name_s = scope.alloc_string(name)?;
+        scope.push_root(Value::String(name_s))?;
+
+        let obj = vm.construct_without_host(
+          &mut scope,
+          Value::Object(class.constructor),
+          &[Value::String(msg_s), Value::String(name_s)],
+          Value::Object(class.constructor),
+        )?;
+        scope.push_root(obj)?;
+        let Value::Object(obj_handle) = obj else {
+          panic!("expected DOMException constructor to return an object, got {obj:?}");
+        };
+
+        let code = vm.get(&mut scope, obj_handle, code_key)?;
+        assert_eq!(as_f64(code), expected_code, "wrong .code for name {name}");
+
+        // Prototype-chain lookup: instance["HIERARCHY_REQUEST_ERR"] === 3
+        let hierarchy_value = vm.get(&mut scope, obj_handle, key_hierarchy)?;
+        assert_eq!(as_f64(hierarchy_value), 3.0);
+      }
+
+      // Ensure `DomExceptionClassVmJs::new_instance` also sets `.code`.
+      let obj = class.new_instance(&mut scope, "InvalidStateError", "m")?;
+      scope.push_root(obj)?;
+      let Value::Object(obj_handle) = obj else {
+        panic!("expected DOMException instance to be an object");
+      };
+      let code = vm.get(&mut scope, obj_handle, code_key)?;
+      assert_eq!(as_f64(code), 11.0);
+    }
+
+    realm.teardown(&mut heap);
     Ok(())
   }
 }
