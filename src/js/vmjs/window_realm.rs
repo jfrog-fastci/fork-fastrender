@@ -53334,12 +53334,16 @@ mod tests {
       &mut host,
       r#"(() => {
         const video = document.createElement('video');
+        const audio = document.createElement('audio');
         if (typeof video.networkState !== 'number') return false;
         if (typeof video.readyState !== 'number') return false;
         if (typeof video.seeking !== 'boolean') return false;
         if (video.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
         if (video.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
         if (video.seeking !== false) return false;
+        if (audio.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
+        if (audio.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
+        if (audio.seeking !== false) return false;
         return true;
       })()"#,
     )?;
