@@ -194,6 +194,8 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
     (alias: `webgpu`), `all` (aliases: `auto`, `default`).
 - `FASTR_BROWSER_DOWNLOAD_DIR=/path/to/dir` – override the download directory used by the windowed browser UI.
   - CLI equivalent: `browser --download-dir /path/to/dir`.
+- `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
+  - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).
 - `FASTR_BROWSER_HISTORY_PATH=/path/to/history.json` – override the history persistence file path (JSON).
 - `FASTR_BROWSER_ALLOW_CRASH_URLS=0|1` – allow navigating to `crash://` URLs (testing hook).
@@ -325,6 +327,7 @@ Not all builds implement all of these toggles yet; unsupported values are expect
 
 - `FASTR_BROWSER_SESSION_PATH=/path/to/fastrender_session.json` – override where the browser session file is stored.
   - Primary use case: tests/integration harnesses that need an isolated session file.
+  - CLI equivalent: `browser --session-path /path/to/fastrender_session.json` (takes precedence over the env var).
   - The default is a per-user config path (via `directories`) with a fallback to `./fastrender_session.json` in the current working directory.
 
 ### Browser bookmarks file

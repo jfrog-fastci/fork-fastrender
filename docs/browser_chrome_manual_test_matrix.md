@@ -24,6 +24,12 @@ parity are out of scope here** (see `instructions/browser_interaction.md`). This
 2. **Use an isolated session** so you don’t pollute your real profile while testing:
 
    ```bash
+   # Preferred: CLI flag
+   bash scripts/run_limited.sh --as 64G -- \
+     bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+     --session-path ./target/manual_session.json
+   #
+   # Env var equivalent:
    FASTR_BROWSER_SESSION_PATH=./target/manual_session.json \
      bash scripts/run_limited.sh --as 64G -- \
      bash scripts/cargo_agent.sh run --features browser_ui --bin browser
@@ -205,7 +211,7 @@ Use `about:test-scroll` → `about:test-form` to build deterministic back/forwar
 
 ### Normal session restore (clean exit)
 
-- [ ] With an isolated session (`FASTR_BROWSER_SESSION_PATH=...`), create a meaningful state:
+- [ ] With an isolated session (`--session-path ...` or `FASTR_BROWSER_SESSION_PATH=...`), create a meaningful state:
   - [ ] Open 3+ tabs and switch the active tab.
   - [ ] Reorder tabs.
   - [ ] Change per-tab zoom (Ctrl/Cmd +/-).
@@ -436,4 +442,3 @@ See `docs/chrome_accessibility.md` for deeper debugging and the `dump_accesskit`
 
 - [ ] Enable Orca (often Super+Alt+S on GNOME; may vary).
 - [ ] Tab/arrow through chrome controls and ensure Orca announces labels/states.
-
