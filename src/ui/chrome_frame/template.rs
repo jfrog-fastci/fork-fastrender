@@ -164,14 +164,15 @@ pub fn chrome_frame_html(app: &BrowserAppState) -> String {
         <a class="toolbar-button" href="chrome-action:forward" aria-label="Forward">Forward</a>
         <a class="toolbar-button" href="chrome-action:reload" aria-label="Reload">Reload</a>
       </div>
-      <div class="address-bar-wrap">
-        <form class="address-bar" action="chrome-action:navigate" method="get" autocomplete="off">
-          <input
-            class="address-input"
-            name="url"
-            type="text"
-            value="{safe_current_url}"
-            placeholder="Enter URL"
+       <div class="address-bar-wrap">
+         <form class="address-bar" action="chrome-action:navigate" method="get" autocomplete="off">
+           <input
+             id="address-bar"
+             class="address-input"
+             name="url"
+             type="text"
+             value="{safe_current_url}"
+             placeholder="Enter URL"
             aria-label="Address bar"
           >
         </form>
@@ -231,6 +232,10 @@ mod tests {
       "chrome frame address bar should include an <input name=\"url\">"
     );
     assert!(
+      html.contains(r#"id="address-bar""#),
+      "chrome frame address bar should include #address-bar for stable querying"
+    );
+    assert!(
       html.contains(r#"id="content-frame""#),
       "chrome frame should include #content-frame placeholder"
     );
@@ -252,6 +257,11 @@ mod tests {
       count_nodes_with_id(doc.dom(), "content-frame"),
       1,
       "#content-frame should exist exactly once"
+    );
+    assert_eq!(
+      count_nodes_with_id(doc.dom(), "address-bar"),
+      1,
+      "#address-bar should exist exactly once"
     );
   }
 

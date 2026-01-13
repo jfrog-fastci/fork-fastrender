@@ -236,9 +236,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
   // Address bar.
   out.push_str("    <div class=\"address-bar-wrap\">\n");
   out.push_str(
-    "      <form class=\"address-bar-form\" action=\"chrome-action:navigate\" method=\"get\">\n",
+    "      <form id=\"address-form\" class=\"address-bar-form\" action=\"chrome-action:navigate\" method=\"get\" autocomplete=\"off\">\n",
   );
-  out.push_str("        <input class=\"address-input\" name=\"url\" type=\"text\" value=\"");
+  out.push_str("        <input id=\"address-bar\" class=\"address-input\" name=\"url\" type=\"text\" value=\"");
   out.push_str(&escape_html(&app.chrome.address_bar_text));
   out.push_str("\">\n");
   // A submit button is useful for keyboard-less environments; CSS can hide it if desired.

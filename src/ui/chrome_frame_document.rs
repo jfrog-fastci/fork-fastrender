@@ -359,8 +359,19 @@ pub fn apply_chrome_frame_event(app: &mut BrowserAppState, event: ChromeFrameEve
       app.chrome.address_bar_has_focus = true;
     }
     ChromeFrameEvent::AddressBarFocusChanged(has_focus) => {
-      // Keep focus/editing coupled, and revert uncommitted edits on blur (BrowserAppState helper).
-      app.set_address_bar_editing(has_focus);
+      // Focus changes should not automatically enter "editing" mode:
+      // - focusing the omnibox does not imply the user modified it yet,
+      // - but losing focus should discard any uncommitted edits.
+      app.chrome.address_bar_has_focus = has_focus;
+      if !has_focus {
+        // Only revert to the active tab URL when the user was actively editing.
+        if app.chrome.address_bar_editing {
+          app.set_address_bar_editing(false);
+        } else {
+          // Still close the dropdown so stale suggestion state doesn't linger.
+          app.chrome.omnibox.reset();
+        }
+      }
     }
   }
 }
@@ -407,6 +418,8 @@ pub fn sync_browser_state_to_chrome_frame(app: &mut BrowserAppState, chrome: &mu
 mod tests {
   use super::*;
   use crate::text::font_db::FontConfig;
+  use crate::ui::omnibox_nav::{apply_omnibox_nav_key, OmniboxNavKey};
+  use crate::ui::ChromeAction;
 
   #[test]
   fn address_bar_text_input_emits_event() {
@@ -433,5 +446,53 @@ mod tests {
       vec![ChromeFrameEvent::AddressBarTextChanged("hello".to_string())]
     );
     assert_eq!(doc.address_bar_value(), "hello");
+  }
+
+  #[test]
+  fn chrome_frame_address_bar_sync_updates_browser_state_and_enter_clears_editing() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let mut chrome =
+      ChromeFrameDocument::new_with_renderer(renderer, (320, 80), 1.0).expect("create chrome frame");
+
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    // Start with a blank omnibox value so the test doesn't depend on initial tab URL formatting.
+    app.chrome.address_bar_text.clear();
+    app.chrome.address_bar_editing = false;
+    app.chrome.address_bar_has_focus = false;
+
+    // State -> DOM initial sync.
+    sync_browser_state_to_chrome_frame(&mut app, &mut chrome);
+
+    // Focus should update `address_bar_has_focus` but not enter editing mode.
+    for event in chrome.focus_address_bar() {
+      apply_chrome_frame_event(&mut app, event);
+    }
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(!app.chrome.address_bar_editing);
+
+    // Typing should sync DOM -> state and flip editing on.
+    for event in chrome.text_input("example.com") {
+      apply_chrome_frame_event(&mut app, event);
+    }
+    assert_eq!(app.chrome.address_bar_text, "example.com");
+    assert!(app.chrome.address_bar_editing);
+
+    // Enter should resolve into a navigation action and clear editing/focus.
+    let outcome = apply_omnibox_nav_key(&mut app, OmniboxNavKey::Enter);
+    assert_eq!(
+      outcome.action,
+      Some(ChromeAction::NavigateTo("example.com".to_string()))
+    );
+    assert!(!app.chrome.address_bar_editing);
+    assert!(!app.chrome.address_bar_has_focus);
+
+    // Apply state -> DOM sync; this should blur the DOM input to match the model and keep the
+    // committed value visible.
+    sync_browser_state_to_chrome_frame(&mut app, &mut chrome);
+    assert!(!chrome.address_bar_has_focus());
+    assert_eq!(chrome.address_bar_value(), "example.com");
   }
 }
