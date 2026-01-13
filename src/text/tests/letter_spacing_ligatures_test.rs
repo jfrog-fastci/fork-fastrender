@@ -98,4 +98,15 @@ fn shaping_cache_key_includes_letter_spacing() {
     2,
     "letter-spacing should produce a distinct shaping cache entry"
   );
+
+  let mut spaced2 = baseline.clone();
+  spaced2.letter_spacing = 2.0;
+  pipeline
+    .shape("cache me", &spaced2, &ctx)
+    .expect("shape spaced2");
+  assert_eq!(
+    pipeline.cache_len(),
+    2,
+    "different non-zero letter-spacing values should share the same shaping cache entry"
+  );
 }

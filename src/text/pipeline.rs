@@ -6074,7 +6074,15 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   style.language.hash(&mut hasher);
   style.font_family.hash(&mut hasher);
   f32_to_canonical_bits(style.font_size).hash(&mut hasher);
-  f32_to_canonical_bits(style.letter_spacing).hash(&mut hasher);
+  // `letter-spacing` does not affect the HarfBuzz shaping result directly (spacing is applied later
+  // during inline layout). The only shaping-relevant distinction is "zero vs non-zero", because we
+  // disable optional ligature features when spacing is enabled (see `collect_opentype_features`).
+  //
+  // Hashing the raw float bits here would create distinct shaping cache keys for e.g. `1px` vs
+  // `2px`, even though the shaped glyph stream is identical. Collapse all non-zero values to
+  // improve cache hit-rate and reduce cache growth.
+  let has_letter_spacing = style.letter_spacing != 0.0;
+  has_letter_spacing.hash(&mut hasher);
   style.font_weight.to_u16().hash(&mut hasher);
   f32_to_canonical_bits(style.font_stretch.to_percentage()).hash(&mut hasher);
 
