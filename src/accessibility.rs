@@ -3193,13 +3193,21 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
       {
         return Some(value.to_string());
       }
-      Some(
-        node
-          .node
-          .get_attribute_ref("value")
-          .map(|v| v.to_string())
-          .unwrap_or_default(),
-      )
+      // Fall back to the DOM layer's value computation so accessibility matches HTML sanitization
+      // (e.g. color/date/time inputs) instead of exposing the raw `value=` attribute.
+      ElementRef::new(&node.node)
+        .accessibility_value()
+        .or_else(|| {
+          // Defensive fallback: `ElementRef::control_value()` should always return `Some` for
+          // `<input>`, but preserve previous behaviour if that ever changes.
+          Some(
+            node
+              .node
+              .get_attribute_ref("value")
+              .map(|v| v.to_string())
+              .unwrap_or_default(),
+          )
+        })
     }
     "textarea" => {
       if let Some(value) = ctx
