@@ -4,10 +4,15 @@
 //! architecture. The sandbox should be applied **as early as possible during renderer startup**,
 //! and critically **before any thread pools spawn**.
 //!
-//! On Linux, the implementation uses `seccomp-bpf` with `SECCOMP_FILTER_FLAG_TSYNC` to ensure the
-//! filter is applied to all threads in the process. If you apply the sandbox after spawning
-//! threads, the kernel may reject the request (or you may inadvertently sandbox background
-//! threads that still need broader syscall access).
+//! ## Platform implementations
+//!
+//! - **Linux**: `seccomp-bpf` with `SECCOMP_FILTER_FLAG_TSYNC` to ensure the filter is applied to
+//!   all threads in the process. If you apply the sandbox after spawning threads, the kernel may
+//!   reject the request (or you may inadvertently sandbox background threads that still need
+//!   broader syscall access).
+//! - **macOS**: renderers can call `sandbox_init(3)` (Seatbelt) in-process, but the browser process
+//!   may also want a *pre-main* sandbox when spawning renderers from a multithreaded parent. See
+//!   [`macos_spawn`] for a `/usr/bin/sandbox-exec` based launcher helper.
 //!
 //! The current policy is intentionally small and focused:
 //! - deny opening filesystem paths (e.g. `open/openat`)
@@ -98,6 +103,9 @@ pub fn apply_renderer_sandbox(
 
 #[cfg(target_os = "linux")]
 mod linux_seccomp;
+
+#[cfg(target_os = "macos")]
+pub mod macos_spawn;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {

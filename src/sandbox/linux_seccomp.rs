@@ -7,9 +7,7 @@
 //! - The policy is a small denylist (returning `EPERM`) on top of a broad allowlist,
 //!   with a conservative default action (`KILL_PROCESS`) for syscalls not explicitly allowed.
 
-use super::{
-  RendererSandboxConfig, SandboxError, SandboxStatus, SeccompInstallRejectedReason,
-};
+use super::{RendererSandboxConfig, SandboxError, SandboxStatus, SeccompInstallRejectedReason};
 use std::io;
 
 // Values from `linux/seccomp.h`.
@@ -152,13 +150,11 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_getpgrp,
     libc::SYS_setsid,
     libc::SYS_getsid,
-
     // Signals.
     libc::SYS_rt_sigaction,
     libc::SYS_rt_sigprocmask,
     libc::SYS_rt_sigreturn,
     libc::SYS_sigaltstack,
-
     // Memory management.
     libc::SYS_brk,
     libc::SYS_mmap,
@@ -166,7 +162,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_mprotect,
     libc::SYS_mremap,
     libc::SYS_madvise,
-
     // Randomness and time.
     libc::SYS_getrandom,
     libc::SYS_clock_gettime,
@@ -174,7 +169,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_clock_nanosleep,
     libc::SYS_nanosleep,
     libc::SYS_sched_yield,
-
     // File descriptor I/O (on already-open fds, pipes, etc.).
     libc::SYS_read,
     libc::SYS_write,
@@ -202,10 +196,8 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_epoll_pwait,
     libc::SYS_eventfd2,
     libc::SYS_signalfd4,
-
     // Local IPC primitives (not network).
     libc::SYS_socketpair,
-
     // Misc.
     libc::SYS_uname,
     libc::SYS_sysinfo,
@@ -217,7 +209,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_umask,
     libc::SYS_futex,
     libc::SYS_restart_syscall,
-
     // Allow querying metadata about existing fds.
     libc::SYS_fstat,
     libc::SYS_fstatfs,
