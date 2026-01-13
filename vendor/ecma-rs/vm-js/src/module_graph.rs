@@ -319,7 +319,6 @@ impl ModuleGraph {
   pub(crate) fn mark_scc_dirty(&mut self) {
     self.scc_dirty = true;
   }
-
   pub fn set_global_lexical_env(&mut self, env: GcEnv) {
     self.global_lexical_env = Some(env);
   }
@@ -2358,9 +2357,10 @@ impl ModuleGraph {
     let result = (|| -> Result<(), VmError> {
       self.link_with_scope(vm, scope, global_object, module)?;
 
-      if self.modules[module_index(module)].has_tla {
-        return Err(VmError::Unimplemented("top-level await"));
-      }
+      // `evaluate_sync_with_scope` is intended for embeddings that do not support async module
+      // evaluation / top-level await. Reject any graph that contains TLA *before* executing any
+      // module bodies so callers don't observe partial execution.
+      self.ensure_no_tla_in_resolved_graph(vm, module)?;
 
       self.eval_inner(vm, scope, global_object, realm_id, module, host, hooks)
     })();
@@ -2374,6 +2374,59 @@ impl ModuleGraph {
     }
 
     result
+  }
+
+  fn ensure_no_tla_in_resolved_graph(&self, vm: &mut Vm, module: ModuleId) -> Result<(), VmError> {
+    let module_count = self.modules.len();
+    if module_count == 0 {
+      return Ok(());
+    }
+
+    let mut stack: Vec<ModuleId> = Vec::new();
+    stack.push(module);
+
+    let mut visited = vec![false; module_count];
+
+    const MODULE_TICK_EVERY: usize = 32;
+    const EDGE_TICK_EVERY: usize = 32;
+    let mut visited_modules: usize = 0;
+
+    while let Some(current) = stack.pop() {
+      let idx = module_index(current);
+      if idx >= module_count {
+        return Err(VmError::invalid_handle());
+      }
+      if visited[idx] {
+        continue;
+      }
+      visited[idx] = true;
+
+      visited_modules = visited_modules.wrapping_add(1);
+      if visited_modules % MODULE_TICK_EVERY == 0 || visited_modules == 1 {
+        vm.tick()?;
+      }
+
+      let record = &self.modules[idx];
+      if record.has_tla {
+        return Err(VmError::Unimplemented("top-level await"));
+      }
+
+      for (i, loaded) in record.loaded_modules.iter().enumerate() {
+        if i % EDGE_TICK_EVERY == 0 && i != 0 {
+          vm.tick()?;
+        }
+        let imported = loaded.module;
+        let imported_idx = module_index(imported);
+        if imported_idx >= module_count {
+          return Err(VmError::invalid_handle());
+        }
+        if !visited[imported_idx] {
+          stack.push(imported);
+        }
+      }
+    }
+
+    Ok(())
   }
 
   /// Convenience wrapper around [`ModuleGraph::evaluate_sync_with_scope`] that creates a new scope.

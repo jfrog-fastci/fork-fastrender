@@ -109,6 +109,73 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
 }
 
 #[test]
+fn module_evaluate_sync_rejects_top_level_await_in_dependencies() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+  graph.add_module_with_specifier(
+    "dep.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        globalThis.dep_executed = true;
+        export const v = await Promise.resolve(1);
+      "#,
+    )?,
+  );
+  let main = graph.add_module_with_specifier(
+    "main.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        import { v } from "dep.js";
+        export const out = v + 1;
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  let err = graph
+    .evaluate_sync(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      main,
+      &mut host,
+      &mut hooks,
+    )
+    .expect_err("sync module evaluation should reject graphs that contain top-level await");
+  match err {
+    VmError::Unimplemented(msg) => assert!(
+      msg.contains("top-level await"),
+      "error message should mention top-level await (got {msg:?})"
+    ),
+    other => panic!("expected VmError::Unimplemented, got {other:?}"),
+  }
+
+  // Ensure we failed fast (no module bodies executed).
+  let mut scope = heap.scope();
+  let key_s = scope.alloc_string("dep_executed")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  assert_eq!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key)?,
+    None,
+    "dependency module body should not have executed"
+  );
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn module_evaluate_supports_anonymous_default_export_function_decls() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
