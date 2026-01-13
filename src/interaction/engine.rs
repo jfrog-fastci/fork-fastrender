@@ -6834,10 +6834,7 @@ impl InteractionEngine {
         selection: edit.selection(),
       });
     let changed = self.state.text_edit != next;
-    self.state.text_edit = next;
-    if changed {
-      self.state.mark_paint_hash_dirty();
-    }
+    self.state.set_text_edit(next);
     changed
   }
 
@@ -8168,7 +8165,7 @@ impl InteractionEngine {
             }
           };
 
-          self.state.document_selection = next;
+          self.state.set_document_selection(next);
           if let Some(DocumentSelectionState::Ranges(ranges)) =
             self.state.document_selection.as_ref()
           {
@@ -8204,13 +8201,10 @@ impl InteractionEngine {
         }
       } else if !modifiers.shift() && !modifiers.command() {
         // Plain click away from selectable text clears the selection.
-        self.state.document_selection = None;
+        self.state.set_document_selection(None);
       }
     }
     let selection_changed = prev_doc_selection != self.state.document_selection;
-    if selection_changed {
-      self.state.mark_paint_hash_dirty();
-    }
     dom_changed |= selection_changed;
     (dom_changed, down_hit)
   }
@@ -8842,11 +8836,9 @@ impl InteractionEngine {
                   if is_focusable_interactive_element(&index, target_id) {
                     dom_changed |= self.set_focus(&mut index, Some(target_id), false);
                     // Restore the document selection for copy semantics.
-                    let before_selection = self.state.document_selection.clone();
-                    self.state.document_selection = preserved_selection.clone();
-                    if before_selection != self.state.document_selection {
-                      self.state.mark_paint_hash_dirty();
-                    }
+                    self
+                      .state
+                      .set_document_selection(preserved_selection.clone());
 
                     // Place caret/selection state for the pending drop so `apply_text_drop` inserts
                     // at the drop location.
@@ -8879,7 +8871,7 @@ impl InteractionEngine {
                   };
                   // Ensure selection remains highlighted for copy semantics even if focusing cleared
                   // it above.
-                  self.state.document_selection = preserved_selection;
+                  self.state.set_document_selection(preserved_selection);
                   return (dom_changed, action, up_hit);
                 }
               }
@@ -8900,21 +8892,19 @@ impl InteractionEngine {
           // Drag candidate ended without activation: fall back to normal click behavior by
           // collapsing the document selection to the original down point.
           let before = self.state.document_selection.clone();
-          if let Some(point) = document_selection_point_at_page_point(
+          let next = if let Some(point) = document_selection_point_at_page_point(
             &box_index,
             fragment_tree,
             drag_drop.down_page_point,
           ) {
-            self.state.document_selection = Some(DocumentSelectionState::Ranges(
-              DocumentSelectionRanges::collapsed(point),
-            ));
+            Some(DocumentSelectionState::Ranges(DocumentSelectionRanges::collapsed(
+              point,
+            )))
           } else {
-            self.state.document_selection = None;
-          }
+            None
+          };
+          self.state.set_document_selection(next);
           let selection_changed = before != self.state.document_selection;
-          if selection_changed {
-            self.state.mark_paint_hash_dirty();
-          }
           dom_changed |= selection_changed;
         }
       }
@@ -9532,7 +9522,9 @@ impl InteractionEngine {
     let mut changed = if is_focusable_interactive_element(&index, target_dom_id) {
       let focus_changed = self.set_focus(&mut index, Some(target_dom_id), false);
       // `set_focus` collapses any active document selection; restore it for drag-drop copy semantics.
-      self.state.document_selection = preserved_document_selection.clone();
+      self
+        .state
+        .set_document_selection(preserved_document_selection.clone());
       focus_changed
     } else {
       false
@@ -9565,7 +9557,7 @@ impl InteractionEngine {
     }
 
     // Restore document selection for copy semantics even if focus changes occurred above.
-    self.state.document_selection = preserved_document_selection;
+    self.state.set_document_selection(preserved_document_selection);
 
     changed
   }
@@ -10248,10 +10240,7 @@ impl InteractionEngine {
 
   fn ime_cancel_internal(&mut self) -> bool {
     let changed = self.state.ime_preedit.is_some();
-    self.state.ime_preedit = None;
-    if changed {
-      self.state.mark_paint_hash_dirty();
-    }
+    self.state.set_ime_preedit(None);
     changed
   }
 
@@ -10294,30 +10283,8 @@ impl InteractionEngine {
       return changed;
     }
 
-    // Update internal state.
-    let mut preedit_changed = false;
-    match self.state.ime_preedit.as_mut() {
-      Some(existing) if existing.node_id == focused => {
-        if existing.text != text || existing.cursor != cursor {
-          existing.text.clear();
-          existing.text.push_str(text);
-          existing.cursor = cursor;
-          preedit_changed = true;
-        }
-      }
-      _ => {
-        self.state.ime_preedit = Some(ImePreeditState {
-          node_id: focused,
-          text: text.to_string(),
-          cursor,
-        });
-        preedit_changed = true;
-      }
-    }
-    if preedit_changed {
-      self.state.mark_paint_hash_dirty();
-      changed = true;
-    }
+    // Update internal state (paint-only).
+    changed |= self.state.update_ime_preedit(focused, text, cursor);
 
     changed
   }
@@ -10417,8 +10384,7 @@ impl InteractionEngine {
 
             // Text-control selection is distinct from document selection.
             if self.state.document_selection.is_some() {
-              self.state.document_selection = None;
-              self.state.mark_paint_hash_dirty();
+              self.state.set_document_selection(None);
               changed = true;
             }
           }
@@ -10432,9 +10398,10 @@ impl InteractionEngine {
 
     // No focused text control: fall back to document selection.
     let prev_doc = self.state.document_selection.clone();
-    self.state.document_selection = Some(DocumentSelectionState::All);
+    self
+      .state
+      .set_document_selection(Some(DocumentSelectionState::All));
     if prev_doc != self.state.document_selection {
-      self.state.mark_paint_hash_dirty();
       changed = true;
     }
 

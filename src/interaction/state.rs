@@ -960,6 +960,42 @@ impl InteractionState {
     self.mark_paint_hash_dirty();
   }
 
+  /// Update the IME preedit (composition) state for `node_id`, marking the cached paint hash dirty
+  /// when the state changes.
+  ///
+  /// This preserves the existing allocation for the preedit string when possible (by mutating the
+  /// stored `String` in place).
+  pub fn update_ime_preedit(
+    &mut self,
+    node_id: usize,
+    text: &str,
+    cursor: Option<(usize, usize)>,
+  ) -> bool {
+    let mut changed = false;
+    match self.ime_preedit.as_mut() {
+      Some(existing) if existing.node_id == node_id => {
+        if existing.text != text || existing.cursor != cursor {
+          existing.text.clear();
+          existing.text.push_str(text);
+          existing.cursor = cursor;
+          changed = true;
+        }
+      }
+      _ => {
+        self.ime_preedit = Some(ImePreeditState {
+          node_id,
+          text: text.to_string(),
+          cursor,
+        });
+        changed = true;
+      }
+    }
+    if changed {
+      self.mark_paint_hash_dirty();
+    }
+    changed
+  }
+
   /// Mutably access the IME preedit state, marking the cached paint hash dirty.
   pub fn ime_preedit_mut(&mut self) -> &mut Option<ImePreeditState> {
     self.mark_paint_hash_dirty();
