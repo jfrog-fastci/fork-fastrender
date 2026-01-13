@@ -2,6 +2,7 @@ use crate::js::import_maps::{
   resolve_module_specifier as resolve_import_map_specifier, ImportMapState,
 };
 use crate::js::options::JsExecutionOptions;
+use crate::html::content_security_policy::CspPolicy;
 use crate::resource::{
   cors_enforcement_enabled, ensure_cors_allows_origin, ensure_http_success, ensure_script_mime_sane,
   is_data_url, origin_from_url, CorsMode, DocumentOrigin, FetchDestination, FetchRequest,
@@ -106,6 +107,16 @@ pub struct ModuleLoader {
   /// This is intentionally distinct from `document_url`, which tracks the current *base URL* and
   /// can change as `<base href>` elements are encountered.
   document_origin: Option<DocumentOrigin>,
+  /// Content Security Policy for module script fetches (script-src / default-src).
+  ///
+  /// This is configured by the embedder (e.g. `api::BrowserTab`) and enforced for **module
+  /// dependencies** and dynamic `import()` so module graphs cannot bypass `script-src` restrictions.
+  ///
+  /// Note: HTML module-script entrypoints perform their own CSP checks (including nonce-based
+  /// allowlisting) before starting module graph loads. This loader currently enforces URL-based
+  /// allowlisting only, and therefore should not be relied upon for `<script nonce=...>` entry
+  /// semantics.
+  csp: Option<CspPolicy>,
   cors_mode: CorsMode,
   referrer_policy: ReferrerPolicy,
   /// Integrity metadata override for the next module-script *entry* fetch.
@@ -151,6 +162,7 @@ impl ModuleLoader {
     Self {
       document_url,
       document_origin,
+      csp: None,
       cors_mode: CorsMode::Anonymous,
       referrer_policy: ReferrerPolicy::default(),
       entry_module_integrity_override: None,
@@ -184,6 +196,10 @@ impl ModuleLoader {
   /// still know the correct origin (e.g. an inherited origin) and can provide it here.
   pub fn set_document_origin(&mut self, document_origin: Option<DocumentOrigin>) {
     self.document_origin = document_origin;
+  }
+
+  pub fn set_csp_policy(&mut self, csp: Option<CspPolicy>) {
+    self.csp = csp;
   }
 
   pub fn set_cors_mode(&mut self, mode: CorsMode) {
@@ -703,6 +719,16 @@ impl ModuleLoader {
           .cloned()
           .or_else(|| self.document_url.clone()),
       });
+
+      if let Some(csp) = self.csp.as_ref() {
+        let parsed = Url::parse(&key.url).ok();
+        let allowed = parsed.as_ref().is_some_and(|url| {
+          csp.allows_script_url(self.document_origin.as_ref(), /*nonce=*/ None, url)
+        });
+        if !allowed {
+          return Err(VmError::TypeError(MODULE_FETCH_FAILED_TYPE_ERROR));
+        }
+      }
 
       let remaining_total = self
         .max_module_graph_total_bytes

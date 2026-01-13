@@ -1142,6 +1142,9 @@ impl BrowserTabHost {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.csp.clone());
+    // Keep the renderer-level CSP mirror in sync so JS module loaders (which may only see the
+    // `BrowserDocumentDom2` fetcher + metadata) can enforce CSP for module dependency loads.
+    self.document.renderer_mut().document_csp = self.csp.clone();
     self.js_events = JsDomEvents::new()?;
     self.js_execution_depth.set(0);
     self.lifecycle = DocumentLifecycle::new();
@@ -3101,10 +3104,14 @@ impl BrowserTabHost {
           };
 
           if let Some(csp) = self.csp.as_ref() {
-            let is_inline_classic = entry.as_ref().is_some_and(|entry| {
-              entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
+            let is_inline_script = entry.as_ref().is_some_and(|entry| {
+              !entry.spec.src_attr_present
+                && matches!(
+                  entry.spec.script_type,
+                  ScriptType::Classic | ScriptType::ImportMap
+                )
             });
-            if is_inline_classic {
+            if is_inline_script {
               fn trim_ascii_whitespace(value: &str) -> &str {
                 value.trim_matches(|c: char| {
                   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
@@ -3288,10 +3295,14 @@ impl BrowserTabHost {
           };
 
           if let Some(csp) = self.csp.as_ref() {
-            let is_inline_classic = self.scripts.get(&script_id).is_some_and(|entry| {
-              entry.spec.script_type == ScriptType::Classic && !entry.spec.src_attr_present
+            let is_inline_script = self.scripts.get(&script_id).is_some_and(|entry| {
+              !entry.spec.src_attr_present
+                && matches!(
+                  entry.spec.script_type,
+                  ScriptType::Classic | ScriptType::ImportMap
+                )
             });
-            if is_inline_classic {
+            if is_inline_script {
               fn trim_ascii_whitespace(value: &str) -> &str {
                 value.trim_matches(|c: char| {
                   matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
@@ -3798,6 +3809,86 @@ impl BrowserTabHost {
         "StartModuleGraphFetch for non-module script_id={}",
         script_id.as_u64()
       )));
+    }
+
+    if let Some(csp) = self.csp.as_ref() {
+      fn trim_ascii_whitespace(value: &str) -> &str {
+        value.trim_matches(|c: char| {
+          matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+        })
+      }
+      let nonce_attr = self
+        .document
+        .dom()
+        .get_attribute(entry.node_id, "nonce")
+        .ok()
+        .flatten()
+        .map(trim_ascii_whitespace)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+      let doc_origin = self
+        .document_url
+        .as_deref()
+        .and_then(origin_from_url)
+        .or_else(|| spec.base_url.as_deref().and_then(origin_from_url));
+
+      let mut blocked: bool = false;
+      let mut blocked_kind: &str = "";
+      let mut blocked_url: Option<String> = None;
+      let mut blocked_reason: Option<&str> = None;
+
+      if spec.src_attr_present {
+        if let Some(src) = spec.src.as_deref().filter(|s| !s.is_empty()) {
+          match Url::parse(src) {
+            Ok(url) => {
+              if !csp.allows_script_url(doc_origin.as_ref(), nonce_attr.as_deref(), &url) {
+                blocked = true;
+                blocked_kind = "external";
+                blocked_url = Some(src.to_string());
+              }
+            }
+            Err(_) => {
+              blocked = true;
+              blocked_kind = "external";
+              blocked_url = Some(src.to_string());
+              blocked_reason = Some("invalid_url");
+            }
+          }
+        }
+      } else if !csp.allows_inline_script(nonce_attr.as_deref(), &spec.inline_text) {
+        blocked = true;
+        blocked_kind = "inline";
+      }
+
+      if blocked {
+        let mut span = self.trace.span("js.script.csp_block", "js");
+        span.arg_u64("node_id", entry.node_id.index() as u64);
+        span.arg_str("kind", blocked_kind);
+        if let Some(url) = blocked_url.as_deref() {
+          span.arg_str("url", url);
+        }
+        if let Some(reason) = blocked_reason {
+          span.arg_str("reason", reason);
+        }
+        if let Some(nonce) = nonce_attr.as_deref() {
+          span.arg_str("nonce", nonce);
+        }
+
+        // Mark the script element as "already started" so later mutations/insertion do not attempt
+        // to execute it again (matches browser behavior for CSP-blocked scripts).
+        self
+          .mutate_dom(|dom| (dom.set_script_already_started(entry.node_id, true), false))
+          .map_err(|err| Error::Other(err.to_string()))?;
+
+        let actions = self.scheduler.module_graph_failed(script_id)?;
+        let needs_manual_error = actions.is_empty();
+        self.apply_scheduler_actions(actions, event_loop)?;
+        if needs_manual_error {
+          self.dispatch_script_event_in_event_loop(entry.node_id, "error", event_loop)?;
+        }
+        self.finish_script_execution(script_id, event_loop)?;
+        return Ok(());
+      }
     }
 
     use crate::resource::FetchedResource;
@@ -4824,6 +4915,9 @@ impl BrowserTab {
           self.host.csp = Some(meta_csp);
         }
       }
+      // Keep renderer metadata aligned with the host-visible CSP policy so JS module loaders can
+      // enforce `script-src` for module dependencies/dynamic import.
+      self.host.document.renderer_mut().document_csp = self.host.csp.clone();
     }
     // `StreamingHtmlParser` cooperatively checks any *active* render deadline via
     // `check_active_periodic`, but it does not accept `RenderOptions` directly. Store the deadline
@@ -6028,6 +6122,7 @@ impl BrowserTab {
         .host
         .reset_scripting_state(Some(final_url.clone()), document_referrer_policy)?;
       self.host.csp = header_csp;
+      self.host.document.renderer_mut().document_csp = self.host.csp.clone();
 
       // Avoid installing a nested deadline: the outer guard already enforces the render budget
       // across fetch + parse.
@@ -9786,6 +9881,70 @@ mod tests {
       req: crate::resource::FetchRequest<'_>,
     ) -> Result<crate::resource::FetchedResource> {
       self.fetch(req.url)
+    }
+  }
+
+  #[derive(Default)]
+  struct RecordingScriptFetcher {
+    sources: Mutex<HashMap<String, Vec<u8>>>,
+    calls: Mutex<Vec<String>>,
+  }
+
+  impl RecordingScriptFetcher {
+    fn new(sources: &[(&str, &str)]) -> Self {
+      let mut map = HashMap::new();
+      for (url, source) in sources {
+        map.insert((*url).to_string(), (*source).as_bytes().to_vec());
+      }
+      Self {
+        sources: Mutex::new(map),
+        calls: Mutex::new(Vec::new()),
+      }
+    }
+
+    fn calls(&self) -> Vec<String> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    }
+  }
+
+  impl crate::resource::ResourceFetcher for RecordingScriptFetcher {
+    fn fetch(&self, url: &str) -> Result<crate::resource::FetchedResource> {
+      self.fetch_with_request(crate::resource::FetchRequest::new(
+        url,
+        crate::resource::FetchDestination::Other,
+      ))
+    }
+
+    fn fetch_with_request(
+      &self,
+      req: crate::resource::FetchRequest<'_>,
+    ) -> Result<crate::resource::FetchedResource> {
+      self
+        .calls
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(req.url.to_string());
+      let bytes = self
+        .sources
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(req.url)
+        .cloned()
+        .ok_or_else(|| Error::Other(format!("RecordingScriptFetcher has no source for url={}", req.url)))?;
+      let mut res = crate::resource::FetchedResource::new(
+        bytes,
+        Some("application/javascript".to_string()),
+      );
+      // Mirror HTTP fetches so downstream validations (status/CORS) remain deterministic.
+      res.status = Some(200);
+      res.final_url = Some(req.url.to_string());
+      res.access_control_allow_origin = Some("*".to_string());
+      res.access_control_allow_credentials = true;
+      Ok(res)
     }
   }
 
@@ -16800,6 +16959,199 @@ html, body { margin: 0; padding: 0; }
     assert_eq!(
       &*log.borrow(),
       &["script:OK".to_string(), "microtask:OK".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn csp_blocks_external_module_entry() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let fetcher = Arc::new(RecordingScriptFetcher::new(&[(
+      "https://evil.com/a.js",
+      r#"document.body.setAttribute("data-module-ran", "1");"#,
+    )]));
+    let fetcher_trait: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
+
+    let html = r#"<!doctype html><head>
+      <meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+      </head><body>
+      <script type="module" src="https://evil.com/a.js"></script>
+      </body>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      fetcher_trait,
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      fetcher.calls().is_empty(),
+      "expected CSP to block module fetch, got calls={:?}",
+      fetcher.calls()
+    );
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-module-ran")
+        .expect("get_attribute should succeed"),
+      None
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn csp_blocks_inline_module_without_nonce_or_hash() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let html = r#"<!doctype html><head>
+      <meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+      </head><body>
+      <script type="module">
+        document.body.setAttribute("data-inline-module", "1");
+      </script>
+      </body>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::new(RecordingScriptFetcher::new(&[])),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-inline-module")
+        .expect("get_attribute should succeed"),
+      None
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn csp_allows_inline_module_with_matching_nonce() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let html = r#"<!doctype html><head>
+      <meta http-equiv="Content-Security-Policy" content="script-src 'nonce-abc'">
+      </head><body>
+      <script type="module" nonce="abc">
+        document.body.setAttribute("data-inline-module-nonce", "1");
+      </script>
+      </body>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      Arc::new(RecordingScriptFetcher::new(&[])),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-inline-module-nonce")
+        .expect("get_attribute should succeed"),
+      Some("1")
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn csp_blocks_module_dependency_import() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let fetcher = Arc::new(RecordingScriptFetcher::new(&[
+      (
+        "https://example.com/entry.js",
+        r#"import "https://evil.com/dep.js";
+document.body.setAttribute("data-entry", "1");"#,
+      ),
+      ("https://evil.com/dep.js", r#"export const x = 1;"#),
+    ]));
+    let fetcher_trait: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
+
+    let html = r#"<!doctype html><head>
+      <meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+      </head><body>
+      <script type="module" src="https://example.com/entry.js"></script>
+      </body>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      fetcher_trait,
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert_eq!(
+      fetcher.calls(),
+      vec!["https://example.com/entry.js".to_string()],
+      "expected CSP to block module dependency fetch"
+    );
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-entry")
+        .expect("get_attribute should succeed"),
+      None
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn csp_blocks_dynamic_import_of_disallowed_url() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let fetcher = Arc::new(RecordingScriptFetcher::new(&[(
+      "https://evil.com/dyn.js",
+      r#"export const value = 1;"#,
+    )]));
+    let fetcher_trait: Arc<dyn crate::resource::ResourceFetcher> = fetcher.clone();
+
+    let html = r#"<!doctype html><head>
+      <meta http-equiv="Content-Security-Policy" content="script-src 'nonce-abc' 'self'">
+      </head><body>
+      <script type="module" nonce="abc">
+        try {
+          await import("https://evil.com/dyn.js");
+          document.body.setAttribute("data-dynamic", "loaded");
+        } catch (e) {
+          document.body.setAttribute("data-dynamic", "blocked");
+        }
+      </script>
+      </body>"#;
+    let mut tab = BrowserTab::from_html_with_vmjs_and_document_url_and_fetcher_and_js_execution_options(
+      html,
+      "https://example.com/",
+      RenderOptions::default(),
+      fetcher_trait,
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    assert!(
+      fetcher.calls().is_empty(),
+      "expected CSP to block dynamic import fetch, got calls={:?}",
+      fetcher.calls()
+    );
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-dynamic")
+        .expect("get_attribute should succeed"),
+      Some("blocked")
     );
     Ok(())
   }

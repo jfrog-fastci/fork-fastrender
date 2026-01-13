@@ -796,6 +796,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
         loader.set_fetcher(Arc::clone(&fetcher));
         loader.set_cors_mode(cors_mode);
         loader.set_referrer_policy(effective_referrer_policy);
+        loader.set_csp_policy(document.document_csp());
         loader.set_js_execution_options(js_execution_options);
         // Only the entry module fetch is eligible for the `<script>` integrity attribute override.
         // Clear any previous value so inline modules do not leak an override into subsequent loads.
@@ -967,6 +968,7 @@ impl BrowserTabJsExecutor for VmJsBrowserTabExecutor {
       loader.set_fetcher(document.fetcher());
       loader.set_cors_mode(cors_mode);
       loader.set_referrer_policy(effective_referrer_policy);
+      loader.set_csp_policy(document.document_csp());
       // Entry module source is provided inline (either actual inline text or host-fetched bytes),
       // so `<script integrity>` does not apply here.
       loader.set_entry_module_integrity_override(None);
