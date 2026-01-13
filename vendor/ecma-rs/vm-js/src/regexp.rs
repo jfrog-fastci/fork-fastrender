@@ -3432,60 +3432,6 @@ impl<'a> Parser<'a> {
     Ok(value)
   }
 
-  /// Scan ahead to find the longest prefix of a decimal escape that forms a valid backreference
-  /// in non-UnicodeMode (Annex B).
-  ///
-  /// Returns `(len, n)` where `len` is the number of decimal digits consumed (including the already
-  /// consumed `first_digit`) and `n` is the capture-group index.
-  ///
-  /// This implements the web-compat "longest valid backref" behaviour:
-  /// - If `NcapturingParens == 8`, `\89` parses as `\8` + literal `9` (not `\89`).
-  fn try_scan_longest_valid_backref(
-    &self,
-    ctx: &mut CompileCtx<'_>,
-    first_digit: u16,
-  ) -> Result<Option<(usize, u32)>, RegExpCompileError> {
-    debug_assert!((b'1' as u16..=b'9' as u16).contains(&first_digit));
-
-    let max = self.total_capture_count;
-    if max == 0 {
-      return Ok(None);
-    }
-
-    let mut value: u32 = (first_digit - (b'0' as u16)) as u32;
-    if value > max {
-      return Ok(None);
-    }
-
-    let mut best_len: usize = 1;
-    let mut best_val: u32 = value;
-
-    let mut scan_idx = self.idx;
-    let mut digit_i: usize = 0;
-    while let Some(&d) = self.units.get(scan_idx) {
-      if !is_decimal_digit(d) {
-        break;
-      }
-      if digit_i != 0 {
-        ctx.tick_every(digit_i)?;
-      }
-      digit_i = digit_i.wrapping_add(1);
-
-      value = value
-        .saturating_mul(10)
-        .saturating_add((d - (b'0' as u16)) as u32);
-      if value > max {
-        break;
-      }
-
-      scan_idx = scan_idx.saturating_add(1);
-      best_len = best_len.saturating_add(1);
-      best_val = value;
-    }
-
-    Ok(Some((best_len, best_val)))
-  }
-
   fn parse_disjunction(
     &mut self,
     ctx: &mut CompileCtx<'_>,
@@ -4716,43 +4662,46 @@ impl<'a> Parser<'a> {
       x if (b'1' as u16..=b'9' as u16).contains(&x) => {
         // `\1`-`\9` is either a DecimalEscape/backreference or (in non-unicode mode) an Annex B
         // legacy octal escape / identity escape.
-        if self.flags.has_either_unicode_flag() {
-          // UnicodeMode: parse as a DecimalEscape/backreference. Bounds are validated after the
-          // full parse so forward references (e.g. `/\\1(a)/u`) work correctly.
-          let mut n: u32 = (x - (b'0' as u16)) as u32;
-          let mut digit_i: usize = 0;
-          while let Some(d) = self.peek() {
-            if !is_decimal_digit(d) {
-              break;
-            }
-            if digit_i != 0 {
-              ctx.tick_every(digit_i)?;
-            }
-            digit_i = digit_i.wrapping_add(1);
-            self.next();
-            n = n
-              .saturating_mul(10)
-              .saturating_add((d - (b'0' as u16)) as u32);
+        let digit_start = self.idx.saturating_sub(1);
+
+        // Parse as a decimal integer literal first (DecimalEscape).
+        let mut n: u32 = (x - (b'0' as u16)) as u32;
+        let mut digit_i: usize = 0;
+        while let Some(d) = self.peek() {
+          if !is_decimal_digit(d) {
+            break;
           }
+          if digit_i != 0 {
+            ctx.tick_every(digit_i)?;
+          }
+          digit_i = digit_i.wrapping_add(1);
+          self.next();
+          n = n
+            .saturating_mul(10)
+            .saturating_add((d - (b'0' as u16)) as u32);
+        }
+
+        if self.flags.has_either_unicode_flag() {
+          // UnicodeMode: treat as a DecimalEscape/backreference. Bounds are validated after the
+          // full parse so forward references (e.g. `/\\1(a)/u`) work correctly.
           ctx.vec_try_push(&mut self.backrefs, n)?;
           return Ok(Atom::BackRef(n));
         }
 
-        // Non-UnicodeMode (Annex B): use the longest valid backreference, otherwise fall back to
-        // LegacyOctalEscapeSequence (`\0`-`\7`) or IdentityEscape (`\8`/`\9`).
-        if let Some((len, n)) = self.try_scan_longest_valid_backref(ctx, x)? {
-          // Consume the additional decimal digits belonging to the backreference.
-          self.idx = self
-            .idx
-            .checked_add(len.saturating_sub(1))
-            .ok_or(RegExpCompileError::OutOfMemory)?;
+        if n <= self.total_capture_count {
           return Ok(Atom::BackRef(n));
         }
 
+        // Non-unicode: invalid backreference => legacy octal escape (if possible) or identity
+        // escape (`\8`/`\9`). Rewind to immediately after the first digit so the remaining digits
+        // can be re-parsed according to the Annex B legacy-octal length rules (or left as literal
+        // pattern characters for identity escapes).
         if x == (b'8' as u16) || x == (b'9' as u16) {
+          self.idx = digit_start.saturating_add(1);
           return Ok(Atom::Literal(x as u32));
         }
 
+        self.idx = digit_start.saturating_add(1);
         let v = self.parse_legacy_octal_escape_after_first(x)?;
         Ok(Atom::Literal(v as u32))
       }
