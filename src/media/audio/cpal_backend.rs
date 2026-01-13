@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
@@ -29,9 +30,11 @@ pub struct CpalAudioBackend {
   estimated_latency_nanos: Arc<AtomicU64>,
   mixer: Arc<MixerState>,
   frames_played: Arc<AtomicU64>,
-  // `cpal::Stream` is not guaranteed to be `Sync` across all platforms; keep it behind a mutex so
-  // the backend can be shared (`dyn AudioBackend: Sync`) while still keeping the stream alive.
-  _stream: Mutex<cpal::Stream>,
+  // `cpal::Stream` is neither `Send` nor `Sync`, so it cannot live inside a `Send + Sync`
+  // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its lifetime
+  // via a shutdown channel + join handle.
+  shutdown_tx: std::sync::mpsc::Sender<()>,
+  stream_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl CpalAudioBackend {
@@ -40,44 +43,109 @@ impl CpalAudioBackend {
   }
 
   pub fn new_with_config(engine_cfg: &AudioEngineConfig) -> Result<Self, AudioError> {
-    let host = cpal::default_host();
-    let device = host
-      .default_output_device()
-      .ok_or(AudioError::NoOutputDevice)?;
-
-    let (stream_config, sample_format) = select_output_stream_config(&device)?;
-    let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
     let max_buffered_duration = engine_cfg.per_stream_max_buffered_duration;
-    let fixed_callback_frames = match stream_config.buffer_size {
-      cpal::BufferSize::Fixed(frames) => Some(frames),
-      cpal::BufferSize::Default => None,
-    };
-    let last_callback_frames = Arc::new(AtomicU32::new(0));
 
-    // Start with a conservative estimate; the callback will refine this using timestamps (when
-    // available) or observed callback sizes.
-    let initial_latency = fixed_callback_frames
-      .map(|frames| frames_to_duration(config.sample_rate_hz, frames as u64))
-      .unwrap_or_else(|| frames_to_duration(config.sample_rate_hz, 1024));
-    let estimated_latency_nanos =
-      Arc::new(AtomicU64::new(duration_to_nanos_u64(initial_latency)));
+    // `cpal::Stream` is not `Send`/`Sync`, so it cannot live inside a `Send + Sync`
+    // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its
+    // lifetime via a shutdown channel + join handle.
+    type ReadyState = (
+      AudioStreamConfig,
+      Option<u32>,
+      Arc<AtomicU32>,
+      Arc<AtomicU64>,
+      Arc<MixerState>,
+      Arc<AtomicU64>,
+    );
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<ReadyState, AudioError>>();
+    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
 
-    let frames_played = Arc::new(AtomicU64::new(0));
-    let mixer = Arc::new(MixerState::new(config));
+    let thread = std::thread::spawn(move || {
+      let init = (|| -> Result<(ReadyState, cpal::Stream), AudioError> {
+        let host = cpal::default_host();
+        let device = host
+          .default_output_device()
+          .ok_or(AudioError::NoOutputDevice)?;
 
-    let stream = build_stream(
-      &device,
-      &stream_config,
-      sample_format,
-      mixer.clone(),
-      frames_played.clone(),
+        let (stream_config, sample_format) = select_output_stream_config(&device)?;
+        let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
+        let fixed_callback_frames = match stream_config.buffer_size {
+          cpal::BufferSize::Fixed(frames) => Some(frames),
+          cpal::BufferSize::Default => None,
+        };
+        let last_callback_frames = Arc::new(AtomicU32::new(0));
+
+        // Start with a conservative estimate; the callback will refine this using timestamps (when
+        // available) or observed callback sizes.
+        let initial_latency = fixed_callback_frames
+          .map(|frames| frames_to_duration(config.sample_rate_hz, frames as u64))
+          .unwrap_or_else(|| frames_to_duration(config.sample_rate_hz, 1024));
+        let estimated_latency_nanos =
+          Arc::new(AtomicU64::new(duration_to_nanos_u64(initial_latency)));
+
+        let frames_played = Arc::new(AtomicU64::new(0));
+        let mixer = Arc::new(MixerState::new(config));
+
+        let stream = build_stream(
+          &device,
+          &stream_config,
+          sample_format,
+          mixer.clone(),
+          frames_played.clone(),
+          fixed_callback_frames,
+          last_callback_frames.clone(),
+          estimated_latency_nanos.clone(),
+        )?;
+        stream
+          .play()
+          .map_err(|err| AudioError::StreamPlayFailed(err.to_string()))?;
+
+        Ok((
+          (
+            config,
+            fixed_callback_frames,
+            last_callback_frames,
+            estimated_latency_nanos,
+            mixer,
+            frames_played,
+          ),
+          stream,
+        ))
+      })();
+
+      let (ready, _stream) = match init {
+        Ok(ok) => ok,
+        Err(err) => {
+          let _ = ready_tx.send(Err(err));
+          return;
+        }
+      };
+
+      let _ = ready_tx.send(Ok(ready));
+      // Keep the stream alive until shutdown is requested.
+      let _ = shutdown_rx.recv();
+      drop(_stream);
+    });
+
+    let (
+      config,
       fixed_callback_frames,
-      last_callback_frames.clone(),
-      estimated_latency_nanos.clone(),
-    )?;
-    stream
-      .play()
-      .map_err(|err| AudioError::StreamPlayFailed(err.to_string()))?;
+      last_callback_frames,
+      estimated_latency_nanos,
+      mixer,
+      frames_played,
+    ) = match ready_rx.recv() {
+      Ok(Ok(ok)) => ok,
+      Ok(Err(err)) => {
+        let _ = thread.join();
+        return Err(err);
+      }
+      Err(_) => {
+        let _ = thread.join();
+        return Err(AudioError::StreamBuildFailed(
+          "cpal audio thread terminated unexpectedly".to_string(),
+        ));
+      }
+    };
 
     Ok(Self {
       config,
@@ -87,8 +155,21 @@ impl CpalAudioBackend {
       estimated_latency_nanos,
       mixer,
       frames_played,
-      _stream: Mutex::new(stream),
+      shutdown_tx,
+      stream_thread: Mutex::new(Some(thread)),
     })
+  }
+}
+
+impl Drop for CpalAudioBackend {
+  fn drop(&mut self) {
+    let _ = self.shutdown_tx.send(());
+    if let Some(handle) = self.stream_thread.lock().take() {
+      // Avoid panicking if the backend is dropped on its own stream thread.
+      if handle.thread().id() != std::thread::current().id() {
+        let _ = handle.join();
+      }
+    }
   }
 }
 
@@ -331,7 +412,7 @@ fn build_stream_typed<T>(
   estimated_latency_nanos: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, AudioError>
 where
-  T: OutputSample,
+  T: OutputSample + cpal::SizedSample,
 {
   use cpal::traits::DeviceTrait;
 
