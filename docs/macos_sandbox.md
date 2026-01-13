@@ -184,17 +184,17 @@ This tool is **macOS-only**.
 
 ```bash
 # From repo root (wrapper-safe; no raw `cargo`).
-bash scripts/cargo_agent.sh run --bin macos_sandbox_probe -- --mode strict
+bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 
 # Or, directly (useful on local dev machines):
-cargo run --bin macos_sandbox_probe -- --mode strict
+cargo run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 Tip: if you're iterating on Seatbelt profiles and want faster rebuilds, you can disable the crate's
 default features during probe runs:
 
 ```bash
-cargo run --no-default-features --bin macos_sandbox_probe -- --mode strict
+cargo run --no-default-features --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 ### Network probe

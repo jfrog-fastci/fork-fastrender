@@ -39,6 +39,10 @@ box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
 quickjs = ["dep:rquickjs"]
+# Build the `macos_sandbox_probe` tool (macOS Seatbelt probe CLI).
+#
+# This is intentionally non-default so non-macOS CI/builds don't even consider the target.
+macos_sandbox_probe = []
 # Direct (in-process) networking. Renderer builds should disable this feature so all network
 # requests are mediated by a separate network/IPC process.
 direct_network = ["dep:reqwest", "dep:ureq"]
@@ -213,6 +217,7 @@ name = "macos_sandbox_probe"
 path = "src/bin/macos_sandbox_probe/probe.rs"
 test = false
 bench = false
+required-features = ["macos_sandbox_probe"]
 
 [target.'cfg(windows)'.dependencies]
 # Windows-only renderer sandboxing (AppContainer + restricted token + job objects).
