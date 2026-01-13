@@ -57,6 +57,15 @@ pub struct TimedAudioQueue {
 }
 
 impl TimedAudioQueue {
+  /// Number of frames of tolerance allowed between successive `target_pts` values and the internal
+  /// cursor.
+  ///
+  /// In real playback, `target_pts` may be derived from an audio backend clock that converts frames
+  /// ↔ `Duration` via `f64` (see `AudioClock::time`). Those conversions can introduce ±1 frame of
+  /// jitter when mapped back into frames. Treating that jitter as a seek would cause repeated
+  /// cursor resets and audible glitches.
+  const TARGET_PTS_TOLERANCE_FRAMES: u64 = 1;
+
   pub fn new(channels: u16, sample_rate: u32, max_buffered_duration: Duration) -> Self {
     assert!(channels > 0, "channels must be non-zero");
     assert!(sample_rate > 0, "sample_rate must be non-zero");
@@ -187,7 +196,10 @@ impl TimedAudioQueue {
         self.cursor_frame = Some(target_frame);
       }
       Some(cursor) if cursor != target_frame => {
-        self.reset_cursor(target_pts);
+        let diff = cursor.abs_diff(target_frame);
+        if diff > Self::TARGET_PTS_TOLERANCE_FRAMES {
+          self.reset_cursor(target_pts);
+        }
       }
       _ => {}
     }
@@ -411,5 +423,22 @@ mod tests {
     q.read_into(&mut out2, Duration::from_millis(400), 2);
     assert_eq!(out2, vec![5.0, 6.0]);
   }
-}
 
+  #[test]
+  fn small_target_pts_jitter_does_not_force_seek() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+      .unwrap();
+
+    let mut out1 = vec![0.0; 2];
+    q.read_into(&mut out1, Duration::ZERO, 2);
+    assert_eq!(out1, vec![1.0, 2.0]);
+
+    // We would normally pass `target_pts = 200ms` for the next read (2 frames at 10Hz), but a clock
+    // derived from `f64` seconds can produce timestamps that round back to a neighboring frame.
+    // 250ms rounds to 3 frames (off by +1), and the queue should still continue smoothly.
+    let mut out2 = vec![0.0; 2];
+    q.read_into(&mut out2, Duration::from_millis(250), 2);
+    assert_eq!(out2, vec![3.0, 4.0]);
+  }
+}
