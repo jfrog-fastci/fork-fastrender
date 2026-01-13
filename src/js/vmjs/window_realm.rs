@@ -5528,16 +5528,22 @@ fn location_host_set_native(
   };
 
   // Parse "hostname" or "hostname:port", with best-effort support for bracketed IPv6 hosts.
-  let (host_part, port_part) = if let Some(rest) = host_input.strip_prefix('[') {
-    let Some(end) = rest.find(']') else {
+  //
+  // Note: rust-url expects bracketed IPv6 (e.g. `"[::1]"`) for `Url::set_host`.
+  let (host_part, port_part) = if host_input.starts_with('[') {
+    let Some(end) = host_input.find(']') else {
       return Ok(Value::Undefined);
     };
-    let host = &rest[..end];
-    let after = &rest[end + 1..];
-    let port = if let Some(port) = after.strip_prefix(':') {
+    // Keep the brackets for `Url::set_host`.
+    let host = &host_input[..end + 1];
+    let after = &host_input[end + 1..];
+    let port = if after.is_empty() {
+      None
+    } else if let Some(port) = after.strip_prefix(':') {
       Some(port)
     } else {
-      None
+      // Trailing garbage after the closing bracket is invalid.
+      return Ok(Value::Undefined);
     };
     (host, port)
   } else if let Some(colon) = host_input.rfind(':') {
@@ -5613,12 +5619,8 @@ fn location_hostname_set_native(
     return Ok(Value::Undefined);
   };
 
-  // Best-effort: accept bracketed IPv6 (`[::1]`) by stripping matching brackets.
-  let hostname = if let Some(rest) = hostname_input.strip_prefix('[') {
-    rest.strip_suffix(']').unwrap_or(rest)
-  } else {
-    hostname_input.as_str()
-  };
+  // Best-effort: accept bracketed IPv6 (`[::1]`). rust-url expects the brackets for `set_host`.
+  let hostname = hostname_input.as_str();
 
   if hostname.is_empty() {
     return Ok(Value::Undefined);
@@ -50578,6 +50580,25 @@ mod tests {
   }
 
   #[test]
+  fn location_host_set_ipv6_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm
+      .exec_script("location.host = '[::1]:1234'; 1 + 2")
+      .is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://[::1]:1234/path?x=1#h");
+    assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let host_v = realm.exec_script("location.host")?;
+    assert_eq!(get_string(realm.heap(), host_v), "[::1]:1234");
+    Ok(())
+  }
+
+  #[test]
   fn location_hostname_set_requests_navigation() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new(
       "https://example.invalid:8443/path?x=1#h",
@@ -50593,6 +50614,25 @@ mod tests {
     realm.reset_interrupt();
     let href_v = realm.exec_script("location.href")?;
     assert_eq!(get_string(realm.heap(), href_v), req.url);
+    Ok(())
+  }
+
+  #[test]
+  fn location_hostname_set_ipv6_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm
+      .exec_script("location.hostname = '[::1]'; 1 + 2")
+      .is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://[::1]:8443/path?x=1#h");
+    assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let hostname_v = realm.exec_script("location.hostname")?;
+    assert_eq!(get_string(realm.heap(), hostname_v), "[::1]");
     Ok(())
   }
 
