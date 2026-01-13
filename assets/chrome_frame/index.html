@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FastRender Chrome Frame</title>
+    <link rel="stylesheet" href="chrome.css" />
+  </head>
+  <body>
+    <div id="chrome">
+      <div class="tab-strip">
+        <div class="tab active">
+          <span class="tab-title">Example</span>
+          <span class="tab-close">×</span>
+        </div>
+        <div class="tab">
+          <span class="tab-title">Second tab</span>
+          <span class="tab-close">×</span>
+        </div>
+        <div class="spacer"></div>
+        <div class="tab action-tab">+</div>
+      </div>
+      <div class="toolbar">
+        <button class="nav" aria-label="Back">←</button>
+        <button class="nav" aria-label="Forward">→</button>
+        <button class="nav" aria-label="Reload">↻</button>
+        <div class="omnibox" role="textbox">https://example.com</div>
+        <button class="menu" aria-label="Menu">☰</button>
+      </div>
+    </div>
+
+    <div id="content-frame">
+      <div class="content-placeholder">
+        <div class="content-title">#content-frame</div>
+        <div class="content-subtitle">This rectangle is printed to stdout by render_chrome_frame.</div>
+      </div>
+    </div>
+  </body>
+</html>
+
