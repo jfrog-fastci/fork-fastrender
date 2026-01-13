@@ -29,8 +29,16 @@ fn class_elements_set_function_home_object_ast() -> Result<(), VmError> {
         static s() { return 2; }
         mArrow() { return () => 3; }
         static sArrow() { return () => 4; }
+        mNested() { return () => () => 7; }
+        static sNested() { return () => () => 8; }
         x = () => 5;
         static y = () => 6;
+        static {
+          // Arrow functions created in static blocks capture the class constructor as their
+          // `[[HomeObject]]`.
+          this.blockArrow = () => 9;
+          this.blockNested = () => () => 10;
+        }
       };
 
       // Keep these function objects alive from the JS side so GC won't collect them between host
@@ -39,8 +47,15 @@ fn class_elements_set_function_home_object_ast() -> Result<(), VmError> {
       var staticMethod = A.s;
       var instArrow = (new A()).mArrow();
       var staticArrow = A.sArrow();
+      var instNested1 = (new A()).mNested();
+      var instNested2 = instNested1();
+      var staticNested1 = A.sNested();
+      var staticNested2 = staticNested1();
       var instFieldArrow = (new A()).x;
       var staticFieldArrow = A.y;
+      var blockArrow = A.blockArrow;
+      var blockNested1 = A.blockNested;
+      var blockNested2 = A.blockNested();
     "#,
   )?;
 
@@ -53,13 +68,30 @@ fn class_elements_set_function_home_object_ast() -> Result<(), VmError> {
   let static_method = assert_is_function(rt.exec_script("staticMethod")?);
   let inst_arrow = assert_is_function(rt.exec_script("instArrow")?);
   let static_arrow = assert_is_function(rt.exec_script("staticArrow")?);
+  let inst_nested_1 = assert_is_function(rt.exec_script("instNested1")?);
+  let inst_nested_2 = assert_is_function(rt.exec_script("instNested2")?);
+  let static_nested_1 = assert_is_function(rt.exec_script("staticNested1")?);
+  let static_nested_2 = assert_is_function(rt.exec_script("staticNested2")?);
   let inst_field_arrow = assert_is_function(rt.exec_script("instFieldArrow")?);
   let static_field_arrow = assert_is_function(rt.exec_script("staticFieldArrow")?);
+  let block_arrow = assert_is_function(rt.exec_script("blockArrow")?);
+  let block_nested_1 = assert_is_function(rt.exec_script("blockNested1")?);
+  let block_nested_2 = assert_is_function(rt.exec_script("blockNested2")?);
 
   assert_eq!(rt.heap().get_function_home_object(inst_method)?, Some(proto));
   assert_eq!(rt.heap().get_function_home_object(static_method)?, Some(ctor));
   assert_eq!(rt.heap().get_function_home_object(inst_arrow)?, Some(proto));
   assert_eq!(rt.heap().get_function_home_object(static_arrow)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(inst_nested_1)?, Some(proto));
+  assert_eq!(rt.heap().get_function_home_object(inst_nested_2)?, Some(proto));
+  assert_eq!(
+    rt.heap().get_function_home_object(static_nested_1)?,
+    Some(ctor)
+  );
+  assert_eq!(
+    rt.heap().get_function_home_object(static_nested_2)?,
+    Some(ctor)
+  );
   assert_eq!(
     rt.heap().get_function_home_object(inst_field_arrow)?,
     Some(proto)
@@ -68,6 +100,9 @@ fn class_elements_set_function_home_object_ast() -> Result<(), VmError> {
     rt.heap().get_function_home_object(static_field_arrow)?,
     Some(ctor)
   );
+  assert_eq!(rt.heap().get_function_home_object(block_arrow)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(block_nested_1)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(block_nested_2)?, Some(ctor));
 
   // Ensure the hidden user-defined constructor body function has `[[HomeObject]]` set (needed for
   // `super.prop` inside constructors).
@@ -128,6 +163,12 @@ fn class_elements_set_function_home_object_hir() -> Result<(), VmError> {
         constructor() {}
         mArrow() { return () => 1; }
         static sArrow() { return () => 2; }
+        mNested() { return () => () => 3; }
+        static sNested() { return () => () => 4; }
+        static {
+          this.blockArrow = () => 5;
+          this.blockNested = () => () => 6;
+        }
       };
 
       // Keep these function objects alive from the JS side so GC won't collect them between host
@@ -136,6 +177,13 @@ fn class_elements_set_function_home_object_hir() -> Result<(), VmError> {
       var staticMethod = A.sArrow;
       var instArrow = (new A()).mArrow();
       var staticArrow = A.sArrow();
+      var instNested1 = (new A()).mNested();
+      var instNested2 = instNested1();
+      var staticNested1 = A.sNested();
+      var staticNested2 = staticNested1();
+      var blockArrow = A.blockArrow;
+      var blockNested1 = A.blockNested;
+      var blockNested2 = A.blockNested();
     "#,
   )?;
   rt.exec_compiled_script(script)?;
@@ -149,11 +197,31 @@ fn class_elements_set_function_home_object_hir() -> Result<(), VmError> {
   let static_method = assert_is_function(rt.exec_script("staticMethod")?);
   let inst_arrow = assert_is_function(rt.exec_script("instArrow")?);
   let static_arrow = assert_is_function(rt.exec_script("staticArrow")?);
+  let inst_nested_1 = assert_is_function(rt.exec_script("instNested1")?);
+  let inst_nested_2 = assert_is_function(rt.exec_script("instNested2")?);
+  let static_nested_1 = assert_is_function(rt.exec_script("staticNested1")?);
+  let static_nested_2 = assert_is_function(rt.exec_script("staticNested2")?);
+  let block_arrow = assert_is_function(rt.exec_script("blockArrow")?);
+  let block_nested_1 = assert_is_function(rt.exec_script("blockNested1")?);
+  let block_nested_2 = assert_is_function(rt.exec_script("blockNested2")?);
 
   assert_eq!(rt.heap().get_function_home_object(inst_method)?, Some(proto));
   assert_eq!(rt.heap().get_function_home_object(static_method)?, Some(ctor));
   assert_eq!(rt.heap().get_function_home_object(inst_arrow)?, Some(proto));
   assert_eq!(rt.heap().get_function_home_object(static_arrow)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(inst_nested_1)?, Some(proto));
+  assert_eq!(rt.heap().get_function_home_object(inst_nested_2)?, Some(proto));
+  assert_eq!(
+    rt.heap().get_function_home_object(static_nested_1)?,
+    Some(ctor)
+  );
+  assert_eq!(
+    rt.heap().get_function_home_object(static_nested_2)?,
+    Some(ctor)
+  );
+  assert_eq!(rt.heap().get_function_home_object(block_arrow)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(block_nested_1)?, Some(ctor));
+  assert_eq!(rt.heap().get_function_home_object(block_nested_2)?, Some(ctor));
 
   // Ensure the compiled constructor body function also has `[[HomeObject]]` set.
   {
@@ -176,6 +244,75 @@ fn class_elements_set_function_home_object_hir() -> Result<(), VmError> {
       Some(proto)
     );
   }
+
+  Ok(())
+}
+
+#[test]
+fn object_literal_sets_function_home_object_and_inherits_into_arrows() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  rt.exec_script(
+    r#"
+      var obj = {
+        m() { return 1; },
+        get x() { return 2; },
+        set x(v) {},
+        nested() { return () => () => 3; },
+      };
+      var m = obj.m;
+      var g = Object.getOwnPropertyDescriptor(obj, "x").get;
+      var s = Object.getOwnPropertyDescriptor(obj, "x").set;
+      var nested1 = obj.nested();
+      var nested2 = nested1();
+    "#,
+  )?;
+
+  let Value::Object(obj) = rt.exec_script("obj")? else {
+    panic!("expected obj to be an object");
+  };
+  let m = assert_is_function(rt.exec_script("m")?);
+  let g = assert_is_function(rt.exec_script("g")?);
+  let s = assert_is_function(rt.exec_script("s")?);
+  let nested_1 = assert_is_function(rt.exec_script("nested1")?);
+  let nested_2 = assert_is_function(rt.exec_script("nested2")?);
+
+  assert_eq!(rt.heap().get_function_home_object(m)?, Some(obj));
+  assert_eq!(rt.heap().get_function_home_object(g)?, Some(obj));
+  assert_eq!(rt.heap().get_function_home_object(s)?, Some(obj));
+  assert_eq!(rt.heap().get_function_home_object(nested_1)?, Some(obj));
+  assert_eq!(rt.heap().get_function_home_object(nested_2)?, Some(obj));
+
+  Ok(())
+}
+
+#[test]
+fn function_home_object_is_traced_by_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  rt.exec_script(
+    r#"
+      // This object should only remain live through the method function's `[[HomeObject]]`.
+      var f = ({ m() { return 1; } }).m;
+    "#,
+  )?;
+
+  let f = assert_is_function(rt.exec_script("f")?);
+  let Some(home_before) = rt.heap().get_function_home_object(f)? else {
+    return Err(VmError::InvariantViolation(
+      "expected object literal method to have [[HomeObject]]",
+    ));
+  };
+  assert!(rt.heap().is_valid_object(home_before));
+
+  rt.heap.collect_garbage();
+
+  let Some(home_after) = rt.heap().get_function_home_object(f)? else {
+    return Err(VmError::InvariantViolation(
+      "expected object literal method to still have [[HomeObject]] after GC",
+    ));
+  };
+  assert!(rt.heap().is_valid_object(home_after));
 
   Ok(())
 }
