@@ -49,6 +49,11 @@ boundary that works for:
 - CI runs, and
 - future browser-like multiprocess spawning without requiring an app bundle/entitlements.
 
+That said, when we eventually ship FastRender as a macOS `.app`, we may also apply App Sandbox
+entitlements to the renderer helper process as an additional enforcement layer for end-user builds.
+See [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md) and the placeholder
+entitlement files under `tools/macos/entitlements/`.
+
 ## Baseline policy: `pure-computation`
 
 The **strict baseline** is the built-in Seatbelt profile **`pure-computation`**.

@@ -17,6 +17,7 @@ Related docs (other platforms / tooling):
 
 - Linux seccomp allowlist workflow: [seccomp_allowlist.md](seccomp_allowlist.md)
 - macOS sandbox probe tool: [macos_sandbox.md](macos_sandbox.md)
+- macOS `.app` App Sandbox entitlements (future packaging): [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md)
 
 ## Windows sandbox implementation
 
@@ -118,3 +119,7 @@ shared memory (`memfd_create`) passed to the renderer before the sandbox is inst
 Renderer sandboxing on macOS uses Seatbelt profiles. For iteration tooling and IPC capability
 expectations, see [macos_sandbox.md](macos_sandbox.md) (and the launcher helper in
 [`src/sandbox/macos_spawn.rs`](../src/sandbox/macos_spawn.rs)).
+
+When FastRender is eventually packaged as a macOS `.app`, the renderer helper process may also be
+sandboxed via App Sandbox entitlements embedded in the code signature; see
+[security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md).
