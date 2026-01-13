@@ -137,10 +137,13 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    // The compiled (HIR) executor does not yet support generator bodies or async classic script
-    // evaluation (top-level `await` / `for await..of`), so fall back to the AST interpreter for
-    // those cases.
-    let requires_ast_fallback = contains_generators || contains_top_level_await;
+    // The compiled (HIR) executor does not yet support generator bodies, and it only supports a
+    // subset of async classic scripts (top-level await as a direct statement/initializer/assignment).
+    //
+    // Fall back to the AST interpreter when the script uses unsupported top-level await forms like
+    // `for await..of` or `await` nested inside class static blocks.
+    let requires_ast_fallback =
+      contains_generators || parsed.stx.body.iter().any(stmt_contains_unsupported_await_for_hir_async_scripts);
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -283,7 +286,8 @@ impl CompiledScript {
     let contains_async_generators = feature_flags.contains_async_generators;
     let contains_generators = feature_flags.contains_generators;
     let contains_async_functions = feature_flags.contains_async_functions;
-    let requires_ast_fallback = contains_generators || has_top_level_await;
+    let requires_ast_fallback =
+      contains_generators || parsed.stx.body.iter().any(stmt_contains_unsupported_await_for_hir_async_scripts);
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);
@@ -550,6 +554,77 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
     Expr::SatisfiesExpr(expr) => expr_contains_await(&expr.stx.expression),
 
     _ => false,
+  }
+}
+
+fn expr_direct_await_arg(expr: &Node<Expr>) -> Option<&Node<Expr>> {
+  let Expr::Unary(unary) = &*expr.stx else {
+    return None;
+  };
+  if unary.stx.operator == OperatorName::Await {
+    Some(&unary.stx.argument)
+  } else {
+    None
+  }
+}
+
+fn expr_is_supported_assignment_target_for_hir_async_scripts(expr: &Node<Expr>) -> bool {
+  match &*expr.stx {
+    Expr::Id(_) | Expr::Member(_) | Expr::ComputedMember(_) => true,
+    // TypeScript-only wrappers.
+    Expr::Instantiation(inst) => expr_is_supported_assignment_target_for_hir_async_scripts(&inst.stx.expression),
+    Expr::TypeAssertion(expr) => expr_is_supported_assignment_target_for_hir_async_scripts(&expr.stx.expression),
+    Expr::NonNullAssertion(expr) => expr_is_supported_assignment_target_for_hir_async_scripts(&expr.stx.expression),
+    Expr::SatisfiesExpr(expr) => expr_is_supported_assignment_target_for_hir_async_scripts(&expr.stx.expression),
+    _ => false,
+  }
+}
+
+fn stmt_contains_unsupported_await_for_hir_async_scripts(stmt: &Node<Stmt>) -> bool {
+  match &*stmt.stx {
+    // Supported async classic script forms for the compiled (HIR) executor:
+    // - `await <expr>;`
+    // - `x = await <expr>;`
+    // - `const x = await <expr>;` (and `var`/`let`)
+    //
+    // Any other `await` / `for await..of` form must fall back to the AST interpreter.
+    Stmt::Expr(expr_stmt) => {
+      let expr = &expr_stmt.stx.expr;
+      if let Some(arg) = expr_direct_await_arg(expr) {
+        // Nested awaits inside the await argument are not supported by the compiled executor.
+        return expr_contains_await(arg);
+      }
+
+      if let Expr::Binary(binary) = &*expr.stx {
+        if binary.stx.operator == OperatorName::Assignment {
+          if let Some(arg) = expr_direct_await_arg(&binary.stx.right) {
+            if !expr_is_supported_assignment_target_for_hir_async_scripts(&binary.stx.left) {
+              return true;
+            }
+            // Nested awaits inside the await argument (or in computed member keys) are not
+            // supported by the compiled executor.
+            return expr_contains_await(&binary.stx.left) || expr_contains_await(arg);
+          }
+        }
+      }
+
+      expr_contains_await(expr)
+    }
+    Stmt::VarDecl(decl) => decl.stx.declarators.iter().any(|d| {
+      if pat_contains_await(&d.pattern.stx.pat.stx) {
+        return true;
+      }
+      let Some(init) = d.initializer.as_ref() else {
+        return false;
+      };
+      if let Some(arg) = expr_direct_await_arg(init) {
+        expr_contains_await(arg)
+      } else {
+        expr_contains_await(init)
+      }
+    }),
+    // Other statement kinds must not contain `await` / `for await..of`.
+    _ => stmt_contains_await(stmt),
   }
 }
 
