@@ -6993,8 +6993,9 @@ impl BrowserTab {
   ///
   /// Note: `requestAnimationFrame` callbacks are queued separately from tasks/microtasks.
   /// `run_event_loop_until_idle` will never run rAF callbacks; `tick_frame` will run at most one rAF
-  /// turn when callbacks are pending (and drains the microtask checkpoint after rAF before
-  /// rendering).
+  /// turn when callbacks are pending and the next animation frame is due (paced by
+  /// [`JsExecutionOptions::animation_frame_interval`]). It drains the microtask checkpoint after rAF
+  /// before rendering.
   ///
   /// `tick_frame` does not enforce a wall-clock frame cadence by itself; interactive embedders are
   /// expected to call it on their chosen frame schedule. See

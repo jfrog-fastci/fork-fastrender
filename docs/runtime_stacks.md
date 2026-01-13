@@ -179,10 +179,11 @@ In the public API this maps to:
   freshly rendered `Pixmap` *only if* something invalidated rendering.
 - `BrowserTab::run_until_stable(...)` — a bounded helper for “drive until idle + rendered”.
 
-Note: `tick_frame()` runs at most one `requestAnimationFrame` “turn” when callbacks are queued, and
-it drains the post-rAF microtask checkpoint before rendering. It does **not** enforce a wall-clock
-frame cadence by itself; interactive embedders should call it on their chosen frame schedule and
-can use `BrowserTab::next_wake_time()` as a sleep hint (see
+Note: `tick_frame()` runs at most one `requestAnimationFrame` “turn” when callbacks are queued and
+the next frame is due (paced by `JsExecutionOptions.animation_frame_interval`), and it drains the
+post-rAF microtask checkpoint before rendering. It does **not** enforce a wall-clock frame cadence
+by itself; interactive embedders should call it on their chosen frame schedule and can use
+`BrowserTab::next_wake_time()` as a sleep hint (see
 [`docs/live_rendering_loop.md`](live_rendering_loop.md)).
 
 Conceptually:

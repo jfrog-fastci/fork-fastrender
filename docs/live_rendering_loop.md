@@ -87,7 +87,8 @@ FastRender models this separation too:
 - rAF callbacks are queued separately from tasks/microtasks,
 - driving tasks to idle does not run rAF.
 
-**Current behavior:** `tick_frame()` runs at most one rAF “turn” when callbacks are pending, and it
+**Current behavior:** `tick_frame()` runs at most one rAF “turn” when callbacks are pending **and the
+next animation frame is due** (paced by `JsExecutionOptions.animation_frame_interval`). It then
 drains microtasks queued by rAF before rendering. It does **not** enforce a wall-clock frame cadence
 by itself; the embedder is expected to call `tick_frame()` on its chosen frame schedule (see the
 live-loop discussion below for wake/sleep strategy).
