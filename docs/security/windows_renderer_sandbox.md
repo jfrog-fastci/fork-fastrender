@@ -32,7 +32,7 @@ This is a quick reference. The full Windows sandbox design is layered as:
    - The Windows spawn helper passes an explicit, allowlisted environment block to avoid leaking
      secrets from the parent process environment into the untrusted renderer.
    - It also overrides `TEMP`/`TMP` to a sandbox-accessible temp directory (in AppContainer mode this
-     is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`).
+     is typically `GetAppContainerFolderPath(AppContainerSid)\Temp`).
    - Debug escape hatch: `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` disables this sanitization and inherits
      the full parent environment (**debug only**).
 5. **Process mitigations** (Win32k lockdown, dynamic code prohibition, etc.) when enabled.

@@ -482,7 +482,7 @@ When this opt-in is enabled, we fall back to a “best-effort” sandbox:
   - Repo reality: `src/sandbox/windows.rs` currently strips privileges but does **not** disable any
     group SIDs (`DisableSidCount = 0`).
   - `crates/win-sandbox` additionally disables a small set of broad local group SIDs (deny-only)
-    like `BUILTIN\\Users` as defense-in-depth against permissive filesystem ACLs.
+    like `BUILTIN\Users` as defense-in-depth against permissive filesystem ACLs.
 - Set the token’s **Integrity Level (IL)** to **Low** (`S-1-16-4096`).
 
 Then we spawn the child using `CreateProcessAsUserW` with the restricted primary token (see
@@ -490,12 +490,12 @@ Then we spawn the child using `CreateProcessAsUserW` with the restricted primary
 
 Important pitfall (restricted-token spawns):
 
-- If `lpCurrentDirectory` is left as `NULL`, Windows inherits the parent’s CWD. When `BUILTIN\\Users`
+- If `lpCurrentDirectory` is left as `NULL`, Windows inherits the parent’s CWD. When `BUILTIN\Users`
   (or similar broad groups) are disabled in the restricted token **or** when the token runs at Low
   IL, that inherited directory may no longer be accessible, causing `CreateProcessAsUserW` to fail
   with `ERROR_ACCESS_DENIED` (or leaving the child in a “weird” working directory).
 - `src/sandbox/windows.rs::spawn_restricted_token` avoids this by setting `lpCurrentDirectory` to the
-  executable’s parent directory (best-effort) and falling back to `C:\\Windows\\System32`.
+  executable’s parent directory (best-effort) and falling back to `C:\Windows\System32`.
 - `crates/win-sandbox::restricted_token::spawn_with_token` avoids this by setting an explicit current
   directory: `SpawnConfig.current_dir` if provided, otherwise `SpawnConfig.exe.parent()` (best-effort
   “if the image is loadable, the directory is usually traversable too”).
@@ -540,8 +540,8 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
   - By default `src/sandbox/windows.rs` builds a sanitized environment block (so secrets from the
     browser process environment are not leaked into the renderer) and overrides `TEMP`/`TMP` to a
     sandbox-accessible temp directory.
-    - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`
-      (fallback: `C:\\Windows\\Temp`).
+    - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\Temp`
+      (fallback: `C:\Windows\Temp`).
   - This is intended for local debugging only.
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`: opt in to running without the full Windows sandbox when
   required primitives are missing or sandbox startup fails.
@@ -626,10 +626,10 @@ Repo reality (`src/sandbox/windows.rs::spawn_appcontainer`):
 - We always set an explicit `lpCurrentDirectory` to a sandbox-accessible working directory so we do
   **not** inherit the parent process CWD (including on relocation retries). In the main spawner this
   is typically the AppContainer profile storage folder returned by `GetAppContainerFolderPath`
-  (fallback: `C:\\Windows\\System32`).
+  (fallback: `C:\Windows\System32`).
 - The sanitized environment overrides `TEMP`/`TMP` to a sandbox-accessible temp directory.
-  - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\\Temp`
-    (fallback: `C:\\Windows\\Temp`).
+  - In AppContainer mode this is typically `GetAppContainerFolderPath(AppContainerSid)\Temp`
+    (fallback: `C:\Windows\Temp`).
 
 Enable `FASTR_LOG_SANDBOX=1` to see which path was taken.
 
