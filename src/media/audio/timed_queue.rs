@@ -60,10 +60,10 @@ impl TimedAudioQueue {
   /// Number of frames of tolerance allowed between successive `target_pts` values and the internal
   /// cursor.
   ///
-  /// In real playback, `target_pts` may be derived from an audio backend clock that converts frames
-  /// ↔ `Duration` via `f64` (see `AudioClock::time`). Those conversions can introduce ±1 frame of
-  /// jitter when mapped back into frames. Treating that jitter as a seek would cause repeated
-  /// cursor resets and audible glitches.
+  /// In real playback, callers may derive `target_pts` from clocks that are not perfectly
+  /// sample-aligned (e.g. wall-clock based timing, or conversions that round to whole nanoseconds).
+  /// Those can introduce ±1 frame of jitter when mapped back into frames. Treating that jitter as a
+  /// seek would cause repeated cursor resets and audible glitches.
   const TARGET_PTS_TOLERANCE_FRAMES: u64 = 1;
 
   pub fn new(channels: u16, sample_rate: u32, max_buffered_duration: Duration) -> Self {
@@ -338,10 +338,15 @@ impl TimedAudioQueue {
 
 fn duration_to_frames(duration: Duration, sample_rate: u32) -> u64 {
   const NANOS_PER_SEC: u128 = 1_000_000_000;
+  if sample_rate == 0 {
+    return 0;
+  }
   let nanos = duration.as_nanos();
   let sr = sample_rate as u128;
   // Round to the nearest frame to avoid consistent drift from truncation.
-  ((nanos * sr + NANOS_PER_SEC / 2) / NANOS_PER_SEC) as u64
+  let scaled = nanos.saturating_mul(sr);
+  let frames = scaled.saturating_add(NANOS_PER_SEC / 2) / NANOS_PER_SEC;
+  u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
