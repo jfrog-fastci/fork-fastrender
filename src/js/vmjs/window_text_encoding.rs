@@ -618,6 +618,11 @@ fn text_encoder_stream_transform(
     ));
   };
 
+  // `ToString` coercion can run JS and therefore allocate / trigger GC. Root the controller object
+  // across encoding so it remains live even if GC runs during `chunk` coercion.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(controller_obj))?;
+
   // Encode input chunk to UTF-8 bytes (matching `TextEncoder.encode` default empty-string parameter
   // semantics).
   let view_obj = if matches!(chunk, Value::Undefined) {
@@ -634,7 +639,7 @@ fn text_encoder_stream_transform(
   } else {
     let s = match chunk {
       Value::String(s) => s,
-      other => scope.heap_mut().to_string(other)?,
+      other => scope.to_string(vm, host, hooks, other)?,
     };
     let code_units = scope.heap().get_string(s)?.as_code_units();
     let byte_len = utf8_len_from_utf16_units(code_units)?;
@@ -663,8 +668,6 @@ fn text_encoder_stream_transform(
   };
 
   // Root objects across the property lookup + enqueue call in case those operations trigger GC.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(controller_obj))?;
   scope.push_root(Value::Object(view_obj))?;
 
   // controller.enqueue(view)
@@ -743,7 +746,7 @@ fn text_decoder_stream_construct(
     if !matches!(label_value, Value::Undefined) {
       let label_string = match label_value {
         Value::String(s) => s,
-        other => scope.heap_mut().to_string(other)?,
+        other => scope.to_string(vm, host, hooks, other)?,
       };
       let label_units = scope.heap().get_string(label_string)?.as_code_units();
       let enc = encoding_from_label_code_units(label_units)?;
@@ -1361,7 +1364,7 @@ fn text_decoder_construct(
     if !matches!(label_value, Value::Undefined) {
       let label_string = match label_value {
         Value::String(s) => s,
-        other => scope.heap_mut().to_string(other)?,
+        other => scope.to_string(vm, host, hooks, other)?,
       };
       let label_units = scope.heap().get_string(label_string)?.as_code_units();
       let enc = encoding_from_label_code_units(label_units)?;
@@ -1506,8 +1509,8 @@ fn text_decoder_get_ignore_bom(
 fn text_encoder_encode(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -1534,7 +1537,7 @@ fn text_encoder_encode(
 
   let s = match input {
     Value::String(s) => s,
-    other => scope.heap_mut().to_string(other)?,
+    other => scope.to_string(vm, host, hooks, other)?,
   };
   let code_units = scope.heap().get_string(s)?.as_code_units();
 
@@ -1568,8 +1571,8 @@ fn text_encoder_encode(
 fn text_encoder_encode_into(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -1612,7 +1615,13 @@ fn text_encoder_encode_into(
   } else {
     Some(match source {
       Value::String(s) => s,
-      other => scope.heap_mut().to_string(other)?,
+      other => {
+        // `ToString` can allocate and trigger GC (and may invoke user code), so ensure we keep the
+        // destination view alive across coercion.
+        let mut scope = scope.reborrow();
+        scope.push_root(Value::Object(dest_obj))?;
+        scope.to_string(vm, host, hooks, other)?
+      }
     })
   };
 
@@ -2441,6 +2450,53 @@ mod tests {
 
     drop(scope);
     realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn text_encoder_encode_coerces_string_object() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    let out = rt.exec_script("new TextEncoder().encode(new String('hi'))")?;
+    let Value::Object(out_obj) = out else {
+      return Err(VmError::InvariantViolation(
+        "TextEncoder.encode must return an object",
+      ));
+    };
+    assert!(
+      rt.heap().is_uint8_array_object(out_obj),
+      "expected Uint8Array result"
+    );
+    assert_eq!(rt.heap().uint8_array_data(out_obj)?, b"hi");
+    Ok(())
+  }
+
+  #[test]
+  fn text_encoder_encode_coerces_object_via_to_string() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    let out = rt.exec_script("new TextEncoder().encode({ toString(){ return 'ok'; } })")?;
+    let Value::Object(out_obj) = out else {
+      return Err(VmError::InvariantViolation(
+        "TextEncoder.encode must return an object",
+      ));
+    };
+    assert!(
+      rt.heap().is_uint8_array_object(out_obj),
+      "expected Uint8Array result"
+    );
+    assert_eq!(rt.heap().uint8_array_data(out_obj)?, b"ok");
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_coerces_string_object_label() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    let decoded = rt.exec_script(
+      "new TextDecoder(new String('windows-1252')).decode(new Uint8Array([0x80]))",
+    )?;
+    assert_eq!(get_string(rt.heap(), decoded), "€");
     Ok(())
   }
 
@@ -3300,6 +3356,17 @@ mod tests {
     )?;
     assert_eq!(ok, Value::Bool(true));
 
+    Ok(())
+  }
+
+  #[test]
+  fn text_decoder_stream_constructs_with_object_label() -> Result<(), VmError> {
+    let (mut rt, _bindings) = new_runtime_with_streams_and_text_encoding()?;
+
+    let ok = rt.exec_script(
+      "(() => { new TextDecoderStream({ toString(){ return 'utf-8'; } }); return true; })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
