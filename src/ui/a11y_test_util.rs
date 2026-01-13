@@ -101,6 +101,13 @@ impl AccessKitTestTree {
     accesskit_orphan_node_ids_from_update(update, self.root_id, self.nodes_iter())
   }
 
+  pub fn orphan_nodes_snapshot(
+    &self,
+    update: &accesskit::TreeUpdate,
+  ) -> Vec<AccessKitNodeSnapshot> {
+    accesskit_orphan_nodes_snapshot_from_update(update, self.root_id, self.nodes_iter())
+  }
+
   pub fn orphan_node_ids_from_platform_output(
     &self,
     output: &egui::PlatformOutput,
@@ -114,6 +121,21 @@ impl AccessKitTestTree {
     output: &egui::FullOutput,
   ) -> Vec<accesskit::NodeId> {
     self.orphan_node_ids_from_platform_output(&output.platform_output)
+  }
+
+  pub fn orphan_nodes_snapshot_from_platform_output(
+    &self,
+    output: &egui::PlatformOutput,
+  ) -> Vec<AccessKitNodeSnapshot> {
+    let update = accesskit_update_from_platform_output(output);
+    self.orphan_nodes_snapshot(update)
+  }
+
+  pub fn orphan_nodes_snapshot_from_full_output(
+    &self,
+    output: &egui::FullOutput,
+  ) -> Vec<AccessKitNodeSnapshot> {
+    self.orphan_nodes_snapshot_from_platform_output(&output.platform_output)
   }
 
   pub fn reachable_nodes_snapshot(
@@ -359,6 +381,45 @@ where
     .collect()
 }
 
+/// Snapshot-friendly list of nodes that are present in `update.nodes` but not reachable from the
+/// update's root.
+///
+/// The output is sorted by `role → name → id` for stable diffs.
+pub fn accesskit_orphan_nodes_snapshot_from_update<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) -> Vec<AccessKitNodeSnapshot>
+where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let root_id = accesskit_root_id_from_update(update, root_id_fallback);
+
+  let mut nodes_by_id: HashMap<accesskit::NodeId, &accesskit::Node> = HashMap::new();
+  for (id, node) in additional_nodes {
+    nodes_by_id.insert(id, node);
+  }
+  for (id, node) in update.nodes.iter() {
+    nodes_by_id.insert(*id, node);
+  }
+
+  let reachable_ids = accesskit_reachable_node_ids(root_id, &nodes_by_id);
+  let reachable_set: HashSet<accesskit::NodeId> = reachable_ids.into_iter().collect();
+
+  let mut out: Vec<AccessKitNodeSnapshot> = update
+    .nodes
+    .iter()
+    .filter(|(id, _node)| !reachable_set.contains(id))
+    .map(|(id, node)| AccessKitNodeSnapshot {
+      id: id.0.get().to_string(),
+      role: format!("{:?}", node.role()),
+      name: node.name().unwrap_or("").trim().to_string(),
+    })
+    .collect();
+  out.sort_by(|a, b| (&a.role, &a.name, &a.id).cmp(&(&b.role, &b.name, &b.id)));
+  out
+}
+
 /// Snapshot-friendly pre-order list of all nodes reachable from the update's root.
 pub fn accesskit_reachable_nodes_snapshot_from_update<'a, I>(
   update: &'a accesskit::TreeUpdate,
@@ -417,8 +478,35 @@ pub fn accesskit_reachable_nodes_pretty_json_from_platform_output(
     .expect("accesskit reachable node snapshot must serialize to JSON")
 }
 
-pub fn accesskit_reachable_nodes_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
+pub fn accesskit_reachable_nodes_pretty_json_from_full_output(
+  output: &egui::FullOutput,
+) -> String {
   accesskit_reachable_nodes_pretty_json_from_platform_output(&output.platform_output)
+}
+
+pub fn accesskit_orphan_nodes_snapshot_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> Vec<AccessKitNodeSnapshot> {
+  let update = accesskit_update_from_platform_output(output);
+  accesskit_orphan_nodes_snapshot_from_update(update, None, std::iter::empty())
+}
+
+pub fn accesskit_orphan_nodes_snapshot_from_full_output(
+  output: &egui::FullOutput,
+) -> Vec<AccessKitNodeSnapshot> {
+  accesskit_orphan_nodes_snapshot_from_platform_output(&output.platform_output)
+}
+
+pub fn accesskit_orphan_nodes_pretty_json_from_platform_output(
+  output: &egui::PlatformOutput,
+) -> String {
+  let snapshot = accesskit_orphan_nodes_snapshot_from_platform_output(output);
+  serde_json::to_string_pretty(&snapshot)
+    .expect("accesskit orphan node snapshot must serialize to JSON")
+}
+
+pub fn accesskit_orphan_nodes_pretty_json_from_full_output(output: &egui::FullOutput) -> String {
+  accesskit_orphan_nodes_pretty_json_from_platform_output(&output.platform_output)
 }
 
 #[cfg(test)]
@@ -481,6 +569,16 @@ mod tests {
     assert_eq!(reachable, vec![root_id, a_id, a1_id, b_id]);
     let orphans = accesskit_orphan_node_ids_from_update(&update, None, std::iter::empty());
     assert_eq!(orphans, vec![orphan_id]);
+    let orphan_snap =
+      accesskit_orphan_nodes_snapshot_from_update(&update, None, std::iter::empty());
+    assert_eq!(
+      orphan_snap,
+      vec![AccessKitNodeSnapshot {
+        id: orphan_id.0.get().to_string(),
+        role: "Button".to_string(),
+        name: "orphan".to_string(),
+      }]
+    );
 
     let snapshot =
       accesskit_reachable_nodes_snapshot_from_update(&update, None, std::iter::empty());
