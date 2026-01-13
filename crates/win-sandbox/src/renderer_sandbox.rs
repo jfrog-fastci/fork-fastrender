@@ -8,7 +8,7 @@ use windows_sys::Win32::Foundation::{
   CloseHandle, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE, HANDLE_FLAG_INHERIT,
   INVALID_HANDLE_VALUE, TRUE,
 };
-use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
+use windows_sys::Win32::Security::{NO_INHERITANCE, SECURITY_CAPABILITIES};
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
 use windows_sys::Win32::System::Console::{
   GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
@@ -32,11 +32,6 @@ use windows_sys::Win32::Security::ACL;
 // exporting the constants.
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
-
-// `EXPLICIT_ACCESS_W::grfInheritance` value for "do not propagate ACEs".
-//
-// Defined as 0 in the Win32 headers; `windows-sys` does not currently export it.
-const NO_INHERITANCE: u32 = 0;
 
 /// Sandbox configuration for spawning untrusted renderer processes.
 ///
