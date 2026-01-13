@@ -3033,7 +3033,16 @@ impl ModuleGraph {
       graph_guard.disarm();
     }
 
-    result
+    // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
+    // when intrinsics are available.
+    match result {
+      Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+        &*vm,
+        scope,
+        err,
+      )),
+      other => other,
+    }
   }
 
   fn ensure_no_tla_in_resolved_graph(&self, vm: &mut Vm, module: ModuleId) -> Result<(), VmError> {

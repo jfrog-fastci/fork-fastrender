@@ -2355,7 +2355,13 @@ impl JsRuntime {
       return Err(err);
     }
 
-    result
+    // Ensure host-visible failures never leak uncaptured `VmError::Throw` completions. When
+    // intrinsics are available, attach a best-effort stack trace so the embedder sees a proper
+    // Error object and stack frames.
+    match result {
+      Err(err) if err.is_throw_completion() => Err(self.coerce_error_to_throw_with_stack(err)),
+      other => other,
+    }
   }
 
   /// Alias for [`JsRuntime::exec_compiled_script_with_hooks`], provided for API consistency with
@@ -3851,7 +3857,12 @@ impl JsRuntime {
       return Err(err);
     }
 
-    result
+    // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
+    // when intrinsics are available.
+    match result {
+      Err(err) if err.is_throw_completion() => Err(self.coerce_error_to_throw_with_stack(err)),
+      other => other,
+    }
   }
 
   /// Convenience wrapper around [`JsRuntime::exec_module_source_with_host_and_hooks`] for string
@@ -8361,8 +8372,12 @@ impl<'a> Evaluator<'a> {
             // - static fields are initialized during the post-definition initialization pass (after
             //   all methods have been defined), in source order relative to static blocks.
             //
-            // Private *static* fields are handled separately so we can enforce the correct property
+            // Private static fields are handled separately so we can enforce the correct property
             // attributes (notably non-enumerable and non-configurable).
+            //
+            // Private instance fields are stored in the constructor's native-slot field list just
+            // like public fields, and `class_fields::initialize_instance_fields_with_host_and_hooks`
+            // takes care of defining them with spec-correct attributes.
             if is_private_key && member.stx.static_ {
               let PropertyKey::Symbol(sym) = key else {
                 return Err(VmError::InvariantViolation(

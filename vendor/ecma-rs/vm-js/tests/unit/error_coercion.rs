@@ -1,9 +1,11 @@
 use crate::{
-  Heap, HeapLimits, Job, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, Value, Vm, VmError,
-  VmHostHooks, VmOptions,
+  Heap, HeapLimits, HostDefined, Job, ModuleGraph, ModuleLoadPayload, ModuleReferrer, ModuleRequest, PropertyDescriptor,
+  PropertyKey, PropertyKind, RealmId, Scope, SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks,
+  VmOptions,
 };
 use crate::exec::{eval_script_with_host_and_hooks, JsRuntime};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 #[test]
 fn exec_script_coerces_instantiation_throw_to_throw_with_stack() -> Result<(), VmError> {
@@ -79,6 +81,38 @@ impl VmHostHooks for CapturingHooks {
   }
 }
 
+struct FailingModuleLoadHooks {
+  jobs: VecDeque<(Option<RealmId>, Job)>,
+}
+
+impl FailingModuleLoadHooks {
+  fn new() -> Self {
+    Self {
+      jobs: VecDeque::new(),
+    }
+  }
+}
+
+impl VmHostHooks for FailingModuleLoadHooks {
+  fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
+    self.jobs.push_back((realm, job));
+  }
+
+  fn host_load_imported_module(
+    &mut self,
+    _vm: &mut Vm,
+    _scope: &mut Scope<'_>,
+    _modules: &mut ModuleGraph,
+    _referrer: ModuleReferrer,
+    _module_request: ModuleRequest,
+    _host_defined: HostDefined,
+    _payload: ModuleLoadPayload,
+  ) -> Result<(), VmError> {
+    // Simulate a host hook returning a helper error while loading the static import graph.
+    Err(VmError::NotCallable)
+  }
+}
+
 #[test]
 fn job_run_coerces_helper_errors_to_throw_with_stack() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
@@ -105,6 +139,42 @@ fn job_run_coerces_helper_errors_to_throw_with_stack() -> Result<(), VmError> {
 
   {
     let type_error_proto = rt.realm().intrinsics().type_error_prototype();
+    let mut scope = rt.heap.scope();
+    scope.push_root(thrown_value)?;
+    assert_eq!(scope.heap().object_prototype(thrown_obj)?, Some(type_error_proto));
+  }
+
+  // Ensure no queued jobs are dropped with leaked roots.
+  while let Some((_realm, job)) = hooks.jobs.pop_front() {
+    job.discard(&mut rt);
+  }
+
+  Ok(())
+}
+
+#[test]
+fn exec_module_coerces_helper_errors_to_throw_with_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let type_error_proto = rt.realm().intrinsics().type_error_prototype();
+  let mut host = ();
+  let mut hooks = FailingModuleLoadHooks::new();
+  let err = rt
+    .exec_module_with_host_and_hooks(&mut host, &mut hooks, "m.js", "import \"./dep.js\";")
+    .unwrap_err();
+
+  let thrown_value = match err {
+    VmError::ThrowWithStack { value, .. } => value,
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  };
+
+  let Value::Object(thrown_obj) = thrown_value else {
+    panic!("expected thrown value to be an object");
+  };
+
+  {
     let mut scope = rt.heap.scope();
     scope.push_root(thrown_value)?;
     assert_eq!(scope.heap().object_prototype(thrown_obj)?, Some(type_error_proto));
@@ -176,5 +246,53 @@ fn eval_script_coerces_instantiation_throw_to_throw_with_stack() -> Result<(), V
     job.discard(&mut rt);
   }
 
+  Ok(())
+}
+
+#[test]
+fn evaluate_sync_coerces_unimplemented_to_throw_with_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let global_object = rt.realm().global_object();
+  let realm_id = rt.realm().id();
+  let error_proto = rt.realm().intrinsics().error_prototype();
+
+  let (err, mut hooks) = {
+    let (vm, modules, heap) = rt.vm_modules_and_heap_mut();
+
+    let source = Arc::new(SourceText::new_charged(heap, "m.js", "await 1;")?);
+    let record = SourceTextModuleRecord::parse_source_with_vm(vm, source.clone())?;
+    let module = modules.add_module_with_specifier("m.js", record)?;
+
+    let mut host = ();
+    let mut hooks = CapturingHooks::new();
+
+    let mut scope = heap.scope();
+    let err = modules
+      .evaluate_sync_with_scope(vm, &mut scope, global_object, realm_id, module, &mut host, &mut hooks)
+      .unwrap_err();
+
+    (err, hooks)
+  };
+
+  // Ensure no queued jobs are dropped with leaked roots.
+  while let Some((_realm, job)) = hooks.jobs.pop_front() {
+    job.discard(&mut rt);
+  }
+
+  let thrown_value = match err {
+    VmError::ThrowWithStack { value, .. } => value,
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  };
+
+  let Value::Object(thrown_obj) = thrown_value else {
+    panic!("expected thrown value to be an object");
+  };
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(thrown_value)?;
+  assert_eq!(scope.heap().object_prototype(thrown_obj)?, Some(error_proto));
   Ok(())
 }
