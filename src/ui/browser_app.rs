@@ -1814,6 +1814,14 @@ impl BrowserAppState {
         // Front-ends that show a picker overlay should dismiss it.
         update.request_redraw = true;
       }
+      WorkerToUi::FilePickerOpened { .. } => {
+        // Front-ends may show an overlay picker for `<input type=file>`.
+        update.request_redraw = true;
+      }
+      WorkerToUi::FilePickerClosed { .. } => {
+        // Front-ends that show a picker overlay should dismiss it.
+        update.request_redraw = true;
+      }
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.stage = Some(stage);

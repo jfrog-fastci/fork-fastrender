@@ -91,6 +91,11 @@ pub enum InteractionAction {
     input_node_id: usize,
     kind: DateTimeInputKind,
   },
+  OpenFilePicker {
+    input_node_id: usize,
+    multiple: bool,
+    accept: Option<String>,
+  },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1944,6 +1949,74 @@ fn is_range_input(node: &DomNode) -> bool {
 
 fn is_file_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("file")
+}
+
+fn normalize_file_selection_path(path: &PathBuf) -> PathBuf {
+  std::fs::canonicalize(path).unwrap_or_else(|_| {
+    if path.is_absolute() {
+      path.clone()
+    } else {
+      std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(path)
+    }
+  })
+}
+
+fn content_type_for_path(path: &std::path::Path) -> String {
+  let ext = path
+    .extension()
+    .map(|ext| ext.to_string_lossy().to_ascii_lowercase());
+  let mime = match ext.as_deref() {
+    Some("txt") => "text/plain",
+    Some("html") | Some("htm") => "text/html",
+    Some("css") => "text/css",
+    Some("js") | Some("mjs") => "text/javascript",
+    Some("json") => "application/json",
+    Some("xml") => "application/xml",
+    Some("png") => "image/png",
+    Some("jpg") | Some("jpeg") => "image/jpeg",
+    Some("gif") => "image/gif",
+    Some("webp") => "image/webp",
+    Some("svg") | Some("svgz") => "image/svg+xml",
+    Some("pdf") => "application/pdf",
+    _ => "application/octet-stream",
+  };
+  mime.to_string()
+}
+
+fn build_file_selections_from_paths(paths: &[PathBuf], multiple: bool) -> Vec<FileSelection> {
+  let mut selected: Vec<FileSelection> = Vec::new();
+  for path in paths {
+    if path.as_os_str().is_empty() {
+      continue;
+    }
+    if !multiple && !selected.is_empty() {
+      break;
+    }
+
+    let filename = path
+      .file_name()
+      .map(|name| name.to_string_lossy().to_string())
+      .filter(|name| !name.is_empty());
+    let Some(filename) = filename else {
+      continue;
+    };
+
+    let normalized_path = normalize_file_selection_path(path);
+    let bytes = match std::fs::read(&normalized_path) {
+      Ok(bytes) => bytes,
+      Err(_) => continue,
+    };
+
+    selected.push(FileSelection {
+      path: normalized_path,
+      filename,
+      content_type: content_type_for_path(path),
+      bytes,
+    });
+  }
+  selected
 }
 
 fn date_time_input_kind(node: &DomNode) -> Option<DateTimeInputKind> {
@@ -6283,6 +6356,23 @@ impl InteractionEngine {
                   dom_changed |= self.mark_user_validity(target_id);
                 }
               }
+            } else if index.node(target_id).is_some_and(is_file_input) {
+              if !node_is_disabled(&index, target_id) {
+                let multiple = index
+                  .node(target_id)
+                  .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+                let accept = index
+                  .node(target_id)
+                  .and_then(|node| node.get_attribute_ref("accept"))
+                  .map(trim_ascii_whitespace)
+                  .filter(|v| !v.is_empty())
+                  .map(|v| v.to_string());
+                action = InteractionAction::OpenFilePicker {
+                  input_node_id: target_id,
+                  multiple,
+                  accept,
+                };
+              }
             } else if let Some(kind) = index
               .node(target_id)
               .and_then(|node| date_time_input_kind(node))
@@ -6496,46 +6586,12 @@ impl InteractionEngine {
       .node(target_id)
       .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
 
-    let mut selected: Vec<FileSelection> = Vec::new();
-    for path in paths {
-      if path.as_os_str().is_empty() {
-        continue;
-      }
-      if !multiple && !selected.is_empty() {
-        break;
-      }
-
-      let filename = path
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .filter(|name| !name.is_empty());
-      let Some(filename) = filename else {
-        continue;
-      };
-
-      let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(_) => continue,
-      };
-
-      selected.push(FileSelection {
-        path: path.clone(),
-        filename,
-        content_type: "application/octet-stream".to_string(),
-        bytes,
-      });
-    }
-
-    let prev_paths: Vec<PathBuf> = self
-      .state
-      .form_state
-      .file_inputs
-      .get(&target_id)
-      .map(|prev| prev.iter().map(|f| f.path.clone()).collect())
-      .unwrap_or_default();
-    let next_paths: Vec<PathBuf> = selected.iter().map(|f| f.path.clone()).collect();
-
-    if prev_paths != next_paths {
+    let selected = build_file_selections_from_paths(paths, multiple);
+    let selection_unchanged = match self.state.form_state.file_inputs.get(&target_id) {
+      Some(prev) => prev.as_slice() == selected.as_slice(),
+      None => selected.is_empty(),
+    };
+    if !selection_unchanged {
       changed = true;
       if selected.is_empty() {
         self.state.form_state.file_inputs.remove(&target_id);
@@ -6558,6 +6614,74 @@ impl InteractionEngine {
       .map(|file| format!("C:\\fakepath\\{}", file.filename))
       .unwrap_or_default();
     if let Some(node_mut) = index.node_mut(target_id) {
+      let attr_changed = if value_string.is_empty() {
+        remove_node_attr(node_mut, "data-fastr-file-value")
+      } else {
+        set_node_attr(node_mut, "data-fastr-file-value", &value_string)
+      };
+      changed |= attr_changed;
+    }
+
+    changed
+  }
+
+  /// Choose one or more local files for a specific `<input type="file">` control.
+  ///
+  /// This is used by browser UI file picker overlays, which already know the target input node.
+  pub fn file_picker_choose(
+    &mut self,
+    dom: &mut DomNode,
+    input_node_id: usize,
+    paths: &[PathBuf],
+  ) -> bool {
+    self.modality = InputModality::Pointer;
+    let mut index = DomIndexMut::new(dom);
+
+    if !index.node(input_node_id).is_some_and(is_file_input) {
+      return false;
+    }
+    if is_disabled_or_inert(&index, input_node_id) {
+      return false;
+    }
+
+    // Keep focus on the input (browser-like).
+    let mut changed = if is_focusable_interactive_element(&index, input_node_id) {
+      self.set_focus(&mut index, Some(input_node_id), false)
+    } else {
+      false
+    };
+
+    let multiple = index
+      .node(input_node_id)
+      .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+    let selected = build_file_selections_from_paths(paths, multiple);
+    let selection_unchanged = match self.state.form_state.file_inputs.get(&input_node_id) {
+      Some(prev) => prev.as_slice() == selected.as_slice(),
+      None => selected.is_empty(),
+    };
+    if !selection_unchanged {
+      changed = true;
+      if selected.is_empty() {
+        self.state.form_state.file_inputs.remove(&input_node_id);
+      } else {
+        self.state.form_state.file_inputs.insert(input_node_id, selected);
+      }
+
+      // Selecting files flips HTML user validity so `:user-invalid` can match after interaction.
+      changed |= self.mark_user_validity(input_node_id);
+      changed |= self.mark_form_user_validity(&index, input_node_id);
+    }
+
+    // Mirror browser value semantics: the value string reflects the first filename only.
+    let value_string = self
+      .state
+      .form_state
+      .file_inputs
+      .get(&input_node_id)
+      .and_then(|files| files.first())
+      .map(|file| format!("C:\\fakepath\\{}", file.filename))
+      .unwrap_or_default();
+    if let Some(node_mut) = index.node_mut(input_node_id) {
       let attr_changed = if value_string.is_empty() {
         remove_node_attr(node_mut, "data-fastr-file-value")
       } else {
@@ -8216,6 +8340,23 @@ impl InteractionEngine {
               kind,
             };
           }
+        } else if index.node(focused).is_some_and(is_file_input) {
+          if !node_is_disabled(&index, focused) {
+            let multiple = index
+              .node(focused)
+              .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+            let accept = index
+              .node(focused)
+              .and_then(|node| node.get_attribute_ref("accept"))
+              .map(trim_ascii_whitespace)
+              .filter(|v| !v.is_empty())
+              .map(|v| v.to_string());
+            action = InteractionAction::OpenFilePicker {
+              input_node_id: focused,
+              multiple,
+              accept,
+            };
+          }
         } else if index.node(focused).is_some_and(is_select) {
           let mut computed_disabled = false;
           let control = match box_tree
@@ -8406,6 +8547,23 @@ impl InteractionEngine {
             action = InteractionAction::OpenDateTimePicker {
               input_node_id: focused,
               kind,
+            };
+          }
+        } else if index.node(focused).is_some_and(is_file_input) {
+          if !node_is_disabled(&index, focused) {
+            let multiple = index
+              .node(focused)
+              .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+            let accept = index
+              .node(focused)
+              .and_then(|node| node.get_attribute_ref("accept"))
+              .map(trim_ascii_whitespace)
+              .filter(|v| !v.is_empty())
+              .map(|v| v.to_string());
+            action = InteractionAction::OpenFilePicker {
+              input_node_id: focused,
+              multiple,
+              accept,
             };
           }
         } else if index.node(focused).is_some_and(is_select) {
@@ -8610,6 +8768,33 @@ impl InteractionEngine {
           // Inert subtrees are not interactive.
         } else if let Some(details_id) = details_owner_for_summary(&index, focused) {
           changed |= toggle_details_open(&mut index, details_id);
+        } else if let Some(kind) = index
+          .node(focused)
+          .and_then(|node| date_time_input_kind(node))
+        {
+          if !node_is_disabled(&index, focused) && !node_is_readonly(&index, focused) {
+            action = InteractionAction::OpenDateTimePicker {
+              input_node_id: focused,
+              kind,
+            };
+          }
+        } else if index.node(focused).is_some_and(is_file_input) {
+          if !node_is_disabled(&index, focused) {
+            let multiple = index
+              .node(focused)
+              .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+            let accept = index
+              .node(focused)
+              .and_then(|node| node.get_attribute_ref("accept"))
+              .map(trim_ascii_whitespace)
+              .filter(|v| !v.is_empty())
+              .map(|v| v.to_string());
+            action = InteractionAction::OpenFilePicker {
+              input_node_id: focused,
+              multiple,
+              accept,
+            };
+          }
         } else if index.node(focused).is_some_and(is_select) {
           let mut computed_disabled = false;
           let control = match box_tree
@@ -8781,6 +8966,33 @@ impl InteractionEngine {
           // Inert subtrees are not interactive.
         } else if let Some(details_id) = details_owner_for_summary(&index, focused) {
           changed |= toggle_details_open(&mut index, details_id);
+        } else if let Some(kind) = index
+          .node(focused)
+          .and_then(|node| date_time_input_kind(node))
+        {
+          if !node_is_disabled(&index, focused) && !node_is_readonly(&index, focused) {
+            action = InteractionAction::OpenDateTimePicker {
+              input_node_id: focused,
+              kind,
+            };
+          }
+        } else if index.node(focused).is_some_and(is_file_input) {
+          if !node_is_disabled(&index, focused) {
+            let multiple = index
+              .node(focused)
+              .is_some_and(|node| node.get_attribute_ref("multiple").is_some());
+            let accept = index
+              .node(focused)
+              .and_then(|node| node.get_attribute_ref("accept"))
+              .map(trim_ascii_whitespace)
+              .filter(|v| !v.is_empty())
+              .map(|v| v.to_string());
+            action = InteractionAction::OpenFilePicker {
+              input_node_id: focused,
+              multiple,
+              accept,
+            };
+          }
         } else if index.node(focused).is_some_and(is_select) {
           let mut computed_disabled = false;
           let control = match box_tree

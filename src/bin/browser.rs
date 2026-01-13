@@ -2729,6 +2729,21 @@ fn close_date_time_picker_popup(
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
+struct OpenFilePicker {
+  tab_id: fastrender::ui::TabId,
+  input_node_id: usize,
+  multiple: bool,
+  accept: Option<String>,
+  /// Bounding box of the `<input>` control in viewport CSS coordinates.
+  anchor_css: fastrender::geometry::Rect,
+  /// Fallback anchor position in egui points (cursor position).
+  anchor_points: egui::Pos2,
+  /// Draft path input shown in the popup.
+  draft: String,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
 struct PendingContextMenuRequest {
   tab_id: fastrender::ui::TabId,
   pos_css: (f32, f32),
@@ -3166,6 +3181,8 @@ struct App {
   open_select_dropdown_rect: Option<egui::Rect>,
   open_date_time_picker: Option<OpenDateTimePicker>,
   open_date_time_picker_rect: Option<egui::Rect>,
+  open_file_picker: Option<OpenFilePicker>,
+  open_file_picker_rect: Option<egui::Rect>,
   debug_log: std::collections::VecDeque<String>,
   debug_log_ui_enabled: bool,
   debug_log_ui_open: bool,
@@ -3408,6 +3425,9 @@ impl App {
       .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_date_time_picker_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .open_file_picker_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_context_menu_rect
@@ -3703,6 +3723,8 @@ impl App {
       open_select_dropdown_rect: None,
       open_date_time_picker: None,
       open_date_time_picker_rect: None,
+      open_file_picker: None,
+      open_file_picker_rect: None,
       bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState::default(),
       debug_log: std::collections::VecDeque::new(),
       debug_log_ui_enabled,
@@ -4098,6 +4120,8 @@ impl App {
       | UiToWorker::SelectDropdownPick { tab_id, .. }
       | UiToWorker::DateTimePickerChoose { tab_id, .. }
       | UiToWorker::DateTimePickerCancel { tab_id }
+      | UiToWorker::FilePickerChoose { tab_id, .. }
+      | UiToWorker::FilePickerCancel { tab_id }
       | UiToWorker::TextInput { tab_id, .. }
       | UiToWorker::ImePreedit { tab_id, .. }
       | UiToWorker::ImeCommit { tab_id, .. }
@@ -4140,6 +4164,8 @@ impl App {
           | UiToWorker::SelectDropdownPick { .. }
           | UiToWorker::DateTimePickerChoose { .. }
           | UiToWorker::DateTimePickerCancel { .. }
+          | UiToWorker::FilePickerChoose { .. }
+          | UiToWorker::FilePickerCancel { .. }
           | UiToWorker::TextInput { .. }
           | UiToWorker::ImePreedit { .. }
           | UiToWorker::ImeCommit { .. }
@@ -4320,6 +4346,18 @@ impl App {
       ));
     }
     self.close_date_time_picker();
+  }
+
+  fn close_file_picker(&mut self) {
+    self.open_file_picker = None;
+    self.open_file_picker_rect = None;
+  }
+
+  fn cancel_file_picker(&mut self) {
+    if let Some(picker) = self.open_file_picker.as_ref() {
+      self.send_worker_msg(fastrender::ui::UiToWorker::FilePickerCancel { tab_id: picker.tab_id });
+    }
+    self.close_file_picker();
   }
 
   fn flush_pending_pointer_move(&mut self) {
@@ -4593,6 +4631,9 @@ impl App {
     if self.open_date_time_picker.is_some() {
       self.cancel_date_time_picker();
     }
+    if self.open_file_picker.is_some() {
+      self.cancel_file_picker();
+    }
     if self.pointer_captured {
       self.cancel_pointer_capture();
     }
@@ -4618,6 +4659,9 @@ impl App {
     }
     if self.open_date_time_picker.is_some() {
       self.cancel_date_time_picker();
+    }
+    if self.open_file_picker.is_some() {
+      self.cancel_file_picker();
     }
     if self.pointer_captured {
       self.cancel_pointer_capture();
@@ -4686,7 +4730,8 @@ impl App {
       | fastrender::ui::WorkerToUi::NavigationCommitted { tab_id, .. }
       | fastrender::ui::WorkerToUi::NavigationFailed { tab_id, .. }
       | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id }
-      | fastrender::ui::WorkerToUi::DateTimePickerClosed { tab_id } => {
+      | fastrender::ui::WorkerToUi::DateTimePickerClosed { tab_id }
+      | fastrender::ui::WorkerToUi::FilePickerClosed { tab_id } => {
         if self
           .open_select_dropdown
           .as_ref()
@@ -4700,6 +4745,13 @@ impl App {
           .is_some_and(|picker| picker.tab_id == *tab_id)
         {
           self.close_date_time_picker();
+        }
+        if self
+          .open_file_picker
+          .as_ref()
+          .is_some_and(|picker| picker.tab_id == *tab_id)
+        {
+          self.close_file_picker();
         }
         if self
           .open_context_menu
@@ -4863,6 +4915,41 @@ impl App {
           state,
         });
         self.open_date_time_picker_rect = None;
+        request_redraw = true;
+      }
+    }
+
+    if let fastrender::ui::WorkerToUi::FilePickerOpened {
+      tab_id,
+      input_node_id,
+      multiple,
+      accept,
+      anchor_css,
+    } = &msg
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let mut anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        if self.page_input_tab == Some(*tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(*anchor_css) {
+              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+            }
+          }
+        }
+
+        self.open_file_picker = Some(OpenFilePicker {
+          tab_id: *tab_id,
+          input_node_id: *input_node_id,
+          multiple: *multiple,
+          accept: accept.clone(),
+          anchor_css: *anchor_css,
+          anchor_points,
+          draft: String::new(),
+        });
+        self.open_file_picker_rect = None;
         request_redraw = true;
       }
     }
@@ -7526,6 +7613,136 @@ impl App {
     }
   }
 
+  fn render_file_picker(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::UiToWorker;
+    use std::path::PathBuf;
+ 
+    let (tab_id, input_node_id, multiple, anchor_css, fallback_anchor_points) =
+      match self.open_file_picker.as_ref() {
+        Some(picker) => (
+          picker.tab_id,
+          picker.input_node_id,
+          picker.multiple,
+          picker.anchor_css,
+          picker.anchor_points,
+        ),
+        None => {
+          self.open_file_picker_rect = None;
+          return;
+        }
+      };
+ 
+    // When the popup first opens, force keyboard focus into it so keyboard-only workflows work
+    // without requiring an extra click.
+    let request_initial_focus = self.open_file_picker_rect.is_none();
+ 
+    let mut anchor_pos_points = fallback_anchor_points;
+    if let Some(mapping) = self.page_input_mapping {
+      if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+        anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+      }
+    }
+ 
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.cancel_file_picker();
+      self.window.request_redraw();
+      return;
+    }
+ 
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.cancel_file_picker();
+      self.window.request_redraw();
+      return;
+    }
+ 
+    enum Action {
+      Choose(String),
+      Cancel,
+    }
+ 
+    let popup = egui::Area::new(egui::Id::new((
+      "fastr_file_picker_popup",
+      tab_id.0,
+      input_node_id,
+    )))
+    .order(egui::Order::Foreground)
+    .fixed_pos(anchor_pos_points)
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        let Some(picker) = self.open_file_picker.as_mut() else {
+          return None;
+        };
+ 
+        if picker.multiple {
+          ui.label(egui::RichText::new("Multiple selection (separate paths with ';')").small());
+        }
+        if let Some(accept) = picker.accept.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+          ui.label(egui::RichText::new(format!("Accept: {accept}")).small());
+        }
+ 
+        let hint = if picker.multiple { "Path;path;..." } else { "Path" };
+        let resp = ui.add(
+          egui::TextEdit::singleline(&mut picker.draft)
+            .desired_width(360.0)
+            .hint_text(hint),
+        );
+        if request_initial_focus {
+          resp.request_focus();
+        }
+ 
+        let mut action: Option<Action> = None;
+        ui.horizontal(|ui| {
+          if ui.button("OK").clicked() {
+            action = Some(Action::Choose(picker.draft.clone()));
+          }
+          if ui.button("Cancel").clicked() {
+            action = Some(Action::Cancel);
+          }
+        });
+ 
+        action
+      });
+ 
+      (frame.response.rect, frame.inner)
+    });
+ 
+    let (popup_rect, action) = popup.inner;
+    self.open_file_picker_rect = Some(popup_rect);
+ 
+    match action {
+      Some(Action::Choose(draft)) => {
+        let mut paths: Vec<PathBuf> = Vec::new();
+        let trimmed = draft.trim();
+        if !trimmed.is_empty() {
+          if multiple {
+            for part in trimmed.split(';') {
+              let part = part.trim();
+              if part.is_empty() {
+                continue;
+              }
+              paths.push(PathBuf::from(part));
+            }
+          } else {
+            paths.push(PathBuf::from(trimmed));
+          }
+        }
+ 
+        self.send_worker_msg(UiToWorker::FilePickerChoose {
+          tab_id,
+          input_node_id,
+          paths,
+        });
+        self.close_file_picker();
+        self.window.request_redraw();
+      }
+      Some(Action::Cancel) => {
+        self.cancel_file_picker();
+        self.window.request_redraw();
+      }
+      None => {}
+    }
+  }
+ 
   fn sync_hover_after_tab_change(&mut self, ctx: &egui::Context) {
     use fastrender::ui::PointerButton;
     use fastrender::ui::UiToWorker;
@@ -7791,6 +8008,10 @@ impl App {
         }
         if self.open_date_time_picker.is_some() {
           self.cancel_date_time_picker();
+          self.window.request_redraw();
+        }
+        if self.open_file_picker.is_some() {
+          self.cancel_file_picker();
           self.window.request_redraw();
         }
         if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
@@ -8185,6 +8406,34 @@ impl App {
           });
 
           self.cancel_date_time_picker();
+          self.window.request_redraw();
+          if clicked_input_control {
+            return;
+          }
+        }
+
+        if matches!(state, ElementState::Pressed) && self.open_file_picker.is_some() {
+          // If the picker popup is open, clicks inside it are handled by egui.
+          if self
+            .open_file_picker_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+
+          // Close the picker before processing the click so we don't require a second click to
+          // interact with the underlying page/chrome.
+          //
+          // Special-case: clicking the `<input>` control itself should typically just toggle the
+          // popup closed (don't immediately reopen it by forwarding the click to the page).
+          let clicked_input_control = self.open_file_picker.as_ref().is_some_and(|picker| {
+            self
+              .page_input_mapping
+              .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
+              .is_some_and(|rect_points| rect_points.contains(pos_points))
+          });
+
+          self.cancel_file_picker();
           self.window.request_redraw();
           if clicked_input_control {
             return;
@@ -9042,6 +9291,9 @@ impl App {
         if self.open_date_time_picker.is_some() {
           self.cancel_date_time_picker();
         }
+        if self.open_file_picker.is_some() {
+          self.cancel_file_picker();
+        }
 
         match ime {
           Ime::Preedit(text, cursor_range) => {
@@ -9101,6 +9353,10 @@ impl App {
           self.cancel_date_time_picker();
           self.window.request_redraw();
         }
+        if self.open_file_picker.is_some() {
+          self.cancel_file_picker();
+          self.window.request_redraw();
+        }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
@@ -9123,6 +9379,7 @@ impl App {
     if !actions.is_empty() {
       self.cancel_select_dropdown();
       self.cancel_date_time_picker();
+      self.cancel_file_picker();
       self.cancel_pointer_capture();
       self.close_context_menu();
     }
@@ -10509,6 +10766,16 @@ impl App {
               self.cancel_date_time_picker();
             }
           }
+          if self.open_file_picker.is_some() {
+            if self
+              .open_file_picker_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            {
+              wheel_blocked_by_popup = true;
+            } else {
+              self.cancel_file_picker();
+            }
+          }
         }
       }
 
@@ -10591,6 +10858,9 @@ impl App {
             }
             if self.open_date_time_picker.is_some() {
               self.cancel_date_time_picker();
+            }
+            if self.open_file_picker.is_some() {
+              self.cancel_file_picker();
             }
             if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
               self.close_context_menu();
@@ -11029,6 +11299,7 @@ impl App {
     );
     self.render_select_dropdown(&ctx);
     self.render_date_time_picker(&ctx);
+    self.render_file_picker(&ctx);
     session_dirty |= self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
     // Coalesce pointer-move bursts to at most one message per rendered frame.

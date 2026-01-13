@@ -1638,6 +1638,19 @@ impl BrowserRuntime {
         // close notification can dismiss the popup deterministically.
         let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
       }
+      UiToWorker::FilePickerChoose {
+        tab_id,
+        input_node_id,
+        paths,
+      } => {
+        self.handle_file_picker_choose(tab_id, input_node_id, paths);
+      }
+      UiToWorker::FilePickerCancel { tab_id } => {
+        // Front-ends typically own the picker overlay state, so cancellation is a no-op on the
+        // worker side. Emit `FilePickerClosed` anyway so front-ends can dismiss the popup
+        // deterministically.
+        let _ = self.ui_tx.send(WorkerToUi::FilePickerClosed { tab_id });
+      }
       UiToWorker::TextInput { tab_id, text } => {
         self.handle_text_input(tab_id, &text);
       }
@@ -3365,6 +3378,12 @@ impl BrowserRuntime {
             &scroll_snapshot,
             *input_node_id,
           ),
+          InteractionAction::OpenFilePicker { input_node_id, .. } => styled_node_anchor_css(
+            box_tree,
+            fragment_tree,
+            &scroll_snapshot,
+            *input_node_id,
+          ),
           _ => None,
         };
 
@@ -3698,6 +3717,29 @@ impl BrowserRuntime {
           input_node_id,
           kind,
           value,
+          anchor_css,
+        });
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
+      InteractionAction::OpenFilePicker {
+        input_node_id,
+        multiple,
+        accept,
+      } => {
+        // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
+        // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
+        let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
+        let anchor_css = anchor_css
+          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+          .unwrap_or(cursor_anchor_css);
+
+        let _ = self.ui_tx.send(WorkerToUi::FilePickerOpened {
+          tab_id,
+          input_node_id,
+          multiple,
+          accept,
           anchor_css,
         });
         if dom_changed || scroll_changed {
@@ -4106,6 +4148,28 @@ impl BrowserRuntime {
     let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, &value));
     if dom_changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_file_picker_choose(&mut self, tab_id: TabId, input_node_id: usize, paths: Vec<PathBuf>) {
+    // Close the picker popup deterministically for any UI: `FilePickerChoose` always corresponds to
+    // a user choosing a path in the picker overlay, so the popup should be dismissed even if the
+    // selection is a no-op.
+    let _ = self.ui_tx.send(WorkerToUi::FilePickerClosed { tab_id });
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let engine = &mut tab.interaction;
+    let changed = doc.mutate_dom(|dom| engine.file_picker_choose(dom, input_node_id, &paths));
+
+    if changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -4642,6 +4706,37 @@ impl BrowserRuntime {
             input_node_id,
             kind,
             value,
+            anchor_css,
+          });
+
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+        InteractionAction::OpenFilePicker {
+          input_node_id,
+          multiple,
+          accept,
+        } => {
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              styled_node_anchor_css(
+                prepared.box_tree(),
+                prepared.fragment_tree(),
+                &tab.scroll_state,
+                input_node_id,
+              )
+            })
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
+
+          let _ = self.ui_tx.send(WorkerToUi::FilePickerOpened {
+            tab_id,
+            input_node_id,
+            multiple,
+            accept,
             anchor_css,
           });
 

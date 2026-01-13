@@ -425,6 +425,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::DateTimePickerOpened { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::FilePickerOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::NavigationStarted { tab_id, .. } = msg {
     return Some(*tab_id);
   }
@@ -456,6 +459,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
     return Some(*tab_id);
   }
   if let WorkerToUi::DateTimePickerClosed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::FilePickerClosed { tab_id, .. } = msg {
     return Some(*tab_id);
   }
   if let WorkerToUi::SetClipboardText { tab_id, .. } = msg {
@@ -647,6 +653,25 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     }
     if let WorkerToUi::DateTimePickerClosed { tab_id } = msg {
       let _ = writeln!(&mut out, "DateTimePickerClosed(tab={})", tab_id.0);
+      continue;
+    }
+    if let WorkerToUi::FilePickerOpened {
+      tab_id,
+      input_node_id,
+      multiple,
+      accept,
+      anchor_css,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "FilePickerOpened(tab={}, input_node_id={}, multiple={}, accept={accept:?}, anchor_css={anchor_css:?})",
+        tab_id.0, input_node_id, multiple
+      );
+      continue;
+    }
+    if let WorkerToUi::FilePickerClosed { tab_id } = msg {
+      let _ = writeln!(&mut out, "FilePickerClosed(tab={})", tab_id.0);
       continue;
     }
     if let WorkerToUi::ContextMenu {

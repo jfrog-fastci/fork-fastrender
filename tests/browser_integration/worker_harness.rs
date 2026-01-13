@@ -95,6 +95,15 @@ pub enum WorkerToUiEvent {
   DateTimePickerClosed {
     tab_id: TabId,
   },
+  FilePickerOpened {
+    tab_id: TabId,
+    input_node_id: usize,
+    multiple: bool,
+    accept: Option<String>,
+  },
+  FilePickerClosed {
+    tab_id: TabId,
+  },
   ContextMenu {
     tab_id: TabId,
     pos_css: (f32, f32),
@@ -152,6 +161,8 @@ pub enum WorkerEventKind {
   SelectDropdownClosed,
   DateTimePickerOpened,
   DateTimePickerClosed,
+  FilePickerOpened,
+  FilePickerClosed,
   ContextMenu,
   HoverChanged,
   FindResult,
@@ -180,6 +191,8 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
       WorkerToUiEvent::DateTimePickerOpened { .. } => WorkerEventKind::DateTimePickerOpened,
       WorkerToUiEvent::DateTimePickerClosed { .. } => WorkerEventKind::DateTimePickerClosed,
+      WorkerToUiEvent::FilePickerOpened { .. } => WorkerEventKind::FilePickerOpened,
+      WorkerToUiEvent::FilePickerClosed { .. } => WorkerEventKind::FilePickerClosed,
       WorkerToUiEvent::ContextMenu { .. } => WorkerEventKind::ContextMenu,
       WorkerToUiEvent::HoverChanged { .. } => WorkerEventKind::HoverChanged,
       WorkerToUiEvent::FindResult { .. } => WorkerEventKind::FindResult,
@@ -298,6 +311,22 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       None,
     ),
     WorkerToUi::DateTimePickerClosed { tab_id } => (WorkerToUiEvent::DateTimePickerClosed { tab_id }, None),
+    WorkerToUi::FilePickerOpened {
+      tab_id,
+      input_node_id,
+      multiple,
+      accept,
+      anchor_css: _,
+    } => (
+      WorkerToUiEvent::FilePickerOpened {
+        tab_id,
+        input_node_id,
+        multiple,
+        accept,
+      },
+      None,
+    ),
+    WorkerToUi::FilePickerClosed { tab_id } => (WorkerToUiEvent::FilePickerClosed { tab_id }, None),
     WorkerToUi::ContextMenu {
       tab_id,
       pos_css,

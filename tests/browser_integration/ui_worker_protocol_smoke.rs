@@ -161,6 +161,8 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
       WorkerToUi::SelectDropdownClosed { tab_id: t } => *t == tab_id,
       WorkerToUi::DateTimePickerOpened { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::DateTimePickerClosed { tab_id: t } => *t == tab_id,
+      WorkerToUi::FilePickerOpened { tab_id: t, .. } => *t == tab_id,
+      WorkerToUi::FilePickerClosed { tab_id: t } => *t == tab_id,
       WorkerToUi::ContextMenu { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::NavigationStarted { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::NavigationCommitted { tab_id: t, .. } => *t == tab_id,

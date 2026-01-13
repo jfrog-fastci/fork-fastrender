@@ -160,6 +160,14 @@ impl BrowserTabController {
       } if tab_id == self.tab_id => {
         self.handle_select_dropdown_choose(select_node_id, option_node_id)
       }
+      UiToWorker::FilePickerChoose {
+        tab_id,
+        input_node_id,
+        paths,
+      } if tab_id == self.tab_id => self.handle_file_picker_choose(input_node_id, paths),
+      UiToWorker::FilePickerCancel { tab_id } if tab_id == self.tab_id => Ok(vec![
+        WorkerToUi::FilePickerClosed { tab_id },
+      ]),
       UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => {
         self.handle_text_input(&text)
       }
@@ -744,6 +752,31 @@ impl BrowserTabController {
 
         Ok(out)
       }
+      InteractionAction::OpenFilePicker {
+        input_node_id,
+        multiple,
+        accept,
+      } => {
+        let mut out = vec![WorkerToUi::FilePickerOpened {
+          tab_id: self.tab_id,
+          input_node_id,
+          multiple,
+          accept,
+          anchor_css: self
+            .select_anchor_css(input_node_id)
+            .filter(|rect| {
+              rect.origin.x.is_finite()
+                && rect.origin.y.is_finite()
+                && rect.size.width.is_finite()
+                && rect.size.height.is_finite()
+            })
+            .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0)),
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
+      }
       _ => {
         if changed {
           self.paint_if_needed()
@@ -935,6 +968,20 @@ impl BrowserTabController {
           anchor_css,
         });
       }
+      InteractionAction::OpenFilePicker {
+        input_node_id,
+        multiple,
+        accept,
+      } => {
+        let anchor_css = self.select_anchor_css(input_node_id).unwrap_or(Rect::ZERO);
+        out.push(WorkerToUi::FilePickerOpened {
+          tab_id: self.tab_id,
+          input_node_id,
+          multiple,
+          accept,
+          anchor_css,
+        });
+      }
       _ => {}
     }
 
@@ -966,6 +1013,28 @@ impl BrowserTabController {
     } else {
       Ok(out)
     }
+  }
+
+  fn handle_file_picker_choose(
+    &mut self,
+    input_node_id: usize,
+    paths: Vec<std::path::PathBuf>,
+  ) -> Result<Vec<WorkerToUi>> {
+    // Mirror the threaded worker semantics: choosing files should close the popup even when it
+    // results in no DOM mutation (e.g. choosing the already-selected path).
+    let mut out = vec![WorkerToUi::FilePickerClosed { tab_id: self.tab_id }];
+
+    let engine = &mut self.interaction;
+    let changed =
+      self
+        .document
+        .mutate_dom(|dom| engine.file_picker_choose(dom, input_node_id, &paths));
+
+    if changed {
+      out.extend(self.paint_if_needed()?);
+    }
+
+    Ok(out)
   }
 
   fn handle_navigation_action(
