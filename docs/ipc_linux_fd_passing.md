@@ -6,6 +6,8 @@ Assumption: the **renderer is untrusted / potentially compromised**. Anything th
 
 Related:
 - IPC transport invariants (framing, message size caps, shared memory policy): [`docs/ipc.md`](ipc.md)
+- Renderer sandbox entrypoint (all platforms): [`docs/renderer_sandbox.md`](renderer_sandbox.md)
+- Linux renderer sandbox deep dive (seccomp/landlock/namespaces + IPC assumptions): [`docs/security/sandbox.md`](security/sandbox.md)
 
 ---
 
@@ -16,6 +18,9 @@ For this project, prefer `memfd_create(2)` over `shm_open(3)` / POSIX shared mem
 Repo reality:
 - Linux memfd-backed SHM helper with size caps + best-effort seals: [`src/ipc/shm.rs`](../src/ipc/shm.rs)
 - Shared-memory backend crate (POSIX `shm_open` hardening + Linux memfd sealing): [`crates/fastrender-shmem`](../crates/fastrender-shmem/)
+- Sandbox note: the renderer seccomp sandbox does **not** currently allow calling `memfd_create(2)`
+  after the sandbox is installed. Create memfds in the browser/broker and pass them into the
+  renderer (or do it during startup before installing the filter).
 
 ### Creation template (recommended)
 
