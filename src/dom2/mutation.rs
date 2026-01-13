@@ -1,7 +1,7 @@
 use crate::dom::HTML_NAMESPACE;
 
-use super::DomError;
 use super::live_mutation::utf16_len;
+use super::DomError;
 use super::{Document, Node, NodeId, NodeKind};
 
 struct CloneNodeData {
@@ -151,7 +151,11 @@ fn push_cloned_node(doc: &mut Document, parent: Option<NodeId>, data: CloneNodeD
 }
 
 impl Document {
-  fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
+  fn clone_node_shallow(
+    &mut self,
+    src: NodeId,
+    parent: Option<NodeId>,
+  ) -> Result<NodeId, DomError> {
     let copy_form_state = self.is_html_document();
     let (data, input_state, textarea_state, option_state) = {
       let node = self.node_checked(src)?;
@@ -169,52 +173,6 @@ impl Document {
         },
         if copy_form_state {
           self.option_states[src.index()].clone()
-        } else {
-          None
-        },
-      )
-    };
-    let dst = push_cloned_node(self, parent, data);
-    if copy_form_state {
-      // Only overwrite the destination's freshly-initialized form control state when the source
-      // node actually had state to preserve. This avoids accidentally clearing state when importing
-      // from an XML document (which never has HTML form control internal state).
-      if input_state.is_some() {
-        self.input_states[dst.index()] = input_state;
-      }
-      if textarea_state.is_some() {
-        self.textarea_states[dst.index()] = textarea_state;
-      }
-      if option_state.is_some() {
-        self.option_states[dst.index()] = option_state;
-      }
-    }
-    Ok(dst)
-  }
-
-  fn clone_node_shallow_from_document(
-    &mut self,
-    src_doc: &Document,
-    src: NodeId,
-    parent: Option<NodeId>,
-  ) -> Result<NodeId, DomError> {
-    let copy_form_state = self.is_html_document();
-    let (data, input_state, textarea_state, option_state) = {
-      let node = src_doc.node_checked(src)?;
-      (
-        clone_node_data(self, node, parent),
-        if copy_form_state {
-          src_doc.input_states[src.index()].clone()
-        } else {
-          None
-        },
-        if copy_form_state {
-          src_doc.textarea_states[src.index()].clone()
-        } else {
-          None
-        },
-        if copy_form_state {
-          src_doc.option_states[src.index()].clone()
         } else {
           None
         },
@@ -275,8 +233,10 @@ impl Document {
 
     fn should_skip_tree_child(parent_kind: &NodeKind, child_kind: &NodeKind) -> bool {
       // Shadow roots are not part of an element's tree children (light DOM).
-      matches!(parent_kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
-        && matches!(child_kind, NodeKind::ShadowRoot { .. })
+      matches!(
+        parent_kind,
+        NodeKind::Element { .. } | NodeKind::Slot { .. }
+      ) && matches!(child_kind, NodeKind::ShadowRoot { .. })
     }
 
     fn initial_phase(deep: bool) -> Phase {
@@ -356,7 +316,14 @@ impl Document {
                       clonable,
                       serializable,
                       declarative,
-                    } => (*mode, *delegates_focus, *slot_assignment, *clonable, *serializable, *declarative),
+                    } => (
+                      *mode,
+                      *delegates_focus,
+                      *slot_assignment,
+                      *clonable,
+                      *serializable,
+                      *declarative,
+                    ),
                     _ => unreachable!("shadow_root_for_host must return a ShadowRoot node"),
                   };
 
@@ -379,7 +346,9 @@ impl Document {
                     /* inert_subtree */ false,
                   );
                   self.nodes[shadow_root_dst.index()].parent = Some(frame.dst);
-                  self.nodes[frame.dst.index()].children.insert(0, shadow_root_dst);
+                  self.nodes[frame.dst.index()]
+                    .children
+                    .insert(0, shadow_root_dst);
 
                   frame.shadow_root_src = Some(src_shadow_root);
                   frame.shadow_root_dst = Some(shadow_root_dst);
@@ -441,49 +410,31 @@ impl Document {
     src_root: NodeId,
     deep: bool,
   ) -> Result<(NodeId, Vec<(NodeId, NodeId)>), DomError> {
-    let dst_root = self.clone_node_shallow_from_document(src, src_root, None)?;
-    let mut mapping: Vec<(NodeId, NodeId)> = vec![(src_root, dst_root)];
-
-    if !deep {
-      return Ok((dst_root, mapping));
+    let src_node = src.node_checked(src_root)?;
+    // WHATWG DOM: `Document.importNode()` does not support importing a document node or shadow root.
+    if src_root == src.root()
+      || matches!(&src_node.kind, NodeKind::Document { .. })
+      || matches!(&src_node.kind, NodeKind::ShadowRoot { .. })
+    {
+      return Err(DomError::NotSupportedError);
     }
 
-    struct Frame {
-      src: NodeId,
-      dst: NodeId,
-      next_child: usize,
+    // Delegate to the shared cross-document clone logic (WHATWG DOM "clone a node" semantics),
+    // then reorder the returned mapping into source subtree pre-order for backwards compatibility
+    // with this helper's original API.
+    let (dst_root, mapping) = crate::dom2::clone_node_into_document(src, src_root, self, deep)?;
+
+    let mut map = std::collections::HashMap::<NodeId, NodeId>::with_capacity(mapping.len());
+    for (old, new) in mapping {
+      map.insert(old, new);
     }
 
-    let mut stack: Vec<Frame> = vec![Frame {
-      src: src_root,
-      dst: dst_root,
-      next_child: 0,
-    }];
+    let ordered_mapping: Vec<(NodeId, NodeId)> = src
+      .subtree_preorder(src_root)
+      .filter_map(|old| map.get(&old).copied().map(|new| (old, new)))
+      .collect();
 
-    while let Some(mut frame) = stack.pop() {
-      let child_src = src.nodes[frame.src.index()]
-        .children
-        .get(frame.next_child)
-        .copied();
-
-      let Some(child_src) = child_src else {
-        continue;
-      };
-
-      frame.next_child += 1;
-      let parent_dst = frame.dst;
-      stack.push(frame);
-
-      let child_dst = self.clone_node_shallow_from_document(src, child_src, Some(parent_dst))?;
-      mapping.push((child_src, child_dst));
-      stack.push(Frame {
-        src: child_src,
-        dst: child_dst,
-        next_child: 0,
-      });
-    }
-
-    Ok((dst_root, mapping))
+    Ok((dst_root, ordered_mapping))
   }
 
   fn validate_insert_hierarchy(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
@@ -975,7 +926,9 @@ impl Document {
     let (target_kind, old_value) = match &self.node(node_id).kind {
       NodeKind::Text { content } => (ReplaceTarget::Text, content.clone()),
       NodeKind::Comment { content } => (ReplaceTarget::Comment, content.clone()),
-      NodeKind::ProcessingInstruction { data, .. } => (ReplaceTarget::ProcessingInstruction, data.clone()),
+      NodeKind::ProcessingInstruction { data, .. } => {
+        (ReplaceTarget::ProcessingInstruction, data.clone())
+      }
       _ => return Err(DomError::InvalidNodeType),
     };
 
@@ -1115,7 +1068,11 @@ impl Document {
     Ok(true)
   }
 
-  pub fn set_processing_instruction_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
+  pub fn set_processing_instruction_data(
+    &mut self,
+    node: NodeId,
+    data: &str,
+  ) -> Result<bool, DomError> {
     let node_id = node;
     // Drive live Range/NodeIterator updates via the DOM "replace data" primitive.
     let old_value = match &self.node_checked(node_id)?.kind {
@@ -1170,7 +1127,10 @@ impl Document {
     f: impl FnOnce(&mut Self) -> Result<T, DomError>,
   ) -> Result<T, DomError> {
     self.node_checked(shadow_root)?;
-    if !matches!(self.nodes[shadow_root.index()].kind, NodeKind::ShadowRoot { .. }) {
+    if !matches!(
+      self.nodes[shadow_root.index()].kind,
+      NodeKind::ShadowRoot { .. }
+    ) {
       return Err(DomError::InvalidNodeType);
     }
 
@@ -1455,7 +1415,10 @@ impl Document {
       (prev, next)
     };
 
-    if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
+    if matches!(
+      self.nodes[new_child.index()].kind,
+      NodeKind::DocumentFragment
+    ) {
       // DocumentFragment replacement is transparent: remove `old_child`, then insert the
       // fragment's children in its place, and finally empty the fragment.
       //
@@ -1473,7 +1436,9 @@ impl Document {
         self.nodes[new_child.index()].children.as_slice(),
       )?;
 
-      self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+      self
+        .live_mutation
+        .pre_remove(old_child, parent, old_child_idx);
       self.live_range_pre_remove_steps(old_child, parent, old_child_idx);
       self.node_iterator_pre_remove_steps(old_child);
       self.nodes[parent.index()].children.remove(old_child_idx);
@@ -1548,7 +1513,9 @@ impl Document {
       self.detach_from_parent(new_child)?;
     }
 
-    self.live_mutation.pre_remove(old_child, parent, old_child_idx);
+    self
+      .live_mutation
+      .pre_remove(old_child, parent, old_child_idx);
     self.live_range_pre_remove_steps(old_child, parent, old_child_idx);
     self.node_iterator_pre_remove_steps(old_child);
     self.nodes[parent.index()].children.remove(old_child_idx);

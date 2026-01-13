@@ -963,3 +963,60 @@ fn import_node_from_document_handles_deep_trees_iteratively() {
   }
   assert_eq!(dst.children(current).unwrap().len(), 0);
 }
+
+#[test]
+fn import_node_from_document_clones_clonable_shadow_root_when_deep_false() {
+  fn find_in_subtree_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeId> {
+    doc
+      .subtree_preorder(root)
+      .find(|&node_id| match &doc.node(node_id).kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
+          .iter()
+          .any(|(k, v)| k.eq_ignore_ascii_case("id") && v == id),
+        _ => false,
+      })
+  }
+
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowroot=open shadowrootclonable><span id=shadow>shadow</span></template>",
+    "<p id=light>light</p>",
+    "</div>",
+  );
+  let src = crate::dom2::parse_html(html).unwrap();
+  let host = src
+    .get_element_by_id("host")
+    .expect("host element not found");
+  let shadow_root = src
+    .shadow_root_for_host(host)
+    .expect("expected a shadow root child");
+  let shadow_span = find_in_subtree_by_id(&src, host, "shadow").expect("shadow span not found");
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let (imported, mapping) = dst
+    .import_node_from_document(&src, host, /* deep */ false)
+    .unwrap();
+  assert_eq!(dst.parent(imported).unwrap(), None);
+
+  // Mapping order should follow the source subtree's pre-order traversal (including the shadow root).
+  assert_eq!(mapping.len(), 3);
+  assert_eq!(mapping[0].0, host);
+  assert_eq!(mapping[1].0, shadow_root);
+  assert_eq!(mapping[2].0, shadow_span);
+
+  let dst_shadow_root = mapping[1].1;
+  let dst_shadow_span = mapping[2].1;
+  assert_eq!(dst.parent(dst_shadow_root).unwrap(), Some(imported));
+  assert_eq!(dst.parent(dst_shadow_span).unwrap(), Some(dst_shadow_root));
+
+  match &dst.node(dst_shadow_root).kind {
+    NodeKind::ShadowRoot { clonable, .. } => assert!(*clonable),
+    other => panic!("expected ShadowRoot node, got {other:?}"),
+  }
+
+  // `deep=false` should not clone light DOM children.
+  assert!(find_in_subtree_by_id(&dst, imported, "light").is_none());
+  // Shadow DOM children are cloned shallowly.
+  assert!(dst.children(dst_shadow_span).unwrap().is_empty());
+}
