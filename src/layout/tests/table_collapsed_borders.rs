@@ -948,3 +948,81 @@ fn collapsed_table_borders_keep_horizontal_edges_visible_with_repeated_footers()
     "expected to find an intermediate continuation fragment with a non-zero slice_offset"
   );
 }
+
+#[test]
+fn collapsed_table_outer_border_spills_into_margin() {
+  // CSS 2.2 §17.6.2: later rows/columns with thicker outer collapsed borders must not widen the
+  // table's layout box; the excess should spill outward into the margin area. This is especially
+  // important when shifting baseline half-borders into the table fragment coordinate space
+  // (e.g., to avoid clipping at the viewport origin).
+  const EPSILON: f32 = 0.1;
+
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          table { border-collapse: collapse; border: 0; margin: 0; padding: 0; }
+          td { width: 40px; height: 40px; padding: 0; border: 0; }
+          td.thin { border-left: 2px solid black; }
+          td.thick { border-left: 20px solid black; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td class="thin"></td></tr>
+          <tr><td class="thick"></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let (table_fragment, table_rect) =
+    find_table_fragment(&tree.root, Point::ZERO).expect("table fragment with border metadata");
+  let borders = table_fragment
+    .table_borders
+    .as_deref()
+    .expect("expected collapsed border metadata");
+
+  // 1) Baseline outer-left border width comes from the first row.
+  assert!(
+    (borders.vertical_line_base.first().copied().unwrap_or(0.0) - 2.0).abs() < EPSILON,
+    "expected baseline outer-left width of 2px, got {:?}",
+    borders.vertical_line_base.first()
+  );
+
+  // 2) Later rows with thicker outer borders should spill outward by the *excess half* beyond the
+  // baseline outer border.
+  let baseline_width = borders.vertical_line_width(0);
+  let baseline_half = baseline_width * 0.5;
+  let baseline_outer_edge = borders
+    .column_line_positions
+    .first()
+    .copied()
+    .unwrap_or(0.0)
+    - baseline_half;
+  let expected_spill = (20.0 * 0.5) - (2.0 * 0.5); // 9px
+  let expected_min_x = baseline_outer_edge - expected_spill;
+  assert!(
+    (borders.paint_bounds.min_x() - expected_min_x).abs() < EPSILON,
+    "expected paint_bounds.min_x to reflect a {}px spill beyond the baseline outer edge \
+     (baseline_outer_edge={:.2}, expected_min_x={:.2}, got min_x={:.2})",
+    expected_spill,
+    baseline_outer_edge,
+    expected_min_x,
+    borders.paint_bounds.min_x()
+  );
+
+  // 3) The table fragment's own bounds should stay anchored at the baseline edge (x=0); only the
+  // paint bounds should extend into negative coordinates.
+  assert!(
+    table_fragment.bounds.min_x().abs() < EPSILON,
+    "expected table fragment bounds.min_x to remain 0, got {} (absolute min_x={})",
+    table_fragment.bounds.min_x(),
+    table_rect.min_x()
+  );
+}
