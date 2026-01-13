@@ -1,16 +1,44 @@
 //! Minimal WHATWG Fetch bindings (`fetch`/`Headers`/`Request`/`Response`) for the `vm-js` Window realm.
 //!
-//! This is an MVP binding layer:
-//! - It is **not** a complete Fetch implementation (request streaming is not supported, large
-//!   parts of `RequestInit` are missing, etc).
-//! - `Response` supports streaming bodies via `Response.body` (`ReadableStream`) and the
-//!   `Response` constructor accepts `ReadableStream` bodies (byte streams).
-//! - It is intended to expose enough surface area for early deterministic tests and real-world
-//!   scripts that expect `fetch()` to exist.
+//! This module is a deliberately small, test-focused wrapper around the core Fetch
+//! implementation in [`crate::resource::web_fetch`]. It is **not** a complete browser Fetch stack.
 //!
-//! The core Fetch algorithms and spec-shaped data structures live in `crate::resource::web_fetch`.
-//! This module is the missing JavaScript-facing wrapper layer for the `WindowRealm` (`vm-js`)
-//! embedding.
+//! ## `fetch(input, init)` / `new Request(input, init)`
+//!
+//! Implemented `RequestInit` fields:
+//! - `method`
+//! - `headers`
+//! - `body` (`string`, `ArrayBuffer`, `Uint8Array`, `URLSearchParams`, `Blob`, `FormData`, `ReadableStream`)
+//! - `mode` (`navigate`/`same-origin`/`no-cors`/`cors`)
+//! - `redirect` (`follow`/`error`/`manual`)
+//! - `referrer`
+//! - `referrerPolicy`
+//! - `credentials` (`omit`/`same-origin`/`include`)
+//! - `signal`
+//!
+//! Unimplemented/ignored fields (non-exhaustive): `cache`, `integrity`, `priority`, `keepalive`,
+//! `duplex`, and others.
+//!
+//! ### Request body streaming
+//!
+//! The Rust core fetch layer only accepts in-memory request bodies. If a `ReadableStream` is
+//! provided as `init.body`, the stream is fully buffered into memory (bounded by
+//! [`WebFetchLimits`]) before the request is dispatched; true streaming uploads are not supported.
+//!
+//! ## Responses
+//!
+//! `Response.body` is exposed as a `ReadableStream`, and the `Response` constructor also accepts
+//! `ReadableStream` bodies (byte streams).
+//!
+//! ### AbortSignal semantics
+//!
+//! `signal` is observed in a best-effort way:
+//! - If already aborted, `fetch()` rejects immediately with `signal.reason`.
+//! - If aborted after `fetch()` returns, the returned promise rejects promptly.
+//!
+//! Spec deviation: aborting cannot cancel an in-flight request because the underlying
+//! [`ResourceFetcher`] API is synchronous; the work still completes on the Rust side, but the JS
+//! promise rejects instead of resolving.
 
 use crate::js::event_loop::TaskSource;
 use crate::js::time;
@@ -3707,8 +3735,9 @@ fn apply_request_init(
               "Request body is already used",
             ));
           }
-          // The core fetch layer only supports in-memory bodies. The stream will be buffered when
-          // the request is dispatched (e.g. via `fetch()`).
+          // The core fetch layer only supports in-memory bodies. When a ReadableStream is
+          // provided, we buffer it (bounded by `WebFetchLimits`) before dispatching the request;
+          // true streaming uploads / `duplex` are not supported.
           request.body = None;
           *body_stream_out = Some(obj);
         } else {
@@ -7817,6 +7846,9 @@ fn enqueue_fetch_network_task<Host: WindowRealmHost + 'static>(
 
         // If the signal was aborted while the underlying fetch was running, reject instead of
         // storing/settling with a `Response`.
+        //
+        // Note: this cannot stop the already-running synchronous `ResourceFetcher` call; we can
+        // only change the JS-visible outcome.
         if let Some(signal_root_id) = signal_root {
           let window_realm = host.window_realm()?;
           let aborted = (|| {
