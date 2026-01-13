@@ -5,8 +5,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use windows_sys::Win32::Foundation::{
-  CloseHandle, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE, HANDLE_FLAG_INHERIT,
-  INVALID_HANDLE_VALUE, TRUE,
+  CloseHandle, GetHandleInformation, SetHandleInformation, ERROR_ACCESS_DENIED, FALSE,
+  HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, TRUE,
 };
 use windows_sys::Win32::Security::{NO_INHERITANCE, SECURITY_CAPABILITIES};
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
@@ -15,8 +15,8 @@ use windows_sys::Win32::System::Console::{
 };
 use windows_sys::Win32::System::Threading::{
   CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, ResumeThread,
-  UpdateProcThreadAttribute, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-  LPPROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW, STARTUPINFOW,
+  UpdateProcThreadAttribute, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+  LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use windows_sys::Win32::Security::Authorization::{
@@ -89,6 +89,7 @@ fn spawn_appcontainer_no_capabilities(
   };
 
   let mut handles = standard_handle_list();
+  let _inherit_guard = HandleInheritGuard::new(&handles);
 
   fn mitigation_policy_unsupported(err: &WinSandboxError) -> bool {
     const ERROR_INVALID_PARAMETER: u32 = 87;
@@ -224,10 +225,7 @@ fn spawn_appcontainer_no_capabilities(
   // Developer builds / CI checkouts often reside in directories without AppContainer ACL entries.
   // Remediate by copying the executable to a fresh temp directory and granting read+execute to the
   // derived AppContainer SID.
-  let (temp_dir, relocated) = relocate_exe_for_appcontainer(
-    exe,
-    profile.sid().as_ptr(),
-  )?;
+  let (temp_dir, relocated) = relocate_exe_for_appcontainer(exe, profile.sid().as_ptr())?;
   let current_dir_w = wide_null(temp_dir.path().as_os_str());
   let pi = create_process(&relocated, Some(&current_dir_w))?;
   finish_spawn(pi, Some(temp_dir))
@@ -457,7 +455,10 @@ impl AttributeList {
       return Err(WinSandboxError::last("InitializeProcThreadAttributeList"));
     }
 
-    Ok(Self { list, _buffer: buffer })
+    Ok(Self {
+      list,
+      _buffer: buffer,
+    })
   }
 
   fn update_raw(&mut self, attribute: usize, value: *mut c_void, size: usize) -> Result<()> {
@@ -488,6 +489,46 @@ impl Drop for AttributeList {
   }
 }
 
+struct HandleInheritGuard {
+  saved: Vec<(windows_sys::Win32::Foundation::HANDLE, u32)>,
+}
+
+impl HandleInheritGuard {
+  fn new(handles: &[windows_sys::Win32::Foundation::HANDLE]) -> Self {
+    let mut saved = Vec::with_capacity(handles.len());
+    for &handle in handles {
+      if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+        continue;
+      }
+      let mut flags: u32 = 0;
+      let ok = unsafe { GetHandleInformation(handle, &mut flags) };
+      if ok == 0 {
+        continue;
+      }
+      saved.push((handle, flags));
+      unsafe {
+        let _ = SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+      }
+    }
+    Self { saved }
+  }
+}
+
+impl Drop for HandleInheritGuard {
+  fn drop(&mut self) {
+    for (handle, flags) in self.saved.drain(..) {
+      let inherit = if (flags & HANDLE_FLAG_INHERIT) != 0 {
+        HANDLE_FLAG_INHERIT
+      } else {
+        0
+      };
+      unsafe {
+        let _ = SetHandleInformation(handle, HANDLE_FLAG_INHERIT, inherit);
+      }
+    }
+  }
+}
+
 fn standard_handle_list() -> Vec<windows_sys::Win32::Foundation::HANDLE> {
   let mut handles = Vec::new();
   for h in unsafe {
@@ -499,9 +540,6 @@ fn standard_handle_list() -> Vec<windows_sys::Win32::Foundation::HANDLE> {
   } {
     if h.is_null() || h == INVALID_HANDLE_VALUE {
       continue;
-    }
-    unsafe {
-      let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
     }
     if !handles.contains(&h) {
       handles.push(h);
