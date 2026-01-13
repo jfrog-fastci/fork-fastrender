@@ -3162,4 +3162,22 @@ mod tests {
       "expected suggestions to be case-insensitive"
     );
   }
+
+  #[test]
+  fn test_layout_stress_fixture_is_width_sensitive_offline_and_large() {
+    let html = html_for_about_url(ABOUT_TEST_LAYOUT_STRESS).unwrap();
+    assert!(
+      html.contains("repeat(auto-fit,minmax(240px,1fr))"),
+      "expected layout-stress fixture to use an auto-fit grid for width-sensitive layout"
+    );
+    let card_count = html.match_indices("<article class=\"card\">").count();
+    assert!(
+      card_count >= 50,
+      "expected layout-stress fixture to have >= 50 cards, got {card_count}"
+    );
+    assert!(
+      !html.contains("http://") && !html.contains("https://"),
+      "expected layout-stress fixture to avoid network URLs"
+    );
+  }
 }
