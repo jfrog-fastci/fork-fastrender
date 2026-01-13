@@ -194,8 +194,8 @@ CSS animations are sampled when painting. FastRender supports two approaches:
   elapsed since the first rendered frame after enabling.
 
 Real-time sampling does not schedule frames by itself; the embedder still needs a frame cadence
-(typically via `tick_frame()` + `next_wake_time()`), otherwise the document will paint once and then
-stay visually frozen.
+(for example, by driving `tick_frame()` on a fixed cadence or in response to external wakeups),
+otherwise the document will paint once and then stay visually frozen.
 
 > Note: `set_realtime_animations_enabled` currently exists on `BrowserDocumentDom2` (and the older
 > `BrowserDocument*` containers), but `BrowserTab` does not currently expose these animation controls
