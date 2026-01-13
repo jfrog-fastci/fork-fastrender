@@ -1477,6 +1477,44 @@ mod tests {
       .expect("call should succeed")
   }
 
+  fn call_result(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    #[derive(Default)]
+    struct NoopHostHooks;
+    impl vm_js::VmHostHooks for NoopHostHooks {
+      fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+        panic!("unexpected Promise job enqueued during time bindings test");
+      }
+    }
+
+    let mut host_hooks = NoopHostHooks::default();
+    let mut scope = heap.scope();
+    scope.push_root(callee).unwrap();
+    scope.push_root(this).unwrap();
+    for &arg in args {
+      scope.push_root(arg).unwrap();
+    }
+
+    let Value::Object(func) = callee else {
+      panic!("expected function object");
+    };
+    let call_key_s = scope.alloc_string("call").expect("alloc key string");
+    scope.push_root(Value::String(call_key_s)).unwrap();
+    let call_key = PropertyKey::from_string(call_key_s);
+    let call_prop = vm.get(&mut scope, func, call_key).expect("get call");
+    scope.push_root(call_prop).unwrap();
+
+    let mut argv: Vec<Value> = Vec::new();
+    argv.push(this);
+    argv.extend_from_slice(args);
+    vm.call_with_host(&mut scope, &mut host_hooks, call_prop, callee, &argv)
+  }
+
   fn get_array_len(heap: &mut Heap, arr: vm_js::GcObject) -> usize {
     let mut scope = heap.scope();
     let key_s = scope.alloc_string("length").expect("alloc key string");
@@ -1531,6 +1569,159 @@ mod tests {
       out.push(Value::String(s));
     }
     out
+  }
+
+  #[test]
+  fn performance_entries_reject_overlong_names() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::default(),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+    let perf_mark = get_object_property(&mut heap, performance_obj, "mark");
+    let perf_get_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+
+    // Call `performance.mark` with a name exceeding the hard cap. This should fail and should not
+    // store an entry (prevents attacker-controlled memory growth).
+    let too_long_name: String =
+      std::iter::repeat('a').take(MAX_PERFORMANCE_ENTRY_NAME_CODE_UNITS + 1).collect();
+    let arg_too_long = alloc_string_value(&mut heap, &too_long_name);
+    let res = call_result(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_too_long],
+    );
+    assert!(res.is_err(), "expected overlong performance.mark to error");
+
+    let arg_mark = alloc_string_value(&mut heap, "mark");
+    let marks = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_mark],
+    );
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks_arr), 0);
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_measure_can_reference_performance_timing_fields() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::default(),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    // Override one of the `performance.timing` fields to ensure `performance.measure` can treat it
+    // as a start mark (many analytics snippets use `fetchStart` without explicitly marking it).
+    let timing = get_object_property(&mut heap, performance_obj, "timing");
+    let timing_obj = match timing {
+      Value::Object(o) => o,
+      _ => panic!("performance.timing should be an object"),
+    };
+    {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(timing_obj)).unwrap();
+      let key_s = scope.alloc_string("fetchStart").expect("alloc fetchStart");
+      scope.push_root(Value::String(key_s)).unwrap();
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .define_property(timing_obj, key, readonly_num_desc(10.0))
+        .expect("define fetchStart");
+    }
+
+    let perf_mark = get_object_property(&mut heap, performance_obj, "mark");
+    let perf_measure = get_object_property(&mut heap, performance_obj, "measure");
+    let perf_get_by_name = get_object_property(&mut heap, performance_obj, "getEntriesByName");
+
+    // `mark("self-tti")` at t=50ms.
+    clock.set_now(Duration::from_millis(50));
+    let arg_self_tti = alloc_string_value(&mut heap, "self-tti");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_self_tti],
+    );
+
+    // `measure("tti", "fetchStart", "self-tti")` should interpret `fetchStart` via
+    // `performance.timing.fetchStart` even if there is no user mark with that name.
+    clock.set_now(Duration::from_millis(60));
+    let args = alloc_string_values(&mut heap, &["tti", "fetchStart", "self-tti"]);
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_measure,
+      Value::Object(performance_obj),
+      &args,
+    );
+
+    // Expect duration to be `endMark(50ms) - fetchStart(10ms) == 40ms`.
+    let args = alloc_string_values(&mut heap, &["tti", "measure"]);
+    let measures = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_name,
+      Value::Object(performance_obj),
+      &args,
+    );
+    let Value::Object(measures_arr) = measures else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, measures_arr), 1);
+    let entry0 = get_array_elem(&mut heap, measures_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let entry_type = get_object_property(&mut heap, entry0_obj, "entryType");
+    assert_eq!(string_value_to_utf8_lossy(&heap, entry_type), "measure");
+    let duration = get_object_property(&mut heap, entry0_obj, "duration");
+    let Value::Number(duration) = duration else {
+      panic!("expected duration number");
+    };
+    assert!((duration - 40.0).abs() < 1e-9, "unexpected duration {duration}");
+
+    realm.teardown(&mut heap);
   }
 
   #[test]
