@@ -1008,7 +1008,10 @@ mod date_time_picker_a11y_tests {
 
 #[cfg(all(test, feature = "browser_ui"))]
 mod page_context_menu_keyboard_shortcut_tests {
-  use super::{keyboard_page_context_menu_request, KeyboardPageContextMenuOpenPlan};
+  use super::{
+    is_page_context_menu_keyboard_gesture, keyboard_page_context_menu_request,
+    page_context_menu_anchor_points_for_keyboard_open, KeyboardPageContextMenuOpenPlan,
+  };
 
   use egui::{Pos2, Rect, Vec2};
   use fastrender::ui::{InputMapping, TabId, UiToWorker};
@@ -1034,7 +1037,8 @@ mod page_context_menu_keyboard_shortcut_tests {
       false,
       false,
       tab_id,
-      page_rect,
+      Some(page_rect),
+      None,
       Some(mapping),
       Some(cursor),
     )
@@ -1081,7 +1085,8 @@ mod page_context_menu_keyboard_shortcut_tests {
       false,
       false,
       tab_id,
-      page_rect,
+      Some(page_rect),
+      None,
       Some(mapping),
       Some(cursor_outside),
     )
@@ -1118,7 +1123,8 @@ mod page_context_menu_keyboard_shortcut_tests {
       false,
       false,
       tab_id,
-      page_rect,
+      Some(page_rect),
+      None,
       None,
       Some(cursor),
     )
@@ -1138,6 +1144,40 @@ mod page_context_menu_keyboard_shortcut_tests {
     assert!(!menu.can_cut);
     assert!(!menu.can_paste);
     assert!(!menu.can_select_all);
+  }
+
+  #[test]
+  fn ctrl_shift_f10_does_not_open() {
+    let tab_id = TabId(1);
+    let page_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(page_rect, (800, 600));
+
+    let mut modifiers = shift_mods();
+    modifiers.insert(ModifiersState::CTRL);
+
+    assert!(!is_page_context_menu_keyboard_gesture(VirtualKeyCode::F10, modifiers));
+    assert!(keyboard_page_context_menu_request(
+      VirtualKeyCode::F10,
+      modifiers,
+      true,
+      false,
+      false,
+      tab_id,
+      Some(page_rect),
+      None,
+      Some(mapping),
+      Some(Pos2::new(20.0, 30.0)),
+    )
+    .is_none());
+  }
+
+  #[test]
+  fn anchor_falls_back_to_content_center_when_page_rect_unknown() {
+    let content_rect =
+      Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
+    let cursor = Pos2::new(20.0, 30.0);
+    let anchor = page_context_menu_anchor_points_for_keyboard_open(None, Some(content_rect), Some(cursor));
+    assert_eq!(anchor, content_rect.center());
   }
 }
 
@@ -2855,6 +2895,52 @@ enum KeyboardPageContextMenuOpenPlan {
 }
 
 #[cfg(feature = "browser_ui")]
+fn is_page_context_menu_keyboard_gesture(
+  key: winit::event::VirtualKeyCode,
+  modifiers: winit::event::ModifiersState,
+) -> bool {
+  use winit::event::VirtualKeyCode;
+
+  // Standard "open context menu" gestures:
+  // - Shift+F10
+  // - Menu/Apps key
+  //
+  // Only handle these when they are not combined with browser/chrome command modifiers.
+  let has_command_modifiers = modifiers.ctrl() || modifiers.alt() || modifiers.logo();
+  match key {
+    VirtualKeyCode::F10 => modifiers.shift() && !has_command_modifiers,
+    VirtualKeyCode::Apps => !has_command_modifiers,
+    _ => false,
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+fn page_context_menu_anchor_points_for_keyboard_open(
+  page_rect_points: Option<egui::Rect>,
+  content_rect_points: Option<egui::Rect>,
+  last_cursor_pos_points: Option<egui::Pos2>,
+) -> egui::Pos2 {
+  // Prefer opening at the last known cursor position when it is within the page bounds.
+  if let (Some(page_rect), Some(cursor)) = (page_rect_points, last_cursor_pos_points) {
+    if page_rect.contains(cursor) {
+      return cursor;
+    }
+  }
+
+  // Deterministic fallback: center of the rendered page region.
+  if let Some(page_rect) = page_rect_points {
+    return page_rect.center();
+  }
+
+  // If we don't yet know the page rect, fall back to something stable in the window.
+  if let Some(content_rect) = content_rect_points {
+    return content_rect.center();
+  }
+
+  last_cursor_pos_points.unwrap_or_else(|| egui::pos2(0.0, 0.0))
+}
+
+#[cfg(feature = "browser_ui")]
 fn keyboard_page_context_menu_request(
   key: winit::event::VirtualKeyCode,
   modifiers: winit::event::ModifiersState,
@@ -2862,15 +2948,12 @@ fn keyboard_page_context_menu_request(
   egui_wants_keyboard_input: bool,
   page_loading_overlay_blocks_input: bool,
   tab_id: fastrender::ui::TabId,
-  page_rect_points: egui::Rect,
+  page_rect_points: Option<egui::Rect>,
+  content_rect_points: Option<egui::Rect>,
   mapping: Option<fastrender::ui::InputMapping>,
   last_cursor_pos_points: Option<egui::Pos2>,
 ) -> Option<KeyboardPageContextMenuOpenPlan> {
-  use winit::event::VirtualKeyCode;
-
-  let is_shortcut = matches!(key, VirtualKeyCode::Apps)
-    || (matches!(key, VirtualKeyCode::F10) && modifiers.shift());
-  if !is_shortcut {
+  if !is_page_context_menu_keyboard_gesture(key, modifiers) {
     return None;
   }
 
@@ -2878,9 +2961,11 @@ fn keyboard_page_context_menu_request(
     return None;
   }
 
-  let anchor_points = last_cursor_pos_points
-    .filter(|pos| page_rect_points.contains(*pos))
-    .unwrap_or_else(|| page_rect_points.center());
+  let anchor_points = page_context_menu_anchor_points_for_keyboard_open(
+    page_rect_points,
+    content_rect_points,
+    last_cursor_pos_points,
+  );
 
   if let Some(pos_css) = mapping.and_then(|mapping| mapping.pos_points_to_pos_css_clamped(anchor_points))
   {
@@ -8885,9 +8970,7 @@ impl App {
         //
         // This is handled at the winit layer so keyboard-only users can open the context menu even
         // when no pointer interaction has occurred.
-        let wants_page_context_menu = matches!(key, VirtualKeyCode::Apps)
-          || (matches!(key, VirtualKeyCode::F10) && self.modifiers.shift());
-        if wants_page_context_menu {
+        if is_page_context_menu_keyboard_gesture(key, self.modifiers) {
           // If a popup is already open, dismiss it rather than opening a new one.
           if self.open_context_menu.is_some() || self.pending_context_menu_request.is_some() {
             self.close_context_menu();
@@ -8904,11 +8987,13 @@ impl App {
             self.window.request_redraw();
             return;
           }
+          if self.open_file_picker.is_some() {
+            self.cancel_file_picker();
+            self.window.request_redraw();
+            return;
+          }
 
-          if let (Some(tab_id), Some(page_rect_points)) = (
-            self.page_input_tab.or(self.browser_state.active_tab_id()),
-            self.page_rect_points,
-          ) {
+          if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
             if let Some(plan) = keyboard_page_context_menu_request(
               key,
               self.modifiers,
@@ -8916,7 +9001,8 @@ impl App {
               self.egui_ctx.wants_keyboard_input(),
               self.page_loading_overlay_blocks_input,
               tab_id,
-              page_rect_points,
+              self.page_rect_points,
+              self.content_rect_points,
               self.page_input_mapping,
               self.last_cursor_pos_points,
             ) {
