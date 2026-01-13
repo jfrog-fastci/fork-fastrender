@@ -227,6 +227,23 @@ snapshot APIs.
 
 ---
 
+## Maintainer guidance (extending the bridge)
+
+When adding new APIs under `globalThis.chrome`:
+
+- Treat every method as a **privileged capability**:
+  - Only install it in the trusted chrome/UI realm.
+  - Do not gate privileged behavior on URL strings or origins that can be influenced by content.
+- Validate everything (even in chrome):
+  - enforce type/arity checks,
+  - cap string lengths and array sizes to avoid chrome-side memory abuse,
+  - parse URLs with a strict allowlist (fail closed).
+- Prefer returning **snapshots** (plain objects/arrays) over live handles or pointers to host state.
+- Keep the surface small and composable:
+  - command methods + events/state snapshots are easier to reason about than many synchronous getters.
+
+---
+
 ## Minimal example: tab strip + address bar
 
 This is a minimal, framework-free example of wiring a chrome page to the bridge.
