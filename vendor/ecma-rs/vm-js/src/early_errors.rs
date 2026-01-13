@@ -151,6 +151,18 @@ struct SavedScopeFlags {
   return_allowed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct PrivateNameDeclState {
+  /// Whether this private name has been declared as a static or instance element.
+  ///
+  /// ECMA-262 does not permit the same private name to be used for both static and instance
+  /// elements within a single class body.
+  is_static: Option<bool>,
+  has_getter: bool,
+  has_setter: bool,
+  has_other: bool,
+}
+
 struct EarlyErrorWalker<'a, F: FnMut() -> Result<(), VmError>> {
   tick: &'a mut F,
   steps: u32,
@@ -178,6 +190,22 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self
       .diags
       .push(Diagnostic::error(EARLY_ERROR_CODE, message, span));
+    Ok(())
+  }
+
+  fn validate_declared_private_name(
+    &mut self,
+    ctx: &ControlContext,
+    loc: Loc,
+    name: &str,
+  ) -> Result<(), VmError> {
+    let ok = ctx
+      .private_names
+      .last()
+      .is_some_and(|names| names.contains(name));
+    if !ok {
+      self.push_error(loc, "invalid private name")?;
+    }
     Ok(())
   }
 
@@ -985,6 +1013,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // Collect declared private names in this class body so `AllPrivateNamesValid` can validate
     // private-name MemberExpressions and private identifiers.
     let mut declared_private_names: HashSet<String> = HashSet::new();
+    let mut private_name_decl_state: HashMap<String, PrivateNameDeclState> = HashMap::new();
     for member in members {
       if let ClassOrObjKey::Direct(key) = &member.stx.key {
         if key.stx.tt == TT::PrivateMember {
@@ -992,6 +1021,44 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             .try_reserve(1)
             .map_err(|_| VmError::OutOfMemory)?;
           declared_private_names.insert(key.stx.key.clone());
+
+          private_name_decl_state
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          let entry = private_name_decl_state.entry(key.stx.key.clone()).or_default();
+          if let Some(prev_static) = entry.is_static {
+            if prev_static != member.stx.static_ {
+              self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+              continue;
+            }
+          } else {
+            entry.is_static = Some(member.stx.static_);
+          }
+          match &member.stx.val {
+            ClassOrObjVal::Getter(_) => {
+              if entry.has_other || entry.has_getter {
+                self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+              } else {
+                entry.has_getter = true;
+              }
+            }
+            ClassOrObjVal::Setter(_) => {
+              if entry.has_other || entry.has_setter {
+                self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+              } else {
+                entry.has_setter = true;
+              }
+            }
+            // Methods/fields/accessors are all private name declarations; getters/setters are the
+            // only duplication that's allowed as a pair.
+            _ => {
+              if entry.has_other || entry.has_getter || entry.has_setter {
+                self.push_error(key.loc, format!("duplicate private name '{}'", key.stx.key))?;
+              } else {
+                entry.has_other = true;
+              }
+            }
+          }
         }
       }
     }
@@ -1471,13 +1538,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           self.push_error(expr.loc, "arguments is not allowed in class static initialization blocks")?;
         }
         if id.stx.name.starts_with('#') {
-          let ok = ctx
-            .private_names
-            .last()
-            .is_some_and(|names| names.contains(&id.stx.name));
-          if !ok {
-            self.push_error(expr.loc, "invalid private name")?;
-          }
+          // parse-js parses `PrivateIdentifier` tokens as identifier expressions (e.g. `#x` is an
+          // `Expr::Id`). In ECMAScript syntax, a private identifier may only appear in:
+          // - `#x in obj` (private brand check), and
+          // - `obj.#x` (private member access).
+          self.push_error(expr.loc, "invalid private identifier")?;
         }
         Ok(())
       }
@@ -1496,13 +1561,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
       Expr::IdPat(id) => {
         if id.stx.name.starts_with('#') {
-          let ok = ctx
-            .private_names
-            .last()
-            .is_some_and(|names| names.contains(&id.stx.name));
-          if !ok {
-            self.push_error(expr.loc, "invalid private name")?;
-          }
+          self.push_error(expr.loc, "invalid private identifier")?;
         }
         Ok(())
       }
@@ -1554,12 +1613,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     self.visit_expr(ctx, &expr.left)?;
     if expr.right.starts_with('#') {
-      let ok = ctx
-        .private_names
-        .last()
-        .is_some_and(|names| names.contains(&expr.right));
-      if !ok {
-        self.push_error(loc, "invalid private name")?;
+      if matches!(&*expr.left.stx, Expr::Super(_)) {
+        self.push_error(loc, "super.#<name> is not a valid private member access")?;
+      } else {
+        self.validate_declared_private_name(ctx, loc, &expr.right)?;
       }
     }
     Ok(())
@@ -1646,6 +1703,28 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // Destructuring patterns handle optional chaining only in `Pat::AssignTarget` positions.
       } else if let Some(loc) = Self::optional_chain_in_assignment_target_expr(&expr.left) {
         self.push_error(loc, "optional chaining cannot appear in assignment targets")?;
+      }
+    }
+
+    if expr.operator == OperatorName::In {
+      match &*expr.left.stx {
+        Expr::Id(id) if id.stx.name.starts_with('#') => {
+          if expr.left.assoc.get::<ParenthesizedExpr>().is_some() {
+            self.push_error(expr.left.loc, "invalid private identifier")?;
+          } else {
+            self.validate_declared_private_name(ctx, expr.left.loc, &id.stx.name)?;
+          }
+          return self.visit_expr(ctx, &expr.right);
+        }
+        Expr::IdPat(id) if id.stx.name.starts_with('#') => {
+          if expr.left.assoc.get::<ParenthesizedExpr>().is_some() {
+            self.push_error(expr.left.loc, "invalid private identifier")?;
+          } else {
+            self.validate_declared_private_name(ctx, expr.left.loc, &id.stx.name)?;
+          }
+          return self.visit_expr(ctx, &expr.right);
+        }
+        _ => {}
       }
     }
 
