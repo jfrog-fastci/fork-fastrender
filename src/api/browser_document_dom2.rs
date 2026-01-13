@@ -38,6 +38,47 @@ pub struct BrowserDocumentDom2InvalidationCounters {
   pub incremental_relayouts: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserDocumentDom2LayoutFlushKind {
+  /// No layout work was required; cached layout artifacts were already up to date.
+  Noop,
+  /// Layout was satisfied via an incremental relayout (currently: text-only and some form-control
+  /// text changes).
+  IncrementalRelayout,
+  /// Layout required a full pipeline run (DOM snapshot + cascade + layout).
+  Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserDocumentDom2LayoutFlushErrorRecovery {
+  /// Restore the previous prepared cache on incremental relayout errors.
+  RestorePreparedCache,
+  /// Preserve (possibly partially updated) prepared artifacts on incremental relayout errors so
+  /// callers can retry without discarding intermediate state.
+  PreservePreparedCache,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BrowserDocumentDom2LayoutFlushRequest {
+  /// When true, ensure `last_dom_mapping` is available so renderer preorder IDs can be mapped back
+  /// to stable `dom2::NodeId`s.
+  require_dom_mapping: bool,
+  /// How to handle incremental relayout errors.
+  incremental_error_recovery: BrowserDocumentDom2LayoutFlushErrorRecovery,
+}
+
+impl BrowserDocumentDom2LayoutFlushRequest {
+  const FOR_RENDER_OR_DOM_QUERIES: Self = Self {
+    require_dom_mapping: true,
+    incremental_error_recovery: BrowserDocumentDom2LayoutFlushErrorRecovery::RestorePreparedCache,
+  };
+
+  const FOR_HIT_TESTING: Self = Self {
+    require_dom_mapping: true,
+    incremental_error_recovery: BrowserDocumentDom2LayoutFlushErrorRecovery::RestorePreparedCache,
+  };
+}
+
 /// Result of hit testing in viewport coordinates, including both renderer hit metadata and a stable
 /// `dom2::NodeId` for JS/event dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -643,8 +684,8 @@ impl BrowserDocumentDom2 {
   /// - style/layout dirty flags and per-node dirty sets are cleared, and
   /// - `paint_dirty` remains (or becomes) true so a subsequent `render_if_needed()` will repaint.
   pub fn ensure_layout_for_dom_queries(&mut self) -> Result<()> {
-    // DOM query APIs need `dom2`⇄renderer mapping for node/style resolution.
-    self.ensure_layout_internal(true)
+    self.flush_layout(BrowserDocumentDom2LayoutFlushRequest::FOR_RENDER_OR_DOM_QUERIES)?;
+    Ok(())
   }
 
   /// Ensure this document has up-to-date layout artifacts, without painting.
@@ -654,7 +695,10 @@ impl BrowserDocumentDom2 {
   /// - Hit testing (`elementFromPoint` / `elementsFromPoint`)
   ///
   /// It runs at most cascade+layout and intentionally does **not** paint.
-  fn ensure_layout_internal(&mut self, require_mapping: bool) -> Result<()> {
+  fn flush_layout(
+    &mut self,
+    request: BrowserDocumentDom2LayoutFlushRequest,
+  ) -> Result<BrowserDocumentDom2LayoutFlushKind> {
     let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
     if interaction_hash != self.interaction_state_hash {
       // Interaction state affects pseudo-class matching and form-control paint hints, so we must
@@ -692,7 +736,7 @@ impl BrowserDocumentDom2 {
           // No render-affecting mutations: record that we've now seen this generation so callers do
           // not repeatedly flush layout, but keep cached layout artifacts intact.
           self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
-          return Ok(());
+          return Ok(BrowserDocumentDom2LayoutFlushKind::Noop);
         }
       }
     }
@@ -702,10 +746,10 @@ impl BrowserDocumentDom2 {
       || interaction_hash != self.interaction_state_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
       || self.prepared.is_none()
-      || (require_mapping && self.last_dom_mapping.is_none());
+      || (request.require_dom_mapping && self.last_dom_mapping.is_none());
     if !needs_layout {
       self.dom.clear_mutations();
-      return Ok(());
+      return Ok(BrowserDocumentDom2LayoutFlushKind::Noop);
     }
 
     // Layout without style changes can often avoid a full cascade by patching the existing box tree
@@ -728,24 +772,35 @@ impl BrowserDocumentDom2 {
         .prepared
         .take()
         .expect("prepared exists when can_incremental_relayout=true");
-      let prev_fragment_tree = prepared.fragment_tree.clone();
+      let restore_on_incremental_error = matches!(
+        request.incremental_error_recovery,
+        BrowserDocumentDom2LayoutFlushErrorRecovery::RestorePreparedCache
+      );
 
-      // Capture the box-tree text we are about to patch so we can restore on incremental failure.
-      let mapping = self
-        .last_dom_mapping
-        .as_ref()
-        .expect("mapping exists when can_incremental_relayout=true");
-      let mut updated_styled_ids: FxHashSet<usize> = FxHashSet::default();
-      for &node in &self.dirty_text_nodes {
-        if let Some(preorder) = mapping.preorder_for_node_id(node) {
-          updated_styled_ids.insert(preorder);
+      let (prev_fragment_tree, prev_text_by_box_id) = if restore_on_incremental_error {
+        let prev_fragment_tree = prepared.fragment_tree.clone();
+
+        // Capture the box-tree text we are about to patch so we can restore on incremental failure.
+        let mapping = self
+          .last_dom_mapping
+          .as_ref()
+          .expect("mapping exists when can_incremental_relayout=true");
+        let mut updated_styled_ids: FxHashSet<usize> = FxHashSet::default();
+        for &node in &self.dirty_text_nodes {
+          if let Some(preorder) = mapping.preorder_for_node_id(node) {
+            updated_styled_ids.insert(preorder);
+          }
         }
-      }
 
-      let prev_text_by_box_id = if updated_styled_ids.is_empty() {
-        FxHashMap::default()
+        let prev_text_by_box_id = if updated_styled_ids.is_empty() {
+          FxHashMap::default()
+        } else {
+          capture_text_for_styled_node_ids(&prepared.box_tree.root, &updated_styled_ids)
+        };
+
+        (Some(prev_fragment_tree), prev_text_by_box_id)
       } else {
-        capture_text_for_styled_node_ids(&prepared.box_tree.root, &updated_styled_ids)
+        (None, FxHashMap::default())
       };
 
       let incremental_result = match self.incremental_relayout_for_text_changes(&mut prepared) {
@@ -772,11 +827,15 @@ impl BrowserDocumentDom2 {
           self.prepared = Some(prepared);
         }
         Err(err) => {
-          // Restore the last known-good layout artifacts if incremental relayout fails so callers
-          // do not lose the prepared cache.
-          prepared.fragment_tree = prev_fragment_tree;
-          if !prev_text_by_box_id.is_empty() {
-            restore_text_for_box_ids(&mut prepared.box_tree.root, &prev_text_by_box_id);
+          if restore_on_incremental_error {
+            // Restore the last known-good layout artifacts if incremental relayout fails so callers
+            // do not lose the prepared cache.
+            if let Some(prev_fragment_tree) = prev_fragment_tree {
+              prepared.fragment_tree = prev_fragment_tree;
+            }
+            if !prev_text_by_box_id.is_empty() {
+              restore_text_for_box_ids(&mut prepared.box_tree.root, &prev_text_by_box_id);
+            }
           }
           self.prepared = Some(prepared);
           return Err(err);
@@ -784,7 +843,9 @@ impl BrowserDocumentDom2 {
       }
     }
 
+    let mut flush_kind = BrowserDocumentDom2LayoutFlushKind::IncrementalRelayout;
     if !did_incremental_layout {
+      flush_kind = BrowserDocumentDom2LayoutFlushKind::Full;
       let prev_prepared = self.prepared.take();
       let prev_mapping = self.last_dom_mapping.take();
       let prev_seen_generation = self.last_seen_dom_mutation_generation;
@@ -848,7 +909,7 @@ impl BrowserDocumentDom2 {
     self.paint_dirty = true;
     self.interaction_state_hash = interaction_hash;
     self.dom.clear_mutations();
-    Ok(())
+    Ok(flush_kind)
   }
 
   /// Ensures style/layout artifacts are available and up to date, without painting.
@@ -1986,7 +2047,7 @@ impl BrowserDocumentDom2 {
     // Rendering requires up-to-date layout caches. Reuse the same host-side layout flush used by
     // DOM/layout query APIs (e.g. `getBoundingClientRect`) so JS-driven `scrollTo` can clamp against
     // current scroll bounds without forcing a paint.
-    self.ensure_layout_for_dom_queries()?;
+    self.flush_layout(BrowserDocumentDom2LayoutFlushRequest::FOR_RENDER_OR_DOM_QUERIES)?;
 
     let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
 
@@ -2007,8 +2068,8 @@ impl BrowserDocumentDom2 {
   /// Callers can use this to satisfy CSSOM View properties (e.g. `Element.clientTop/clientLeft`)
   /// that need computed border widths while avoiding the cost/side-effects of a paint.
   pub(crate) fn ensure_layout_for_dom_query(&mut self) -> Result<()> {
-    // DOM query APIs need `dom2`⇄renderer mapping for node/style resolution.
-    self.ensure_layout_internal(true)
+    self.flush_layout(BrowserDocumentDom2LayoutFlushRequest::FOR_RENDER_OR_DOM_QUERIES)?;
+    Ok(())
   }
 
   /// Compute CSSOM View `clientTop`/`clientLeft` values for a DOM element.
@@ -2328,7 +2389,8 @@ impl BrowserDocumentDom2 {
   ///
   /// This is a "layout flush" that runs at most cascade+layout. It intentionally does **not** paint.
   fn ensure_layout_for_hit_testing(&mut self) -> Result<()> {
-    self.ensure_layout_internal(true)
+    self.flush_layout(BrowserDocumentDom2LayoutFlushRequest::FOR_HIT_TESTING)?;
+    Ok(())
   }
 
   #[inline]
