@@ -844,8 +844,9 @@ fn determine_flex_base_size(
 
     let container_width = constants.node_inner_size.main(dir);
     let pb_sum = (child.padding + child.border).sum_axes();
+    let pb_main_sum = pb_sum.main(dir);
     let box_sizing_adjustment =
-      if child_style.box_sizing() == BoxSizing::ContentBox { pb_sum.main(dir) } else { 0.0 };
+      if child_style.box_sizing() == BoxSizing::ContentBox { pb_main_sum } else { 0.0 };
     let flex_basis = child_style
       .flex_basis()
       .maybe_resolve(container_width, |val, basis| tree.calc(val, basis))
@@ -930,18 +931,14 @@ fn determine_flex_base_size(
     // TODO: resolve spec violation
     // Spec: https://www.w3.org/TR/css-flexbox-1/#intrinsic-item-contributions
     // Spec: https://www.w3.org/TR/css-flexbox-1/#change-2016-max-contribution
-    let padding_border_sum =
-      child.padding.main_axis_sum(constants.dir) + child.border.main_axis_sum(constants.dir);
-    child.flex_basis = child.flex_basis.max(padding_border_sum);
+    child.flex_basis = child.flex_basis.max(pb_main_sum);
 
     // The hypothetical main size is the item’s flex base size clamped according to its
     // used min and max main sizes (and flooring the content box size at zero).
 
-    child.inner_flex_basis = child.flex_basis
-      - child.padding.main_axis_sum(constants.dir)
-      - child.border.main_axis_sum(constants.dir);
+    child.inner_flex_basis = child.flex_basis - pb_main_sum;
 
-    let padding_border_axes_sums = (child.padding + child.border).sum_axes().map(Some);
+    let padding_border_axes_sums = pb_sum.map(Some);
 
     // Note that it is important that the `parent_size` parameter in the main axis is not set for this
     // function call as it used for resolving percentages, and percentage size in an axis should not contribute
