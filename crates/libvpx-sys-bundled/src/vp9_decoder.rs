@@ -85,24 +85,32 @@ impl Vp9Decoder {
   ///
   /// Note: libvpx may output 0+ frames per input packet; the returned vec contains all frames
   /// produced by this call.
+  ///
+  /// If `data` is empty, this performs a libvpx **flush** (equivalent to calling
+  /// `vpx_codec_decode(ctx, NULL, 0, ...)` in C) and returns any delayed frames.
   pub fn decode(&mut self, data: &[u8]) -> Result<Vec<Vp9Frame>, MediaError> {
     if !self.initialized {
       return Err(MediaError::Decode(
         "vp9 decoder not initialized".to_string(),
       ));
     }
-    if data.is_empty() {
-      return Ok(Vec::new());
-    }
 
-    let res = unsafe {
-      crate::vpx_codec_decode(
-        &mut self.ctx,
+    let (data_ptr, data_sz) = if data.is_empty() {
+      (ptr::null(), 0u32)
+    } else {
+      (
         data.as_ptr(),
         data
           .len()
           .try_into()
           .map_err(|_| MediaError::Decode("vp9 frame too large".to_string()))?,
+      )
+    };
+    let res = unsafe {
+      crate::vpx_codec_decode(
+        &mut self.ctx,
+        data_ptr,
+        data_sz,
         ptr::null_mut(),
         0,
       )
