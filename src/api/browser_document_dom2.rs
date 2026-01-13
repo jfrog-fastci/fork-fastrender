@@ -1758,36 +1758,10 @@ impl BrowserDocumentDom2 {
     x: f32,
     y: f32,
   ) -> Result<Option<crate::dom2::NodeId>> {
-    if !x.is_finite() || !y.is_finite() {
-      return Ok(None);
-    }
-
-    self.ensure_layout_for_hit_testing()?;
-    let Some(prepared) = self.prepared.as_ref() else {
-      return Ok(None);
-    };
-
-    let viewport = prepared.fragment_tree().viewport_size();
-    if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
-      return Ok(None);
-    }
-
-    let scroll_state = ScrollState::from_parts_with_deltas(
-      Point::new(self.options.scroll_x, self.options.scroll_y),
-      self.options.element_scroll_offsets.clone(),
-      self.options.scroll_delta,
-      self.options.element_scroll_deltas.clone(),
-    );
-
-    let Some(hit) = crate::interaction::hit_testing::hit_test_dom_viewport_point(
-      prepared,
-      &scroll_state,
-      Point::new(x, y),
-    ) else {
-      return Ok(None);
-    };
-
-    let Some(mut node_id) = self.dom2_node_for_hit_test(&hit) else {
+    let Some(mut node_id) = self
+      .hit_test_viewport_point(x, y)?
+      .map(|result| result.node)
+    else {
       return Ok(None);
     };
 

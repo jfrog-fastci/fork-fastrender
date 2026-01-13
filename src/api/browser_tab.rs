@@ -43,7 +43,8 @@ use selectors::context::QuirksMode;
 use url::Url;
 
 use super::{
-  BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason,
+  BrowserDocumentDom2, Dom2HitTestResult, Pixmap, RenderOptions, RunUntilStableOutcome,
+  RunUntilStableStopReason,
 };
 
 const MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE: &str =
@@ -6726,6 +6727,15 @@ impl BrowserTab {
 
   pub fn dom_mut(&mut self) -> &mut Document {
     self.host.dom_mut()
+  }
+
+  /// Perform a viewport-coordinate hit test against the current document layout.
+  ///
+  /// This is a convenience wrapper around [`BrowserDocumentDom2::hit_test_viewport_point`] that
+  /// keeps the document animation timestamp synchronized with the tab's event loop clock.
+  pub fn hit_test_viewport_point(&mut self, x: f32, y: f32) -> Result<Option<Dom2HitTestResult>> {
+    self.sync_document_animation_time_to_event_loop();
+    self.host.document.hit_test_viewport_point(x, y)
   }
 
   fn cached_renderer_dom_mapping(&mut self) -> &crate::dom2::RendererDomMapping {
