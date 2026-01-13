@@ -2546,6 +2546,9 @@ impl BrowserRuntime {
             tab.needs_repaint = true;
             tab.force_repaint = true;
           }
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            js_tab.set_runtime_toggles(Some(Arc::clone(&self.runtime_toggles)));
+          }
         }
       }
       UiToWorker::SetDebugLogEnabled { enabled } => {

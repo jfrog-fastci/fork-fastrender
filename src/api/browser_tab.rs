@@ -2,6 +2,7 @@ use crate::css::encoding::decode_css_bytes_cow;
 use crate::css::loader::resolve_href_with_base;
 use crate::css::parser::parse_stylesheet_with_media;
 use crate::css::types::CssImportLoader;
+use crate::debug::runtime::RuntimeToggles;
 use crate::debug::trace::TraceHandle;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{Document, NodeId, NodeKind};
@@ -7756,6 +7757,45 @@ impl BrowserTab {
     // internal frame.
     self.pending_frame = None;
     self.host.document.render_frame()
+  }
+
+  /// Updates (or clears) the runtime toggle override used by the underlying document.
+  ///
+  /// This mirrors [`super::BrowserDocument::set_runtime_toggles`]. In addition to invalidating the
+  /// renderer pipeline, this updates the JS realm's `matchMedia()` environment so media queries like
+  /// `(prefers-color-scheme)` observe the new values immediately.
+  pub fn set_runtime_toggles(&mut self, toggles: Option<Arc<RuntimeToggles>>) {
+    self.host.document.set_runtime_toggles(toggles);
+
+    // Keep the JS `matchMedia()` surface consistent with the renderer's media context. The vm-js
+    // matchMedia implementation evaluates queries against a host-owned `MediaContext`, so update it
+    // when preferences change.
+    let options = self.host.document.options().clone();
+    let toggles = self
+      .host
+      .document
+      .renderer_mut()
+      .resolve_runtime_toggles(&options);
+
+    let (viewport_w, viewport_h) = options.viewport.unwrap_or((1024, 768));
+    let width = viewport_w as f32;
+    let height = viewport_h as f32;
+    let mut media = match options.media_type {
+      MediaType::Print => MediaContext::print(width, height),
+      _ => super::headless_chrome_screen_media_context(width, height),
+    };
+    media.media_type = options.media_type;
+    if let Some(dpr) = options.device_pixel_ratio {
+      media = media.with_device_pixel_ratio(dpr);
+    }
+
+    let media = crate::debug::runtime::with_thread_runtime_toggles(toggles, || {
+      media.with_env_overrides()
+    });
+
+    if let Some(realm) = self.host.executor.window_realm_mut() {
+      let _ = realm.set_media_context(media);
+    }
   }
 
   /// Applies a scroll wheel delta at a point in viewport coordinates.

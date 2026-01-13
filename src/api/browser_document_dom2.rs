@@ -1,4 +1,5 @@
 use crate::animation::TransitionState;
+use crate::debug::runtime::RuntimeToggles;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Rect, Size};
 use crate::interaction::InteractionState;
@@ -677,6 +678,23 @@ impl BrowserDocumentDom2 {
       self.style_dirty = true;
       self.layout_dirty = true;
       self.paint_dirty = true;
+    }
+  }
+
+  /// Updates (or clears) the runtime toggle override used by the renderer.
+  ///
+  /// Runtime toggles can affect the media-query surface (e.g. `prefers-*`) via
+  /// [`crate::style::media::MediaContext::with_env_overrides`], so changing them must invalidate
+  /// style/layout (and therefore paint).
+  pub fn set_runtime_toggles(&mut self, toggles: Option<Arc<RuntimeToggles>>) {
+    let changed = match (&self.options.runtime_toggles, &toggles) {
+      (None, None) => false,
+      (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+      _ => true,
+    };
+    if changed {
+      self.options.runtime_toggles = toggles;
+      self.invalidate_all();
     }
   }
 
