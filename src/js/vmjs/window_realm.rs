@@ -6196,7 +6196,13 @@ fn history_state_change_native(
     )?;
   }
 
+  {
     // Keep `history.length` in sync with the per-realm session history.
+    //
+    // Root the receiver while allocating property keys: `alloc_key` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(history_obj))?;
+
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(
       history_obj,
