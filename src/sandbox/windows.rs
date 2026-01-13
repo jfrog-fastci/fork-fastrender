@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 
 use tempfile::TempDir;
 
+pub mod appcontainer;
+
 /// Debug escape hatch: disable the Windows renderer sandbox.
 ///
 /// This is intentionally Windows-only (the variable is ignored on other platforms).
@@ -46,9 +48,15 @@ pub(crate) fn requested_renderer_sandbox_level() -> Option<WindowsRendererSandbo
     return None;
   }
 
-  // Preferred sandbox. Callers are expected to fall back to restricted-token mode if
-  // AppContainer is unavailable (e.g. older Windows versions or policy restrictions).
-  Some(WindowsRendererSandboxLevel::AppContainer)
+  // Preferred sandbox. If AppContainer is unavailable (e.g. older Windows versions without the
+  // relevant userenv.dll exports), fall back to restricted-token mode.
+  match appcontainer::appcontainer_apis() {
+    Ok(_) => Some(WindowsRendererSandboxLevel::AppContainer),
+    Err(err) => {
+      log_appcontainer_unavailable_once(err);
+      Some(WindowsRendererSandboxLevel::RestrictedToken)
+    }
+  }
 }
 
 fn renderer_sandbox_disabled_via_env() -> bool {
@@ -104,11 +112,17 @@ fn log_sandbox_debug(msg: &str) {
   }
 }
 
+fn log_appcontainer_unavailable_once(err: &appcontainer::AppContainerApiLoadError) {
+  static LOGGED: OnceLock<()> = OnceLock::new();
+  LOGGED.get_or_init(|| {
+    eprintln!(
+      "warning: Windows AppContainer sandbox is unavailable ({err}); falling back to restricted-token sandboxing"
+    );
+  });
+}
+
 use windows_sys::Win32::Foundation::{
   BOOL, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, FALSE, HANDLE, TRUE,
-};
-use windows_sys::Win32::Security::Authentication::Identity::{
-  CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::Authorization::{
   GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
@@ -297,12 +311,15 @@ struct AppContainerSid {
 
 impl AppContainerSid {
   fn new(name: &[u16]) -> io::Result<Self> {
+    let apis = appcontainer::appcontainer_apis()
+      .map_err(|err| io::Error::new(io::ErrorKind::Unsupported, err.to_string()))?;
+
     // Best-effort profile creation: ignore failures other than ensuring the profile exists.
     let display = wide_from_str("FastRender renderer");
     let description = wide_from_str("FastRender renderer sandbox profile");
     let mut created_sid: *mut std::ffi::c_void = std::ptr::null_mut();
     let hr = unsafe {
-      CreateAppContainerProfile(
+      (apis.create_app_container_profile)(
         name.as_ptr(),
         display.as_ptr(),
         description.as_ptr(),
@@ -322,7 +339,8 @@ impl AppContainerSid {
     }
 
     let mut sid: *mut std::ffi::c_void = std::ptr::null_mut();
-    let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+    let hr =
+      unsafe { (apis.derive_app_container_sid_from_app_container_name)(name.as_ptr(), &mut sid) };
     if hr < 0 {
       return Err(io_error_from_hresult(hr));
     }
@@ -373,23 +391,23 @@ pub fn spawn_sandboxed(
     WindowsRendererSandboxLevel::AppContainer => match spawn_appcontainer(exe, args, inherit_handles)
     {
       Ok(child) => Ok(child),
-      Err(appcontainer_err) => match spawn_restricted_token(exe, args, inherit_handles) {
-        Ok(child) => {
-          eprintln!(
-            "warning: Windows AppContainer sandbox failed ({appcontainer_err}); falling back to restricted-token mode"
-          );
-          Ok(child)
-        }
-        Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles) {
+      Err(appcontainer_err) => {
+        eprintln!(
+          "warning: Windows AppContainer sandbox failed ({appcontainer_err}); falling back to restricted-token mode"
+        );
+        match spawn_restricted_token(exe, args, inherit_handles) {
           Ok(child) => Ok(child),
-          Err(unsandboxed_err) => Err(io::Error::new(
-            unsandboxed_err.kind(),
-            format!(
-              "failed to spawn child process (appcontainer={appcontainer_err}, restricted_token={restricted_err}, unsandboxed={unsandboxed_err})"
-            ),
-          )),
-        },
-      },
+          Err(restricted_err) => match spawn_unsandboxed(exe, args, inherit_handles) {
+            Ok(child) => Ok(child),
+            Err(unsandboxed_err) => Err(io::Error::new(
+              unsandboxed_err.kind(),
+              format!(
+                "failed to spawn child process (appcontainer={appcontainer_err}, restricted_token={restricted_err}, unsandboxed={unsandboxed_err})"
+              ),
+            )),
+          },
+        }
+      }
     },
     WindowsRendererSandboxLevel::RestrictedToken => match spawn_restricted_token(exe, args, inherit_handles)
     {

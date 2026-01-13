@@ -16,13 +16,13 @@ pub struct AppContainerApis {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppContainerApiLoadError {
-  #[error("failed to load userenv.dll (required for AppContainer sandboxing)")]
+  #[error("failed to load userenv.dll (required for AppContainer sandboxing): {source}")]
   LoadUserenvFailed {
     #[source]
     source: io::Error,
   },
 
-  #[error("userenv.dll is missing required AppContainer symbol `{symbol}`")]
+  #[error("userenv.dll is missing required AppContainer symbol `{symbol}`: {source}")]
   MissingSymbol {
     symbol: &'static str,
     #[source]
