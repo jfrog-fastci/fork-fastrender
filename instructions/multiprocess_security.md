@@ -139,6 +139,8 @@ enum RendererToBrowser {
 }
 ```
 
+IPC transport invariants (framing + size caps + shared memory safety): [`docs/ipc.md`](../docs/ipc.md).
+
 Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc_linux_fd_passing.md`](../docs/ipc_linux_fd_passing.md).
 
 ### Sandbox technologies
