@@ -9,7 +9,6 @@ use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
 
 const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
 const MODE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_MODE";
-const FONT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_FONT_PATH";
 
 #[test]
 fn renderer_sandbox_profiles_enforce_policy() {
@@ -19,9 +18,6 @@ fn renderer_sandbox_profiles_enforce_policy() {
     return;
   }
 
-  let font_path =
-    find_system_font_under(Path::new("/System/Library/Fonts")).expect("locate a system font file");
-
   for mode in ["pure", "relaxed"] {
     let exe = std::env::current_exe().expect("test exe path");
     let test_name = "macos_renderer_sandbox::renderer_sandbox_profiles_enforce_policy";
@@ -29,7 +25,6 @@ fn renderer_sandbox_profiles_enforce_policy() {
     let output = Command::new(&exe)
       .env(CHILD_ENV, "1")
       .env(MODE_ENV, mode)
-      .env(FONT_ENV, &font_path)
       .arg("--exact")
       .arg(test_name)
       .arg("--nocapture")
@@ -47,12 +42,14 @@ fn renderer_sandbox_profiles_enforce_policy() {
 
 fn run_child() {
   let mode = std::env::var(MODE_ENV).expect("child mode env var");
-  let font_path = std::env::var(FONT_ENV).expect("child font path env var");
   let mode = match mode.as_str() {
     "pure" => MacosSandboxMode::PureComputation,
     "relaxed" => MacosSandboxMode::RendererSystemFonts,
     other => panic!("unknown sandbox mode: {other}"),
   };
+
+  // Discover a real system font file path before sandboxing; strict mode denies filesystem reads.
+  let font_path = find_system_font_file();
 
   apply_renderer_sandbox(mode).expect("apply renderer sandbox");
 
@@ -67,13 +64,17 @@ fn run_child() {
   let font_read = std::fs::read(&font_path);
   match mode {
     MacosSandboxMode::PureComputation => {
-      assert_permission_denied(font_read, format!("read system font {font_path}"));
+      assert_permission_denied(
+        font_read,
+        format!("read system font {}", font_path.display()),
+      );
     }
     MacosSandboxMode::RendererSystemFonts => {
       let bytes = font_read.unwrap_or_else(|err| panic!("expected font read to succeed: {err}"));
       assert!(
         !bytes.is_empty(),
-        "expected font file to have non-zero length: {font_path}"
+        "expected font file to have non-zero length: {}",
+        font_path.display()
       );
     }
   }
@@ -95,7 +96,7 @@ fn assert_permission_denied<T>(result: Result<T, io::Error>, context: impl std::
   }
 }
 
-fn find_system_font_under(root: &Path) -> Option<PathBuf> {
+fn find_system_font_file() -> PathBuf {
   fn is_font_file(path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(OsStr::to_str) else {
       return false;
@@ -103,20 +104,41 @@ fn find_system_font_under(root: &Path) -> Option<PathBuf> {
     matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "ttc" | "otf")
   }
 
-  let mut stack = vec![root.to_path_buf()];
-  while let Some(dir) = stack.pop() {
-    let entries = std::fs::read_dir(&dir).ok()?;
-    for entry in entries.filter_map(Result::ok) {
-      let path = entry.path();
-      let ty = entry.file_type().ok()?;
-      if ty.is_dir() {
-        stack.push(path);
+  // Avoid hardcoding a specific system font filename: the set varies across macOS versions and
+  // installations. Instead, pick the first font file in a small set of well-known font
+  // directories.
+  const FONT_DIRS: [&str; 3] = [
+    "/System/Library/Fonts",
+    "/System/Library/Fonts/Supplemental",
+    "/Library/Fonts",
+  ];
+
+  for dir in FONT_DIRS {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+      continue;
+    };
+
+    // `read_dir` ordering is unspecified; sort entries so strict/relaxed runs choose the same font.
+    let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
+    for entry in entries {
+      let ty = match entry.file_type() {
+        Ok(ty) => ty,
+        Err(_) => continue,
+      };
+      if !ty.is_file() {
         continue;
       }
-      if ty.is_file() && is_font_file(&path) {
-        return Some(path);
+      let path = entry.path();
+      if is_font_file(&path) {
+        return path;
       }
     }
   }
-  None
+
+  panic!(
+    "expected to find at least one system font file (.ttf/.otf/.ttc) in one of: {}",
+    FONT_DIRS.join(", ")
+  );
 }
