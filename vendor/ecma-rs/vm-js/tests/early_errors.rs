@@ -410,3 +410,19 @@ fn await_using_declaration_does_not_allow_destructuring_pattern_is_syntax_error(
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
+
+#[test]
+fn using_declaration_missing_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script("{ using x; }").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_missing_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ { await using x; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
