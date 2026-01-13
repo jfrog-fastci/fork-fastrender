@@ -17,15 +17,35 @@ pub fn clear_browsing_data_dialog_ui(
   ctx: &egui::Context,
   open: &mut bool,
   range: &mut ClearBrowsingDataRange,
+  request_initial_focus: &mut bool,
 ) -> ClearBrowsingDataDialogOutput {
   let mut out = ClearBrowsingDataDialogOutput::default();
 
   if !*open {
+    *request_initial_focus = false;
     return out;
   }
 
-  // Esc closes the dialog (Chrome-like).
-  if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+  let request_initial_focus = std::mem::take(request_initial_focus);
+
+  // Esc closes the dialog (Chrome-like) and should not leak to other overlays.
+  let escape_pressed = ctx.input_mut(|i| {
+    let pressed = i.key_pressed(egui::Key::Escape);
+    if pressed {
+      i.events.retain(|event| {
+        !matches!(
+          event,
+          egui::Event::Key {
+            key: egui::Key::Escape,
+            pressed: true,
+            ..
+          }
+        )
+      });
+    }
+    pressed
+  });
+  if escape_pressed {
     *open = false;
     return out;
   }
@@ -118,9 +138,12 @@ pub fn clear_browsing_data_dialog_ui(
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range: All time")
             });
           });
-        combo.response.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range")
-        });
+        combo
+          .response
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Time range"));
+        if request_initial_focus {
+          combo.response.request_focus();
+        }
       });
 
       ui.add_space(12.0);
@@ -149,8 +172,7 @@ pub fn clear_browsing_data_dialog_ui(
         }
 
         let cancel_resp = ui.button("Cancel");
-        cancel_resp
-          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel"));
+        cancel_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel"));
         if cancel_resp.clicked() {
           close_dialog = true;
         }

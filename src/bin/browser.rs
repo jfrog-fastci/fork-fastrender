@@ -934,8 +934,14 @@ mod date_time_picker_a11y_tests {
 
     egui::CentralPanel::default().show(&ctx, |ui| {
       ui.horizontal(|ui| {
-        let (hour_resp, minute_resp) =
-          App::render_date_time_picker_time_inputs(ui, tab_id, input_node_id, &mut hour, &mut minute, true);
+        let (hour_resp, minute_resp) = App::render_date_time_picker_time_inputs(
+          ui,
+          tab_id,
+          input_node_id,
+          &mut hour,
+          &mut minute,
+          true,
+        );
         hour_id = Some(hour_resp.id);
         minute_id = Some(minute_resp.id);
       });
@@ -955,15 +961,21 @@ mod date_time_picker_a11y_tests {
       "expected hour/minute DragValues to have distinct egui ids"
     );
 
-    let hour_label = ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_hour_label")));
-    let minute_label = ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_minute_label")));
+    let hour_label =
+      ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_hour_label")));
+    let minute_label =
+      ctx.data(|d| d.get_temp::<String>(egui::Id::new("test_dt_picker_time_minute_label")));
 
     assert!(
-      hour_label.as_deref().is_some_and(|label| !label.trim().is_empty()),
+      hour_label
+        .as_deref()
+        .is_some_and(|label| !label.trim().is_empty()),
       "expected hour DragValue to have a non-empty accessible label"
     );
     assert!(
-      minute_label.as_deref().is_some_and(|label| !label.trim().is_empty()),
+      minute_label
+        .as_deref()
+        .is_some_and(|label| !label.trim().is_empty()),
       "expected minute DragValue to have a non-empty accessible label"
     );
     assert_eq!(hour_label.as_deref(), Some("Hour"));
@@ -1972,7 +1984,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         active_window_id = Some(window_id);
         request_autosave(&windows, &window_order, active_window_id);
       }
-      Event::UserEvent(UserEvent::RequestNewWindowWithSession { from_id, window: session_window }) => {
+      Event::UserEvent(UserEvent::RequestNewWindowWithSession {
+        from_id,
+        window: session_window,
+      }) => {
         let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
         let inherit_pos = windows.get(&from_id).and_then(|win| {
           win
@@ -1984,7 +1999,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
         let window_state = session_window.window_state.clone();
 
-        let window = match build_window(event_loop_target, window_state, inherit_size, inherit_pos) {
+        let window = match build_window(event_loop_target, window_state, inherit_size, inherit_pos)
+        {
           Ok(window) => window,
           Err(err) => {
             eprintln!("failed to create new window: {err}");
@@ -3061,6 +3077,7 @@ struct App {
   downloads_panel_open: bool,
   downloads_panel_request_focus: bool,
   clear_browsing_data_dialog_open: bool,
+  clear_browsing_data_dialog_request_focus: bool,
   bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState,
   clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange,
 
@@ -3640,6 +3657,7 @@ impl App {
       downloads_panel_open: false,
       downloads_panel_request_focus: false,
       clear_browsing_data_dialog_open: false,
+      clear_browsing_data_dialog_request_focus: false,
       clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
@@ -5121,7 +5139,10 @@ impl App {
 
     let (stroke_color, icon) = match toast_kind {
       ToastKind::Info => (theme_colors.accent, fastrender::ui::BrowserIcon::Info),
-      ToastKind::Warning => (theme_colors.warn, fastrender::ui::BrowserIcon::WarningInsecure),
+      ToastKind::Warning => (
+        theme_colors.warn,
+        fastrender::ui::BrowserIcon::WarningInsecure,
+      ),
       ToastKind::Error => (theme_colors.danger, fastrender::ui::BrowserIcon::Error),
     };
 
@@ -5171,11 +5192,14 @@ impl App {
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              let close_resp =
-                fastrender::ui::icon_button(ui, fastrender::ui::BrowserIcon::Close, "Dismiss", true);
-              close_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss")
-              });
+              let close_resp = fastrender::ui::icon_button(
+                ui,
+                fastrender::ui::BrowserIcon::Close,
+                "Dismiss",
+                true,
+              );
+              close_resp
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss"));
               if close_resp.clicked() {
                 dismiss = true;
               }
@@ -5272,13 +5296,11 @@ impl App {
             theme_sizing.padding,
           ));
 
-        let presentation =
-          fastrender::ui::classify_warning_toast(Some(&toast_text)).unwrap_or_else(|| {
-            fastrender::ui::WarningToastPresentation {
-              title: fastrender::ui::notifications::derive_warning_toast_title(&toast_text),
-              summary: None,
-              icon: fastrender::ui::WarningToastIcon::WarningInsecure,
-            }
+        let presentation = fastrender::ui::classify_warning_toast(Some(&toast_text))
+          .unwrap_or_else(|| fastrender::ui::WarningToastPresentation {
+            title: fastrender::ui::notifications::derive_warning_toast_title(&toast_text),
+            summary: None,
+            icon: fastrender::ui::WarningToastIcon::WarningInsecure,
           });
         let title_text = presentation.title.clone();
         let summary_text = presentation.summary.clone();
@@ -5312,10 +5334,8 @@ impl App {
               let title_resp = ui
                 .push_id(toast_id.with("toggle_details"), |ui| {
                   ui.add(
-                    egui::Button::new(
-                      egui::RichText::new(&title_text).strong().color(title_color),
-                    )
-                    .frame(false),
+                    egui::Button::new(egui::RichText::new(&title_text).strong().color(title_color))
+                      .frame(false),
                   )
                 })
                 .inner
@@ -5323,8 +5343,9 @@ impl App {
 
               // AccessKit may request explicit expand/collapse actions when the node exposes an
               // expanded state.
-              let expand_requested = ui
-                .input(|i| i.has_accesskit_action_request(title_resp.id, accesskit::Action::Expand));
+              let expand_requested = ui.input(|i| {
+                i.has_accesskit_action_request(title_resp.id, accesskit::Action::Expand)
+              });
               let collapse_requested = ui.input(|i| {
                 i.has_accesskit_action_request(title_resp.id, accesskit::Action::Collapse)
               });
@@ -5358,16 +5379,18 @@ impl App {
                 let label = title_a11y_label.clone();
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
               });
-              let _ = title_resp.ctx.accesskit_node_builder(title_resp.id, |builder| {
-                builder.set_expanded(expanded);
-                if expanded {
-                  builder.add_action(accesskit::Action::Collapse);
-                  builder.remove_action(accesskit::Action::Expand);
-                } else {
-                  builder.add_action(accesskit::Action::Expand);
-                  builder.remove_action(accesskit::Action::Collapse);
-                }
-              });
+              let _ = title_resp
+                .ctx
+                .accesskit_node_builder(title_resp.id, |builder| {
+                  builder.set_expanded(expanded);
+                  if expanded {
+                    builder.add_action(accesskit::Action::Collapse);
+                    builder.remove_action(accesskit::Action::Expand);
+                  } else {
+                    builder.add_action(accesskit::Action::Expand);
+                    builder.remove_action(accesskit::Action::Collapse);
+                  }
+                });
 
               if title_resp.has_focus() {
                 let focus_stroke = ui.visuals().selection.stroke;
@@ -5377,8 +5400,7 @@ impl App {
                 );
                 let rounding =
                   egui::Rounding::same((theme_sizing.corner_radius * 0.5).clamp(2.0, 6.0));
-                ui
-                  .painter()
+                ui.painter()
                   .rect_stroke(title_resp.rect.expand(2.0), rounding, focus_stroke);
               }
 
@@ -5607,16 +5629,18 @@ impl App {
                 details_resp.widget_info(|| {
                   egui::WidgetInfo::labeled(egui::WidgetType::Button, details_a11y_label)
                 });
-                let _ = details_resp.ctx.accesskit_node_builder(details_resp.id, |builder| {
-                  builder.set_expanded(details_open);
-                  if details_open {
-                    builder.add_action(accesskit::Action::Collapse);
-                    builder.remove_action(accesskit::Action::Expand);
-                  } else {
-                    builder.add_action(accesskit::Action::Expand);
-                    builder.remove_action(accesskit::Action::Collapse);
-                  }
-                });
+                let _ = details_resp
+                  .ctx
+                  .accesskit_node_builder(details_resp.id, |builder| {
+                    builder.set_expanded(details_open);
+                    if details_open {
+                      builder.add_action(accesskit::Action::Collapse);
+                      builder.remove_action(accesskit::Action::Expand);
+                    } else {
+                      builder.add_action(accesskit::Action::Expand);
+                      builder.remove_action(accesskit::Action::Collapse);
+                    }
+                  });
               });
             });
 
@@ -6587,7 +6611,10 @@ impl App {
     }
 
     for (tab_id, download_id) in output.cancel_requests {
-      self.send_worker_msg(UiToWorker::CancelDownload { tab_id, download_id });
+      self.send_worker_msg(UiToWorker::CancelDownload {
+        tab_id,
+        download_id,
+      });
     }
     for (tab_id, url) in output.retry_requests {
       self.send_worker_msg(UiToWorker::StartDownload {
@@ -6652,9 +6679,7 @@ impl App {
       match item {
         SelectItem::OptGroupLabel { .. } => {}
         SelectItem::Option {
-          selected,
-          disabled,
-          ..
+          selected, disabled, ..
         } => {
           if first_enabled.is_none() && !*disabled {
             first_enabled = Some(idx);
@@ -7072,12 +7097,14 @@ impl App {
         |ui| ui.add(egui::DragValue::new(hour).clamp_range(0..=23)),
       )
       .inner;
-    hour_resp
-      .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, HOUR_LABEL));
+    hour_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, HOUR_LABEL));
     #[cfg(test)]
-    ui
-      .ctx()
-      .data_mut(|d| d.insert_temp(egui::Id::new("test_dt_picker_time_hour_label"), HOUR_LABEL.to_string()));
+    ui.ctx().data_mut(|d| {
+      d.insert_temp(
+        egui::Id::new("test_dt_picker_time_hour_label"),
+        HOUR_LABEL.to_string(),
+      )
+    });
     if request_initial_focus {
       hour_resp.request_focus();
     }
@@ -7310,7 +7337,8 @@ impl App {
                   let focus_rect = response.rect.expand(expand);
                   let rounding = ui.visuals().widgets.inactive.rounding;
                   let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-                  ui.painter().rect_stroke(focus_rect, focus_rounding, focus_stroke);
+                  ui.painter()
+                    .rect_stroke(focus_rect, focus_rounding, focus_stroke);
                 }
 
                 if choose_requested {
@@ -8356,6 +8384,9 @@ impl App {
         self.modifiers = *modifiers;
       }
       WindowEvent::KeyboardInput { input, .. } => {
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
         if input.state != ElementState::Pressed {
           return;
         }
@@ -8639,8 +8670,10 @@ impl App {
                 if currently_fullscreen {
                   self.window.set_fullscreen(None);
                 } else {
-                  let monitor =
-                    self.window.current_monitor().or_else(|| self.window.primary_monitor());
+                  let monitor = self
+                    .window
+                    .current_monitor()
+                    .or_else(|| self.window.primary_monitor());
                   self
                     .window
                     .set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
@@ -8909,6 +8942,9 @@ impl App {
         });
       }
       WindowEvent::Ime(ime) => {
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
         // If egui is actively editing text (e.g. the address bar), don't handle page-level IME
         // events.
         if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
@@ -8960,6 +8996,9 @@ impl App {
         }
       }
       WindowEvent::ReceivedCharacter(ch) => {
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
         if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
           return;
         }
@@ -9143,6 +9182,13 @@ impl App {
         }
         ChromeAction::OpenClearBrowsingDataDialog => {
           self.clear_browsing_data_dialog_open = true;
+          self.clear_browsing_data_dialog_request_focus = true;
+          // Treat the dialog as a modal: while it's open, keyboard focus/input should not be
+          // forwarded to the rendered page.
+          self.page_has_focus = false;
+          // End any in-flight page-scoped drags so the page doesn't keep scrolling underneath the
+          // modal dialog.
+          self.cancel_scrollbar_drag();
           // Default to a "safe" time range when the dialog is opened (including from shortcuts).
           self.clear_browsing_data_range = fastrender::ui::ClearBrowsingDataRange::default();
           self.window.request_redraw();
@@ -9371,7 +9417,9 @@ impl App {
               initial_url: Some(initial_url),
               cancel,
             });
-            self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: created_tab });
+            self.send_worker_msg(UiToWorker::SetActiveTab {
+              tab_id: created_tab,
+            });
             self.viewport_cache_tab = None;
             self.hover_sync_pending = true;
             self.pending_pointer_move = None;
@@ -9890,6 +9938,12 @@ impl App {
       self.browser_state.appearance.reduced_motion,
     );
 
+    // Treat the clear browsing data dialog as a modal: while it's open, the rendered page should
+    // never take keyboard focus (e.g. via `response.request_focus()` on the central page image).
+    if self.clear_browsing_data_dialog_open {
+      self.page_has_focus = false;
+    }
+
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
     // the top chrome is drawn into the titlebar area. Reserve a left inset so the system traffic
     // lights remain visible and clickable.
@@ -9917,129 +9971,129 @@ impl App {
     // Render this before `ui::chrome_ui` so clipboard commands can inject egui events for the
     // address bar (TextEdit reads input during widget construction).
     if self.browser_state.chrome.show_menu_bar {
-    let page_url = self
-      .browser_state
-      .active_tab()
-      .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()));
-    let page_bookmarked = page_url
-      .map(|url| self.bookmarks.contains_url(url))
-      .unwrap_or(false);
-    let menu_commands = fastrender::ui::menu_bar_ui(
-      &ctx,
-      &self.browser_state,
-      fastrender::ui::MenuBarState {
-        debug_log_open: self.debug_log_ui_enabled && self.debug_log_ui_open,
-        history_panel_open: self.history_panel_open,
-        bookmarks_panel_open: self.bookmarks_panel_open,
-        page_bookmarked,
-      },
-    );
-    if !menu_commands.is_empty() {
-      let mut chrome_actions = Vec::new();
-      for cmd in menu_commands {
-        match cmd {
-          fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
-            if !self.debug_log_ui_enabled {
-              self.debug_log_ui_enabled = true;
-              self.debug_log_ui_open = true;
-            } else {
-              self.debug_log_ui_open = !self.debug_log_ui_open;
-            }
-          }
-          fastrender::ui::MenuCommand::ToggleHistoryPanel => {
-            self.history_panel_open = !self.history_panel_open;
-            if self.history_panel_open {
-              self.bookmarks_panel_open = false;
-              self.downloads_panel_open = false;
-              self.downloads_panel_request_focus = false;
-              self.bookmarks_manager.clear_transient();
-              self.history_panel_request_focus_search = true;
-              self.page_has_focus = false;
-            } else {
-              self.page_has_focus = self.should_restore_page_focus();
-            }
-          }
-          fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
-            self.bookmarks_panel_open = !self.bookmarks_panel_open;
-            if self.bookmarks_panel_open {
-              self.history_panel_open = false;
-              self.downloads_panel_open = false;
-              self.downloads_panel_request_focus = false;
-              self.history_panel_request_focus_search = false;
-              self.bookmarks_manager.request_focus_search();
-              self.page_has_focus = false;
-            } else {
-              self.bookmarks_manager.clear_transient();
-              self.page_has_focus = self.should_restore_page_focus();
-            }
-          }
-          fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
-            self.toggle_bookmark_for_active_tab();
-          }
-          fastrender::ui::MenuCommand::Quit => {
-            self.shutdown();
-            *control_flow = winit::event_loop::ControlFlow::Exit;
-            return session_dirty;
-          }
-          fastrender::ui::MenuCommand::Copy
-          | fastrender::ui::MenuCommand::Cut
-          | fastrender::ui::MenuCommand::Paste => {
-            // Match our shortcut routing semantics:
-            // - when egui has an active text field (address bar), prefer egui editing;
-            // - otherwise, when the rendered page has focus, route to the worker.
-            let egui_target = self.egui_ctx.wants_keyboard_input()
-              || self.browser_state.chrome.address_bar_has_focus;
-            if egui_target {
-              match cmd {
-                fastrender::ui::MenuCommand::Copy => {
-                  ctx.input_mut(|i| i.events.push(egui::Event::Copy));
-                }
-                fastrender::ui::MenuCommand::Cut => {
-                  ctx.input_mut(|i| i.events.push(egui::Event::Cut));
-                }
-                fastrender::ui::MenuCommand::Paste => {
-                  if let Ok(mut clipboard) = Clipboard::new() {
-                    if let Ok(text) = clipboard.get_text() {
-                      ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
-                    }
-                  }
-                }
-                _ => {}
-              }
-            } else if self.page_has_focus {
-              let Some(tab_id) = self.browser_state.active_tab_id() else {
-                continue;
-              };
-              match cmd {
-                fastrender::ui::MenuCommand::Copy => {
-                  self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
-                }
-                fastrender::ui::MenuCommand::Cut => {
-                  self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
-                }
-                fastrender::ui::MenuCommand::Paste => {
-                  if let Ok(mut clipboard) = Clipboard::new() {
-                    if let Ok(text) = clipboard.get_text() {
-                      self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
-                    }
-                  }
-                }
-                _ => {}
+      let page_url = self
+        .browser_state
+        .active_tab()
+        .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()));
+      let page_bookmarked = page_url
+        .map(|url| self.bookmarks.contains_url(url))
+        .unwrap_or(false);
+      let menu_commands = fastrender::ui::menu_bar_ui(
+        &ctx,
+        &self.browser_state,
+        fastrender::ui::MenuBarState {
+          debug_log_open: self.debug_log_ui_enabled && self.debug_log_ui_open,
+          history_panel_open: self.history_panel_open,
+          bookmarks_panel_open: self.bookmarks_panel_open,
+          page_bookmarked,
+        },
+      );
+      if !menu_commands.is_empty() {
+        let mut chrome_actions = Vec::new();
+        for cmd in menu_commands {
+          match cmd {
+            fastrender::ui::MenuCommand::ToggleDebugLogPanel => {
+              if !self.debug_log_ui_enabled {
+                self.debug_log_ui_enabled = true;
+                self.debug_log_ui_open = true;
+              } else {
+                self.debug_log_ui_open = !self.debug_log_ui_open;
               }
             }
-          }
-          other => {
-            chrome_actions.extend(fastrender::ui::dispatch_menu_command(
-              other,
-              &mut self.browser_state,
-            ));
+            fastrender::ui::MenuCommand::ToggleHistoryPanel => {
+              self.history_panel_open = !self.history_panel_open;
+              if self.history_panel_open {
+                self.bookmarks_panel_open = false;
+                self.downloads_panel_open = false;
+                self.downloads_panel_request_focus = false;
+                self.bookmarks_manager.clear_transient();
+                self.history_panel_request_focus_search = true;
+                self.page_has_focus = false;
+              } else {
+                self.page_has_focus = self.should_restore_page_focus();
+              }
+            }
+            fastrender::ui::MenuCommand::ToggleBookmarksPanel => {
+              self.bookmarks_panel_open = !self.bookmarks_panel_open;
+              if self.bookmarks_panel_open {
+                self.history_panel_open = false;
+                self.downloads_panel_open = false;
+                self.downloads_panel_request_focus = false;
+                self.history_panel_request_focus_search = false;
+                self.bookmarks_manager.request_focus_search();
+                self.page_has_focus = false;
+              } else {
+                self.bookmarks_manager.clear_transient();
+                self.page_has_focus = self.should_restore_page_focus();
+              }
+            }
+            fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
+              self.toggle_bookmark_for_active_tab();
+            }
+            fastrender::ui::MenuCommand::Quit => {
+              self.shutdown();
+              *control_flow = winit::event_loop::ControlFlow::Exit;
+              return session_dirty;
+            }
+            fastrender::ui::MenuCommand::Copy
+            | fastrender::ui::MenuCommand::Cut
+            | fastrender::ui::MenuCommand::Paste => {
+              // Match our shortcut routing semantics:
+              // - when egui has an active text field (address bar), prefer egui editing;
+              // - otherwise, when the rendered page has focus, route to the worker.
+              let egui_target = self.egui_ctx.wants_keyboard_input()
+                || self.browser_state.chrome.address_bar_has_focus;
+              if egui_target {
+                match cmd {
+                  fastrender::ui::MenuCommand::Copy => {
+                    ctx.input_mut(|i| i.events.push(egui::Event::Copy));
+                  }
+                  fastrender::ui::MenuCommand::Cut => {
+                    ctx.input_mut(|i| i.events.push(egui::Event::Cut));
+                  }
+                  fastrender::ui::MenuCommand::Paste => {
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                      if let Ok(text) = clipboard.get_text() {
+                        ctx.input_mut(|i| i.events.push(egui::Event::Paste(text)));
+                      }
+                    }
+                  }
+                  _ => {}
+                }
+              } else if self.page_has_focus {
+                let Some(tab_id) = self.browser_state.active_tab_id() else {
+                  continue;
+                };
+                match cmd {
+                  fastrender::ui::MenuCommand::Copy => {
+                    self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id });
+                  }
+                  fastrender::ui::MenuCommand::Cut => {
+                    self.send_worker_msg(fastrender::ui::UiToWorker::Cut { tab_id });
+                  }
+                  fastrender::ui::MenuCommand::Paste => {
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                      if let Ok(text) = clipboard.get_text() {
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
+                      }
+                    }
+                  }
+                  _ => {}
+                }
+              }
+            }
+            other => {
+              chrome_actions.extend(fastrender::ui::dispatch_menu_command(
+                other,
+                &mut self.browser_state,
+              ));
+            }
           }
         }
+        if !chrome_actions.is_empty() {
+          session_dirty |= self.handle_chrome_actions(chrome_actions);
+        }
       }
-      if !chrome_actions.is_empty() {
-        session_dirty |= self.handle_chrome_actions(chrome_actions);
-      }
-    }
     }
 
     let appearance_before = self.browser_state.appearance.clone();
@@ -10047,6 +10101,7 @@ impl App {
       &ctx,
       &mut self.browser_state,
       Some(&self.bookmarks),
+      !self.clear_browsing_data_dialog_open,
       |tab_id| {
         if let Some(tex) = self.tab_favicons.get(&tab_id) {
           Some(tex.id())
@@ -10209,15 +10264,21 @@ impl App {
     }
 
     if self.clear_browsing_data_dialog_open {
+      let was_open = self.clear_browsing_data_dialog_open;
       let output = fastrender::ui::panels::clear_browsing_data_dialog_ui(
         &ctx,
         fastrender::ui::panels::ClearBrowsingDataDialogInput {
           open: &mut self.clear_browsing_data_dialog_open,
           range: &mut self.clear_browsing_data_range,
+          request_initial_focus: &mut self.clear_browsing_data_dialog_request_focus,
         },
       );
       if output.clear_now {
         self.clear_browsing_data(self.clear_browsing_data_range);
+      }
+      if was_open && !self.clear_browsing_data_dialog_open {
+        self.page_has_focus = self.should_restore_page_focus();
+        self.window.request_redraw();
       }
     }
 
@@ -10272,7 +10333,7 @@ impl App {
       // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,
       // close it (matching typical browser behaviour).
       let mut wheel_blocked_by_popup = false;
-      if !wheel_events.is_empty() {
+      if !wheel_events.is_empty() && !self.clear_browsing_data_dialog_open {
         if let Some(pos_points) = ctx.input(|i| i.pointer.hover_pos()) {
           if self.open_select_dropdown.is_some() {
             if self
@@ -10417,7 +10478,11 @@ impl App {
 
             // If a wheel scroll is happening this frame, register it before drawing so scrollbars
             // become visible immediately (even if this is a single-tick wheel scroll).
-            if !wheel_events.is_empty() && !wheel_blocked_by_popup && response.hovered() {
+            if !wheel_events.is_empty()
+              && !wheel_blocked_by_popup
+              && response.hovered()
+              && !self.clear_browsing_data_dialog_open
+            {
               let mut delta_css = (0.0, 0.0);
               for (unit, delta) in &wheel_events {
                 let Some((dx, dy)) = mapping
@@ -10690,6 +10755,7 @@ impl App {
           && !wheel_blocked_by_popup
           && response.hovered()
           && !self.page_loading_overlay_blocks_input
+          && !self.clear_browsing_data_dialog_open
         {
           let Some(hover_pos) = response.hover_pos() else {
             return;
@@ -11274,9 +11340,8 @@ mod warning_toast_a11y_tests {
   }
 
   fn warning_toast_toggle_ui(ui: &mut egui::Ui, expanded: &mut bool) {
-    let title_resp = ui.add(
-      egui::Button::new(egui::RichText::new("Viewport clamped").strong()).frame(false),
-    );
+    let title_resp =
+      ui.add(egui::Button::new(egui::RichText::new("Viewport clamped").strong()).frame(false));
 
     let mut toggle_requested = title_resp.clicked();
     if title_resp.has_focus() {
@@ -11299,11 +11364,7 @@ mod warning_toast_a11y_tests {
     title_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
   }
 
-  fn run_toast_frame(
-    ctx: &egui::Context,
-    expanded: &mut bool,
-    events: Vec<egui::Event>,
-  ) {
+  fn run_toast_frame(ctx: &egui::Context, expanded: &mut bool, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
     raw.focused = true;
     raw.pixels_per_point = Some(1.0);
@@ -11334,7 +11395,10 @@ mod warning_toast_a11y_tests {
 
     run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Tab));
     run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Space));
-    assert!(expanded, "expected Space to toggle expanded when focused via Tab");
+    assert!(
+      expanded,
+      "expected Space to toggle expanded when focused via Tab"
+    );
   }
 
   #[test]
@@ -11351,7 +11415,10 @@ mod warning_toast_a11y_tests {
 
     run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Tab));
     run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Enter));
-    assert!(expanded, "expected Enter to toggle expanded when focused via Tab");
+    assert!(
+      expanded,
+      "expected Enter to toggle expanded when focused via Tab"
+    );
   }
 }
 
@@ -11588,8 +11655,14 @@ mod select_dropdown_a11y_tests {
           disabled,
           ..
         } => {
-          let base = if label.trim().is_empty() { value } else { label };
-          option_labels.push(App::select_dropdown_option_a11y_label(base, *selected, *disabled));
+          let base = if label.trim().is_empty() {
+            value
+          } else {
+            label
+          };
+          option_labels.push(App::select_dropdown_option_a11y_label(
+            base, *selected, *disabled,
+          ));
           option_widget_types.push(App::select_dropdown_option_a11y_widget_type(*disabled));
         }
       }
@@ -11618,7 +11691,10 @@ mod select_dropdown_a11y_tests {
   #[test]
   fn select_dropdown_focus_target_prefers_selected_enabled_else_first_enabled() {
     let control = make_control();
-    assert_eq!(App::select_dropdown_focus_target_item_index(&control), Some(3));
+    assert_eq!(
+      App::select_dropdown_focus_target_item_index(&control),
+      Some(3)
+    );
 
     // If the selected option is disabled, focus should fall back to the first enabled option.
     let mut items = (*control.items).clone();
@@ -11630,7 +11706,10 @@ mod select_dropdown_a11y_tests {
       items: Arc::new(items),
       ..control
     };
-    assert_eq!(App::select_dropdown_focus_target_item_index(&control), Some(1));
+    assert_eq!(
+      App::select_dropdown_focus_target_item_index(&control),
+      Some(1)
+    );
   }
 }
 
