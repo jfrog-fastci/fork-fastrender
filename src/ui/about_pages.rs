@@ -36,7 +36,7 @@ pub const ABOUT_PAGE_URLS: &[&str] = &[
 ];
 
 use parking_lot::RwLock;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use super::string_match::contains_ascii_case_insensitive;
@@ -121,19 +121,19 @@ pub struct HistorySnapshot {
   pub visit_count: u64,
 }
 
-static ABOUT_PAGE_SNAPSHOT: OnceLock<RwLock<AboutPageSnapshot>> = OnceLock::new();
+static ABOUT_PAGE_SNAPSHOT: OnceLock<RwLock<Arc<AboutPageSnapshot>>> = OnceLock::new();
 
-fn about_page_snapshot_lock() -> &'static RwLock<AboutPageSnapshot> {
-  ABOUT_PAGE_SNAPSHOT.get_or_init(|| RwLock::new(AboutPageSnapshot::default()))
+fn about_page_snapshot_lock() -> &'static RwLock<Arc<AboutPageSnapshot>> {
+  ABOUT_PAGE_SNAPSHOT.get_or_init(|| RwLock::new(Arc::new(AboutPageSnapshot::default())))
 }
 
-pub fn about_page_snapshot() -> AboutPageSnapshot {
+pub fn about_page_snapshot() -> Arc<AboutPageSnapshot> {
   about_page_snapshot_lock().read().clone()
 }
 
 #[cfg(feature = "browser_ui")]
 pub fn set_about_page_snapshot(snapshot: AboutPageSnapshot) {
-  *about_page_snapshot_lock().write() = snapshot;
+  *about_page_snapshot_lock().write() = Arc::new(snapshot);
 }
 
 #[cfg(feature = "browser_ui")]
@@ -141,20 +141,25 @@ pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &Globa
   // Preserve any separately-updated chrome settings (e.g. accent color) across snapshot refreshes.
   // Similarly, keep optional debug snapshots (open tabs) intact unless explicitly overwritten by
   // callers.
-  let (chrome_accent, open_tabs, session_path, bookmarks_path, history_path, download_dir) = {
-    let snapshot = about_page_snapshot_lock().read();
-    (
-      snapshot.chrome_accent,
-      snapshot.open_tabs.clone(),
-      snapshot.session_path.clone(),
-      snapshot.bookmarks_path.clone(),
-      snapshot.history_path.clone(),
-      snapshot.download_dir.clone(),
-    )
-  };
-  set_about_page_snapshot(AboutPageSnapshot {
-    bookmarks: bookmark_snapshots_from_store(bookmarks),
-    history: history_snapshots_from_global_history_store(history),
+  let new_bookmarks = bookmark_snapshots_from_store(bookmarks);
+  let new_history = history_snapshots_from_global_history_store(history);
+
+  let mut guard = about_page_snapshot_lock().write();
+  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
+    snapshot.bookmarks = new_bookmarks;
+    snapshot.history = new_history;
+    return;
+  }
+
+  let chrome_accent = guard.chrome_accent;
+  let open_tabs = guard.open_tabs.clone();
+  let session_path = guard.session_path.clone();
+  let bookmarks_path = guard.bookmarks_path.clone();
+  let history_path = guard.history_path.clone();
+  let download_dir = guard.download_dir.clone();
+  *guard = Arc::new(AboutPageSnapshot {
+    bookmarks: new_bookmarks,
+    history: new_history,
     open_tabs,
     chrome_accent,
     session_path,
@@ -167,27 +172,137 @@ pub fn set_about_snapshot_from_stores(bookmarks: &BookmarkStore, history: &Globa
 #[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_history_from_global_history_store(store: &GlobalHistoryStore) {
   let history = history_snapshots_from_global_history_store(store);
-  about_page_snapshot_lock().write().history = history;
+  let mut guard = about_page_snapshot_lock().write();
+  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
+    snapshot.history = history;
+    return;
+  }
+
+  let chrome_accent = guard.chrome_accent;
+  let bookmarks = guard.bookmarks.clone();
+  let open_tabs = guard.open_tabs.clone();
+  let session_path = guard.session_path.clone();
+  let bookmarks_path = guard.bookmarks_path.clone();
+  let history_path = guard.history_path.clone();
+  let download_dir = guard.download_dir.clone();
+  *guard = Arc::new(AboutPageSnapshot {
+    bookmarks,
+    history,
+    open_tabs,
+    chrome_accent,
+    session_path,
+    bookmarks_path,
+    history_path,
+    download_dir,
+  });
 }
 
 #[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
   let bookmarks = bookmark_snapshots_from_store(store);
-  about_page_snapshot_lock().write().bookmarks = bookmarks;
+  let mut guard = about_page_snapshot_lock().write();
+  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
+    snapshot.bookmarks = bookmarks;
+    return;
+  }
+
+  let chrome_accent = guard.chrome_accent;
+  let history = guard.history.clone();
+  let open_tabs = guard.open_tabs.clone();
+  let session_path = guard.session_path.clone();
+  let bookmarks_path = guard.bookmarks_path.clone();
+  let history_path = guard.history_path.clone();
+  let download_dir = guard.download_dir.clone();
+  *guard = Arc::new(AboutPageSnapshot {
+    bookmarks,
+    history,
+    open_tabs,
+    chrome_accent,
+    session_path,
+    bookmarks_path,
+    history_path,
+    download_dir,
+  });
 }
 
 #[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_chrome_accent(accent: Option<RgbaColor>) {
-  about_page_snapshot_lock().write().chrome_accent = accent;
+  let mut guard = about_page_snapshot_lock().write();
+  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
+    snapshot.chrome_accent = accent;
+    return;
+  }
+
+  let bookmarks = guard.bookmarks.clone();
+  let history = guard.history.clone();
+  let open_tabs = guard.open_tabs.clone();
+  let session_path = guard.session_path.clone();
+  let bookmarks_path = guard.bookmarks_path.clone();
+  let history_path = guard.history_path.clone();
+  let download_dir = guard.download_dir.clone();
+  *guard = Arc::new(AboutPageSnapshot {
+    bookmarks,
+    history,
+    open_tabs,
+    chrome_accent: accent,
+    session_path,
+    bookmarks_path,
+    history_path,
+    download_dir,
+  });
 }
 
 #[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_download_dir(download_dir: Option<String>) {
-  about_page_snapshot_lock().write().download_dir = download_dir;
+  let mut guard = about_page_snapshot_lock().write();
+  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
+    snapshot.download_dir = download_dir;
+    return;
+  }
+
+  let chrome_accent = guard.chrome_accent;
+  let bookmarks = guard.bookmarks.clone();
+  let history = guard.history.clone();
+  let open_tabs = guard.open_tabs.clone();
+  let session_path = guard.session_path.clone();
+  let bookmarks_path = guard.bookmarks_path.clone();
+  let history_path = guard.history_path.clone();
+  *guard = Arc::new(AboutPageSnapshot {
+    bookmarks,
+    history,
+    open_tabs,
+    chrome_accent,
+    session_path,
+    bookmarks_path,
+    history_path,
+    download_dir,
+  });
 }
 
 pub fn sync_about_page_snapshot_open_tabs(open_tabs: Vec<OpenTabSnapshot>) {
-  about_page_snapshot_lock().write().open_tabs = open_tabs;
+  let mut guard = about_page_snapshot_lock().write();
+  if let Some(snapshot) = Arc::get_mut(&mut *guard) {
+    snapshot.open_tabs = open_tabs;
+    return;
+  }
+
+  let chrome_accent = guard.chrome_accent;
+  let bookmarks = guard.bookmarks.clone();
+  let history = guard.history.clone();
+  let session_path = guard.session_path.clone();
+  let bookmarks_path = guard.bookmarks_path.clone();
+  let history_path = guard.history_path.clone();
+  let download_dir = guard.download_dir.clone();
+  *guard = Arc::new(AboutPageSnapshot {
+    bookmarks,
+    history,
+    open_tabs,
+    chrome_accent,
+    session_path,
+    bookmarks_path,
+    history_path,
+    download_dir,
+  });
 }
 
 fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnapshot> {
@@ -322,8 +437,7 @@ fn about_footer_html() -> String {
 const DEFAULT_ABOUT_ACCENT: RgbaColor = RgbaColor::new(10, 132, 255, 0xFF);
 
 fn about_theme_css() -> String {
-  let accent = about_page_snapshot_lock()
-    .read()
+  let accent = about_page_snapshot()
     .chrome_accent
     .unwrap_or(DEFAULT_ABOUT_ACCENT);
   let r = accent.r;
@@ -2146,6 +2260,19 @@ mod tests {
 
   static SNAPSHOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+  #[test]
+  fn about_page_snapshot_returns_same_arc_when_unchanged() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let a = about_page_snapshot();
+    let b = about_page_snapshot();
+    assert!(
+      std::sync::Arc::ptr_eq(&a, &b),
+      "expected about_page_snapshot() to clone the existing Arc when unchanged"
+    );
+  }
+
   #[cfg(not(feature = "browser_ui"))]
   #[test]
   fn about_page_snapshot_getter_returns_empty_without_browser_ui() {
@@ -2229,7 +2356,7 @@ mod tests {
       }
     }
 
-    let before_open_tabs = about_page_snapshot().open_tabs;
+    let before_open_tabs = about_page_snapshot().open_tabs.clone();
     let _restore = RestoreOpenTabs(before_open_tabs);
 
     sync_about_page_snapshot_open_tabs(vec![
@@ -2519,7 +2646,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     set_about_page_snapshot(AboutPageSnapshot {
       bookmarks: vec![
@@ -2577,7 +2704,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     let raw_url1 = "https://example.test/?q=1&x=<tag>\"'";
     let raw_url2 = "about:newtab?x=1&y=<2>";
@@ -2587,12 +2714,34 @@ mod tests {
     set_about_page_snapshot(AboutPageSnapshot {
       open_tabs: vec![
         OpenTabSnapshot {
+          window_id: None,
           tab_id: 1111,
           url: raw_url1.to_string(),
+          title: None,
+          site_key: None,
+          renderer_process: None,
+          is_active: false,
+          loading: false,
+          crashed: false,
+          unresponsive: false,
+          renderer_crashed: false,
+          crash_reason: None,
+          renderer_protocol_violation: None,
         },
         OpenTabSnapshot {
+          window_id: None,
           tab_id: 2222,
           url: raw_url2.to_string(),
+          title: None,
+          site_key: None,
+          renderer_process: None,
+          is_active: false,
+          loading: false,
+          crashed: false,
+          unresponsive: false,
+          renderer_crashed: false,
+          crash_reason: None,
+          renderer_protocol_violation: None,
         },
       ],
       ..Default::default()
@@ -2620,7 +2769,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     let mut store = GlobalHistoryStore::default();
     store.record(
@@ -2692,7 +2841,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     let mut store = GlobalHistoryStore::default();
     store.record("https://example.test/frag#section".to_string(), None);
@@ -2720,7 +2869,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
     set_about_page_snapshot(AboutPageSnapshot::default());
 
     let html = html_for_about_url(ABOUT_NEWTAB).unwrap();
@@ -2774,7 +2923,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     set_about_page_snapshot(AboutPageSnapshot {
       chrome_accent: Some(RgbaColor::new(255, 0, 255, 0xFF)),
@@ -2897,7 +3046,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     set_about_page_snapshot(AboutPageSnapshot {
       bookmarks: Vec::new(),
@@ -2933,7 +3082,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     set_about_page_snapshot(AboutPageSnapshot {
       bookmarks: Vec::new(),
@@ -2967,7 +3116,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     set_about_page_snapshot(AboutPageSnapshot {
       bookmarks: vec![
@@ -3001,7 +3150,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     let mut bookmarks = BookmarkStore::default();
     let folder = bookmarks.create_folder("Folder".to_string(), None).unwrap();
@@ -3040,11 +3189,22 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     let open_tabs = vec![OpenTabSnapshot {
+      window_id: None,
       tab_id: 1,
       url: "https://tab.example/".to_string(),
+      title: None,
+      site_key: None,
+      renderer_process: None,
+      is_active: false,
+      loading: false,
+      crashed: false,
+      unresponsive: false,
+      renderer_crashed: false,
+      crash_reason: None,
+      renderer_protocol_violation: None,
     }];
     let accent = Some(RgbaColor::new(1, 2, 3, 4));
     set_about_page_snapshot(AboutPageSnapshot {
@@ -3098,7 +3258,7 @@ mod tests {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before = about_page_snapshot();
+    let before = about_page_snapshot().as_ref().clone();
 
     let session_path = r"C:\path\<test>&session.json".to_string();
     let bookmarks_path = r"C:\path\<test>&bookmarks.json".to_string();

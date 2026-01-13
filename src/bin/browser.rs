@@ -4770,7 +4770,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   {
     // Expose runtime persistence locations in `about:settings` so users can discover where state is
     // written without reading stderr.
-    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot();
+    let mut snapshot = fastrender::ui::about_pages::about_page_snapshot()
+      .as_ref()
+      .clone();
     snapshot.session_path = Some(session_path.display().to_string());
     snapshot.bookmarks_path = Some(bookmarks_path.display().to_string());
     snapshot.history_path = Some(history_path.display().to_string());
