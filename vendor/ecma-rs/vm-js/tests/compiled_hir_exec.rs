@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vm_js::{
-  Budget, CompiledFunctionRef, CompiledScript, Heap, HeapLimits, JsRuntime, TerminationReason,
-  Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  Budget, CompiledFunctionRef, CompiledScript, Heap, HeapLimits, JsRuntime, TerminationReason, Value,
+  Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyId {
@@ -1738,6 +1738,25 @@ fn compiled_function_length_ignores_rest_param() -> Result<(), VmError> {
   let mut rt = JsRuntime::new(Vm::new(VmOptions::default()), heap)?;
   let actual = rt.exec_compiled_script(script)?;
   assert_eq!(actual, expected);
+  Ok(())
+}
 
+#[test]
+fn compiled_function_level_use_strict_sets_this_to_undefined() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ 'use strict'; return this; }
+      f()
+    "#,
+  )?;
+
+  let value = rt.exec_compiled_script(script)?;
+  assert_eq!(value, Value::Undefined);
   Ok(())
 }

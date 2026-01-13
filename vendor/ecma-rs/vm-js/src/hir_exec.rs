@@ -222,7 +222,6 @@ impl<'vm> HirEvaluator<'vm> {
         // prologues (unlike the parse-js AST), so this is best-effort.
         return Ok(true);
       }
-      break;
     }
     Ok(false)
   }
@@ -237,8 +236,9 @@ impl<'vm> HirEvaluator<'vm> {
     // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
     // requires `&mut Vm`, so borrow HIR via a standalone `Arc` clone of the compiled script.
     let script = self.script.clone();
+    let outer_strict = self.strict;
 
-    let (length, is_async, is_generator) = {
+    let (length, is_async, is_generator, body_has_use_strict) = {
       let func_body = script
         .hir
         .body(body_id)
@@ -266,8 +266,25 @@ impl<'vm> HirEvaluator<'vm> {
         length = length.saturating_add(1);
       }
 
-      (length, func_meta.async_, func_meta.generator)
+      let body_has_use_strict = if outer_strict {
+        // Already strict regardless of directives.
+        false
+      } else {
+        // Only block-bodied functions can have directive prologues (expression-bodied arrow
+        // functions do not).
+        matches!(func_meta.body, hir_js::FunctionBody::Block(_))
+          && self.detect_use_strict_directive(func_body)?
+      };
+
+      (
+        length,
+        func_meta.async_,
+        func_meta.generator,
+        body_has_use_strict,
+      )
     };
+
+    let is_strict = outer_strict || body_has_use_strict;
 
     if is_generator {
       return Err(VmError::Unimplemented(if is_async {
@@ -292,7 +309,7 @@ impl<'vm> HirEvaluator<'vm> {
 
     let this_mode = if is_arrow {
       ThisMode::Lexical
-    } else if self.strict {
+    } else if is_strict {
       ThisMode::Strict
     } else {
       ThisMode::Global
@@ -306,7 +323,7 @@ impl<'vm> HirEvaluator<'vm> {
       name_s,
       length,
       this_mode,
-      /* is_strict */ self.strict,
+      is_strict,
       closure_env,
     )?;
 
