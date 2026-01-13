@@ -166,6 +166,10 @@ Linux sandbox code lives in:
 - Optional filesystem defense-in-depth (Landlock): [`src/sandbox/linux_landlock.rs`](../src/sandbox/linux_landlock.rs)
 - Optional namespace hardening (best-effort, before seccomp; disabled by default and controlled via
   `RendererSandboxConfig::linux_namespaces`): [`src/sandbox/linux_namespaces.rs`](../src/sandbox/linux_namespaces.rs)
+- Spawn-time hardening prelude (Linux `CommandExt::pre_exec`): [`src/sandbox/spawn.rs`](../src/sandbox/spawn.rs)
+  (`sandbox::spawn::configure_renderer_command`). Note: this cannot install the *full* renderer seccomp
+  policy (it needs `execve(2)`); install the full sandbox early in the renderer process via
+  `sandbox::apply_renderer_sandbox(...)`.
 
 Repo reality (today): the Linux seccomp sandbox is designed to:
 

@@ -1,11 +1,15 @@
 //! Helper for spawning a renderer subprocess with sandboxing configured.
 //!
-//! The goal is to minimize the "unsandboxed window" by installing security
-//! restrictions immediately after `fork(2)` and before `execve(2)`.
+//! The goal is to minimize the "unsandboxed window" by installing the subset of security
+//! restrictions that can be applied immediately after `fork(2)` and before `execve(2)`.
+//!
+//! Some policies (notably the full Linux renderer seccomp policy) intentionally deny `execve(2)` and
+//! therefore **must** be installed *after* `exec` inside the renderer process.
 //!
 //! Platform notes:
-//! - **Linux**: uses `CommandExt::pre_exec` to install the sandbox in the child after `fork` and
-//!   before `exec` (tightest window).
+//! - **Linux**: uses `CommandExt::pre_exec` to apply a pre-`exec` hardening prelude in the child
+//!   after `fork` and right before `exec` (tightest window). The renderer binary should still call
+//!   `sandbox::apply_renderer_sandbox(...)` early during startup to install the full renderer policy.
 //! - **macOS**: avoids `pre_exec` (unsafe in multithreaded parents). When explicitly enabled via
 //!   `FASTR_MACOS_USE_SANDBOX_EXEC=1`, spawns are wrapped in Apple’s deprecated
 //!   `/usr/bin/sandbox-exec` so the renderer starts sandboxed.
@@ -66,8 +70,13 @@ impl RendererSpawnCommand {
 
 /// Configure `cmd` so the spawned renderer process is sandboxed as early as possible.
 ///
-/// On Linux this uses `CommandExt::pre_exec` to run the sandbox setup in the child
-/// process right after `fork` and right before `exec`.
+/// On Linux this uses `CommandExt::pre_exec` to run a sandbox prelude in the child process right
+/// after `fork` and right before `exec`.
+///
+/// Important: the Linux `pre_exec` hook cannot install the full renderer seccomp policy, because
+/// that policy denies `execve(2)` and path-based filesystem syscalls. The renderer binary should
+/// still call `sandbox::apply_renderer_sandbox(...)` early during startup (post-`exec`) to install
+/// the full renderer sandbox.
 ///
 /// On macOS, this can optionally wrap the spawn in `/usr/bin/sandbox-exec` when
 /// `FASTR_MACOS_USE_SANDBOX_EXEC=1` is set. This path is intended for debugging/legacy workflows
