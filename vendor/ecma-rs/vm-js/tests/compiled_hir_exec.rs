@@ -6899,6 +6899,50 @@ fn compiled_try_catch_catches_throw() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_try_catch_coerces_internal_not_callable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Non-callable `Call` should surface as an internal `VmError::NotCallable`, which must be coerced
+  // to a JS throw so `try/catch` can observe it.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { (0)(); } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_try_catch_coerces_internal_not_constructable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Non-constructable `new` should surface as an internal `VmError::NotConstructable`, which must
+  // be coerced to a JS throw so `try/catch` can observe it.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { new (0)(); } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_try_finally_runs_and_preserves_return() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
