@@ -5619,9 +5619,10 @@ impl BrowserRuntime {
               crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
                 !focus_consumes_space
               }
-              crate::interaction::KeyAction::ArrowDown | crate::interaction::KeyAction::ArrowUp => {
-                !focus_consumes_arrows
-              }
+              crate::interaction::KeyAction::ArrowDown
+              | crate::interaction::KeyAction::ArrowUp
+              | crate::interaction::KeyAction::ArrowLeft
+              | crate::interaction::KeyAction::ArrowRight => !focus_consumes_arrows,
               crate::interaction::KeyAction::Home
               | crate::interaction::KeyAction::End
               | crate::interaction::KeyAction::ShiftHome
@@ -5634,66 +5635,76 @@ impl BrowserRuntime {
 
             if allow_scroll {
               keyboard_scroll = match key {
-              crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
-                Some(UiToWorker::ScrollTo {
+                crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
+                  Some(UiToWorker::ScrollTo {
+                    tab_id,
+                    pos_css: (tab.scroll_state.viewport.x, 0.0),
+                  })
+                }
+                crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
+                  Some(UiToWorker::ScrollTo {
+                    tab_id,
+                    pos_css: (tab.scroll_state.viewport.x, f32::MAX),
+                  })
+                }
+                crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
                   tab_id,
-                  pos_css: (tab.scroll_state.viewport.x, 0.0),
-                })
-              }
-              crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
-                Some(UiToWorker::ScrollTo {
-                  tab_id,
-                  pos_css: (tab.scroll_state.viewport.x, f32::MAX),
-                })
-              }
-              crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
-                tab_id,
-                delta_css: (0.0, 40.0),
-                pointer_css: None,
-              }),
-              crate::interaction::KeyAction::ArrowUp => Some(UiToWorker::Scroll {
-                tab_id,
-                delta_css: (0.0, -40.0),
-                pointer_css: None,
-              }),
-              crate::interaction::KeyAction::Space => {
-                let h = tab.viewport_css.1.max(1) as f32;
-                let dy = (h * 0.9).max(1.0);
-                Some(UiToWorker::Scroll {
-                  tab_id,
-                  delta_css: (0.0, dy),
+                  delta_css: (0.0, 40.0),
                   pointer_css: None,
-                })
-              }
-              crate::interaction::KeyAction::ShiftSpace => {
-                let h = tab.viewport_css.1.max(1) as f32;
-                let dy = -((h * 0.9).max(1.0));
-                Some(UiToWorker::Scroll {
+                }),
+                crate::interaction::KeyAction::ArrowUp => Some(UiToWorker::Scroll {
                   tab_id,
-                  delta_css: (0.0, dy),
+                  delta_css: (0.0, -40.0),
                   pointer_css: None,
-                })
-              }
-              crate::interaction::KeyAction::PageDown => {
-                let h = tab.viewport_css.1.max(1) as f32;
-                let dy = (h * 0.9).max(1.0);
-                Some(UiToWorker::Scroll {
+                }),
+                crate::interaction::KeyAction::ArrowRight => Some(UiToWorker::Scroll {
                   tab_id,
-                  delta_css: (0.0, dy),
+                  delta_css: (40.0, 0.0),
                   pointer_css: None,
-                })
-              }
-              crate::interaction::KeyAction::PageUp => {
-                let h = tab.viewport_css.1.max(1) as f32;
-                let dy = -((h * 0.9).max(1.0));
-                Some(UiToWorker::Scroll {
+                }),
+                crate::interaction::KeyAction::ArrowLeft => Some(UiToWorker::Scroll {
                   tab_id,
-                  delta_css: (0.0, dy),
+                  delta_css: (-40.0, 0.0),
                   pointer_css: None,
-                })
-              }
-              _ => None,
-            };
+                }),
+                crate::interaction::KeyAction::Space => {
+                  let h = tab.viewport_css.1.max(1) as f32;
+                  let dy = (h * 0.9).max(1.0);
+                  Some(UiToWorker::Scroll {
+                    tab_id,
+                    delta_css: (0.0, dy),
+                    pointer_css: None,
+                  })
+                }
+                crate::interaction::KeyAction::ShiftSpace => {
+                  let h = tab.viewport_css.1.max(1) as f32;
+                  let dy = -((h * 0.9).max(1.0));
+                  Some(UiToWorker::Scroll {
+                    tab_id,
+                    delta_css: (0.0, dy),
+                    pointer_css: None,
+                  })
+                }
+                crate::interaction::KeyAction::PageDown => {
+                  let h = tab.viewport_css.1.max(1) as f32;
+                  let dy = (h * 0.9).max(1.0);
+                  Some(UiToWorker::Scroll {
+                    tab_id,
+                    delta_css: (0.0, dy),
+                    pointer_css: None,
+                  })
+                }
+                crate::interaction::KeyAction::PageUp => {
+                  let h = tab.viewport_css.1.max(1) as f32;
+                  let dy = -((h * 0.9).max(1.0));
+                  Some(UiToWorker::Scroll {
+                    tab_id,
+                    delta_css: (0.0, dy),
+                    pointer_css: None,
+                  })
+                }
+                _ => None,
+              };
             }
           }
           if changed || scroll_changed {
