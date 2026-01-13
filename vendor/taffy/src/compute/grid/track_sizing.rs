@@ -6,7 +6,7 @@ use crate::style::{AlignContent, AlignSelf, AvailableSpace};
 use crate::style_helpers::TaffyMinContent;
 use crate::tree::{LayoutPartialTree, LayoutPartialTreeExt, SizingMode};
 use crate::util::check_layout_abort;
-use crate::util::sys::{f32_max, f32_min, Vec};
+use crate::util::sys::{f32_max, f32_min, Map, Vec};
 use crate::util::{MaybeMath, ResolveOrZero};
 use crate::CompactLength;
 use core::cmp::Ordering;
@@ -642,171 +642,163 @@ pub(super) fn resolve_item_baselines(
     AbstractAxis::Block => items.iter_mut().for_each(|item| item.baseline_shim.x = 0.0),
   }
 
-  // Sort items by track in the other axis (row) start position so that we can iterate items in groups which
-  // are in the same track in the other axis (row)
+  if items.is_empty() {
+    return;
+  }
+
   let other_axis = axis.other();
-  items.sort_unstable_by_key(|item| item.placement(other_axis).start);
 
-  // Iterate over grid rows
-  let mut is_first_row_group = true;
-  let mut remaining_items = &mut items[0..];
-  while !remaining_items.is_empty() {
+  // Baseline alignment operates independently per other-axis track (row/column). We only need to
+  // consider items that actually participate in baseline alignment, so we avoid sorting the entire
+  // `items` slice by other-axis start and instead group participating items via maps.
+  let is_baseline_aligned = |item: &GridItem| match axis {
+    AbstractAxis::Inline => item.align_self == AlignSelf::Baseline,
+    AbstractAxis::Block => item.justify_self == AlignSelf::Baseline,
+  };
+
+  // Determine:
+  // - The first other-axis track containing items (needed for grid container baseline computation).
+  // - How many items participate in baseline alignment per other-axis track.
+  let mut first_group_key: Option<u16> = None;
+  let mut baseline_counts: Map<u16, usize> = Map::default();
+  for item in items.iter() {
     check_layout_abort();
-    // Get the row index of the current row
-    let current_row = remaining_items[0].placement(other_axis).start;
+    let key = match other_axis {
+      AbstractAxis::Inline => item.column_indexes.start,
+      AbstractAxis::Block => item.row_indexes.start,
+    };
+    first_group_key = Some(match first_group_key {
+      Some(min_key) => min_key.min(key),
+      None => key,
+    });
+    if is_baseline_aligned(item) {
+      *baseline_counts.entry(key).or_insert(0) += 1;
+    }
+  }
 
-    // Find the item index of the first item that is in a different row (or None if we've reached the end of the list)
-    let next_row_first_item = remaining_items
-      .iter()
-      .position(|item| item.placement(other_axis).start != current_row);
+  let Some(first_group_key) = first_group_key else {
+    return;
+  };
+  if baseline_counts.is_empty() {
+    return;
+  }
 
-    // Use this index to split the `remaining_items` slice in two slices:
-    //    - A `row_items` slice containing the items (that start) in the current row
-    //    - A new `remaining_items` consisting of the remainder of the `remaining_items` slice
-    //      that hasn't been split off into `row_items
-    let row_items = if let Some(index) = next_row_first_item {
-      let (row_items, tail) = remaining_items.split_at_mut(index);
-      remaining_items = tail;
-      row_items
+  let mut measure_item_baseline_value = |item: &mut GridItem| -> f32 {
+    let measured_size_and_baselines = tree.perform_child_layout(
+      item.node,
+      Size::NONE,
+      inner_node_size,
+      Size::MIN_CONTENT,
+      SizingMode::InherentSize,
+      Line::FALSE,
+    );
+
+    let (baseline, fallback_size, margin_start) = match axis {
+      AbstractAxis::Inline => (
+        measured_size_and_baselines.first_baselines.y,
+        measured_size_and_baselines.size.height,
+        item
+          .margin
+          .top
+          .resolve_or_zero(inner_node_size.width, |val, basis| tree.calc(val, basis)),
+      ),
+      AbstractAxis::Block => (
+        measured_size_and_baselines.first_baselines.x,
+        measured_size_and_baselines.size.width,
+        item
+          .margin
+          .left
+          .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
+      ),
+    };
+
+    let extra_margin_start = match axis {
+      AbstractAxis::Inline => item.extra_margin.top,
+      AbstractAxis::Block => item.extra_margin.left,
+    };
+
+    let baseline = baseline.filter(|b| b.is_finite());
+    let fallback_size = if fallback_size.is_finite() {
+      fallback_size
     } else {
-      let row_items = remaining_items;
-      remaining_items = &mut [];
-      row_items
+      0.0
+    };
+    let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
+    let extra_margin_start = if extra_margin_start.is_finite() {
+      extra_margin_start
+    } else {
+      0.0
     };
 
-    let is_first_row_group_this_iter = is_first_row_group;
-    is_first_row_group = false;
+    let value = baseline.unwrap_or(fallback_size) + margin_start + extra_margin_start;
+    let value = if value.is_finite() { value } else { 0.0 };
 
-    let is_baseline_aligned = |item: &GridItem| match axis {
-      AbstractAxis::Inline => item.align_self == AlignSelf::Baseline,
-      AbstractAxis::Block => item.justify_self == AlignSelf::Baseline,
-    };
+    if axis == AbstractAxis::Inline {
+      // Record the vertical baseline for computing the grid container baseline.
+      item.baseline = Some(value);
+    }
 
-    // Count baseline-aligned items in this group.
-    //
-    // Baseline alignment is a no-op if <= 1 items in a row-group participate. In that case we can
-    // skip the expensive baseline-measurement pass entirely, with one exception:
-    // - In the column sizing pass (`axis == Inline`), the grid container baseline is derived from
-    //   the first row-group's baseline-aligned item (if any), so we still need to measure that
-    //   baseline value.
-    let baseline_item_count = row_items.iter().filter(|item| is_baseline_aligned(item)).count();
-    if baseline_item_count == 0 {
+    value
+  };
+
+  // (item_index, other_axis_start_index, baseline_value)
+  let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::new();
+  let mut group_max: Map<u16, f32> = Map::default();
+
+  for (idx, item) in items.iter_mut().enumerate() {
+    check_layout_abort();
+    if !is_baseline_aligned(item) {
       continue;
     }
 
-    let mut measure_item_baseline_value = |item: &mut GridItem| -> f32 {
-      let measured_size_and_baselines = tree.perform_child_layout(
-        item.node,
-        Size::NONE,
-        inner_node_size,
-        Size::MIN_CONTENT,
-        SizingMode::InherentSize,
-        Line::FALSE,
-      );
-
-      let (baseline, fallback_size, margin_start) = match axis {
-        AbstractAxis::Inline => (
-          measured_size_and_baselines.first_baselines.y,
-          measured_size_and_baselines.size.height,
-          item
-            .margin
-            .top
-            .resolve_or_zero(inner_node_size.width, |val, basis| tree.calc(val, basis)),
-        ),
-        AbstractAxis::Block => (
-          measured_size_and_baselines.first_baselines.x,
-          measured_size_and_baselines.size.width,
-          item
-            .margin
-            .left
-            .resolve_or_zero(Some(0.0), |val, basis| tree.calc(val, basis)),
-        ),
-      };
-
-      let extra_margin_start = match axis {
-        AbstractAxis::Inline => item.extra_margin.top,
-        AbstractAxis::Block => item.extra_margin.left,
-      };
-
-      let baseline = baseline.filter(|b| b.is_finite());
-      let fallback_size = if fallback_size.is_finite() {
-        fallback_size
-      } else {
-        0.0
-      };
-      let margin_start = if margin_start.is_finite() { margin_start } else { 0.0 };
-      let extra_margin_start = if extra_margin_start.is_finite() {
-        extra_margin_start
-      } else {
-        0.0
-      };
-
-      let value = baseline.unwrap_or(fallback_size) + margin_start + extra_margin_start;
-      let value = if value.is_finite() { value } else { 0.0 };
-
-      if axis == AbstractAxis::Inline {
-        // Record the vertical baseline for computing the grid container baseline.
-        item.baseline = Some(value);
-      }
-
-      value
+    let key = match other_axis {
+      AbstractAxis::Inline => item.column_indexes.start,
+      AbstractAxis::Block => item.row_indexes.start,
     };
+    let baseline_item_count = *baseline_counts.get(&key).unwrap_or(&0);
 
+    // Baseline alignment is a no-op if <= 1 items in an other-axis group participate. In that
+    // case we can skip the expensive baseline-measurement pass entirely, with one exception:
+    // - In the column sizing pass (`axis == Inline`), the grid container baseline is derived from
+    //   the first other-axis group's baseline-aligned item (if any), so we still need to measure
+    //   that baseline value.
     if baseline_item_count <= 1 {
       match axis {
         // `justify-self: baseline` does not contribute to the grid container baseline, so we can
         // skip measuring entirely when there is no alignment work to do.
         AbstractAxis::Block => continue,
         // `align-self: baseline` is only needed for the grid container baseline if this is the
-        // first row-group containing items.
+        // first other-axis group containing items.
         AbstractAxis::Inline => {
-          if !is_first_row_group_this_iter {
+          if key != first_group_key {
             continue;
           }
-
-          // Measure only the single baseline item in this row-group to compute the grid container
+          // Measure only the single baseline item in this group to compute the grid container
           // baseline later. No shim is needed.
-          let item = row_items
-            .iter_mut()
-            .find(|item| is_baseline_aligned(item))
-            .unwrap();
           let _ = measure_item_baseline_value(item);
           continue;
         }
       }
     }
 
-    // Collect baseline-aligned items in this group.
-    let mut baseline_values: Vec<(usize, f32)> = Vec::new();
-    for (idx, item) in row_items.iter_mut().enumerate() {
-      if !is_baseline_aligned(item) {
-        continue;
-      }
-      let value = measure_item_baseline_value(item);
-      baseline_values.push((idx, value));
-    }
+    let value = measure_item_baseline_value(item);
+    baseline_entries.push((idx, key, value));
+    let entry = group_max.entry(key).or_insert(value);
+    *entry = f32_max(*entry, value);
+  }
 
-    let group_max_baseline = baseline_values
-      .iter()
-      .map(|(_, value)| *value)
-      .max_by(|a, b| a.total_cmp(b))
-      .unwrap();
-
-    for (idx, value) in baseline_values {
-      match axis {
-        AbstractAxis::Inline => {
-          let shim = group_max_baseline - value;
-          row_items[idx].baseline_shim.y = if shim.is_finite() { shim } else { 0.0 };
-        }
-        AbstractAxis::Block => {
-          let shim = group_max_baseline - value;
-          row_items[idx].baseline_shim.x = if shim.is_finite() { shim } else { 0.0 };
-        }
-      }
+  for (idx, key, value) in baseline_entries {
+    let Some(group_max) = group_max.get(&key) else {
+      continue;
+    };
+    let shim = *group_max - value;
+    let shim = if shim.is_finite() { shim } else { 0.0 };
+    match axis {
+      AbstractAxis::Inline => items[idx].baseline_shim.y = shim,
+      AbstractAxis::Block => items[idx].baseline_shim.x = shim,
     }
   }
 }
-
 /// 11.5 Resolve Intrinsic Track Sizes
 #[allow(clippy::too_many_arguments)]
 fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
