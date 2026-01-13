@@ -56,6 +56,11 @@ fn subgrid_line_names_accepts_repeat_forms() {
     Some(vec![vec!["a".to_string()], vec!["a".to_string()]])
   );
   assert_eq!(
+    parse_subgrid_line_names("subgrid repeat(+2, [a])"),
+    Some(vec![vec!["a".to_string()], vec!["a".to_string()]])
+  );
+  assert!(parse_subgrid_line_names("subgrid repeat(-2, [a])").is_none());
+  assert_eq!(
     parse_subgrid_line_names("subgrid repeat(/*comment*/2, [a])"),
     Some(vec![vec!["a".to_string()], vec!["a".to_string()]])
   );

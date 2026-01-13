@@ -1449,9 +1449,6 @@ fn parse_line_name_list(
       let count_str = strip_css_comments_to_whitespace(count_str);
       let count_str = trim_ascii_whitespace(count_str.as_ref());
 
-      if count_str.is_empty() || !count_str.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-      }
       let count: usize = count_str.parse().ok()?;
       if count == 0 {
         return None;
