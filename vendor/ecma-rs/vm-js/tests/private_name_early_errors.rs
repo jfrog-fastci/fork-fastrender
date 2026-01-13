@@ -117,3 +117,42 @@ fn private_in_expression_is_allowed_when_declared() {
   rt.exec_script("class C { #x(){ return #x in {}; } }")
     .unwrap();
 }
+
+#[test]
+fn private_in_expression_is_syntax_error_when_undeclared() {
+  let mut rt = new_runtime();
+  let diags = assert_syntax_error(rt.exec_script("#x in {};").unwrap_err());
+  assert!(
+    diags
+      .iter()
+      .any(|d| d.code.as_str() == "VMJS0004" && d.message == "invalid private name"),
+    "expected early error VMJS0004 invalid private name, got {diags:?}"
+  );
+}
+
+#[test]
+fn parenthesized_private_in_expression_is_syntax_error_even_when_declared() {
+  let mut rt = new_runtime();
+  let diags = assert_syntax_error(
+    rt.exec_script("class C { #x(){} m(){ return (#x) in {}; } }")
+      .unwrap_err(),
+  );
+  assert!(
+    diags
+      .iter()
+      .any(|d| d.code.as_str() == "VMJS0004" && d.message == "invalid private identifier"),
+    "expected early error VMJS0004 invalid private identifier, got {diags:?}"
+  );
+}
+
+#[test]
+fn private_member_access_is_syntax_error_when_undeclared() {
+  let mut rt = new_runtime();
+  let diags = assert_syntax_error(rt.exec_script("class C { m(){ return this.#x; } }").unwrap_err());
+  assert!(
+    diags
+      .iter()
+      .any(|d| d.code.as_str() == "VMJS0004" && d.message == "invalid private name"),
+    "expected early error VMJS0004 invalid private name, got {diags:?}"
+  );
+}
