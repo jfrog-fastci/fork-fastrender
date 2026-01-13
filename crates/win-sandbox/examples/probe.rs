@@ -48,7 +48,7 @@ mod windows {
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
+    TokenIsAppContainer, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSID, SECURITY_CAPABILITIES,
     TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
