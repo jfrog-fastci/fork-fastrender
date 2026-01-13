@@ -7837,6 +7837,22 @@ impl BrowserTab {
     self.host.document.options().viewport
   }
 
+  /// Updates the viewport size (in CSS px), marking style/layout/paint dirty.
+  ///
+  /// This is a convenience wrapper around [`BrowserDocumentDom2::set_viewport`] for embedders that
+  /// host a live [`BrowserTab`] (JS + event loop) and need to keep DOM geometry queries consistent
+  /// with the embedding viewport.
+  pub fn set_viewport(&mut self, width: u32, height: u32) {
+    self.host.document.set_viewport(width, height);
+  }
+
+  /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
+  ///
+  /// This forwards to [`BrowserDocumentDom2::set_device_pixel_ratio`].
+  pub fn set_device_pixel_ratio(&mut self, dpr: f32) {
+    self.host.document.set_device_pixel_ratio(dpr);
+  }
+
   /// Updates the full scroll state (viewport + element scroll offsets) used for hit testing.
   ///
   /// This is intended for UI integrations that maintain their own scroll offsets and need to keep

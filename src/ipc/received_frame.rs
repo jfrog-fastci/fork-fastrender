@@ -2,7 +2,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
-use super::protocol::BrowserToRenderer;
+use super::protocol::renderer::BrowserToRenderer;
 
 pub type FrameAckCallback = Box<dyn FnOnce(u64) + Send + 'static>;
 
