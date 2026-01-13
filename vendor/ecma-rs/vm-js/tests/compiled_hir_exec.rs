@@ -8374,3 +8374,125 @@ fn compiled_import_call_requires_module_graph() -> Result<(), VmError> {
   }
   Ok(())
 }
+
+#[test]
+fn compiled_import_call_returns_promise_like_value() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() { return import("x"); }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  struct ImportCallHooks {
+    microtasks: vm_js::MicrotaskQueue,
+  }
+
+  impl VmHostHooks for ImportCallHooks {
+    fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<vm_js::RealmId>) {
+      self.microtasks.enqueue_promise_job(job, realm);
+    }
+
+    fn host_load_imported_module(
+      &mut self,
+      vm: &mut Vm,
+      scope: &mut vm_js::Scope<'_>,
+      modules: &mut vm_js::ModuleGraph,
+      referrer: vm_js::ModuleReferrer,
+      module_request: vm_js::ModuleRequest,
+      _host_defined: vm_js::HostDefined,
+      payload: vm_js::ModuleLoadPayload,
+    ) -> Result<(), VmError> {
+      // Reject the dynamic import promise with a thrown value.
+      //
+      // `ContinueDynamicImport` treats thrown values as catchable rejections, while a plain
+      // `VmError::Unimplemented` would propagate as an evaluator error.
+      vm.finish_loading_imported_module(
+        scope,
+        modules,
+        self,
+        referrer,
+        module_request,
+        payload,
+        Err(VmError::Throw(Value::Undefined)),
+      )?;
+      Ok(())
+    }
+  }
+
+  let mut hooks = ImportCallHooks {
+    microtasks: vm_js::MicrotaskQueue::new(),
+  };
+  let mut host = ();
+
+  let realm_id = rt.realm().id();
+
+  {
+    let mut scope = rt.heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script: script.clone(),
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+
+    // Dynamic import requires an active Realm. Ensure one is present even though we're calling the
+    // function directly from Rust instead of via `JsRuntime::exec_*`.
+    let exec_ctx = vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    };
+    let mut vm_ctx = rt.vm.execution_context_guard(exec_ctx)?;
+
+    let result = vm_ctx.call_with_host_and_hooks(
+      &mut host,
+      &mut scope,
+      &mut hooks,
+      Value::Object(f),
+      Value::Undefined,
+      &[],
+    )?;
+
+    let Value::Object(promise) = result else {
+      panic!("expected import() result to be an object, got {result:?}");
+    };
+    assert!(
+      scope.heap().is_promise_object(promise),
+      "expected import() result to be a Promise object"
+    );
+
+    // Smoke-check that it is promise-like by asserting it has a callable `then` property.
+    scope.push_root(Value::Object(promise))?;
+    let then_key_s = scope.alloc_string("then")?;
+    scope.push_root(Value::String(then_key_s))?;
+    let then_key = vm_js::PropertyKey::from_string(then_key_s);
+
+    let then = scope.get_with_host_and_hooks(
+      &mut *vm_ctx,
+      &mut host,
+      &mut hooks,
+      promise,
+      then_key,
+      Value::Object(promise),
+    )?;
+    assert!(
+      scope.heap().is_callable(then)?,
+      "expected Promise.then to be callable, got {then:?}"
+    );
+  }
+
+  // Discard any jobs enqueued by Promise resolution/rejection so `Job` persistent roots are cleaned
+  // up before the test ends.
+  hooks.microtasks.teardown(&mut rt);
+
+  Ok(())
+}
