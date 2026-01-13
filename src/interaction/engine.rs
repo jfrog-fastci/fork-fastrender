@@ -189,8 +189,17 @@ struct RangeDragState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionDragGranularity {
+  Char,
+  Word,
+  LineOrBlock,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DocumentDragState {
-  anchor: DocumentSelectionPoint,
+  down_point: DocumentSelectionPoint,
+  initial_range: Option<DocumentSelectionRange>,
+  granularity: SelectionDragGranularity,
 }
 
 #[derive(Debug, Clone)]
@@ -359,6 +368,9 @@ struct TextDragState {
   node_id: usize,
   box_id: usize,
   anchor: usize,
+  down_caret: usize,
+  initial_range: Option<(usize, usize)>,
+  granularity: SelectionDragGranularity,
   focus_before: Option<usize>,
 }
 
@@ -5692,26 +5704,87 @@ impl InteractionEngine {
           .as_mut()
           .filter(|edit| edit.node_id == state.node_id)
         {
-           if let Some((caret, affinity)) = caret_index_for_text_control_point(
-             &index,
-             box_tree,
-             fragment_tree,
-             scroll,
-             state.node_id,
-             state.box_id,
-             page_point,
-           ) {
+          if let Some((raw_caret, raw_affinity)) = caret_index_for_text_control_point(
+            &index,
+            box_tree,
+            fragment_tree,
+            scroll,
+            state.node_id,
+            state.box_id,
+            page_point,
+          ) {
             let prev_caret = edit.caret;
             let prev_affinity = edit.caret_affinity;
             let prev_anchor = edit.selection_anchor;
             edit.preferred_x = None;
-            edit.caret = caret;
-            edit.caret_affinity = affinity;
-            if caret == state.anchor {
-              edit.selection_anchor = None;
+
+            if let Some((mut sel_start, mut sel_end)) = state.initial_range {
+              // Multi-click selection (double-click / triple-click) dragging should preserve the
+              // originally selected word/line/all content.
+              let node = index.node(state.node_id);
+              let is_textarea = node.is_some_and(is_textarea);
+              let current_value = node
+                .map(|node| {
+                  if is_textarea {
+                    textarea_value_for_editing(node)
+                  } else {
+                    node.get_attribute_ref("value").unwrap_or("").to_string()
+                  }
+                })
+                .unwrap_or_default();
+              let current_len = current_value.chars().count();
+
+              // Clamp stored endpoints to the current text length in case the value changed while
+              // dragging (e.g. via script).
+              sel_start = sel_start.min(current_len);
+              sel_end = sel_end.min(current_len);
+
+              let down_caret = state.down_caret.min(current_len);
+              let caret = raw_caret.min(current_len);
+              let dragging_left = caret < down_caret;
+              let fixed = if dragging_left { sel_end } else { sel_start };
+
+              let mut caret = caret;
+              match state.granularity {
+                SelectionDragGranularity::Char => {}
+                SelectionDragGranularity::Word => {
+                  if let Some((word_start, word_end)) = word_selection_range(&current_value, caret) {
+                    caret = if dragging_left { word_start } else { word_end };
+                  }
+                }
+                SelectionDragGranularity::LineOrBlock => {
+                  if is_textarea {
+                    let (line_start, line_end) = textarea_line_selection_range(&current_value, caret);
+                    caret = if dragging_left { line_start } else { line_end };
+                  } else {
+                    // `<input>` has no line concept; triple-click already selects all.
+                    caret = if dragging_left { 0 } else { current_len };
+                  }
+                }
+              }
+
+              // Prevent shrinking into the initial multi-click selection.
+              if dragging_left {
+                caret = caret.min(sel_start);
+              } else {
+                caret = caret.max(sel_end);
+              }
+
+              edit.caret = caret;
+              edit.caret_affinity = raw_affinity;
+              edit.selection_anchor = if caret == fixed { None } else { Some(fixed) };
             } else {
-              edit.selection_anchor = Some(state.anchor);
+              // Normal click-and-drag selection: extend in character granularity from the initial
+              // anchor.
+              edit.caret = raw_caret;
+              edit.caret_affinity = raw_affinity;
+              if raw_caret == state.anchor {
+                edit.selection_anchor = None;
+              } else {
+                edit.selection_anchor = Some(state.anchor);
+              }
             }
+
             if edit.caret != prev_caret
               || edit.caret_affinity != prev_affinity
               || edit.selection_anchor != prev_anchor
@@ -5723,7 +5796,7 @@ impl InteractionEngine {
       }
     }
 
-    if self.document_drag.is_some() {
+    if let Some(state) = self.document_drag {
       // Mirror the sentinel handling in other drags: when the pointer leaves the page image the UI
       // sends a negative page-point. Do not treat that as dragging the selection to the start of the
       // document; keep the last in-page selection instead.
@@ -5732,13 +5805,63 @@ impl InteractionEngine {
         && page_point.x >= 0.0
         && page_point.y >= 0.0
       {
-        if let Some(point) =
-          document_selection_point_at_page_point(box_tree, fragment_tree, page_point)
+        if let Some((point, text_box_id)) =
+          document_selection_hit_at_page_point(box_tree, fragment_tree, page_point)
         {
           if let Some(DocumentSelectionState::Ranges(ranges)) = self.state.document_selection.as_mut()
           {
             let before = ranges.clone();
-            ranges.focus = point;
+            if let Some(initial_range) = state.initial_range {
+              let initial_range = initial_range.normalized();
+              let dragging_left =
+                cmp_document_selection_point(point, state.down_point) == Ordering::Less;
+              let fixed = if dragging_left {
+                initial_range.end
+              } else {
+                initial_range.start
+              };
+
+              let mut focus = point;
+              match state.granularity {
+                SelectionDragGranularity::Char => {}
+                SelectionDragGranularity::Word => {
+                  if let Some(word_range) =
+                    document_word_selection_range(box_tree, text_box_id, point)
+                  {
+                    focus = if dragging_left {
+                      word_range.start
+                    } else {
+                      word_range.end
+                    };
+                  }
+                }
+                SelectionDragGranularity::LineOrBlock => {
+                  if let Some(block_range) =
+                    document_block_selection_range(box_tree, text_box_id, point)
+                  {
+                    focus = if dragging_left {
+                      block_range.start
+                    } else {
+                      block_range.end
+                    };
+                  }
+                }
+              }
+
+              // Prevent shrinking into the initial multi-click selection.
+              if dragging_left {
+                if cmp_document_selection_point(focus, initial_range.start) == Ordering::Greater {
+                  focus = initial_range.start;
+                }
+              } else if cmp_document_selection_point(focus, initial_range.end) == Ordering::Less {
+                focus = initial_range.end;
+              }
+
+              ranges.anchor = fixed;
+              ranges.focus = focus;
+            } else {
+              ranges.focus = point;
+            }
             if ranges.primary < ranges.ranges.len() {
               ranges.ranges[ranges.primary] = DocumentSelectionRange {
                 start: ranges.anchor,
@@ -5986,6 +6109,7 @@ impl InteractionEngine {
             })
             .unwrap_or_default();
           let current_len = current_value.chars().count();
+          let down_caret = caret.min(current_len);
 
           let click_count = click_count.clamp(1, 3);
           let click_count = if click_count > 1 && focus_before != Some(hit.dom_node_id) {
@@ -6007,7 +6131,7 @@ impl InteractionEngine {
               .filter(|state| state.node_id == hit.dom_node_id)
               .and_then(|state| state.selection())
             {
-              let caret_in_bounds = caret.min(current_len);
+              let caret_in_bounds = down_caret;
               // `caret_index_for_text_control_point` returns the nearest caret stop. At the edges of
               // the selection highlight, clicks can legitimately quantize to `sel_start`/`sel_end`
               // (e.g. clicking inside the first/last selected glyph). Treat boundary caret indices
@@ -6149,11 +6273,28 @@ impl InteractionEngine {
               .as_ref()
               .filter(|state| state.node_id == hit.dom_node_id)
               .map(|state| state.selection_anchor.unwrap_or(state.caret))
-              .unwrap_or(caret.min(current_len));
+              .unwrap_or(down_caret);
+            let granularity = match click_count {
+              2 => SelectionDragGranularity::Word,
+              3 => SelectionDragGranularity::LineOrBlock,
+              _ => SelectionDragGranularity::Char,
+            };
+            let initial_range = if matches!(granularity, SelectionDragGranularity::Char) {
+              None
+            } else {
+              self
+                .text_edit
+                .as_ref()
+                .filter(|state| state.node_id == hit.dom_node_id)
+                .and_then(|state| state.selection())
+            };
             self.text_drag = Some(TextDragState {
               node_id: hit.dom_node_id,
               box_id: hit.box_id,
               anchor: drag_anchor,
+              down_caret,
+              initial_range,
+              granularity,
               focus_before,
             });
           }
@@ -6255,7 +6396,34 @@ impl InteractionEngine {
           if let Some(DocumentSelectionState::Ranges(ranges)) =
             self.state.document_selection.as_ref()
           {
-            self.document_drag = Some(DocumentDragState { anchor: ranges.anchor });
+            let (granularity, initial_range) = if !modifiers.shift() && !modifiers.command() {
+              match click_count {
+                2 => (
+                  SelectionDragGranularity::Word,
+                  ranges
+                    .ranges
+                    .get(ranges.primary)
+                    .copied()
+                    .filter(|r| r.start != r.end),
+                ),
+                3 => (
+                  SelectionDragGranularity::LineOrBlock,
+                  ranges
+                    .ranges
+                    .get(ranges.primary)
+                    .copied()
+                    .filter(|r| r.start != r.end),
+                ),
+                _ => (SelectionDragGranularity::Char, None),
+              }
+            } else {
+              (SelectionDragGranularity::Char, None)
+            };
+            self.document_drag = Some(DocumentDragState {
+              down_point: point,
+              initial_range,
+              granularity,
+            });
           }
         }
       } else if !modifiers.shift() && !modifiers.command() {
@@ -6516,16 +6684,30 @@ impl InteractionEngine {
     }
 
     if let Some(state) = &mut self.document_drag {
-      let ptr = old_index
-        .id_to_node
-        .get(state.anchor.node_id)
-        .copied()
-        .unwrap_or(std::ptr::null_mut());
-      if ptr.is_null() {
-        self.document_drag = None;
-      } else if let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) {
-        state.anchor.node_id = new_id;
-      } else {
+      let mut ok = true;
+      let mut remap_point = |point: &mut DocumentSelectionPoint| {
+        let ptr = old_index
+          .id_to_node
+          .get(point.node_id)
+          .copied()
+          .unwrap_or(std::ptr::null_mut());
+        if ptr.is_null() {
+          ok = false;
+          return;
+        }
+        let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) else {
+          ok = false;
+          return;
+        };
+        point.node_id = new_id;
+      };
+
+      remap_point(&mut state.down_point);
+      if let Some(range) = &mut state.initial_range {
+        remap_point(&mut range.start);
+        remap_point(&mut range.end);
+      }
+      if !ok {
         self.document_drag = None;
       }
     }

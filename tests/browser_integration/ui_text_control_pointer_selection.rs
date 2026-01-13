@@ -262,3 +262,118 @@ second line</textarea>
   join.join().expect("join ui worker thread");
 }
 
+#[test]
+fn ui_text_control_pointer_selection_double_click_drag_preserves_initial_word() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #i {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 320px;
+        height: 40px;
+        padding: 0;
+        border: 0;
+        outline: none;
+        font-family: "Noto Sans Mono", monospace;
+        font-size: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <input id="i" value="hello world">
+  </body>
+</html>
+"#,
+  );
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-text-control-pointer-multiclick-drag").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(url.clone()),
+      cancel: Default::default(),
+    })
+    .expect("create tab");
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (360, 120),
+      dpr: 1.0,
+    })
+    .expect("viewport");
+  ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("active tab");
+
+  // Initial paint.
+  let _ = next_frame_ready(&ui_rx, tab_id);
+
+  let input_left = (10.0, 20.0);
+  let input_right = (310.0, 20.0);
+
+  // Focus the input first (multi-click selection is suppressed for the first click that focuses).
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: input_left,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 1,
+    })
+    .expect("focus input down");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: input_left,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("focus input up");
+
+  // Double-click selects the second word; drag left should preserve the initially selected word.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: input_right,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+      click_count: 2,
+    })
+    .expect("double click down");
+  ui_tx
+    .send(UiToWorker::PointerMove {
+      tab_id,
+      pos_css: input_left,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("drag left");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: input_left,
+      button: PointerButton::Primary,
+      modifiers: PointerModifiers::NONE,
+    })
+    .expect("double click drag up");
+
+  ui_tx.send(UiToWorker::Copy { tab_id }).expect("copy");
+  assert_eq!(next_clipboard_text(&ui_rx, tab_id), "hello world");
+
+  drop(ui_tx);
+  join.join().expect("join ui worker thread");
+}
