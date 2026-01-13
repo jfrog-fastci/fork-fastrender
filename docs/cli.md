@@ -486,7 +486,10 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Render: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
     - `bundle_page render` is offline and ignores `FASTR_HTTP_*` env vars (it uses the bundle contents only).
 - Security: `--same-origin-subresources` (plus optional `--allow-subresource-origin`) applies both when capturing and replaying bundles to keep cross-origin assets out of offline artifacts. It does not block cross-origin iframe/embed document navigation.
-- Convert bundles to offline fixtures for the `pages_regression` harness: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`. All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
+- Convert bundles to offline fixtures for the `pages_regression` harness: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`.
+  - By default, media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files so fixtures stay small/offline-safe.
+  - Pass `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes`, `--media-max-file-bytes`; set to `0` to disable).
+  - All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
 
 ## `import_wpt`
 

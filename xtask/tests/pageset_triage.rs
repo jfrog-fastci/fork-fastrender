@@ -165,6 +165,9 @@ Capture fixture:
 ```bash
 bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch https://example.invalid/ --no-render --out target/page-fixture-bundles/example.invalid.tar --viewport 1200x800 --dpr 1.0
 bash scripts/cargo_agent.sh xtask import-page-fixture target/page-fixture-bundles/example.invalid.tar example.invalid
+# Note: media sources are rewritten to deterministic empty placeholder files by default.
+#       Add --include-media to vendor playable media into the fixture (subject to
+#       --media-max-bytes / --media-max-file-bytes; set to 0 to disable).
 bash scripts/cargo_agent.sh xtask validate-page-fixtures --only example.invalid
 ```
 
