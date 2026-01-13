@@ -3,7 +3,7 @@
 This document is the **normative spec** for FastRender’s multiprocess *site isolation* model.
 It defines the identifiers and algorithms that decide:
 
-1. Which renderer process a document runs in (process-per-site).
+1. Which renderer process a document runs in (process-per-origin).
 2. When an iframe becomes an out-of-process iframe (OOPIF).
 3. How the browser composites multiple frame surfaces into one viewport.
 
@@ -751,7 +751,7 @@ Expected:
   - process-per-tab (MVP) prevents a compromised renderer from reading memory/state belonging to other tabs.
   - process-per-`SiteKey` (future) additionally prevents cross-site memory observation within a single tab over time
     (via process swaps).
-- **Spectre-style cross-site attacks** (once per-site isolation is implemented): reducing cross-site co-residency reduces
+- **Spectre-style cross-site attacks** (once per-origin isolation is implemented): reducing cross-site co-residency reduces
   the value of microarchitectural side channels.
 - **Stability**: a renderer crash only takes down the frames/tabs hosted in that renderer process.
 
