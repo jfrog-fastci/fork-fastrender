@@ -761,7 +761,11 @@ fn bench_inline_layout_cache(c: &mut Criterion) {
   assign_box_ids(&mut box_tree.root, &mut next_id);
 
   let _ = engine
-    .layout_tree(black_box(&box_tree))
+    // Warm using `layout_tree_reuse_caches` so the engine stores a stable run fingerprint.
+    // `layout_tree()` runs with `reset_caches=true` (because `enable_incremental` is false by
+    // default) which skips the fingerprint computation. That would cause the next reuse-caches
+    // run to detect a "fingerprint change", bump the cache epoch, and yield 0 cache hits.
+    .layout_tree_reuse_caches(black_box(&box_tree))
     .expect("inline layout warmup should succeed");
   let before = engine.stats();
   let _ = engine
