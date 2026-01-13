@@ -125,9 +125,10 @@ Repo reality:
 
 - Landlock + seccomp are implemented in `src/sandbox/` and applied by
   `sandbox::apply_renderer_sandbox` (`src/sandbox/mod.rs`).
-- `sandbox::apply_renderer_sandbox` also applies a **best-effort Linux namespace** hardening step
+- `sandbox::apply_renderer_sandbox` can apply a **best-effort Linux namespace** hardening step
   (currently a network namespace when permitted) *before* seccomp, since seccomp may deny
-  `unshare(2)` / `setns(2)`. See `src/sandbox/linux_namespaces.rs`.
+  `unshare(2)` / `setns(2)`. This is controlled by `RendererSandboxConfig::linux_namespaces`
+  (disabled by default). See `src/sandbox/linux_namespaces.rs`.
 - Some rlimits/hardening are applied **in-process** by `sandbox::apply_renderer_sandbox` (via
   `linux_hardening`), before installing seccomp.
   - Default values live in `RendererSandboxConfig::default()` (`src/sandbox/mod.rs`) and include
