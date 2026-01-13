@@ -6415,29 +6415,45 @@ impl InteractionEngine {
 
     // Non-text-control keyboard actions.
     match key {
-      KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
-        if matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown)
-          && index.node(focused).is_some_and(is_range_input)
-        {
+      KeyAction::ArrowUp
+      | KeyAction::ArrowDown
+      | KeyAction::ArrowLeft
+      | KeyAction::ArrowRight
+      | KeyAction::Home
+      | KeyAction::End => {
+        if index.node(focused).is_some_and(is_range_input) {
           if node_or_ancestor_is_inert(&index, focused)
             || node_is_disabled(&index, focused)
             || node_is_readonly(&index, focused)
           {
             return changed;
           }
+          let bounds = if matches!(key, KeyAction::Home | KeyAction::End) {
+            index.node(focused).and_then(crate::dom::input_range_bounds)
+          } else {
+            None
+          };
           if let Some(node_mut) = index.node_mut(focused) {
-            let delta = match key {
-              KeyAction::ArrowUp => 1,
-              KeyAction::ArrowDown => -1,
-              _ => 0,
+            let dom_changed = match key {
+              KeyAction::ArrowUp | KeyAction::ArrowRight => dom_mutation::step_range_value(node_mut, 1),
+              KeyAction::ArrowDown | KeyAction::ArrowLeft => dom_mutation::step_range_value(node_mut, -1),
+              KeyAction::Home => bounds
+                .map(|(min, _)| dom_mutation::set_range_value(node_mut, min))
+                .unwrap_or(false),
+              KeyAction::End => bounds
+                .map(|(_, max)| dom_mutation::set_range_value(node_mut, max))
+                .unwrap_or(false),
+              _ => false,
             };
-            let dom_changed = dom_mutation::step_range_value(node_mut, delta);
             changed |= dom_changed;
             if dom_changed {
               changed |= self.mark_user_validity(focused);
             }
           }
-        } else if index.node(focused).is_some_and(is_select)
+        } else if matches!(
+          key,
+          KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End
+        ) && index.node(focused).is_some_and(is_select)
           && !is_disabled_or_inert(&index, focused)
         {
           if matches!(key, KeyAction::Home | KeyAction::End)
