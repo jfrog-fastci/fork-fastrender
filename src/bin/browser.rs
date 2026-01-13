@@ -209,6 +209,43 @@ fn drain_mpsc_receiver_with_budget<T>(
   }
 }
 
+/// Coalesced scroll delta produced by an active overlay-scrollbar thumb drag.
+///
+/// CursorMoved events can arrive at very high frequency (hundreds/thousands/sec). During a thumb
+/// drag we coalesce these deltas and forward at most one `UiToWorker::Scroll` per rendered frame.
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy)]
+struct PendingScrollDrag {
+  tab_id: fastrender::ui::TabId,
+  delta_css: (f32, f32),
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl PendingScrollDrag {
+  fn push(pending: &mut Option<Self>, tab_id: fastrender::ui::TabId, delta_css: (f32, f32)) {
+    if delta_css.0 == 0.0 && delta_css.1 == 0.0 {
+      return;
+    }
+    match pending {
+      Some(existing) if existing.tab_id == tab_id => {
+        existing.delta_css.0 += delta_css.0;
+        existing.delta_css.1 += delta_css.1;
+      }
+      _ => {
+        *pending = Some(Self { tab_id, delta_css });
+      }
+    }
+  }
+
+  fn into_worker_msg(self) -> fastrender::ui::UiToWorker {
+    fastrender::ui::UiToWorker::Scroll {
+      tab_id: self.tab_id,
+      delta_css: self.delta_css,
+      pointer_css: None,
+    }
+  }
+}
+
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -4594,6 +4631,11 @@ struct App {
   overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars,
   overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState,
   scrollbar_drag: Option<ScrollbarDrag>,
+  /// Pending scroll delta produced by a scrollbar thumb drag.
+  ///
+  /// CursorMoved events can arrive at very high frequency; we coalesce them so the UI worker sees
+  /// at most one `UiToWorker::Scroll` per rendered frame.
+  pending_scroll_drag: Option<PendingScrollDrag>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
   viewport_cache_dpr: f32,
@@ -5208,6 +5250,7 @@ impl App {
       overlay_scrollbar_visibility:
         fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default(),
       scrollbar_drag: None,
+      pending_scroll_drag: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
@@ -5679,6 +5722,24 @@ impl App {
   fn send_worker_msg(&mut self, msg: fastrender::ui::UiToWorker) {
     use fastrender::ui::UiToWorker;
 
+    // If the active tab changes while a scrollbar thumb drag is in progress, drop any unflushed
+    // delta and cancel the drag. This avoids "leaking" drag scroll into the wrong tab.
+    if let UiToWorker::SetActiveTab { tab_id } = &msg {
+      if self
+        .scrollbar_drag
+        .is_some_and(|drag| drag.tab_id != *tab_id)
+      {
+        self.pending_scroll_drag = None;
+        self.cancel_scrollbar_drag();
+      }
+    }
+    if let UiToWorker::CloseTab { tab_id } = &msg {
+      if self.scrollbar_drag.is_some_and(|drag| drag.tab_id == *tab_id) {
+        self.pending_scroll_drag = None;
+        self.cancel_scrollbar_drag();
+      }
+    }
+
     // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
     // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, etc).
     if matches!(
@@ -5977,6 +6038,13 @@ impl App {
       self.send_worker_msg(fastrender::ui::UiToWorker::FilePickerCancel { tab_id: picker.tab_id });
     }
     self.close_file_picker();
+  }
+
+  fn flush_pending_scroll_drag(&mut self) {
+    let Some(pending) = self.pending_scroll_drag.take() else {
+      return;
+    };
+    self.send_worker_msg(pending.into_worker_msg());
   }
 
   fn flush_pending_pointer_move(&mut self) {
@@ -9661,11 +9729,7 @@ impl App {
               fastrender::ui::scrollbars::ScrollbarAxis::Vertical => (0.0, axis_delta_css),
               fastrender::ui::scrollbars::ScrollbarAxis::Horizontal => (axis_delta_css, 0.0),
             };
-            self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-              tab_id,
-              delta_css,
-              pointer_css: None,
-            });
+            PendingScrollDrag::push(&mut self.pending_scroll_drag, tab_id, delta_css);
           }
           self.window.request_redraw();
           return;
@@ -13027,6 +13091,8 @@ impl App {
     self.render_file_picker(&ctx);
     session_dirty |= self.render_context_menu(&ctx);
     self.sync_hover_after_tab_change(&ctx);
+    // Coalesce scrollbar thumb drag CursorMoved bursts to at most one scroll message per frame.
+    self.flush_pending_scroll_drag();
     // Coalesce pointer-move bursts to at most one message per rendered frame.
     self.flush_pending_pointer_move();
 
@@ -13414,6 +13480,38 @@ mod page_focus_restore_tests {
     assert!(!should_restore_page_focus_for_state(
       false, false, false, false, false, false, true
     ));
+  }
+}
+
+#[cfg(test)]
+mod pending_scroll_drag_tests {
+  use super::PendingScrollDrag;
+
+  #[test]
+  fn coalesces_multiple_deltas_into_one_scroll_message() {
+    let tab_id = fastrender::ui::TabId(1);
+    let mut pending: Option<PendingScrollDrag> = None;
+
+    PendingScrollDrag::push(&mut pending, tab_id, (0.0, 1.0));
+    PendingScrollDrag::push(&mut pending, tab_id, (0.0, 2.0));
+
+    let msg = pending
+      .take()
+      .expect("pending scroll drag should exist")
+      .into_worker_msg();
+
+    match msg {
+      fastrender::ui::UiToWorker::Scroll {
+        tab_id: msg_tab,
+        delta_css,
+        pointer_css,
+      } => {
+        assert_eq!(msg_tab, tab_id);
+        assert_eq!(pointer_css, None);
+        assert_eq!(delta_css, (0.0, 3.0));
+      }
+      other => panic!("expected UiToWorker::Scroll, got {other:?}"),
+    }
   }
 }
 
