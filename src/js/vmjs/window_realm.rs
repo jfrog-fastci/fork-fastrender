@@ -8230,35 +8230,48 @@ fn get_or_create_node_wrapper(
     }
   }
 
-  // Media element wrappers (`<video>`, `<audio>`) should inherit from `HTMLMediaElement.prototype`
-  // so scripts that probe readiness state (`readyState`, `networkState`, `seeking`, etc) see a
-  // spec-shaped surface even before FastRender implements playback.
+  // Media element wrappers (`<video>`, `<audio>`) should inherit from their concrete element
+  // prototype (`HTMLVideoElement.prototype` / `HTMLAudioElement.prototype`), which in turn inherits
+  // from `HTMLMediaElement.prototype`. This ensures feature-detection probes for media readiness
+  // state (`readyState`, `networkState`, `seeking`, etc) work without breaking `instanceof
+  // HTMLVideoElement` / `instanceof HTMLAudioElement`.
   if let Some(dom) = dom {
     if let NodeKind::Element {
       tag_name, namespace, ..
     } = &dom.node(node_id).kind
     {
       let is_html_ns = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
-      if is_html_ns
-        && (tag_name.eq_ignore_ascii_case("video") || tag_name.eq_ignore_ascii_case("audio"))
-      {
+      let ctor_name = if is_html_ns && tag_name.eq_ignore_ascii_case("video") {
+        Some("HTMLVideoElement")
+      } else if is_html_ns && tag_name.eq_ignore_ascii_case("audio") {
+        Some("HTMLAudioElement")
+      } else {
+        None
+      };
+      if let Some(ctor_name) = ctor_name {
         if let Some(global) = vm
           .user_data::<WindowRealmUserData>()
           .and_then(|data| data.window_obj())
         {
           scope.push_root(Value::Object(global))?;
-          let ctor_key = alloc_key(scope, "HTMLMediaElement")?;
-          if let Some(Value::Object(ctor_obj)) =
-            scope.heap().object_get_own_data_property_value(global, &ctor_key)?
-          {
-            scope.push_root(Value::Object(ctor_obj))?;
-            let proto_key = alloc_key(scope, "prototype")?;
-            if let Some(Value::Object(proto_obj)) =
-              scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
+
+          // Prefer the concrete interface (HTMLVideoElement/HTMLAudioElement). Fall back to
+          // HTMLMediaElement for robustness in case an older bindings layer only installed that.
+          for name in [ctor_name, "HTMLMediaElement"] {
+            let ctor_key = alloc_key(scope, name)?;
+            if let Some(Value::Object(ctor_obj)) =
+              scope.heap().object_get_own_data_property_value(global, &ctor_key)?
             {
-              scope
-                .heap_mut()
-                .object_set_prototype(wrapper, Some(proto_obj))?;
+              scope.push_root(Value::Object(ctor_obj))?;
+              let proto_key = alloc_key(scope, "prototype")?;
+              if let Some(Value::Object(proto_obj)) =
+                scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
+              {
+                scope
+                  .heap_mut()
+                  .object_set_prototype(wrapper, Some(proto_obj))?;
+                break;
+              }
             }
           }
         }
