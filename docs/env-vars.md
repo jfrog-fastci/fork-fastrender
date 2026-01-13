@@ -101,6 +101,11 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - CLI equivalent: `browser --download-dir /path/to/dir`.
 - `FASTR_BROWSER_BOOKMARKS_PATH=/path/to/bookmarks.json` – override the bookmarks persistence file path (JSON).
 - `FASTR_BROWSER_HISTORY_PATH=/path/to/history.json` – override the history persistence file path (JSON).
+- `FASTR_BROWSER_ALLOW_CRASH_URLS=0|1` – allow navigating to `crash://` URLs (testing hook).
+  - CLI equivalent: `browser --allow-crash-urls`.
+  - Note: this only allowlists the scheme for typed/explicit navigations; the UI worker still only
+    *crashes* on `crash://panic` when the internal crash hook is explicitly enabled (see
+    `FASTR_ENABLE_CRASH_URLS` below).
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
   - CLI equivalent: `browser --exit-immediately`.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end headless smoke test of the real `browser` entrypoint and UI↔worker messaging (for CI environments without a display/GPU). On success it prints `HEADLESS_SMOKE_OK` to stdout and exits without opening a window or initialising winit/wgpu.
@@ -112,6 +117,16 @@ These are consumed by the experimental desktop browser UI (`browser` binary; see
   - This is expected to be the same schema as the bookmarks file on disk (`BookmarkStore`), but legacy bookmark list schemas are still accepted and migrated.
 - `FASTR_TEST_BROWSER_HEADLESS_SMOKE_HISTORY_JSON=<json>` – **test-only** hook: override the global history store used by headless smoke mode with an explicit JSON value.
   - This is expected to be the same schema as the history file on disk (`PersistedGlobalHistoryStore`), but legacy list schemas are still accepted and migrated.
+
+### Browser UI crash URL hooks (test-only)
+
+These are internal crash-isolation test hooks used by browser/worker integration tests. They are
+**disabled by default** and should not be enabled in normal browsing sessions.
+
+- `FASTR_ENABLE_CRASH_URLS=0|1` – enable internal `crash://` crash triggers in the UI worker.
+  - When enabled, navigating to `crash://panic` (typed navigation) deliberately panics the UI
+    worker thread after emitting `WorkerToUi::NavigationStarted` so the browser can attribute the
+    crash to the correct tab.
 
 ### Performance / responsiveness logging (browser UI)
 

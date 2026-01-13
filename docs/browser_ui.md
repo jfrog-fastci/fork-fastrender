@@ -137,6 +137,13 @@ modes that exercise startup and UI↔worker wiring **without** creating a window
     contained/observable (future: renderer *process* crash isolation).
   - On success prints `HEADLESS_CRASH_SMOKE_OK` to stdout.
 
+For manual crash-recovery testing, the browser also supports a separate opt-in flag that allows the
+address bar / CLI to accept `crash://` URLs:
+
+- `browser --allow-crash-urls` / `FASTR_BROWSER_ALLOW_CRASH_URLS=1`
+  - This only allowlists the scheme for typed navigations. The worker crash triggers themselves are
+    still disabled unless explicitly enabled (see `FASTR_ENABLE_CRASH_URLS` in [env-vars.md](env-vars.md)).
+
 Run smoke modes under the repo’s resource-limit wrapper:
 
 ```bash
