@@ -34,8 +34,10 @@ impl AacDecoder {
     let spec = *decoded.spec();
     let sample_rate_hz = spec.rate;
     let channels = spec.channels.count() as u16;
+    let samples_per_channel = decoded.frames() as u64;
 
-    let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+    // Symphonia's `SampleBuffer` expects a frame count (per channel), not a raw sample count.
+    let mut sample_buf = SampleBuffer::<f32>::new(samples_per_channel, spec);
     sample_buf.copy_interleaved_ref(decoded);
     let samples = sample_buf.samples().to_vec();
 
@@ -43,18 +45,28 @@ impl AacDecoder {
       return Ok(None);
     }
 
-    let duration_ns = if packet.duration_ns != 0 {
-      packet.duration_ns
-    } else if sample_rate_hz == 0 || channels == 0 {
+    // Compute duration from the decoded output. For AAC-LC this is typically 1024 samples/channel,
+    // but we always trust the decoder output rather than container metadata for A/V sync.
+    let computed_duration_ns = if sample_rate_hz == 0 || samples_per_channel == 0 {
       0
     } else {
-      // Best-effort fallback when the container didn't provide an explicit duration.
-      let frames = samples.len() / channels as usize;
-      ((frames as u128)
+      ((u128::from(samples_per_channel))
         .saturating_mul(1_000_000_000u128)
-        .checked_div(sample_rate_hz as u128)
+        .checked_div(u128::from(sample_rate_hz))
         .unwrap_or(0)
         .min(u128::from(u64::MAX))) as u64
+    };
+
+    // Prefer the decoded duration over any demux-provided duration when they disagree.
+    // Fall back to the demux duration only if we cannot compute from decoded output.
+    let duration_ns = match (computed_duration_ns, packet.duration_ns) {
+      (0, demux_duration_ns) => demux_duration_ns,
+      (computed_duration_ns, demux_duration_ns)
+        if demux_duration_ns != 0 && demux_duration_ns != computed_duration_ns =>
+      {
+        computed_duration_ns
+      }
+      (computed_duration_ns, _) => computed_duration_ns,
     };
 
     Ok(Some(DecodedAudioChunk {
