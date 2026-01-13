@@ -312,6 +312,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
   // Fill timing and build PTS index vectors.
   let mut stts_iter = TableRunIter::new_stts(&stts);
   let mut ctts_iter = TableRunIter::new_ctts(&ctts);
+  let has_ctts = !ctts.is_empty();
 
   let mut dts_ticks: i64 = 0;
   let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
@@ -324,7 +325,13 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
       .next_u32()
       .ok_or(Mp4Error::Invalid("stts shorter than sample_count"))?;
 
-    let ctts_off = ctts_iter.next_i64().unwrap_or(0);
+    let ctts_off = if has_ctts {
+      ctts_iter
+        .next_i64()
+        .ok_or(Mp4Error::Invalid("ctts shorter than sample_count"))?
+    } else {
+      0
+    };
 
     sample.dts_ticks = dts_ticks.max(0) as u64;
     sample.duration_ticks = dur;
