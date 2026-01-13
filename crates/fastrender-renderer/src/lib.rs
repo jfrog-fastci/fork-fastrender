@@ -305,6 +305,27 @@ fn http_get_follow_redirects(
         .ok()
         .or_else(|| url.join(location).ok())
         .ok_or_else(|| format!("invalid redirect Location: {location:?}"))?;
+      // Keep this placeholder renderer deterministic/offline: do not follow redirects to
+      // non-localhost destinations.
+      if matches!(next_url.scheme(), "http" | "https")
+        && !matches!(
+          next_url.host_str(),
+          Some("127.0.0.1") | Some("localhost") | Some("::1")
+        )
+      {
+        return Err(format!("redirect to non-localhost URL blocked: {}", next_url.as_str()));
+      }
+      // For redirects to non-network schemes (`file:`, `about:`, `data:`), stop here and report the
+      // final URL without attempting a fetch. This lets the browser-side policy/CSP enforcement
+      // layer observe the real redirect destination.
+      if !matches!(next_url.scheme(), "http" | "https") {
+        return Ok(HttpResponse {
+          headers: Vec::new(),
+          body: Vec::new(),
+          final_url: next_url,
+        });
+      }
+
       url = next_url;
       continue;
     }
