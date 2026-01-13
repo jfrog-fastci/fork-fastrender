@@ -904,6 +904,18 @@ impl BrowserTabController {
       InteractionAction::NavigateRequest { request } => {
         return self.handle_navigation_request_action(request, NavigationReason::LinkClick);
       }
+      InteractionAction::TextDrop { target_dom_id, text } => {
+        // This controller does not currently dispatch JS drag/drop events. Preserve the legacy
+        // (pre-deferred-drop) behavior by applying the default insertion immediately.
+        let drop_changed = self
+          .document
+          .mutate_dom(|dom| self.interaction.apply_text_drop(dom, target_dom_id, &text));
+        if changed || drop_changed {
+          self.paint_if_needed()
+        } else {
+          Ok(Vec::new())
+        }
+      }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
         control,

@@ -4976,6 +4976,79 @@ impl BrowserRuntime {
           tab.needs_repaint = true;
         }
       }
+      InteractionAction::TextDrop { target_dom_id, text } => {
+        let mut drop_default_allowed = default_allowed;
+        if drop_default_allowed {
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            let target = js_dom_node_for_preorder_id_with_log(
+              &self.ui_tx,
+              tab_id,
+              self.debug_log_enabled,
+              js_tab,
+              target_dom_id,
+              mouseup_target_element_id.as_deref(),
+              &mut tab.js_dom_mapping_generation,
+              &mut tab.js_dom_mapping,
+              &mut tab.js_dom_mapping_miss_logged,
+              "drop",
+            );
+            if let Some(node_id) = target {
+              // `DragEvent` inherits from `MouseEvent` in the DOM. We don't currently model
+              // `dataTransfer`, but exposing a MouseEvent-like shape keeps common `preventDefault()`
+              // checks working.
+              let mouse = web_events::MouseEvent {
+                client_x: mouse_client_coord(pos_css.0),
+                client_y: mouse_client_coord(pos_css.1),
+                button: mouse_event_button(button),
+                buttons: pointer_buttons,
+                detail: click_count as i32,
+                ctrl_key: modifiers.ctrl(),
+                shift_key: modifiers.shift(),
+                alt_key: modifiers.alt(),
+                meta_key: modifiers.meta(),
+                related_target: None,
+              };
+              match js_tab.dispatch_mouse_event(
+                node_id,
+                "drop",
+                web_events::EventInit {
+                  bubbles: true,
+                  cancelable: true,
+                  composed: false,
+                },
+                mouse,
+              ) {
+                Ok(allowed) => drop_default_allowed = allowed,
+                Err(err) => {
+                  if self.debug_log_enabled {
+                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                      tab_id,
+                      line: format!("js drop event dispatch failed: {err}"),
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        if drop_default_allowed {
+          let apply_changed = if let Some(doc) = tab.document.as_mut() {
+            let engine = &mut tab.interaction;
+            doc.mutate_dom(|dom| engine.apply_text_drop(dom, target_dom_id, &text))
+          } else {
+            false
+          };
+          if dom_changed || scroll_changed || apply_changed {
+            tab.needs_repaint = true;
+          }
+          if apply_changed {
+            tab.cancel.bump_paint();
+          }
+        } else if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
       InteractionAction::OpenSelectDropdown {
         select_node_id,
         control,
