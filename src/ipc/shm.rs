@@ -247,14 +247,28 @@ mod linux {
   }
 
   fn set_cloexec(fd: RawFd) -> io::Result<()> {
-    // SAFETY: `fcntl` is an OS syscall.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags < 0 {
-      return Err(io::Error::last_os_error());
-    }
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-    if rc != 0 {
-      return Err(io::Error::last_os_error());
+    let flags = loop {
+      // SAFETY: `fcntl` is an OS syscall.
+      let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+      if flags >= 0 {
+        break flags;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
+    loop {
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+      if rc == 0 {
+        break;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
     }
     Ok(())
   }

@@ -109,25 +109,34 @@ impl SharedMemory {
     }
 
     let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
-    // SAFETY: `fcntl` is called with a valid fd and a correct seal bitmask argument.
-    let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) };
-    if rc != 0 {
-      return Err(SharedMemoryError::SealSizeFailed {
-        source: io::Error::last_os_error(),
-      });
+    loop {
+      // SAFETY: `fcntl` is called with a valid fd and a correct seal bitmask argument.
+      let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+      if rc == 0 {
+        break;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(SharedMemoryError::SealSizeFailed { source: err });
     }
 
     // Defense-in-depth: lock the seal set so an untrusted peer cannot persistently add
     // `F_SEAL_WRITE` (breaking reuse of pooled buffers). Treat this as best-effort so the required
     // size seals still take effect even when seal-locking is blocked by sandbox policy.
-    let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
-    if rc != 0 {
+    loop {
+      let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+      if rc == 0 {
+        break;
+      }
       let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
       match err.raw_os_error() {
-        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
-        _ => {
-          return Err(SharedMemoryError::SealLockFailed { source: err });
-        }
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => break,
+        _ => return Err(SharedMemoryError::SealLockFailed { source: err }),
       }
     }
 
@@ -161,13 +170,18 @@ impl SharedMemory {
       .map_err(|_| SharedMemoryError::SizeDoesNotFitInUsize { size: size_u64 })?;
 
     // Require size seals so the sender cannot truncate/extend after we map (SIGBUS footgun).
-    // SAFETY: `fcntl` is called with a valid fd and the correct command.
-    let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
-    if seals < 0 {
-      return Err(SharedMemoryError::GetSealsFailed {
-        source: io::Error::last_os_error(),
-      });
-    }
+    let seals = loop {
+      // SAFETY: `fcntl` is called with a valid fd and the correct command.
+      let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+      if seals >= 0 {
+        break seals;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(SharedMemoryError::GetSealsFailed { source: err });
+    };
     let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
     if (seals & required) != required {
       return Err(SharedMemoryError::MissingSeals {

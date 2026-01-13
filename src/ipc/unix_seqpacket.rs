@@ -320,21 +320,29 @@ impl UnixSeqpacket {
     if need_manual_cloexec {
       for fd in &received_fds {
         let raw = fd.as_raw_fd();
-        // SAFETY: `fcntl` is called with a valid file descriptor.
-        let current = unsafe { libc::fcntl(raw, libc::F_GETFD) };
-        if current < 0 {
-          return Err(FdPassingError::SetCloexecFailed {
-            fd: raw,
-            source: io::Error::last_os_error(),
-          });
-        }
-        // SAFETY: `fcntl` is called with a valid file descriptor.
-        let rc = unsafe { libc::fcntl(raw, libc::F_SETFD, current | libc::FD_CLOEXEC) };
-        if rc < 0 {
-          return Err(FdPassingError::SetCloexecFailed {
-            fd: raw,
-            source: io::Error::last_os_error(),
-          });
+        let current = loop {
+          // SAFETY: `fcntl` is called with a valid file descriptor.
+          let current = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+          if current >= 0 {
+            break current;
+          }
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          return Err(FdPassingError::SetCloexecFailed { fd: raw, source: err });
+        };
+        loop {
+          // SAFETY: `fcntl` is called with a valid file descriptor.
+          let rc = unsafe { libc::fcntl(raw, libc::F_SETFD, current | libc::FD_CLOEXEC) };
+          if rc >= 0 {
+            break;
+          }
+          let err = io::Error::last_os_error();
+          if err.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          return Err(FdPassingError::SetCloexecFailed { fd: raw, source: err });
         }
       }
     }

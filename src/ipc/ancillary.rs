@@ -313,14 +313,28 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     ));
   }
   if need_manual_cloexec {
-    let flags = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFD) };
-    if flags < 0 {
-      return Err(io::Error::last_os_error());
-    }
+    let flags = loop {
+      let flags = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFD) };
+      if flags >= 0 {
+        break flags;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    };
     if (flags & libc::FD_CLOEXEC) == 0 {
-      let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-      if rc < 0 {
-        return Err(io::Error::last_os_error());
+      loop {
+        let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        if rc >= 0 {
+          break;
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err);
       }
     }
   }
