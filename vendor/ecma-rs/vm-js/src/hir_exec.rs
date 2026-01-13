@@ -3558,12 +3558,114 @@ impl<'vm> HirEvaluator<'vm> {
   ) -> Result<Value, VmError> {
     match op {
       hir_js::AssignOp::Assign => {
-        // Root the RHS across assignment target evaluation in case it allocates and triggers GC.
-        let mut scope = scope.reborrow();
-        let v = self.eval_expr(&mut scope, body, value)?;
-        scope.push_root(v)?;
-        self.assign_to_pat(&mut scope, body, target, v)?;
-        Ok(v)
+        // Spec: evaluate the assignment target (including computed property keys / binding
+        // resolution) *before* evaluating the RHS expression.
+        let pat = self.get_pat(body, target)?;
+
+        match pat.kind {
+          hir_js::PatKind::Ident(name_id) => {
+            let name = self.resolve_name(name_id)?;
+            let mut scope = scope.reborrow();
+
+            let reference = self.env.resolve_binding_reference(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              name.as_str(),
+            )?;
+
+            let v = self.eval_expr(&mut scope, body, value)?;
+            scope.push_root(v)?;
+            self.env.set_resolved_binding(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut scope,
+              reference,
+              v,
+              self.strict,
+            )?;
+            Ok(v)
+          }
+          hir_js::PatKind::AssignTarget(expr_id) => {
+            let target_expr = self.get_expr(body, expr_id)?;
+            match &target_expr.kind {
+              hir_js::ExprKind::Ident(name_id) => {
+                let name = self.resolve_name(*name_id)?;
+                let mut scope = scope.reborrow();
+
+                let reference = self.env.resolve_binding_reference(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut scope,
+                  name.as_str(),
+                )?;
+
+                let v = self.eval_expr(&mut scope, body, value)?;
+                scope.push_root(v)?;
+                self.env.set_resolved_binding(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut scope,
+                  reference,
+                  v,
+                  self.strict,
+                )?;
+                Ok(v)
+              }
+              hir_js::ExprKind::Member(member) => {
+                if member.optional {
+                  // Optional chaining is never a valid assignment target; this should be rejected by
+                  // early errors before execution begins.
+                  return Err(VmError::InvariantViolation(
+                    "optional chaining used in assignment target",
+                  ));
+                }
+
+                let mut scope = scope.reborrow();
+
+                // Evaluate the property reference first (including computed property keys).
+                let base = self.eval_expr(&mut scope, body, member.object)?;
+                scope.push_root(base)?;
+
+                let key = self.eval_object_key(&mut scope, body, &member.property)?;
+                root_property_key(&mut scope, key)?;
+
+                // Evaluate RHS after LHS reference evaluation.
+                let v = self.eval_expr(&mut scope, body, value)?;
+                scope.push_root(v)?;
+
+                let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
+                scope.push_root(Value::Object(obj))?;
+
+                let receiver = base;
+                let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+                  self.vm,
+                  &mut scope,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  obj,
+                  key,
+                  v,
+                  receiver,
+                )?;
+                if !ok && self.strict {
+                  return Err(VmError::TypeError("Cannot assign to read-only property"));
+                }
+                Ok(v)
+              }
+              _ => Err(VmError::Unimplemented(
+                "assignment target (hir-js compiled path)",
+              )),
+            }
+          }
+          _ => Err(VmError::Unimplemented(
+            "assignment pattern (hir-js compiled path)",
+          )),
+        }
       }
       hir_js::AssignOp::AddAssign
       | hir_js::AssignOp::SubAssign
