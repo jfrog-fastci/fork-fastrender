@@ -450,3 +450,57 @@ fn regexp_prototype_source_escapes_slash_and_line_terminators() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn regexp_prototype_source_flags_and_bool_getters_special_case_prototype() {
+  let mut rt = new_runtime();
+
+  let v = rt
+    .exec_script(
+      r#"
+        Object.getOwnPropertyDescriptor(RegExp.prototype, 'source')
+          .get.call(RegExp.prototype) === '(?:)'
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let v = rt
+    .exec_script(
+      r#"
+        Object.getOwnPropertyDescriptor(RegExp.prototype, 'global')
+          .get.call(RegExp.prototype) === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let v = rt
+    .exec_script(
+      r#"
+        Object.getOwnPropertyDescriptor(RegExp.prototype, 'ignoreCase')
+          .get.call(RegExp.prototype) === undefined
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+
+  let v = rt
+    .exec_script(
+      r#"
+        Object.getOwnPropertyDescriptor(RegExp.prototype, 'flags')
+          .get.call(RegExp.prototype) === ''
+      "#,
+    )
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+}
+
+#[test]
+fn regexp_prototype_to_string_is_generic() {
+  let mut rt = new_runtime();
+  let v = rt
+    .exec_script(r#"RegExp.prototype.toString.call({ source: 'a', flags: 'g' }) === '/a/g'"#)
+    .unwrap();
+  assert_eq!(v, Value::Bool(true));
+}

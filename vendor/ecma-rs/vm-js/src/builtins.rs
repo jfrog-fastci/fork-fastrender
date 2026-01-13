@@ -13048,6 +13048,12 @@ pub fn regexp_prototype_source_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let obj = require_object(this)?;
+  let intr = require_intrinsics(vm)?;
+  if obj == intr.regexp_prototype() {
+    let s = scope.alloc_string("(?:)")?;
+    return Ok(Value::String(s));
+  }
   let rx = require_regexp_object(scope, this)?;
   let source = scope.heap().regexp_original_source(rx)?;
   if scope.heap().get_string(source)?.is_empty() {
@@ -13192,9 +13198,33 @@ pub fn regexp_prototype_source_get(
   Ok(Value::String(escaped_source))
 }
 
-/// `get RegExp.prototype.flags` (ECMA-262) (minimal).
-pub fn regexp_prototype_flags_get(
-  _vm: &mut Vm,
+fn regexp_prototype_flag_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  this: Value,
+  flag: u16,
+) -> Result<Value, VmError> {
+  let obj = require_object(this)?;
+  let intr = require_intrinsics(vm)?;
+  if obj == intr.regexp_prototype() {
+    return Ok(Value::Undefined);
+  }
+  let rx = require_regexp_object(scope, this)?;
+  let flags_s = scope.heap().regexp_original_flags(rx)?;
+  let flags = scope.heap().get_string(flags_s)?.as_code_units();
+  let mut contains = false;
+  for &u in flags {
+    if u == flag {
+      contains = true;
+      break;
+    }
+  }
+  Ok(Value::Bool(contains))
+}
+
+/// `get RegExp.prototype.global` (ECMA-262).
+pub fn regexp_prototype_global_get(
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -13202,10 +13232,190 @@ pub fn regexp_prototype_flags_get(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let rx = require_regexp_object(scope, this)?;
-  let flags = scope.heap().regexp_flags(rx)?;
-  let s = scope.alloc_string(&flags.to_canonical_string())?;
-  Ok(Value::String(s))
+  regexp_prototype_flag_get(vm, scope, this, b'g' as u16)
+}
+
+/// `get RegExp.prototype.ignoreCase` (ECMA-262).
+pub fn regexp_prototype_ignore_case_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b'i' as u16)
+}
+
+/// `get RegExp.prototype.multiline` (ECMA-262).
+pub fn regexp_prototype_multiline_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b'm' as u16)
+}
+
+/// `get RegExp.prototype.dotAll` (ECMA-262).
+pub fn regexp_prototype_dot_all_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b's' as u16)
+}
+
+/// `get RegExp.prototype.unicode` (ECMA-262).
+pub fn regexp_prototype_unicode_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b'u' as u16)
+}
+
+/// `get RegExp.prototype.unicodeSets` (ECMA-262).
+pub fn regexp_prototype_unicode_sets_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b'v' as u16)
+}
+
+/// `get RegExp.prototype.sticky` (ECMA-262).
+pub fn regexp_prototype_sticky_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  regexp_prototype_flag_get(vm, scope, this, b'y' as u16)
+}
+
+/// `get RegExp.prototype.flags` (ECMA-262).
+pub fn regexp_prototype_flags_get(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-get-regexp.prototype.flags
+  let mut scope = scope.reborrow();
+  let r = require_object(this)?;
+  scope.push_root(Value::Object(r))?;
+
+  // `vm-js` does not currently support `/d` (`hasIndices`).
+  let mut out: Vec<u16> = Vec::new();
+  // `RegExp.prototype.flags` is generic and uses `ToBoolean(Get(R, ...))`, so a user can monkeypatch
+  // `unicode`/`unicodeSets` to both be truthy; reserve space for both.
+  out.try_reserve_exact(7).map_err(|_| VmError::OutOfMemory)?;
+
+  let key = string_key(&mut scope, "global")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'g' as u16);
+  }
+  let key = string_key(&mut scope, "ignoreCase")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'i' as u16);
+  }
+  let key = string_key(&mut scope, "multiline")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'm' as u16);
+  }
+  let key = string_key(&mut scope, "dotAll")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b's' as u16);
+  }
+  let key = string_key(&mut scope, "unicode")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'u' as u16);
+  }
+  let key = string_key(&mut scope, "unicodeSets")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'v' as u16);
+  }
+  let key = string_key(&mut scope, "sticky")?;
+  let v = scope.get_with_host_and_hooks(vm, host, hooks, r, key, Value::Object(r))?;
+  if scope.heap().to_boolean(v)? {
+    out.push(b'y' as u16);
+  }
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
+/// `RegExp.prototype.toString()` (ECMA-262).
+pub fn regexp_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // https://tc39.es/ecma262/#sec-regexp.prototype.tostring
+  let mut scope = scope.reborrow();
+  let r = require_object(this)?;
+  scope.push_root(Value::Object(r))?;
+
+  let source_key = string_key(&mut scope, "source")?;
+  let source_val = scope.get_with_host_and_hooks(vm, host, hooks, r, source_key, Value::Object(r))?;
+  scope.push_root(source_val)?;
+  let source_s = scope.to_string(vm, host, hooks, source_val)?;
+  scope.push_root(Value::String(source_s))?;
+
+  let flags_key = string_key(&mut scope, "flags")?;
+  let flags_val = scope.get_with_host_and_hooks(vm, host, hooks, r, flags_key, Value::Object(r))?;
+  scope.push_root(flags_val)?;
+  let flags_s = scope.to_string(vm, host, hooks, flags_val)?;
+  scope.push_root(Value::String(flags_s))?;
+
+  let source_units = scope.heap().get_string(source_s)?.as_code_units();
+  let flags_units = scope.heap().get_string(flags_s)?.as_code_units();
+  let total_len = 2usize
+    .saturating_add(source_units.len())
+    .saturating_add(flags_units.len());
+
+  let mut out: Vec<u16> = Vec::new();
+  out.try_reserve_exact(total_len).map_err(|_| VmError::OutOfMemory)?;
+  out.push(b'/' as u16);
+  vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, source_units)?;
+  out.push(b'/' as u16);
+  vec_try_extend_from_slice_u16_with_ticks(vm, &mut out, flags_units)?;
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
 }
 
 /// `%RegExp.prototype%[@@match]` (ECMA-262) (partial).

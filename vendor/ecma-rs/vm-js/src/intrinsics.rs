@@ -1040,9 +1040,21 @@ impl Intrinsics {
     let string_iterator_next = vm.register_native_call(builtins::string_iterator_next)?;
     let regexp_prototype_exec = vm.register_native_call(builtins::regexp_prototype_exec)?;
     let regexp_prototype_test = vm.register_native_call(builtins::regexp_prototype_test)?;
+    let regexp_prototype_to_string = vm.register_native_call(builtins::regexp_prototype_to_string)?;
     let regexp_prototype_source_get =
       vm.register_native_call(builtins::regexp_prototype_source_get)?;
     let regexp_prototype_flags_get = vm.register_native_call(builtins::regexp_prototype_flags_get)?;
+    let regexp_prototype_global_get = vm.register_native_call(builtins::regexp_prototype_global_get)?;
+    let regexp_prototype_ignore_case_get =
+      vm.register_native_call(builtins::regexp_prototype_ignore_case_get)?;
+    let regexp_prototype_multiline_get =
+      vm.register_native_call(builtins::regexp_prototype_multiline_get)?;
+    let regexp_prototype_dot_all_get =
+      vm.register_native_call(builtins::regexp_prototype_dot_all_get)?;
+    let regexp_prototype_unicode_get = vm.register_native_call(builtins::regexp_prototype_unicode_get)?;
+    let regexp_prototype_unicode_sets_get =
+      vm.register_native_call(builtins::regexp_prototype_unicode_sets_get)?;
+    let regexp_prototype_sticky_get = vm.register_native_call(builtins::regexp_prototype_sticky_get)?;
     let regexp_prototype_symbol_match =
       vm.register_native_call(builtins::regexp_prototype_symbol_match)?;
     let regexp_prototype_symbol_search =
@@ -3148,6 +3160,23 @@ impl Intrinsics {
       )?;
     }
 
+    // RegExp.prototype.toString
+    {
+      let to_string_s = scope.alloc_string("toString")?;
+      scope.push_root(Value::String(to_string_s))?;
+      let key = PropertyKey::from_string(to_string_s);
+      let func = scope.alloc_native_function(regexp_prototype_to_string, None, to_string_s, 0)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(
+        regexp_prototype,
+        key,
+        data_desc(Value::Object(func), true, false, true),
+      )?;
+    }
+
     // RegExp.prototype.source
     {
       let key_s = scope.alloc_string("source")?;
@@ -3183,6 +3212,197 @@ impl Intrinsics {
 
       let get_name = scope.alloc_string("get flags")?;
       let get = scope.alloc_native_function(regexp_prototype_flags_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.global
+    {
+      let key_s = scope.alloc_string("global")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get global")?;
+      let get = scope.alloc_native_function(regexp_prototype_global_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.ignoreCase
+    {
+      let key_s = scope.alloc_string("ignoreCase")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get ignoreCase")?;
+      let get =
+        scope.alloc_native_function(regexp_prototype_ignore_case_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.multiline
+    {
+      let key_s = scope.alloc_string("multiline")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get multiline")?;
+      let get = scope.alloc_native_function(regexp_prototype_multiline_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.dotAll
+    {
+      let key_s = scope.alloc_string("dotAll")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get dotAll")?;
+      let get = scope.alloc_native_function(regexp_prototype_dot_all_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.unicode
+    {
+      let key_s = scope.alloc_string("unicode")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get unicode")?;
+      let get = scope.alloc_native_function(regexp_prototype_unicode_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.unicodeSets
+    {
+      let key_s = scope.alloc_string("unicodeSets")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get unicodeSets")?;
+      let get =
+        scope.alloc_native_function(regexp_prototype_unicode_sets_get, None, get_name, 0)?;
+      scope.push_root(Value::Object(get))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get, Some(function_prototype))?;
+
+      scope.define_property(
+        regexp_prototype,
+        key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(get),
+            set: Value::Undefined,
+          },
+        },
+      )?;
+    }
+
+    // RegExp.prototype.sticky
+    {
+      let key_s = scope.alloc_string("sticky")?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+
+      let get_name = scope.alloc_string("get sticky")?;
+      let get = scope.alloc_native_function(regexp_prototype_sticky_get, None, get_name, 0)?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
