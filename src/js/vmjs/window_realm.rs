@@ -38276,6 +38276,34 @@ fn init_window_globals(
     let html_script_element_ctor =
       install_illegal_dom_ctor(&mut scope, "HTMLScriptElement", html_script_element_proto)?;
 
+    // HTMLMediaElement constructor + constants.
+    //
+    // Many sites (and some libraries) probe these numeric constants for feature detection even when
+    // video/audio elements are not actively used.
+    let html_media_element_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(html_media_element_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(html_media_element_proto, Some(html_element_proto))?;
+    let html_media_element_ctor =
+      install_illegal_dom_ctor(&mut scope, "HTMLMediaElement", html_media_element_proto)?;
+    for (name, value) in [
+      ("NETWORK_EMPTY", 0.0),
+      ("NETWORK_IDLE", 1.0),
+      ("NETWORK_LOADING", 2.0),
+      ("NETWORK_NO_SOURCE", 3.0),
+      ("HAVE_NOTHING", 0.0),
+      ("HAVE_METADATA", 1.0),
+      ("HAVE_CURRENT_DATA", 2.0),
+      ("HAVE_FUTURE_DATA", 3.0),
+      ("HAVE_ENOUGH_DATA", 4.0),
+    ] {
+      let key = alloc_key(&mut scope, name)?;
+      let desc = const_desc(Value::Number(value));
+      scope.define_property(html_media_element_ctor, key, desc.clone())?;
+      scope.define_property(html_media_element_proto, key, desc)?;
+    }
+
     // Document.doctype (readonly DocumentType?)
     let doctype_get_call_id = vm.register_native_call(document_doctype_get_native)?;
     let doctype_get_name = scope.alloc_string("get doctype")?;
@@ -38382,6 +38410,7 @@ fn init_window_globals(
       .heap_mut()
       .object_set_prototype(html_element_ctor, Some(element_ctor))?;
     for ctor in [
+      html_media_element_ctor,
       html_input_element_ctor,
       html_select_element_ctor,
       html_text_area_element_ctor,
@@ -51501,6 +51530,37 @@ mod tests {
 \n\
         // Spot-check inherited static constants via the interface object prototype chain.\n\
         if (Element.ELEMENT_NODE !== 1) return 'Element.ELEMENT_NODE';\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_constants_are_exposed() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\n\
+        if (typeof HTMLMediaElement !== 'function') return 'HTMLMediaElement:typeof:' + (typeof HTMLMediaElement);\n\
+        if (HTMLMediaElement.NETWORK_EMPTY !== 0) return 'NETWORK_EMPTY';\n\
+        if (HTMLMediaElement.NETWORK_IDLE !== 1) return 'NETWORK_IDLE';\n\
+        if (HTMLMediaElement.NETWORK_LOADING !== 2) return 'NETWORK_LOADING';\n\
+        if (HTMLMediaElement.NETWORK_NO_SOURCE !== 3) return 'NETWORK_NO_SOURCE';\n\
+        if (HTMLMediaElement.HAVE_NOTHING !== 0) return 'HAVE_NOTHING';\n\
+        if (HTMLMediaElement.HAVE_METADATA !== 1) return 'HAVE_METADATA';\n\
+        if (HTMLMediaElement.HAVE_CURRENT_DATA !== 2) return 'HAVE_CURRENT_DATA';\n\
+        if (HTMLMediaElement.HAVE_FUTURE_DATA !== 3) return 'HAVE_FUTURE_DATA';\n\
+        if (HTMLMediaElement.HAVE_ENOUGH_DATA !== 4) return 'HAVE_ENOUGH_DATA';\n\
+\n\
+        // WebIDL constants should be readonly/enumerable/non-configurable.\n\
+        const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement, 'NETWORK_EMPTY');\n\
+        if (!desc || desc.writable !== false || desc.enumerable !== true || desc.configurable !== false) return 'desc';\n\
+        const protoDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'NETWORK_EMPTY');\n\
+        if (!protoDesc || protoDesc.writable !== false || protoDesc.enumerable !== true || protoDesc.configurable !== false) return 'protoDesc';\n\
+        if (HTMLMediaElement.prototype.NETWORK_EMPTY !== 0) return 'prototype.NETWORK_EMPTY';\n\
+        if (HTMLMediaElement.prototype.HAVE_ENOUGH_DATA !== 4) return 'prototype.HAVE_ENOUGH_DATA';\n\
         return true;\n\
       })()",
     )?;
