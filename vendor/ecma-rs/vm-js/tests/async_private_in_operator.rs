@@ -27,9 +27,11 @@ fn async_private_in_operator_await_rhs_true_false() -> Result<(), VmError> {
           #x;
           async hasAsync(o) { return #x in (await Promise.resolve(o)); }
         }
+        class D { #x; }
         const c = new C();
         return (await c.hasAsync(c)) &&
           (await c.hasAsync(new C())) &&
+          !(await c.hasAsync(new D())) &&
           !(await c.hasAsync({})) &&
           // Brand checks must not consult the prototype chain.
           !(await c.hasAsync(Object.create(c)));

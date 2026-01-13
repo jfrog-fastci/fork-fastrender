@@ -7749,23 +7749,34 @@ impl<'a> Evaluator<'a> {
       // - private instance methods (which are stored per-instance so private access does not consult
       //   the prototype chain).
       let mut instance_field_count: usize = 0;
+      let mut private_instance_method_count: usize = 0;
       for member in members {
         if member.stx.static_ {
           continue;
         }
-        let is_private_key = matches!(
-          &member.stx.key,
-          ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
-        );
-        let is_slot_backed = matches!(&member.stx.val, ClassOrObjVal::Prop(_))
-          || (is_private_key && matches!(&member.stx.val, ClassOrObjVal::Method(_)));
-        if !is_slot_backed {
-          continue;
+        match &member.stx.val {
+          ClassOrObjVal::Prop(_) => {
+            instance_field_count = instance_field_count
+              .checked_add(1)
+              .ok_or(VmError::OutOfMemory)?;
+          }
+          ClassOrObjVal::Method(_) => {
+            let is_private_key = matches!(
+              &member.stx.key,
+              ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
+            );
+            if is_private_key {
+              private_instance_method_count = private_instance_method_count
+                .checked_add(1)
+                .ok_or(VmError::OutOfMemory)?;
+            }
+          }
+          _ => {}
         }
-        instance_field_count = instance_field_count
-          .checked_add(1)
-          .ok_or(VmError::OutOfMemory)?;
       }
+      let instance_slot_pair_count = instance_field_count
+        .checked_add(private_instance_method_count)
+        .ok_or(VmError::OutOfMemory)?;
 
     // Find an explicit `constructor(...) { ... }` method, if present.
     let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
@@ -7891,7 +7902,7 @@ impl<'a> Evaluator<'a> {
         ctor_length,
         ctor_body_func,
         super_value,
-        instance_field_count,
+        instance_slot_pair_count,
       )?;
 
       // ECMA-262 `NamedEvaluation` assigns inferred names to anonymous class expressions in specific
@@ -8076,7 +8087,10 @@ impl<'a> Evaluator<'a> {
         Block(&'a [Node<Stmt>]),
       }
       let mut static_inits: Vec<StaticInitElement<'_>> = Vec::new();
+      let mut instance_private_method_idx: usize = 0;
       let mut instance_field_idx: usize = 0;
+      let instance_field_slot_start = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+        .saturating_add(private_instance_method_count.saturating_mul(2));
       for member in members {
         self.tick()?;
 
@@ -8293,7 +8307,7 @@ impl<'a> Evaluator<'a> {
                 ));
               };
               let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
-                .saturating_add(instance_field_idx.saturating_mul(2));
+                .saturating_add(instance_private_method_idx.saturating_mul(2));
               member_scope
                 .heap_mut()
                 .set_function_native_slot(func_obj, slot_base, Value::Symbol(sym))?;
@@ -8302,22 +8316,23 @@ impl<'a> Evaluator<'a> {
                 slot_base.saturating_add(1),
                 Value::Object(method_func_obj),
               )?;
-              instance_field_idx = instance_field_idx
+              instance_private_method_idx = instance_private_method_idx
                 .checked_add(1)
                 .ok_or(VmError::OutOfMemory)?;
-            } else {
-              member_scope.define_property_or_throw(
-                target_obj,
-                key,
-                PropertyDescriptorPatch {
-                  value: Some(Value::Object(method_func_obj)),
-                  writable: Some(!is_private_key),
-                  enumerable: Some(false),
-                  configurable: Some(!is_private_key),
-                  ..Default::default()
-                },
-              )?;
+              continue;
             }
+
+            member_scope.define_property_or_throw(
+              target_obj,
+              key,
+              PropertyDescriptorPatch {
+                value: Some(Value::Object(method_func_obj)),
+                writable: Some(!is_private_key),
+                enumerable: Some(false),
+                configurable: Some(!is_private_key),
+                ..Default::default()
+              },
+            )?;
           }
           ClassOrObjVal::Getter(getter) => {
             let func_node = &getter.stx.func;
@@ -8502,8 +8517,11 @@ impl<'a> Evaluator<'a> {
           ClassOrObjVal::Prop(initializer_expr) => {
             // Class fields (public and private).
             //
-            // - instance fields are stored as `(key, initializer)` pairs in the class constructor's
-            //   native slots, and are initialized per-instance during `[[Construct]]`.
+            // - instance fields (public and private) are stored as `(key, initializer)` pairs in the
+            //   class constructor's native slots, and are initialized per-instance during
+            //   `[[Construct]]`.
+            // - private instance methods are also stored in these native slots so they can be
+            //   installed as hidden own-properties before field initializers run.
             // - static fields are initialized during the post-definition initialization pass (after
             //   all methods have been defined), in source order relative to static blocks.
             //
@@ -8645,7 +8663,7 @@ impl<'a> Evaluator<'a> {
               });
             } else {
               // Instance field: store as `(key, initializer)` in the class constructor's native slots.
-              let slot_base = crate::class_fields::CLASS_CTOR_SLOT_INSTANCE_FIELDS_START
+              let slot_base = instance_field_slot_start
                 .saturating_add(instance_field_idx.saturating_mul(2));
               member_scope
                 .heap_mut()
@@ -36081,7 +36099,9 @@ fn gen_apply_update_to_reference(
   let mut update_scope = scope.reborrow();
   evaluator.root_reference(&mut update_scope, reference)?;
 
-  let old_value = evaluator.get_value_from_reference(&mut update_scope, reference)?;
+  let old_value = evaluator
+    .get_value_from_reference(&mut update_scope, reference)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut update_scope, err))?;
   update_scope.push_root(old_value)?;
 
   let old_numeric = evaluator.to_numeric(&mut update_scope, old_value)?;
@@ -36102,7 +36122,9 @@ fn gen_apply_update_to_reference(
   };
 
   update_scope.push_root(new_value)?;
-  evaluator.put_value_to_reference(&mut update_scope, reference, new_value)?;
+  evaluator
+    .put_value_to_reference(&mut update_scope, reference, new_value)
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut update_scope, err))?;
 
   if prefix {
     Ok(new_value)
