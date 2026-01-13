@@ -772,19 +772,16 @@ fn p1_document_write_limit_per_call_bytes_exceeded_throws_rangeerror_and_parsing
   )?;
 
   h.register_html_source(
-    r#"<!doctype html><body>
-      <script>
-        document.write('12345');
-      </script>
-      <script>
-        console.log("after");
-        let found = false;
-        for (const n of document.body.childNodes) {
-          if (n.nodeType === 3 && n.nodeValue === "12345") found = true;
-        }
-        console.log("wrote:" + found);
-      </script>
-    </body>"#,
+    r#"<!doctype html><body><script>document.write('12345');</script><script>
+      console.log("after");
+      let found = false;
+      for (const n of document.body.childNodes) {
+        // Avoid false negatives from whitespace text-node coalescing: if the write is mistakenly
+        // inserted, it may merge with adjacent whitespace into a single text node.
+        if (n.nodeType === 3 && n.nodeValue.includes("12345")) found = true;
+      }
+      console.log("wrote:" + found);
+    </script><div id="tail"></div></body>"#,
   );
 
   h.navigate()?;
@@ -803,6 +800,10 @@ fn p1_document_write_limit_per_call_bytes_exceeded_throws_rangeerror_and_parsing
     exc.contains("RangeError"),
     "expected document.write limit to surface as a RangeError, got: {exc:?}"
   );
+  assert!(
+    h.tab.dom().get_element_by_id("tail").is_some(),
+    "expected parser to continue and parse trailing markup after document.write byte limit error"
+  );
   Ok(())
 }
 
@@ -818,17 +819,18 @@ fn p1_document_write_limit_max_calls_exceeded_throws_rangeerror_and_is_determini
   )?;
 
   h.register_html_source(
-    r#"<!doctype html><body>
-      <script>
-        document.write('<div id="a"></div>');
-        document.write('<div id="b"></div>');
-      </script>
-      <script>
-        console.log("after");
-        console.log("a:" + (document.getElementById("a") !== null));
-        console.log("b:" + (document.getElementById("b") !== null));
-      </script>
-    </body>"#,
+    r#"<!doctype html><body><script>document.write('a');document.write('b');</script><script>
+      console.log("after");
+      let foundA = false;
+      let foundB = false;
+      for (const n of document.body.childNodes) {
+        if (n.nodeType !== 3) continue;
+        if (n.nodeValue.includes("a")) foundA = true;
+        if (n.nodeValue.includes("b")) foundB = true;
+      }
+      console.log("a:" + foundA);
+      console.log("b:" + foundB);
+    </script><div id="tail2"></div></body>"#,
   );
 
   h.navigate()?;
@@ -852,12 +854,8 @@ fn p1_document_write_limit_max_calls_exceeded_throws_rangeerror_and_is_determini
     "expected document.write limit to surface as a RangeError, got: {exc:?}"
   );
   assert!(
-    h.tab.dom().get_element_by_id("a").is_some(),
-    "expected first document.write call to insert element a"
-  );
-  assert!(
-    h.tab.dom().get_element_by_id("b").is_none(),
-    "expected second document.write call to be a no-op after exceeding call limit"
+    h.tab.dom().get_element_by_id("tail2").is_some(),
+    "expected parser to continue and parse trailing markup after document.write call count error"
   );
   Ok(())
 }
