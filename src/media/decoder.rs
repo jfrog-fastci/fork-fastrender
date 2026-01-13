@@ -3,7 +3,6 @@ use super::{
   MediaTrackInfo,
 };
 use openh264::formats::YUVSource;
-use std::ffi::CStr;
 
 /// A video decoder consumes demuxed packets and outputs 0..N decoded frames.
 pub trait VideoDecoder: Send {
@@ -41,7 +40,9 @@ pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Audio
       )?;
       Ok(Box::new(decoder))
     }
-    MediaCodec::Opus => Ok(Box::new(OpusDecoder::new(&track.codec_private)?)),
+    MediaCodec::Opus => Ok(Box::new(super::codecs::opus::OpusDecoder::new(
+      &track.codec_private,
+    )?)),
     _ => Err(MediaError::Unsupported("unsupported audio codec")),
   }
 }
@@ -49,6 +50,13 @@ pub fn create_audio_decoder(track: &MediaTrackInfo) -> MediaResult<Box<dyn Audio
 impl AudioDecoder for super::codecs::aac::AacDecoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedAudioChunk>> {
     let decoded = super::codecs::aac::AacDecoder::decode(self, packet)?;
+    Ok(decoded.into_iter().collect())
+  }
+}
+
+impl AudioDecoder for super::codecs::opus::OpusDecoder {
+  fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedAudioChunk>> {
+    let decoded = super::codecs::opus::OpusDecoder::decode(self, packet)?;
     Ok(decoded.into_iter().collect())
   }
 }
@@ -255,120 +263,5 @@ impl VideoDecoder for Vp9Decoder {
       height: self.height,
       rgba: vec![0u8; rgba_len],
     }])
-  }
-}
-
-// ============================================================================
-// Opus (libopus via audiopus_sys)
-// ============================================================================
-
-pub struct OpusDecoder {
-  st: *mut audiopus_sys::OpusDecoder,
-  channels: u16,
-}
-
-unsafe impl Send for OpusDecoder {}
-
-impl Drop for OpusDecoder {
-  fn drop(&mut self) {
-    unsafe {
-      if !self.st.is_null() {
-        audiopus_sys::opus_decoder_destroy(self.st);
-      }
-    }
-  }
-}
-
-impl OpusDecoder {
-  pub fn new(opus_head: &[u8]) -> MediaResult<Self> {
-    let channels = parse_opus_channels(opus_head)?;
-
-    let mut err = 0i32;
-    let st = unsafe { audiopus_sys::opus_decoder_create(48_000, channels as i32, &mut err) };
-    if st.is_null() || err != audiopus_sys::OPUS_OK {
-      return Err(MediaError::Decode(format!(
-        "opus: opus_decoder_create failed: {}",
-        opus_strerror(err)
-      )));
-    }
-
-    Ok(Self { st, channels })
-  }
-}
-
-impl AudioDecoder for OpusDecoder {
-  fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedAudioChunk>> {
-    const MAX_FRAME_SIZE: usize = 5760; // 120ms @ 48kHz
-    let data = packet.as_slice();
-    let ch = self.channels as usize;
-    let mut out = vec![0f32; MAX_FRAME_SIZE * ch];
-
-    let n = unsafe {
-      audiopus_sys::opus_decode_float(
-        self.st,
-        data.as_ptr(),
-        data.len() as i32,
-        out.as_mut_ptr(),
-        MAX_FRAME_SIZE as i32,
-        0,
-      )
-    };
-
-    if n < 0 {
-      return Err(MediaError::Decode(format!(
-        "opus: decode failed: {}",
-        opus_strerror(n)
-      )));
-    }
-
-    let frames = n as usize;
-    out.truncate(frames * ch);
-
-    if out.is_empty() {
-      return Ok(vec![]);
-    }
-
-    let duration_ns = if packet.duration_ns != 0 {
-      packet.duration_ns
-    } else {
-      // Best-effort fallback when the container didn't provide an explicit duration.
-      let frames = frames as u128;
-      ((frames
-        .saturating_mul(1_000_000_000u128)
-        .checked_div(48_000u128)
-        .unwrap_or(0))
-        .min(u128::from(u64::MAX))) as u64
-    };
-
-    Ok(vec![DecodedAudioChunk {
-      pts_ns: packet.pts_ns,
-      duration_ns,
-      sample_rate_hz: 48_000,
-      channels: self.channels,
-      samples: out,
-    }])
-  }
-}
-
-fn parse_opus_channels(opus_head: &[u8]) -> MediaResult<u16> {
-  const OPUS_HEAD_MAGIC: &[u8] = b"OpusHead";
-  if opus_head.len() < 10 || &opus_head[..8] != OPUS_HEAD_MAGIC {
-    return Err(MediaError::Decode("invalid OpusHead (missing magic)".into()));
-  }
-  let channels = opus_head[9];
-  if channels == 0 {
-    return Err(MediaError::Decode("invalid OpusHead (channels=0)".into()));
-  }
-  Ok(u16::from(channels))
-}
-
-fn opus_strerror(code: i32) -> String {
-  unsafe {
-    let ptr = audiopus_sys::opus_strerror(code);
-    if ptr.is_null() {
-      format!("opus error {code}")
-    } else {
-      CStr::from_ptr(ptr).to_string_lossy().into_owned()
-    }
   }
 }
