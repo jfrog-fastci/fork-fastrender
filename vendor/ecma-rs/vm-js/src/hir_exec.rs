@@ -3505,6 +3505,7 @@ impl<'vm> HirEvaluator<'vm> {
 
           let func_obj =
             self.alloc_user_function_object(&mut scope, *getter_body, /* name */ "", /* is_arrow */ false)?;
+          crate::function_properties::set_function_name(&mut scope, func_obj, key, Some("get"))?;
           scope.push_root(Value::Object(func_obj))?;
 
           scope.define_property(
@@ -3534,6 +3535,7 @@ impl<'vm> HirEvaluator<'vm> {
 
           let func_obj =
             self.alloc_user_function_object(&mut scope, *setter_body, /* name */ "", /* is_arrow */ false)?;
+          crate::function_properties::set_function_name(&mut scope, func_obj, key, Some("set"))?;
           scope.push_root(Value::Object(func_obj))?;
 
           scope.define_property(
