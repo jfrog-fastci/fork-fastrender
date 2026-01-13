@@ -24,6 +24,7 @@
 //! Callers that want "drop-oldest" behavior should explicitly drain/clear the queue before pushing
 //! newer audio (e.g. on seek) or implement a higher-level policy.
 
+use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::cmp;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -57,6 +58,88 @@ pub fn pcm_f32_queue(
   )
 }
 
+/// A bounded PCM `f32` queue suitable for:
+/// - multi-threaded producers (serialized via a small mutex), and
+/// - a single real-time consumer (no locks/allocations on pop).
+///
+/// This is essentially the same underlying queue as [`pcm_f32_queue`], but exposes a single shared
+/// handle (`&self` methods) which is often more ergonomic to embed inside backend sink structs.
+pub struct PcmF32Queue {
+  inner: Arc<PcmF32QueueInner>,
+  push_lock: Mutex<()>,
+}
+
+impl PcmF32Queue {
+  /// Create a new bounded queue with capacity measured in **frames**.
+  #[must_use]
+  pub fn new(channels: usize, sample_rate_hz: u32, max_buffered_frames: usize) -> Self {
+    Self {
+      inner: Arc::new(PcmF32QueueInner::new(channels, sample_rate_hz, max_buffered_frames)),
+      push_lock: Mutex::new(()),
+    }
+  }
+
+  /// Push interleaved PCM samples.
+  ///
+  /// Returns the number of **samples** accepted (the remainder was dropped).
+  pub fn push(&self, samples: &[f32], start_pts: Duration) -> usize {
+    let _guard = self.push_lock.lock();
+    self.inner.push_inner(samples, Some(start_pts))
+  }
+
+  /// Push samples without updating the PTS base.
+  ///
+  /// Returns the number of **samples** accepted.
+  pub fn push_without_pts(&self, samples: &[f32]) -> usize {
+    let _guard = self.push_lock.lock();
+    self.inner.push_inner(samples, None)
+  }
+
+  /// Pop samples into `out`.
+  ///
+  /// Returns the number of **samples** written.
+  pub fn pop_into(&self, out: &mut [f32]) -> usize {
+    self.inner.pop_into_inner(out)
+  }
+
+  /// Pop samples and add them into `dst` after applying `gain`.
+  ///
+  /// Returns the number of **samples** consumed.
+  pub fn pop_add_into(&self, dst: &mut [f32], gain: f32) -> usize {
+    self.inner.pop_add_into_inner(dst, gain)
+  }
+
+  /// Returns the number of frames currently buffered.
+  pub fn buffered_frames(&self) -> usize {
+    self.inner.buffered_frames()
+  }
+
+  /// Returns the duration currently buffered, based on the configured sample rate.
+  pub fn buffered_duration(&self) -> Duration {
+    self.inner.buffered_duration()
+  }
+
+  /// Returns the PTS of the next frame to be popped, if available.
+  pub fn head_pts(&self) -> Option<Duration> {
+    self.inner.head_pts()
+  }
+
+  /// Maximum number of frames this queue can buffer.
+  pub fn capacity_frames(&self) -> usize {
+    self.inner.capacity_frames()
+  }
+
+  /// Channel count (interleaving factor).
+  pub fn channels(&self) -> usize {
+    self.inner.channels
+  }
+
+  /// Sample rate in Hz.
+  pub fn sample_rate_hz(&self) -> u32 {
+    self.inner.sample_rate_hz
+  }
+}
+
 /// Producer-side handle for a bounded PCM `f32` queue.
 pub struct PcmF32QueueProducer {
   inner: Arc<PcmF32QueueInner>,
@@ -71,13 +154,17 @@ impl PcmF32QueueProducer {
   ///
   /// If the queue does not have enough free space, the input is truncated and the remainder is
   /// dropped (see module-level docs for the drop policy).
-  pub fn push(&mut self, samples: &[f32], start_pts: Duration) {
-    self.inner.push_inner(samples, Some(start_pts));
+  ///
+  /// Returns the number of **samples** accepted.
+  pub fn push(&mut self, samples: &[f32], start_pts: Duration) -> usize {
+    self.inner.push_inner(samples, Some(start_pts))
   }
 
   /// Push samples without updating the queue's PTS base.
-  pub fn push_without_pts(&mut self, samples: &[f32]) {
-    self.inner.push_inner(samples, None);
+  ///
+  /// Returns the number of **samples** accepted.
+  pub fn push_without_pts(&mut self, samples: &[f32]) -> usize {
+    self.inner.push_inner(samples, None)
   }
 
   /// Returns the number of frames currently buffered.
@@ -122,6 +209,13 @@ impl PcmF32QueueConsumer {
     self.inner.pop_into_inner(out)
   }
 
+  /// Pop samples and add them into `dst` after applying `gain`.
+  ///
+  /// Returns the number of **samples** consumed.
+  pub fn pop_add_into(&mut self, dst: &mut [f32], gain: f32) -> usize {
+    self.inner.pop_add_into_inner(dst, gain)
+  }
+
   /// Returns the number of frames currently buffered.
   pub fn buffered_frames(&self) -> usize {
     self.inner.buffered_frames()
@@ -162,13 +256,15 @@ struct PcmF32QueueInner {
 
 impl PcmF32QueueInner {
   fn new(channels: usize, sample_rate_hz: u32, max_buffered_frames: usize) -> Self {
-    assert!(channels > 0, "channels must be > 0");
-    assert!(sample_rate_hz > 0, "sample_rate_hz must be > 0");
-    assert!(max_buffered_frames > 0, "max_buffered_frames must be > 0");
+    // Avoid panicking on invalid configuration; treat zero values as 1 so we never divide/mod by 0.
+    let channels = channels.max(1);
+    let sample_rate_hz = sample_rate_hz.max(1);
+    let max_buffered_frames = max_buffered_frames.max(1);
 
-    let len_samples = max_buffered_frames
-      .checked_mul(channels)
-      .expect("buffer length overflow");
+    // Prevent `frames * channels` overflow.
+    let max_frames_by_mul = (usize::MAX / channels).max(1);
+    let max_buffered_frames = cmp::min(max_buffered_frames, max_frames_by_mul);
+    let len_samples = max_buffered_frames * channels;
 
     let mut buf = Vec::with_capacity(len_samples);
     buf.resize_with(len_samples, || UnsafeCell::new(0.0));
@@ -207,13 +303,18 @@ impl PcmF32QueueInner {
   }
 
   fn head_pts(&self) -> Option<Duration> {
+    let read_frame = self.read_frame.load(Ordering::Acquire);
+    let write_frame = self.write_frame.load(Ordering::Acquire);
+    if write_frame == read_frame {
+      return None;
+    }
+
     let base_ns = self.pts_base_ns.load(Ordering::Acquire);
     if base_ns == NO_PTS_NS {
       return None;
     }
 
     let base_frame = self.pts_base_frame.load(Ordering::Acquire);
-    let read_frame = self.read_frame.load(Ordering::Acquire);
     let delta_frames = read_frame.saturating_sub(base_frame);
 
     let delta_ns = (delta_frames as u128)
@@ -229,11 +330,11 @@ impl PcmF32QueueInner {
     self.buf.as_ptr().cast::<f32>() as *mut f32
   }
 
-  fn push_inner(&self, samples: &[f32], start_pts: Option<Duration>) {
+  fn push_inner(&self, samples: &[f32], start_pts: Option<Duration>) -> usize {
     let channels = self.channels;
     let input_frames = (samples.len() / channels) as u64;
     if input_frames == 0 {
-      return;
+      return 0;
     }
 
     let read = self.read_frame.load(Ordering::Acquire);
@@ -251,7 +352,7 @@ impl PcmF32QueueInner {
     let free = capacity.saturating_sub(buffered);
     let frames_to_write = cmp::min(input_frames, free);
     if frames_to_write == 0 {
-      return;
+      return 0;
     }
 
     let samples_to_write = (frames_to_write as usize) * channels;
@@ -285,6 +386,8 @@ impl PcmF32QueueInner {
     self
       .write_frame
       .store(write + frames_to_write, Ordering::Release);
+
+    samples_to_write
   }
 
   fn pop_into_inner(&self, out: &mut [f32]) -> usize {
@@ -340,6 +443,66 @@ impl PcmF32QueueInner {
 
     samples_to_read
   }
+
+  fn pop_add_into_inner(&self, dst: &mut [f32], gain: f32) -> usize {
+    let channels = self.channels;
+    let requested_frames = (dst.len() / channels) as u64;
+    if requested_frames == 0 {
+      return 0;
+    }
+
+    let read = self.read_frame.load(Ordering::Relaxed);
+    let write = self.write_frame.load(Ordering::Acquire);
+    let available_frames = write.saturating_sub(read);
+    let frames_to_read = cmp::min(requested_frames, available_frames);
+    if frames_to_read == 0 {
+      return 0;
+    }
+
+    let samples_to_read = (frames_to_read as usize) * channels;
+
+    // If gain is 0, we can discard without touching `dst`.
+    if gain == 0.0 {
+      self
+        .read_frame
+        .store(read + frames_to_read, Ordering::Release);
+      return samples_to_read;
+    }
+
+    let capacity = self.capacity_frames;
+    let read_idx_frames = (read % capacity) as usize;
+    let first_part_frames =
+      cmp::min(frames_to_read as usize, self.capacity_frames() - read_idx_frames);
+    let first_part_samples = first_part_frames * channels;
+    let second_part_samples = samples_to_read - first_part_samples;
+
+    unsafe {
+      let buf_ptr = self.buf_ptr();
+      let dst_ptr = dst.as_mut_ptr();
+
+      // First contiguous region.
+      let src_ptr = buf_ptr.add(read_idx_frames * channels);
+      for i in 0..first_part_samples {
+        let sample = *src_ptr.add(i);
+        *dst_ptr.add(i) += sample * gain;
+      }
+
+      // Wrap-around region.
+      if second_part_samples > 0 {
+        let src_ptr = buf_ptr;
+        for i in 0..second_part_samples {
+          let sample = *src_ptr.add(i);
+          *dst_ptr.add(first_part_samples + i) += sample * gain;
+        }
+      }
+    }
+
+    self
+      .read_frame
+      .store(read + frames_to_read, Ordering::Release);
+
+    samples_to_read
+  }
 }
 
 unsafe impl Send for PcmF32QueueInner {}
@@ -366,7 +529,7 @@ mod tests {
     let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 8);
 
     let a: Vec<f32> = (0..6).map(|v| v as f32).collect();
-    prod.push(&a, Duration::from_secs(0));
+    assert_eq!(prod.push(&a, Duration::from_secs(0)), 6);
 
     let mut tmp = [0.0f32; 5];
     let n = cons.pop_into(&mut tmp);
@@ -374,7 +537,7 @@ mod tests {
     assert_eq!(&tmp, &[0.0, 1.0, 2.0, 3.0, 4.0]);
 
     let b: Vec<f32> = (6..10).map(|v| v as f32).collect();
-    prod.push(&b, Duration::from_secs(0));
+    assert_eq!(prod.push(&b, Duration::from_secs(0)), 4);
 
     let mut out = [0.0f32; 5];
     let n = cons.pop_into(&mut out);
@@ -388,7 +551,7 @@ mod tests {
     let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 4);
 
     let input: Vec<f32> = (0..6).map(|v| v as f32).collect();
-    prod.push(&input, Duration::from_secs(0));
+    assert_eq!(prod.push(&input, Duration::from_secs(0)), 4);
 
     assert_eq!(cons.buffered_frames(), 4);
 
@@ -419,7 +582,7 @@ mod tests {
         for v in i..(i + n) {
           samples.push(v as f32);
         }
-        prod.push(&samples, Duration::from_secs(0));
+        assert_eq!(prod.push(&samples, Duration::from_secs(0)), n);
         i += n;
       }
       done.store(true, AtomicOrdering::Release);
@@ -455,7 +618,30 @@ mod tests {
     let (mut prod, cons) = pcm_f32_queue(2, 48_000, 16);
     assert_eq!(cons.head_pts(), None);
 
-    prod.push(&[0.0, 0.0, 1.0, 1.0], Duration::from_millis(123));
+    assert_eq!(
+      prod.push(&[0.0, 0.0, 1.0, 1.0], Duration::from_millis(123)),
+      4
+    );
     assert_eq!(cons.head_pts(), Some(Duration::from_millis(123)));
+  }
+
+  #[test]
+  fn queue_enforces_frame_alignment() {
+    let (mut prod, mut cons) = pcm_f32_queue(2, 48_000, 8);
+    // 3 samples = 1 full frame (2 samples) + 1 trailing sample dropped.
+    assert_eq!(prod.push(&[1.0, 2.0, 3.0], Duration::from_secs(0)), 2);
+    let mut out = [0.0f32; 4];
+    assert_eq!(cons.pop_into(&mut out), 2);
+    assert_eq!(&out[..2], &[1.0, 2.0]);
+  }
+
+  #[test]
+  fn shared_queue_pop_add_into_applies_gain_and_consumes() {
+    let q = PcmF32Queue::new(1, 48_000, 8);
+    assert_eq!(q.push_without_pts(&[1.0, 1.0, 1.0, 1.0]), 4);
+    let mut out = [0.0f32; 4];
+    assert_eq!(q.pop_add_into(&mut out, 0.5), 4);
+    assert_eq!(out, [0.5, 0.5, 0.5, 0.5]);
+    assert_eq!(q.buffered_frames(), 0);
   }
 }

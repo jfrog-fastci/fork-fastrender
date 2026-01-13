@@ -1124,8 +1124,6 @@ impl WorkerToUi {
       | WorkerToUi::PageAccessibility { tab_id, .. }
       | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::OpenSelectDropdown { tab_id, .. }
-      | WorkerToUi::DatalistOpened { tab_id, .. }
-      | WorkerToUi::DatalistClosed { tab_id }
       | WorkerToUi::NavigationStarted { tab_id, .. }
       | WorkerToUi::NavigationCommitted { tab_id, .. }
       | WorkerToUi::NavigationFailed { tab_id, .. }
