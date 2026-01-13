@@ -9,6 +9,7 @@
 //! keep behavior deterministic.
 
 use crate::js::event_loop::{EventLoop, IdleCallbackId, TaskSource, TimerId};
+use crate::js::job_callback_context;
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::time::duration_to_ms_f64;
 use crate::js::vm_error_format;
@@ -918,6 +919,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     Some(&mut self.any)
   }
 
+  fn host_make_job_callback(&mut self, callback: vm_js::GcObject) -> Result<JobCallback, VmError> {
+    let ctx = job_callback_context::current_job_callback_context();
+    let realm = ctx.realm;
+    JobCallback::try_new_with_data_in_realm(callback, ctx, realm)
+  }
+
   fn host_enqueue_promise_job(&mut self, job: Job, realm: Option<RealmId>) {
     // Once enqueueing fails (queue limit, missing EventLoop), we keep the first error and discard
     // all subsequent jobs (while the heap is still live) to avoid leaking persistent roots.
@@ -1667,6 +1674,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     this_argument: Value,
     arguments: &[Value],
   ) -> Result<Value, VmError> {
+    let _job_callback_ctx = callback
+      .downcast_ref::<job_callback_context::JobCallbackContext>()
+      .map(|ctx| job_callback_context::push_job_callback_context(ctx.clone()));
     ctx.call(
       self,
       Value::Object(callback.callback_object()),

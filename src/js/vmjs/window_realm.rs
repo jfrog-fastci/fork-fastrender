@@ -20,6 +20,7 @@ use crate::js::dom_internal_keys::{
 };
 use crate::js::dom_platform::{DocumentId, DomInterface, DomNodeKey, DomPlatform, DOM_WRAPPER_HOST_TAG};
 use crate::js::host_document::ActiveEventGuard;
+use crate::js::job_callback_context::{self, JobCallbackContext};
 use crate::js::realm_module_loader::{ModuleKey, ModuleLoader, ModuleLoaderHandle};
 use crate::js::time::{TimeBindings, WebTime};
 use crate::js::web_storage;
@@ -1311,6 +1312,10 @@ impl WindowRealm {
         .unwrap_or_else(|| data.document_url.clone())
     };
 
+    let script_url_for_context = script_url.clone();
+    let window_id = self.window_id();
+    let realm_id = self.realm_id;
+
     let module_loader = Rc::clone(&self.module_loader);
     let did_consume_script_id = std::cell::Cell::new(false);
     let did_consume_script_id = &did_consume_script_id;
@@ -1325,6 +1330,12 @@ impl WindowRealm {
         loader.register_script_url(script_id, script_url)?;
       }
 
+      let _job_callback_ctx = job_callback_context::push_job_callback_context(JobCallbackContext {
+        realm: Some(realm_id),
+        window_id: Some(window_id),
+        script_id: Some(script_id),
+        script_url: Some(script_url_for_context),
+      });
       did_consume_script_id.set(true);
       let result = rt.exec_script_source_with_host_and_hooks(host, hooks, source);
 
@@ -3598,6 +3609,7 @@ const TREE_WALKER_CURRENT_NODE_KEY: &str = "__fastrender_tree_walker_current_nod
 const TREE_WALKER_WHAT_TO_SHOW_KEY: &str = "__fastrender_tree_walker_what_to_show";
 const TREE_WALKER_FILTER_KEY: &str = "__fastrender_tree_walker_filter";
 const TREE_WALKER_PROTOTYPE_KEY: &str = "__fastrender_tree_walker_prototype";
+const NODE_ITERATOR_PROTOTYPE_KEY: &str = "__fastrender_node_iterator_prototype";
 const NODE_FILTER_FILTER_ACCEPT: u16 = 1;
 const NODE_FILTER_FILTER_REJECT: u16 = 2;
 const NODE_FILTER_FILTER_SKIP: u16 = 3;

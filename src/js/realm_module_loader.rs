@@ -1,6 +1,7 @@
 use crate::js::import_maps::{
   resolve_module_specifier as resolve_import_map_specifier, ImportMapState,
 };
+use crate::js::job_callback_context;
 use crate::js::options::JsExecutionOptions;
 use crate::html::content_security_policy::CspPolicy;
 use crate::resource::{
@@ -501,7 +502,13 @@ impl ModuleLoader {
           .ok_or(ModuleResolveError::UnknownReferrer)?,
       ),
       ModuleReferrer::Realm(_) => self.document_url.as_deref(),
-      ModuleReferrer::Script(script) => self.script_url(script).or(self.document_url.as_deref()),
+      ModuleReferrer::Script(script) => {
+        let tls_url = job_callback_context::script_url_for_script_id(script);
+        self
+          .script_url(script)
+          .or(tls_url.as_deref())
+          .or(self.document_url.as_deref())
+      }
     };
 
     let Some(base_url) = base_url else {

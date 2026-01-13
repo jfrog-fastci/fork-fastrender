@@ -1,5 +1,5 @@
 use fastrender::dom2::Document as Dom2Document;
-use fastrender::js::{JsExecutionOptions, RunLimits, WindowHost};
+use fastrender::js::{JsExecutionOptions, RunLimits, TaskSource, WindowHost};
 use fastrender::resource::{FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
 use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
@@ -187,6 +187,65 @@ fn window_host_base_url_propagates_to_dynamic_import_resolution() -> Result<()> 
     Some("https://example.com/a/b/mod.js")
   );
   assert_eq!(fetcher.request_urls(), vec!["https://example.com/a/b/mod.js".to_string()]);
+  Ok(())
+}
+
+#[test]
+fn window_host_script_url_propagates_to_dynamic_import_in_microtask() -> Result<()> {
+  let dom = Dom2Document::new(QuirksMode::NoQuirks);
+  let fetcher = Arc::new(RecordingFetcher::default());
+  fetcher.insert(
+    "https://example.com/scriptdir/mod.js",
+    FetchedResource::new(
+      b"export default import.meta.url;".to_vec(),
+      Some("application/javascript".to_string()),
+    ),
+  );
+
+  let mut options = js_opts_for_test();
+  options.supports_module_scripts = true;
+
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    // Use a document URL in a different directory from the classic script URL so we can verify
+    // Promise microtasks run with the correct incumbent script base.
+    "https://example.com/docdir/page.html",
+    fetcher.clone() as Arc<dyn ResourceFetcher>,
+    options,
+  )?;
+
+  // Execute a classic script with a URL-like source name (simulates an external `<script src>`).
+  host.queue_task(TaskSource::DOMManipulation, |host_state, event_loop| {
+    host_state.exec_script_with_name_in_event_loop(
+      event_loop,
+      "https://example.com/scriptdir/script.js",
+      r#"
+      globalThis.__err = '';
+      globalThis.__url = '';
+      Promise.resolve()
+        .then(() => import('./mod.js'))
+        .then(m => { globalThis.__url = m.default; })
+        .catch(e => { globalThis.__err = String(e && (e.stack || e.message) || e); });
+      "#,
+    )?;
+    Ok(())
+  })?;
+
+  host.run_until_idle(RunLimits {
+    max_tasks: 20,
+    max_microtasks: 100,
+    max_wall_time: Some(Duration::from_secs(5)),
+  })?;
+
+  assert_eq!(get_global_string(&mut host, "__err").unwrap_or_default(), "");
+  assert_eq!(
+    get_global_string(&mut host, "__url").as_deref(),
+    Some("https://example.com/scriptdir/mod.js")
+  );
+  assert_eq!(
+    fetcher.request_urls(),
+    vec!["https://example.com/scriptdir/mod.js".to_string()]
+  );
   Ok(())
 }
 
