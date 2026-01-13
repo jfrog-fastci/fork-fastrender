@@ -206,6 +206,7 @@ impl Vp9Decoder {
     }
 
     let full_range = img.range == crate::VPX_CR_FULL_RANGE;
+    let cs = img.cs;
 
     let rgba_len = width
       .checked_mul(height)
@@ -260,7 +261,7 @@ impl Vp9Decoder {
           let u = downshift_to_u8(u16, shift) as i32;
           let v = downshift_to_u8(v16, shift) as i32;
 
-          let (r, g, b) = yuv_to_rgb_bt601(y, u, v, full_range);
+          let (r, g, b) = yuv_to_rgb(y, u, v, full_range, cs);
           let dst = (row * width + col) * 4;
           rgba8[dst] = clamp_u8(r);
           rgba8[dst + 1] = clamp_u8(g);
@@ -279,7 +280,7 @@ impl Vp9Decoder {
           let u = unsafe { *u_row.add(col >> x_shift) } as i32;
           let v = unsafe { *v_row.add(col >> x_shift) } as i32;
 
-          let (r, g, b) = yuv_to_rgb_bt601(y, u, v, full_range);
+          let (r, g, b) = yuv_to_rgb(y, u, v, full_range, cs);
           let dst = (row * width + col) * 4;
           rgba8[dst] = clamp_u8(r);
           rgba8[dst + 1] = clamp_u8(g);
@@ -327,29 +328,54 @@ fn downshift_to_u8(sample: u16, shift: u32) -> u8 {
   v as u8
 }
 
-fn yuv_to_rgb_bt601(y: i32, u: i32, v: i32, full_range: bool) -> (i32, i32, i32) {
+fn yuv_to_rgb(
+  y: i32,
+  u: i32,
+  v: i32,
+  full_range: bool,
+  cs: crate::vpx_color_space_t,
+) -> (i32, i32, i32) {
+  let cs = match cs {
+    // Treat both BT.601 and SMPTE.170 as BT.601.
+    crate::VPX_CS_BT_601 | crate::VPX_CS_SMPTE_170 => crate::VPX_CS_BT_601,
+    // SMPTE.240 is closer to BT.709 than BT.601 for our purposes.
+    crate::VPX_CS_SMPTE_240 => crate::VPX_CS_BT_709,
+    // VPX_CS_SRGB is typically used for RGB frames, but if we ever see it alongside YUV planes,
+    // using BT.709 coefficients is a reasonable approximation.
+    crate::VPX_CS_SRGB => crate::VPX_CS_BT_709,
+    other => other,
+  };
+
   if full_range {
-    // Full-range BT.601.
-    //
-    // r = y + 1.402 * (v - 128)
-    // g = y - 0.344136 * (u - 128) - 0.714136 * (v - 128)
-    // b = y + 1.772 * (u - 128)
-    //
-    // Use fixed-point math for determinism/perf.
+    // Full-range YUV -> RGB using fixed-point math (16.16).
+    let (r_coef, g_u_coef, g_v_coef, b_coef) = match cs {
+      crate::VPX_CS_BT_709 => (103206, 12276, 30679, 121609),
+      crate::VPX_CS_BT_2020 => (96639, 10784, 37444, 123299),
+      // Default: BT.601.
+      _ => (91881, 22554, 46802, 116130),
+    };
+
     let d = u - 128;
     let e = v - 128;
-    let r = y + ((91881 * e + 32768) >> 16);
-    let g = y - ((22554 * d + 46802 * e + 32768) >> 16);
-    let b = y + ((116130 * d + 32768) >> 16);
+    let r = y + ((r_coef * e + 32768) >> 16);
+    let g = y - ((g_u_coef * d + g_v_coef * e + 32768) >> 16);
+    let b = y + ((b_coef * d + 32768) >> 16);
     (r, g, b)
   } else {
-    // Studio-range BT.601 (16..235, 16..240).
+    // Studio-range YUV -> RGB (16..235, 16..240).
+    let (r_coef, g_u_coef, g_v_coef, b_coef) = match cs {
+      crate::VPX_CS_BT_709 => (459, 55, 136, 541),
+      crate::VPX_CS_BT_2020 => (430, 48, 166, 548),
+      // Default: BT.601.
+      _ => (409, 100, 208, 516),
+    };
+
     let c = y - 16;
     let d = u - 128;
     let e = v - 128;
-    let r = (298 * c + 409 * e + 128) >> 8;
-    let g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-    let b = (298 * c + 516 * d + 128) >> 8;
+    let r = (298 * c + r_coef * e + 128) >> 8;
+    let g = (298 * c - g_u_coef * d - g_v_coef * e + 128) >> 8;
+    let b = (298 * c + b_coef * d + 128) >> 8;
     (r, g, b)
   }
 }
