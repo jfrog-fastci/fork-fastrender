@@ -2,16 +2,89 @@ use serde::{Deserialize, Serialize};
 
 /// Structured perf-log events emitted by the windowed `browser` when `FASTR_PERF_LOG` is enabled.
 ///
-/// The log format is newline-delimited JSON (JSONL) where every line is a single serialized
-/// [`BrowserPerfLogEvent`]. The schema is intentionally loose:
-/// - Unknown event types deserialize as [`BrowserPerfLogEvent::Unknown`] (forward compatible).
-/// - Unknown fields are ignored (forward compatible).
+/// The log format is newline-delimited JSON (JSONL) where every line is a single serialized event.
 ///
-/// This module is shared by the producer (`browser`) and consumers (e.g.
-/// `browser_perf_log_summary`) so that perf-log captures remain actionable without one-off scripts.
+/// Over time we have had two schemas:
+/// - **V1 (legacy)**: `{ "type": "ui_frame_time", ... }`
+/// - **V2 (current)**: `{ "event": "frame", "schema_version": 2, ... }` (see `src/bin/browser.rs`)
+///
+/// This enum is intentionally **loose and forward compatible**:
+/// - Unknown event kinds deserialize as `Unknown*`.
+/// - Unknown fields are ignored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BrowserPerfLogEvent {
+  V2(BrowserPerfLogEventV2),
+  V1(BrowserPerfLogEventV1),
+  /// Catch-all for forward compatibility (valid JSON that doesn't match known schemas).
+  Unknown(serde_json::Value),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputKind {
+  Keyboard,
+  MouseWheel,
+  PointerMove,
+  Button,
+  #[serde(other)]
+  Unknown,
+}
+
+/// Current `browser` perf-log schema (`event=...`).
+///
+/// The variants include only the fields needed by aggregation tools; unknown fields are ignored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum BrowserPerfLogEventV2 {
+  Frame {
+    #[serde(default)]
+    ui_frame_ms: Option<f64>,
+    #[serde(default)]
+    fps: Option<f64>,
+  },
+  Input {
+    #[serde(default)]
+    input_kind: Option<InputKind>,
+    #[serde(default)]
+    input_to_present_ms: Option<f64>,
+  },
+  Resize {
+    #[serde(default)]
+    resize_to_present_ms: Option<f64>,
+  },
+  Ttfp {
+    #[serde(default)]
+    ttfp_ms: Option<f64>,
+  },
+  CpuSummary {
+    #[serde(default)]
+    cpu_percent_recent: Option<f64>,
+  },
+  IdleSample {
+    #[serde(default)]
+    idle_fps: Option<f32>,
+  },
+  FrameUpload {
+    #[serde(default)]
+    upload_last_ms: Option<f64>,
+    #[serde(default)]
+    upload_total_ms: Option<f64>,
+    #[serde(default)]
+    overwritten_frames: Option<u64>,
+    #[serde(default)]
+    uploads: Option<u32>,
+    #[serde(default)]
+    uploaded_bytes: Option<u64>,
+  },
+  #[serde(other)]
+  Unknown,
+}
+
+/// Legacy perf-log schema (`type=...`) kept for backwards compatibility with older captures/tests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum BrowserPerfLogEvent {
+pub enum BrowserPerfLogEventV1 {
   /// Emitted once per UI frame (egui/winit redraw).
   #[serde(alias = "ui_frame")]
   UiFrameTime {

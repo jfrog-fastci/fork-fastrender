@@ -5,7 +5,7 @@
 //! hard to compare without ad-hoc scripts; this tool provides stable percentile summaries.
 
 use clap::{ArgAction, Parser};
-use fastrender::browser_perf_log::BrowserPerfLogEvent;
+use fastrender::browser_perf_log::{BrowserPerfLogEvent, BrowserPerfLogEventV2, InputKind};
 use serde::Serialize;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
@@ -35,6 +35,9 @@ struct Samples {
   resize_latency_ms: Vec<f64>,
   input_latency_ms: Vec<f64>,
   tab_switch_latency_ms: Vec<f64>,
+  upload_total_ms: Vec<f64>,
+  upload_last_ms: Vec<f64>,
+  coalesced_frames: Vec<f64>,
   cpu_percent: Vec<f64>,
   rss_bytes: Vec<u64>,
 }
@@ -48,6 +51,9 @@ struct Summary {
   resize_latency_ms: TimeStats,
   input_latency_ms: TimeStats,
   tab_switch_latency_ms: TimeStats,
+  upload_total_ms: TimeStats,
+  upload_last_ms: TimeStats,
+  coalesced_frames: ScalarStats,
   cpu_percent: ScalarStats,
   rss_bytes: RssStats,
 }
@@ -172,13 +178,15 @@ fn print_table(summary: &Summary) {
     "metric", "count", "mean", "p50", "p95", "max"
   );
 
-  let rows: [(&str, &TimeStats); 6] = [
+  let rows: [(&str, &TimeStats); 8] = [
     ("ui_frame_time_ms", &summary.ui_frame_time_ms),
     ("ttfp_ms", &summary.ttfp_ms),
     ("scroll_latency_ms", &summary.scroll_latency_ms),
     ("resize_latency_ms", &summary.resize_latency_ms),
     ("input_latency_ms", &summary.input_latency_ms),
     ("tab_switch_latency_ms", &summary.tab_switch_latency_ms),
+    ("upload_total_ms", &summary.upload_total_ms),
+    ("upload_last_ms", &summary.upload_last_ms),
   ];
 
   for (name, stats) in rows {
@@ -197,6 +205,14 @@ fn print_table(summary: &Summary) {
   println!(
     "{:<22} {:>7} {:>12} {:>12} {:>12}",
     "metric", "count", "min", "mean", "max"
+  );
+  println!(
+    "{:<22} {:>7} {:>12} {:>12} {:>12}",
+    "coalesced_frames",
+    summary.coalesced_frames.count,
+    fmt_opt_f64(summary.coalesced_frames.min, 2),
+    fmt_opt_f64(summary.coalesced_frames.mean, 2),
+    fmt_opt_f64(summary.coalesced_frames.max, 2),
   );
   println!(
     "{:<22} {:>7} {:>12} {:>12} {:>12}",
@@ -269,50 +285,117 @@ fn run(cli: Cli) -> Result<(), String> {
       Ok(event) => {
         events_parsed = events_parsed.saturating_add(1);
         match event {
-          BrowserPerfLogEvent::UiFrameTime { frame_time_ms, .. } => {
-            if frame_time_ms.is_finite() {
-              samples.ui_frame_time_ms.push(frame_time_ms);
-            }
-          }
-          BrowserPerfLogEvent::TimeToFirstPaint { ttfp_ms, .. } => {
-            if ttfp_ms.is_finite() {
-              samples.ttfp_ms.push(ttfp_ms);
-            }
-          }
-          BrowserPerfLogEvent::Latency {
-            kind, latency_ms, ..
-          } => {
-            if !latency_ms.is_finite() {
-              continue;
-            }
-            match kind.to_ascii_lowercase().as_str() {
-              "scroll" => samples.scroll_latency_ms.push(latency_ms),
-              "resize" => samples.resize_latency_ms.push(latency_ms),
-              "input" => samples.input_latency_ms.push(latency_ms),
-              "tab_switch" | "tabswitch" | "tab-switch" => {
-                samples.tab_switch_latency_ms.push(latency_ms)
+          BrowserPerfLogEvent::V2(event) => match event {
+            BrowserPerfLogEventV2::Frame { ui_frame_ms, .. } => {
+              if let Some(ms) = ui_frame_ms.filter(f64::is_finite) {
+                samples.ui_frame_time_ms.push(ms);
               }
-              _ => {}
             }
-          }
-          BrowserPerfLogEvent::ResourceSample {
-            cpu_percent,
-            rss_bytes,
-            ..
-          } => {
-            if let Some(cpu) = cpu_percent {
-              if cpu.is_finite() {
+            BrowserPerfLogEventV2::Ttfp { ttfp_ms, .. } => {
+              if let Some(ms) = ttfp_ms.filter(f64::is_finite) {
+                samples.ttfp_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::Resize {
+              resize_to_present_ms,
+              ..
+            } => {
+              if let Some(ms) = resize_to_present_ms.filter(f64::is_finite) {
+                samples.resize_latency_ms.push(ms);
+              }
+            }
+            BrowserPerfLogEventV2::Input {
+              input_kind,
+              input_to_present_ms,
+              ..
+            } => {
+              let Some(ms) = input_to_present_ms.filter(f64::is_finite) else {
+                continue;
+              };
+              match input_kind.unwrap_or(InputKind::Unknown) {
+                InputKind::Keyboard => samples.input_latency_ms.push(ms),
+                InputKind::MouseWheel => samples.scroll_latency_ms.push(ms),
+                _ => {}
+              }
+            }
+            BrowserPerfLogEventV2::CpuSummary {
+              cpu_percent_recent, ..
+            } => {
+              if let Some(cpu) = cpu_percent_recent.filter(f64::is_finite) {
                 samples.cpu_percent.push(cpu);
               }
             }
-            if let Some(rss) = rss_bytes {
-              samples.rss_bytes.push(rss);
+            BrowserPerfLogEventV2::FrameUpload {
+              upload_last_ms,
+              upload_total_ms,
+              overwritten_frames,
+              ..
+            } => {
+              if let Some(ms) = upload_total_ms.filter(f64::is_finite) {
+                samples.upload_total_ms.push(ms);
+              }
+              if let Some(ms) = upload_last_ms.filter(f64::is_finite) {
+                samples.upload_last_ms.push(ms);
+              }
+              if let Some(frames) = overwritten_frames {
+                samples.coalesced_frames.push(frames as f64);
+              }
             }
-          }
-          BrowserPerfLogEvent::Unknown => {
+            BrowserPerfLogEventV2::IdleSample { .. } | BrowserPerfLogEventV2::Unknown => {
+              unknown_events = unknown_events.saturating_add(1);
+            }
+          },
+          BrowserPerfLogEvent::V1(event) => match event {
+            fastrender::browser_perf_log::BrowserPerfLogEventV1::UiFrameTime {
+              frame_time_ms, ..
+            } => {
+              if frame_time_ms.is_finite() {
+                samples.ui_frame_time_ms.push(frame_time_ms);
+              }
+            }
+            fastrender::browser_perf_log::BrowserPerfLogEventV1::TimeToFirstPaint { ttfp_ms, .. } => {
+              if ttfp_ms.is_finite() {
+                samples.ttfp_ms.push(ttfp_ms);
+              }
+            }
+            fastrender::browser_perf_log::BrowserPerfLogEventV1::Latency {
+              kind, latency_ms, ..
+            } => {
+              if !latency_ms.is_finite() {
+                continue;
+              }
+              match kind.to_ascii_lowercase().as_str() {
+                "scroll" => samples.scroll_latency_ms.push(latency_ms),
+                "resize" => samples.resize_latency_ms.push(latency_ms),
+                "input" => samples.input_latency_ms.push(latency_ms),
+                "tab_switch" | "tabswitch" | "tab-switch" => {
+                  samples.tab_switch_latency_ms.push(latency_ms)
+                }
+                _ => {}
+              }
+            }
+            fastrender::browser_perf_log::BrowserPerfLogEventV1::ResourceSample {
+              cpu_percent,
+              rss_bytes,
+              ..
+            } => {
+              if let Some(cpu) = cpu_percent {
+                if cpu.is_finite() {
+                  samples.cpu_percent.push(cpu);
+                }
+              }
+              if let Some(rss) = rss_bytes {
+                samples.rss_bytes.push(rss);
+              }
+            }
+            fastrender::browser_perf_log::BrowserPerfLogEventV1::Unknown => {
+              unknown_events = unknown_events.saturating_add(1);
+            }
+          },
+          BrowserPerfLogEvent::Unknown(_) => {
             unknown_events = unknown_events.saturating_add(1);
           }
-        }
+        };
       }
       Err(err) => {
         parse_errors = parse_errors.saturating_add(1);
@@ -334,6 +417,9 @@ fn run(cli: Cli) -> Result<(), String> {
     resize_latency_ms: time_stats(&mut samples.resize_latency_ms),
     input_latency_ms: time_stats(&mut samples.input_latency_ms),
     tab_switch_latency_ms: time_stats(&mut samples.tab_switch_latency_ms),
+    upload_total_ms: time_stats(&mut samples.upload_total_ms),
+    upload_last_ms: time_stats(&mut samples.upload_last_ms),
+    coalesced_frames: scalar_stats(&mut samples.coalesced_frames),
     cpu_percent: scalar_stats(&mut samples.cpu_percent),
     rss_bytes: rss_stats(&mut samples.rss_bytes),
   };

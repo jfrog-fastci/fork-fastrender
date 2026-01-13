@@ -4,16 +4,16 @@ use std::process::{Command, Stdio};
 #[test]
 fn json_output_parses_and_contains_expected_keys() {
   let input = r#"
-{"type":"ui_frame_time","frame_time_ms":10.0,"ts_ms":1,"extra_field":"ok"}
-{"type":"ui_frame_time","frame_time_ms":20.0,"ts_ms":2}
+{"event":"frame","ui_frame_ms":10.0,"extra_field":"ok"}
+{"event":"frame","ui_frame_ms":20.0}
+{"event":"ttfp","ttfp_ms":100.0}
+{"event":"input","input_kind":"mouse_wheel","input_to_present_ms":5.0}
+{"event":"input","input_kind":"keyboard","input_to_present_ms":11.0}
+{"event":"resize","resize_to_present_ms":7.0}
+{"event":"cpu_summary","cpu_percent_recent":10.0}
+{"event":"frame_upload","upload_total_ms":3.0,"upload_last_ms":3.0,"overwritten_frames":2}
+
 {"type":"ui_frame_time","frame_time_ms":30.0,"ts_ms":3}
-{"type":"time_to_first_paint","ttfp_ms":100.0}
-{"type":"time_to_first_paint","ttfp_ms":200.0}
-{"type":"latency","kind":"scroll","latency_ms":5.0}
-{"type":"latency","kind":"resize","latency_ms":7.0}
-{"type":"latency","kind":"input","latency_ms":11.0}
-{"type":"latency","kind":"tab_switch","latency_ms":13.0}
-{"type":"resource_sample","cpu_percent":10.0,"rss_bytes":1000}
 {"type":"resource_sample","cpu_percent":20.0,"rss_bytes":2000,"unknown":true}
 {"type":"future_event","foo":1,"bar":"baz"}
 "#;
@@ -52,6 +52,9 @@ fn json_output_parses_and_contains_expected_keys() {
     "resize_latency_ms",
     "input_latency_ms",
     "tab_switch_latency_ms",
+    "upload_total_ms",
+    "upload_last_ms",
+    "coalesced_frames",
     "cpu_percent",
     "rss_bytes",
   ] {
