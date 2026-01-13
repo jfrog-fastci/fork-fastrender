@@ -261,6 +261,27 @@ The browser chrome uses an accent color for links, focus rings, and selection.
     - set `FASTR_BROWSER_DEBUG_LOG=1` to enable it at startup, or
     - enable it at runtime via the menu bar: **View → Debug log**.
 
+### Performance / responsiveness
+
+For profiling the *responsiveness* of the windowed UI (frame pacing, jank, and UI↔worker latency),
+there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / tracing knobs:
+
+- `FASTR_PERF_LOG=1` enables **windowed JSONL performance logging**.
+  - Intended to make UI regressions measurable (e.g. per-frame time, input/resize→present latency,
+    navigation TTFP, and idle/busy-loop behavior).
+  - Use this when investigating “the UI feels laggy” problems (dropped frames, slow resize, slow
+    typing/click feedback), and prefer `--release` builds for realistic numbers.
+  - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` can be used to write events to a file instead of stdout.
+- `ui_perf_smoke` is a **headless** UI responsiveness harness.
+  - Use it for quick local checks and for CI-style regression tests where you can’t (or don’t want
+    to) open a real window/GPU-backed swapchain.
+- `browser_perf_log_summary` summarizes a captured perf log into p50/p95/max numbers.
+- Optional helper (if present in your checkout): `scripts/capture_browser_perf_log.sh` — wrapper for
+  capturing a perf log from a short browser run.
+
+See [perf-logging.md#browser-responsiveness](perf-logging.md#browser-responsiveness) (and the
+“Measuring browser responsiveness” section below) for full details.
+
 ### Persistence (session file)
 
 The browser persists a lightweight session file for restoring state across restarts.
