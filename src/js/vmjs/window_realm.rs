@@ -5493,7 +5493,7 @@ fn serialized_origin_for_document_url(url: &str) -> String {
   }
 }
 
-fn is_secure_context_for_document_url(url: &str) -> bool {
+pub(crate) fn is_secure_context_for_document_url(url: &str) -> bool {
   let Ok(url) = Url::parse(url) else {
     return false;
   };

@@ -1,7 +1,7 @@
 //! WebSocket bindings (`WebSocket` class) for the `vm-js` Window realm.
 //!
 //! This is a minimal, deterministic implementation intended to unblock real-world scripts that
-//! expect `new WebSocket("ws://…")` to work.
+//! expect WebSockets to work (including `ws://` from non-secure contexts).
 //!
 //! Design notes:
 //! - Connection I/O is performed on a dedicated thread per WebSocket.
@@ -13,7 +13,9 @@
 use crate::js::event_loop::{ExternalTaskQueueHandle, TaskSource};
 use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_blob;
-use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG};
+use crate::js::window_realm::{
+  is_secure_context_for_document_url, WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG,
+};
 use crate::js::window_timers::{event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use crate::resource::ResourceFetcher;
 use std::borrow::Cow;
@@ -147,6 +149,11 @@ pub enum WebSocketIpcCommand {
   Connect {
     ws_id: u64,
     url: String,
+    /// True if the renderer's document is a secure context (e.g. https://).
+    ///
+    /// The network process must treat the renderer as untrusted; if this is true and `url` is
+    /// `ws://`, it must reject the connection as mixed content.
+    document_is_secure: bool,
     protocols: Option<String>,
   },
   SendText {
@@ -451,6 +458,17 @@ fn current_document_base_url(vm: &mut Vm, env_id: u64) -> Result<Option<String>,
   with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
 }
 
+fn current_document_is_secure_context(vm: &mut Vm, env_id: u64) -> bool {
+  if let Some(data) = vm.user_data::<WindowRealmUserData>() {
+    return is_secure_context_for_document_url(data.document_url());
+  }
+  with_env_state(env_id, |state| Ok(state.env.document_url.clone()))
+    .ok()
+    .flatten()
+    .map(|url| is_secure_context_for_document_url(&url))
+    .unwrap_or(false)
+}
+
 fn resolve_websocket_url(vm: &mut Vm, env_id: u64, url: &str) -> Result<url::Url, VmError> {
   let base = current_document_base_url(vm, env_id)?;
   let resolved_href = resolve_url(url, base.as_deref()).map_err(|err| match err {
@@ -639,6 +657,13 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
     other => other,
   })?;
 
+  let document_is_secure = current_document_is_secure_context(vm, env_id);
+  if document_is_secure && resolved_url.scheme() == "ws" {
+    return Err(VmError::TypeError(
+      "Mixed content is blocked: cannot connect to ws: from a secure context",
+    ));
+  }
+
   let protocols_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let protocols = parse_protocols(vm, scope, host, hooks, protocols_value)?;
   let protocols_header = if protocols.is_empty() {
@@ -778,6 +803,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
     match ipc_tx.try_send(WebSocketIpcCommand::Connect {
       ws_id,
       url: resolved_url_string,
+      document_is_secure,
       protocols: protocols_header,
     }) {
       Ok(()) => {}
@@ -804,6 +830,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
         ws_id,
         fetcher,
         resolved_url_string,
+        document_is_secure,
         protocols,
         cmd_rx,
         task_queue,
@@ -1630,10 +1657,42 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
   ws_id: u64,
   fetcher: Arc<dyn ResourceFetcher>,
   url: String,
+  document_is_secure: bool,
   requested_protocols: Vec<String>,
   cmd_rx: mpsc::Receiver<WsCommand>,
   task_queue: ExternalTaskQueueHandle<Host>,
 ) {
+  // Defense in depth: the renderer is untrusted in multiprocess mode.
+  // If the browser/network side marks the document as secure, refuse insecure ws:// targets.
+  if document_is_secure {
+    if let Ok(parsed) = url::Url::parse(&url) {
+      if parsed.scheme() == "ws" {
+        with_env_state_mut(env_id, |state| {
+          if let Some(ws) = state.sockets.get_mut(&ws_id) {
+            ws.ready_state = WS_CLOSED;
+          }
+          Ok(())
+        })
+        .ok();
+        queue_ws_task::<Host>(
+          &task_queue,
+          env_id,
+          ws_id,
+          WsTaskKind::Close,
+          |vm_host, heap, vm, hooks, ws_obj| {
+            let mut scope = heap.scope();
+            let ev = make_simple_event(&mut scope, "error")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+            let close_ev = make_simple_event(&mut scope, "close")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+            Ok(())
+          },
+        );
+        return;
+      }
+    }
+  }
+
   let protocols_header = if requested_protocols.is_empty() {
     None
   } else {
@@ -2331,7 +2390,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2450,7 +2509,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2629,7 +2688,7 @@ mod tests {
 
     // Phase 1: ensure the failed connection surfaces `error` + `close` events.
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
     host.exec_script(&format!(
       r#"
       globalThis.__got_error = false;
@@ -2676,7 +2735,7 @@ mod tests {
     // Phase 2: ensure env teardown (Drop) cannot hang joining the websocket thread even if the
     // thread is stuck in its connect path.
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
     host.exec_script(&format!(
       r#"globalThis.__ws = new WebSocket({target:?});"#,
     ))?;
@@ -2731,7 +2790,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2831,7 +2890,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -2925,7 +2984,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -3046,7 +3105,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     let msg_size = MAX_WEBSOCKET_MESSAGE_BYTES;
     let cap = MAX_WEBSOCKET_BUFFERED_AMOUNT_BYTES;
@@ -3254,7 +3313,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -3534,7 +3593,7 @@ mod tests {
     });
 
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = make_host(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "http://example.invalid/")?;
 
     host.exec_script(&format!(
       r#"
@@ -3646,6 +3705,101 @@ mod tests {
   }
 
   #[test]
+  fn websocket_blocks_mixed_content_from_secure_context() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "https://example.invalid/")?;
+
+    let err = host
+      .exec_script("new WebSocket('ws://127.0.0.1')")
+      .expect_err("expected mixed content ws:// to be blocked");
+    let msg = err.to_string();
+    assert!(
+      msg.contains("Mixed content"),
+      "expected error to mention mixed content, got: {msg:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_allows_wss_from_secure_context() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "https://example.invalid/")?;
+
+    // Connection may fail (no server), but the constructor should not throw.
+    // Use an IP + unlikely-to-be-listening port to ensure the background connect exits quickly.
+    host.exec_script("globalThis.__ws = new WebSocket('wss://127.0.0.1:1/')")?;
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_thread_blocks_ws_when_document_is_secure() {
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(HttpFetcher::new());
+    let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+    {
+      let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock.insert(env_id, EnvState::new(WindowWebSocketEnv::for_document(fetcher.clone(), None)));
+    }
+
+    let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WsCommand>(1);
+
+    // Use a standalone heap allocation for the weak handle. The queued tasks won't actually run in
+    // this test; we only assert that the handler queued Error+Close events without panicking.
+    let mut heap = vm_js::Heap::new(vm_js::HeapLimits::new(1024 * 1024, 512 * 1024));
+    let mut scope = heap.scope();
+    let ws_obj = scope.alloc_object().expect("alloc websocket object");
+    let weak = WeakGcObject::from(ws_obj);
+
+    let ws_id = with_env_state_mut(env_id, |state| {
+      let id = state.alloc_id();
+      state.sockets.insert(
+        id,
+        WebSocketState {
+          weak_obj: weak,
+          url: String::new(),
+          protocol: String::new(),
+          ready_state: WS_CONNECTING,
+          buffered_amount: 0,
+          pending_events: 0,
+          close_task_queued: false,
+          forced_close: None,
+          cmd_tx: Some(cmd_tx),
+          thread: None,
+        },
+      );
+      Ok(id)
+    })
+    .expect("register websocket state");
+
+    let event_loop = EventLoop::<WindowHostState>::new();
+    let task_queue = event_loop.external_task_queue_handle();
+
+    websocket_thread_main::<WindowHostState>(
+      env_id,
+      ws_id,
+      fetcher,
+      "ws://127.0.0.1:1/".to_string(),
+      true,
+      Vec::new(),
+      cmd_rx,
+      task_queue,
+    );
+
+    with_env_state(env_id, |state| {
+      let ws = state
+        .sockets
+        .get(&ws_id)
+        .ok_or(VmError::InvariantViolation("missing websocket state"))?;
+      assert_eq!(ws.ready_state, WS_CLOSED);
+      // Should have queued a task that dispatches `error` + `close` events.
+      assert_eq!(ws.pending_events, 1);
+      Ok(())
+    })
+    .expect("inspect websocket state");
+
+    unregister_window_websocket_env(env_id);
+  }
+
+  #[test]
   fn websocket_ipc_connect_rejects_invalid_url_without_panic() {
     // Create a minimal env/socket entry so the "network process" connect handler can queue events
     // on failure. This simulates a compromised renderer sending an invalid URL over IPC.
@@ -3695,6 +3849,7 @@ mod tests {
       ws_id,
       fetcher,
       "ws:/relative".to_string(),
+      false,
       Vec::new(),
       cmd_rx,
       task_queue,

@@ -38,6 +38,11 @@ pub enum WebSocketIpcCommand {
   Connect {
     ws_id: u64,
     url: String,
+    /// True if the renderer's document is a secure context (e.g. https://).
+    ///
+    /// The network process must treat the renderer as untrusted; if this is true and `url` is
+    /// `ws://`, it must reject the connection as mixed content.
+    document_is_secure: bool,
     protocols: Option<String>,
   },
   SendText {

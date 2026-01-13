@@ -182,7 +182,18 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect { ws_id, url, protocols }) => break (ws_id, url, protocols),
+        Ok(WebSocketIpcCommand::Connect {
+          ws_id,
+          url,
+          document_is_secure,
+          protocols,
+        }) => {
+          assert!(
+            !document_is_secure,
+            "expected http:// document to be treated as an insecure context"
+          );
+          break (ws_id, url, protocols);
+        }
         Ok(other) => panic!("unexpected command before connect: {other:?}"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
@@ -298,7 +309,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = make_host(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "http://example.invalid/")?;
 
   // Override the default (in-process tungstenite) WebSocket bindings with the IPC-backed version.
   let _ipc_bindings = {
@@ -310,7 +321,7 @@ fn websocket_ipc_connect_send_echo_close() -> Result<()> {
       heap,
       WindowWebSocketIpcEnv {
         fetcher: Arc::new(NoFetchResourceFetcher),
-        document_url: Some("https://example.invalid/".to_string()),
+        document_url: Some("http://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
       },
@@ -406,7 +417,18 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect { ws_id, url, protocols }) => break (ws_id, url, protocols),
+        Ok(WebSocketIpcCommand::Connect {
+          ws_id,
+          url,
+          document_is_secure,
+          protocols,
+        }) => {
+          assert!(
+            !document_is_secure,
+            "expected http:// document to be treated as an insecure context"
+          );
+          break (ws_id, url, protocols);
+        }
         Ok(other) => panic!("unexpected command before connect: {other:?}"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
@@ -451,7 +473,7 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = make_host(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "http://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
@@ -462,7 +484,7 @@ fn websocket_ipc_rejects_unrequested_protocol_selected_by_server() -> Result<()>
       heap,
       WindowWebSocketIpcEnv {
         fetcher: Arc::new(NoFetchResourceFetcher),
-        document_url: Some("https://example.invalid/".to_string()),
+        document_url: Some("http://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
       },
@@ -558,7 +580,18 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect { ws_id, url, protocols }) => break (ws_id, url, protocols),
+        Ok(WebSocketIpcCommand::Connect {
+          ws_id,
+          url,
+          document_is_secure,
+          protocols,
+        }) => {
+          assert!(
+            !document_is_secure,
+            "expected http:// document to be treated as an insecure context"
+          );
+          break (ws_id, url, protocols);
+        }
         Ok(other) => panic!("unexpected command before connect: {other:?}"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
@@ -617,7 +650,7 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = make_host(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "http://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
@@ -628,7 +661,7 @@ fn websocket_ipc_protocol_is_set_from_server_handshake_response() -> Result<()> 
       heap,
       WindowWebSocketIpcEnv {
         fetcher: Arc::new(NoFetchResourceFetcher),
-        document_url: Some("https://example.invalid/".to_string()),
+        document_url: Some("http://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
       },
@@ -716,7 +749,18 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
     let connect_deadline = Instant::now() + Duration::from_secs(5);
     let (ws_id, url, protocols) = loop {
       match cmd_rx.recv_timeout(Duration::from_millis(50)) {
-        Ok(WebSocketIpcCommand::Connect { ws_id, url, protocols }) => break (ws_id, url, protocols),
+        Ok(WebSocketIpcCommand::Connect {
+          ws_id,
+          url,
+          document_is_secure,
+          protocols,
+        }) => {
+          assert!(
+            !document_is_secure,
+            "expected http:// document to be treated as an insecure context"
+          );
+          break (ws_id, url, protocols);
+        }
         Ok(other) => panic!("unexpected command before connect: {other:?}"),
         Err(mpsc::RecvTimeoutError::Timeout) => {
           if Instant::now() >= connect_deadline {
@@ -757,7 +801,7 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = make_host(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "http://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
@@ -768,7 +812,7 @@ fn websocket_ipc_rejects_protocol_when_none_were_requested() -> Result<()> {
       heap,
       WindowWebSocketIpcEnv {
         fetcher: Arc::new(NoFetchResourceFetcher),
-        document_url: Some("https://example.invalid/".to_string()),
+        document_url: Some("http://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
       },
@@ -854,7 +898,7 @@ fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<(
   });
 
   let dom = dom2::Document::new(QuirksMode::NoQuirks);
-  let mut host = make_host(dom, "https://example.invalid/")?;
+  let mut host = make_host(dom, "http://example.invalid/")?;
 
   let _ipc_bindings = {
     let window = host.host_mut().window_mut();
@@ -865,7 +909,7 @@ fn websocket_ipc_send_queue_full_does_not_increase_buffered_amount() -> Result<(
       heap,
       WindowWebSocketIpcEnv {
         fetcher: Arc::new(NoFetchResourceFetcher),
-        document_url: Some("https://example.invalid/".to_string()),
+        document_url: Some("http://example.invalid/".to_string()),
         cmd_tx,
         event_rx,
       },

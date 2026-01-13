@@ -1470,7 +1470,7 @@ mod tests {
     let out = host.exec_script(
       "(() => {\n\
         try {\n\
-          structuredClone(new WebSocket('ws://127.0.0.1:1/'));\n\
+          structuredClone(new WebSocket('wss://127.0.0.1:1/'));\n\
           return false;\n\
         } catch (e) {\n\
           return !!(e && e.name === 'DataCloneError');\n\
