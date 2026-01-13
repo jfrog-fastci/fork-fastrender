@@ -5531,6 +5531,33 @@ fn compiled_with_restores_outer_env_on_labeled_break() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_restores_outer_env_on_continue() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let i = 0;
+      function getI() { return i; }
+      let o = {i: 0};
+      for (; i < 2; i++) {
+        with (o) { continue; }
+      }
+      getI() + o.i * 10
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The loop update/condition must run in the outer environment (i=2, o.i=0). If the `with` env is
+  // not restored after `continue`, the loop would iterate over o.i instead and return 20.
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_with_boxes_primitive_binding_object() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
@@ -5669,6 +5696,28 @@ fn compiled_with_to_object_throws_for_null() -> Result<(), VmError> {
     r#"
       let ok = 0;
       try { with (null) { } } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_with_to_object_throws_for_undefined() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let ok = 0;
+      let u;
+      try { with (u) { } } catch (e) { ok = 1; }
       ok
     "#,
   )?;
