@@ -30,8 +30,10 @@ scripts are **not** executed unless you opt in with `--js`.
   - `render_fixtures --js …` (render offline fixtures under `tests/pages/fixtures/`)
   - `pageset_progress run --js …` (pageset scoreboard renders)
 - Browser:
-  - `browser --js …` (windowed browser UI; experimental)
-  - `browser --headless-smoke --js …` (headless smoke test mode; selects a vm-js `BrowserTab` harness)
+  - Windowed UI: JavaScript is currently enabled by default (no stable CLI toggle to disable it yet;
+    `browser --js` does not change behaviour in windowed mode).
+  - `browser --headless-smoke --js …` (vm-js `BrowserTab` smoke test; this is the only thing the
+    `browser --js` flag currently controls)
   - Note: the `browser` binary does not expose the shared JS budget flags.
   - Example (headless smoke test):
 
