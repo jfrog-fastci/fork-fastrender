@@ -258,6 +258,39 @@ fn compiled_strict_equality_compares_bigint_values() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_template_literal_concatenates() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let x = 2;
+        return `a${x}b`;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  let expected = scope.alloc_string("a2b")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_execution_respects_fuel_budget_in_infinite_loop() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

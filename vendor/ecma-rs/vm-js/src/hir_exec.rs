@@ -143,7 +143,6 @@ fn vec_try_extend_utf16_from_str_with_ticks(
       .map_err(|_| VmError::OutOfMemory)?;
     out.extend_from_slice(&buf[..buf_len]);
   }
-
   Ok(())
 }
 
