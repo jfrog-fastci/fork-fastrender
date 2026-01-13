@@ -79,3 +79,23 @@ fn async_generator_function_constructor_to_string_matches_test262() -> Result<()
   }
   Ok(())
 }
+
+#[test]
+fn async_generator_function_constructor_to_string_handles_line_comments() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script(
+    "const AsyncGeneratorFunction = Object.getPrototypeOf(async function*(){}).constructor;\n\
+     AsyncGeneratorFunction(\"a\", \" /* a */ b, c /* b */ //\", \"/* c */ ; /* d */ //\").toString()",
+  ) {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert_eq!(
+        s,
+        "async function* anonymous(a, /* a */ b, c /* b */ //\n) {\n/* c */ ; /* d */ //\n}"
+      );
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
