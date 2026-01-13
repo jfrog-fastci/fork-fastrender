@@ -2694,7 +2694,7 @@ impl BrowserRuntime {
           if !tab.loading {
             tab
               .history
-              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+              .update_scroll_state(&tab.scroll_state);
           }
           tab.history.go_back().map(|entry| entry.url.clone())
         };
@@ -2720,7 +2720,7 @@ impl BrowserRuntime {
           if !tab.loading {
             tab
               .history
-              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+              .update_scroll_state(&tab.scroll_state);
           }
           tab.history.go_forward().map(|entry| entry.url.clone())
         };
@@ -2746,7 +2746,7 @@ impl BrowserRuntime {
           if !tab.loading {
             tab
               .history
-              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+              .update_scroll_state(&tab.scroll_state);
           }
           tab
             .history
@@ -2877,7 +2877,7 @@ impl BrowserRuntime {
               if tab.loading {
                 tab
                   .history
-                  .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+                  .update_scroll_state(&tab.scroll_state);
               }
             }
             return;
@@ -3092,7 +3092,7 @@ impl BrowserRuntime {
             if tab.loading {
               tab
                 .history
-                .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+                .update_scroll_state(&tab.scroll_state);
             }
           }
         }
@@ -3853,6 +3853,17 @@ impl BrowserRuntime {
             return;
           };
 
+          // Best-effort: persist the current scroll position before moving the history index. This
+          // matters when a scroll message updated `tab.scroll_state` but the paint job hasn't run
+          // yet.
+          //
+          // Only do this when we are not in the middle of a navigation: during an in-flight
+          // navigation, the history index may already point at the pending entry while the UI is
+          // still showing the previous document/scroll state.
+          if !tab.loading {
+            tab.history.update_scroll_state(&tab.scroll_state);
+          }
+
           if tab
             .history
             .current()
@@ -3968,31 +3979,35 @@ impl BrowserRuntime {
             let url_string = target_url.to_string();
 
             if push_history {
-              // Persist current scroll position for the previous history entry before pushing a
-              // new entry for the fragment navigation.
-              //
-              // Note: for back/forward navigations, the history index has already been moved by
-              // the caller, so updating scroll here would corrupt the target entry.
-              tab
-                .history
-                .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-              tab.history.push(url_string.clone());
-            }
+               // Persist current scroll position for the previous history entry before pushing a
+               // new entry for the fragment navigation.
+               //
+               // Note: for back/forward navigations, the history index has already been moved by
+               // the caller, so updating scroll here would corrupt the target entry.
+               tab
+                 .history
+                 .update_scroll_state(&tab.scroll_state);
+               tab.history.push(url_string.clone());
+             }
 
             tab.last_committed_url = Some(url_string.clone());
             doc.set_document_url(Some(url_string.clone()));
 
             let fragment = target_url.fragment().unwrap_or("");
-            let offset = if matches!(reason, NavigationReason::BackForward) {
-              tab
+
+            let mut next_scroll_state = tab.scroll_state.clone();
+            if matches!(reason, NavigationReason::BackForward) {
+              // Same-document back/forward: restore the full scroll state saved in history (viewport
+              // + nested element scrollers).
+              next_scroll_state = tab
                 .history
                 .current()
-                .map(|entry| Point::new(entry.scroll_x, entry.scroll_y))
-                .unwrap_or(Point::ZERO)
+                .map(|entry| entry.scroll_state())
+                .unwrap_or_default();
             } else if fragment.is_empty() {
-              Point::ZERO
+              next_scroll_state.viewport = Point::ZERO;
             } else {
-              match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+              let offset = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let viewport = fragment_tree.viewport_size();
                 let offset = scroll_offset_for_fragment_target(
                   dom,
@@ -4012,17 +4027,16 @@ impl BrowserRuntime {
                       line: format!("fragment navigation scroll failed: {err}"),
                     });
                   }
-                  tab.scroll_state.viewport
+                  next_scroll_state.viewport
                 }
-              }
-            };
+              };
+              next_scroll_state.viewport = offset;
+            }
 
             let prev_scroll = tab.scroll_state.clone();
-            let mut next_scroll = prev_scroll.clone();
-            next_scroll.viewport = offset;
-            next_scroll.update_deltas_from(&prev_scroll);
-            tab.scroll_state = next_scroll.clone();
-            doc.set_scroll_state(next_scroll);
+            next_scroll_state.update_deltas_from(&prev_scroll);
+            tab.scroll_state = next_scroll_state.clone();
+            doc.set_scroll_state(next_scroll_state);
             if let Some(js_tab) = tab.js_tab.as_mut() {
               js_tab.set_scroll_state(tab.scroll_state.clone());
             }
@@ -4078,14 +4092,14 @@ impl BrowserRuntime {
     });
     if push_history {
       if !had_pending_navigation {
-        // Persist the current scroll position before pushing a new history entry. This is required
-        // for correct scroll restoration when a scroll message arrives and the subsequent paint is
-        // pre-empted by a navigation job.
-        tab
-          .history
-          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-      }
-      if had_pending_history_entry {
+         // Persist the current scroll position before pushing a new history entry. This is required
+         // for correct scroll restoration when a scroll message arrives and the subsequent paint is
+         // pre-empted by a navigation job.
+         tab
+           .history
+           .update_scroll_state(&tab.scroll_state);
+       }
+       if had_pending_history_entry {
         // If we already pushed a provisional history entry for an in-flight navigation, normally
         // replace it in-place to avoid cancelled URLs showing up in the back/forward list.
         //
@@ -4469,7 +4483,7 @@ impl BrowserRuntime {
       tab.sync_js_scroll_state();
       tab
         .history
-        .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+        .update_scroll_state(&tab.scroll_state);
       let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
         tab_id,
         scroll: tab.scroll_state.clone(),
@@ -8531,7 +8545,7 @@ impl BrowserRuntime {
         tab.cancel.snapshot_paint(),
         tab.viewport_css,
         tab.dpr,
-        tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
+        tab.history.current().map(|e| e.scroll_state()),
         tab.cancel.clone(),
         doc,
         tab.site_key.clone(),
@@ -9089,10 +9103,7 @@ impl BrowserRuntime {
     let mut js_prepaint_synced = false;
 
     // Compute initial scroll state (including fragment navigations like `#target`).
-    let mut scroll_state = ScrollState::with_viewport(Point::new(
-      initial_scroll.map(|(x, _)| x).unwrap_or(0.0),
-      initial_scroll.map(|(_, y)| y).unwrap_or(0.0),
-    ));
+    let mut scroll_state = initial_scroll.unwrap_or_default();
     if apply_fragment_scroll {
       if let Some(fragment) = url_fragment(&committed_url) {
         let offset = if fragment.is_empty() {
@@ -9325,7 +9336,7 @@ impl BrowserRuntime {
           tab.scroll_state = scroll_state.clone();
           tab
             .history
-            .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+            .update_scroll_state(&tab.scroll_state);
           tab.document = Some(doc);
           tab.interaction = interaction;
           tab.tick_time = Duration::ZERO;
@@ -9565,7 +9576,7 @@ impl BrowserRuntime {
     }
     tab
       .history
-      .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+      .update_scroll_state(&tab.scroll_state);
     tab.document = Some(doc);
     tab.interaction = interaction;
     tab.tick_time = Duration::ZERO;
@@ -10110,7 +10121,7 @@ impl BrowserRuntime {
       }
       tab
         .history
-        .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+        .update_scroll_state(&tab.scroll_state);
 
       let actual_dpr = tab
         .document

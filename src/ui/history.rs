@@ -1,10 +1,19 @@
+use std::collections::HashMap;
 use std::time::SystemTime;
+
+use crate::geometry::Point;
+use crate::scroll::ScrollState;
 
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
   pub url: String,
   pub scroll_x: f32,
   pub scroll_y: f32,
+  /// Scroll offsets for element scroll containers keyed by box_id.
+  ///
+  /// This is sourced from [`ScrollState::elements`] so history back/forward can restore nested
+  /// scrollers in addition to the viewport scroll.
+  pub element_scroll: HashMap<usize, Point>,
   pub title: Option<String>,
   pub timestamp: Option<SystemTime>,
 }
@@ -15,9 +24,17 @@ impl HistoryEntry {
       url,
       scroll_x: 0.0,
       scroll_y: 0.0,
+      element_scroll: HashMap::new(),
       title: None,
       timestamp: None,
     }
+  }
+
+  pub fn scroll_state(&self) -> ScrollState {
+    ScrollState::from_parts(
+      Point::new(self.scroll_x, self.scroll_y),
+      self.element_scroll.clone(),
+    )
   }
 }
 
@@ -186,6 +203,20 @@ impl TabHistory {
 
     entry.scroll_x = scroll_x;
     entry.scroll_y = scroll_y;
+  }
+
+  pub fn update_scroll_state(&mut self, scroll_state: &ScrollState) {
+    let Some(i) = self.index else {
+      return;
+    };
+    let Some(entry) = self.entries.get_mut(i) else {
+      debug_assert!(false, "TabHistory invariant violated: index out of bounds");
+      return;
+    };
+
+    entry.scroll_x = scroll_state.viewport.x;
+    entry.scroll_y = scroll_state.viewport.y;
+    entry.element_scroll = scroll_state.elements.clone();
   }
 
   pub fn set_title(&mut self, title: String) {
