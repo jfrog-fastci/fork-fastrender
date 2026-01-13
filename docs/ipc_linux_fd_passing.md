@@ -171,6 +171,17 @@ process termination via `SIGPIPE`:
 - Alternatively, ignore `SIGPIPE` process-wide (common for network servers) and treat `EPIPE` as a
   normal error.
 
+### Robustness footgun: retry `sendmsg`/`recvmsg` on `EINTR` (and treat short sends as fatal)
+
+Signals can interrupt syscalls. `sendmsg(2)` / `recvmsg(2)` can return `-1` with `errno=EINTR` if a
+signal is delivered before the syscall completes.
+
+Rules of thumb:
+
+- Always retry on `EINTR`.
+- On `SOCK_SEQPACKET`, a successful `sendmsg()` should write the full message. If it returns a short
+  write, treat that as an error and close the connection (protocol state is ambiguous).
+
 ### FD passing footgun: include at least 1 byte of non-ancillary data
 
 When sending `SCM_RIGHTS`, include at least **one byte** of real (non-ancillary) data in the same
