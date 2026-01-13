@@ -18,7 +18,7 @@ start with [`docs/runtime_stacks.md`](runtime_stacks.md).
 
 ## Three “drivers”: tasks-only vs step-wise vs converge-to-stable
 
-### 1) `BrowserTab::run_event_loop_until_idle(...)` (tasks/microtasks/timers only)
+### 1) `BrowserTab::run_event_loop_until_idle(...)` (tasks/microtasks/timers/idle callbacks only)
 
 `run_event_loop_until_idle(limits)` executes **runnable** event-loop work until no runnable work
 remains or a limit is hit:
@@ -47,7 +47,7 @@ use fastrender::js::RunLimits;
 fn main() -> Result<()> {
     let mut tab = BrowserTab::from_html_with_vmjs("<!doctype html><p>hi</p>", RenderOptions::new())?;
 
-    // Drain tasks/microtasks/timers (bounded).
+    // Drain tasks/microtasks/timers/idle callbacks (bounded).
     let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
     // Rendering is explicit.
@@ -188,7 +188,7 @@ It considers:
   it returns the next eligible animation-frame time (based on
   `JsExecutionOptions.animation_frame_interval`), clamped to `>= now`.
 
-If nothing is scheduled (no tasks/microtasks, no pending timers, no pending rAF), it returns `None`.
+If nothing is scheduled (no tasks/microtasks/idle callbacks, no pending timers, no pending rAF), it returns `None`.
 
 ---
 
