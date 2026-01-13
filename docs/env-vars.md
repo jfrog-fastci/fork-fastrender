@@ -167,7 +167,7 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - Set `1` to enable the compatibility behavior, which may prevent replaced elements from overflowing their containing block when author CSS does not constrain them.
   - Note: this toggle intentionally does **not** apply to inline `<svg>` elements.
 
-- `FASTR_CLASSIC_SCROLLBARS=0|1` – enable legacy classic-scrollbar layout behavior for `overflow:auto` blocks.
+- `FASTR_CLASSIC_SCROLLBARS=0|1` – enable legacy classic-scrollbar layout behavior for `overflow:auto` containers.
   - Default: `0` (disabled). FastRender models scrollbars as overlay by default; layout space is reserved only when the author opts in via `scrollbar-gutter: stable`.
   - When enabled, block layout may perform extra reflow passes to “force” scrollbars when content overflows. This is significantly more expensive on float-heavy pages and is intended only for compatibility experiments.
 
