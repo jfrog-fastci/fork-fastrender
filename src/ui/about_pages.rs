@@ -2573,6 +2573,47 @@ mod tests {
 
   #[cfg(feature = "browser_ui")]
   #[test]
+  fn about_processes_renders_open_tabs_snapshot_and_escapes_urls() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let raw_url1 = "https://example.test/?q=1&x=<tag>\"'";
+    let raw_url2 = "about:newtab?x=1&y=<2>";
+    let safe_url1 = escape_html(raw_url1);
+    let safe_url2 = escape_html(raw_url2);
+
+    set_about_page_snapshot(AboutPageSnapshot {
+      open_tabs: vec![
+        OpenTabSnapshot {
+          tab_id: 1111,
+          url: raw_url1.to_string(),
+        },
+        OpenTabSnapshot {
+          tab_id: 2222,
+          url: raw_url2.to_string(),
+        },
+      ],
+      ..Default::default()
+    });
+
+    let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
+    assert!(html.contains("<title>Processes</title>"));
+    assert!(html.contains("<code>1111</code>"));
+    assert!(html.contains("<code>2222</code>"));
+
+    // URLs must be HTML escaped before being inserted into the template.
+    assert!(html.contains(&safe_url1));
+    assert!(html.contains(&safe_url2));
+    assert!(!html.contains(raw_url1));
+    assert!(!html.contains(raw_url2));
+
+    set_about_page_snapshot(before);
+  }
+
+  #[cfg(feature = "browser_ui")]
+  #[test]
   fn sync_history_from_global_history_store_updates_snapshot_and_newtab() {
     use std::time::{Duration, UNIX_EPOCH};
 

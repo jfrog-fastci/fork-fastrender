@@ -712,6 +712,38 @@ fn open_typed_in_new_tab_state(
   ))
 }
 
+/// Build a best-effort open-tabs snapshot for debug `about:` pages.
+///
+/// The windowed browser UI owns the authoritative tab list for a window; `about:` page templates
+/// expect a lightweight snapshot of tab ids + committed URLs.
+#[cfg(any(test, feature = "browser_ui"))]
+fn about_open_tabs_snapshot_from_browser_state(
+  browser_state: &fastrender::ui::BrowserAppState,
+) -> Vec<fastrender::ui::about_pages::OpenTabSnapshot> {
+  use fastrender::ui::about_pages::OpenTabSnapshot;
+
+  // Clamp/normalize using the same untrusted helpers used for worker-provided chrome strings so
+  // extremely large URLs cannot bloat the snapshot.
+  const MAX_URL_BYTES: usize = fastrender::ui::protocol_limits::MAX_URL_BYTES;
+
+  browser_state
+    .tabs
+    .iter()
+    .map(|tab| {
+      let url = tab
+        .committed_url
+        .as_deref()
+        .or(tab.current_url.as_deref())
+        .unwrap_or("");
+      let url = fastrender::ui::untrusted::sanitize_untrusted_text(url, MAX_URL_BYTES);
+      OpenTabSnapshot {
+        tab_id: tab.id.0,
+        url,
+      }
+    })
+    .collect()
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn truncate_utf8_str_to_bytes(value: &str, max_bytes: usize) -> String {
   if max_bytes == 0 {
@@ -9914,6 +9946,9 @@ impl App {
 
     // Initial UX: focus the address bar so typing immediately navigates.
     self.focus_address_bar_select_all();
+
+    // Keep debug `about:` pages (e.g. `about:processes`) updated with the current open tabs list.
+    self.sync_about_open_tabs_snapshot();
   }
 
   fn sync_window_title(&mut self) {
@@ -11693,6 +11728,7 @@ impl App {
     for msg in msgs {
       let _ = self.send_worker_msg(msg);
     }
+    self.sync_about_open_tabs_snapshot();
     self.window.request_redraw();
   }
 
@@ -12346,7 +12382,12 @@ impl App {
       _ => None,
     };
 
+    let sync_open_tabs_snapshot =
+      matches!(msg, fastrender::ui::WorkerToUi::NavigationCommitted { .. });
     let update = self.browser_state.apply_worker_msg(msg);
+    if sync_open_tabs_snapshot {
+      self.sync_about_open_tabs_snapshot();
+    }
     history_changed |= update.history_changed;
 
     let has_frame_ready = update.frame_ready.is_some();
@@ -14026,6 +14067,7 @@ impl App {
     );
 
     let mut session_dirty = false;
+    let mut open_tabs_snapshot_dirty = false;
     let (
       tab_id,
       pos_css,
@@ -15955,6 +15997,12 @@ impl App {
     if request_flush {
       self.profile_bookmarks_flush_requested = true;
     }
+  }
+
+  fn sync_about_open_tabs_snapshot(&self) {
+    fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(
+      about_open_tabs_snapshot_from_browser_state(&self.browser_state),
+    );
   }
 
   fn toggle_bookmark_for_active_tab(&mut self) {
@@ -18415,6 +18463,7 @@ impl App {
         }
         ChromeAction::NewTab => {
           session_dirty = true;
+          open_tabs_snapshot_dirty = true;
           let tab_id = fastrender::ui::TabId::new();
           let initial_url = "about:newtab".to_string();
           let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
@@ -18452,6 +18501,7 @@ impl App {
           };
 
           session_dirty = true;
+          open_tabs_snapshot_dirty = true;
           let tab_id = fastrender::ui::TabId::new();
           let url = closed.url;
           let mut tab_state = fastrender::ui::BrowserTabState::new(tab_id, url.clone());
@@ -18504,6 +18554,7 @@ impl App {
           // the invariant that each window always has at least one tab.
           if self.browser_state.tabs.len() <= 1 {
             session_dirty = true;
+            open_tabs_snapshot_dirty = true;
             let replacement_id = fastrender::ui::TabId::new();
             let initial_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
             let mut tab_state =
@@ -18607,6 +18658,7 @@ impl App {
 
           // Close the tab in the source window.
           session_dirty = true;
+          open_tabs_snapshot_dirty = true;
           self.pending_frame_uploads.remove_tab(tab_id);
           self.next_media_wakeup.remove(&tab_id);
           self.last_media_wakeup_tick.remove(&tab_id);
@@ -18712,6 +18764,7 @@ impl App {
           }
 
           session_dirty = true;
+          open_tabs_snapshot_dirty = true;
           self.pending_frame_uploads.remove_tab(tab_id);
           self.next_media_wakeup.remove(&tab_id);
           self.last_media_wakeup_tick.remove(&tab_id);
@@ -18793,6 +18846,7 @@ impl App {
             continue;
           }
 
+          open_tabs_snapshot_dirty = true;
           for closed_tab_id in closed {
             self.pending_frame_uploads.remove_tab(closed_tab_id);
             self.next_media_wakeup.remove(&closed_tab_id);
@@ -18845,6 +18899,7 @@ impl App {
             continue;
           }
 
+          open_tabs_snapshot_dirty = true;
           for closed_tab_id in closed {
             self.pending_frame_uploads.remove_tab(closed_tab_id);
             self.next_media_wakeup.remove(&closed_tab_id);
@@ -18921,6 +18976,7 @@ impl App {
           let Some(source) = self.browser_state.tab(source_tab_id) else {
             continue;
           };
+          open_tabs_snapshot_dirty = true;
           let url = source
             .committed_url
             .clone()
@@ -18969,6 +19025,7 @@ impl App {
         ChromeAction::ActivateTab(tab_id) => {
           if self.browser_state.set_active_tab(tab_id) {
             session_dirty = true;
+            open_tabs_snapshot_dirty = true;
             self.viewport_cache_tab = None;
             self.last_page_upload_at = None;
             self.next_page_upload_redraw = None;
@@ -18998,6 +19055,7 @@ impl App {
           match result {
             Ok((_tab_id, msgs)) => {
               session_dirty = true;
+              open_tabs_snapshot_dirty = true;
               self.apply_open_url_in_new_tab_messages(msgs);
             }
             Err(err) => {
@@ -19180,6 +19238,10 @@ impl App {
           let _ = self.send_worker_msg(UiToWorker::GoForward { tab_id });
         }
       }
+    }
+
+    if open_tabs_snapshot_dirty {
+      self.sync_about_open_tabs_snapshot();
     }
 
     session_dirty
