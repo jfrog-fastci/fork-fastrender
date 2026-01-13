@@ -10,9 +10,10 @@
 //!   all threads in the process. If you apply the sandbox after spawning threads, the kernel may
 //!   reject the request (or you may inadvertently sandbox background threads that still need
 //!   broader syscall access).
-//! - **macOS**: renderers can call `sandbox_init(3)` (Seatbelt) in-process, but the browser process
-//!   may also want a *pre-main* sandbox when spawning renderers from a multithreaded parent. See
-//!   [`macos_spawn`] for a `/usr/bin/sandbox-exec` based launcher helper.
+//! - **macOS**: renderers can call `sandbox_init(3)` (Seatbelt) in-process. For debugging/legacy,
+//!   the browser process can also launch renderers through `/usr/bin/sandbox-exec` (deprecated by
+//!   Apple; may be removed in future macOS releases). See [`macos_spawn`] for helpers and
+//!   `FASTR_MACOS_USE_SANDBOX_EXEC=1` gating.
 //! - **Windows**: renderers are intended to be spawned in an AppContainer (no capabilities) with
 //!   a Job Object configured for kill-on-close and active-process limiting. If AppContainer is
 //!   unavailable, a restricted-token + low-integrity fallback is used (see [`windows`]).

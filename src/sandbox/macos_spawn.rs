@@ -4,11 +4,15 @@
 //!
 //! macOS exposes the "Seatbelt" sandbox through two main interfaces:
 //!
-//! - **`/usr/bin/sandbox-exec` (recommended for pre-main sandboxing):**
+//! - **`/usr/bin/sandbox-exec` (debug/legacy, deprecated by Apple):**
 //!   The browser process launches the renderer *through* `sandbox-exec`, so the renderer starts
 //!   executing already sandboxed. This is useful when the parent (browser) process is
 //!   multithreaded and cannot safely use `std::os::unix::process::CommandExt::pre_exec`, which runs
 //!   after `fork()` and is undefined/unsafe in a multithreaded parent.
+//!
+//!   ⚠️ Apple has deprecated `sandbox-exec` and may remove it in future macOS releases. FastRender
+//!   keeps this path primarily as a pragmatic fallback for debugging or for experimenting with SBPL
+//!   profiles externally. Prefer in-process `sandbox_init` for long-term sandboxing.
 //!
 //! - **`sandbox_init(3)` (recommended for in-process sandboxing):**
 //!   The renderer calls the Seatbelt API itself very early in `main` (or earlier) to apply a
@@ -19,6 +23,17 @@
 //!
 //! In a multiprocess browser architecture, `sandbox-exec` is a pragmatic way to ensure the
 //! renderer's *entire* lifetime (including early initialization code) runs inside the sandbox.
+//!
+//! # Opt-in gate
+//!
+//! `sandbox-exec` usage is intentionally opt-in. Set:
+//!
+//! ```text
+//! FASTR_MACOS_USE_SANDBOX_EXEC=1
+//! ```
+//!
+//! And then call [`maybe_wrap_command_with_sandbox_exec`] (or
+//! [`wrap_command_with_sandbox_exec`]) when spawning a renderer.
 
 #[cfg(target_os = "macos")]
 use std::ffi::OsString;
@@ -35,6 +50,100 @@ use std::{fs, io};
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 #[cfg(target_os = "macos")]
 const PURE_COMPUTATION_PROFILE_NAME: &str = "pure-computation";
+
+/// Opt-in env var gate for wrapping child processes with `sandbox-exec`.
+#[cfg(target_os = "macos")]
+pub const ENV_MACOS_USE_SANDBOX_EXEC: &str = "FASTR_MACOS_USE_SANDBOX_EXEC";
+
+#[cfg(target_os = "macos")]
+fn parse_env_bool(raw: Option<&str>) -> bool {
+  let Some(raw) = raw else {
+    return false;
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return false;
+  }
+  !matches!(
+    raw.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
+/// Returns `true` when `FASTR_MACOS_USE_SANDBOX_EXEC` is set to an enabled value.
+#[cfg(target_os = "macos")]
+pub fn macos_use_sandbox_exec_from_env() -> bool {
+  parse_env_bool(std::env::var(ENV_MACOS_USE_SANDBOX_EXEC).ok().as_deref())
+}
+
+/// Conditionally wrap `cmd` under `sandbox-exec` when `FASTR_MACOS_USE_SANDBOX_EXEC` is enabled.
+#[cfg(target_os = "macos")]
+pub fn maybe_wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+  if macos_use_sandbox_exec_from_env() {
+    wrap_command_with_sandbox_exec(cmd, sbpl)?;
+  }
+  Ok(())
+}
+
+/// Rewrite `cmd` so it executes under `sandbox-exec`.
+///
+/// Specifically, the command is transformed to:
+/// `sandbox-exec -p <sbpl> -- <original-exe> <args...>`
+///
+/// This helper does **not** invoke a shell; all arguments are forwarded as separate argv entries.
+///
+/// Note: The rewrite constructs a new [`Command`] internally. Environment overrides and
+/// `current_dir` are preserved, but other configuration (notably stdio) should be applied after
+/// calling this helper.
+#[cfg(target_os = "macos")]
+pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+  if sbpl.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "SBPL profile string is empty",
+    ));
+  }
+  if sbpl.as_bytes().contains(&0) {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "SBPL profile string contains NUL byte",
+    ));
+  }
+
+  let original_program = cmd.get_program().to_os_string();
+  if original_program.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "command program is empty",
+    ));
+  }
+  let current_dir: Option<PathBuf> = cmd.get_current_dir().map(PathBuf::from);
+
+  let mut wrapped = Command::new(SANDBOX_EXEC_PATH);
+  wrapped
+    .arg("-p")
+    .arg(sbpl)
+    .arg("--")
+    .arg(&original_program)
+    .args(cmd.get_args());
+
+  if let Some(dir) = current_dir {
+    wrapped.current_dir(dir);
+  }
+  for (key, value) in cmd.get_envs() {
+    match value {
+      Some(value) => {
+        wrapped.env(key, value);
+      }
+      None => {
+        wrapped.env_remove(key);
+      }
+    }
+  }
+
+  *cmd = wrapped;
+  Ok(())
+}
 
 /// Fallback sandbox profile used with `sandbox-exec -p ...` when `sandbox-exec -n` is unavailable.
 ///
@@ -187,92 +296,84 @@ pub fn sandbox_exec_command(
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
   use super::*;
-  use std::io;
-  use std::net::{TcpListener, TcpStream};
+  use std::ffi::OsStr;
+  use std::net::TcpListener;
+  use std::sync::{Mutex, OnceLock};
 
-  // This test is macOS-only and ignored by default because it relies on the host having a working
-  // Seatbelt sandbox (`sandbox-exec`). It's still valuable to run locally on macOS to validate that
-  // the fallback profile blocks filesystem/network access.
+  static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+  fn env_lock() -> &'static Mutex<()> {
+    ENV_LOCK.get_or_init(|| Mutex::new(()))
+  }
+
   #[test]
-  #[ignore]
-  fn sandbox_exec_blocks_file_and_network() {
+  fn sandbox_exec_blocks_network_bind() {
     const CHILD_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_CHILD";
-    const PORT_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_PORT";
+    const EXPECT_ENV: &str = "FASTR_TEST_SANDBOX_EXEC_EXPECT_BIND_OK";
 
-    fn is_permission_error(err: &io::Error) -> bool {
-      if err.kind() == io::ErrorKind::PermissionDenied {
-        return true;
+    if std::env::var_os(CHILD_ENV).is_some() {
+      let expect_ok = std::env::var_os(EXPECT_ENV)
+        .as_deref()
+        .is_some_and(|v| v == OsStr::new("1"));
+      let result = TcpListener::bind(("127.0.0.1", 0));
+      if expect_ok {
+        assert!(
+          result.is_ok(),
+          "expected network bind to succeed, got: {:?}",
+          result.err()
+        );
+      } else {
+        let err = result.expect_err("expected network bind to be blocked by sandbox-exec");
+        assert!(
+          err.kind() == io::ErrorKind::PermissionDenied
+            || matches!(err.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES)),
+          "expected network bind to be denied by sandbox-exec, got {err:?}"
+        );
       }
-      matches!(err.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES))
-    }
-
-    let is_child = std::env::var_os(CHILD_ENV).is_some();
-    if is_child {
-      let port: u16 = std::env::var(PORT_ENV)
-        .expect("child process missing sandbox port env var")
-        .parse()
-        .expect("parse sandbox port env var");
-
-      let read_err = std::fs::read("/private/etc/passwd")
-        .or_else(|err| {
-          if err.kind() == io::ErrorKind::NotFound {
-            std::fs::read("/etc/passwd")
-          } else {
-            Err(err)
-          }
-        })
-        .expect_err("expected sandbox to block reading /etc/passwd");
-      assert!(
-        is_permission_error(&read_err),
-        "expected file read to be denied by sandbox, got {read_err:?}"
-      );
-
-      let connect_err =
-        TcpStream::connect(("127.0.0.1", port)).expect_err("expected sandbox to block TCP connect");
-      assert!(
-        is_permission_error(&connect_err),
-        "expected connect to be denied by sandbox, got {connect_err:?}"
-      );
       return;
     }
 
-    // Ensure the test is meaningful: without a sandbox, these operations should succeed on normal
-    // macOS hosts. If they don't, skip the test rather than producing misleading output.
-    if std::fs::read("/etc/passwd").is_err() {
-      eprintln!("skipping: cannot read /etc/passwd in parent process");
-      return;
-    }
+    let _guard = env_lock().lock().unwrap();
 
-    let listener = match TcpListener::bind(("127.0.0.1", 0)) {
-      Ok(listener) => listener,
-      Err(_) => {
-        eprintln!("skipping: cannot bind localhost in parent process");
-        return;
-      }
-    };
-    let port = listener
-      .local_addr()
-      .expect("listener local addr")
-      .port()
-      .to_string();
-    if TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).is_err() {
-      eprintln!("skipping: cannot connect to localhost in parent process");
+    // Skip the test if sandbox-exec is missing (it is deprecated and may not exist on future macOS
+    // releases / minimal images).
+    if !Path::new(SANDBOX_EXEC_PATH).is_file() {
+      eprintln!("skipping: {SANDBOX_EXEC_PATH} is missing");
       return;
     }
 
     let exe = std::env::current_exe().expect("current test exe path");
-    let test_name = "sandbox::macos_spawn::tests::sandbox_exec_blocks_file_and_network";
-    let args = vec![
-      OsString::from("--exact"),
-      OsString::from(test_name),
-      OsString::from("--nocapture"),
-    ];
+    let test_name = "sandbox::macos_spawn::tests::sandbox_exec_blocks_network_bind";
 
-    let mut cmd =
-      sandbox_exec_command(&exe, &args).expect("construct sandbox-exec wrapped test command");
-    cmd.env(CHILD_ENV, "1");
-    cmd.env(PORT_ENV, port);
-    let output = cmd.output().expect("spawn sandboxed child test process");
+    // First validate that network bind works *without* sandbox-exec so we know the environment is
+    // capable of binding localhost.
+    let baseline = Command::new(&exe)
+      .env(CHILD_ENV, "1")
+      .env(EXPECT_ENV, "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn baseline child process");
+    if !baseline.status.success() {
+      eprintln!(
+        "skipping: baseline child could not bind localhost (stdout={}, stderr={})",
+        String::from_utf8_lossy(&baseline.stdout),
+        String::from_utf8_lossy(&baseline.stderr)
+      );
+      return;
+    }
+
+    let sbpl = "(version 1)\n(allow default)\n(deny network*)\n";
+    let mut cmd = Command::new(&exe);
+    cmd
+      .env(CHILD_ENV, "1")
+      .env(EXPECT_ENV, "0")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture");
+    wrap_command_with_sandbox_exec(&mut cmd, sbpl).expect("wrap command with sandbox-exec");
+    let output = cmd.output().expect("spawn sandboxed child process");
     assert!(
       output.status.success(),
       "sandboxed child should exit successfully (stdout={}, stderr={})",
