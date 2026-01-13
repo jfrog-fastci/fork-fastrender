@@ -9,6 +9,35 @@ fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
 }
 
+fn non_white_bbox(pixmap: &Pixmap) -> Option<(u32, u32, u32, u32)> {
+  let width = pixmap.width();
+  let height = pixmap.height();
+  let mut min_x = width;
+  let mut min_y = height;
+  let mut max_x = 0u32;
+  let mut max_y = 0u32;
+  let mut any = false;
+
+  for y in 0..height {
+    for x in 0..width {
+      let px = pixel(pixmap, x, y);
+      // Backgrounds in these tests are solid white; treat near-white pixels as background to avoid
+      // accidentally counting subpixel noise outside glyph bounds.
+      if px[0] > 250 && px[1] > 250 && px[2] > 250 {
+        continue;
+      }
+
+      any = true;
+      min_x = min_x.min(x);
+      min_y = min_y.min(y);
+      max_x = max_x.max(x);
+      max_y = max_y.max(y);
+    }
+  }
+
+  any.then_some((min_x, min_y, max_x, max_y))
+}
+
 fn render_html_with_svg_document_css_injection_disabled(
   renderer: &mut FastRender,
   html: &str,
@@ -582,6 +611,55 @@ fn inline_svg_opacity_attribute_overridden_by_css_is_serialized_when_document_cs
         pixel(&pixmap, 10, 10),
         [255, 0, 0, 255],
         "computed opacity should override the markup opacity attribute"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_dominant_baseline_attribute_does_not_leak_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html_with_attr = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        .t { dominant-baseline: alphabetic; font-size: 80px; fill: rgb(0, 0, 0); }
+      </style>
+      <svg width="120" height="140" viewBox="0 0 120 140">
+        <text dominant-baseline="hanging" class="t" x="10" y="90">X</text>
+      </svg>
+      "#;
+
+      let html_without_attr = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        .t { dominant-baseline: alphabetic; font-size: 80px; fill: rgb(0, 0, 0); }
+      </style>
+      <svg width="120" height="140" viewBox="0 0 120 140">
+        <text class="t" x="10" y="90">X</text>
+      </svg>
+      "#;
+
+      let with_attr =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, html_with_attr, 120, 140);
+      let without_attr = render_html_with_svg_document_css_injection_disabled(
+        &mut renderer,
+        html_without_attr,
+        120,
+        140,
+      );
+
+      let with_bbox = non_white_bbox(&with_attr).expect("expected baseline text to render");
+      let without_bbox = non_white_bbox(&without_attr).expect("expected baseline text to render");
+      assert_eq!(
+        with_bbox, without_bbox,
+        "dominant-baseline presentation attribute should be stripped so output matches the control"
       );
     })
     .unwrap()

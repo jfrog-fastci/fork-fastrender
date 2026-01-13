@@ -1347,6 +1347,8 @@ fn svg_inlined_presentation_attr(name: &str) -> bool {
     || name.eq_ignore_ascii_case("color-interpolation")
     || name.eq_ignore_ascii_case("color-interpolation-filters")
     || name.eq_ignore_ascii_case("mask-type")
+    || name.eq_ignore_ascii_case("dominant-baseline")
+    || name.eq_ignore_ascii_case("baseline-shift")
 }
 
 fn attrs_need_svg_inlined_presentation_stripping(attrs: &[(String, String)]) -> bool {
