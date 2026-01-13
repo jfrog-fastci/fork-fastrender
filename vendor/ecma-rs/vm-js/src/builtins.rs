@@ -18923,7 +18923,9 @@ pub fn string_prototype_replace(
     buf.extend_from_slice(units);
     buf
   } else {
-    let replace_s = replace_s.expect("replace_s computed for non-callable replaceValue");
+    let Some(replace_s) = replace_s else {
+      return Err(VmError::InvariantViolation("replace string should be computed"));
+    };
     let captures = [pos, pos.saturating_add(search_len)];
     get_substitution(
       vm,
