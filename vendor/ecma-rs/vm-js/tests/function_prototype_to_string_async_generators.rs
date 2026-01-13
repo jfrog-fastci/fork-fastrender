@@ -239,3 +239,31 @@ async /* a */ * /* b */ [ /* c */ x /* d */ ] /* e */ ( /* f */ ) /* g */ { /* h
   }
   Ok(())
 }
+
+#[test]
+fn proxy_async_generator_function_to_string_is_native() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script("new Proxy(async function*() {}, {}).toString()") {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert!(s.contains("[native code]"));
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
+
+#[test]
+fn proxy_async_generator_method_to_string_is_native() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+  match rt.exec_script("new Proxy({ async * method() {} }.method, {}).toString()") {
+    Ok(value) => {
+      let s = value_to_utf8(&rt, value);
+      assert!(s.contains("[native code]"));
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => {}
+    Err(err) => return Err(err),
+  }
+  Ok(())
+}
