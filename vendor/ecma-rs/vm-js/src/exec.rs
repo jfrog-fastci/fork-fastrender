@@ -15131,6 +15131,58 @@ pub(crate) enum GenFrame {
   /// Continue a destructuring assignment after evaluating the RHS.
   AssignAfterRhsPattern { expr: *const BinaryExpr },
 
+  /// Finish a destructuring assignment after binding the pattern.
+  ///
+  /// Restores the assignment expression result to the original RHS value (ECMA-262 assignment
+  /// expressions evaluate to the RHS even for destructuring).
+  AssignPatternAfterBind {
+    result: Value,
+  },
+
+  /// Continue object destructuring after evaluating a computed property key.
+  BindObjAfterKey {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring after evaluating a default initializer expression.
+  BindObjAfterDefault {
+    pat: *const ObjPat,
+    prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    kind: BindingKind,
+  },
+  /// Continue object destructuring after binding a property target pattern.
+  BindObjContinue {
+    pat: *const ObjPat,
+    next_prop_index: usize,
+    value: Value,
+    excluded: Vec<PropertyKey>,
+    kind: BindingKind,
+  },
+
+  /// Continue array destructuring after evaluating a default initializer expression.
+  BindArrAfterDefault {
+    pat: *const ArrPat,
+    elem_index: usize,
+    array_index: u32,
+    len: u32,
+    value: Value,
+    kind: BindingKind,
+  },
+  /// Continue array destructuring after binding an element target pattern.
+  BindArrContinue {
+    pat: *const ArrPat,
+    elem_index: usize,
+    array_index: u32,
+    len: u32,
+    value: Value,
+    kind: BindingKind,
+  },
+
   /// Continue a call expression while evaluating arguments.
   CallAfterCallee { expr: *const CallExpr },
   CallMemberAfterBase {
@@ -15189,9 +15241,19 @@ impl Trace for GenFrame {
           tracer.trace_value(v);
         }
       }
-      GenFrame::YieldStar {
-        iterator_record, ..
-      } => {
+      GenFrame::AssignPatternAfterBind { result } => tracer.trace_value(*result),
+      GenFrame::BindObjAfterKey { value, excluded, .. }
+      | GenFrame::BindObjAfterDefault { value, excluded, .. }
+      | GenFrame::BindObjContinue { value, excluded, .. } => {
+        tracer.trace_value(*value);
+        for key in excluded {
+          key.trace(tracer);
+        }
+      }
+      GenFrame::BindArrAfterDefault { value, .. } | GenFrame::BindArrContinue { value, .. } => {
+        tracer.trace_value(*value);
+      }
+      GenFrame::YieldStar { iterator_record, .. } => {
         tracer.trace_value(iterator_record.iterator);
         tracer.trace_value(iterator_record.next_method);
       }
@@ -33683,31 +33745,61 @@ fn gen_eval_assignment_expr(
   // binding.
   match &*expr.left.stx {
     Expr::ObjPat(_) | Expr::ArrPat(_) => {
-      if expr_contains_yield(&expr.left) {
-        return Err(VmError::Unimplemented(
-          "yield in destructuring assignment target",
-        ));
-      }
-
       match gen_eval_expr(evaluator, scope, &expr.right)? {
-        GenEval::Complete(c) => Ok(GenEval::Complete(match c {
+        GenEval::Complete(c) => match c {
           Completion::Normal(v) => {
             let value = v.unwrap_or(Value::Undefined);
-            bind_assignment_target(
-              evaluator.vm,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              scope,
-              evaluator.env,
-              &expr.left,
-              value,
-              evaluator.strict,
-              evaluator.this,
-            )?;
-            Completion::normal(value)
+
+            // If the pattern contains no `yield`, reuse the synchronous binder. Otherwise, use the
+            // generator-aware binder so we can suspend inside computed keys and default
+            // initializers.
+            if !expr_contains_yield(&expr.left) {
+              let mut bind_scope = scope.reborrow();
+              bind_scope.push_root(value)?;
+              match bind_assignment_target(
+                evaluator.vm,
+                &mut *evaluator.host,
+                &mut *evaluator.hooks,
+                &mut bind_scope,
+                evaluator.env,
+                &expr.left,
+                value,
+                evaluator.strict,
+                evaluator.this,
+              ) {
+                Ok(()) => Ok(GenEval::Complete(Completion::normal(value))),
+                Err(err) => Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut bind_scope,
+                  err,
+                )?)),
+              }
+            } else {
+              let mut bind_scope = scope.reborrow();
+              bind_scope.push_root(value)?;
+              match gen_bind_assignment_target(
+                evaluator,
+                &mut bind_scope,
+                &expr.left,
+                value,
+                BindingKind::Assignment,
+              )? {
+                GenEval::Complete(bind_completion) => Ok(GenEval::Complete(match bind_completion {
+                  Completion::Normal(_) => Completion::normal(value),
+                  abrupt => abrupt,
+                })),
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::AssignPatternAfterBind { result: value },
+                  )?;
+                  Ok(GenEval::Suspend(suspend))
+                }
+              }
+            }
           }
-          abrupt => abrupt,
-        })),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
         GenEval::Suspend(mut suspend) => {
           gen_frames_push(
             &mut suspend.frames,
@@ -34324,6 +34416,529 @@ fn gen_error_to_completion(
   }
 }
 
+fn gen_bind_pattern(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &Pat,
+  value: Value,
+  kind: BindingKind,
+) -> Result<GenEval<Completion>, VmError> {
+  // Fast path: if the pattern doesn't contain a yield, reuse the synchronous binder.
+  if !pat_contains_yield(pat) {
+    let res = bind_pattern(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      scope,
+      evaluator.env,
+      pat,
+      value,
+      kind,
+      evaluator.strict,
+      evaluator.this,
+    );
+    return match res {
+      Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+      Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, scope, err)?)),
+    };
+  }
+
+  // Keep temporary roots local to this binding operation.
+  let mut scope = scope.reborrow();
+  scope.push_root(value)?;
+
+  match pat {
+    Pat::Obj(obj) => gen_bind_object_pattern(evaluator, &mut scope, &obj.stx, value, kind),
+    Pat::Arr(arr) => gen_bind_array_pattern(evaluator, &mut scope, &arr.stx, value, kind),
+    Pat::AssignTarget(target) => {
+      if !matches!(kind, BindingKind::Assignment) {
+        return Err(VmError::Unimplemented(
+          "assignment target pattern in binding context",
+        ));
+      }
+      gen_bind_assignment_target(evaluator, &mut scope, target, value, kind)
+    }
+    // `Pat::Id` cannot contain a `yield`, but handle it defensively.
+    Pat::Id(_) => {
+      let res = bind_pattern(
+        evaluator.vm,
+        &mut *evaluator.host,
+        &mut *evaluator.hooks,
+        &mut scope,
+        evaluator.env,
+        pat,
+        value,
+        kind,
+        evaluator.strict,
+        evaluator.this,
+      );
+      match res {
+        Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+        Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+      }
+    }
+  }
+}
+
+fn gen_bind_assignment_target(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  target: &Node<Expr>,
+  value: Value,
+  kind: BindingKind,
+) -> Result<GenEval<Completion>, VmError> {
+  match &*target.stx {
+    Expr::ObjPat(obj) => gen_bind_object_pattern(evaluator, scope, &obj.stx, value, kind),
+    Expr::ArrPat(arr) => gen_bind_array_pattern(evaluator, scope, &arr.stx, value, kind),
+    _ => Err(VmError::Unimplemented("yield in assignment target")),
+  }
+}
+
+fn gen_bind_object_pattern(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  value: Value,
+  kind: BindingKind,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut excluded: Vec<PropertyKey> = Vec::new();
+  excluded
+    .try_reserve_exact(pat.properties.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  gen_bind_object_pattern_from(evaluator, scope, pat, value, excluded, 0, kind)
+}
+
+fn gen_bind_object_pattern_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ObjPat,
+  value: Value,
+  mut excluded: Vec<PropertyKey>,
+  start_prop_index: usize,
+  kind: BindingKind,
+) -> Result<GenEval<Completion>, VmError> {
+  // Keep the boxed object wrapper (for primitive source values) rooted only for the duration of
+  // this binding step; if we suspend, we'll re-box on resume.
+  let mut scope = scope.reborrow();
+
+  // Object destructuring follows `GetV` semantics: property lookup uses `ToObject(value)`, but
+  // accessors must observe `this = value` (the original RHS value), not the boxed object.
+  let src_value = scope.push_root(value)?;
+  let obj = match scope.to_object(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    src_value,
+  ) {
+    Ok(obj) => obj,
+    Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+  };
+  scope.push_root(Value::Object(obj))?;
+
+  let receiver = src_value;
+
+  for (idx, prop) in pat
+    .properties
+    .iter()
+    .enumerate()
+    .skip(start_prop_index)
+  {
+    // Budget object destructuring by pattern size.
+    evaluator.tick()?;
+
+    let prop = &prop.stx;
+    let key = match &prop.key {
+      ClassOrObjKey::Direct(direct) => resolve_obj_pat_direct_key(&mut scope, direct)?,
+      ClassOrObjKey::Computed(expr) => match gen_eval_expr(evaluator, &mut scope, expr)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => {
+            let key_value = v.unwrap_or(Value::Undefined);
+            // Root the key value across `ToPropertyKey`, which can allocate/invoke user code.
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(key_value)?;
+            match evaluator.to_property_key_operator(&mut key_scope, key_value) {
+              Ok(key) => key,
+              Err(err) => {
+                let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+                return Ok(GenEval::Complete(gen_error_to_completion(
+                  evaluator,
+                  &mut key_scope,
+                  err,
+                )?));
+              }
+            }
+          }
+          abrupt => return Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::BindObjAfterKey {
+              pat: pat as *const ObjPat,
+              prop_index: idx,
+              value: src_value,
+              excluded,
+              kind,
+            },
+          )?;
+          return Ok(GenEval::Suspend(suspend));
+        }
+      },
+    };
+
+    excluded.push(key);
+
+    let mut prop_value = match scope.get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+      receiver,
+    ) {
+      Ok(v) => v,
+      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+    };
+
+    if matches!(prop_value, Value::Undefined) {
+      if let Some(default_expr) = &prop.default_value {
+        match gen_eval_expr(evaluator, &mut scope, default_expr)? {
+          GenEval::Complete(c) => match c {
+            Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
+            abrupt => return Ok(GenEval::Complete(abrupt)),
+          },
+          GenEval::Suspend(mut suspend) => {
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::BindObjAfterDefault {
+                pat: pat as *const ObjPat,
+                prop_index: idx,
+                value: src_value,
+                excluded,
+                kind,
+              },
+            )?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+    }
+
+    match gen_bind_pattern(evaluator, &mut scope, &prop.target.stx, prop_value, kind)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(_) => {}
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::BindObjContinue {
+            pat: pat as *const ObjPat,
+            next_prop_index: idx.saturating_add(1),
+            value: src_value,
+            excluded,
+            kind,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+  }
+
+  let Some(rest_pat) = &pat.rest else {
+    return Ok(GenEval::Complete(Completion::empty()));
+  };
+  if pat_contains_yield(&rest_pat.stx) {
+    return Err(VmError::Unimplemented("yield in object rest pattern"));
+  }
+
+  let rest_obj = scope.alloc_object()?;
+  // Root the rest object only for the duration of this operation.
+  let mut rest_scope = scope.reborrow();
+  rest_scope.push_root(Value::Object(rest_obj))?;
+
+  let keys = rest_scope.object_own_property_keys_with_host_and_hooks(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    obj,
+  )?;
+  for key in keys {
+    evaluator.tick()?;
+
+    if excluded
+      .iter()
+      .any(|excluded_key| rest_scope.heap().property_key_eq(excluded_key, &key))
+    {
+      continue;
+    }
+
+    let desc = match rest_scope.object_get_own_property_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+    ) {
+      Ok(Some(desc)) => desc,
+      Ok(None) => continue,
+      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+    };
+    if !desc.enumerable {
+      continue;
+    }
+
+    let v = match rest_scope.get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+      Value::Object(obj),
+    ) {
+      Ok(v) => v,
+      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+    };
+    rest_scope.create_data_property(rest_obj, key, v)?;
+  }
+
+  // Binding a rest pattern cannot itself contain yield (checked above), so we can reuse the
+  // synchronous binder.
+  let res = bind_pattern(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut rest_scope,
+    evaluator.env,
+    &rest_pat.stx,
+    Value::Object(rest_obj),
+    kind,
+    evaluator.strict,
+    evaluator.this,
+  );
+  match res {
+    Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+    Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+  }
+}
+
+fn gen_array_like_length(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+) -> Result<u32, VmError> {
+  let key_s = scope.alloc_string("length")?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  let v = scope
+    .get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+      Value::Object(obj),
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))?;
+  match v {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => Ok(n as u32),
+    Value::Undefined => Ok(0),
+    _ => Err(VmError::Unimplemented("array-like length")),
+  }
+}
+
+fn gen_array_like_get(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  obj: GcObject,
+  idx: u32,
+) -> Result<Value, VmError> {
+  let key_s = scope.alloc_u32_index_string(idx)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope
+    .get_with_host_and_hooks(
+      evaluator.vm,
+      &mut *evaluator.host,
+      &mut *evaluator.hooks,
+      obj,
+      key,
+      Value::Object(obj),
+    )
+    .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err))
+}
+
+fn gen_bind_array_pattern(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ArrPat,
+  value: Value,
+  kind: BindingKind,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut scope = scope.reborrow();
+  let value = scope.push_root(value)?;
+  let obj = match value {
+    Value::Object(obj) => obj,
+    other => match scope.to_object(evaluator.vm, &mut *evaluator.host, &mut *evaluator.hooks, other) {
+      Ok(obj) => obj,
+      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+    },
+  };
+  let value = Value::Object(obj);
+  scope.push_root(value)?;
+
+  let len = match gen_array_like_length(evaluator, &mut scope, obj) {
+    Ok(len) => len,
+    Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+  };
+  gen_bind_array_pattern_from(evaluator, &mut scope, pat, value, kind, 0, 0, len)
+}
+
+fn gen_bind_array_pattern_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  pat: &ArrPat,
+  value: Value,
+  kind: BindingKind,
+  start_elem_index: usize,
+  start_array_index: u32,
+  len: u32,
+) -> Result<GenEval<Completion>, VmError> {
+  let mut scope = scope.reborrow();
+  let Value::Object(obj) = value else {
+    let err = throw_type_error(evaluator.vm, &mut scope, "array destructuring requires object")?;
+    return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?));
+  };
+  scope.push_root(Value::Object(obj))?;
+
+  let mut array_index = start_array_index;
+  for (elem_index, elem) in pat.elements.iter().enumerate().skip(start_elem_index) {
+    evaluator.tick()?;
+
+    let Some(elem) = elem else {
+      array_index = array_index.saturating_add(1);
+      continue;
+    };
+
+    let mut item = if array_index < len {
+      match gen_array_like_get(evaluator, &mut scope, obj, array_index) {
+        Ok(v) => v,
+        Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut scope, err)?)),
+      }
+    } else {
+      Value::Undefined
+    };
+
+    if matches!(item, Value::Undefined) {
+      if let Some(default_expr) = &elem.default_value {
+        match gen_eval_expr(evaluator, &mut scope, default_expr)? {
+          GenEval::Complete(c) => match c {
+            Completion::Normal(v) => item = v.unwrap_or(Value::Undefined),
+            abrupt => return Ok(GenEval::Complete(abrupt)),
+          },
+          GenEval::Suspend(mut suspend) => {
+            gen_frames_push(
+              &mut suspend.frames,
+              GenFrame::BindArrAfterDefault {
+                pat: pat as *const ArrPat,
+                elem_index,
+                array_index,
+                len,
+                value: Value::Object(obj),
+                kind,
+              },
+            )?;
+            return Ok(GenEval::Suspend(suspend));
+          }
+        }
+      }
+    }
+
+    match gen_bind_pattern(evaluator, &mut scope, &elem.target.stx, item, kind)? {
+      GenEval::Complete(c) => match c {
+        Completion::Normal(_) => {}
+        abrupt => return Ok(GenEval::Complete(abrupt)),
+      },
+      GenEval::Suspend(mut suspend) => {
+        gen_frames_push(
+          &mut suspend.frames,
+          GenFrame::BindArrContinue {
+            pat: pat as *const ArrPat,
+            elem_index: elem_index.saturating_add(1),
+            array_index: array_index.saturating_add(1),
+            len,
+            value: Value::Object(obj),
+            kind,
+          },
+        )?;
+        return Ok(GenEval::Suspend(suspend));
+      }
+    }
+
+    array_index = array_index.saturating_add(1);
+  }
+
+  let Some(rest_pat) = &pat.rest else {
+    return Ok(GenEval::Complete(Completion::empty()));
+  };
+  if pat_contains_yield(&rest_pat.stx) {
+    return Err(VmError::Unimplemented("yield in array rest pattern"));
+  }
+
+  let rest_arr = scope.alloc_object()?;
+  let mut rest_scope = scope.reborrow();
+  rest_scope.push_root(Value::Object(rest_arr))?;
+
+  let mut rest_idx: u32 = 0;
+  while array_index < len {
+    evaluator.tick()?;
+
+    let v = match gen_array_like_get(evaluator, &mut rest_scope, obj, array_index) {
+      Ok(v) => v,
+      Err(err) => return Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+    };
+    // Root the element value while allocating the property key and defining the property.
+    let mut elem_scope = rest_scope.reborrow();
+    let v = elem_scope.push_root(v)?;
+    let key_s = elem_scope.alloc_u32_index_string(rest_idx)?;
+    let key = PropertyKey::from_string(key_s);
+    elem_scope.create_data_property(rest_arr, key, v)?;
+
+    array_index = array_index.saturating_add(1);
+    rest_idx = rest_idx.saturating_add(1);
+  }
+
+  // Define `length` as non-enumerable to match real arrays closely enough for rest patterns.
+  let length_s = rest_scope.alloc_string("length")?;
+  let length_key = PropertyKey::from_string(length_s);
+  let length_desc = PropertyDescriptor {
+    enumerable: false,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value: Value::Number(rest_idx as f64),
+      writable: true,
+    },
+  };
+  rest_scope.define_property(rest_arr, length_key, length_desc)?;
+
+  let res = bind_pattern(
+    evaluator.vm,
+    &mut *evaluator.host,
+    &mut *evaluator.hooks,
+    &mut rest_scope,
+    evaluator.env,
+    &rest_pat.stx,
+    Value::Object(rest_arr),
+    kind,
+    evaluator.strict,
+    evaluator.this,
+  );
+  match res {
+    Ok(()) => Ok(GenEval::Complete(Completion::empty())),
+    Err(err) => Ok(GenEval::Complete(gen_error_to_completion(evaluator, &mut rest_scope, err)?)),
+  }
+}
+
 fn gen_resume_from_frames(
   evaluator: &mut Evaluator<'_>,
   scope: &mut Scope<'_>,
@@ -34887,20 +35502,375 @@ fn gen_resume_from_frames(
         Completion::Normal(v) => {
           let expr = unsafe { &*expr };
           let value = v.unwrap_or(Value::Undefined);
+          match &*expr.left.stx {
+            Expr::ObjPat(_) | Expr::ArrPat(_) => {
+              if !expr_contains_yield(&expr.left) {
+                let mut bind_scope = scope.reborrow();
+                if let Err(err) = bind_scope.push_root(value) {
+                  state = gen_error_to_completion(evaluator, &mut bind_scope, err)?;
+                  continue;
+                }
+                let res = bind_assignment_target(
+                  evaluator.vm,
+                  &mut *evaluator.host,
+                  &mut *evaluator.hooks,
+                  &mut bind_scope,
+                  evaluator.env,
+                  &expr.left,
+                  value,
+                  evaluator.strict,
+                  evaluator.this,
+                );
+                match res {
+                  Ok(()) => state = Completion::normal(value),
+                  Err(err) => state = gen_error_to_completion(evaluator, &mut bind_scope, err)?,
+                }
+                continue;
+              }
 
-          match bind_assignment_target(
+              match gen_bind_assignment_target(evaluator, scope, &expr.left, value, BindingKind::Assignment)? {
+                GenEval::Complete(bind_completion) => match bind_completion {
+                  Completion::Normal(_) => state = Completion::normal(value),
+                  abrupt => state = abrupt,
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(&mut suspend.frames, GenFrame::AssignPatternAfterBind { result: value })?;
+                  suspend.frames.append(&mut frames);
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            }
+            _ => return Err(VmError::Unimplemented("yield in assignment target")),
+          }
+        }
+        abrupt => state = abrupt,
+      },
+      
+      GenFrame::AssignPatternAfterBind { result } => match state {
+        Completion::Normal(_) => state = Completion::normal(result),
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjAfterKey {
+        pat,
+        prop_index,
+        value,
+        mut excluded,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let key_value = v.unwrap_or(Value::Undefined);
+          let key = {
+            let mut key_scope = scope.reborrow();
+            key_scope.push_root(key_value)?;
+            match evaluator.to_property_key_operator(&mut key_scope, key_value) {
+              Ok(key) => Ok(key),
+              Err(err) => {
+                let err = coerce_error_to_throw_for_async(evaluator.vm, &mut key_scope, err);
+                Err(gen_error_to_completion(evaluator, &mut key_scope, err)?)
+              }
+            }
+          };
+          let key = match key {
+            Ok(key) => key,
+            Err(completion) => {
+              state = completion;
+              continue;
+            }
+          };
+          excluded.push(key);
+
+          let pat_ref = unsafe { &*pat };
+          let prop = pat_ref
+            .properties
+            .get(prop_index)
+            .ok_or(VmError::InvariantViolation(
+              "generator object pattern continuation out of bounds",
+            ))?;
+          let prop = &prop.stx;
+
+          // Recreate the boxed object wrapper for property access (GetV semantics).
+          let mut obj_scope = scope.reborrow();
+          obj_scope.push_root(value)?;
+          let obj = match obj_scope.to_object(
             evaluator.vm,
             &mut *evaluator.host,
             &mut *evaluator.hooks,
-            scope,
-            evaluator.env,
-            &expr.left,
             value,
-            evaluator.strict,
-            evaluator.this,
           ) {
-            Ok(()) => state = Completion::normal(value),
-            Err(err) => state = gen_error_to_completion(evaluator, scope, err)?,
+            Ok(obj) => obj,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+              continue;
+            }
+          };
+          obj_scope.push_root(Value::Object(obj))?;
+
+          let receiver = value;
+          let mut prop_value = match obj_scope.get_with_host_and_hooks(
+            evaluator.vm,
+            &mut *evaluator.host,
+            &mut *evaluator.hooks,
+            obj,
+            key,
+            receiver,
+          ) {
+            Ok(v) => v,
+            Err(err) => {
+              state = gen_error_to_completion(evaluator, &mut obj_scope, err)?;
+              continue;
+            }
+          };
+
+          if matches!(prop_value, Value::Undefined) {
+            if let Some(default_expr) = &prop.default_value {
+              match gen_eval_expr(evaluator, &mut obj_scope, default_expr)? {
+                GenEval::Complete(c) => match c {
+                  Completion::Normal(v) => prop_value = v.unwrap_or(Value::Undefined),
+                  abrupt => {
+                    state = abrupt;
+                    continue;
+                  }
+                },
+                GenEval::Suspend(mut suspend) => {
+                  gen_frames_push(
+                    &mut suspend.frames,
+                    GenFrame::BindObjAfterDefault {
+                      pat,
+                      prop_index,
+                      value,
+                      excluded,
+                      kind,
+                    },
+                  )?;
+                  suspend.frames.append(&mut frames);
+                  return Ok(GenEval::Suspend(suspend));
+                }
+              }
+            }
+          }
+
+          match gen_bind_pattern(evaluator, &mut obj_scope, &prop.target.stx, prop_value, kind)? {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(_) => {}
+              abrupt => {
+                state = abrupt;
+                continue;
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindObjContinue {
+                  pat,
+                  next_prop_index: prop_index.saturating_add(1),
+                  value,
+                  excluded,
+                  kind,
+                },
+              )?;
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+
+          match gen_bind_object_pattern_from(
+            evaluator,
+            &mut obj_scope,
+            pat_ref,
+            value,
+            excluded,
+            prop_index.saturating_add(1),
+            kind,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjAfterDefault {
+        pat,
+        prop_index,
+        value,
+        excluded,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let default_value = v.unwrap_or(Value::Undefined);
+          let pat_ref = unsafe { &*pat };
+          let prop = pat_ref
+            .properties
+            .get(prop_index)
+            .ok_or(VmError::InvariantViolation(
+              "generator object pattern continuation out of bounds",
+            ))?;
+          let prop = &prop.stx;
+
+          match gen_bind_pattern(evaluator, scope, &prop.target.stx, default_value, kind)? {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(_) => {}
+              abrupt => {
+                state = abrupt;
+                continue;
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindObjContinue {
+                  pat,
+                  next_prop_index: prop_index.saturating_add(1),
+                  value,
+                  excluded,
+                  kind,
+                },
+              )?;
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+
+          match gen_bind_object_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            excluded,
+            prop_index.saturating_add(1),
+            kind,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindObjContinue {
+        pat,
+        next_prop_index,
+        value,
+        excluded,
+        kind,
+      } => match state {
+        Completion::Normal(_) => {
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_object_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            excluded,
+            next_prop_index,
+            kind,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindArrAfterDefault {
+        pat,
+        elem_index,
+        array_index,
+        len,
+        value,
+        kind,
+      } => match state {
+        Completion::Normal(v) => {
+          let default_value = v.unwrap_or(Value::Undefined);
+          let pat_ref = unsafe { &*pat };
+          let elem = pat_ref
+            .elements
+            .get(elem_index)
+            .and_then(|e| e.as_ref())
+            .ok_or(VmError::InvariantViolation(
+              "generator array pattern continuation out of bounds",
+            ))?;
+
+          match gen_bind_pattern(evaluator, scope, &elem.target.stx, default_value, kind)? {
+            GenEval::Complete(c) => match c {
+              Completion::Normal(_) => {}
+              abrupt => {
+                state = abrupt;
+                continue;
+              }
+            },
+            GenEval::Suspend(mut suspend) => {
+              gen_frames_push(
+                &mut suspend.frames,
+                GenFrame::BindArrContinue {
+                  pat,
+                  elem_index: elem_index.saturating_add(1),
+                  array_index: array_index.saturating_add(1),
+                  len,
+                  value,
+                  kind,
+                },
+              )?;
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+
+          match gen_bind_array_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            kind,
+            elem_index.saturating_add(1),
+            array_index.saturating_add(1),
+            len,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
+          }
+        }
+        abrupt => state = abrupt,
+      },
+
+      GenFrame::BindArrContinue {
+        pat,
+        elem_index,
+        array_index,
+        len,
+        value,
+        kind,
+      } => match state {
+        Completion::Normal(_) => {
+          let pat_ref = unsafe { &*pat };
+          match gen_bind_array_pattern_from(
+            evaluator,
+            scope,
+            pat_ref,
+            value,
+            kind,
+            elem_index,
+            array_index,
+            len,
+          )? {
+            GenEval::Complete(c) => state = c,
+            GenEval::Suspend(mut suspend) => {
+              suspend.frames.append(&mut frames);
+              return Ok(GenEval::Suspend(suspend));
+            }
           }
         }
         abrupt => state = abrupt,
@@ -35345,6 +36315,21 @@ fn gen_root_values_for_continuation(
       GenFrame::ComputedMemberAfterMember { base, .. }
       | GenFrame::CallComputedMemberAfterMember { base, .. } => values.push(*base),
       GenFrame::BinaryAfterRight { left, .. } => values.push(*left),
+      GenFrame::AssignPatternAfterBind { result } => values.push(*result),
+      GenFrame::BindObjAfterKey { value, excluded, .. }
+      | GenFrame::BindObjAfterDefault { value, excluded, .. }
+      | GenFrame::BindObjContinue { value, excluded, .. } => {
+        values.push(*value);
+        for key in excluded.iter() {
+          match key {
+            PropertyKey::String(s) => values.push(Value::String(*s)),
+            PropertyKey::Symbol(sym) => values.push(Value::Symbol(*sym)),
+          }
+        }
+      }
+      GenFrame::BindArrAfterDefault { value, .. } | GenFrame::BindArrContinue { value, .. } => {
+        values.push(*value);
+      }
       GenFrame::CallArgs {
         callee, this, args, ..
       } => {

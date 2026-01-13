@@ -119,3 +119,74 @@ fn generator_default_params_are_not_evaluated_until_first_next() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn yield_in_object_destructuring_assignment_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          function* g(){
+            var a;
+            ({a = yield 1} = {});
+            return a;
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.value !== 1 || r1.done !== false) return false;
+          var r2 = it.next(5);
+          return r2.value === 5 && r2.done === true;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn yield_in_array_destructuring_assignment_default() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          function* g(){
+            var a;
+            ([a = yield 1] = []);
+            return a;
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.value !== 1 || r1.done !== false) return false;
+          var r2 = it.next(5);
+          return r2.value === 5 && r2.done === true;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn yield_in_object_destructuring_assignment_computed_key() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          function* g(){
+            var a;
+            ({[(yield 1)]: a} = {x: 5});
+            return a;
+          }
+          var it = g();
+          var r1 = it.next();
+          if (r1.value !== 1 || r1.done !== false) return false;
+          var r2 = it.next("x");
+          return r2.value === 5 && r2.done === true;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
