@@ -3153,14 +3153,40 @@ impl BrowserDocumentDom2 {
           options.stage_mem_budget_bytes,
         )?;
 
+        // Preserve document-level metadata that is not produced by layout itself.
+        //
+        // Full pipeline runs populate these fields from CSS parsing / DOM scanning (e.g. `@keyframes`,
+        // SVG `<defs>` registries). `LayoutEngine::layout_tree_*` returns a fresh `FragmentTree`
+        // without them, so incremental relayout must carry them forward.
+        let preserved_keyframes = std::mem::take(&mut prepared.fragment_tree.keyframes);
+        let preserved_svg_filter_defs = prepared.fragment_tree.svg_filter_defs.take();
+        let preserved_svg_id_defs = prepared.fragment_tree.svg_id_defs.take();
+        let preserved_svg_id_defs_raw = prepared.fragment_tree.svg_id_defs_raw.take();
+
         crate::render_control::record_stage(crate::render_control::StageHeartbeat::Layout);
         let _layout_span = trace_handle.span("layout_tree", "layout");
-        let mut fragment_tree = self
+        let layout_result = self
           .renderer
           .layout_engine
-          .layout_tree_with_trace(&prepared.box_tree, trace_handle)
-          .map_err(super::map_formatting_layout_error)?;
+          .layout_tree_with_trace(&prepared.box_tree, trace_handle);
+        let mut fragment_tree = match layout_result {
+          Ok(tree) => tree,
+          Err(err) => {
+            // Restore preserved metadata when layout fails so callers can retry without losing
+            // non-layout caches.
+            prepared.fragment_tree.keyframes = preserved_keyframes;
+            prepared.fragment_tree.svg_filter_defs = preserved_svg_filter_defs;
+            prepared.fragment_tree.svg_id_defs = preserved_svg_id_defs;
+            prepared.fragment_tree.svg_id_defs_raw = preserved_svg_id_defs_raw;
+            return Err(super::map_formatting_layout_error(err));
+          }
+        };
         drop(_layout_span);
+
+        fragment_tree.keyframes = preserved_keyframes;
+        fragment_tree.svg_filter_defs = preserved_svg_filter_defs;
+        fragment_tree.svg_id_defs = preserved_svg_id_defs;
+        fragment_tree.svg_id_defs_raw = preserved_svg_id_defs_raw;
 
         // Preserve (and refresh) transition state across incremental relayouts.
         match now_ms {
@@ -4202,10 +4228,22 @@ mod tests {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
       renderer,
-      "<!doctype html><html><body><textarea id=t>Hello</textarea></body></html>",
+      "<!doctype html><html><head><style>\
+        @keyframes fade { from { opacity: 0; } to { opacity: 1; } }\
+        #box { width: 1px; height: 1px; animation: fade 1s linear infinite; }\
+      </style></head><body><div id=box></div><textarea id=t>Hello</textarea></body></html>",
       RenderOptions::new().with_viewport(32, 32),
     )?;
     doc.render_frame()?;
+    assert!(
+      doc
+        .prepared()
+        .expect("prepared")
+        .fragment_tree
+        .keyframes
+        .contains_key("fade"),
+      "expected @keyframes fade to be preserved on the initial fragment tree"
+    );
     let before = doc.invalidation_counters();
 
     let textarea = doc.dom().get_element_by_id("t").expect("textarea element");
@@ -4220,6 +4258,10 @@ mod tests {
     assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
 
     let prepared = doc.prepared().expect("prepared");
+    assert!(
+      prepared.fragment_tree.keyframes.contains_key("fade"),
+      "incremental relayout should preserve fragment-tree keyframes metadata"
+    );
     let value =
       find_first_textarea_control_value(&prepared.box_tree().root).expect("textarea form control value");
     assert_eq!(value, "Updated");
