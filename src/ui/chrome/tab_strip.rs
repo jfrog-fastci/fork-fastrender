@@ -309,7 +309,10 @@ fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32)
     let end = center + dir * radius;
     painter.line_segment(
       [start, end],
-      Stroke::new(2.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)),
+      Stroke::new(
+        2.0,
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha),
+      ),
     );
   }
 }
@@ -318,15 +321,15 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
   let fill = visuals.widgets.inactive.bg_fill;
   let stroke = visuals.widgets.inactive.bg_stroke;
   // Keep favicon placeholders subtly rounded without looking fully pill-shaped.
-  let rounding =
-    egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
+  let rounding = egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.5).clamp(2.0, 4.0));
   painter.rect_filled(rect, rounding, fill);
   painter.rect_stroke(rect, rounding, stroke);
 }
 
 fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
   let font_id = egui::TextStyle::Button.resolve(ui.style());
-  let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color()));
+  let galley =
+    ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color()));
   // Reserve fixed space for the collapse/expand affordance icon so the chip width remains stable
   // across collapsed/expanded states.
   (galley.size().x + GROUP_CHIP_PADDING_X * 2.0 + GROUP_CHIP_ICON_SIZE + GROUP_CHIP_ICON_GAP)
@@ -391,8 +394,7 @@ fn group_chip_ui(
 
   let rounding = visuals.widgets.inactive.rounding;
   ui.painter().rect_filled(chip_rect, rounding, fill);
-  ui
-    .painter()
+  ui.painter()
     .rect_stroke(chip_rect.shrink(0.5), rounding, stroke);
 
   // Collapse/expand indicator: paint a small rotating triangle instead of swapping text glyphs.
@@ -419,8 +421,11 @@ fn group_chip_ui(
     Vec2::new(half * 0.55, 0.0),
   ];
   let points: Vec<Pos2> = tri.iter().map(|v| icon_center + rot(*v)).collect();
-  ui.painter()
-    .add(egui::Shape::convex_polygon(points, visuals.text_color(), Stroke::NONE));
+  ui.painter().add(egui::Shape::convex_polygon(
+    points,
+    visuals.text_color(),
+    Stroke::NONE,
+  ));
 
   // Title.
   let title_start_x = icon_rect.max.x + GROUP_CHIP_ICON_GAP;
@@ -468,7 +473,11 @@ fn group_chip_ui(
       ui.close_menu();
     }
 
-    let label = if collapsed { "Expand group" } else { "Collapse group" };
+    let label = if collapsed {
+      "Expand group"
+    } else {
+      "Collapse group"
+    };
     if ui.button(label).clicked() {
       ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
       ui.close_menu();
@@ -554,16 +563,15 @@ fn tab_ui(
     painter.rect_filled(tab_rect, rounding, bg);
 
     if let Some(color) = group_color {
-      painter.rect_stroke(
-        tab_rect.shrink(0.5),
-        rounding,
-        Stroke::new(1.0, color),
-      );
+      painter.rect_stroke(tab_rect.shrink(0.5), rounding, Stroke::new(1.0, color));
     }
   }
 
   // Favicon.
-  let icon_min = Pos2::new(tab_rect.min.x + TAB_PADDING_X, tab_rect.center().y - ICON_SIZE * 0.5);
+  let icon_min = Pos2::new(
+    tab_rect.min.x + TAB_PADDING_X,
+    tab_rect.center().y - ICON_SIZE * 0.5,
+  );
   let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
   if let Some(tex_id) = favicon_tex {
     if ui.is_rect_visible(icon_rect) {
@@ -597,7 +605,12 @@ fn tab_ui(
       // Reduced-motion: keep the spinner static (and avoid continuous repaints).
       0.0
     };
-    paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
+    paint_spinner(
+      ui.painter(),
+      icon_rect.expand(2.0),
+      time,
+      visuals.text_color(),
+    );
   }
 
   let err_t = motion.animate_bool(
@@ -671,7 +684,10 @@ fn tab_ui(
       ui.painter().rect_filled(
         close_rect,
         close_rounding,
-        with_alpha(visuals.widgets.hovered.bg_fill.gamma_multiply(0.85), close_hover_t),
+        with_alpha(
+          visuals.widgets.hovered.bg_fill.gamma_multiply(0.85),
+          close_hover_t,
+        ),
       );
     }
 
@@ -875,7 +891,12 @@ fn pinned_tab_ui(
       // Reduced-motion: keep the spinner static (and avoid continuous repaints).
       0.0
     };
-    paint_spinner(ui.painter(), icon_rect.expand(2.0), time, visuals.text_color());
+    paint_spinner(
+      ui.painter(),
+      icon_rect.expand(2.0),
+      time,
+      visuals.text_color(),
+    );
   }
 
   let err_t = motion.animate_bool(
@@ -953,8 +974,10 @@ pub(super) fn tab_strip_ui(
     Vec2::splat(button_size),
   );
   let tabs_viewport_max_x = (button_rect.min.x - 8.0).max(strip_rect.min.x);
-  let tabs_rect =
-    Rect::from_min_max(strip_rect.min, Pos2::new(tabs_viewport_max_x, strip_rect.max.y));
+  let tabs_rect = Rect::from_min_max(
+    strip_rect.min,
+    Pos2::new(tabs_viewport_max_x, strip_rect.max.y),
+  );
   let tabs_viewport_width = tabs_rect.width().max(0.0);
 
   let tab_count = app.tabs.len();
@@ -969,8 +992,7 @@ pub(super) fn tab_strip_ui(
     .data(|d| d.get_temp::<Option<TabId>>(last_active_id_key))
     .unwrap_or(None);
   let active_changed = active_id != last_active_id;
-  ui
-    .ctx()
+  ui.ctx()
     .data_mut(|d| d.insert_temp(last_active_id_key, active_id));
 
   let pinned_content_width = if pinned_count == 0 {
@@ -1015,8 +1037,10 @@ pub(super) fn tab_strip_ui(
   }
 
   let pinned_viewport_max_x = (tabs_rect.min.x + pinned_viewport_width).min(tabs_rect.max.x);
-  let pinned_viewport_rect =
-    Rect::from_min_max(tabs_rect.min, Pos2::new(pinned_viewport_max_x, tabs_rect.max.y));
+  let pinned_viewport_rect = Rect::from_min_max(
+    tabs_rect.min,
+    Pos2::new(pinned_viewport_max_x, tabs_rect.max.y),
+  );
 
   let unpinned_viewport_min_x = (pinned_viewport_max_x + segment_gap).min(tabs_rect.max.x);
   let unpinned_viewport_rect = Rect::from_min_max(
@@ -1085,7 +1109,7 @@ pub(super) fn tab_strip_ui(
         egui::Layout::left_to_right(egui::Align::Center),
       );
       pinned_ui.set_clip_rect(pinned_viewport_rect);
-      let mut restore_scroll_delta: Option<(Vec2, Vec2)> = None;
+      let mut restore_scroll_delta: Option<Vec2> = None;
       // Match the unpinned segment ergonomics: treat vertical wheel scroll as horizontal scroll
       // while the pointer is over the pinned strip.
       let pointer_over_strip = pinned_ui.input(|i| {
@@ -1094,13 +1118,11 @@ pub(super) fn tab_strip_ui(
           .is_some_and(|pos| pinned_viewport_rect.contains(pos))
       });
       if pointer_over_strip {
-        let has_vertical_scroll =
-          pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0);
+        let has_vertical_scroll = pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0);
         if has_vertical_scroll {
           pinned_ui.ctx().input_mut(|i| {
-            restore_scroll_delta = Some((i.scroll_delta, i.smooth_scroll_delta));
+            restore_scroll_delta = Some(i.scroll_delta);
             i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
-            i.smooth_scroll_delta = Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
           });
         }
       }
@@ -1141,7 +1163,8 @@ pub(super) fn tab_strip_ui(
               let is_close_action = maybe_action
                 .as_ref()
                 .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
-              if !is_close_action && tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
+              if !is_close_action && tab_response.drag_started() && chrome.dragging_tab_id.is_none()
+              {
                 chrome.dragging_tab_id = Some(tab_id);
                 chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
               }
@@ -1155,10 +1178,9 @@ pub(super) fn tab_strip_ui(
           });
         });
       pinned_scroll_offset_x = scroll_output.state.offset.x;
-      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_delta {
+      if let Some(scroll_delta) = restore_scroll_delta {
         pinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
-          i.smooth_scroll_delta = smooth_scroll_delta;
         });
       }
     }
@@ -1180,9 +1202,7 @@ pub(super) fn tab_strip_ui(
           .is_some_and(|pos| unpinned_viewport_rect.contains(pos))
       });
       if pointer_over_strip {
-        let has_vertical_scroll = unpinned_ui.input(|i| {
-          i.scroll_delta.y.abs() > 0.0
-        });
+        let has_vertical_scroll = unpinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0);
         if has_vertical_scroll {
           unpinned_ui.ctx().input_mut(|i| {
             restore_scroll_delta = Some(i.scroll_delta);
@@ -1222,12 +1242,9 @@ pub(super) fn tab_strip_ui(
               let favicon_tex = favicon_for_tab(tab_id);
               let (tab_rect, tab_response, maybe_action) = {
                 let tab = &app.tabs[idx];
-                let group_border = tab.group.and_then(|gid| {
-                  app
-                    .tab_groups
-                    .get(&gid)
-                    .map(|g| group_color_egui(g.color))
-                });
+                let group_border = tab
+                  .group
+                  .and_then(|gid| app.tab_groups.get(&gid).map(|g| group_color_egui(g.color)));
                 tab_ui(
                   ui,
                   motion,
@@ -1237,10 +1254,10 @@ pub(super) fn tab_strip_ui(
                   sizing.tab_width,
                   favicon_tex,
                   &mut app.chrome,
-                   focus_ring,
-                   group_border,
-                 )
-               };
+                  focus_ring,
+                  group_border,
+                )
+              };
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = false;
@@ -1293,9 +1310,7 @@ pub(super) fn tab_strip_ui(
           app.chrome.dragging_tab_id,
           ui.input(|i| i.pointer.interact_pos()),
         ) {
-          let dragging_is_unpinned = app
-            .tab(dragging_tab_id)
-            .is_some_and(|tab| !tab.pinned);
+          let dragging_is_unpinned = app.tab(dragging_tab_id).is_some_and(|tab| !tab.pinned);
           if dragging_is_unpinned
             && pointer_pos.y >= unpinned_viewport_rect.top()
             && pointer_pos.y <= unpinned_viewport_rect.bottom()
@@ -1318,13 +1333,19 @@ pub(super) fn tab_strip_ui(
   }
 
   // Visual separator between pinned and unpinned tabs.
-  if pinned_count > 0 && unpinned_count > 0 && pinned_viewport_rect.width() > 0.0 && unpinned_viewport_rect.width() > 0.0 {
+  if pinned_count > 0
+    && unpinned_count > 0
+    && pinned_viewport_rect.width() > 0.0
+    && unpinned_viewport_rect.width() > 0.0
+  {
     let x = pinned_viewport_rect.max.x + segment_gap * 0.5;
     let y0 = tabs_rect.top() + 6.0;
     let y1 = tabs_rect.bottom() - 6.0;
-    let stroke = Stroke::new(1.0, with_alpha(ui.visuals().widgets.inactive.bg_stroke.color, 0.6));
-    ui
-      .painter()
+    let stroke = Stroke::new(
+      1.0,
+      with_alpha(ui.visuals().widgets.inactive.bg_stroke.color, 0.6),
+    );
+    ui.painter()
       .with_clip_rect(tabs_rect)
       .line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], stroke);
   }
@@ -1348,7 +1369,10 @@ pub(super) fn tab_strip_ui(
       if left_t > 0.0 || right_t > 0.0 {
         let fade_rect = Rect::from_min_max(
           unpinned_viewport_rect.min,
-          Pos2::new(unpinned_viewport_rect.max.x, unpinned_viewport_rect.max.y - 1.0),
+          Pos2::new(
+            unpinned_viewport_rect.max.x,
+            unpinned_viewport_rect.max.y - 1.0,
+          ),
         );
         let painter = ui.painter().with_clip_rect(unpinned_viewport_rect);
         let fade_color = ui.visuals().panel_fill;
@@ -1403,13 +1427,10 @@ pub(super) fn tab_strip_ui(
     let x0 = center_screen_x - width * 0.5;
     let x1 = center_screen_x + width * 0.5;
     let y = active_rect.max.y - ACTIVE_UNDERLINE_HEIGHT * 0.5;
-    ui
-      .painter()
-      .with_clip_rect(tabs_rect)
-      .line_segment(
-        [Pos2::new(x0, y), Pos2::new(x1, y)],
-        Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
-      );
+    ui.painter().with_clip_rect(tabs_rect).line_segment(
+      [Pos2::new(x0, y), Pos2::new(x1, y)],
+      Stroke::new(ACTIVE_UNDERLINE_HEIGHT, ui.visuals().selection.stroke.color),
+    );
   }
 
   // Drag-to-reorder: apply the reorder while dragging, and draw an outline + drop indicator.
@@ -1424,23 +1445,15 @@ pub(super) fn tab_strip_ui(
     // Outline the dragged tab.
     if let Some(rect) = dragged_tab_rect {
       let stroke = Stroke::new(1.0, ui.visuals().widgets.active.bg_stroke.color);
-      ui
-        .painter()
+      ui.painter()
         .with_clip_rect(tabs_rect)
         .rect_stroke(rect.expand(1.0), 8.0, stroke);
     }
 
-    let dragging_is_pinned = app
-      .tab(dragging_tab_id)
-      .map(|t| t.pinned)
-      .unwrap_or(false);
+    let dragging_is_pinned = app.tab(dragging_tab_id).map(|t| t.pinned).unwrap_or(false);
 
     let (tab_rects_for_drag, group_start_index, group_clip_rect) = if dragging_is_pinned {
-      (
-        &pinned_tab_rects_for_drag,
-        0usize,
-        pinned_viewport_rect,
-      )
+      (&pinned_tab_rects_for_drag, 0usize, pinned_viewport_rect)
     } else {
       (
         &unpinned_tab_rects_for_drag,
@@ -1542,8 +1555,7 @@ pub(super) fn tab_strip_ui(
       let stroke = Stroke::new(2.0, ui.visuals().widgets.active.bg_stroke.color);
       let y1 = tab_strip_rect.top() + 1.0;
       let y2 = tab_strip_rect.bottom() - 1.0;
-      ui
-        .painter()
+      ui.painter()
         .with_clip_rect(group_clip_rect)
         .line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], stroke);
     }
