@@ -512,6 +512,76 @@ impl std::fmt::Display for ChromeActionUrl {
   }
 }
 
+/// Parse a `chrome-action:` href value into a typed [`ChromeActionUrl`].
+///
+/// This is intentionally strict (unknown actions fail closed) and only accepts the opaque
+/// `chrome-action:<action>?<query>` grammar (not `chrome-action://...`). See
+/// `docs/renderer_chrome_schemes.md`.
+pub fn parse_chrome_action_url(href: &str) -> Option<ChromeActionUrl> {
+  let url = Url::parse(href).ok()?;
+  if !url.scheme().eq_ignore_ascii_case(CHROME_ACTION_SCHEME) {
+    return None;
+  }
+
+  // Canonical form is opaque `chrome-action:<action>?<query>`; reject the hierarchical/authority
+  // form (`chrome-action://...`).
+  if url.host_str().is_some()
+    || !url.username().is_empty()
+    || url.password().is_some()
+    || url.port().is_some()
+    || url.fragment().is_some()
+  {
+    return None;
+  }
+
+  let action = url.path();
+  if action.is_empty() || action.starts_with('/') {
+    return None;
+  }
+
+  ChromeActionUrl::parse_url(&url).ok()
+}
+
+/// Build a canonical `chrome-action:` href for the given action.
+///
+/// This round-trips with [`parse_chrome_action_url`]. Query parameters are percent-encoded using
+/// `application/x-www-form-urlencoded` rules (via `url::form_urlencoded`).
+pub fn chrome_action_href(action: &ChromeActionUrl) -> String {
+  action.to_url_string()
+}
+
+pub fn chrome_action_back() -> String {
+  chrome_action_href(&ChromeActionUrl::Back)
+}
+
+pub fn chrome_action_forward() -> String {
+  chrome_action_href(&ChromeActionUrl::Forward)
+}
+
+pub fn chrome_action_reload() -> String {
+  chrome_action_href(&ChromeActionUrl::Reload)
+}
+
+pub fn chrome_action_stop_loading() -> String {
+  chrome_action_href(&ChromeActionUrl::StopLoading)
+}
+
+pub fn chrome_action_home() -> String {
+  chrome_action_href(&ChromeActionUrl::Home)
+}
+
+pub fn chrome_action_new_tab() -> String {
+  chrome_action_href(&ChromeActionUrl::NewTab)
+}
+
+pub fn chrome_action_activate_tab(tab_id: TabId) -> String {
+  chrome_action_href(&ChromeActionUrl::ActivateTab { tab_id })
+}
+
+pub fn chrome_action_close_tab(tab_id: TabId) -> String {
+  chrome_action_href(&ChromeActionUrl::CloseTab { tab_id })
+}
+
 fn validate_tab_id(tab_id: TabId) -> Result<TabId, String> {
   if tab_id.0 == 0 {
     return Err("invalid tab id: 0".to_string());
@@ -858,6 +928,202 @@ mod tests {
     for case in cases {
       let err = case.into_chrome_action().unwrap_err();
       assert!(err.contains("invalid tab id"), "unexpected error: {err}");
+    }
+  }
+  #[test]
+  fn roundtrips_all_variants_via_url_format() {
+    let tab_id = TabId(123);
+
+    let cases: Vec<ChromeActionUrl> = vec![
+      ChromeActionUrl::Back,
+      ChromeActionUrl::Forward,
+      ChromeActionUrl::Reload,
+      ChromeActionUrl::StopLoading,
+      ChromeActionUrl::Home,
+      ChromeActionUrl::NewTab,
+      ChromeActionUrl::ReopenClosedTab,
+      ChromeActionUrl::OpenTabSearch,
+      ChromeActionUrl::CloseTabSearch,
+      ChromeActionUrl::ToggleBookmarksBar,
+      ChromeActionUrl::ToggleHistoryPanel,
+      ChromeActionUrl::ToggleBookmarksManager,
+      ChromeActionUrl::OpenClearBrowsingDataDialog,
+      ChromeActionUrl::ToggleDownloadsPanel,
+      ChromeActionUrl::ToggleBookmarkForActiveTab,
+      ChromeActionUrl::FocusAddressBar,
+      ChromeActionUrl::NewWindow,
+      ChromeActionUrl::ToggleFullScreen,
+      ChromeActionUrl::OpenFindInPage,
+      ChromeActionUrl::FindQuery {
+        tab_id,
+        query: "cats".to_string(),
+        case_sensitive: false,
+      },
+      ChromeActionUrl::FindNext { tab_id },
+      ChromeActionUrl::FindPrev { tab_id },
+      ChromeActionUrl::CloseFindInPage { tab_id },
+      ChromeActionUrl::SavePage,
+      ChromeActionUrl::PrintPage,
+      ChromeActionUrl::SetShowMenuBar { show: true },
+      ChromeActionUrl::AddressBarFocusChanged { has_focus: false },
+      ChromeActionUrl::Navigate {
+        url: "https://example.com/a?b=c&d=e".to_string(),
+      },
+      ChromeActionUrl::OpenUrlInNewTab {
+        url: "about:blank".to_string(),
+      },
+      ChromeActionUrl::CloseTab { tab_id },
+      ChromeActionUrl::DetachTab { tab_id },
+      ChromeActionUrl::ReloadTab { tab_id },
+      ChromeActionUrl::DuplicateTab { tab_id },
+      ChromeActionUrl::CloseOtherTabs { tab_id },
+      ChromeActionUrl::CloseTabsToRight { tab_id },
+      ChromeActionUrl::ActivateTab { tab_id },
+      ChromeActionUrl::TogglePinTab { tab_id },
+    ];
+
+    for case in cases {
+      let url = chrome_action_href(&case);
+      let parsed = parse_chrome_action_url(&url)
+        .unwrap_or_else(|| panic!("failed to parse formatted chrome-action URL {url:?}"));
+      assert_eq!(parsed, case, "roundtrip mismatch for {url}");
+    }
+  }
+
+  #[test]
+  fn parses_representative_strings() {
+    assert_eq!(ChromeActionUrl::parse("chrome-action:back").unwrap(), ChromeActionUrl::Back);
+    assert_eq!(
+      ChromeActionUrl::parse("chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F").unwrap(),
+      ChromeActionUrl::Navigate {
+        url: "https://example.com/".to_string(),
+      }
+    );
+
+    // Scheme must be case-insensitive.
+    assert_eq!(
+      ChromeActionUrl::parse("ChRoMe-AcTiOn:reload").unwrap(),
+      ChromeActionUrl::Reload
+    );
+  }
+
+  #[test]
+  fn rejects_whitespace_and_invalid_inputs() {
+    let cases = vec![
+      " chrome-action:back",
+      "chrome-action:back ",
+      "chrome-action:back\n",
+      "chrome-action://back",
+      "chrome-action:unknown",
+      "chrome-action:navigate?url=",
+      "chrome-action:navigate?url=+",
+      "chrome-action:navigate",
+      "chrome-action:close-tab?tab=0",
+      "chrome-action:close-tab?tab=not-a-number",
+      "chrome-action:navigate?url=a&url=b",
+      "chrome-action:back?x=1",
+      "chrome-action:set-show-menu-bar?show=maybe",
+      // Mixed alias keys should be rejected.
+      "chrome-action:activate-tab?tab=1&tab_id=2",
+    ];
+
+    for input in cases {
+      assert!(
+        ChromeActionUrl::parse(input).is_err(),
+        "expected parse error for input {input:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn chrome_action_url_encoding_is_deterministic() {
+    let action = ChromeActionUrl::Navigate {
+      url: "cats & dogs".to_string(),
+    };
+
+    assert_eq!(
+      action.to_url(),
+      format!("{CHROME_ACTION_SCHEME}:navigate?url=cats+%26+dogs")
+    );
+
+    assert_eq!(
+      ChromeActionUrl::parse(&format!(
+        "{CHROME_ACTION_SCHEME}:navigate?url=cats+%26+dogs"
+      ))
+      .unwrap(),
+      action
+    );
+
+    // Legacy alias accepted.
+    assert_eq!(
+      ChromeActionUrl::parse(&format!(
+        "{CHROME_ACTION_SCHEME}:navigate?input=cats+%26+dogs"
+      ))
+      .unwrap(),
+      action
+    );
+  }
+
+  #[test]
+  fn chrome_action_href_round_trips_all_variants() {
+    let actions = vec![
+      ChromeActionUrl::Back,
+      ChromeActionUrl::Forward,
+      ChromeActionUrl::Reload,
+      ChromeActionUrl::StopLoading,
+      ChromeActionUrl::Home,
+      ChromeActionUrl::NewTab,
+      ChromeActionUrl::ReopenClosedTab,
+      ChromeActionUrl::OpenTabSearch,
+      ChromeActionUrl::CloseTabSearch,
+      ChromeActionUrl::ToggleBookmarksBar,
+      ChromeActionUrl::ToggleHistoryPanel,
+      ChromeActionUrl::ToggleBookmarksManager,
+      ChromeActionUrl::OpenClearBrowsingDataDialog,
+      ChromeActionUrl::ToggleDownloadsPanel,
+      ChromeActionUrl::ToggleBookmarkForActiveTab,
+      ChromeActionUrl::FocusAddressBar,
+      ChromeActionUrl::NewWindow,
+      ChromeActionUrl::ToggleFullScreen,
+      ChromeActionUrl::OpenFindInPage,
+      ChromeActionUrl::FindQuery {
+        tab_id: TabId(7),
+        query: "café & dogs + cats".to_string(),
+        case_sensitive: true,
+      },
+      ChromeActionUrl::FindNext { tab_id: TabId(7) },
+      ChromeActionUrl::FindPrev { tab_id: TabId(7) },
+      ChromeActionUrl::CloseFindInPage { tab_id: TabId(7) },
+      ChromeActionUrl::SavePage,
+      ChromeActionUrl::PrintPage,
+      ChromeActionUrl::SetShowMenuBar { show: true },
+      ChromeActionUrl::SetShowMenuBar { show: false },
+      ChromeActionUrl::AddressBarFocusChanged { has_focus: true },
+      ChromeActionUrl::AddressBarFocusChanged { has_focus: false },
+      ChromeActionUrl::Navigate {
+        url: "https://example.com/a?b=c&d=hello world#frag".to_string(),
+      },
+      ChromeActionUrl::OpenUrlInNewTab {
+        url: "file:///tmp/space here+plus.txt".to_string(),
+      },
+      ChromeActionUrl::CloseTab { tab_id: TabId(7) },
+      ChromeActionUrl::DetachTab { tab_id: TabId(123) },
+      ChromeActionUrl::ReloadTab { tab_id: TabId(55) },
+      ChromeActionUrl::DuplicateTab { tab_id: TabId(99) },
+      ChromeActionUrl::CloseOtherTabs { tab_id: TabId(3) },
+      ChromeActionUrl::CloseTabsToRight { tab_id: TabId(3) },
+      ChromeActionUrl::ActivateTab { tab_id: TabId(42) },
+      ChromeActionUrl::TogglePinTab {
+        tab_id: TabId(123456),
+      },
+    ];
+
+    for action in actions {
+      let href = chrome_action_href(&action);
+      let parsed = parse_chrome_action_url(&href).unwrap_or_else(|| {
+        panic!("failed to parse chrome-action href produced by formatter: {href:?}");
+      });
+      assert_eq!(parsed, action, "href={href}");
     }
   }
 }

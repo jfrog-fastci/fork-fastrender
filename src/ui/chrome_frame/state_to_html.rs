@@ -188,6 +188,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     let is_active = active_tab_id == Some(tab.id);
     let aria_selected = if is_active { "true" } else { "false" };
     let aria_posinset = tab_idx + 1;
+    let activate_href =
+      escape_html(&ChromeActionUrl::ActivateTab { tab_id: tab.id }.to_url_string());
+    let close_href = escape_html(&ChromeActionUrl::CloseTab { tab_id: tab.id }.to_url_string());
     out.push_str("      <div class=\"tab");
     if is_active {
       out.push_str(" active");
@@ -205,10 +208,9 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str(aria_selected);
     write!(
       out,
-      "\" aria-posinset=\"{aria_posinset}\" aria-setsize=\"{tab_setsize}\" href=\"chrome-action:activate-tab?tab=",
+      "\" aria-posinset=\"{aria_posinset}\" aria-setsize=\"{tab_setsize}\" href=\"{activate_href}",
     )
     .expect("write tab aria posinset/setsize");
-    out.push_str(&tab_id);
     out.push_str("\">");
     out.push_str("<img class=\"tab-favicon\" src=\"");
     out.push_str(&favicon_url);
@@ -225,8 +227,8 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str(&tab_id);
     out.push_str("\" class=\"tab-close\" role=\"button\" aria-label=\"Close tab: ");
     out.push_str(&title);
-    out.push_str("\" href=\"chrome-action:close-tab?tab=");
-    out.push_str(&tab_id);
+    out.push_str("\" href=\"");
+    out.push_str(&close_href);
     out.push_str("\">×</a>\n");
 
     out.push_str("      </div>\n");
@@ -278,13 +280,19 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str("</a>\n");
   }
 
+  let back_href = escape_html(&ChromeActionUrl::Back.to_url_string());
+  let forward_href = escape_html(&ChromeActionUrl::Forward.to_url_string());
+  let reload_href = escape_html(&ChromeActionUrl::Reload.to_url_string());
+  let stop_loading_href = escape_html(&ChromeActionUrl::StopLoading.to_url_string());
+  let home_href = escape_html(&ChromeActionUrl::Home.to_url_string());
+
   push_toolbar_button(
     &mut out,
     "toolbar-back",
     "back",
     "←",
     "Back",
-    "chrome-action:back",
+    &back_href,
     can_go_back,
   );
   push_toolbar_button(
@@ -293,7 +301,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "forward",
     "→",
     "Forward",
-    "chrome-action:forward",
+    &forward_href,
     can_go_forward,
   );
   push_toolbar_button(
@@ -302,17 +310,16 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "reload",
     "↻",
     "Reload",
-    "chrome-action:reload",
+    &reload_href,
     !loading,
   );
-  // Keep action names in sync with `ui::ChromeActionUrl` parsing ("stop-loading").
   push_toolbar_button(
     &mut out,
     "toolbar-stop",
     "stop",
     "✕",
     "Stop loading",
-    "chrome-action:stop-loading",
+    &stop_loading_href,
     loading,
   );
   push_toolbar_button(
@@ -321,7 +328,7 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     "home",
     "⌂",
     "Home",
-    "chrome-action:home",
+    &home_href,
     true,
   );
 

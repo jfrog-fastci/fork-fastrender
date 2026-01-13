@@ -337,6 +337,11 @@ pub use bookmarks::{
   BookmarkDelta, BookmarkError, BookmarkFolder, BookmarkId, BookmarkNode, BookmarkStore,
   BookmarkStoreMigration, BOOKMARK_STORE_VERSION,
 };
+pub use chrome_action_url::{
+  chrome_action_activate_tab, chrome_action_back, chrome_action_close_tab, chrome_action_forward,
+  chrome_action_href, chrome_action_new_tab, chrome_action_reload, parse_chrome_action_url,
+  ChromeActionUrl, CHROME_ACTION_SCHEME,
+};
 pub use notifications::{
   classify_warning_toast, Toast, ToastKind, ToastState, WarningToast, WarningToastIcon,
   WarningToastPresentation, WarningToastState, TOAST_DEFAULT_TTL, WARNING_TOAST_DEFAULT_TTL,
@@ -348,7 +353,6 @@ pub use frame_ready_bridge_coalescer::FrameReadyBridgeCoalescer;
   pub use worker_wake::WorkerWakeCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 pub use chrome_action::ChromeAction;
-pub use chrome_action_url::ChromeActionUrl;
 pub use chrome_dynamic_asset_fetcher::{ChromeDynamicAssetFetcher, ChromeDynamicAssetLimits};
 
 pub use crate::select_dropdown;
