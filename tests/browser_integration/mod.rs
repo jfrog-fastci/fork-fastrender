@@ -132,6 +132,7 @@ mod ui_worker_history;
 mod ui_worker_hover_active;
 mod ui_worker_hover_cursor;
 mod ui_worker_drag_drop_cursor;
+mod ui_worker_hover_cursor_none;
 mod ui_worker_hover_text_cursor;
 mod ui_worker_interaction;
 mod ui_details_toggle;

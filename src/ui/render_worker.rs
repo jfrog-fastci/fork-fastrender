@@ -715,6 +715,7 @@ fn cursor_for_form_control(node: &crate::dom::DomNode) -> CursorKind {
 fn cursor_kind_from_css_cursor(cursor: CursorKeyword) -> Option<CursorKind> {
   match cursor {
     CursorKeyword::Auto => None,
+    CursorKeyword::None => Some(CursorKind::Hidden),
     CursorKeyword::Pointer => Some(CursorKind::Pointer),
     CursorKeyword::Text | CursorKeyword::VerticalText => Some(CursorKind::Text),
     CursorKeyword::Crosshair => Some(CursorKind::Crosshair),

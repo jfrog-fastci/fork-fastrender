@@ -188,6 +188,8 @@ pub struct ScrollMetrics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CursorKind {
   Default,
+  /// Hide the OS cursor (CSS `cursor: none`).
+  Hidden,
   Pointer,
   Text,
   Crosshair,

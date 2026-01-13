@@ -7193,6 +7193,9 @@ impl App {
         .is_some_and(|pos| self.cursor_over_egui_overlay(pos));
 
     if !self.cursor_in_page || overlay_intercepts {
+      if self.page_cursor_override == Some(CursorKind::Hidden) {
+        self.window.set_cursor_visible(true);
+      }
       self.page_cursor_override = None;
       return;
     }
@@ -7209,7 +7212,16 @@ impl App {
     if self.page_cursor_override == Some(kind) {
       return;
     }
+
+    if self.page_cursor_override == Some(CursorKind::Hidden) && kind != CursorKind::Hidden {
+      self.window.set_cursor_visible(true);
+    }
     self.page_cursor_override = Some(kind);
+
+    if kind == CursorKind::Hidden {
+      self.window.set_cursor_visible(false);
+      return;
+    }
 
     let icon = match kind {
       CursorKind::Default => CursorIcon::Default,
@@ -7219,6 +7231,7 @@ impl App {
       CursorKind::NotAllowed => CursorIcon::NotAllowed,
       CursorKind::Grab => CursorIcon::Grab,
       CursorKind::Grabbing => CursorIcon::Grabbing,
+      CursorKind::Hidden => unreachable!("handled above"),
     };
     self.window.set_cursor_icon(icon);
   }
