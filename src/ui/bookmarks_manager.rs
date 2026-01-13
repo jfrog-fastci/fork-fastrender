@@ -9,6 +9,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
+use smallvec::SmallVec;
+
 use crate::ui::bookmarks_io_job::{BookmarksIoJob, BookmarksIoJobUpdate};
 use crate::ui::motion::UiMotion;
 
@@ -1120,13 +1122,17 @@ fn filter_search_rows(
   } else {
     Cow::Borrowed(query)
   };
-  let tokens: Vec<&str> = query_lower
-    .split_whitespace()
-    .filter(|t| !t.is_empty())
-    .collect();
-  if tokens.is_empty() {
+  let mut tokens_iter = query_lower.split_whitespace().filter(|t| !t.is_empty());
+  let Some(first_token) = tokens_iter.next() else {
     return Vec::new();
-  }
+  };
+  let tokens: Option<SmallVec<[&str; 4]>> = tokens_iter.next().map(|second_token| {
+    let mut tokens: SmallVec<[&str; 4]> = SmallVec::new();
+    tokens.push(first_token);
+    tokens.push(second_token);
+    tokens.extend(tokens_iter);
+    tokens
+  });
 
   let mut out = Vec::with_capacity(prev_rows.len());
   'rows: for row in prev_rows {
@@ -1147,12 +1153,20 @@ fn filter_search_rows(
       .map(str::trim)
       .filter(|t| !t.is_empty());
 
-    for token_lower in &tokens {
-      if !contains_ascii_case_insensitive(url, token_lower)
-        && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
-      {
-        continue 'rows;
+    if let Some(tokens) = &tokens {
+      // Multi-token query: every token must match either title or URL.
+      for token_lower in tokens {
+        if !contains_ascii_case_insensitive(url, token_lower)
+          && !title.is_some_and(|t| contains_ascii_case_insensitive(t, token_lower))
+        {
+          continue 'rows;
+        }
       }
+    } else if !contains_ascii_case_insensitive(url, first_token)
+      && !title.is_some_and(|t| contains_ascii_case_insensitive(t, first_token))
+    {
+      // Single-token query fast path.
+      continue 'rows;
     }
 
     out.push(BookmarkRow {
