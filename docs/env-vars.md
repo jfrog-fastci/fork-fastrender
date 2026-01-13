@@ -310,6 +310,12 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - Includes FPS / frame-time samples, frame queue/backpressure stats, and (when enabled) UI latency
     + CPU summary metrics.
   - Default: `0`.
+  - CLI equivalents: `browser --hud` / `browser --no-hud` (CLI overrides env vars).
+- `FASTR_PERF_LOG=0|1` – emit a machine-readable performance log (JSONL) from the `browser` binary.
+  - Default: `0` (off).
+  - CLI equivalents:
+    - `browser --perf-log` (logs to stdout)
+    - `browser --perf-log-out <path>` (logs to a file instead of stdout; creates parent directories)
 - `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.
   - Default: enabled in debug builds; disabled in release builds unless set to `1`.
 - `FASTR_BROWSER_LOG_SURFACE_CONFIGURE=0|1` – log `wgpu::Surface::configure` calls to stderr.

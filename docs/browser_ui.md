@@ -295,8 +295,11 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 
 ### HUD / debug overlays
 
-- `FASTR_BROWSER_HUD=1` shows an in-app HUD overlay with browser/debug metrics (FPS / frame time,
-  frame queue/backpressure stats, and when enabled: input/resize latency + CPU usage summaries).
+- HUD overlay:
+  - `browser --hud` (or `FASTR_BROWSER_HUD=1`) shows an in-app HUD overlay with browser/debug metrics
+    (FPS / frame time, frame queue/backpressure stats, and when enabled: input/resize latency + CPU
+    usage summaries).
+  - `browser --no-hud` force-disables the HUD (overrides `FASTR_BROWSER_HUD`).
 - `FASTR_BROWSER_LOG_SURFACE_CONFIGURE=1` logs `wgpu::Surface::configure` calls to stderr (useful
   when debugging interactive resize performance; swapchain reconfiguration should be coalesced).
 - Debug log UI:
@@ -315,6 +318,9 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
     navigation TTFP, and idle CPU usage / busy-loop behavior).
   - Use this when investigating “the UI feels laggy” problems (dropped frames, slow resize, slow
     typing/click feedback), and prefer `--release` builds for realistic numbers.
+  - CLI equivalents:
+    - `browser --perf-log` emits events to stdout (overrides `FASTR_PERF_LOG` and forces stdout even if `FASTR_PERF_LOG_OUT` is set).
+    - `browser --perf-log-out <path>` writes events to a file instead of stdout (creates parent directories; overrides env vars).
   - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` can be used to write events to a file instead of stdout.
 - `ui_perf_smoke` is a **headless** UI responsiveness harness.
   - Use it for quick local checks and for CI-style regression tests where you can’t (or don’t want

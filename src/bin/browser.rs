@@ -304,10 +304,14 @@ mod perf_log {
     },
   }
 
-  pub fn write_event_jsonl<W: Write>(writer: &mut W, event: &PerfEvent<'_>) -> io::Result<()> {
-    serde_json::to_writer(writer, event)?;
+  pub fn write_jsonl<W: Write, T: Serialize>(writer: &mut W, value: &T) -> io::Result<()> {
+    serde_json::to_writer(writer, value)?;
     writer.write_all(b"\n")?;
     Ok(())
+  }
+
+  pub fn write_event_jsonl<W: Write>(writer: &mut W, event: &PerfEvent<'_>) -> io::Result<()> {
+    write_jsonl(writer, event)
   }
 
   #[derive(Debug)]
@@ -330,14 +334,18 @@ mod perf_log {
       t.saturating_duration_since(self.start).as_millis() as u64
     }
 
-    pub fn emit(&mut self, event: &PerfEvent<'_>) {
+    pub fn emit_value<T: Serialize>(&mut self, value: &T) {
       if self.disabled {
         return;
       }
-      if write_event_jsonl(&mut self.writer, event).is_err() {
+      if write_jsonl(&mut self.writer, value).is_err() {
         // Avoid crashing or spamming logs if stdout is closed (e.g. broken pipe).
         self.disabled = true;
       }
+    }
+
+    pub fn emit(&mut self, event: &PerfEvent<'_>) {
+      self.emit_value(event);
     }
   }
 }
@@ -2443,13 +2451,19 @@ fn parse_browser_hud_env(raw: Option<&str>) -> Result<bool, String> {
   ))
 }
 
-fn browser_hud_enabled_from_env() -> bool {
-  let raw = match std::env::var(ENV_BROWSER_HUD) {
-    Ok(raw) => raw,
-    Err(_) => return false,
-  };
-
-  match parse_browser_hud_env(Some(&raw)) {
+#[cfg(any(test, feature = "browser_ui"))]
+fn browser_hud_enabled_from_cli_or_env(
+  cli_force_on: bool,
+  cli_force_off: bool,
+  env_value: Option<&str>,
+) -> bool {
+  if cli_force_on {
+    return true;
+  }
+  if cli_force_off {
+    return false;
+  }
+  match parse_browser_hud_env(env_value) {
     Ok(enabled) => enabled,
     Err(err) => {
       eprintln!("{err}");
@@ -2517,9 +2531,50 @@ fn parse_allow_crash_urls_env(raw: Option<&str>) -> Result<bool, String> {
   Ok(parse_env_bool_override(ENV_BROWSER_ALLOW_CRASH_URLS, raw)?.unwrap_or(false))
 }
 
-#[cfg(feature = "browser_ui")]
-fn perf_log_enabled_from_env() -> bool {
-  parse_env_bool(std::env::var(ENV_PERF_LOG).ok().as_deref())
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PerfLogConfig {
+  enabled: bool,
+  out_path: Option<std::path::PathBuf>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn perf_log_config_from_cli_or_env(
+  cli_force_on: bool,
+  cli_out_path: Option<&std::path::PathBuf>,
+  env_enabled: Option<&str>,
+  env_out_path: Option<&str>,
+) -> PerfLogConfig {
+  // CLI always wins.
+  if let Some(path) = cli_out_path.filter(|p| !p.as_os_str().is_empty()) {
+    return PerfLogConfig {
+      enabled: true,
+      out_path: Some(path.clone()),
+    };
+  }
+  if cli_force_on {
+    // Force stdout when explicitly enabled via CLI (ignore any env output override).
+    return PerfLogConfig {
+      enabled: true,
+      out_path: None,
+    };
+  }
+
+  if parse_env_bool(env_enabled) {
+    let out_path = env_out_path
+      .map(|raw| raw.trim())
+      .filter(|s| !s.is_empty())
+      .map(std::path::PathBuf::from);
+    return PerfLogConfig {
+      enabled: true,
+      out_path,
+    };
+  }
+
+  PerfLogConfig {
+    enabled: false,
+    out_path: None,
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -2758,6 +2813,126 @@ mod download_dir_validation_tests {
     assert!(!entry.file_name.contains('/'));
     assert!(!entry.file_name.contains('\\'));
     assert!(!entry.file_name.chars().any(|c| c.is_control()));
+  }
+}
+
+#[cfg(test)]
+mod browser_cli_flag_tests {
+  use super::*;
+  use clap::Parser;
+
+  #[test]
+  fn parses_hud_and_perf_log_flags() {
+    let args = BrowserCliArgs::try_parse_from(["browser", "--hud", "--perf-log"]).unwrap();
+    assert!(args.hud);
+    assert!(!args.no_hud);
+    assert!(args.perf_log);
+    assert!(args.perf_log_out.is_none());
+
+    let args =
+      BrowserCliArgs::try_parse_from(["browser", "--no-hud", "--perf-log-out", "out.jsonl"])
+        .unwrap();
+    assert!(!args.hud);
+    assert!(args.no_hud);
+    assert!(!args.perf_log);
+    assert_eq!(args.perf_log_out.as_deref(), Some(std::path::Path::new("out.jsonl")));
+  }
+
+  #[test]
+  fn hud_cli_overrides_env() {
+    let base = BrowserCliArgs::try_parse_from(["browser"]).unwrap();
+    assert!(!base.hud);
+    assert!(!base.no_hud);
+
+    assert!(browser_hud_enabled_from_cli_or_env(base.hud, base.no_hud, Some("1")));
+    assert!(!browser_hud_enabled_from_cli_or_env(base.hud, base.no_hud, None));
+
+    let forced_on = BrowserCliArgs::try_parse_from(["browser", "--hud"]).unwrap();
+    assert!(browser_hud_enabled_from_cli_or_env(
+      forced_on.hud,
+      forced_on.no_hud,
+      Some("0")
+    ));
+
+    let forced_off = BrowserCliArgs::try_parse_from(["browser", "--no-hud"]).unwrap();
+    assert!(!browser_hud_enabled_from_cli_or_env(
+      forced_off.hud,
+      forced_off.no_hud,
+      Some("1")
+    ));
+  }
+
+  #[test]
+  fn perf_log_cli_overrides_env_and_out_path_enables() {
+    let base = BrowserCliArgs::try_parse_from(["browser"]).unwrap();
+    assert!(!base.perf_log);
+    assert!(base.perf_log_out.is_none());
+
+    let env_on = perf_log_config_from_cli_or_env(
+      base.perf_log,
+      base.perf_log_out.as_ref(),
+      Some("1"),
+      None,
+    );
+    assert!(env_on.enabled);
+    assert!(env_on.out_path.is_none());
+
+    let env_out = perf_log_config_from_cli_or_env(
+      base.perf_log,
+      base.perf_log_out.as_ref(),
+      Some("1"),
+      Some("target/env.jsonl"),
+    );
+    assert_eq!(
+      env_out.out_path.as_deref(),
+      Some(std::path::Path::new("target/env.jsonl"))
+    );
+
+    let forced_on = BrowserCliArgs::try_parse_from(["browser", "--perf-log"]).unwrap();
+    let forced_on_config = perf_log_config_from_cli_or_env(
+      forced_on.perf_log,
+      forced_on.perf_log_out.as_ref(),
+      Some("0"),
+      Some("target/ignored.jsonl"),
+    );
+    assert!(forced_on_config.enabled);
+    assert!(
+      forced_on_config.out_path.is_none(),
+      "expected --perf-log to force stdout"
+    );
+
+    let forced_file =
+      BrowserCliArgs::try_parse_from(["browser", "--perf-log", "--perf-log-out", "target/run.jsonl"])
+        .unwrap();
+    let config = perf_log_config_from_cli_or_env(
+      forced_file.perf_log,
+      forced_file.perf_log_out.as_ref(),
+      Some("0"),
+      None,
+    );
+    assert!(config.enabled);
+    assert_eq!(
+      config.out_path.as_deref(),
+      Some(std::path::Path::new("target/run.jsonl"))
+    );
+
+    let out_only =
+      BrowserCliArgs::try_parse_from(["browser", "--perf-log-out", "out.jsonl"]).unwrap();
+    let config =
+      perf_log_config_from_cli_or_env(out_only.perf_log, out_only.perf_log_out.as_ref(), None, None);
+    assert!(config.enabled);
+    assert_eq!(config.out_path.as_deref(), Some(std::path::Path::new("out.jsonl")));
+  }
+
+  #[test]
+  fn hud_flags_last_one_wins() {
+    let args = BrowserCliArgs::try_parse_from(["browser", "--hud", "--no-hud"]).unwrap();
+    assert!(!args.hud, "expected last flag to win");
+    assert!(args.no_hud);
+
+    let args = BrowserCliArgs::try_parse_from(["browser", "--no-hud", "--hud"]).unwrap();
+    assert!(args.hud);
+    assert!(!args.no_hud);
   }
 }
 
@@ -3425,6 +3600,9 @@ mod wheel_delta_shift_mapping_tests {
     assert_eq!(remap_wheel_delta_for_shift((7.0, 3.0), true), (7.0, 3.0));
   }
 }
+
+#[cfg(feature = "browser_ui")]
+use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
 use clap::Parser;
 #[cfg(feature = "browser_ui")]
@@ -3479,7 +3657,7 @@ impl From<accesskit_winit::ActionRequestEvent> for UserEvent {
   }
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(clap::Parser, Debug)]
 #[command(
   name = "browser",
@@ -3521,6 +3699,32 @@ struct BrowserCliArgs {
   /// to the current working directory.
   #[arg(long = "download-dir", value_name = "PATH")]
   download_dir: Option<std::path::PathBuf>,
+
+  /// Show an in-app HUD overlay with browser/debug metrics
+  ///
+  /// CLI overrides `FASTR_BROWSER_HUD`. When neither the flag nor env var is set, the HUD is off.
+  #[arg(long, action = clap::ArgAction::SetTrue, overrides_with = "no_hud")]
+  hud: bool,
+
+  /// Do not show the in-app HUD overlay
+  ///
+  /// CLI overrides `FASTR_BROWSER_HUD`. When neither the flag nor env var is set, the HUD is off.
+  #[arg(long = "no-hud", action = clap::ArgAction::SetTrue, overrides_with = "hud")]
+  no_hud: bool,
+
+  /// Emit a machine-readable performance log (JSONL) to stdout
+  ///
+  /// CLI overrides `FASTR_PERF_LOG` (and forces stdout even if `FASTR_PERF_LOG_OUT` is set).
+  /// When neither the flag nor env var is set, perf logging is off.
+  #[arg(long = "perf-log", action = clap::ArgAction::SetTrue)]
+  perf_log: bool,
+
+  /// Write the performance log (JSONL) to a file instead of stdout
+  ///
+  /// When set, perf logging is enabled regardless of `FASTR_PERF_LOG`, and the output path
+  /// overrides `FASTR_PERF_LOG_OUT`.
+  #[arg(long = "perf-log-out", value_name = "PATH")]
+  perf_log_out: Option<std::path::PathBuf>,
 
   /// wgpu adapter power preference when selecting a GPU
   ///
@@ -3623,7 +3827,7 @@ struct BrowserCliArgs {
   exit_immediately: bool,
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 enum CliPowerPreference {
   High,
@@ -3642,7 +3846,7 @@ impl CliPowerPreference {
   }
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 enum CliWgpuBackend {
   /// Enable all supported wgpu backends (useful for overriding `FASTR_BROWSER_WGPU_BACKENDS`).
@@ -3673,7 +3877,7 @@ impl CliWgpuBackend {
   }
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 fn parse_u64_mb(raw: &str) -> Result<u64, String> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
@@ -3685,7 +3889,7 @@ fn parse_u64_mb(raw: &str) -> Result<u64, String> {
     .map_err(|_| format!("invalid integer: {raw:?}"))
 }
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 fn parse_u64_ms(raw: &str) -> Result<u64, String> {
   parse_u64_mb(raw)
 }
@@ -5117,41 +5321,6 @@ mod window_restore_rect_tests {
 #[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let perf_log_start = std::time::Instant::now();
-  let perf_log_writer = if parse_env_bool(std::env::var(ENV_PERF_LOG).ok().as_deref()) {
-    let out_path = std::env::var(ENV_PERF_LOG_OUT)
-      .ok()
-      .map(|raw| raw.trim().to_string())
-      .filter(|s| !s.is_empty());
-
-    let sink: Box<dyn std::io::Write> = if let Some(path) = out_path {
-      let path = std::path::PathBuf::from(path);
-      let open = (|| -> std::io::Result<std::fs::File> {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-          std::fs::create_dir_all(parent)?;
-        }
-        std::fs::File::create(&path)
-      })();
-      match open {
-        Ok(file) => Box::new(file),
-        Err(err) => {
-          eprintln!(
-            "warning: failed to open {ENV_PERF_LOG_OUT}={} ({err}); falling back to stdout",
-            path.display()
-          );
-          Box::new(std::io::stdout())
-        }
-      }
-    } else {
-      Box::new(std::io::stdout())
-    };
-
-    Some(std::rc::Rc::new(std::cell::RefCell::new(
-      perf_log::JsonlPerfWriter::new(perf_log_start, std::io::BufWriter::new(sink)),
-    )))
-  } else {
-    None
-  };
-
   let cli = BrowserCliArgs::parse();
 
   #[cfg(feature = "audio_cpal")]
@@ -5343,6 +5512,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       session_path,
       download_dir,
       renderer_watchdog_timeout,
+    );
+  }
+
+  let hud_enabled = browser_hud_enabled_from_cli_or_env(
+    cli.hud,
+    cli.no_hud,
+    std::env::var(ENV_BROWSER_HUD).ok().as_deref(),
+  );
+
+  let perf_log_config = perf_log_config_from_cli_or_env(
+    cli.perf_log,
+    cli.perf_log_out.as_ref(),
+    std::env::var(ENV_PERF_LOG).ok().as_deref(),
+    std::env::var(ENV_PERF_LOG_OUT).ok().as_deref(),
+  );
+  let perf_log_writer = if perf_log_config.enabled {
+    let sink: Box<dyn std::io::Write> = if let Some(path) = perf_log_config.out_path {
+      let open = (|| -> std::io::Result<std::fs::File> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+          std::fs::create_dir_all(parent)?;
+        }
+        std::fs::File::create(&path)
+      })();
+      match open {
+        Ok(file) => Box::new(file),
+        Err(err) => {
+          eprintln!(
+            "warning: failed to open perf log output {} ({err}); falling back to stdout",
+            path.display()
+          );
+          Box::new(std::io::stdout())
+        }
+      }
+    } else {
+      Box::new(std::io::stdout())
+    };
+
+    Some(std::rc::Rc::new(std::cell::RefCell::new(
+      perf_log::JsonlPerfWriter::new(perf_log_start, std::io::BufWriter::new(sink)),
+    )))
+  } else {
+    None
+  };
+  let perf_log_enabled = perf_log_writer.is_some();
+
+  if cli.js_enabled {
+    eprintln!(
+      "warning: --js is currently supported only with --headless-smoke (windowed UI script execution is not wired yet)"
     );
   }
 
@@ -5594,7 +5811,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let worker_wake_coalescer = Arc::new(fastrender::ui::WorkerWakeCoalescer::new(Arc::new(
     AtomicBool::new(false),
   )));
-  let perf_log_enabled = perf_log_enabled_from_env();
 
   // Prefer the explicit browser UI trace env var, but accept the older `FASTR_PERF_TRACE_OUT` as an
   // alias so existing perf-logging docs/scripts continue to work.
@@ -5613,7 +5829,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     fastrender::debug::trace::TraceHandle::disabled()
   };
 
-  let hud_enabled = browser_hud_enabled_from_env();
   let mut cpu_sampler = ProcessCpuSampler::new(perf_log_writer.clone(), hud_enabled);
 
   // Keep a single profile autosave worker (bookmarks/history) across all windows.
@@ -5895,6 +6110,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       theme_accent,
       worker_name.clone(),
       ui_unresponsive_watchdog_timeout,
+      hud_enabled,
       bookmarks_path.clone(),
       history_path.clone(),
       download_dir.clone(),
@@ -5920,9 +6136,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       None
     };
     let worker_perf_log = if perf_log_enabled {
-      worker_wake_counters
-        .as_ref()
-        .map(|counters| WorkerWakePerfLogger::new(window_id, Arc::clone(counters)))
+      if let (Some(counters), Some(writer)) =
+        (worker_wake_counters.as_ref(), perf_log_writer.as_ref())
+      {
+        Some(WorkerWakePerfLogger::new(
+          window_id,
+          Arc::clone(counters),
+          writer.clone(),
+        ))
+      } else {
+        None
+      }
     } else {
       None
     };
@@ -6723,6 +6947,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           theme_accent,
           worker_name.clone(),
           ui_unresponsive_watchdog_timeout,
+          hud_enabled,
           bookmarks_path.clone(),
           history_path.clone(),
           download_dir.clone(),
@@ -6768,9 +6993,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           None
         };
         let worker_perf_log = if perf_log_enabled {
-          worker_wake_counters
-            .as_ref()
-            .map(|counters| WorkerWakePerfLogger::new(window_id, Arc::clone(counters)))
+          if let (Some(counters), Some(writer)) =
+            (worker_wake_counters.as_ref(), perf_log_writer.as_ref())
+          {
+            Some(WorkerWakePerfLogger::new(
+              window_id,
+              Arc::clone(counters),
+              writer.clone(),
+            ))
+          } else {
+            None
+          }
         } else {
           None
         };
@@ -6908,6 +7141,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           theme_accent,
           worker_name.clone(),
           ui_unresponsive_watchdog_timeout,
+          hud_enabled,
           bookmarks_path.clone(),
           history_path.clone(),
           download_dir.clone(),
@@ -6947,9 +7181,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           None
         };
         let worker_perf_log = if perf_log_enabled {
-          worker_wake_counters
-            .as_ref()
-            .map(|counters| WorkerWakePerfLogger::new(window_id, Arc::clone(counters)))
+          if let (Some(counters), Some(writer)) =
+            (worker_wake_counters.as_ref(), perf_log_writer.as_ref())
+          {
+            Some(WorkerWakePerfLogger::new(
+              window_id,
+              Arc::clone(counters),
+              writer.clone(),
+            ))
+          } else {
+            None
+          }
         } else {
           None
         };
@@ -9310,6 +9552,9 @@ fn format_worker_wake_perf_log_line(line: &WorkerWakePerfLogLine) -> serde_json:
 struct WorkerWakePerfLogger {
   window_id: String,
   counters: std::sync::Arc<WorkerWakeHudCounters>,
+  perf_log_writer: std::rc::Rc<
+    std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+  >,
   start_time: std::time::Instant,
   last_report_at: std::time::Instant,
   next_report_at: std::time::Instant,
@@ -9331,6 +9576,9 @@ impl WorkerWakePerfLogger {
   fn new(
     window_id: winit::window::WindowId,
     counters: std::sync::Arc<WorkerWakeHudCounters>,
+    perf_log_writer: std::rc::Rc<
+      std::cell::RefCell<perf_log::JsonlPerfWriter<std::io::BufWriter<Box<dyn std::io::Write>>>>,
+    >,
   ) -> Self {
     let now = std::time::Instant::now();
     let sent = counters
@@ -9342,6 +9590,7 @@ impl WorkerWakePerfLogger {
     Self {
       window_id: format!("{window_id:?}"),
       counters,
+      perf_log_writer,
       start_time: now,
       last_report_at: now,
       next_report_at: now.checked_add(Self::PERF_LOG_INTERVAL).unwrap_or(now),
@@ -9436,7 +9685,8 @@ impl WorkerWakePerfLogger {
           worker_last_drain: self.last_drain,
           worker_max_drain: self.max_drain_since_report,
         };
-        println!("{}", format_worker_wake_perf_log_line(&line));
+        let json = format_worker_wake_perf_log_line(&line);
+        self.perf_log_writer.borrow_mut().emit_value(&json);
 
         self.prev_wake_events_sent = sent_total;
         self.prev_wake_events_coalesced = coalesced_total;
@@ -9548,7 +9798,6 @@ struct IdleRepaintMonitor {
   idle_frames_total: u64,
   idle_frame_times: std::collections::VecDeque<std::time::Instant>,
   idle_frames_per_sec: f32,
-
   window_id: String,
   last_perf_log: Option<std::time::Instant>,
   perf_log_writer: Option<
@@ -9650,28 +9899,28 @@ impl IdleRepaintMonitor {
       0.0
     };
 
-    if self.perf_log_writer.is_some() {
+    if let Some(writer) = self.perf_log_writer.as_ref() {
       let should_log = match self.last_perf_log {
         Some(prev) => now.saturating_duration_since(prev) >= Self::PERF_LOG_INTERVAL,
         None => true,
       };
       if should_log {
         self.last_perf_log = Some(now);
-        if let Some(writer) = self.perf_log_writer.as_ref() {
-          let mut writer = writer.borrow_mut();
-          let t_ms = writer.ms_since_start(now);
-          let rolling_window_ms = Self::IDLE_WINDOW.as_millis().min(u128::from(u64::MAX)) as u64;
-          let idle_frames_window = u64::try_from(self.idle_frame_times.len()).unwrap_or(u64::MAX);
-          writer.emit(&perf_log::PerfEvent::IdleSample {
-            schema_version: perf_log::SCHEMA_VERSION,
-            t_ms,
-            window_id: self.window_id.as_str(),
-            rolling_window_ms,
-            idle_fps: self.idle_frames_per_sec,
-            idle_frames_total: self.idle_frames_total,
-            idle_frames_window,
-          });
-        }
+        let mut writer = writer.borrow_mut();
+        let t_ms = writer.ms_since_start(now);
+        let rolling_window_ms = Self::IDLE_WINDOW
+          .as_millis()
+          .min(u128::from(u64::MAX)) as u64;
+        let idle_frames_window = u64::try_from(self.idle_frame_times.len()).unwrap_or(u64::MAX);
+        writer.emit(&perf_log::PerfEvent::IdleSample {
+          schema_version: perf_log::SCHEMA_VERSION,
+          t_ms,
+          window_id: self.window_id.as_str(),
+          rolling_window_ms,
+          idle_fps: self.idle_frames_per_sec,
+          idle_frames_total: self.idle_frames_total,
+          idle_frames_window,
+        });
       }
     }
 
@@ -11161,6 +11410,7 @@ impl App {
     theme_accent: Option<egui::Color32>,
     worker_name_base: String,
     unresponsive_watchdog_timeout: Option<std::time::Duration>,
+    hud_enabled: bool,
     bookmarks_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
     download_dir: std::path::PathBuf,
@@ -11315,7 +11565,7 @@ impl App {
       view_formats: vec![],
     };
 
-    let mut hud = if browser_hud_enabled_from_env() {
+    let mut hud = if hud_enabled {
       Some(BrowserHud::new())
     } else {
       None
