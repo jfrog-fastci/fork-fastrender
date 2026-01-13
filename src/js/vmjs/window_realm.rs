@@ -60613,6 +60613,103 @@ mod tests {
   }
 
   #[test]
+  fn restore_location_url_to_document_url_repairs_location_href_after_canceled_navigation(
+  ) -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Navigation requests from `window.location` abort the running script so the embedder can
+    // synchronously commit navigation (or cancel it). The location object updates its internal href
+    // slot before termination, so `location.href` reflects the requested URL.
+    let err = realm
+      .exec_script("location.href = 'https://example.com/next'; 1 + 2")
+      .unwrap_err();
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, vm_js::TerminationReason::Interrupted),
+      other => panic!("expected interrupted termination, got {other:?}"),
+    }
+    realm.reset_interrupt();
+
+    let href_v = realm.exec_script("location.href")?;
+    let document_url_v = realm.exec_script("document.URL")?;
+    assert_eq!(get_string(realm.heap(), href_v), "https://example.com/next");
+    assert_eq!(get_string(realm.heap(), document_url_v), "https://example.com/");
+
+    // The embedder-tracked document URL stays unchanged until navigation is committed.
+    let internal_document_url = realm
+      .vm()
+      .user_data::<WindowRealmUserData>()
+      .expect("expected WindowRealmUserData")
+      .document_url()
+      .to_string();
+    assert_eq!(internal_document_url, "https://example.com/");
+
+    // Simulate the embedder observing the pending navigation request.
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.com/next");
+    assert!(!req.replace);
+
+    // If the embedder cancels navigation, it must restore the href slot back to the active
+    // document URL so `location.href` stays in sync.
+    realm.restore_location_url_to_document_url()?;
+    let restored_href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), restored_href_v), "https://example.com/");
+    Ok(())
+  }
+
+  fn assert_restore_location_url_after_canceled_navigation(
+    script: &str,
+    expected_request_url: &str,
+    expected_replace: bool,
+  ) -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let err = realm.exec_script(script).unwrap_err();
+    match err {
+      VmError::Termination(term) => assert_eq!(term.reason, vm_js::TerminationReason::Interrupted),
+      other => panic!("expected interrupted termination, got {other:?}"),
+    }
+    realm.reset_interrupt();
+
+    let href_v = realm.exec_script("location.href")?;
+    let document_url_v = realm.exec_script("document.URL")?;
+    assert_eq!(get_string(realm.heap(), href_v), expected_request_url);
+    assert_eq!(get_string(realm.heap(), document_url_v), "https://example.com/");
+
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, expected_request_url);
+    assert_eq!(req.replace, expected_replace);
+
+    realm.restore_location_url_to_document_url()?;
+    let restored_href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), restored_href_v), "https://example.com/");
+    Ok(())
+  }
+
+  #[test]
+  fn restore_location_url_to_document_url_repairs_location_assign_after_canceled_navigation(
+  ) -> Result<(), VmError> {
+    assert_restore_location_url_after_canceled_navigation(
+      "location.assign('/rel'); 1 + 2",
+      "https://example.com/rel",
+      false,
+    )
+  }
+
+  #[test]
+  fn restore_location_url_to_document_url_repairs_location_replace_after_canceled_navigation(
+  ) -> Result<(), VmError> {
+    assert_restore_location_url_after_canceled_navigation(
+      "location.replace('/rel'); 1 + 2",
+      "https://example.com/rel",
+      true,
+    )
+  }
+
+  #[test]
   fn location_protocol_set_requests_navigation() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new(
       "https://example.invalid:8443/path?x=1#h",
