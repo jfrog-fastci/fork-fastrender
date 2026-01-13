@@ -20,6 +20,20 @@ const MAX_FRAME_BUFFERS: usize = 8;
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+fn invalid_parameters(message: impl Into<String>) -> IpcError {
+  IpcError::Io(std::io::Error::new(
+    std::io::ErrorKind::InvalidInput,
+    message.into(),
+  ))
+}
+
+fn protocol_violation(message: impl Into<String>) -> IpcError {
+  IpcError::Io(std::io::Error::new(
+    std::io::ErrorKind::InvalidData,
+    message.into(),
+  ))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameBufferLayout {
   pub width_px: u32,
@@ -63,9 +77,7 @@ enum ShmemBacking {
 
 impl ShmemRegion {
   fn create_temp_mapped(len: u64) -> Result<Self, IpcError> {
-    let len_usize = usize::try_from(len).map_err(|_| IpcError::InvalidParameters {
-      message: format!("shared memory length {len} does not fit in usize"),
-    })?;
+    let len_usize = usize::try_from(len).map_err(|_| IpcError::ArithmeticOverflow)?;
 
     let mut tmp = tempfile::Builder::new()
       .prefix("fastr_framebuf_")
@@ -95,9 +107,7 @@ impl ShmemRegion {
   }
 
   fn open_mapped(path: &Path, len: u64) -> Result<Self, IpcError> {
-    let len_usize = usize::try_from(len).map_err(|_| IpcError::InvalidParameters {
-      message: format!("shared memory length {len} does not fit in usize"),
-    })?;
+    let len_usize = usize::try_from(len).map_err(|_| IpcError::ArithmeticOverflow)?;
 
     let file = OpenOptions::new().read(true).write(true).open(path)?;
 
@@ -105,13 +115,11 @@ impl ShmemRegion {
     // after mapping. The file handle is kept alive to reduce platform-specific surprises.
     let mmap = unsafe { MmapMut::map_mut(&file)? };
     if mmap.len() != len_usize {
-      return Err(IpcError::ProtocolViolation {
-        message: format!(
-          "shared memory size mismatch for {}: expected {len_usize} bytes, got {} bytes",
-          path.display(),
-          mmap.len()
-        ),
-      });
+      return Err(protocol_violation(format!(
+        "shared memory size mismatch for {}: expected {len_usize} bytes, got {} bytes",
+        path.display(),
+        mmap.len()
+      )));
     }
 
     Ok(Self {
@@ -149,15 +157,14 @@ impl BrowserFramePool {
     dpr: f32,
   ) -> Result<Self, IpcError> {
     if count == 0 {
-      return Err(IpcError::InvalidParameters {
-        message: "frame pool buffer count must be > 0".to_string(),
-      });
+      return Err(invalid_parameters(
+        "frame pool buffer count must be > 0".to_string(),
+      ));
     }
     if count > MAX_FRAME_BUFFERS {
-      return Err(IpcError::InvalidParameters {
-        message: format!(
-          "frame pool buffer count {count} exceeds maximum supported ({MAX_FRAME_BUFFERS})"
-        ),
+      return Err(IpcError::TooManyFrameBuffers {
+        len: count,
+        max: MAX_FRAME_BUFFERS,
       });
     }
 
@@ -170,9 +177,7 @@ impl BrowserFramePool {
     for index in 0..count {
       let region = ShmemRegion::create_temp_mapped(layout.byte_len)?;
       let desc = FrameBufferDesc {
-        index: u32::try_from(index).map_err(|_| IpcError::InvalidParameters {
-          message: "frame pool buffer count does not fit in u32".to_string(),
-        })?,
+        index: index as u32,
         width_px: layout.width_px,
         height_px: layout.height_px,
         stride_bytes: layout.stride_bytes,
@@ -214,41 +219,33 @@ pub struct RendererFramePool {
 impl RendererFramePool {
   pub fn install(generation: u64, descs: Vec<FrameBufferDesc>) -> Result<Self, IpcError> {
     if descs.is_empty() {
-      return Err(IpcError::InvalidParameters {
-        message: "frame pool descriptors must be non-empty".to_string(),
-      });
+      return Err(invalid_parameters(
+        "frame pool descriptors must be non-empty".to_string(),
+      ));
     }
     if descs.len() > MAX_FRAME_BUFFERS {
-      return Err(IpcError::InvalidParameters {
-        message: format!(
-          "frame pool descriptor count {} exceeds maximum supported ({MAX_FRAME_BUFFERS})",
-          descs.len()
-        ),
+      return Err(IpcError::TooManyFrameBuffers {
+        len: descs.len(),
+        max: MAX_FRAME_BUFFERS,
       });
     }
 
     // Validate descriptors are contiguous and consistent. This keeps index handling simple and
     // ensures protocol violations are caught eagerly.
     for (pos, desc) in descs.iter().enumerate() {
-      let expected = u32::try_from(pos).map_err(|_| IpcError::InvalidParameters {
-        message: "frame pool descriptor count does not fit in u32".to_string(),
-      })?;
+      let expected = pos as u32;
       if desc.index != expected {
-        return Err(IpcError::ProtocolViolation {
-          message: format!(
-            "frame buffer descriptor index mismatch at position {pos}: expected {expected}, got {}",
-            desc.index
-          ),
-        });
+        return Err(protocol_violation(format!(
+          "frame buffer descriptor index mismatch at position {pos}: expected {expected}, got {}",
+          desc.index
+        )));
       }
       let layout = desc.layout()?;
       if layout.byte_len != desc.byte_len {
-        return Err(IpcError::ProtocolViolation {
-          message: format!(
-            "frame buffer descriptor {} byte_len mismatch: expected {}, got {}",
-            desc.index, layout.byte_len, desc.byte_len
-          ),
-        });
+        return Err(protocol_violation(format!(
+          "frame buffer descriptor {} byte_len mismatch: expected {}, got {}",
+          desc.index, layout.byte_len, desc.byte_len
+        )));
       }
     }
 
@@ -260,9 +257,9 @@ impl RendererFramePool {
         || desc.stride_bytes != first_layout.stride_bytes
         || desc.byte_len != first_layout.byte_len
       {
-        return Err(IpcError::ProtocolViolation {
-          message: "frame buffer descriptors have inconsistent layouts".to_string(),
-        });
+        return Err(protocol_violation(
+          "frame buffer descriptors have inconsistent layouts".to_string(),
+        ));
       }
     }
 
@@ -303,14 +300,14 @@ impl RendererFramePool {
     self.ensure_index(idx)?;
 
     if !self.writing.remove(&idx) {
-      return Err(IpcError::ProtocolViolation {
-        message: format!("mark_sent for buffer {idx} that is not currently acquired for writing"),
-      });
+      return Err(protocol_violation(format!(
+        "mark_sent for buffer {idx} that is not currently acquired for writing"
+      )));
     }
     if !self.in_use.insert(idx) {
-      return Err(IpcError::ProtocolViolation {
-        message: format!("mark_sent for buffer {idx} that is already in_use"),
-      });
+      return Err(protocol_violation(format!(
+        "mark_sent for buffer {idx} that is already in_use"
+      )));
     }
     Ok(())
   }
@@ -319,14 +316,14 @@ impl RendererFramePool {
     self.ensure_index(idx)?;
 
     if !self.in_use.remove(&idx) {
-      return Err(IpcError::ProtocolViolation {
-        message: format!("release for buffer {idx} that is not currently in_use"),
-      });
+      return Err(protocol_violation(format!(
+        "release for buffer {idx} that is not currently in_use"
+      )));
     }
     if self.writing.contains(&idx) {
-      return Err(IpcError::ProtocolViolation {
-        message: format!("release for buffer {idx} that is still marked as writing"),
-      });
+      return Err(protocol_violation(format!(
+        "release for buffer {idx} that is still marked as writing"
+      )));
     }
 
     self.free.push_back(idx);
@@ -334,15 +331,11 @@ impl RendererFramePool {
   }
 
   fn ensure_index(&self, idx: u32) -> Result<(), IpcError> {
-    let idx_usize = usize::try_from(idx).map_err(|_| IpcError::ProtocolViolation {
-      message: format!("frame buffer index {idx} does not fit in usize"),
-    })?;
+    let idx_usize = usize::try_from(idx).map_err(|_| IpcError::ArithmeticOverflow)?;
     if idx_usize >= self.buffers.len() {
-      return Err(IpcError::ProtocolViolation {
-        message: format!(
-          "frame buffer index {idx} out of bounds (buffer count {})",
-          self.buffers.len()
-        ),
+      return Err(IpcError::InvalidBufferIndex {
+        buffer_index: idx,
+        buffer_count: self.buffers.len(),
       });
     }
     Ok(())
@@ -362,46 +355,35 @@ fn viewport_to_device_px(viewport_css: (u32, u32), dpr: f32) -> Result<(u32, u32
   let h_f = (h_css * (dpr as f64)).round();
 
   if !w_f.is_finite() || !h_f.is_finite() {
-    return Err(IpcError::InvalidParameters {
-      message: "viewport size is not finite".to_string(),
-    });
+    return Err(invalid_parameters("viewport size is not finite".to_string()));
   }
 
-  let w = u32::try_from(w_f as u64).map_err(|_| IpcError::InvalidParameters {
-    message: format!("viewport width out of range: {w_f}"),
-  })?;
-  let h = u32::try_from(h_f as u64).map_err(|_| IpcError::InvalidParameters {
-    message: format!("viewport height out of range: {h_f}"),
-  })?;
+  let w = u32::try_from(w_f as u64).map_err(|_| invalid_parameters(format!("viewport width out of range: {w_f}")))?;
+  let h = u32::try_from(h_f as u64).map_err(|_| invalid_parameters(format!("viewport height out of range: {h_f}")))?;
 
   Ok((w.max(1), h.max(1)))
 }
 
 fn frame_buffer_layout(width_px: u32, height_px: u32) -> Result<FrameBufferLayout, IpcError> {
   if width_px == 0 || height_px == 0 {
-    return Err(IpcError::InvalidParameters {
-      message: format!("frame buffer size is zero ({width_px}x{height_px})"),
+    return Err(IpcError::FrameDimensionsZero {
+      width_px,
+      height_px,
     });
   }
 
   let stride_bytes = width_px
     .checked_mul(BYTES_PER_PIXEL as u32)
-    .ok_or_else(|| IpcError::InvalidParameters {
-      message: format!("frame buffer stride overflow for width {width_px}"),
-    })?;
+    .ok_or(IpcError::ArithmeticOverflow)?;
 
   let byte_len = (stride_bytes as u64)
     .checked_mul(height_px as u64)
-    .ok_or_else(|| IpcError::InvalidParameters {
-      message: format!("frame buffer byte size overflow for {width_px}x{height_px}"),
-    })?;
+    .ok_or(IpcError::ArithmeticOverflow)?;
 
   if byte_len > MAX_PIXMAP_BYTES {
-    return Err(IpcError::InvalidParameters {
-      message: format!(
-        "frame buffer {}x{} would require {} bytes (limit {})",
-        width_px, height_px, byte_len, MAX_PIXMAP_BYTES
-      ),
+    return Err(IpcError::FrameTooLarge {
+      len: usize::try_from(byte_len).map_err(|_| IpcError::ArithmeticOverflow)?,
+      max: usize::try_from(MAX_PIXMAP_BYTES).map_err(|_| IpcError::ArithmeticOverflow)?,
     });
   }
 

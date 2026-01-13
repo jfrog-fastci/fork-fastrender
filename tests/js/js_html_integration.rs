@@ -1502,6 +1502,44 @@ fn p3_unhandledrejection_event_fires_for_unhandled_promise_rejections() -> Resul
 }
 
 #[test]
+fn p3_rejectionhandled_event_fires_when_promise_becomes_handled_after_unhandledrejection(
+) -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_rejectionhandled.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        addEventListener("unhandledrejection", (e) => {
+          console.log("unhandled");
+          e.preventDefault();
+        });
+        addEventListener("rejectionhandled", () => console.log("handled"));
+
+        const p = Promise.reject("x");
+        setTimeout(() => {
+          p.catch(() => {});
+          console.log("timer");
+        }, 0);
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "unhandled".to_string(),
+      "timer".to_string(),
+      "handled".to_string()
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p3_beforeunload_can_cancel_navigation() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let page1_url = "https://example.invalid/p3_beforeunload.html";
