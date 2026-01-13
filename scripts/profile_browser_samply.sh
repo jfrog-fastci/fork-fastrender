@@ -20,7 +20,7 @@ usage: scripts/profile_browser_samply.sh [url] [browser args...]
    or: scripts/profile_browser_samply.sh --url <url> [-- <browser args...>]
 
 Examples:
-  bash scripts/profile_browser_samply.sh about:test-scroll
+  bash scripts/profile_browser_samply.sh about:test-layout-stress
   bash scripts/profile_browser_samply.sh https://example.org/ --no-restore
   bash scripts/profile_browser_samply.sh --url about:newtab -- --no-restore
 
@@ -51,7 +51,7 @@ URL=""
 browser_args=()
 
 # Allow `--url ...` (optional) + `--` separator, but also support the simple positional form:
-#   scripts/profile_browser_samply.sh about:test-scroll --no-restore
+#   scripts/profile_browser_samply.sh about:test-layout-stress --no-restore
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -189,4 +189,3 @@ if command -v python3 >/dev/null 2>&1; then
   fi
   python3 scripts/samply_summary.py "${OUT_FILE}" --top 25 --addr2line-binary "${ADDR2LINE_BIN}" || true
 fi
-
