@@ -421,8 +421,8 @@ impl RendererSandboxMode {
 
 fn allow_unsandboxed_renderer() -> bool {
   matches!(
-    std::env::var("FASTR_ALLOW_UNSANDBOXED_RENDERER"),
-    Ok(val) if val == "1"
+    std::env::var_os("FASTR_ALLOW_UNSANDBOXED_RENDERER").as_deref(),
+    Some(v) if v == std::ffi::OsStr::new("1")
   )
 }
 
