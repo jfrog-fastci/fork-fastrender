@@ -7,9 +7,7 @@
 //! This module intentionally implements only the subset of ISO BMFF needed for unit tests and
 //! basic MP4 playback plumbing (non-fragmented `moov`/`mdat` files).
 
-use crate::media::timebase::{ticks_to_duration, Timebase};
 use std::ops::Range;
-use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -310,7 +308,7 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
     sample.duration_ticks = dur;
 
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
-    let pts_ns = duration_to_ns(ticks_to_duration(pts_ticks, Timebase::new(1, timescale)));
+    let pts_ns = ticks_to_ns(pts_ticks, timescale);
     pts_ns_by_sample.push(pts_ns);
 
     dts_ticks = dts_ticks.saturating_add(i64::from(dur));
@@ -355,13 +353,26 @@ fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
   PtsIndex::Sorted { sample_indices_by_pts }
 }
 
-fn duration_to_ns(d: Duration) -> u64 {
-  let ns = d.as_nanos();
-  if ns > u64::MAX as u128 {
-    u64::MAX
-  } else {
-    ns as u64
+fn ticks_to_ns(ticks: i64, timescale: u32) -> u64 {
+  // Match `crate::media::timebase::ticks_to_duration(Timebase { num: 1, den: timescale })`
+  // semantics, but avoid constructing a `Duration` for each sample when building large MP4 tables.
+  if ticks <= 0 {
+    return 0;
   }
+
+  let den = u128::from(timescale);
+  if den == 0 {
+    // Infinite seconds-per-tick -> unrepresentably large duration.
+    return u64::MAX;
+  }
+
+  let ticks = ticks as u128;
+  let ns = ticks
+    .saturating_mul(1_000_000_000u128)
+    .saturating_add(den / 2)
+    / den;
+
+  ns.min(u128::from(u64::MAX)) as u64
 }
 
 #[derive(Debug)]
