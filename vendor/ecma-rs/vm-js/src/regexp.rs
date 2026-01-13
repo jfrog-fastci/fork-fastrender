@@ -756,6 +756,10 @@ impl RegExpFlags {
   /// which is defined as either `u` or `v` being present.
   #[inline]
   pub(crate) fn has_either_unicode_flag(self) -> bool {
+    debug_assert!(
+      !(self.unicode && self.unicode_sets),
+      "RegExpFlags cannot contain both `u` and `v`"
+    );
     self.unicode || self.unicode_sets
   }
 }
@@ -1287,34 +1291,156 @@ impl RegExpProgram {
               state.pc += 1;
               continue;
             }
-            let slice = &input[cap_start..cap_end];
+            if cap_end > input.len() || cap_start > input.len() {
+              // Defensive: capture indices should always be within-bounds.
+              break;
+            }
+            if !flags.has_either_unicode_flag() {
+              // Legacy (no `/u` or `/v`) behaviour: compare UTF-16 code units directly.
+              let slice = &input[cap_start..cap_end];
+              if dir.is_forward() {
+                if state.pos + slice.len() > input.len() {
+                  break;
+                }
+                let mut ok = true;
+                for (i, (&a, &b)) in slice
+                  .iter()
+                  .zip(input[state.pos..state.pos + slice.len()].iter())
+                  .enumerate()
+                {
+                  // Avoid ticking on the first iteration so small captures don't double-charge fuel;
+                  // the surrounding VM loop already ticks once per instruction.
+                  if i != 0 {
+                    tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+                  }
+                  if !canonical_eq(a, b, flags) {
+                    ok = false;
+                    break;
+                  }
+                }
+                if !ok {
+                  break;
+                }
+                state.pos += slice.len();
+              } else {
+                if slice.len() > state.pos {
+                  break;
+                }
+                let start_pos = state.pos - slice.len();
+                let mut ok = true;
+                for (i, (&a, &b)) in slice.iter().zip(input[start_pos..state.pos].iter()).enumerate()
+                {
+                  if i != 0 {
+                    tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+                  }
+                  if !canonical_eq(a, b, flags) {
+                    ok = false;
+                    break;
+                  }
+                }
+                if !ok {
+                  break;
+                }
+                state.pos = start_pos;
+              }
+              state.pc += 1;
+              continue;
+            }
+
+            // FullUnicode (/u or /v) semantics:
+            // - Compare the capture and the input as sequences of decoded code points.
+            // - Do not allow matching to stop in the middle of a surrogate pair.
+            if !is_utf16_code_point_boundary(input, state.pos)
+              || !is_utf16_code_point_boundary(input, cap_start)
+              || !is_utf16_code_point_boundary(input, cap_end)
+            {
+              break;
+            }
+
             if dir.is_forward() {
-              if state.pos + slice.len() > input.len() {
+              let mut cap_i = cap_start;
+              let mut target_i = state.pos;
+              let mut cmp_i: usize = 0;
+              while cap_i < cap_end {
+                // Avoid ticking on the first iteration so short backreferences don't effectively
+                // double-charge fuel (the surrounding VM loop already ticks per instruction).
+                if cmp_i != 0 {
+                  tick_every(cmp_i, DEFAULT_TICK_EVERY, tick)?;
+                }
+                cmp_i = cmp_i.wrapping_add(1);
+
+                let (cap_cp, cap_len) = utf16_code_point_at(input, cap_i, cap_end);
+                if cap_len == 0 {
+                  break;
+                }
+                if target_i >= input.len() {
+                  break;
+                }
+                debug_assert!(is_utf16_code_point_boundary(input, target_i));
+                let Some((target_cp, target_len)) =
+                  decode_code_point(input, target_i, /*unicode=*/ true)
+                else {
+                  break;
+                };
+
+                if canonicalize(flags, cap_cp) != canonicalize(flags, target_cp) {
+                  break;
+                }
+
+                cap_i = cap_i.saturating_add(cap_len);
+                target_i = target_i.saturating_add(target_len);
+              }
+
+              if cap_i != cap_end {
+                // Mismatch, ran out of input, or capture boundaries not aligned to code points.
                 break;
               }
-              if !slice
-                .iter()
-                .copied()
-                .zip(input[state.pos..state.pos + slice.len()].iter().copied())
-                .all(|(a, b)| canonical_eq(a, b, flags))
-              {
-                break;
-              }
-              state.pos += slice.len();
+              debug_assert!(is_utf16_code_point_boundary(input, target_i));
+              state.pos = target_i;
             } else {
-              if slice.len() > state.pos {
+              let mut cap_i = cap_end;
+              let mut target_i = state.pos;
+              let mut cmp_i: usize = 0;
+              while cap_i > cap_start {
+                if cmp_i != 0 {
+                  tick_every(cmp_i, DEFAULT_TICK_EVERY, tick)?;
+                }
+                cmp_i = cmp_i.wrapping_add(1);
+
+                let Some((cap_cp, cap_len)) =
+                  decode_prev_code_point(input, cap_i, /*unicode=*/ true)
+                else {
+                  break;
+                };
+                let Some(new_cap_i) = cap_i.checked_sub(cap_len) else {
+                  break;
+                };
+                if new_cap_i < cap_start {
+                  break;
+                }
+
+                let Some((target_cp, target_len)) =
+                  decode_prev_code_point(input, target_i, /*unicode=*/ true)
+                else {
+                  break;
+                };
+                let Some(new_target_i) = target_i.checked_sub(target_len) else {
+                  break;
+                };
+
+                if canonicalize(flags, cap_cp) != canonicalize(flags, target_cp) {
+                  break;
+                }
+
+                cap_i = new_cap_i;
+                target_i = new_target_i;
+              }
+
+              if cap_i != cap_start {
                 break;
               }
-              let start_pos = state.pos - slice.len();
-              if !slice
-                .iter()
-                .copied()
-                .zip(input[start_pos..state.pos].iter().copied())
-                .all(|(a, b)| canonical_eq(a, b, flags))
-              {
-                break;
-              }
-              state.pos = start_pos;
+              debug_assert!(is_utf16_code_point_boundary(input, target_i));
+              state.pos = target_i;
             }
             state.pc += 1;
           }
@@ -1351,51 +1477,153 @@ impl RegExpProgram {
               continue;
             };
 
-            let slice = &input[cap_start..cap_end];
+            if cap_end > input.len() || cap_start > input.len() {
+              // Defensive: capture indices should always be within-bounds.
+              break;
+            }
+
+            if !flags.has_either_unicode_flag() {
+              // Legacy (no `/u` or `/v`) behaviour: compare UTF-16 code units directly.
+              let slice = &input[cap_start..cap_end];
+              if dir.is_forward() {
+                if state.pos + slice.len() > input.len() {
+                  break;
+                }
+
+                let mut ok = true;
+                for (i, (&a, &b)) in slice
+                  .iter()
+                  .zip(input[state.pos..state.pos + slice.len()].iter())
+                  .enumerate()
+                {
+                  if i != 0 {
+                    tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+                  }
+                  if !canonical_eq(a, b, flags) {
+                    ok = false;
+                    break;
+                  }
+                }
+                if !ok {
+                  break;
+                }
+                state.pos += slice.len();
+              } else {
+                if slice.len() > state.pos {
+                  break;
+                }
+                let start_pos = state.pos - slice.len();
+
+                let mut ok = true;
+                for (i, (&a, &b)) in slice.iter().zip(input[start_pos..state.pos].iter()).enumerate()
+                {
+                  if i != 0 {
+                    tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+                  }
+                  if !canonical_eq(a, b, flags) {
+                    ok = false;
+                    break;
+                  }
+                }
+                if !ok {
+                  break;
+                }
+                state.pos = start_pos;
+              }
+              state.pc += 1;
+              continue;
+            }
+
+            // FullUnicode (/u or /v): compare decoded code points, forbidding partial surrogate-pair
+            // matches.
+            if !is_utf16_code_point_boundary(input, state.pos)
+              || !is_utf16_code_point_boundary(input, cap_start)
+              || !is_utf16_code_point_boundary(input, cap_end)
+            {
+              break;
+            }
+
             if dir.is_forward() {
-              if state.pos + slice.len() > input.len() {
-                break;
-              }
-
-              let mut ok = true;
-              for (i, (&a, &b)) in slice
-                .iter()
-                .zip(input[state.pos..state.pos + slice.len()].iter())
-                .enumerate()
-              {
-                if i % 1024 == 0 {
-                  tick()?;
+              let mut cap_i = cap_start;
+              let mut target_i = state.pos;
+              let mut cmp_i: usize = 0;
+              while cap_i < cap_end {
+                if cmp_i != 0 {
+                  tick_every(cmp_i, DEFAULT_TICK_EVERY, tick)?;
                 }
-                if !canonical_eq(a, b, flags) {
-                  ok = false;
+                cmp_i = cmp_i.wrapping_add(1);
+
+                let (cap_cp, cap_len) = utf16_code_point_at(input, cap_i, cap_end);
+                if cap_len == 0 {
                   break;
                 }
+                if target_i >= input.len() {
+                  break;
+                }
+                debug_assert!(is_utf16_code_point_boundary(input, target_i));
+                let Some((target_cp, target_len)) =
+                  decode_code_point(input, target_i, /*unicode=*/ true)
+                else {
+                  break;
+                };
+
+                if canonicalize(flags, cap_cp) != canonicalize(flags, target_cp) {
+                  break;
+                }
+
+                cap_i = cap_i.saturating_add(cap_len);
+                target_i = target_i.saturating_add(target_len);
               }
-              if !ok {
+
+              if cap_i != cap_end {
                 break;
               }
-              state.pos += slice.len();
+              debug_assert!(is_utf16_code_point_boundary(input, target_i));
+              state.pos = target_i;
             } else {
-              if slice.len() > state.pos {
-                break;
-              }
-              let start_pos = state.pos - slice.len();
-
-              let mut ok = true;
-              for (i, (&a, &b)) in slice.iter().zip(input[start_pos..state.pos].iter()).enumerate()
-              {
-                if i % 1024 == 0 {
-                  tick()?;
+              let mut cap_i = cap_end;
+              let mut target_i = state.pos;
+              let mut cmp_i: usize = 0;
+              while cap_i > cap_start {
+                if cmp_i != 0 {
+                  tick_every(cmp_i, DEFAULT_TICK_EVERY, tick)?;
                 }
-                if !canonical_eq(a, b, flags) {
-                  ok = false;
+                cmp_i = cmp_i.wrapping_add(1);
+
+                let Some((cap_cp, cap_len)) =
+                  decode_prev_code_point(input, cap_i, /*unicode=*/ true)
+                else {
+                  break;
+                };
+                let Some(new_cap_i) = cap_i.checked_sub(cap_len) else {
+                  break;
+                };
+                if new_cap_i < cap_start {
                   break;
                 }
+
+                let Some((target_cp, target_len)) =
+                  decode_prev_code_point(input, target_i, /*unicode=*/ true)
+                else {
+                  break;
+                };
+                let Some(new_target_i) = target_i.checked_sub(target_len) else {
+                  break;
+                };
+
+                if canonicalize(flags, cap_cp) != canonicalize(flags, target_cp) {
+                  break;
+                }
+
+                cap_i = new_cap_i;
+                target_i = new_target_i;
               }
-              if !ok {
+
+              if cap_i != cap_start {
                 break;
               }
-              state.pos = start_pos;
+              debug_assert!(is_utf16_code_point_boundary(input, target_i));
+              state.pos = target_i;
             }
             state.pc += 1;
           }
@@ -2264,6 +2492,52 @@ fn decode_prev_code_point(input: &[u16], pos: usize, unicode: bool) -> Option<(u
     }
   }
   Some((u, 1))
+}
+
+#[inline]
+fn is_utf16_high_surrogate(u: u16) -> bool {
+  (0xD800..=0xDBFF).contains(&u)
+}
+
+#[inline]
+fn is_utf16_low_surrogate(u: u16) -> bool {
+  (0xDC00..=0xDFFF).contains(&u)
+}
+
+/// Returns true if `index` is a valid UTF-16 code point boundary, i.e. it does not point to the
+/// second code unit of a surrogate pair.
+#[inline]
+fn is_utf16_code_point_boundary(input: &[u16], index: usize) -> bool {
+  if index == 0 || index >= input.len() {
+    return true;
+  }
+  // Disallow indices that point at a trailing surrogate that has a corresponding leading surrogate.
+  !(is_utf16_high_surrogate(input[index - 1]) && is_utf16_low_surrogate(input[index]))
+}
+
+/// Decode the UTF-16 code point starting at `index`, reading at most until `end` (exclusive).
+///
+/// This follows ECMA-262 `CodePointAt`/`StringToCodePoints` semantics:
+/// - If the current code unit is a leading surrogate and the next code unit (within bounds) is a
+///   trailing surrogate, decode as a single supplementary code point and consume 2 code units.
+/// - Otherwise decode the single code unit as a code point and consume 1 code unit.
+#[inline]
+fn utf16_code_point_at(units: &[u16], index: usize, end: usize) -> (u32, usize) {
+  debug_assert!(index <= end);
+  if index >= end {
+    return (0, 0);
+  }
+  let u = units[index];
+  if is_utf16_high_surrogate(u) && index + 1 < end {
+    let u2 = units[index + 1];
+    if is_utf16_low_surrogate(u2) {
+      let high = (u as u32) - 0xD800;
+      let low = (u2 as u32) - 0xDC00;
+      let cp = 0x10000 + ((high << 10) | low);
+      return (cp, 2);
+    }
+  }
+  (u as u32, 1)
 }
 
 fn is_line_terminator_unit(u: u16) -> bool {

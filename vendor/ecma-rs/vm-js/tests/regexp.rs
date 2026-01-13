@@ -556,6 +556,24 @@ fn regexp_engine_lookbehind_catastrophic_backtracking_is_interruptible() {
 }
 
 #[test]
+fn regexp_unicode_backreference_does_not_match_partial_surrogate_pair() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"/foo(.+)bar\1/u.exec("foo\uD834bar\uD834\uDC00")"#)
+    .unwrap();
+  assert!(matches!(value, Value::Null));
+}
+
+#[test]
+fn regexp_unicode_backreference_does_not_match_surrogate_pair_partially() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"/(.+).*\1/u.test("\uD800\uDC00\uD800")"#)
+    .unwrap();
+  assert!(matches!(value, Value::Bool(false)));
+}
+
+#[test]
 fn regexp_compilation_respects_heap_limits() {
   // The runtime itself needs some headroom; use the default 4MiB heap limit but feed a large
   // enough pattern that compilation would exceed it.
