@@ -293,6 +293,51 @@ impl SiteLock {
       _ => false,
     }
   }
+
+  /// True when navigating to `url` is permitted to commit inside this locked renderer process.
+  ///
+  /// This is a defense-in-depth check: it derives the site/origin from the URL itself (where
+  /// possible) rather than trusting the browser-provided [`SiteKey`] inside
+  /// [`NavigationContext`].
+  ///
+  /// For inheriting/opaque URLs like `about:blank`, the renderer cannot derive the effective origin
+  /// from the URL alone. In those cases, it falls back to validating the browser-provided
+  /// `claimed_site_key`.
+  pub fn matches_url(&self, url: &str, claimed_site_key: &SiteKey) -> bool {
+    match self {
+      SiteLock::Opaque(_) => return self.matches_site_key(claimed_site_key),
+      SiteLock::Origin(_) | SiteLock::SchemefulSite { .. } => {}
+    }
+
+    if let Some(about_path) = url.strip_prefix("about:") {
+      if about_path.eq_ignore_ascii_case("blank") || about_path.eq_ignore_ascii_case("srcdoc") {
+        return self.matches_site_key(claimed_site_key);
+      }
+    }
+
+    // Blob URLs embed the origin in the payload: `blob:https://example.com/...`.
+    let url_for_origin = url.strip_prefix("blob:").unwrap_or(url);
+    let Ok(parsed) = Url::parse(url_for_origin) else {
+      return false;
+    };
+
+    match self {
+      SiteLock::Origin(lock_origin) => DocumentOrigin::from_url(&parsed) == *lock_origin,
+      SiteLock::SchemefulSite {
+        scheme,
+        registrable_domain,
+      } => {
+        if parsed.scheme() != scheme {
+          return false;
+        }
+        let Some(host) = parsed.host_str() else {
+          return false;
+        };
+        Self::registrable_domain(host) == *registrable_domain
+      }
+      SiteLock::Opaque(_) => self.matches_site_key(claimed_site_key),
+    }
+  }
 }
 
 /// Generator for [`SiteKey::Opaque`] values.

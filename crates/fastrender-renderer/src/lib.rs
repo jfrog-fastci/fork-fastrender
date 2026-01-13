@@ -725,7 +725,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           if self
             .site_lock
             .as_ref()
-            .is_some_and(|lock| !lock.matches_site_key(&context.site_key))
+            .is_some_and(|lock| !lock.matches_url(&url, &context.site_key))
           {
             let _ = self.transport.send(RendererToBrowser::NavigationFailed {
               frame_id,
@@ -1237,6 +1237,30 @@ mod tests {
     };
 
     let disallowed_url = "https://b.test/".to_string();
+
+    // Simulate a buggy browser: it sends a cross-site URL but forgets to update `site_key`.
+    to_renderer_tx
+      .send(BrowserToRenderer::Navigate {
+        frame_id: frame,
+        url: disallowed_url.clone(),
+        context: NavigationContext {
+          site_key: lock_site_key.clone(),
+          ..Default::default()
+        },
+      })
+      .unwrap();
+
+    let msg = to_browser_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    match msg {
+      RendererToBrowser::NavigationFailed { frame_id, url, error } => {
+        assert_eq!(frame_id, frame);
+        assert_eq!(url, disallowed_url);
+        assert!(error.contains("site lock"));
+      }
+      other => panic!("expected NavigationFailed, got {other:?}"),
+    }
+
+    // Even when the browser reports the correct `site_key`, the renderer must still reject.
     let disallowed_site_key = site_key_for_navigation(&disallowed_url, None);
     to_renderer_tx
       .send(BrowserToRenderer::Navigate {
