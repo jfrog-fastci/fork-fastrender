@@ -7037,9 +7037,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           // windows commit navigations in a single wake batch).
           if !history_deltas.is_empty() {
             global_history.apply_visit_deltas(&history_deltas);
-            fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
-              &global_history,
-            );
+            for delta in &history_deltas {
+              fastrender::ui::about_pages::apply_history_visit_delta(delta, &global_history);
+            }
             history_autosave_send_scheduler.mark_dirty();
             for (id, win) in windows.iter_mut() {
               if *id != window_id {

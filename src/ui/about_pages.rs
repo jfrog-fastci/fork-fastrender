@@ -45,7 +45,9 @@ use crate::ui::theme_parsing::{
   RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_HIGH_CONTRAST, ENV_BROWSER_THEME,
 };
 use crate::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE;
-use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryStore};
+#[cfg(any(test, feature = "browser_ui"))]
+use crate::ui::HistoryVisitDelta;
+use crate::ui::{BookmarkId, BookmarkNode, BookmarkStore, GlobalHistoryEntry, GlobalHistoryStore};
 
 #[derive(Debug, Clone, Default)]
 pub struct AboutPageSnapshot {
@@ -198,6 +200,41 @@ pub fn sync_about_page_snapshot_history_from_global_history_store(store: &Global
   });
 }
 
+/// Update the cached `about:` history snapshot in response to a history visit delta.
+///
+/// The common case is a single newly recorded history entry, which can be applied without
+/// rebuilding the full 500-entry snapshot list.
+#[cfg(any(test, feature = "browser_ui"))]
+pub fn apply_history_visit_delta(delta: &HistoryVisitDelta, global_history: &GlobalHistoryStore) {
+  let rebuild = |global_history: &GlobalHistoryStore| {
+    let history = history_snapshots_from_global_history_store(global_history);
+    about_page_snapshot_lock().write().history = history;
+  };
+
+  let requested_key = delta.url.trim();
+  let entry = global_history
+    .entries
+    .iter()
+    .rev()
+    .find(|entry| entry.url == requested_key);
+  let Some(entry) = entry else {
+    // If the caller provides a stale delta (or the entry was filtered out), rebuild so the snapshot
+    // remains consistent.
+    rebuild(global_history);
+    return;
+  };
+  let Some(snapshot) = history_snapshot_from_global_history_entry(entry) else {
+    rebuild(global_history);
+    return;
+  };
+
+  let snapshot_url = entry.url.trim();
+  let mut lock = about_page_snapshot_lock().write();
+  lock.history.retain(|e| e.url != snapshot_url);
+  lock.history.insert(0, snapshot);
+  lock.history.truncate(MAX_HISTORY_SNAPSHOT);
+}
+
 #[cfg(feature = "browser_ui")]
 pub fn sync_about_page_snapshot_bookmarks_from_bookmark_store(store: &BookmarkStore) {
   let bookmarks = bookmark_snapshots_from_store(store);
@@ -348,37 +385,45 @@ fn bookmark_snapshots_from_store(bookmarks: &BookmarkStore) -> Vec<BookmarkSnaps
   out
 }
 
-fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Vec<HistorySnapshot> {
+const MAX_HISTORY_SNAPSHOT: usize = 500;
+
+fn history_snapshot_from_global_history_entry(
+  entry: &GlobalHistoryEntry,
+) -> Option<HistorySnapshot> {
   use std::time::{Duration, UNIX_EPOCH};
 
-  const MAX_HISTORY: usize = 500;
+  let url = entry.url.trim();
+  if url.is_empty() || is_about_url(url) {
+    return None;
+  }
+  let title = entry
+    .title
+    .as_deref()
+    .map(str::trim)
+    .filter(|t| !t.is_empty())
+    .map(str::to_string);
+  let last_visited = if entry.visited_at_ms == 0 {
+    None
+  } else {
+    UNIX_EPOCH.checked_add(Duration::from_millis(entry.visited_at_ms))
+  };
+  Some(HistorySnapshot {
+    title,
+    url: url.to_string(),
+    last_visited,
+    visit_count: entry.visit_count,
+  })
+}
 
-  let mut out = Vec::with_capacity(store.entries.len().min(MAX_HISTORY));
+fn history_snapshots_from_global_history_store(store: &GlobalHistoryStore) -> Vec<HistorySnapshot> {
+  let mut out = Vec::with_capacity(store.entries.len().min(MAX_HISTORY_SNAPSHOT));
   for entry in store.entries.iter().rev() {
-    if out.len() >= MAX_HISTORY {
+    if out.len() >= MAX_HISTORY_SNAPSHOT {
       break;
     }
-    let url = entry.url.trim();
-    if url.is_empty() || is_about_url(url) {
-      continue;
+    if let Some(snapshot) = history_snapshot_from_global_history_entry(entry) {
+      out.push(snapshot);
     }
-    let title = entry
-      .title
-      .as_deref()
-      .map(str::trim)
-      .filter(|t| !t.is_empty())
-      .map(str::to_string);
-    let last_visited = if entry.visited_at_ms == 0 {
-      None
-    } else {
-      UNIX_EPOCH.checked_add(Duration::from_millis(entry.visited_at_ms))
-    };
-    out.push(HistorySnapshot {
-      title,
-      url: url.to_string(),
-      last_visited,
-      visit_count: entry.visit_count,
-    });
   }
   out
 }
@@ -2261,6 +2306,7 @@ fn test_form_html() -> String {
 mod tests {
   use super::*;
   use crate::ui::GlobalHistoryEntry;
+  use crate::ui::HistoryVisitDelta;
   use std::time::{Duration, UNIX_EPOCH};
 
   fn extract_title(html: &str) -> Option<&str> {
@@ -2287,6 +2333,9 @@ mod tests {
   #[cfg(not(feature = "browser_ui"))]
   #[test]
   fn about_page_snapshot_getter_returns_empty_without_browser_ui() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     let snapshot = about_page_snapshot();
     assert!(
       snapshot.bookmarks.is_empty(),
@@ -2305,6 +2354,9 @@ mod tests {
   #[cfg(not(feature = "browser_ui"))]
   #[test]
   fn about_pages_render_empty_state_without_browser_ui_snapshot_data() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     const SECRET_BOOKMARK_URL: &str = "https://secret-bookmark.example.invalid/";
     const SECRET_HISTORY_URL: &str = "https://secret-history.example.invalid/";
     const SECRET_TITLE: &str = "Super Secret Title";
@@ -2545,6 +2597,110 @@ mod tests {
       !snapshot[0].url.contains('#'),
       "expected fragment to be stripped by GlobalHistoryStore normalization"
     );
+  }
+
+  #[test]
+  fn apply_history_visit_delta_updates_snapshot_incrementally_and_dedups() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    *about_page_snapshot_lock().write() = AboutPageSnapshot::default();
+    let mut store = GlobalHistoryStore::default();
+
+    let delta_a = HistoryVisitDelta {
+      url: "https://example.test/a".to_string(),
+      title: Some("A1".to_string()),
+      visited_at_ms: 1000,
+    };
+    store.apply_visit_delta(&delta_a);
+    apply_history_visit_delta(&delta_a, &store);
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.history.len(), 1);
+    assert_eq!(snapshot.history[0].url, "https://example.test/a");
+    assert_eq!(snapshot.history[0].title.as_deref(), Some("A1"));
+    assert_eq!(snapshot.history[0].visit_count, 1);
+
+    let delta_b = HistoryVisitDelta {
+      url: "https://example.test/b".to_string(),
+      title: Some("B".to_string()),
+      visited_at_ms: 2000,
+    };
+    store.apply_visit_delta(&delta_b);
+    apply_history_visit_delta(&delta_b, &store);
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.history.len(), 2);
+    assert_eq!(snapshot.history[0].url, "https://example.test/b");
+    assert_eq!(snapshot.history[1].url, "https://example.test/a");
+
+    let delta_a2 = HistoryVisitDelta {
+      url: "https://example.test/a".to_string(),
+      title: Some("A2".to_string()),
+      visited_at_ms: 3000,
+    };
+    store.apply_visit_delta(&delta_a2);
+    apply_history_visit_delta(&delta_a2, &store);
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.history.len(), 2);
+    assert_eq!(snapshot.history[0].url, "https://example.test/a");
+    assert_eq!(snapshot.history[0].title.as_deref(), Some("A2"));
+    assert_eq!(snapshot.history[0].visit_count, 2);
+    assert_eq!(
+      snapshot.history[0].last_visited,
+      UNIX_EPOCH.checked_add(Duration::from_millis(3000))
+    );
+    assert_eq!(snapshot.history[1].url, "https://example.test/b");
+    assert_eq!(
+      snapshot
+        .history
+        .iter()
+        .filter(|e| e.url == "https://example.test/a")
+        .count(),
+      1,
+      "expected history snapshot to be deduplicated by URL"
+    );
+
+    *about_page_snapshot_lock().write() = before;
+  }
+
+  #[test]
+  fn apply_history_visit_delta_enforces_max_history_cap() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    *about_page_snapshot_lock().write() = AboutPageSnapshot::default();
+    let mut store = GlobalHistoryStore::default();
+
+    let total = MAX_HISTORY_SNAPSHOT + 10;
+    for i in 0..total {
+      let url = format!("https://example.test/{i}");
+      let delta = HistoryVisitDelta {
+        url: url.clone(),
+        title: None,
+        visited_at_ms: i as u64,
+      };
+      store.apply_visit_delta(&delta);
+      apply_history_visit_delta(&delta, &store);
+    }
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.history.len(), MAX_HISTORY_SNAPSHOT);
+    assert_eq!(
+      snapshot.history[0].url,
+      format!("https://example.test/{}", total - 1)
+    );
+    assert_eq!(
+      snapshot.history.last().unwrap().url,
+      format!("https://example.test/{}", total - MAX_HISTORY_SNAPSHOT)
+    );
+
+    *about_page_snapshot_lock().write() = before;
   }
 
   #[test]
