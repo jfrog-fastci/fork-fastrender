@@ -180,6 +180,7 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
   To run just this check:
 
   ```bash
-  bash scripts/cargo_agent.sh test --features browser_ui --test browser_integration \
+  # Note: `tests/browser_integration/...` is compiled into the unified integration test binary.
+  bash scripts/cargo_agent.sh test --features browser_ui --test integration \
     ui_worker_rejects_unsupported_schemes_without_rendering_error_page
   ```
