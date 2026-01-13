@@ -913,6 +913,43 @@ mod tests {
     }
   }
 
+  #[cfg(unix)]
+  #[test]
+  fn posix_shm_unlinked_when_creator_drops() {
+    let (region, handle) =
+      ShmemRegion::create(ShmemBackend::PosixShm, 4096).expect("create posix shm");
+    let ShmemHandle::PosixShm { id, .. } = handle else {
+      panic!("expected posix shm handle");
+    };
+    let name = posix_shm_name(&id).expect("posix shm name");
+
+    // The name should exist while the creator region is alive.
+    let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC, 0) };
+    assert!(
+      fd >= 0,
+      "shm_open should succeed while region is alive: {}",
+      io::Error::last_os_error()
+    );
+    unsafe {
+      libc::close(fd);
+    }
+
+    drop(region);
+
+    let fd2 = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC, 0) };
+    if fd2 >= 0 {
+      unsafe {
+        libc::close(fd2);
+      }
+      panic!("expected shm_open after drop to fail (name should be unlinked)");
+    }
+    assert_eq!(
+      io::Error::last_os_error().raw_os_error(),
+      Some(libc::ENOENT),
+      "expected shm_open after drop to fail with ENOENT"
+    );
+  }
+
   // This test does a best-effort exec-based inheritance check. It is still unit-test scoped (no
   // dependency on the renderer binary), but validates that `dup_to_fd` works in the intended
   // `CommandExt::pre_exec` environment.
