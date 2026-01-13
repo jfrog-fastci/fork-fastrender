@@ -19,10 +19,8 @@ Code map (repo reality):
     - We resolve AppContainer APIs at runtime (via `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`
       + `GetProcAddress`) so the binary can still load on Windows versions that lack these exports;
       missing symbols are treated as “no AppContainer support”.
-      - By default, `spawn_sandboxed(...)` fails closed and returns an error rather than silently
-        downgrading.
-      - If `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set, it may fall back to restricted-token or
-        unsandboxed mode.
+      - `spawn_sandboxed(...)` **fails closed by default** (to avoid silent sandbox downgrades).
+      - Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt in to restricted-token / unsandboxed fallback.
 - Reusable Win32 wrappers + reusable spawner + tests:
   - `crates/win-sandbox/`
     - `Job` (job object wrapper + limits)
@@ -181,8 +179,12 @@ Repo reality:
 Notes:
 
 - AppContainer APIs are in `userenv.dll` and are resolved at runtime (see code map above). If the
-  APIs are missing, AppContainer is treated as unsupported and we fall back to restricted-token
-  mode.
+  APIs are missing, AppContainer is treated as unsupported.
+  - `src/sandbox/windows.rs` **fails closed by default** (returns an error so we don’t silently run
+    without the intended sandbox). Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to explicitly opt in to
+    falling back to restricted-token (or unsandboxed) spawning.
+  - `crates/win-sandbox` exposes a similar opt-in policy helper (`RendererSandboxMode`) plus an
+    explicit `SpawnConfig::allow_restricted_token_fallback` knob.
 - Creating the profile is a one-time system registration; the profile persists on the machine. We
   intentionally use a stable name so we do not create many profiles over time.
 
@@ -258,8 +260,8 @@ If the parent process is already running inside a Windows Job (common in CI/supe
     (`SandboxedChild.job == None`) and prints a warning: **kill-on-close + active process limit are
     not enforced**.
 
-Note: `crates/win-sandbox::spawn_sandboxed` is stricter here: it treats “cannot assign process to
-Job” as a hard error and will always terminate + return an error (no jobless fallback path).
+Note: `crates/win-sandbox::spawn_sandboxed` does not currently have a “jobless” mode; it always
+errors out if the child cannot be assigned to the Job.
 
 ## Handle inheritance allowlisting (critical)
 
@@ -436,12 +438,19 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
     active-process cap).
     - If the child cannot be assigned to the Job (nested-job restrictions), it runs jobless and
       prints a warning.
+- `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`: opt into inheriting the full parent environment for the
+  sandboxed child.
+  - By default `src/sandbox/windows.rs` builds a sanitized environment block (so secrets from the
+    browser process environment are not leaked into the renderer, and so TEMP/TMP point at an
+    AppContainer-writable location).
+  - This is intended for local debugging only.
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`: opt in to running without the full Windows sandbox when
   required primitives are missing or sandbox startup fails.
 
 From `crates/win-sandbox` (mitigation policy escape hatch):
 
-- `FASTR_DISABLE_WIN_MITIGATIONS=1`: do not apply mitigation policies during process spawn.
+- `FASTR_DISABLE_WIN_MITIGATIONS=1` (any value): do not apply mitigation policies during process
+  spawn.
 
 From `crates/win-sandbox` (strict “no silent downgrade” policy helper):
 
@@ -524,8 +533,9 @@ Windows-only tests that encode the intended boundary:
 - Handle allowlisting (no handle leaks): `tests/sandbox/windows_handle_inheritance.rs`
 - No child processes (active process job limit): `tests/sandbox/windows_no_child_process.rs`
 - Parent process handle escape attempt: `tests/sandbox/windows_process_handle_escape.rs`
-- AppContainer spawn smoke: `tests/windows_sandbox_appcontainer_spawn.rs`
-- Environment sanitization (no secret env inheritance): `tests/windows_sandbox_env_sanitization.rs`
+- AppContainer spawn smoke: `tests/sandbox/windows_sandbox_appcontainer_spawn.rs`
+- Environment sanitization (no secret env inheritance): `tests/sandbox/windows_sandbox_env_sanitization.rs`
+- AppContainer temp dir is writable (override parent TEMP/TMP): `tests/sandbox/windows_appcontainer_temp_dir.rs`
 - Job kill-on-close semantics: `tests/sandbox/windows_job_kill_on_close.rs`
 - AppContainer blocks outbound network (end-to-end spawn helper): `tests/sandbox/windows_network_denial.rs`
 - AppContainer blocks user profile file reads (end-to-end spawn helper): `crates/win-sandbox/tests/filesystem_denied.rs`
