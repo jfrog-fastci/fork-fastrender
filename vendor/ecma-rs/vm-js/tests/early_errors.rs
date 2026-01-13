@@ -113,6 +113,22 @@ fn escaped_await_as_label_in_async_generator_is_syntax_error() {
 }
 
 #[test]
+fn escaped_eval_as_function_name_in_strict_mode_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#""use strict"; function \u0065val() {}"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn escaped_eval_assignment_target_in_strict_mode_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt.exec_script(r#""use strict"; \u0065val = 1;"#).unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn eval_early_errors_are_catchable_syntax_error() {
   let mut rt = new_runtime();
   let value = rt

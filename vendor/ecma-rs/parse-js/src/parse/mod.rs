@@ -327,10 +327,18 @@ impl<'a> Parser<'a> {
     loc: Loc,
     name: &str,
   ) -> SyntaxResult<()> {
-    if self.is_strict_ecmascript()
-      && self.is_strict_mode()
-      && (Self::is_strict_mode_reserved_word(name)
-        || Self::is_strict_mode_restricted_binding_identifier(name))
+    if !self.is_strict_ecmascript() || !self.is_strict_mode() {
+      return Ok(());
+    }
+
+    let Some(string_value) = self.identifier_name_string_value(name) else {
+      // Identifier names should have already been validated by the lexer; treat this as a syntax
+      // error to avoid silently accepting malformed escape sequences.
+      return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
+    };
+
+    if Self::is_strict_mode_reserved_word(string_value.as_ref())
+      || Self::is_strict_mode_restricted_binding_identifier(string_value.as_ref())
     {
       return Err(loc.error(SyntaxErrorType::ExpectedSyntax("identifier"), None));
     }
@@ -338,10 +346,20 @@ impl<'a> Parser<'a> {
   }
 
   fn validate_strict_assignment_target_name(&self, loc: Loc, name: &str) -> SyntaxResult<()> {
-    if self.is_strict_ecmascript()
-      && self.is_strict_mode()
-      && Self::is_strict_mode_restricted_assignment_target(name)
-    {
+    if !self.is_strict_ecmascript() || !self.is_strict_mode() {
+      return Ok(());
+    }
+
+    let Some(string_value) = self.identifier_name_string_value(name) else {
+      return Err(loc.error(
+        SyntaxErrorType::ExpectedSyntax(
+          "assignment to `eval` or `arguments` is not allowed in strict mode",
+        ),
+        None,
+      ));
+    };
+
+    if Self::is_strict_mode_restricted_assignment_target(string_value.as_ref()) {
       return Err(loc.error(
         SyntaxErrorType::ExpectedSyntax(
           "assignment to `eval` or `arguments` is not allowed in strict mode",
