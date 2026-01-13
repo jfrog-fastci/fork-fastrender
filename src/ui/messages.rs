@@ -1227,6 +1227,8 @@ impl WorkerToUi {
       | WorkerToUi::DownloadStarted { tab_id, .. }
       | WorkerToUi::DownloadProgress { tab_id, .. }
       | WorkerToUi::DownloadFinished { tab_id, .. } => *tab_id,
+      #[cfg(feature = "browser_ui")]
+      WorkerToUi::PageAccessKitSubtree { tab_id, .. } => *tab_id,
     }
   }
 }

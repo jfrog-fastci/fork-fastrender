@@ -10199,18 +10199,17 @@ impl BrowserRuntime {
           if let Some((tree, bounds_css)) =
             compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
           {
+            #[cfg(feature = "browser_ui")]
+            {
+              let subtree = page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &tree);
+              msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+            }
             msgs.push(WorkerToUi::PageAccessibility {
               tab_id,
               tree,
               bounds_css,
             });
           }
-        }
-        #[cfg(feature = "browser_ui")]
-        if let Some(subtree) =
-          build_page_accesskit_subtree_for_tab(tab_id, tab, paint_cancel_callback.clone())
-        {
-          msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
         }
         emitted_frame = true;
       } else {
@@ -10488,15 +10487,16 @@ impl BrowserRuntime {
       },
     });
     if let Some((tree, bounds_css)) = page_accessibility {
+      #[cfg(feature = "browser_ui")]
+      {
+        let subtree = page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &tree);
+        msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+      }
       msgs.push(WorkerToUi::PageAccessibility {
         tab_id,
         tree,
         bounds_css,
       });
-    }
-    #[cfg(feature = "browser_ui")]
-    if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone()) {
-      msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
     }
     msgs.push(WorkerToUi::LoadingState {
       tab_id,
@@ -10672,16 +10672,17 @@ impl BrowserRuntime {
         if let Some((tree, bounds_css)) =
           compute_page_accessibility_snapshot(doc, &tab.interaction, &tab.scroll_state)
         {
+          #[cfg(feature = "browser_ui")]
+          {
+            let subtree = page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &tree);
+            msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
+          }
           msgs.push(WorkerToUi::PageAccessibility {
             tab_id,
             tree,
             bounds_css,
           });
         }
-      }
-      #[cfg(feature = "browser_ui")]
-      if let Some(subtree) = build_page_accesskit_subtree_for_tab(tab_id, tab, cancel_callback.clone()) {
-        msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
       }
     }
 

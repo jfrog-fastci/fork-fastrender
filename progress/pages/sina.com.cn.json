@@ -15,31 +15,32 @@
     "layout": 80.9910125961945,
     "paint": 41.99533986469344
   },
-  "notes": "Visually good: major structure/layout matches Chrome. Remaining pixel diffs are dominated by text rasterization differences vs Chrome (especially CJK glyph hinting/positioning), plus minor image decode/color rounding (e.g. the top banner JPEG) and a handful of empty/broken image placeholders. Cascade remains the main performance hotspot due to the large DOM/CSS.",
+  "notes": "Visually good: major structure/layout matches Chrome. Remaining pixel diffs are dominated by text rasterization differences vs Chrome (dense CJK glyph edges: hinting/AA/snap-to-pixel differences), which inflates SSIM/perceptual despite the page looking correct (in a debug diff run, ~88% of differing pixels fell within text display item bounds). Minor diffs also come from image decode/color rounding (e.g. the top banner JPEG) and a handful of empty/broken image placeholders. Cascade remains the main performance hotspot due to the large DOM/CSS.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 101914,
-    "diff_percent": 10.616,
-    "perceptual": 0.1527,
+    "diff_pixels": 91068,
+    "diff_percent": 9.4863,
+    "perceptual": 0.2225,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 117,
-      "y": 17,
+      "x": 118,
+      "y": 18,
       "baseline_rgba": [
-        252,
-        252,
-        252,
+        172,
+        172,
+        172,
         255
       ],
       "rendered_rgba": [
         252,
         252,
-        246,
+        252,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "211684cd9c51358a36c94f5a2064b73ad61c4602"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "cascade",
   "failure_stage": null,
