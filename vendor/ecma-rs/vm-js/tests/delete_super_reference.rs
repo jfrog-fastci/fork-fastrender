@@ -1,8 +1,10 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Some of these tests use Promises/async-await; give them a slightly larger heap to avoid
+  // spurious OOMs.
+  let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
   JsRuntime::new(vm, heap).unwrap()
 }
 
@@ -129,4 +131,38 @@ fn delete_super_property_computed_member_propagates_to_property_key_errors() {
     .unwrap();
 
   assert_value_is_utf8(&rt, value, "x");
+}
+
+#[test]
+fn delete_super_property_computed_member_with_await_in_key_throws_reference_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      class B { m(){} }
+      class D extends B {
+        async del() {
+          let side = 0;
+          try {
+            delete super[await (side = 1, Promise.resolve("m"))];
+            return "no";
+          } catch (e) {
+            return String(side) + ":" + e.name;
+          }
+        }
+      }
+      new D().del().then(function (v) { out = v; });
+      out
+    "#,
+  )?;
+
+  // Promise not resolved yet.
+  assert_value_is_utf8(&rt, value, "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_value_is_utf8(&rt, value, "1:ReferenceError");
+  Ok(())
 }

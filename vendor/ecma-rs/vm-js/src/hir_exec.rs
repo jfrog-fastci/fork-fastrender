@@ -2901,6 +2901,26 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
           hir_js::ExprKind::Member(member) => {
+            // Super References are not deletable (ECMA-262 `delete` runtime semantics).
+            //
+            // For computed super property references, the key expression (including `ToPropertyKey`)
+            // is still evaluated before throwing.
+            let object_expr = self.get_expr(body, member.object)?;
+            if matches!(object_expr.kind, hir_js::ExprKind::Super) {
+              if let hir_js::ObjectKey::Computed(expr_id) = &member.property {
+                let member_value = self.eval_expr(scope, body, *expr_id)?;
+                let mut key_scope = scope.reborrow();
+                key_scope.push_root(member_value)?;
+                let _ =
+                  key_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, member_value)?;
+              }
+              return Err(throw_reference_error(
+                self.vm,
+                scope,
+                "Cannot delete a super property",
+              )?);
+            }
+
             // Optional chaining delete (`delete o?.x`) short-circuits to `true` if the base is
             // nullish and does not evaluate the property expression.
             let base = self.eval_expr(scope, body, member.object)?;

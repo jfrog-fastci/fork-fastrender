@@ -11491,6 +11491,11 @@ enum AsyncFrame {
     expr: *const ComputedMemberExpr,
     base_root: RootId,
   },
+  /// Continue evaluating a `delete super[expr]` after evaluating its computed member key expression.
+  ///
+  /// Per ECMA-262, `delete` of a Super Reference must throw a ReferenceError, but for computed
+  /// property references the key expression (including `ToPropertyKey`) is still evaluated first.
+  DeleteSuperComputedMemberAfterMember,
 
   /// Continue a member access after evaluating the base value.
   MemberAfterBase {
@@ -20202,6 +20207,32 @@ fn async_eval_delete_expr(
   expr: &UnaryExpr,
 ) -> Result<AsyncEval<Value>, VmError> {
   match &*expr.argument.stx {
+    // Super References are not deletable (ECMA-262 `delete` runtime semantics). For computed super
+    // property references, the key expression is still evaluated (and `ToPropertyKey` performed)
+    // before throwing.
+    Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+      match async_eval_expr(evaluator, scope, &member.stx.member)? {
+        AsyncEval::Complete(member_value) => {
+          let mut del_scope = scope.reborrow();
+          del_scope.push_root(member_value)?;
+          let _ = evaluator
+            .to_property_key_operator(&mut del_scope, member_value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+          Err(throw_reference_error(
+            evaluator.vm,
+            &mut del_scope,
+            "Cannot delete a super property",
+          )?)
+        }
+        AsyncEval::Suspend(mut suspend) => {
+          async_frames_push(
+            &mut suspend.frames,
+            AsyncFrame::DeleteSuperComputedMemberAfterMember,
+          )?;
+          Ok(AsyncEval::Suspend(suspend))
+        }
+      }
+    }
     Expr::Member(member) => match async_eval_chain_base(evaluator, scope, &member.stx.left)? {
       AsyncEval::Complete(base) => Ok(AsyncEval::Complete(async_delete_member_after_base(
         evaluator,
@@ -22077,6 +22108,29 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "delete computed member after member frame received completion state",
+          ))
+        }
+      },
+ 
+      AsyncFrame::DeleteSuperComputedMemberAfterMember => match state {
+        AsyncState::Expr(member_res) => match member_res {
+          Ok(member_value) => {
+            let mut del_scope = scope.reborrow();
+            del_scope.push_root(member_value)?;
+            let _ = evaluator
+              .to_property_key_operator(&mut del_scope, member_value)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut del_scope, err))?;
+            state = AsyncState::Expr(Err(throw_reference_error(
+              evaluator.vm,
+              &mut del_scope,
+              "Cannot delete a super property",
+            )?));
+          }
+          Err(err) => state = AsyncState::Expr(Err(err)),
+        },
+        AsyncState::Completion(_) => {
+          return Err(VmError::InvariantViolation(
+            "delete super computed member after member frame received completion state",
           ))
         }
       },
