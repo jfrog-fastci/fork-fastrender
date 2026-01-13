@@ -147,6 +147,7 @@ fn select_listbox_multi_select_shift_skips_disabled_options() -> Result<()> {
       click1_viewport_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "",
       "",
     );
@@ -223,6 +224,7 @@ fn select_listbox_multi_select_shift_skips_disabled_options() -> Result<()> {
       click4_viewport_point,
       PointerButton::Primary,
       PointerModifiers::SHIFT,
+      true,
       "",
       "",
     );

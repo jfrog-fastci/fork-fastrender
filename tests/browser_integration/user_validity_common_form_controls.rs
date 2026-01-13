@@ -70,6 +70,7 @@ fn user_validity_text_input_edit_sets_flag() -> Result<()> {
       click_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "https://example.invalid/page.html",
       "https://example.invalid/page.html",
     );
@@ -138,6 +139,7 @@ fn user_validity_range_drag_sets_flag() -> Result<()> {
       click_point,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "https://example.invalid/page.html",
       "https://example.invalid/page.html",
     );
@@ -233,4 +235,3 @@ fn user_validity_file_input_drop_sets_flag() -> Result<()> {
 
   Ok(())
 }
-

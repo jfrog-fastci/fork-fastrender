@@ -127,6 +127,7 @@ fn select_listbox_multi_select_respects_pointer_modifiers() -> Result<()> {
       click_opt3,
       PointerButton::Primary,
       PointerModifiers::NONE,
+      true,
       "",
       "",
     );
@@ -160,6 +161,7 @@ fn select_listbox_multi_select_respects_pointer_modifiers() -> Result<()> {
       click_opt1,
       PointerButton::Primary,
       cmd,
+      true,
       "",
       "",
     );
@@ -188,6 +190,7 @@ fn select_listbox_multi_select_respects_pointer_modifiers() -> Result<()> {
       click_opt4,
       PointerButton::Primary,
       PointerModifiers::SHIFT,
+      true,
       "",
       "",
     );
