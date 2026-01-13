@@ -30,6 +30,13 @@ const BLOB_CTOR_REALM_ID_SLOT: usize = 0;
 /// used as a `fetch()` request body without additional surprising size limits.
 pub(crate) const MAX_BLOB_BYTES: usize = 10 * 1024 * 1024;
 
+/// Hard upper bound on `Blob` type strings (`BlobPropertyBag.type`, `Blob.prototype.slice(..., contentType)`).
+///
+/// Real-world MIME type strings are tiny (usually <100 bytes). We cap these strings to keep host-side
+/// allocations deterministic and to prevent untrusted scripts from forcing large Rust allocations via
+/// extremely large `type`/`contentType` values.
+const MAX_BLOB_TYPE_BYTES: usize = 4096;
+
 #[derive(Clone, Debug)]
 pub(crate) struct BlobData {
   pub(crate) bytes: Vec<u8>,
@@ -154,6 +161,11 @@ pub(crate) fn normalize_type(s: &str) -> String {
     return String::new();
   }
 
+  // Keep host allocations deterministic: any oversized type is treated as invalid.
+  if s.len() > MAX_BLOB_TYPE_BYTES {
+    return String::new();
+  }
+
   // File API: type is ASCII-lowercased, and set to empty if it contains non-ASCII-printable bytes.
   if !s
     .as_bytes()
@@ -167,6 +179,40 @@ pub(crate) fn normalize_type(s: &str) -> String {
   s.bytes()
     .map(|b| (b as char).to_ascii_lowercase())
     .collect()
+}
+
+fn js_string_to_rust_string_bounded_for_blob_type(
+  heap: &Heap,
+  handle: GcString,
+) -> Result<Option<String>, VmError> {
+  let js = heap.get_string(handle)?;
+
+  let code_units_len = js.len_code_units();
+  // UTF-8 output bytes are always >= UTF-16 code unit length (and can grow by up to 3 bytes per code
+  // unit when decoding lone surrogates as U+FFFD). Reject overly large strings up-front to prevent
+  // unbounded host allocations.
+  if code_units_len > MAX_BLOB_TYPE_BYTES {
+    return Ok(None);
+  }
+
+  // Decode manually so we can enforce the byte limit without relying on potentially-large
+  // allocations performed by `String::from_utf16_lossy` / `to_utf8_lossy`.
+  let capacity = code_units_len.saturating_mul(3).min(MAX_BLOB_TYPE_BYTES);
+  let mut out = String::with_capacity(capacity);
+  let mut out_len = 0usize;
+
+  for decoded in decode_utf16(js.as_code_units().iter().copied()) {
+    let ch = decoded.unwrap_or('\u{FFFD}');
+    let ch_len = ch.len_utf8();
+    let next_len = out_len.checked_add(ch_len).unwrap_or(usize::MAX);
+    if next_len > MAX_BLOB_TYPE_BYTES {
+      return Ok(None);
+    }
+    out.push(ch);
+    out_len = next_len;
+  }
+
+  Ok(Some(out))
 }
 
 fn js_string_to_utf8_bytes_limited(
@@ -275,7 +321,8 @@ fn blob_ctor_construct(
     let type_val = vm.get_with_host_and_hooks(host, scope, hooks, options_obj, type_key)?;
     if !matches!(type_val, Value::Undefined) {
       let s = scope.to_string(vm, host, hooks, type_val)?;
-      type_string = scope.heap().get_string(s)?.to_utf8_lossy();
+      type_string =
+        js_string_to_rust_string_bounded_for_blob_type(scope.heap(), s)?.unwrap_or_default();
     }
   }
   let type_string = normalize_type(&type_string);
@@ -496,7 +543,8 @@ fn blob_slice_native(
   if let Some(v) = args.get(2).copied() {
     if !matches!(v, Value::Undefined) {
       let s = scope.to_string(vm, host, hooks, v)?;
-      content_type = scope.heap().get_string(s)?.to_utf8_lossy();
+      content_type =
+        js_string_to_rust_string_bounded_for_blob_type(scope.heap(), s)?.unwrap_or_default();
     }
   }
   let content_type = normalize_type(&content_type);
@@ -926,6 +974,25 @@ mod tests {
         ));
       }
     }
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_type_too_long_is_clamped_to_empty() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let long_len = MAX_BLOB_TYPE_BYTES + 10;
+    let ty = realm.exec_script(&format!(
+      "(() => {{ const t = 'a'.repeat({long_len}); return new Blob(['hi'], {{ type: t }}).type; }})()"
+    ))?;
+    assert_eq!(get_string(realm.heap(), ty), "");
+
+    let sliced = realm.exec_script(&format!(
+      "(() => {{ const t = 'a'.repeat({long_len}); return new Blob(['hi']).slice(0, 1, t).type; }})()"
+    ))?;
+    assert_eq!(get_string(realm.heap(), sliced), "");
 
     realm.teardown();
     Ok(())
