@@ -103,15 +103,17 @@ Integration notes:
   The demux layer should normalize the access units into the format expected by the decoder.
 - Keyframe info comes from MP4’s `stss` (not from parsing slice headers at demux time).
 
-### VP9: bundled `libvpx` (`libvpx-sys`)
+### VP9: bundled `libvpx` (`libvpx-sys-bundled`)
 
-- Backend: `libvpx` via [`libvpx-sys`](https://crates.io/crates/libvpx-sys) (vendored source build).
+- Backend: `libvpx` via `crates/libvpx-sys-bundled` (vendored source build; **no system `libvpx`**).
 
 Why:
 
 - De-facto reference VP8/VP9 decoder used widely across browsers.
 - Can be built from source in-tree, avoiding system `libvpx`/`pkg-config`.
-- We can configure a **no-asm build** (e.g. `--disable-asm`) for environments without an assembler.
+- We configure a **no-asm build** for CI/minimal hosts (no `nasm`/`yasm`) by disabling x86 SIMD
+  feature flags and setting `AS=true` to bypass assembler auto-detection. (libvpx's `configure`
+  script does **not** provide a `--disable-asm` flag; see `crates/libvpx-sys-bundled/build.rs`.)
 
 Integration notes:
 
@@ -218,4 +220,3 @@ The stack is designed to be extensible without taking on FFmpeg:
     timeline.
   - Keep decoder APIs independent of the container; container-specific “extradata” should be
     normalized at the demux boundary (e.g. `avcC` → Annex B, OpusHead parsing, etc.).
-
