@@ -19241,79 +19241,63 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
 }
 
 fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
-  fn walk(node: &StyledNode, out: &mut HashMap<usize, u64>) {
+  let mut map = HashMap::new();
+  let mut stack: Vec<&StyledNode> = vec![root];
+  while let Some(node) = stack.pop() {
     let base = node.node_id << STYLE_KEY_SHIFT;
-    out.insert(base, style_layout_fingerprint(&node.styles));
+    map.insert(base, style_layout_fingerprint(&node.styles));
     if let Some(before) = &node.before_styles {
-      out.insert(base | STYLE_KEY_BEFORE, style_layout_fingerprint(before));
+      map.insert(base | STYLE_KEY_BEFORE, style_layout_fingerprint(before));
     }
     if let Some(after) = &node.after_styles {
-      out.insert(base | STYLE_KEY_AFTER, style_layout_fingerprint(after));
+      map.insert(base | STYLE_KEY_AFTER, style_layout_fingerprint(after));
     }
     if let Some(marker) = &node.marker_styles {
-      out.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
+      map.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
     }
     if let Some(placeholder) = &node.placeholder_styles {
-      out.insert(
+      map.insert(
         base | STYLE_KEY_PLACEHOLDER,
         style_layout_fingerprint(placeholder),
       );
     }
     if let Some(file_button) = &node.file_selector_button_styles {
-      out.insert(
+      map.insert(
         base | STYLE_KEY_FILE_SELECTOR_BUTTON,
         style_layout_fingerprint(file_button),
       );
     }
     if let Some(thumb) = &node.slider_thumb_styles {
-      out.insert(
-        base | STYLE_KEY_SLIDER_THUMB,
-        style_layout_fingerprint(thumb),
-      );
+      map.insert(base | STYLE_KEY_SLIDER_THUMB, style_layout_fingerprint(thumb));
     }
     if let Some(track) = &node.slider_track_styles {
-      out.insert(
-        base | STYLE_KEY_SLIDER_TRACK,
-        style_layout_fingerprint(track),
-      );
+      map.insert(base | STYLE_KEY_SLIDER_TRACK, style_layout_fingerprint(track));
     }
     if let Some(call) = &node.footnote_call_styles {
-      out.insert(
-        base | STYLE_KEY_FOOTNOTE_CALL,
-        style_layout_fingerprint(call),
-      );
+      map.insert(base | STYLE_KEY_FOOTNOTE_CALL, style_layout_fingerprint(call));
     }
     if let Some(marker) = &node.footnote_marker_styles {
-      out.insert(
+      map.insert(
         base | STYLE_KEY_FOOTNOTE_MARKER,
         style_layout_fingerprint(marker),
       );
     }
     if let Some(first_line) = &node.first_line_styles {
-      out.insert(
-        base | STYLE_KEY_FIRST_LINE,
-        style_layout_fingerprint(first_line),
-      );
+      map.insert(base | STYLE_KEY_FIRST_LINE, style_layout_fingerprint(first_line));
     }
     if let Some(first_letter) = &node.first_letter_styles {
-      out.insert(
+      map.insert(
         base | STYLE_KEY_FIRST_LETTER,
         style_layout_fingerprint(first_letter),
       );
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
-      out.insert(
-        base | STYLE_KEY_BACKDROP,
-        style_layout_fingerprint(backdrop),
-      );
+      map.insert(base | STYLE_KEY_BACKDROP, style_layout_fingerprint(backdrop));
     }
-    for child in node.children.iter() {
-      walk(child, out);
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
-
-  let mut map = HashMap::new();
-  walk(root, &mut map);
   map
 }
 
@@ -19340,54 +19324,53 @@ fn container_query_fingerprint_default_style() -> &'static ComputedStyle {
 }
 
 fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
-  fn walk(node: &StyledNode, hasher: &mut DefaultHasher) {
+  let mut hasher = DefaultHasher::default();
+  let mut stack: Vec<&StyledNode> = vec![root];
+  while let Some(node) = stack.pop() {
     let base = node.node_id << STYLE_KEY_SHIFT;
-    base.hash(hasher);
-    style_layout_fingerprint(&node.styles).hash(hasher);
+    base.hash(&mut hasher);
+    style_layout_fingerprint(&node.styles).hash(&mut hasher);
     if let Some(before) = &node.before_styles {
-      (base | STYLE_KEY_BEFORE).hash(hasher);
-      style_layout_fingerprint(before).hash(hasher);
+      (base | STYLE_KEY_BEFORE).hash(&mut hasher);
+      style_layout_fingerprint(before).hash(&mut hasher);
     }
     if let Some(after) = &node.after_styles {
-      (base | STYLE_KEY_AFTER).hash(hasher);
-      style_layout_fingerprint(after).hash(hasher);
+      (base | STYLE_KEY_AFTER).hash(&mut hasher);
+      style_layout_fingerprint(after).hash(&mut hasher);
     }
     if let Some(marker) = &node.marker_styles {
-      (base | STYLE_KEY_MARKER).hash(hasher);
-      style_layout_fingerprint(marker).hash(hasher);
+      (base | STYLE_KEY_MARKER).hash(&mut hasher);
+      style_layout_fingerprint(marker).hash(&mut hasher);
     }
     if let Some(call) = &node.footnote_call_styles {
-      (base | STYLE_KEY_FOOTNOTE_CALL).hash(hasher);
-      style_layout_fingerprint(call).hash(hasher);
+      (base | STYLE_KEY_FOOTNOTE_CALL).hash(&mut hasher);
+      style_layout_fingerprint(call).hash(&mut hasher);
     }
     if let Some(marker) = &node.footnote_marker_styles {
-      (base | STYLE_KEY_FOOTNOTE_MARKER).hash(hasher);
-      style_layout_fingerprint(marker).hash(hasher);
+      (base | STYLE_KEY_FOOTNOTE_MARKER).hash(&mut hasher);
+      style_layout_fingerprint(marker).hash(&mut hasher);
     }
     if let Some(first_line) = &node.first_line_styles {
-      (base | STYLE_KEY_FIRST_LINE).hash(hasher);
-      style_layout_fingerprint(first_line).hash(hasher);
+      (base | STYLE_KEY_FIRST_LINE).hash(&mut hasher);
+      style_layout_fingerprint(first_line).hash(&mut hasher);
     }
     if let Some(first_letter) = &node.first_letter_styles {
-      (base | STYLE_KEY_FIRST_LETTER).hash(hasher);
-      style_layout_fingerprint(first_letter).hash(hasher);
+      (base | STYLE_KEY_FIRST_LETTER).hash(&mut hasher);
+      style_layout_fingerprint(first_letter).hash(&mut hasher);
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
       if !matches!(
         backdrop.display,
         crate::style::display::Display::None | crate::style::display::Display::Contents
       ) {
-        (base | STYLE_KEY_BACKDROP).hash(hasher);
-        style_layout_fingerprint(backdrop).hash(hasher);
+        (base | STYLE_KEY_BACKDROP).hash(&mut hasher);
+        style_layout_fingerprint(backdrop).hash(&mut hasher);
       }
     }
-    for child in node.children.iter() {
-      walk(child, hasher);
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
-
-  let mut hasher = DefaultHasher::default();
-  walk(root, &mut hasher);
   hasher.finish()
 }
 
@@ -19677,55 +19660,54 @@ fn collect_box_nodes<'a>(node: &'a BoxNode, map: &mut HashMap<usize, &'a BoxNode
 }
 
 fn styled_style_map(root: &StyledNode) -> HashMap<usize, Arc<ComputedStyle>> {
-  fn walk(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
+  let mut map = HashMap::new();
+  let mut stack: Vec<&StyledNode> = vec![root];
+  while let Some(node) = stack.pop() {
     let base = node.node_id << STYLE_KEY_SHIFT;
-    out.insert(base, Arc::clone(&node.styles));
+    map.insert(base, Arc::clone(&node.styles));
     if let Some(before) = &node.before_styles {
-      out.insert(base | STYLE_KEY_BEFORE, Arc::clone(before));
+      map.insert(base | STYLE_KEY_BEFORE, Arc::clone(before));
     }
     if let Some(after) = &node.after_styles {
-      out.insert(base | STYLE_KEY_AFTER, Arc::clone(after));
+      map.insert(base | STYLE_KEY_AFTER, Arc::clone(after));
     }
     if let Some(marker) = &node.marker_styles {
-      out.insert(base | STYLE_KEY_MARKER, Arc::clone(marker));
+      map.insert(base | STYLE_KEY_MARKER, Arc::clone(marker));
     }
     if let Some(placeholder) = &node.placeholder_styles {
-      out.insert(base | STYLE_KEY_PLACEHOLDER, Arc::clone(placeholder));
+      map.insert(base | STYLE_KEY_PLACEHOLDER, Arc::clone(placeholder));
     }
     if let Some(file_button) = &node.file_selector_button_styles {
-      out.insert(
+      map.insert(
         base | STYLE_KEY_FILE_SELECTOR_BUTTON,
         Arc::clone(file_button),
       );
     }
     if let Some(thumb) = &node.slider_thumb_styles {
-      out.insert(base | STYLE_KEY_SLIDER_THUMB, Arc::clone(thumb));
+      map.insert(base | STYLE_KEY_SLIDER_THUMB, Arc::clone(thumb));
     }
     if let Some(track) = &node.slider_track_styles {
-      out.insert(base | STYLE_KEY_SLIDER_TRACK, Arc::clone(track));
+      map.insert(base | STYLE_KEY_SLIDER_TRACK, Arc::clone(track));
     }
     if let Some(call) = &node.footnote_call_styles {
-      out.insert(base | STYLE_KEY_FOOTNOTE_CALL, Arc::clone(call));
+      map.insert(base | STYLE_KEY_FOOTNOTE_CALL, Arc::clone(call));
     }
     if let Some(marker) = &node.footnote_marker_styles {
-      out.insert(base | STYLE_KEY_FOOTNOTE_MARKER, Arc::clone(marker));
+      map.insert(base | STYLE_KEY_FOOTNOTE_MARKER, Arc::clone(marker));
     }
     if let Some(first_line) = &node.first_line_styles {
-      out.insert(base | STYLE_KEY_FIRST_LINE, Arc::clone(first_line));
+      map.insert(base | STYLE_KEY_FIRST_LINE, Arc::clone(first_line));
     }
     if let Some(first_letter) = &node.first_letter_styles {
-      out.insert(base | STYLE_KEY_FIRST_LETTER, Arc::clone(first_letter));
+      map.insert(base | STYLE_KEY_FIRST_LETTER, Arc::clone(first_letter));
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
-      out.insert(base | STYLE_KEY_BACKDROP, Arc::clone(backdrop));
+      map.insert(base | STYLE_KEY_BACKDROP, Arc::clone(backdrop));
     }
-    for child in node.children.iter() {
-      walk(child, out);
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
-
-  let mut map = HashMap::new();
-  walk(root, &mut map);
   map
 }
 
@@ -19761,26 +19743,28 @@ fn styled_summary_map(root: &StyledNode) -> HashMap<usize, String> {
     }
   }
 
-  fn walk(node: &StyledNode, out: &mut HashMap<usize, String>) {
-    out.insert(node.node_id, summary(node));
-    for child in node.children.iter() {
-      walk(child, out);
+  let mut map = HashMap::new();
+  let mut stack: Vec<&StyledNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    map.insert(node.node_id, summary(node));
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
-
-  let mut map = HashMap::new();
-  walk(root, &mut map);
   map
 }
 
 fn find_styled_by_id<'a>(root: &'a StyledNode, id: usize) -> Option<&'a StyledNode> {
-  if root.node_id == id {
-    return Some(root);
+  let mut stack: Vec<&StyledNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if node.node_id == id {
+      return Some(node);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
   }
-  root
-    .children
-    .iter()
-    .find_map(|child| find_styled_by_id(child, id))
+  None
 }
 
 fn styled_style_summary(style: &ComputedStyle) -> String {
@@ -21341,73 +21325,107 @@ fn build_container_query_context(
 }
 
 fn count_styled_nodes_api(node: &StyledNode) -> usize {
-  1 + node
-    .children
-    .iter()
-    .map(count_styled_nodes_api)
-    .sum::<usize>()
+  let mut count = 0usize;
+  let mut stack: Vec<&StyledNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    count += 1;
+    for child in node.children.iter() {
+      stack.push(child);
+    }
+  }
+  count
 }
 
 fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> HashSet<usize> {
-  fn mark(
-    node: &StyledNode,
-    containers: &HashMap<usize, ContainerQueryInfo>,
-    styled_lookup: &HashMap<usize, *const StyledNode>,
+  let mut styled_lookup: HashMap<usize, *const StyledNode> = HashMap::new();
+  build_styled_lookup(styled, &mut styled_lookup);
+  let mut scope = HashSet::new();
+
+  struct Frame<'a> {
+    node: &'a StyledNode,
     in_container_subtree: bool,
-    scope: &mut HashSet<usize>,
-  ) -> bool {
-    let is_container = containers.contains_key(&node.node_id);
-    let mut subtree_has_container = is_container;
-    let child_in_container_subtree = in_container_subtree || is_container;
-    for child in node.children.iter() {
-      if mark(
-        child,
-        containers,
-        styled_lookup,
+    child_in_container_subtree: bool,
+    next_child: usize,
+    next_slot: usize,
+    subtree_has_container: bool,
+  }
+
+  impl<'a> Frame<'a> {
+    fn new(
+      node: &'a StyledNode,
+      containers: &HashMap<usize, ContainerQueryInfo>,
+      in_container_subtree: bool,
+    ) -> Self {
+      let is_container = containers.contains_key(&node.node_id);
+      let child_in_container_subtree = in_container_subtree || is_container;
+      Self {
+        node,
+        in_container_subtree,
         child_in_container_subtree,
-        scope,
-      ) {
-        subtree_has_container = true;
+        next_child: 0,
+        next_slot: 0,
+        subtree_has_container: is_container,
+      }
+    }
+  }
+
+  // The styled tree can be arbitrarily deep; avoid recursion to prevent stack overflows during
+  // container-scope construction.
+  let mut stack: Vec<Frame<'_>> = vec![Frame::new(styled, &ctx.containers, false)];
+  while !stack.is_empty() {
+    let mut push_next: Option<Frame<'_>> = None;
+
+    {
+      let frame = stack.last_mut().expect("stack not empty");
+      if frame.next_child < frame.node.children.len() {
+        let child = &frame.node.children[frame.next_child];
+        frame.next_child += 1;
+        push_next = Some(Frame::new(
+          child,
+          &ctx.containers,
+          frame.child_in_container_subtree,
+        ));
+      } else if frame.child_in_container_subtree
+        && frame.next_slot < frame.node.slotted_node_ids.len()
+      {
+        let slotted_id = frame.node.slotted_node_ids[frame.next_slot];
+        frame.next_slot += 1;
+        if let Some(ptr) = styled_lookup.get(&slotted_id).copied() {
+          if !ptr.is_null() {
+            // Safety: pointers come from `styled` and remain valid for the duration of this traversal.
+            let slotted = unsafe { &*ptr };
+            push_next = Some(Frame::new(
+              slotted,
+              &ctx.containers,
+              frame.child_in_container_subtree,
+            ));
+          }
+        }
       }
     }
 
-    if child_in_container_subtree && !node.slotted_node_ids.is_empty() {
-      for slotted_id in node.slotted_node_ids.iter() {
-        let Some(ptr) = styled_lookup.get(slotted_id).copied() else {
-          continue;
-        };
-        if ptr.is_null() {
-          continue;
-        }
-        // Safety: pointers come from `styled` and remain valid for the duration of this traversal.
-        let slotted = unsafe { &*ptr };
-        if mark(
-          slotted,
-          containers,
-          styled_lookup,
-          child_in_container_subtree,
-          scope,
-        ) {
-          subtree_has_container = true;
-        }
-      }
+    if let Some(next) = push_next {
+      stack.push(next);
+      continue;
     }
+
+    let frame = stack.pop().expect("frame exists");
 
     // Re-run cascade for:
     // - any node that is itself a container,
     // - any descendant of a container (styles may depend on queries),
     // - any ancestor on the path to a container (to reach it).
-    if is_container || in_container_subtree || subtree_has_container {
-      scope.insert(node.node_id);
+    if frame.in_container_subtree || frame.subtree_has_container {
+      scope.insert(frame.node.node_id);
     }
 
-    subtree_has_container
+    if frame.subtree_has_container {
+      if let Some(parent) = stack.last_mut() {
+        parent.subtree_has_container = true;
+      }
+    }
   }
 
-  let mut styled_lookup: HashMap<usize, *const StyledNode> = HashMap::new();
-  build_styled_lookup(styled, &mut styled_lookup);
-  let mut scope = HashSet::new();
-  mark(styled, &ctx.containers, &styled_lookup, false, &mut scope);
   scope
 }
 
@@ -21479,6 +21497,34 @@ mod build_styled_lookup_tests {
     current
   }
 
+  fn container_ctx_for_id(container_id: usize, styles: &Arc<ComputedStyle>) -> ContainerQueryContext {
+    let mut containers = HashMap::new();
+    containers.insert(
+      container_id,
+      ContainerQueryInfo {
+        box_id: None,
+        width: 0.0,
+        height: 0.0,
+        inline_size: 0.0,
+        block_size: 0.0,
+        container_type: ContainerType::InlineSize,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::clone(styles),
+        scroll_offset: Point::new(0.0, 0.0),
+        scroll_bounds: None,
+        stuck_mask: 0,
+        snapped_mask: 0,
+        scrolled_delta: Point::new(0.0, 0.0),
+      },
+    );
+    ContainerQueryContext {
+      base_media: MediaContext::screen(800.0, 600.0),
+      root_font_metrics: None,
+      containers,
+    }
+  }
+
   #[test]
   fn build_styled_lookup_indexes_all_nodes() {
     let styles = Arc::new(ComputedStyle::default());
@@ -21512,6 +21558,26 @@ mod build_styled_lookup_tests {
         let mut map = HashMap::new();
         build_styled_lookup(&tree, &mut map);
         assert_eq!(map.len(), 10_000);
+      })
+      .expect("spawn thread");
+    handle.join().expect("thread should complete without panic");
+  }
+
+  #[test]
+  fn build_container_scope_does_not_overflow_stack_on_deep_trees() {
+    // `build_container_scope` used to recurse through the styled tree; validate that it can handle
+    // degenerate deep trees without overflowing the stack.
+    let handle = std::thread::Builder::new()
+      .name("build_container_scope_deep".into())
+      .stack_size(64 * 1024)
+      .spawn(|| {
+        let depth = 10_000;
+        let tree = deep_styled_chain(depth);
+        let ctx = container_ctx_for_id(depth - 1, &tree.styles);
+        let scope = build_container_scope(&tree, &ctx);
+        assert_eq!(scope.len(), depth);
+        assert!(scope.contains(&0));
+        assert!(scope.contains(&(depth - 1)));
       })
       .expect("spawn thread");
     handle.join().expect("thread should complete without panic");
