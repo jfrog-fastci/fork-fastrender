@@ -2863,6 +2863,9 @@ impl DisplayListBuilder {
               //
               // Do not clamp this to the fragment rect: the bounds are used for culling/tiling and
               // must include any outward spill to avoid clipping thick outer-edge winners.
+              // See comment in `build_fragment` above: collapsed table border bounds can extend
+              // outside the table fragment rect (including into negative coordinates) and must not
+              // be clamped, otherwise thick outer-edge winners can be clipped.
               let bounds = table_borders.paint_bounds.translate(origin);
               let has_visible_borders = table_borders
                 .vertical_borders
