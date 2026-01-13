@@ -22658,8 +22658,9 @@ pub fn json_parse(
     scope.push_roots(&[Value::Object(holder), Value::String(name), reviver])?;
 
     let key = PropertyKey::from_string(name);
+    // Spec: `val = ? Get(holder, name)` (Proxy-aware).
     let mut val =
-      scope.ordinary_get_with_host_and_hooks(vm, host, hooks, holder, key, Value::Object(holder))?;
+      scope.get_with_host_and_hooks(vm, host, hooks, holder, key, Value::Object(holder))?;
     scope.push_root(val)?;
 
     fn primitive_same_value(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, VmError> {
@@ -22717,6 +22718,7 @@ pub fn json_parse(
 
     if let Value::Object(obj) = val {
       if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, val)? {
+        // Spec: `len = ? LengthOfArrayLike(val)` (Proxy-aware `Get(val, "length")`).
         let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
         for i in 0..len {
@@ -22742,22 +22744,56 @@ pub fn json_parse(
           )?;
 
           if matches!(new_element, Value::Undefined) {
-            let ok =
-              idx_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, PropertyKey::from_string(idx_s))?;
-            if !ok {
-              let intr = require_intrinsics(vm)?;
-              return Err(crate::throw_type_error(&mut idx_scope, intr, "DeletePropertyOrThrow failed"));
-            }
-          } else {
-            idx_scope.define_property(
+            // Spec: `Perform ? val.[[Delete]](prop)` (Proxy-aware).
+            //
+            // `[[Delete]]` returns a boolean; when deletion fails (e.g. non-configurable property),
+            // no exception is thrown (only abrupt completions propagate).
+            let _ = crate::spec_ops::internal_delete_with_host_and_hooks(
+              vm,
+              &mut idx_scope,
+              host,
+              hooks,
               obj,
               PropertyKey::from_string(idx_s),
-              data_desc(new_element, true, true, true),
+            )?;
+          } else {
+            // Spec: `Perform ? CreateDataProperty(val, prop, newElement)`.
+            //
+            // `CreateDataProperty` returns a boolean. When it returns `false`, no exception is
+            // thrown (only abrupt completions propagate).
+            let _ = crate::spec_ops::create_data_property_with_host_and_hooks(
+              vm,
+              &mut idx_scope,
+              host,
+              hooks,
+              obj,
+              PropertyKey::from_string(idx_s),
+              new_element,
             )?;
           }
         }
       } else {
-        let keys = scope.ordinary_own_property_keys_with_tick(obj, || vm.tick())?;
+        // Spec: `keys = ? EnumerableOwnProperties(val, "key")`
+        //
+        // `EnumerableOwnProperties` uses:
+        // - `[[OwnPropertyKeys]]` to snapshot keys (Proxy-aware), then
+        // - `[[GetOwnProperty]]` to filter by enumerability (Proxy-aware).
+        let mut tick = Vm::tick;
+        let keys = scope.own_property_keys_with_host_and_hooks_with_tick(vm, host, hooks, obj, &mut tick)?;
+        // Root keys eagerly: for Proxy objects, keys can be synthesized by the `ownKeys` trap and
+        // may not be reachable from `val` itself.
+        let mut key_roots: Vec<Value> = Vec::new();
+        key_roots
+          .try_reserve_exact(keys.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        for k in &keys {
+          key_roots.push(match *k {
+            PropertyKey::String(s) => Value::String(s),
+            PropertyKey::Symbol(s) => Value::Symbol(s),
+          });
+        }
+        scope.push_roots(&key_roots)?;
+
         let mut enumerable: Vec<crate::GcString> = Vec::new();
         enumerable
           .try_reserve_exact(keys.len())
@@ -22770,7 +22806,9 @@ pub fn json_parse(
           let PropertyKey::String(s) = k else {
             continue;
           };
-          let Some(desc) = scope.ordinary_get_own_property(obj, k)? else {
+          let Some(desc) =
+            scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, PropertyKey::from_string(s), &mut tick)?
+          else {
             continue;
           };
           if desc.enumerable {
@@ -22798,17 +22836,23 @@ pub fn json_parse(
             None,
           )?;
           if matches!(new_element, Value::Undefined) {
-            let ok =
-              p_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, PropertyKey::from_string(p))?;
-            if !ok {
-              let intr = require_intrinsics(vm)?;
-              return Err(crate::throw_type_error(&mut p_scope, intr, "DeletePropertyOrThrow failed"));
-            }
-          } else {
-            p_scope.define_property(
+            let _ = crate::spec_ops::internal_delete_with_host_and_hooks(
+              vm,
+              &mut p_scope,
+              host,
+              hooks,
               obj,
               PropertyKey::from_string(p),
-              data_desc(new_element, true, true, true),
+            )?;
+          } else {
+            let _ = crate::spec_ops::create_data_property_with_host_and_hooks(
+              vm,
+              &mut p_scope,
+              host,
+              hooks,
+              obj,
+              PropertyKey::from_string(p),
+              new_element,
             )?;
           }
         }

@@ -500,6 +500,58 @@ pub fn create_data_property(
   scope.create_data_property(obj, key, value)
 }
 
+/// `CreateDataProperty(O, P, V)` (ECMA-262), using `[[DefineOwnProperty]]` dispatch that can invoke
+/// user code (Proxy traps).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-createdataproperty>
+///
+/// This is host-aware because Proxy `"defineProperty"` traps can invoke user JS.
+pub fn create_data_property_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+  value: Value,
+) -> Result<bool, VmError> {
+  scope.define_own_property_with_host_and_hooks(
+    vm,
+    host,
+    hooks,
+    obj,
+    key,
+    PropertyDescriptorPatch {
+      value: Some(value),
+      writable: Some(true),
+      enumerable: Some(true),
+      configurable: Some(true),
+      ..Default::default()
+    },
+  )
+}
+
+/// `CreateDataPropertyOrThrow(O, P, V)` (ECMA-262), using `[[DefineOwnProperty]]` dispatch that can
+/// invoke user code (Proxy traps).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-createdatapropertyorthrow>
+pub fn create_data_property_or_throw_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+  value: Value,
+) -> Result<(), VmError> {
+  let ok = create_data_property_with_host_and_hooks(vm, scope, host, hooks, obj, key, value)?;
+  if ok {
+    Ok(())
+  } else {
+    Err(VmError::TypeError("CreateDataProperty rejected"))
+  }
+}
+
 /// `CreateDataPropertyOrThrow(O, P, V)` (ECMA-262).
 ///
 /// Spec: <https://tc39.es/ecma262/#sec-createdatapropertyorthrow>
@@ -536,6 +588,26 @@ pub fn delete_property_or_throw(
   key: PropertyKey,
 ) -> Result<(), VmError> {
   scope.delete_property_or_throw(obj, key)
+}
+
+/// `DeletePropertyOrThrow(O, P)` (ECMA-262), using `[[Delete]]` dispatch that can invoke user code
+/// (Proxy traps).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-deletepropertyorthrow>
+pub fn delete_property_or_throw_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  obj: GcObject,
+  key: PropertyKey,
+) -> Result<(), VmError> {
+  let ok = internal_delete_with_host_and_hooks(vm, scope, host, hooks, obj, key)?;
+  if ok {
+    Ok(())
+  } else {
+    Err(VmError::TypeError("DeletePropertyOrThrow rejected"))
+  }
 }
 
 /// `CopyDataProperties(target, source, excludedItems)` (ECMA-262).
