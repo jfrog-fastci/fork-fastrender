@@ -93,8 +93,8 @@ A change counts if it lands at least one of:
 - Modules (import/export syntax support)
 
 **Safety:**
-- Instruction count budgets (`RunLimits.max_instructions`)
-- Wall-clock time limits (`RunLimits.max_wall_time`)
+- Fuel ("tick") budgets (`Budget.fuel`, defaults via `VmOptions.default_fuel`)
+- Wall-clock deadlines (`Budget.deadline`, defaults via `VmOptions.default_deadline`)
 - Interrupt/cancel mechanism
 - Stack overflow prevention
 - No resource leaks on termination
@@ -110,8 +110,8 @@ A change counts if it lands at least one of:
 ### P0: Reliability (scripts don't crash the browser)
 
 1. **Execution budgets**
-   - Instruction count limits (`RunLimits.max_instructions`)
-   - Wall-clock time limits (`RunLimits.max_wall_time`)
+   - Fuel ("tick") limits (`Budget.fuel` / `VmOptions.default_fuel`)
+   - Wall-clock deadlines (`Budget.deadline` / `VmOptions.default_deadline`)
    - Clean interrupt mechanism
    - No resource leaks on termination
 
@@ -213,24 +213,40 @@ timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh test -p test262-sem
 
 ### Key vm-js types
 
+Key public API entry points live in `vendor/ecma-rs/vm-js/src/lib.rs`:
+
+- `Vm`, `VmOptions` — VM + construction-time configuration (default budgets, interrupts, max stack depth, …)
+- `Budget` — per-run execution budget (fuel and/or wall-clock deadline)
+- `Heap`, `HeapLimits`, `Scope`, `RootId` — GC heap + rooting
+- `JsRuntime` — convenience wrapper around `{ vm, heap }` with `exec_script*` entry points
+- `Value`, `GcObject`, `GcString`, … — JS values/handles
+
+#### Budgets (fuel + deadline)
+
 ```rust
-// vendor/ecma-rs/vm-js/src/lib.rs
-pub struct Vm { ... }          // JavaScript VM instance
-pub struct Heap { ... }        // GC heap
-pub struct Value { ... }       // JavaScript value
-pub struct Object { ... }      // JavaScript object
+use std::time::{Duration, Instant};
+use vm_js::{Budget, Vm, VmOptions};
 
-// Execution
-impl Vm {
-    pub fn exec_script(&mut self, source: &str) -> Result<Value, ...>;
-    pub fn call(&mut self, func: Value, this: Value, args: &[Value]) -> Result<Value, ...>;
-}
+// Defaults for a long-lived VM (applied by `Vm::reset_budget_to_default()`).
+let mut vm = Vm::new(VmOptions {
+  default_fuel: Some(1_000_000),
+  // `default_deadline` is relative to when the budget is reset.
+  default_deadline: Some(Duration::from_millis(50)),
+  check_time_every: 100,
+  ..VmOptions::default()
+});
 
-// Budgets
-pub struct RunLimits {
-    pub max_instructions: Option<u64>,
-    pub max_wall_time: Option<Duration>,
-}
+// Per-task override (absolute `Instant` deadline).
+vm.set_budget(Budget {
+  fuel: Some(100_000),
+  deadline: Some(Instant::now() + Duration::from_millis(10)),
+  check_time_every: 1,
+});
+
+// ... run a script/job ...
+
+// Restore the construction defaults (refreshes the deadline relative to "now").
+vm.reset_budget_to_default();
 ```
 
 ### Key files
