@@ -107,9 +107,9 @@ end-to-end:
 - **Find in page**: Ctrl/Cmd+F opens a find bar and highlights matches in the current tab.
 - **Downloads**: “Download link/image” from the page context menu; view progress/cancel/retry/open from the downloads side panel.
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
-- **JavaScript (experimental)**: when enabled, `<script>` runs during navigation and can trigger
-  repaints via DOM mutations; time-based updates use the same tick loop described in
-  [browser_ui.md](browser_ui.md).
+- **JavaScript (experimental)**: the windowed UI worker runs a JS-capable tab runtime by default, so
+  `<script>` runs during navigation and can trigger repaints via DOM mutations; time-based updates
+  use the same tick loop described in [browser_ui.md](browser_ui.md).
 - **Pointer/keyboard routing**:
   - link clicking (`<a href=...>`) navigates
   - click to focus and type into basic text inputs / textareas
