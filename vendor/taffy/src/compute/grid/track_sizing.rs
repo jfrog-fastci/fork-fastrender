@@ -1815,6 +1815,37 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
     AvailableSpace::MinContent => 0.0,
     // Otherwise, if the free space is an indefinite length:
     AvailableSpace::MaxContent => {
+      // Compute prefix sums of other-axis track size estimates. This is used when probing
+      // max-content contributions of flex items under an indefinite sizing constraint to supply an
+      // other-axis available space estimate without iterating each item's spanned tracks.
+      let other_axis = axis.other();
+      let other_axis_available_space = inner_node_size.get(other_axis);
+      let mut other_axis_prefix_sum: Vec<f32> = Vec::with_capacity(other_axis_tracks.len() + 1);
+      let mut other_axis_prefix_none: Vec<u32> = Vec::with_capacity(other_axis_tracks.len() + 1);
+      other_axis_prefix_sum.push(0.0);
+      other_axis_prefix_none.push(0);
+      let mut running_sum = 0.0;
+      let mut running_none = 0u32;
+      for track in other_axis_tracks.iter() {
+        match get_track_size_estimate(track, other_axis_available_space, tree) {
+          Some(v) => {
+            running_sum += v + track.content_alignment_adjustment;
+          }
+          None => running_none += 1,
+        }
+        other_axis_prefix_sum.push(running_sum);
+        other_axis_prefix_none.push(running_none);
+      }
+
+      #[inline(always)]
+      fn sum_range(prefix_sum: &[f32], prefix_none: &[u32], range: core::ops::Range<usize>) -> Option<f32> {
+        if prefix_none[range.end] - prefix_none[range.start] > 0 {
+          None
+        } else {
+          Some(prefix_sum[range.end] - prefix_sum[range.start])
+        }
+      }
+
       // The used flex fraction is the maximum of:
       let flex_fraction = f32_max(
         // For each flexible track, if the flexible track’s flex factor is greater than one,
@@ -1843,10 +1874,20 @@ fn expand_flexible_tracks<Tree: LayoutPartialTree>(
             // we must supply an estimate of the item's available space in the other axis. Otherwise
             // `GridItem::known_dimensions()` cannot apply stretch alignment + aspect-ratio, causing
             // intrinsic contributions to incorrectly collapse to 0.
+            if item.available_space_cache.is_none() {
+              let other_axis_size = sum_range(
+                &other_axis_prefix_sum,
+                &other_axis_prefix_none,
+                item.track_range_excluding_lines(other_axis),
+              );
+              let mut size = Size::NONE;
+              size.set(other_axis, other_axis_size);
+              item.available_space_cache = Some(size);
+            }
             let available_space = item.available_space_cached(
               axis,
               other_axis_tracks,
-              inner_node_size.get(axis.other()),
+              other_axis_available_space,
               |track, basis| get_track_size_estimate(track, basis, tree),
             );
             let max_content_contribution =
