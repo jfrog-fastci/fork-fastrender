@@ -7275,6 +7275,8 @@ impl BrowserRuntime {
     committed_url: &str,
     viewport_css: (u32, u32),
     dpr: f32,
+    timeout: Option<std::time::Duration>,
+    cancel_callback: Option<Arc<crate::render_control::CancelCallback>>,
     debug_log_enabled: bool,
     msgs: &mut Vec<WorkerToUi>,
   ) {
@@ -7340,26 +7342,43 @@ impl BrowserRuntime {
       return;
     };
 
+    let cancel_check = cancel_callback.clone();
+    // If the navigation has already been cancelled/preempted, avoid doing any JS work.
+    if cancel_check.as_ref().is_some_and(|cb| cb()) {
+      tab.js_tab = None;
+      tab.js_dom_mapping_generation = 0;
+      tab.js_dom_mapping = None;
+      tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_dirty = false;
+      tab.js_dom_mutation_generation = 0;
+      return;
+    }
+
     let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
     options.runtime_toggles = Some(Arc::clone(runtime_toggles));
+    options.timeout = timeout;
+    options.cancel_callback = cancel_callback;
+
     let fetcher = doc.fetcher();
     let blank_html =
       "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
 
     if let Some(js_tab) = tab.js_tab.as_mut() {
       if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
+        let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
         tab.js_tab = None;
         tab.js_dom_mapping_generation = 0;
         tab.js_dom_mapping = None;
         tab.js_dom_mapping_miss_log_last.clear();
         tab.js_dom_dirty = false;
         tab.js_dom_mutation_generation = 0;
-        if debug_log_enabled {
+        if debug_log_enabled && !cancelled {
+          let kind = if err.is_timeout() { "timed out" } else { "failed" };
           msgs.push(WorkerToUi::DebugLog {
             tab_id,
-            line: format!("js tab navigation failed: {err}"),
+            line: format!("js tab navigation to {committed_url} {kind}: {err}"),
           });
         }
       } else {
@@ -7374,6 +7393,12 @@ impl BrowserRuntime {
       return;
     }
 
+    // We need to pass the (possibly deadline-bounded) `RenderOptions` into both:
+    // - JS tab construction (which parses the initial HTML), and
+    // - the subsequent navigation.
+    //
+    // This ensures JS-capable navigations are bounded by the same cooperative cancellation/timeout
+    // mechanisms used for renderer navigations.
     let mut js_tab = match BrowserTab::from_html_with_document_url_and_fetcher(
       blank_html,
       about_pages::ABOUT_BLANK,
@@ -7383,10 +7408,12 @@ impl BrowserRuntime {
     ) {
       Ok(tab) => tab,
       Err(err) => {
-        if debug_log_enabled {
+        let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
+        if debug_log_enabled && !cancelled {
+          let kind = if err.is_timeout() { "timed out" } else { "failed" };
           msgs.push(WorkerToUi::DebugLog {
             tab_id,
-            line: format!("failed to create JS tab: {err}"),
+            line: format!("js tab init for {committed_url} {kind}: {err}"),
           });
         }
         return;
@@ -7394,10 +7421,12 @@ impl BrowserRuntime {
     };
 
     if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
-      if debug_log_enabled {
+      let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
+      if debug_log_enabled && !cancelled {
+        let kind = if err.is_timeout() { "timed out" } else { "failed" };
         msgs.push(WorkerToUi::DebugLog {
           tab_id,
-          line: format!("js tab navigation failed: {err}"),
+          line: format!("js tab navigation to {committed_url} {kind}: {err}"),
         });
       }
       return;
@@ -7863,6 +7892,8 @@ impl BrowserRuntime {
             &committed_url,
             viewport_css,
             dpr,
+            options.timeout,
+            options.cancel_callback.clone(),
             self.debug_log_enabled,
             &mut msgs,
           );
@@ -8003,6 +8034,8 @@ impl BrowserRuntime {
       &committed_url,
       viewport_css,
       dpr,
+      options.timeout,
+      options.cancel_callback.clone(),
       self.debug_log_enabled,
       &mut msgs,
     );
@@ -8939,5 +8972,100 @@ mod drain_messages_viewport_coalescing_tests {
     assert!((tab.dpr - 2.0).abs() < 1e-6);
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod js_tab_navigation_deadlines_tests {
+  use super::*;
+
+  #[test]
+  fn js_tab_navigation_cancels_without_logging_when_cancel_callback_trips() {
+    let runtime_toggles = crate::debug::runtime::runtime_toggles();
+    let tab_id = TabId::new();
+
+    let mut tab = TabState::new(CancelGens::new());
+    tab.document = Some(
+      BrowserDocument::from_html(
+        "<!doctype html><html><body>ok</body></html>",
+        RenderOptions::default()
+          .with_viewport(1, 1)
+          .with_device_pixel_ratio(1.0),
+      )
+      .expect("create BrowserDocument"),
+    );
+
+    let cancel_callback: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+
+    let mut msgs = Vec::new();
+    BrowserRuntime::sync_js_tab_for_committed_navigation(
+      &runtime_toggles,
+      tab_id,
+      &mut tab,
+      "data:text/html,ok",
+      (1, 1),
+      1.0,
+      None,
+      Some(cancel_callback),
+      true,
+      &mut msgs,
+    );
+
+    assert!(
+      tab.js_tab.is_none(),
+      "expected js_tab to remain unset when cancellation triggers"
+    );
+    assert!(
+      msgs.is_empty(),
+      "expected cancellation to be silent (no DebugLog), got: {msgs:?}"
+    );
+  }
+
+  #[test]
+  fn js_tab_navigation_timeout_is_plumbed_and_logged() {
+    let runtime_toggles = crate::debug::runtime::runtime_toggles();
+    let tab_id = TabId::new();
+
+    let mut tab = TabState::new(CancelGens::new());
+    tab.document = Some(
+      BrowserDocument::from_html(
+        "<!doctype html><html><body>ok</body></html>",
+        RenderOptions::default()
+          .with_viewport(1, 1)
+          .with_device_pixel_ratio(1.0),
+      )
+      .expect("create BrowserDocument"),
+    );
+
+    let mut msgs = Vec::new();
+    BrowserRuntime::sync_js_tab_for_committed_navigation(
+      &runtime_toggles,
+      tab_id,
+      &mut tab,
+      "data:text/html,ok",
+      (1, 1),
+      1.0,
+      Some(std::time::Duration::from_millis(0)),
+      None,
+      true,
+      &mut msgs,
+    );
+
+    assert!(
+      tab.js_tab.is_none(),
+      "expected js_tab to remain unset when timeout triggers"
+    );
+    let saw_timeout_log = msgs.iter().any(|msg| match msg {
+      WorkerToUi::DebugLog { tab_id: got, line } => {
+        *got == tab_id
+          && (line.contains("js tab init") || line.contains("js tab navigation"))
+          && line.contains("timed out")
+      }
+      _ => false,
+    });
+    assert!(
+      saw_timeout_log,
+      "expected a DebugLog describing the timeout; got: {msgs:?}"
+    );
   }
 }
