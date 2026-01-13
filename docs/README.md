@@ -10,6 +10,7 @@ Browser UI development:
 Multiprocess architecture & security:
 
 - Renderer IPC trust boundary: [`docs/multiprocess_threat_model.md`](multiprocess_threat_model.md)
+- Sandboxing overview (renderer process): [`docs/sandboxing.md`](sandboxing.md)
 - Site isolation process model (per-origin + OOPIF): [`docs/site_isolation.md`](site_isolation.md)
 - Chrome JS bridge (trusted UI pages): [`docs/chrome_js_bridge.md`](chrome_js_bridge.md)
 - Renderer-chrome internal schemes (`chrome://` assets, `chrome-action:` actions): [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md)
