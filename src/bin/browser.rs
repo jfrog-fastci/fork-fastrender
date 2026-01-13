@@ -18317,6 +18317,9 @@ impl App {
             .is_some_and(|rect| rect.contains(pos_points))
           {
             if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
+              // UI-owned clicks inside the overlay should not contribute to page multi-click
+              // sequences (e.g. avoid a later page click being interpreted as a double-click).
+              self.primary_click_sequence = None;
               // Track the press so the corresponding release is also suppressed even if the overlay
               // moves/resizes under the cursor.
               self.media_controls_overlay_pointer_capture = true;
@@ -18340,6 +18343,9 @@ impl App {
           self.cancel_media_controls();
           self.window.request_redraw();
           if clicked_media_element {
+            // The toggle-close click is UI-owned; prevent it from contributing to a later page
+            // multi-click count.
+            self.primary_click_sequence = None;
             // Swallow the matching release event too so the toggle-close click is fully UI-owned
             // (prevents page-side `pointerup`/`mouseup` observers from seeing a partial click).
             self.media_controls_overlay_pointer_capture = true;
