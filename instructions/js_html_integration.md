@@ -313,17 +313,28 @@ impl VmHostHooks for VmJsEventLoopHooks<'_> {
 The event loop follows HTML Standard terminology:
 
 ```rust
-pub struct EventLoop {
-    task_queues: HashMap<TaskSource, VecDeque<Task>>,
-    microtask_queue: VecDeque<Microtask>,
+pub struct EventLoop<Host> {
+    // Runnable work:
+    // - task queues (TaskSource::*),
+    // - microtask queue (Promise jobs, queueMicrotask),
+    // - timers (setTimeout/setInterval) promoted into tasks when due,
+    // - requestIdleCallback callbacks (dispatched as tasks when the loop is otherwise idle).
+    //
+    // Frame callbacks (requestAnimationFrame) are queued separately and must be driven by the host
+    // container's frame/tick loop (e.g. BrowserTab::tick_frame / run_until_stable).
+    task_queues: ...,
+    microtask_queue: ...,
+    timers: ...,
+    animation_frame_callbacks: ...,
+    idle_callbacks: ...,
 }
 
-impl EventLoop {
-    fn run_until_idle(&mut self, limits: RunLimits) {
+impl<Host> EventLoop<Host> {
+    fn run_until_idle(&mut self, host: &mut Host, limits: RunLimits) {
         loop {
-            // 1. Run one task from a task queue
-            // 2. Run all microtasks (microtask checkpoint)
-            // 3. Update rendering if needed
+            // 1. Promote due timers / idle callbacks into tasks
+            // 2. Run one task turn (a task + post-task microtask checkpoint)
+            // 3. If the task queue is empty, the loop is idle
         }
     }
 }
@@ -351,7 +362,7 @@ src/js/
   script_scheduler.rs        — Script scheduling and ordering
   html_classic_scripts.rs    — Classic script handling
   streaming.rs               — Parse-time script handling
-  event_loop.rs              — Task/microtask queues
+  event_loop.rs              — tasks/microtasks/timers + rAF + requestIdleCallback queues
   import_maps/               — Import map parsing and resolution
   realm_module_loader.rs     — Module loading (resolution + fetch + budgets; BrowserTab + vm-js ModuleGraph)
   vmjs/module_loader.rs      — vm-js embedding glue (`VmJsModuleLoader`)
