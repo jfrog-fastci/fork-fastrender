@@ -19940,7 +19940,7 @@ impl App {
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
-              fastrender::interaction::KeyAction::WordSelectLeft
+              fastrender::interaction::KeyAction::ShiftWordLeft
             } else {
               fastrender::interaction::KeyAction::WordLeft
             },
@@ -19954,7 +19954,7 @@ impl App {
           let _ = self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
             tab_id,
             key: if self.modifiers.shift() {
-              fastrender::interaction::KeyAction::WordSelectRight
+              fastrender::interaction::KeyAction::ShiftWordRight
             } else {
               fastrender::interaction::KeyAction::WordRight
             },

@@ -759,6 +759,53 @@ fn word_left_moves_by_word_and_typing_inserts_at_word_boundary() -> Result<()> {
 }
 
 #[test]
+fn shift_word_left_selects_word_and_typing_replaces_it() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="hello world">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input and place caret at end.
+  let click = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::End))?;
+
+  // Ctrl/Cmd/Alt+Shift+ArrowLeft: select the previous word ("world").
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftWordLeft))?;
+  let _ = controller.handle_message(support::text_input(tab_id, "X"))?;
+
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(input.get_attribute_ref("value"), Some("hello X"));
+  Ok(())
+}
+
+#[test]
 fn word_shift_arrow_extends_selection_by_word_in_input() -> Result<()> {
   let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
@@ -800,7 +847,7 @@ fn word_shift_arrow_extends_selection_by_word_in_input() -> Result<()> {
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordRight))?;
 
   // Ctrl/Cmd/Alt+Shift+ArrowRight: select the next word ("world").
-  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectRight))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftWordRight))?;
   let input_id = node_id_by_id_attr(controller.document().dom(), "txt");
   let edit = controller
     .interaction_state()
@@ -810,7 +857,7 @@ fn word_shift_arrow_extends_selection_by_word_in_input() -> Result<()> {
 
   // Collapse back to the word start, then select the previous word.
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
-  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftWordLeft))?;
   let edit = controller
     .interaction_state()
     .text_edit_for(input_id)
@@ -862,7 +909,7 @@ fn word_shift_arrow_extends_selection_by_word_in_textarea() -> Result<()> {
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordRight))?;
 
   // Select the next word ("world").
-  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectRight))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftWordRight))?;
   let ta_id = node_id_by_id_attr(controller.document().dom(), "ta");
   let edit = controller
     .interaction_state()
@@ -872,7 +919,7 @@ fn word_shift_arrow_extends_selection_by_word_in_textarea() -> Result<()> {
 
   // Collapse back to the word start, then select the previous word.
   let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
-  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ShiftWordLeft))?;
   let edit = controller
     .interaction_state()
     .text_edit_for(ta_id)

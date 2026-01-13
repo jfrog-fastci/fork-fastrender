@@ -138,9 +138,9 @@ pub enum KeyAction {
   WordLeft,
   WordRight,
   /// Move caret left by one word boundary, extending selection (Ctrl/Cmd/Alt+Shift+ArrowLeft).
-  WordSelectLeft,
+  ShiftWordLeft,
   /// Move caret right by one word boundary, extending selection (Ctrl/Cmd/Alt+Shift+ArrowRight).
-  WordSelectRight,
+  ShiftWordRight,
   ShiftArrowLeft,
   ShiftArrowRight,
   ShiftArrowUp,
@@ -10924,11 +10924,11 @@ impl InteractionEngine {
         }
         KeyAction::WordLeft
         | KeyAction::WordRight
-        | KeyAction::WordSelectLeft
-        | KeyAction::WordSelectRight => {
-          let move_left = matches!(key, KeyAction::WordLeft | KeyAction::WordSelectLeft);
+        | KeyAction::ShiftWordLeft
+        | KeyAction::ShiftWordRight => {
+          let move_left = matches!(key, KeyAction::WordLeft | KeyAction::ShiftWordLeft);
           let extend_selection =
-            matches!(key, KeyAction::WordSelectLeft | KeyAction::WordSelectRight);
+            matches!(key, KeyAction::ShiftWordLeft | KeyAction::ShiftWordRight);
 
           if let Some((start, end)) = edit.selection().filter(|_| !extend_selection) {
             // When a selection exists and Shift is *not* held, collapse to the edge in the direction
@@ -11802,8 +11802,8 @@ impl InteractionEngine {
       | KeyAction::ArrowRight
       | KeyAction::WordLeft
       | KeyAction::WordRight
-      | KeyAction::WordSelectLeft
-      | KeyAction::WordSelectRight
+      | KeyAction::ShiftWordLeft
+      | KeyAction::ShiftWordRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
       | KeyAction::ShiftArrowUp
@@ -12283,8 +12283,8 @@ impl InteractionEngine {
       | KeyAction::ArrowRight
       | KeyAction::WordLeft
       | KeyAction::WordRight
-      | KeyAction::WordSelectLeft
-      | KeyAction::WordSelectRight
+      | KeyAction::ShiftWordLeft
+      | KeyAction::ShiftWordRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
       | KeyAction::ShiftArrowUp
