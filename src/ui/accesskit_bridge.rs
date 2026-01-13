@@ -50,7 +50,7 @@ pub fn update_accesskit_if_active<A, Tree, Bounds, BuildTree, BuildBounds, Build
   BuildBounds: FnOnce(&Tree) -> Bounds,
   BuildUpdate: FnOnce(Tree, Bounds) -> TreeUpdate,
 {
-  // Keep the expensive work inside the `update_if_active` closure. The AccessKit adapter will only
+  // Keep the expensive work inside the `update_if_active` closure. `accesskit_winit` will only
   // invoke this callback when assistive technology is connected.
   adapter.update_if_active(|| {
     let tree = build_tree();

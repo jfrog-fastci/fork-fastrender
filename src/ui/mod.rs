@@ -119,6 +119,10 @@ pub mod fastrender_accesskit;
 #[cfg(feature = "browser_ui")]
 pub mod page_accesskit_ids;
 
+// Winit ↔ AccessKit adapter wiring helpers (used by the `browser` binary).
+#[cfg(feature = "browser_ui")]
+pub mod accesskit_winit_adapter;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;

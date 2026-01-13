@@ -3849,7 +3849,11 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.insert(
       env_id,
-      EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, document_url), realm.id(), ipc_state),
+      EnvState::new_ipc(
+        WindowWebSocketEnv::for_document(fetcher, document_url),
+        realm.id(),
+        ipc_state,
+      ),
     );
   }
 

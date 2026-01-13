@@ -3189,7 +3189,7 @@ use fastrender::ui::compositor_accessibility as compositor_a11y;
 use fastrender::ui::os_clipboard;
 
 #[cfg(feature = "browser_ui")]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum UserEvent {
   WorkerWake,
   SearchSuggestWake(winit::window::WindowId),
@@ -5833,6 +5833,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         let mut session_dirty_immediate = matches!(event, WindowEvent::Focused(_));
 
+        // Forward window lifecycle/input events to AccessKit.
+        //
+        // `accesskit_winit::Adapter::on_event` is responsible for platform-specific bookkeeping
+        // (for example, on Unix it updates the root window bounds on `Moved`/`Resized`).
+        if let Some(win) = windows.get(&window_id) {
+          let needs_redraw = win
+            .app
+            .accesskit
+            .on_window_event(Some(&win.app.window), &event);
+          if needs_redraw {
+            // `on_event` returns `true` when the adapter needs us to redraw, for example when
+            // assistive technology becomes active and we need to publish a fresh tree update.
+            win.app.window.request_redraw();
+          }
+        }
+
         // Window close is handled specially so we can drop its worker + textures immediately.
         if matches!(event, WindowEvent::CloseRequested) {
           if windows.len() <= 1 {
@@ -8008,7 +8024,7 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
       }
       exts.insert(ext.to_ascii_lowercase());
     }
-  };
+  }
 
   for raw_token in accept.split(',') {
     let token = raw_token.trim();
@@ -8033,6 +8049,14 @@ fn rfd_extensions_from_html_accept(accept: Option<&str>) -> Vec<String> {
 
     match token.as_str() {
       // Wildcard MIME groups.
+      "image/*" => push_all(
+        &mut exts,
+        &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"],
+      ),
+      "text/*" => push_all(
+        &mut exts,
+        &["txt", "md", "markdown", "csv", "json", "xml", "html", "htm"],
+      ),
       "image/*" => push_all(
         &mut exts,
         &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg"],
@@ -9836,6 +9860,7 @@ struct App {
 
   egui_ctx: egui::Context,
   egui_state: egui_winit::State,
+  accesskit: fastrender::ui::accesskit_winit_adapter::AccessKitWinitAdapter,
   egui_renderer: egui_wgpu::Renderer,
   /// Window/system scale factor (physical pixels per egui point) reported by winit.
   ///
@@ -10624,6 +10649,27 @@ impl App {
 
     let egui_ctx = new_browser_egui_context(pixels_per_point);
     let egui_state = egui_winit::State::new(event_loop);
+    let accesskit = match &chrome_a11y {
+      ChromeA11yBackend::Egui => {
+        // Enable generation of `PlatformOutput::accesskit_update` so we can forward egui's
+        // `accesskit::TreeUpdate` values into the platform-facing `accesskit_winit::Adapter`.
+        //
+        // `Adapter::update_if_active` will avoid touching platform accessibility APIs when no
+        // assistive technology is active, but egui still needs to build the tree update when this
+        // is enabled.
+        egui_ctx.enable_accesskit();
+        fastrender::ui::accesskit_winit_adapter::AccessKitWinitAdapter::new(
+          &window,
+          &egui_ctx,
+          event_loop_proxy.clone(),
+        )
+      }
+      ChromeA11yBackend::FastRender(_) => {
+        // Renderer-chrome uses its own AccessKit adapter; avoid creating a second one for the same
+        // window.
+        fastrender::ui::accesskit_winit_adapter::AccessKitWinitAdapter::disabled()
+      }
+    };
 
     let theme_override = match applied_appearance.theme {
       fastrender::ui::theme_parsing::BrowserTheme::Light => {
@@ -10782,6 +10828,7 @@ impl App {
       log_surface_configure,
       egui_ctx,
       egui_state,
+      accesskit,
       egui_renderer,
       system_pixels_per_point,
       ui_scale,
@@ -12643,7 +12690,7 @@ impl App {
     multiple: bool,
     accept: Option<String>,
   ) {
-    let tx = self.renderer_backend.clone();
+    let renderer_backend = self.renderer_backend.clone();
     let cancel: Option<fastrender::ui::cancel::CancelGens> = self.tab_cancel.get(&tab_id).cloned();
 
     let spawn_result = std::thread::Builder::new()
@@ -12678,7 +12725,7 @@ impl App {
           cancel.bump_paint();
         }
         // Best-effort: the UI may have already shut down.
-        let _ = tx.send(msg);
+        let _ = renderer_backend.send(msg);
       });
 
     if let Err(err) = spawn_result {
@@ -16268,8 +16315,7 @@ impl App {
             &action,
           );
           if result.bookmarks_changed {
-            self.autosave_bookmarks();
-            self.sync_about_newtab_bookmarks_snapshot();
+            self.record_bookmark_deltas(result.bookmark_deltas, false);
           }
         }
       }
@@ -16286,8 +16332,7 @@ impl App {
           &action,
         );
         if result.bookmarks_changed {
-          self.autosave_bookmarks();
-          self.sync_about_newtab_bookmarks_snapshot();
+          self.record_bookmark_deltas(result.bookmark_deltas, false);
         }
       }
       PageContextMenuAction::ToggleHistoryPanel => {
@@ -16300,8 +16345,7 @@ impl App {
           &action,
         );
         if result.bookmarks_changed {
-          self.autosave_bookmarks();
-          self.sync_about_newtab_bookmarks_snapshot();
+          self.record_bookmark_deltas(result.bookmark_deltas, false);
         }
       }
       PageContextMenuAction::ToggleBookmarksPanel => {
@@ -21146,10 +21190,13 @@ impl App {
   }
 
   fn handle_accesskit_action_request(&mut self, request: accesskit::ActionRequest) {
-    // Egui-driven accessibility actions are handled internally by egui-winit; we only need to
-    // implement action routing for the compositor (renderer-chrome) backend.
-    if !matches!(&self.chrome_a11y, ChromeA11yBackend::FastRender(_)) {
-      return;
+    match &self.chrome_a11y {
+      ChromeA11yBackend::Egui => {
+        // Feed the action request into egui so widgets can respond (e.g. focus, click).
+        self.egui_state.on_accesskit_action_request(request);
+        return;
+      }
+      ChromeA11yBackend::FastRender(_) => {}
     }
 
     fn is_scroll_action(action: accesskit::Action) -> bool {
@@ -22829,6 +22876,9 @@ impl App {
       }
     }
 
+    if let Some(accesskit_update) = platform_output.accesskit_update.take() {
+      self.accesskit.update(accesskit_update);
+    }
     self
       .egui_state
       .handle_platform_output(&self.window, &self.egui_ctx, platform_output);
