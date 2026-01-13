@@ -112,7 +112,7 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
   };
 
   ui_tx
-    .send(UiToWorker::AccessKitAction { tab_id, request })
+    .send(UiToWorker::AccessKitActionRequest { tab_id, request })
     .expect("AccessKitAction");
 
   // The target element is at 1500px; a scroll-into-view request should scroll the viewport down so
@@ -148,4 +148,3 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
   drop(ui_tx);
   join.join().expect("join ui worker");
 }
-

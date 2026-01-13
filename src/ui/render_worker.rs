@@ -3015,8 +3015,8 @@ impl BrowserRuntime {
         }
       }
       #[cfg(feature = "browser_ui")]
-      UiToWorker::AccessKitAction { tab_id, request } => {
-        self.handle_accesskit_action(tab_id, request);
+      UiToWorker::AccessKitActionRequest { tab_id, request } => {
+        self.handle_accesskit_action_request(tab_id, request);
       }
       UiToWorker::PointerMove {
         tab_id,
@@ -3293,7 +3293,7 @@ impl BrowserRuntime {
   }
 
   #[cfg(feature = "browser_ui")]
-  fn handle_accesskit_action(&mut self, tab_id: TabId, request: accesskit::ActionRequest) {
+  fn handle_accesskit_action_request(&mut self, tab_id: TabId, request: accesskit::ActionRequest) {
     // Currently we only support scroll-related accessibility actions. The goal is to let assistive
     // technologies request that a node becomes visible without having to focus it.
     match request.action {

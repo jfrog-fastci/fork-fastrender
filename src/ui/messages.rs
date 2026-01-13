@@ -466,7 +466,7 @@ pub enum UiToWorker {
   /// technologies to request operations (for example scrolling a node into view) without going
   /// through the normal pointer/keyboard focus pipeline.
   #[cfg(feature = "browser_ui")]
-  AccessKitAction {
+  AccessKitActionRequest {
     tab_id: TabId,
     request: accesskit::ActionRequest,
   },

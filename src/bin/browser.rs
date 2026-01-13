@@ -11228,7 +11228,9 @@ impl App {
     // actions, etc).
     if matches!(
       &msg,
-      UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. } | UiToWorker::AccessKitAction { .. }
+      UiToWorker::Scroll { .. }
+        | UiToWorker::ScrollTo { .. }
+        | UiToWorker::AccessKitActionRequest { .. }
     ) {
       self
         .overlay_scrollbar_visibility
@@ -11253,7 +11255,7 @@ impl App {
       | UiToWorker::ViewportChanged { tab_id, .. }
       | UiToWorker::Scroll { tab_id, .. }
       | UiToWorker::ScrollTo { tab_id, .. }
-      | UiToWorker::AccessKitAction { tab_id, .. }
+      | UiToWorker::AccessKitActionRequest { tab_id, .. }
       | UiToWorker::PointerMove { tab_id, .. }
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
@@ -11376,7 +11378,7 @@ impl App {
           | UiToWorker::ViewportChanged { .. }
           | UiToWorker::Scroll { .. }
           | UiToWorker::ScrollTo { .. }
-          | UiToWorker::AccessKitAction { .. }
+          | UiToWorker::AccessKitActionRequest { .. }
           | UiToWorker::PointerMove { .. }
           | UiToWorker::PointerDown { .. }
           | UiToWorker::PointerUp { .. }
