@@ -878,17 +878,45 @@ mod disk_cache_main {
     let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
   }
 
+  fn merge_media_destination(current: FetchDestination, incoming: FetchDestination) -> FetchDestination {
+    match (current, incoming) {
+      // If we discover the same URL for both <video> and <audio>, prefer the video request profile
+      // (arbitrary but stable).
+      (FetchDestination::Video, _) | (_, FetchDestination::Video) => FetchDestination::Video,
+      (FetchDestination::Audio, _) | (_, FetchDestination::Audio) => FetchDestination::Audio,
+      // Fallback: keep the more specific destination when possible.
+      (_, incoming) => incoming,
+    }
+  }
+
   fn record_media_candidate(
     all: &RefCell<BTreeSet<String>>,
-    set: &mut BTreeSet<String>,
+    set: &mut BTreeMap<String, FetchDestination>,
     url: &str,
+    destination: FetchDestination,
     max_total: usize,
     max_set: usize,
   ) {
     let Some(normalized) = normalize_prefetch_url(url) else {
       return;
     };
-    let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
+    if max_set != 0 && set.len() >= max_set && !set.contains_key(&normalized) {
+      return;
+    }
+    if let Some(existing) = set.get_mut(&normalized) {
+      *existing = merge_media_destination(*existing, destination);
+      return;
+    }
+    {
+      let mut all_urls = all.borrow_mut();
+      if !all_urls.contains(&normalized) {
+        if max_total != 0 && all_urls.len() >= max_total {
+          return;
+        }
+        all_urls.insert(normalized.clone());
+      }
+    }
+    set.insert(normalized, destination);
   }
 
   fn link_rel_is_icon_candidate(rel_tokens: &[String]) -> bool {
@@ -1481,7 +1509,7 @@ mod disk_cache_main {
     all: &RefCell<BTreeSet<String>>,
     html: &str,
     base_url: &str,
-    out: &mut BTreeSet<String>,
+    out: &mut BTreeMap<String, FetchDestination>,
     max_total: usize,
   ) {
     // Keep worst-case work bounded for pages that embed many media tags.
@@ -1510,24 +1538,39 @@ mod disk_cache_main {
       if inserted >= MAX_MEDIA_SOURCES_PER_PAGE {
         break;
       }
-      let raw = caps
+      let (raw, destination) = if let Some(raw) = caps
         .get(1)
         .or_else(|| caps.get(2))
         .or_else(|| caps.get(3))
-        .or_else(|| caps.get(4))
+        .map(|m| m.as_str())
+      {
+        (raw, FetchDestination::Video)
+      } else if let Some(raw) = caps
+        .get(4)
         .or_else(|| caps.get(5))
         .or_else(|| caps.get(6))
-        .or_else(|| caps.get(7))
+        .map(|m| m.as_str())
+      {
+        (raw, FetchDestination::Audio)
+      } else if let Some(raw) = caps
+        .get(7)
         .or_else(|| caps.get(8))
         .or_else(|| caps.get(9))
         .map(|m| m.as_str())
-        .unwrap_or("");
+      {
+        // `<source>` can also appear inside `<picture>`. When we fall back to regex-based scanning
+        // (DOM parse failed), we cannot reliably determine its context, so default to the `<video>`
+        // request profile to keep behavior deterministic.
+        (raw, FetchDestination::Video)
+      } else {
+        continue;
+      };
       if trim_ascii_whitespace(raw).is_empty() {
         continue;
       }
       if let Some(resolved) = resolve_href(base_url, raw) {
         let before = out.len();
-        record_media_candidate(all, out, &resolved, max_total, max_total);
+        record_media_candidate(all, out, &resolved, destination, max_total, max_total);
         if out.len() > before {
           inserted += 1;
         }
@@ -1539,14 +1582,14 @@ mod disk_cache_main {
     all: &RefCell<BTreeSet<String>>,
     dom: &DomNode,
     base_url: &str,
-    out: &mut BTreeSet<String>,
+    out: &mut BTreeMap<String, FetchDestination>,
     max_total: usize,
   ) {
     // Keep worst-case work bounded for pages that embed many <video>/<audio> tags with many
     // <source> children.
     const MAX_MEDIA_SOURCES_PER_PAGE: usize = 64;
 
-    let mut stack: Vec<(&DomNode, bool)> = vec![(dom, false)];
+    let mut stack: Vec<(&DomNode, Option<FetchDestination>)> = vec![(dom, None)];
     let mut inserted = 0usize;
 
     while let Some((node, in_media)) = stack.pop() {
@@ -1559,30 +1602,60 @@ mod disk_cache_main {
 
       let mut child_in_media = in_media;
       if let Some(tag) = node.tag_name() {
-        if tag.eq_ignore_ascii_case("video") || tag.eq_ignore_ascii_case("audio") {
-          child_in_media = true;
+        if tag.eq_ignore_ascii_case("video") {
+          child_in_media = Some(FetchDestination::Video);
           if let Some(src) = node
             .get_attribute_ref("src")
             .filter(|value| !trim_ascii_whitespace(value).is_empty())
           {
             if let Some(resolved) = resolve_href(base_url, src) {
               let before = out.len();
-              record_media_candidate(all, out, &resolved, max_total, max_total);
+              record_media_candidate(
+                all,
+                out,
+                &resolved,
+                FetchDestination::Video,
+                max_total,
+                max_total,
+              );
               if out.len() > before {
                 inserted += 1;
               }
             }
           }
-        } else if child_in_media && tag.eq_ignore_ascii_case("source") {
+        } else if tag.eq_ignore_ascii_case("audio") {
+          child_in_media = Some(FetchDestination::Audio);
           if let Some(src) = node
             .get_attribute_ref("src")
             .filter(|value| !trim_ascii_whitespace(value).is_empty())
           {
             if let Some(resolved) = resolve_href(base_url, src) {
               let before = out.len();
-              record_media_candidate(all, out, &resolved, max_total, max_total);
+              record_media_candidate(
+                all,
+                out,
+                &resolved,
+                FetchDestination::Audio,
+                max_total,
+                max_total,
+              );
               if out.len() > before {
                 inserted += 1;
+              }
+            }
+          }
+        } else if let Some(destination) = child_in_media {
+          if tag.eq_ignore_ascii_case("source") {
+            if let Some(src) = node
+              .get_attribute_ref("src")
+              .filter(|value| !trim_ascii_whitespace(value).is_empty())
+            {
+              if let Some(resolved) = resolve_href(base_url, src) {
+                let before = out.len();
+                record_media_candidate(all, out, &resolved, destination, max_total, max_total);
+                if out.len() > before {
+                  inserted += 1;
+                }
               }
             }
           }
@@ -2409,7 +2482,7 @@ mod disk_cache_main {
 
     let mut image_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_image_urls: BTreeMap<String, CrossOriginAttribute> = BTreeMap::new();
-    let mut media_urls: BTreeSet<String> = BTreeSet::new();
+    let mut media_urls: BTreeMap<String, FetchDestination> = BTreeMap::new();
     let mut script_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_script_urls: BTreeMap<String, CorsMode> = BTreeMap::new();
     let mut document_urls: BTreeSet<String> = BTreeSet::new();
@@ -2917,7 +2990,7 @@ mod disk_cache_main {
         .report
         .media
         .discovered
-        .extend(media_urls.iter().cloned());
+        .extend(media_urls.keys().cloned());
       summary
         .report
         .scripts
@@ -3055,7 +3128,7 @@ mod disk_cache_main {
       let mut remaining_budget = page_cap;
 
       let mut summary = summary.borrow_mut();
-      for url in &media_urls {
+      for (url, destination) in &media_urls {
         if page_cap != 0 && remaining_budget == 0 {
           summary.skipped_media += 1;
           summary
@@ -3080,7 +3153,7 @@ mod disk_cache_main {
 
         // When both limits are disabled, do a single fetch just like other asset types.
         if max_allowed == u64::MAX {
-          let mut request = FetchRequest::new(url.as_str(), FetchDestination::Other)
+          let mut request = FetchRequest::new(url.as_str(), *destination)
             .with_referrer_url(base_hint)
             .with_referrer_policy(referrer_policy);
           if let Some(origin) = document_origin.as_ref() {
@@ -3107,7 +3180,7 @@ mod disk_cache_main {
           .saturating_add(1)
           .min(usize::MAX as u64) as usize;
 
-        let mut probe_request = FetchRequest::new(url.as_str(), FetchDestination::Other)
+        let mut probe_request = FetchRequest::new(url.as_str(), *destination)
           .with_referrer_url(base_hint)
           .with_referrer_policy(referrer_policy);
         if let Some(origin) = document_origin.as_ref() {
@@ -3167,7 +3240,7 @@ mod disk_cache_main {
           remaining_budget = remaining_budget.saturating_sub(probe_size);
         }
 
-        let mut request = FetchRequest::new(url.as_str(), FetchDestination::Other)
+        let mut request = FetchRequest::new(url.as_str(), *destination)
           .with_referrer_url(base_hint)
           .with_referrer_policy(referrer_policy);
         if let Some(origin) = document_origin.as_ref() {

@@ -1338,7 +1338,7 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&media, FetchDestination::Other))
+      .fetch_with_request(FetchRequest::new(&media, FetchDestination::Video))
       .is_err(),
     "video src should not be cached without --prefetch-media"
   );
@@ -1399,6 +1399,14 @@ fn prefetch_assets_warms_disk_cache_with_media_sources_when_enabled() {
     (b"dummy-media-webm".to_vec(), "video/webm"),
   );
   responses.insert(
+    "/audio.mp3".to_string(),
+    (b"dummy-audio-mp3".to_vec(), "audio/mpeg"),
+  );
+  responses.insert(
+    "/audio.ogg".to_string(),
+    (b"dummy-audio-ogg".to_vec(), "audio/ogg"),
+  );
+  responses.insert(
     "/__shutdown__".to_string(),
     (b"shutdown".to_vec(), "text/plain"),
   );
@@ -1407,7 +1415,13 @@ fn prefetch_assets_warms_disk_cache_with_media_sources_when_enabled() {
     listener,
     Arc::clone(&hits),
     responses,
-    vec!["/media.mp4", "/media.webm", "/__shutdown__"],
+    vec![
+      "/media.mp4",
+      "/media.webm",
+      "/audio.mp3",
+      "/audio.ogg",
+      "/__shutdown__",
+    ],
   );
 
   let tmp = TempDir::new().expect("tempdir");
@@ -1423,6 +1437,8 @@ fn prefetch_assets_warms_disk_cache_with_media_sources_when_enabled() {
     "<!doctype html><html><body>\
       <video src=\"/media.mp4\"></video>\
       <video><source src=\"/media.webm\"></video>\
+      <audio src=\"/audio.mp3\"></audio>\
+      <audio><source src=\"/audio.ogg\"></audio>\
     </body></html>",
   )
   .expect("write html cache");
@@ -1456,6 +1472,8 @@ fn prefetch_assets_warms_disk_cache_with_media_sources_when_enabled() {
 
   let mp4 = format!("http://{}/media.mp4", addr);
   let webm = format!("http://{}/media.webm", addr);
+  let mp3 = format!("http://{}/audio.mp3", addr);
+  let ogg = format!("http://{}/audio.ogg", addr);
 
   let offline = DiskCachingFetcher::with_configs(
     FailFetcher,
@@ -1472,20 +1490,34 @@ fn prefetch_assets_warms_disk_cache_with_media_sources_when_enabled() {
 
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&mp4, FetchDestination::Other))
+      .fetch_with_request(FetchRequest::new(&mp4, FetchDestination::Video))
       .is_ok(),
     "video src should be cached when --prefetch-media is enabled"
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&webm, FetchDestination::Other))
+      .fetch_with_request(FetchRequest::new(&webm, FetchDestination::Video))
       .is_ok(),
     "video <source src> should be cached when --prefetch-media is enabled"
+  );
+  assert!(
+    offline
+      .fetch_with_request(FetchRequest::new(&mp3, FetchDestination::Audio))
+      .is_ok(),
+    "audio src should be cached when --prefetch-media is enabled"
+  );
+  assert!(
+    offline
+      .fetch_with_request(FetchRequest::new(&ogg, FetchDestination::Audio))
+      .is_ok(),
+    "audio <source src> should be cached when --prefetch-media is enabled"
   );
 
   let hits = hits.lock().unwrap();
   assert!(hits.get("/media.mp4").copied().unwrap_or(0) > 0);
   assert!(hits.get("/media.webm").copied().unwrap_or(0) > 0);
+  assert!(hits.get("/audio.mp3").copied().unwrap_or(0) > 0);
+  assert!(hits.get("/audio.ogg").copied().unwrap_or(0) > 0);
 }
 
 #[test]
