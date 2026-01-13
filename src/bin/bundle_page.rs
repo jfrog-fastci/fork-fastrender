@@ -138,6 +138,8 @@ fn default_credentials_mode_for_destination(destination: FetchDestination) -> Fe
     FetchDestination::Fetch
     | FetchDestination::Font
     | FetchDestination::ImageCors
+    | FetchDestination::VideoCors
+    | FetchDestination::AudioCors
     | FetchDestination::StyleCors
     | FetchDestination::ScriptCors => FetchCredentialsMode::SameOrigin,
     _ => FetchCredentialsMode::Include,
@@ -1680,6 +1682,36 @@ fn placeholder_resource(
       res.access_control_allow_credentials = true;
       res
     }
+    FetchDestination::Video => FetchedResource::with_final_url(
+      Vec::new(),
+      Some("video/mp4".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::VideoCors => {
+      let mut res = FetchedResource::with_final_url(
+        Vec::new(),
+        Some("video/mp4".to_string()),
+        Some(url.to_string()),
+      );
+      res.access_control_allow_origin = Some(allow_origin.clone());
+      res.access_control_allow_credentials = true;
+      res
+    }
+    FetchDestination::Audio => FetchedResource::with_final_url(
+      Vec::new(),
+      Some("audio/mpeg".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::AudioCors => {
+      let mut res = FetchedResource::with_final_url(
+        Vec::new(),
+        Some("audio/mpeg".to_string()),
+        Some(url.to_string()),
+      );
+      res.access_control_allow_origin = Some(allow_origin.clone());
+      res.access_control_allow_credentials = true;
+      res
+    }
     FetchDestination::Font => {
       let mut res = FetchedResource::with_final_url(
         offline_placeholder_woff2_bytes().to_vec(),
@@ -2425,6 +2457,8 @@ fn crawl_document(
         destination,
         FetchDestination::Font
           | FetchDestination::ImageCors
+          | FetchDestination::VideoCors
+          | FetchDestination::AudioCors
           | FetchDestination::StyleCors
           | FetchDestination::ScriptCors
       ) {
@@ -2513,6 +2547,10 @@ fn crawl_document(
       FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
+      FetchDestination::Video
+      | FetchDestination::VideoCors
+      | FetchDestination::Audio
+      | FetchDestination::AudioCors => Ok(()),
       FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe => {
         ensure_http_success(&res, &url).and_then(|_| {
           if document_response_looks_like_html(&res, &url) {
