@@ -193,6 +193,23 @@ struct FetchArgs {
   #[arg(long, action = ArgAction::SetTrue)]
   bundle_scripts: bool,
 
+  /// Prefetch media assets referenced from HTML (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) when crawling.
+  ///
+  /// This is only used when `--no-render` is enabled, or when `--bundle-scripts`/`--prefetch-media`
+  /// forces a crawl pass after rendering.
+  ///
+  /// Media files can be large; see `--prefetch-media-max-bytes` and `--prefetch-media-max-total-bytes`.
+  #[arg(long, action = ArgAction::SetTrue, alias = "include-media")]
+  prefetch_media: bool,
+
+  /// Maximum bytes to download per media asset when `--prefetch-media` is enabled (0 disables the cap).
+  #[arg(long, default_value_t = DEFAULT_PREFETCH_MEDIA_MAX_BYTES)]
+  prefetch_media_max_bytes: usize,
+
+  /// Maximum total bytes to download across all media assets when `--prefetch-media` is enabled (0 disables the cap).
+  #[arg(long, default_value_t = DEFAULT_PREFETCH_MEDIA_MAX_TOTAL_BYTES)]
+  prefetch_media_max_total_bytes: usize,
+
   /// Per-request fetch timeout (seconds).
   ///
   /// This bounds network I/O while crawling large pages. Omit to use the default
@@ -284,6 +301,20 @@ struct CacheArgs {
   /// bundle size.
   #[arg(long, action = ArgAction::SetTrue)]
   bundle_scripts: bool,
+
+  /// Prefetch media assets referenced from HTML (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) when crawling.
+  ///
+  /// Media files can be large; see `--prefetch-media-max-bytes` and `--prefetch-media-max-total-bytes`.
+  #[arg(long, action = ArgAction::SetTrue, alias = "include-media")]
+  prefetch_media: bool,
+
+  /// Maximum bytes to download per media asset when `--prefetch-media` is enabled (0 disables the cap).
+  #[arg(long, default_value_t = DEFAULT_PREFETCH_MEDIA_MAX_BYTES)]
+  prefetch_media_max_bytes: usize,
+
+  /// Maximum total bytes to download across all media assets when `--prefetch-media` is enabled (0 disables the cap).
+  #[arg(long, default_value_t = DEFAULT_PREFETCH_MEDIA_MAX_TOTAL_BYTES)]
+  prefetch_media_max_total_bytes: usize,
 
   /// Viewport size as WxH (e.g., 1200x800)
   #[arg(long, value_parser = parse_viewport, default_value = "1200x800")]
@@ -550,6 +581,49 @@ impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
               .with_referrer_policy(req.referrer_policy)
               .with_credentials_mode(req.credentials_mode);
             if let Ok(res) = self.inner.fetch_with_request(retry) {
+              return Ok(res);
+            }
+          }
+        }
+
+        Err(err)
+      }
+    }
+  }
+
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    match self.inner.fetch_partial_with_request(req, max_bytes) {
+      Ok(res) => Ok(res),
+      Err(err) => {
+        if Self::is_http_like(req.url) {
+          let retries: &[FetchDestination] = match req.destination {
+            FetchDestination::Other => &[
+              FetchDestination::Image,
+              FetchDestination::ImageCors,
+              FetchDestination::Font,
+              FetchDestination::Style,
+            ],
+            FetchDestination::Image => &[FetchDestination::ImageCors],
+            FetchDestination::ImageCors => &[FetchDestination::Image],
+            _ => &[],
+          };
+
+          for dest in retries {
+            let mut retry = FetchRequest::new(req.url, *dest);
+            if let Some(origin) = req.client_origin {
+              retry = retry.with_client_origin(origin);
+            }
+            if let Some(referrer) = req.referrer_url {
+              retry = retry.with_referrer_url(referrer);
+            }
+            retry = retry
+              .with_referrer_policy(req.referrer_policy)
+              .with_credentials_mode(req.credentials_mode);
+            if let Ok(res) = self.inner.fetch_partial_with_request(retry, max_bytes) {
               return Ok(res);
             }
           }
@@ -974,6 +1048,10 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
   };
   let recording = RecordingFetcher::new(http);
   let (prepared, document_resource) = fetch_document(&recording, &args.url)?;
+  let media_limits = MediaPrefetchLimits {
+    max_asset_bytes: args.prefetch_media_max_bytes,
+    max_total_bytes: args.prefetch_media_max_total_bytes,
+  };
 
   if args.no_render {
     crawl_document(
@@ -982,6 +1060,8 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
       &render,
       CrawlMode::BestEffort,
       args.bundle_scripts,
+      args.prefetch_media,
+      media_limits,
     )?;
 
     let recorded = recording.snapshot();
@@ -1030,13 +1110,15 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
   // Render once to ensure all subresources are fetched and cached.
   let _ = render_fetched_document(&mut renderer, &document_resource, Some(&args.url), &options)?;
 
-  if args.bundle_scripts {
+  if args.bundle_scripts || args.prefetch_media {
     crawl_document(
       &recording,
       &prepared,
       &render,
       CrawlMode::BestEffort,
       args.bundle_scripts,
+      args.prefetch_media,
+      media_limits,
     )?;
   }
 
@@ -1184,12 +1266,18 @@ fn cache_bundle_disk_cache(args: CacheArgs) -> Result<()> {
   } else {
     CrawlMode::Strict
   };
+  let media_limits = MediaPrefetchLimits {
+    max_asset_bytes: args.prefetch_media_max_bytes,
+    max_total_bytes: args.prefetch_media_max_total_bytes,
+  };
   crawl_document(
     &recording,
     &prepared,
     &render,
     crawl_mode,
     args.bundle_scripts,
+    args.prefetch_media,
+    media_limits,
   )?;
 
   let recorded = recording.snapshot();
@@ -1623,6 +1711,29 @@ fn apply_full_page_env(full_page: bool) {
   }
 }
 
+// Keep offline bundles tractable by bounding how much media we prefetch when crawling without
+// rendering. These defaults are intentionally small because `<video>`/`<audio>` sources can be
+// extremely large compared to typical fixture assets.
+const DEFAULT_PREFETCH_MEDIA_MAX_BYTES: usize = 2_000_000;
+const DEFAULT_PREFETCH_MEDIA_MAX_TOTAL_BYTES: usize = 10_000_000;
+
+#[derive(Clone, Copy, Debug)]
+struct MediaPrefetchLimits {
+  /// Per-asset cap in bytes (0 disables the cap).
+  max_asset_bytes: usize,
+  /// Total cap across all media assets in bytes (0 disables the cap).
+  max_total_bytes: usize,
+}
+
+impl Default for MediaPrefetchLimits {
+  fn default() -> Self {
+    Self {
+      max_asset_bytes: DEFAULT_PREFETCH_MEDIA_MAX_BYTES,
+      max_total_bytes: DEFAULT_PREFETCH_MEDIA_MAX_TOTAL_BYTES,
+    }
+  }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum CrawlMode {
   /// Preserve historical behavior: warn and skip missing resources.
@@ -1782,6 +1893,8 @@ fn crawl_document(
   render: &BundleRenderConfig,
   mode: CrawlMode,
   bundle_scripts: bool,
+  prefetch_media: bool,
+  media_limits: MediaPrefetchLimits,
 ) -> Result<()> {
   fn html_has_style_tag(html: &str) -> bool {
     let bytes = html.as_bytes();
@@ -2243,6 +2356,7 @@ fn crawl_document(
     images: html_image_urls,
     media: html_media_urls,
     documents: html_documents,
+    media: html_media_urls,
   } =
     fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
   if matches!(mode, CrawlMode::BestEffort) {
@@ -2425,11 +2539,30 @@ fn crawl_document(
     );
   }
 
+  if prefetch_media {
+    for url in html_media_urls {
+      enqueue_unique(
+        &mut queue,
+        &mut seen_urls,
+        &mut queued,
+        url,
+        FetchDestination::Other,
+        FetchCredentialsMode::Include,
+        root_referrer,
+        root_client_origin.as_ref(),
+        root_referrer_policy,
+        root_referrer,
+        root_referrer_policy,
+      );
+    }
+  }
+
   const MAX_CRAWL_URLS: usize = 10_000;
   // Keep offline bundles tractable by avoiding multi-megabyte image downloads becoming part of the
   // deterministic fixture. The HTML/CSS rewrite step will still produce local references for these
   // URLs, but the stored bytes are replaced with a deterministic 1x1 PNG placeholder.
   const MAX_CRAWL_IMAGE_BYTES: usize = 1_000_000;
+  let mut media_bytes_downloaded: usize = 0;
   while let Some(entry) = queue.pop_front() {
     let CrawlQueueEntry {
       url,
@@ -2491,23 +2624,87 @@ fn crawl_document(
     if let Some(origin) = client_origin.as_ref() {
       req = req.with_client_origin(origin);
     }
-    let res = match fetcher.fetch_with_request(req) {
-      Ok(res) => res,
-      Err(err) => {
-        handle_crawl_failure(
-          fetcher,
-          &mut fetch_errors,
-          &url,
-          destination,
-          &referrer_url,
-          client_origin.as_ref(),
-          &err,
-          mode,
+    let is_media_prefetch = prefetch_media && destination == FetchDestination::Other;
+    let res = if is_media_prefetch {
+      let remaining_total = if media_limits.max_total_bytes == 0 {
+        usize::MAX
+      } else {
+        media_limits
+          .max_total_bytes
+          .saturating_sub(media_bytes_downloaded)
+      };
+      if remaining_total == 0 {
+        eprintln!(
+          "Warning: media prefetch byte budget exceeded (max_total_bytes={}); skipping {url}",
+          media_limits.max_total_bytes
         );
-        if matches!(mode, CrawlMode::AllowMissing) {
-          fetched_urls.insert(fetch_key);
-        }
+        fetched_urls.insert(fetch_key);
         continue;
+      }
+      let per_asset_cap = if media_limits.max_asset_bytes == 0 {
+        usize::MAX
+      } else {
+        media_limits.max_asset_bytes
+      };
+      let cap = per_asset_cap.min(remaining_total);
+      if cap == 0 {
+        eprintln!(
+          "Warning: media prefetch byte budget exceeded (max_bytes={}); skipping {url}",
+          media_limits.max_asset_bytes
+        );
+        fetched_urls.insert(fetch_key);
+        continue;
+      }
+
+      // Use a prefix fetch to avoid downloading potentially large media into the bundle.
+      let max_fetch = cap.saturating_add(1);
+      let res = match fetcher.inner.fetch_partial_with_request(req, max_fetch) {
+        Ok(res) => res,
+        Err(err) => {
+          handle_crawl_failure(
+            fetcher,
+            &mut fetch_errors,
+            &url,
+            destination,
+            &referrer_url,
+            client_origin.as_ref(),
+            &err,
+            mode,
+          );
+          if matches!(mode, CrawlMode::AllowMissing) {
+            fetched_urls.insert(fetch_key);
+          }
+          continue;
+        }
+      };
+      if res.bytes.len() > cap {
+        eprintln!(
+          "Warning: skipping large media subresource {url} ({} bytes > cap {cap})",
+          res.bytes.len()
+        );
+        fetched_urls.insert(fetch_key);
+        continue;
+      }
+      res
+    } else {
+      match fetcher.fetch_with_request(req) {
+        Ok(res) => res,
+        Err(err) => {
+          handle_crawl_failure(
+            fetcher,
+            &mut fetch_errors,
+            &url,
+            destination,
+            &referrer_url,
+            client_origin.as_ref(),
+            &err,
+            mode,
+          );
+          if matches!(mode, CrawlMode::AllowMissing) {
+            fetched_urls.insert(fetch_key);
+          }
+          continue;
+        }
       }
     };
 
@@ -2580,6 +2777,34 @@ fn crawl_document(
         mode,
       );
       continue;
+    }
+
+    if is_media_prefetch {
+      // The media prefetch path bypasses `RecordingFetcher::fetch_with_request` so we can use
+      // `fetch_partial_with_request` against the underlying fetcher. Record the accepted bytes now
+      // so they end up in the bundle manifest.
+      media_bytes_downloaded = media_bytes_downloaded.saturating_add(res.bytes.len());
+      fetcher.record_override(&url, res.clone());
+      if let Some(vary) = res.vary.as_deref().filter(|v| *v != "*") {
+        let canonical_url = res.final_url.as_deref().unwrap_or(url.as_str());
+        let vary_req = FetchRequest {
+          url: canonical_url,
+          destination,
+          referrer_url: Some(referrer_url.as_str()),
+          client_origin: client_origin.as_ref(),
+          referrer_policy,
+          credentials_mode,
+        };
+        if let Some(vary_key) =
+          compute_vary_key_for_request(&*fetcher.inner, vary_req, Some(vary))
+            .filter(|key| !key.is_empty())
+        {
+          let manifest_key = vary_partitioned_resource_key(&url, &vary_key);
+          if let Ok(mut map) = fetcher.recorded.lock() {
+            map.entry(manifest_key).or_insert_with(|| res.clone());
+          }
+        }
+      }
     }
 
     if res.bytes.len() > MAX_CRAWL_IMAGE_BYTES
@@ -2711,6 +2936,7 @@ fn crawl_document(
           images: html_image_urls,
           media: html_media_urls,
           documents: html_documents,
+          media: html_media_urls,
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {
           if let Ok(requests) = discover_html_images(&doc.html, &doc.base_url, render) {
@@ -2885,6 +3111,24 @@ fn crawl_document(
             doc_referrer,
             doc_referrer_policy,
           );
+        }
+
+        if prefetch_media {
+          for url in html_media_urls {
+            enqueue_unique(
+              &mut queue,
+              &mut seen_urls,
+              &mut queued,
+              url,
+              FetchDestination::Other,
+              FetchCredentialsMode::Include,
+              doc_referrer,
+              doc_origin.as_ref(),
+              doc_referrer_policy,
+              doc_referrer,
+              doc_referrer_policy,
+            );
+          }
         }
       }
       _ => {}
@@ -3239,7 +3483,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let base_hint = doc.base_hint.clone();
     let calls = inner.calls();
@@ -3261,6 +3513,108 @@ mod tests {
         && *dest == FetchDestination::Image
         && referrer.as_deref() == Some(base_hint.as_str())
     }));
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_prefetch_media_includes_video_src_in_bundle_manifest() -> Result<()> {
+    #[derive(Default)]
+    struct MediaFetcher {
+      calls: Mutex<Vec<(String, FetchDestination)>>,
+    }
+
+    impl MediaFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for MediaFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.destination));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><body><video src="/media.mp4"></video></body></html>"#.to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/media.mp4" => Ok(FetchedResource::with_final_url(
+            b"mp4".to_vec(),
+            Some("video/mp4".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(MediaFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, document_resource) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      true,
+      MediaPrefetchLimits {
+        max_asset_bytes: 64,
+        max_total_bytes: 64,
+      },
+    )?;
+
+    let recorded = recording.snapshot();
+    let (manifest, _resources, _document_bytes) = build_manifest(
+      "https://example.com/".to_string(),
+      render,
+      BundleFetchProfile::default(),
+      document_resource,
+      recorded,
+    );
+
+    let info = manifest
+      .resources
+      .get("https://example.com/media.mp4")
+      .expect("expected video src to be included in bundle resources when prefetch_media is set");
+    assert_eq!(info.content_type.as_deref(), Some("video/mp4"));
+
+    let calls = inner.calls();
+    assert!(
+      calls
+        .iter()
+        .any(|(url, dest)| url == "https://example.com/media.mp4" && *dest == FetchDestination::Other),
+      "expected video src to be fetched with FetchDestination::Other, got: {calls:?}"
+    );
 
     Ok(())
   }
@@ -3407,7 +3761,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     for (url, destination) in [
@@ -3510,7 +3872,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -3611,7 +3981,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -3713,7 +4091,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -3814,7 +4200,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -3923,7 +4317,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -4040,7 +4442,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let expected_origin = origin_from_url(DOC).expect("doc origin");
     let calls = inner.calls();
@@ -4459,7 +4869,16 @@ mod tests {
         dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
       };
 
-      crawl_document(&recording, &doc, &render, CrawlMode::Strict, false).expect("crawl");
+      crawl_document(
+        &recording,
+        &doc,
+        &render,
+        CrawlMode::Strict,
+        false,
+        false,
+        MediaPrefetchLimits::default(),
+      )
+      .expect("crawl");
 
       let calls = inner.calls();
       let font_calls: Vec<_> = calls
@@ -4661,7 +5080,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -4744,7 +5171,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::BestEffort, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::BestEffort,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -4827,7 +5262,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -4929,7 +5372,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -5036,7 +5487,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -5127,7 +5586,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let urls = inner.urls();
     assert_eq!(
@@ -5198,7 +5665,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let urls = inner.urls();
     assert_eq!(
@@ -5266,7 +5741,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::AllowMissing, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::AllowMissing,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let recorded = recording.snapshot();
     let res = recorded
@@ -5407,8 +5890,16 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    let err = crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)
-      .expect_err("crawl should fail in strict mode for HTTP error pages");
+    let err = crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )
+    .expect_err("crawl should fail in strict mode for HTTP error pages");
     let msg = err.to_string();
     assert!(msg.contains("https://example.com/style.css"));
 
@@ -5498,7 +5989,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(calls.iter().any(|(url, dest, referrer)| {
@@ -5592,7 +6091,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(
@@ -5683,7 +6190,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let calls = inner.calls();
     assert!(calls
@@ -5758,7 +6273,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let recorded = recording.snapshot();
     let res = recorded
@@ -5830,7 +6353,15 @@ mod tests {
       dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
     };
 
-    crawl_document(&recording, &doc, &render, CrawlMode::Strict, false)?;
+    crawl_document(
+      &recording,
+      &doc,
+      &render,
+      CrawlMode::Strict,
+      false,
+      false,
+      MediaPrefetchLimits::default(),
+    )?;
 
     let recorded = recording.snapshot();
     let res = recorded

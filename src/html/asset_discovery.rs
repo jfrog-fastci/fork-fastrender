@@ -17,18 +17,21 @@ pub struct HtmlAssetUrls {
   /// Image-like assets (img/src/srcset/source/srcset, video posters, icons/manifests (including
   /// `mask-icon`), and `<link rel=preload as=image>` candidates).
   pub images: Vec<String>,
-  /// Playable media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`).
-  pub media: Vec<String>,
   /// Embedded documents (iframes, objects, embeds).
   pub documents: Vec<String>,
+  /// Playable media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`).
+  ///
+  /// This intentionally excludes "image-like" media resources (e.g. `<video poster>`) which are
+  /// reported via [`HtmlAssetUrls::images`].
+  pub media: Vec<String>,
 }
 
 const MAX_SRCSET_CANDIDATES: usize = 16;
 
 // Keep discovery bounded so pathological HTML doesn't explode memory usage.
 const MAX_DISCOVERED_IMAGES: usize = 4096;
-const MAX_DISCOVERED_MEDIA: usize = 1024;
 const MAX_DISCOVERED_DOCUMENTS: usize = 1024;
+const MAX_DISCOVERED_MEDIA: usize = 1024;
 
 fn parse_srcset_urls(srcset: &str, max_candidates: usize) -> Vec<String> {
   image_attrs::parse_srcset_with_limit(srcset, max_candidates)
@@ -237,8 +240,8 @@ pub fn discover_html_asset_urls_with_srcset_limit(
 
   let mut out = HtmlAssetUrls::default();
   let mut seen_images: HashSet<String> = HashSet::new();
-  let mut seen_media: HashSet<String> = HashSet::new();
   let mut seen_documents: HashSet<String> = HashSet::new();
+  let mut seen_media: HashSet<String> = HashSet::new();
 
   let mut push_image = |out: &mut HtmlAssetUrls, seen_images: &mut HashSet<String>, raw: &str| {
     if out.images.len() >= MAX_DISCOVERED_IMAGES {
@@ -704,6 +707,29 @@ mod tests {
     assert_eq!(
       out.media[MAX_DISCOVERED_MEDIA - 1],
       format!("https://example.com/m{}.mp3", MAX_DISCOVERED_MEDIA - 1)
+    );
+  }
+
+  #[test]
+  fn discovers_video_audio_sources_as_media() {
+    let html = r#"
+      <video src="/video.mp4"></video>
+      <audio src="audio.ogg"></audio>
+      <video><source src="alt.webm"></video>
+      <track src="captions.vtt">
+    "#;
+    let out = discover_html_asset_urls(html, "https://example.com/base/page.html");
+    assert_eq!(
+      out.media,
+      vec![
+        "https://example.com/video.mp4",
+        "https://example.com/base/audio.ogg",
+        "https://example.com/base/alt.webm",
+        "https://example.com/base/captions.vtt",
+      ]
+      .into_iter()
+      .map(str::to_string)
+      .collect::<Vec<_>>()
     );
   }
 
