@@ -221,8 +221,11 @@ cargo test --features browser_ui accesskit
 - Build/run the windowed browser UI with AccessKit enabled (requires `browser_ui`):
 
   ```bash
-  cargo run --features browser_ui --bin browser
+  bash scripts/run_limited.sh --as 64G -- \
+    bash scripts/cargo_agent.sh run --features browser_ui --bin browser
   ```
+
+  See [browser_ui.md](browser_ui.md) for platform prerequisites (system GUI deps).
 
 ### What you can validate today
 
