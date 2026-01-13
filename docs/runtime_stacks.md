@@ -11,6 +11,19 @@ This doc is a **choose-the-right-type** reference that answers:
 All types below are exported as `fastrender::api::*` and also re-exported at the crate root
 (e.g. `fastrender::BrowserTab`).
 
+## Quick selection (what should I use?)
+
+- **One-shot, static render (no JS):** `FastRender::render_html` / `FastRender::render_url`.
+- **Host-driven DOM mutations + rerender (no JS):**
+  - `api::BrowserDocument` if you’re fine with the renderer’s internal `dom::DomNode`.
+  - `api::BrowserDocumentDom2` / `api::BrowserDocument2` if you want to mutate a `dom2::Document`.
+- **Headless screenshots with JS / author scripts:** `api::BrowserTab` + `run_until_stable(...)` +
+  `render_frame()`.
+- **Interactive/live rendering loop:** `api::BrowserTab` driven via repeated `tick_frame()` calls
+  (see [`docs/live_rendering_loop.md`](live_rendering_loop.md)).
+- **Legacy JS host harness (manual script execution, no HTML script scheduler):**
+  `api::BrowserDocumentJs`.
+
 ## Capability matrix (repo reality)
 
 | Type | DOM representation | Live DOM mutation + rerender | JS execution | Event loop | HTML `<script>` processing | Navigation/history |
@@ -83,6 +96,10 @@ recomputed.
 
 Compared to `BrowserDocumentDom2`, it does **not** carry the extra host-side state that `BrowserTab`
 relies on (for example `Document.currentScript` bookkeeping and active event tracking).
+
+It also uses **coarser invalidation**: any `dom2` mutation reported as “changed” invalidates the
+entire render pipeline (style/layout/paint), rather than consuming `dom2` mutation logs and tracking
+dirty sets.
 
 
 ## `api::BrowserTab` (dom2 + JS + event loop + navigation)
