@@ -3073,6 +3073,29 @@ impl FetchedResource {
     }
   }
 
+  /// Clone this resource while replacing the body bytes.
+  ///
+  /// This avoids cloning the existing body buffer, which can be large for media resources.
+  fn clone_with_bytes(&self, bytes: Vec<u8>) -> Self {
+    Self {
+      bytes,
+      content_type: self.content_type.clone(),
+      nosniff: self.nosniff,
+      content_encoding: self.content_encoding.clone(),
+      status: self.status,
+      etag: self.etag.clone(),
+      last_modified: self.last_modified.clone(),
+      access_control_allow_origin: self.access_control_allow_origin.clone(),
+      timing_allow_origin: self.timing_allow_origin.clone(),
+      vary: self.vary.clone(),
+      response_referrer_policy: self.response_referrer_policy,
+      access_control_allow_credentials: self.access_control_allow_credentials,
+      final_url: self.final_url.clone(),
+      cache_policy: self.cache_policy.clone(),
+      response_headers: self.response_headers.clone(),
+    }
+  }
+
   /// Returns true when this response represents a 304 Not Modified HTTP response.
   pub fn is_not_modified(&self) -> bool {
     matches!(self.status, Some(304))
@@ -3140,6 +3163,25 @@ impl FetchedResource {
       _ => Some(values.join(", ")),
     }
   }
+}
+
+/// Apply HTTP-like metadata for a byte range response.
+///
+/// This is primarily used when serving `Range`/partial responses from cached full bytes (memory
+/// cache, disk cache, offline bundles) so downstream code that expects HTTP semantics can rely on
+/// consistent `206` / `Content-Range` / `Content-Length` metadata even without a real network hop.
+fn apply_range_metadata(res: &mut FetchedResource, start: u64, end: u64, total_len: u64) {
+  res.status = Some(206);
+
+  let content_length = end.saturating_sub(start).saturating_add(1);
+  let content_range = format!("bytes {start}-{end}/{total_len}");
+
+  let headers = res.response_headers.get_or_insert_with(Vec::new);
+  headers.retain(|(name, _)| {
+    !(name.eq_ignore_ascii_case("content-range") || name.eq_ignore_ascii_case("content-length"))
+  });
+  headers.push(("Content-Range".to_string(), content_range));
+  headers.push(("Content-Length".to_string(), content_length.to_string()));
 }
 
 // ============================================================================
@@ -12377,9 +12419,14 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     range: std::ops::RangeInclusive<u64>,
     max_bytes: usize,
   ) -> Option<Result<FetchedResource>> {
+    let start = *range.start();
+    let end = *range.end();
+    let capped_end = capped_range_end(start, end, max_bytes);
+
     if let Some(result) = self.with_cached_resource(key, request, |res| {
+      let total_len = u64::try_from(res.bytes.len()).unwrap_or(u64::MAX);
       let bytes = slice_bytes_for_fetch_range(&key.url, &res.bytes, range, max_bytes)?;
-      Ok(FetchedResource {
+      let mut out = FetchedResource {
         bytes,
         content_type: res.content_type.clone(),
         nosniff: res.nosniff,
@@ -12395,7 +12442,10 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
         final_url: res.final_url.clone(),
         cache_policy: res.cache_policy.clone(),
         response_headers: res.response_headers.clone(),
-      })
+      };
+      let actual_end = capped_end.min(total_len.saturating_sub(1));
+      apply_range_metadata(&mut out, start, actual_end, total_len);
+      Ok(out)
     }) {
       return Some(result);
     }
@@ -13428,10 +13478,18 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(result) = self.with_cached_resource(&key, Some(req), |cached| -> Result<FetchedResource> {
-      let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
-      Ok::<FetchedResource, Error>(clone_fetched_resource_with_bytes(cached, bytes))
-    }) {
+    if let Some(result) = self.with_cached_resource(
+      &key,
+      Some(req),
+      |cached| -> Result<FetchedResource> {
+        let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
+        let mut out = clone_fetched_resource_with_bytes(cached, bytes);
+        let total_len = u64::try_from(cached.bytes.len()).unwrap_or(u64::MAX);
+        let actual_end = (*range.end()).min(total_len.saturating_sub(1));
+        apply_range_metadata(&mut out, start, actual_end, total_len);
+        Ok(out)
+      },
+    ) {
       let res = result?;
       record_cache_fresh_hit();
       record_resource_cache_bytes(res.bytes.len());
@@ -25488,7 +25546,9 @@ mod tests {
       "expected cached range hit to allocate a small Vec, got capacity={}",
       res.bytes.capacity()
     );
-    assert_eq!(res.status, Some(200));
+    assert_eq!(res.status, Some(206));
+    assert_eq!(res.header_values("content-range"), vec!["bytes 100-115/1048576"]);
+    assert_eq!(res.header_values("content-length"), vec!["16"]);
     assert_eq!(res.etag.as_deref(), Some("test-etag"));
     assert_eq!(res.final_url.as_deref(), Some(url));
     assert_eq!(
@@ -25615,6 +25675,121 @@ mod tests {
       1,
       "expected range rejection to occur before any additional inner fetch"
     );
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_with_request_synthesizes_http_metadata_on_cache_hits() {
+    #[derive(Clone)]
+    struct StaticFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for StaticFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(
+          b"abcdefghij".to_vec(),
+          Some("application/octet-stream".to_string()),
+        );
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        res.response_headers = Some(vec![
+          ("Content-Length".to_string(), "10".to_string()),
+          ("Content-Range".to_string(), "bytes 0-9/10".to_string()),
+          ("X-Test".to_string(), "ok".to_string()),
+        ]);
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("expected range fetch to be served from the cache");
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(StaticFetcher {
+      calls: Arc::clone(&calls),
+    });
+
+    let url = "http://example.com/video.bin";
+    let req = FetchRequest::new(url, FetchDestination::Other);
+
+    let full = cache.fetch_with_request(req).expect("seed full");
+    assert_eq!(full.bytes, b"abcdefghij");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let range = cache
+      .fetch_range_with_request(req, 2..=9, 3)
+      .expect("range from cache");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "expected range fetch to reuse cached full bytes"
+    );
+    assert_eq!(range.bytes, b"cde");
+    assert_eq!(range.status, Some(206));
+    assert_eq!(range.header_values("content-range"), vec!["bytes 2-4/10"]);
+    assert_eq!(range.header_values("content-length"), vec!["3"]);
+    assert_eq!(range.header_get("x-test"), Some("ok"));
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_with_request_initializes_headers_when_missing() {
+    #[derive(Clone)]
+    struct HeaderlessFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for HeaderlessFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(b"0123456789".to_vec(), None);
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        res.response_headers = None;
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("expected range fetch to be served from the cache");
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(HeaderlessFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "http://example.com/blob.bin";
+    let req = FetchRequest::new(url, FetchDestination::Other);
+
+    cache.fetch_with_request(req).expect("seed");
+    let range = cache
+      .fetch_range_with_request(req, 0..=99, 2)
+      .expect("range from cache");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(range.bytes, b"01");
+    assert_eq!(range.status, Some(206));
+    assert_eq!(range.header_get("content-range"), Some("bytes 0-1/10"));
+    assert_eq!(range.header_get("content-length"), Some("2"));
   }
 
   #[test]

@@ -2367,6 +2367,18 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       })
     });
 
+    let total_len = meta.len as u64;
+    if total_len != 0 && start < total_len {
+      let capped_end = if max_bytes == 0 {
+        start
+      } else {
+        let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+        end.min(cap_end)
+      };
+      let actual_end = capped_end.min(total_len.saturating_sub(1));
+      super::apply_range_metadata(&mut resource, start, actual_end, total_len);
+    }
+
     SnapshotRangeRead::Hit(resource)
   }
 
@@ -4529,7 +4541,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       ));
     }
 
-    let (_capped_end, target_len) =
+    let (capped_end, target_len) =
       super::enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
     let origin_key = super::cors_cache_partition_key(&req);
     let key = CacheKey::new_with_origin(

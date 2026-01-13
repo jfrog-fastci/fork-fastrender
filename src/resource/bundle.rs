@@ -340,6 +340,7 @@ impl BundledResource {
     end: u64,
     max_bytes: usize,
   ) -> Result<FetchedResource> {
+    let total_len = self.bytes.len() as u64;
     let bytes =
       clone_bytes_range_fallible(url, &self.bytes, start, end, max_bytes, "bundle resource bytes")?;
     let mut res = FetchedResource::with_final_url(
@@ -361,6 +362,10 @@ impl BundledResource {
       .and_then(ReferrerPolicy::parse_value_list);
     res.response_headers = self.info.response_headers.clone();
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
+    if total_len != 0 && start < total_len {
+      let actual_end = end.min(total_len.saturating_sub(1));
+      super::apply_range_metadata(&mut res, start, actual_end, total_len);
+    }
     Ok(res)
   }
 }
@@ -1478,6 +1483,7 @@ impl ResourceFetcher for BundledFetcher {
 
     if doc_matches {
       let (doc_meta, bytes) = self.bundle.document();
+      let total_len = bytes.len() as u64;
       let bytes = clone_bytes_range_fallible(
         req.url,
         &bytes,
@@ -1503,6 +1509,10 @@ impl ResourceFetcher for BundledFetcher {
         .as_deref()
         .and_then(ReferrerPolicy::parse_value_list);
       res.response_headers = doc_meta.response_headers.clone();
+      if total_len != 0 && start < total_len {
+        let actual_end = capped_end.min(total_len.saturating_sub(1));
+        super::apply_range_metadata(&mut res, start, actual_end, total_len);
+      }
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
           || (!super::allow_unhandled_vary_env()
