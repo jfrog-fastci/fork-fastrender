@@ -98,6 +98,22 @@ fn parse_request(raw: Vec<u8>) -> CapturedRequest {
   }
 }
 
+fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
+  let start = Instant::now();
+  loop {
+    match listener.accept() {
+      Ok((stream, _)) => return stream,
+      Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+        if start.elapsed() >= MAX_WAIT {
+          panic!("timed out waiting for localhost connection");
+        }
+        thread::sleep(Duration::from_millis(5));
+      }
+      Err(err) => panic!("accept localhost connection: {err}"),
+    }
+  }
+}
+
 fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
   let len = (payload.len() as u32).to_le_bytes();
   stream.write_all(&len)?;
@@ -117,7 +133,8 @@ fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 
 fn spawn_ipc_server(listener: TcpListener, request_tx: mpsc::Sender<IpcRequest>) -> thread::JoinHandle<()> {
   thread::spawn(move || {
-    let (mut stream, _) = listener.accept().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut stream = accept_with_timeout(&listener);
     stream
       .set_read_timeout(Some(Duration::from_secs(5)))
       .unwrap();
@@ -128,6 +145,13 @@ fn spawn_ipc_server(listener: TcpListener, request_tx: mpsc::Sender<IpcRequest>)
 
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
     let response = match req {
+      IpcRequest::FetchWithRequest { req } => {
+        let fetch_req = req.as_fetch_request();
+        match fetcher.fetch_with_request(fetch_req) {
+          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
+          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
+        }
+      }
       IpcRequest::FetchHttpRequest { req } => {
         let body = req.decode_body().unwrap();
         let fetch = req.fetch.as_fetch_request();
@@ -163,7 +187,8 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
 
   let (http_tx, http_rx) = mpsc::channel::<CapturedRequest>();
   let http_handle = thread::spawn(move || {
-    let (mut stream, _) = listener.accept().unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut stream = accept_with_timeout(&listener);
     stream
       .set_read_timeout(Some(Duration::from_millis(500)))
       .unwrap();
@@ -267,8 +292,9 @@ fn ipc_fetcher_http_request_redirect_updates_final_url() {
 
   let (tx, rx) = mpsc::channel::<CapturedRequest>();
   let http_handle = thread::spawn(move || {
+    listener.set_nonblocking(true).unwrap();
     // Redirect response.
-    let (mut stream, _) = listener.accept().unwrap();
+    let mut stream = accept_with_timeout(&listener);
     stream
       .set_read_timeout(Some(Duration::from_millis(500)))
       .unwrap();
@@ -279,7 +305,7 @@ fn ipc_fetcher_http_request_redirect_updates_final_url() {
     stream.write_all(response.as_bytes()).unwrap();
 
     // Final response.
-    let (mut stream, _) = listener.accept().unwrap();
+    let mut stream = accept_with_timeout(&listener);
     stream
       .set_read_timeout(Some(Duration::from_millis(500)))
       .unwrap();
@@ -329,6 +355,104 @@ fn ipc_fetcher_http_request_redirect_updates_final_url() {
   assert!(
     second.body.is_empty(),
     "redirected request should drop body"
+  );
+
+  http_handle.join().unwrap();
+  ipc_handle.join().unwrap();
+}
+
+#[test]
+fn ipc_fetcher_fetch_with_request_redirect_propagates_final_url_and_cookie() {
+  let _net_guard = net_test_lock();
+  let Some(listener) =
+    try_bind_localhost("ipc_fetcher_fetch_with_request_redirect_propagates_final_url_and_cookie")
+  else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+
+  let (tx, rx) = mpsc::channel::<CapturedRequest>();
+  let http_handle = thread::spawn(move || {
+    listener.set_nonblocking(true).unwrap();
+    // Redirect response.
+    let mut stream = accept_with_timeout(&listener);
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
+    let raw = read_http_request_with_body(&mut stream);
+    tx.send(parse_request(raw)).unwrap();
+    let response = concat!(
+      "HTTP/1.1 302 Found\r\n",
+      "Location: /final\r\n",
+      "Set-Cookie: r=1; Path=/\r\n",
+      "Content-Length: 0\r\n",
+      "Connection: close\r\n",
+      "\r\n",
+    );
+    stream.write_all(response.as_bytes()).unwrap();
+
+    // Final response (server only returns 200 if the redirect-set cookie is sent back).
+    let mut stream = accept_with_timeout(&listener);
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
+    let raw = read_http_request_with_body(&mut stream);
+    let captured = parse_request(raw);
+    let cookie_ok = captured
+      .headers
+      .get("cookie")
+      .map(|value| value.contains("r=1"))
+      .unwrap_or(false);
+    tx.send(captured).unwrap();
+    let body: &[u8] = if cookie_ok { b"ok" } else { b"missing cookie" };
+    let status_line = if cookie_ok {
+      "HTTP/1.1 200 OK"
+    } else {
+      "HTTP/1.1 400 Bad Request"
+    };
+    let response = format!(
+      "{status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+      body.len()
+    );
+    stream.write_all(response.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+  });
+
+  let ipc_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+  let ipc_addr = ipc_listener.local_addr().unwrap();
+  let (ipc_tx, _ipc_rx) = mpsc::channel::<IpcRequest>();
+  let ipc_handle = spawn_ipc_server(ipc_listener, ipc_tx);
+
+  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let url = format!("http://{addr}/start");
+  let origin = origin_from_url(&url).unwrap();
+  let fetch = FetchRequest::new(&url, FetchDestination::Fetch)
+    .with_client_origin(&origin)
+    .with_credentials_mode(fastrender::resource::FetchCredentialsMode::SameOrigin);
+  let res = fetcher.fetch_with_request(fetch).expect("fetch_with_request");
+  assert_eq!(res.status, Some(200), "expected redirect to be followed");
+  assert_eq!(res.bytes, b"ok");
+  let expected_final = format!("http://{addr}/final");
+  assert_eq!(res.final_url.as_deref(), Some(expected_final.as_str()));
+
+  let first = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("first request");
+  assert_eq!(first.method, "GET");
+  assert_eq!(first.path, "/start");
+
+  let second = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("second request");
+  assert_eq!(second.method, "GET");
+  assert_eq!(second.path, "/final");
+  assert!(
+    second
+      .headers
+      .get("cookie")
+      .map(|value| value.contains("r=1"))
+      .unwrap_or(false),
+    "expected redirect-set cookie to be sent to /final"
   );
 
   http_handle.join().unwrap();
