@@ -1,4 +1,11 @@
 use clap::{ArgAction, Parser};
+use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
+use fastrender::error::{Error, ResourceError};
+use fastrender::resource::{
+  CachingFetcher, FetchRequest, FetchedResource, HttpFetcher, HttpRequest, ResourceFetcher,
+  ResourcePolicy,
+};
+use fastrender::text::font_db::FontConfig;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
   KeyAction, NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker,
@@ -8,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
 
@@ -50,6 +58,10 @@ struct Args {
   /// (CI-friendly).
   #[arg(long, value_name = "N")]
   rayon_threads: Option<usize>,
+
+  /// Allow http(s) network access (disabled by default).
+  #[arg(long, action = ArgAction::SetTrue)]
+  allow_network: bool,
 
   /// Optional baseline JSON to compare against.
   #[arg(long)]
@@ -147,6 +159,8 @@ struct RunConfig {
   warmup: usize,
   #[serde(default)]
   isolate: bool,
+  #[serde(default)]
+  allow_network: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   iterations: Option<usize>,
 }
@@ -157,6 +171,7 @@ impl Default for RunConfig {
       rayon_threads: 1,
       warmup: 0,
       isolate: false,
+      allow_network: false,
       iterations: None,
     }
   }
@@ -240,13 +255,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rayon_threads,
     warmup: args.warmup,
     isolate,
+    allow_network: args.allow_network,
     iterations: args.iterations,
   };
+
+  let factory = build_ui_worker_factory(args.allow_network)?;
 
   if isolate {
     for name in &scenario_names {
       let worker_name = format!("fastr-ui-perf-smoke-{name}");
-      let (tx, rx, join) = fastrender::ui::spawn_browser_ui_worker(worker_name)?;
+      let (tx, rx, join) =
+        fastrender::ui::spawn_ui_worker_with_factory(worker_name, factory.clone())?.split();
       let summary = run_named_scenario(name, &tx, &rx, &run_config, args.verbose);
       let failed = summary.status != ScenarioStatus::Ok;
       scenarios.push(summary);
@@ -263,7 +282,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
     }
   } else {
-    let (tx, rx, join) = fastrender::ui::spawn_browser_ui_worker("fastr-ui-perf-smoke-worker")?;
+    let (tx, rx, join) =
+      fastrender::ui::spawn_ui_worker_with_factory("fastr-ui-perf-smoke-worker", factory.clone())?
+        .split();
     for name in &scenario_names {
       let summary = run_named_scenario(name, &tx, &rx, &run_config, args.verbose);
       let failed = summary.status != ScenarioStatus::Ok;
@@ -353,6 +374,228 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::process::exit(exit_code);
   }
   Ok(())
+}
+
+fn build_ui_worker_factory(allow_network: bool) -> fastrender::Result<FastRenderFactory> {
+  let mut policy = ResourcePolicy::default();
+  if !allow_network {
+    policy = policy.allow_http(false).allow_https(false);
+  }
+
+  let renderer_config = FastRenderConfig::default()
+    .with_font_sources(FontConfig::bundled_only())
+    .with_resource_policy(policy);
+
+  // `about:` pages are trusted UI surfaces and are allowed to load shared chrome assets via
+  // `chrome://...`. We mirror the production browser worker by installing a minimal chrome-aware
+  // fetcher wrapper around the default HTTP/file fetcher.
+  let base_fetcher: Arc<dyn ResourceFetcher> = if let Some(cache) = renderer_config.resource_cache {
+    let policy = renderer_config.resource_policy.clone();
+    Arc::new(
+      CachingFetcher::with_config(HttpFetcher::new().with_policy(policy.clone()), cache)
+        .with_policy(policy),
+    )
+  } else {
+    Arc::new(HttpFetcher::new().with_policy(renderer_config.resource_policy.clone()))
+  };
+
+  let fetcher = Arc::new(AboutChromeFetcher::new(base_fetcher));
+
+  FastRenderFactory::with_config(
+    FastRenderPoolConfig::new()
+      .with_renderer_config(renderer_config)
+      .with_fetcher(fetcher),
+  )
+}
+
+#[derive(Clone)]
+struct AboutChromeFetcher {
+  default: Arc<dyn ResourceFetcher>,
+}
+
+impl AboutChromeFetcher {
+  fn new(default: Arc<dyn ResourceFetcher>) -> Self {
+    Self { default }
+  }
+
+  fn is_allowed_chrome_request(&self, req: &FetchRequest<'_>) -> bool {
+    if req
+      .client_origin
+      .is_some_and(|origin| origin.scheme().eq_ignore_ascii_case("about"))
+    {
+      return true;
+    }
+
+    // Some call sites may not carry `client_origin` but still provide a referrer URL. Treat an
+    // `about:` referrer as sufficient to allow internal chrome assets.
+    if let Some(referrer) = req.referrer_url {
+      // Avoid allocations by using a cheap prefix check first.
+      if referrer
+        .trim_start()
+        .get(..6)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("about:"))
+      {
+        return true;
+      }
+      if let Ok(parsed) = Url::parse(referrer) {
+        if parsed.scheme().eq_ignore_ascii_case("about") {
+          return true;
+        }
+      }
+    }
+
+    false
+  }
+
+  fn fetch_chrome(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+    if !self.is_allowed_chrome_request(&req) {
+      let origin = req
+        .client_origin
+        .map(|o| o.to_string())
+        .unwrap_or_else(|| "<unknown>".to_string());
+      return Err(Error::Resource(ResourceError::new(
+        req.url,
+        format!("blocked chrome:// subresource fetch from origin {origin}"),
+      )));
+    }
+
+    let url = req.url.trim();
+    let parsed = Url::parse(url).map_err(|err| {
+      Error::Resource(ResourceError::new(
+        url,
+        format!("invalid chrome:// URL {url:?}: {err}"),
+      ))
+    })?;
+
+    if !parsed.scheme().eq_ignore_ascii_case("chrome") {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("expected chrome:// URL, got scheme={}", parsed.scheme()),
+      )));
+    }
+
+    let host = parsed.host_str().unwrap_or_default();
+    let path = parsed.path();
+    match (host, path) {
+      ("styles", "/about.css") => Ok(FetchedResource::new(
+        include_bytes!("../../assets/chrome/about.css").to_vec(),
+        Some("text/css".to_string()),
+      )),
+      _ => Err(Error::Resource(ResourceError::new(
+        url,
+        format!("unknown chrome:// asset chrome://{host}{path}"),
+      ))),
+    }
+  }
+}
+
+impl ResourceFetcher for AboutChromeFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+    // Without request metadata we cannot safely determine whether this `chrome://` request was
+    // initiated by an `about:` document, so fail closed.
+    if url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        "blocked chrome:// fetch without an initiating about: origin".to_string(),
+      )));
+    }
+    self.default.fetch(url)
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+    if req
+      .url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      return self.fetch_chrome(req);
+    }
+    self.default.fetch_with_request(req)
+  }
+
+  fn fetch_with_request_and_validation(
+    &self,
+    req: FetchRequest<'_>,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+  ) -> fastrender::Result<FetchedResource> {
+    if req
+      .url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      let _ = (etag, last_modified);
+      return self.fetch_chrome(req);
+    }
+    self
+      .default
+      .fetch_with_request_and_validation(req, etag, last_modified)
+  }
+
+  fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+    if req
+      .url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      return None;
+    }
+    self.default.request_header_value(req, header_name)
+  }
+
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    if url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      return Some(String::new());
+    }
+    self.default.cookie_header_value(url)
+  }
+
+  fn store_cookie_from_document(&self, url: &str, cookie_string: &str) {
+    if url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      return;
+    }
+    self.default.store_cookie_from_document(url, cookie_string);
+  }
+
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> fastrender::Result<FetchedResource> {
+    if req
+      .fetch
+      .url
+      .trim_start()
+      .get(..9)
+      .is_some_and(|p| p.eq_ignore_ascii_case("chrome://"))
+    {
+      // Only allow `GET`/`HEAD`-style chrome fetches, mirroring the `ResourceFetcher` default
+      // behavior.
+      if !req.method.eq_ignore_ascii_case("GET") && !req.method.eq_ignore_ascii_case("HEAD") {
+        return Err(Error::Resource(ResourceError::new(
+          req.fetch.url,
+          "blocked non-GET chrome:// request".to_string(),
+        )));
+      }
+      let mut res = self.fetch_chrome(req.fetch)?;
+      if req.method.eq_ignore_ascii_case("HEAD") {
+        res.bytes.clear();
+      }
+      return Ok(res);
+    }
+    self.default.fetch_http_request(req)
+  }
 }
 
 fn resolve_fail_on_failure(args: &Args) -> bool {
@@ -497,16 +740,26 @@ fn current_rayon_threads_fallback() -> usize {
 }
 
 fn selected_scenarios(only: Option<&[String]>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-  let all = [
+  let default = [
     "ttfp_newtab",
     "scroll_fixture",
     "resize_fixture",
     "input_text",
     "tab_switch",
   ];
+  let all = [
+    "ttfp_newtab",
+    "scroll_fixture",
+    "resize_fixture",
+    "input_text",
+    "tab_switch",
+    // Not part of the default run: used by CLI integration tests to ensure network is disabled by
+    // default (CI-safe).
+    "network_denied",
+  ];
 
   match only {
-    None => Ok(all.iter().map(|s| s.to_string()).collect()),
+    None => Ok(default.iter().map(|s| s.to_string()).collect()),
     Some(list) => {
       let wanted: BTreeSet<String> = list
         .iter()
@@ -553,6 +806,7 @@ fn run_named_scenario(
     "resize_fixture" => run_resize_fixture(tx, rx, run_config, verbose),
     "input_text" => run_input_text_fixture(tx, rx, run_config, verbose),
     "tab_switch" => run_tab_switch(tx, rx, run_config, verbose),
+    "network_denied" => run_network_denied(tx, rx, run_config),
     other => ScenarioSummary {
       name: other.to_string(),
       url: String::new(),
@@ -1039,13 +1293,12 @@ fn run_tab_switch(
   let tab_a = TabId::new();
   let tab_b = TabId::new();
 
-  let tab_a_url = if fastrender::ui::about_pages::html_for_about_url("about:test-layout-stress")
-    .is_some()
-  {
-    "about:test-layout-stress".to_string()
-  } else {
-    fastrender::ui::about_pages::ABOUT_TEST_HEAVY.to_string()
-  };
+  let tab_a_url =
+    if fastrender::ui::about_pages::html_for_about_url("about:test-layout-stress").is_some() {
+      "about:test-layout-stress".to_string()
+    } else {
+      fastrender::ui::about_pages::ABOUT_TEST_HEAVY.to_string()
+    };
   let tab_b_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
 
   let mut summary = ScenarioSummary {
@@ -1138,13 +1391,73 @@ fn run_tab_switch(
     summary.samples_ms = measured.clone();
     summary.metrics_ms = latency_metrics("tab_switch_latency", &measured);
     let total_ms = measured.iter().sum::<f64>();
-    summary
-      .metrics_ms
-      .insert("tab_switch_latency_total_ms".to_string(), round_ms(total_ms));
+    summary.metrics_ms.insert(
+      "tab_switch_latency_total_ms".to_string(),
+      round_ms(total_ms),
+    );
   }
 
   let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_a });
   let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_b });
+  summary
+}
+
+fn run_network_denied(
+  tx: &Sender<UiToWorker>,
+  rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
+) -> ScenarioSummary {
+  let viewport_css = DEFAULT_VIEWPORT_CSS;
+  let dpr = DEFAULT_DPR;
+  let tab_id = TabId::new();
+  let target_url = "https://example.com".to_string();
+
+  let mut summary = ScenarioSummary {
+    name: "network_denied".to_string(),
+    url: target_url.clone(),
+    viewport_css,
+    dpr,
+    status: ScenarioStatus::Ok,
+    error: None,
+    samples_ms: Vec::new(),
+    metrics_ms: BTreeMap::new(),
+  };
+
+  if let Err(err) = create_and_navigate_tab(tx, tab_id, viewport_css, dpr, &target_url) {
+    summary.status = ScenarioStatus::Error;
+    summary.error = Some(err.to_string());
+    return summary;
+  }
+
+  let start = Instant::now();
+  match wait_for_navigation_outcome(rx, tab_id, Duration::from_secs(10)) {
+    Ok(NavigationOutcome::Failed { error }) => {
+      // Under the default configuration (`--allow-network` not provided), we expect this navigation
+      // to fail immediately with a policy error. We intentionally report the navigation error so
+      // integration tests can assert it is controlled (no hang).
+      summary.status = ScenarioStatus::Error;
+      summary.error = Some(error);
+    }
+    Ok(NavigationOutcome::Committed { url }) => {
+      let dt_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
+      summary.samples_ms = vec![dt_ms];
+      summary
+        .metrics_ms
+        .insert("navigation_committed_ms".to_string(), dt_ms);
+      if !run_config.allow_network {
+        summary.status = ScenarioStatus::Error;
+        summary.error = Some(format!(
+          "expected navigation to be blocked by policy (offline default), but committed {url}"
+        ));
+      }
+    }
+    Err(err) => {
+      summary.status = err.status;
+      summary.error = Some(err.message);
+    }
+  }
+
+  let _ = tx.send(UiToWorker::CloseTab { tab_id });
   summary
 }
 
@@ -1177,6 +1490,47 @@ fn create_and_navigate_tab(
 struct WaitError {
   status: ScenarioStatus,
   message: String,
+}
+
+enum NavigationOutcome {
+  Committed { url: String },
+  Failed { error: String },
+}
+
+fn wait_for_navigation_outcome(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> Result<NavigationOutcome, WaitError> {
+  let deadline = Instant::now() + timeout;
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match rx.recv_timeout(remaining) {
+      Ok(WorkerToUi::NavigationCommitted {
+        tab_id: msg_tab,
+        url,
+        ..
+      }) if msg_tab == tab_id => return Ok(NavigationOutcome::Committed { url }),
+      Ok(WorkerToUi::NavigationFailed {
+        tab_id: msg_tab,
+        error,
+        ..
+      }) if msg_tab == tab_id => return Ok(NavigationOutcome::Failed { error }),
+      Ok(_) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        return Err(WaitError {
+          status: ScenarioStatus::Timeout,
+          message: format!("timed out after {timeout:?} waiting for navigation outcome"),
+        });
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        return Err(WaitError {
+          status: ScenarioStatus::Error,
+          message: "UI worker disconnected before navigation outcome".to_string(),
+        });
+      }
+    }
+  }
 }
 
 fn wait_for_frame(
@@ -1380,6 +1734,11 @@ mod tests {
     assert_eq!(value["run_config"]["rayon_threads"].as_u64(), Some(1));
     assert_eq!(value["run_config"]["warmup"].as_u64(), Some(0));
     assert_eq!(value["run_config"]["isolate"].as_bool(), Some(false));
+    assert_eq!(
+      value["run_config"]["allow_network"].as_bool(),
+      Some(false),
+      "allow_network should default to false (offline by default)"
+    );
   }
 
   #[test]
