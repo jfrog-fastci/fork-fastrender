@@ -1394,6 +1394,30 @@ fn compiled_object_literal_getter_setter_receiver_semantics() -> Result<(), VmEr
 }
 
 #[test]
+fn compiled_member_update_expression_invokes_getter_and_setter() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = '';
+      let o = { get x() { log += 'g'; return 1; }, set x(v) { log += 's'; log += v; } };
+      o.x++;
+      log
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let mut scope = rt.heap_mut().scope();
+  let result = scope.push_root(result)?;
+  let expected = scope.alloc_string("gs2")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_accessor_names_are_prefixed() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
@@ -1586,6 +1610,27 @@ fn compiled_member_assignment_to_primitive_throws_in_strict_mode() -> Result<(),
 }
 
 #[test]
+fn compiled_member_update_expression_to_primitive_throws_in_strict_mode() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      let ok = 0;
+      try { 'abc'.x++; } catch(e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_destructuring_member_assignment_to_primitive_is_silent_in_sloppy_mode() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
@@ -1710,6 +1755,26 @@ fn compiled_computed_member_assignment_key_evaluates_before_nullish_base_error()
 }
 
 #[test]
+fn compiled_computed_member_update_key_evaluates_before_nullish_base_error() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      try { null[(ok = 1, 'x')]++; } catch(e) {}
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_member_assignment_to_nullish_base_does_not_evaluate_rhs() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
@@ -1724,6 +1789,29 @@ fn compiled_member_assignment_to_nullish_base_does_not_evaluate_rhs() -> Result<
       let ok = 0;
       function rhs() { ok = 2; return 0; }
       try { null[(ok = 1, 'x')] = rhs(); } catch(e) {}
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_member_compound_add_assign_to_nullish_base_does_not_evaluate_rhs() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Compound assignment should evaluate the LHS reference (including computed keys) before the RHS.
+  // If the base throws during reference evaluation, RHS evaluation must not occur.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      function rhs() { ok = 2; return 0; }
+      try { null[(ok = 1, 'x')] += rhs(); } catch(e) {}
       ok
     "#,
   )?;
@@ -4893,6 +4981,40 @@ fn compiled_compound_assignment_add_assign_in_function() -> Result<(), VmError> 
 
   let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
   assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_member_compound_assignment_add_assign_executes_in_function() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        let o = { x: 1 };
+        let r = (o.x += 2);
+        return r * 10 + o.x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  // `o.x += 2` returns 3 and leaves `o.x == 3`, so `r*10 + o.x == 33`.
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(33.0));
   Ok(())
 }
 
