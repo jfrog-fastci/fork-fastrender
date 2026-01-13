@@ -38,8 +38,8 @@ Examples:
   bash scripts/capture_browser_perf_log.sh --summary target/browser.perf.jsonl about:test-scroll
 
 Notes:
-  - Output is written to <out.jsonl> via FASTR_PERF_LOG_OUT.
-  - Script progress messages are written to stderr.
+  - Perf logs are emitted on stdout and also written to <out.jsonl> via `tee`.
+  - Script progress messages (including optional summaries) are written to stderr.
 EOF
 }
 
@@ -150,11 +150,20 @@ if [[ -n "${url}" ]]; then
   echo "capture_browser_perf_log: url=${url}" >&2
 fi
 
-browser_cmd=(
-  timeout -k 10 600
-  bash "${repo_root}/scripts/run_limited.sh" --as 64G -- \
+exe_suffix=""
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*) exe_suffix=".exe" ;;
+esac
+
+browser_cmd=(timeout -k 10 600 bash "${repo_root}/scripts/run_limited.sh" --as 64G --)
+if [[ -n "${CARGO_BIN_EXE_browser:-}" && -x "${CARGO_BIN_EXE_browser}" ]]; then
+  echo "capture_browser_perf_log: using CARGO_BIN_EXE_browser=${CARGO_BIN_EXE_browser}" >&2
+  browser_cmd+=("${CARGO_BIN_EXE_browser}")
+else
+  browser_cmd+=(
     bash "${repo_root}/scripts/cargo_agent.sh" run --release --features browser_ui --bin browser --
-)
+  )
+fi
 if [[ -n "${url}" ]]; then
   browser_cmd+=("${url}")
 fi
@@ -162,91 +171,73 @@ if [[ ${#extra_browser_args[@]} -gt 0 ]]; then
   browser_cmd+=("${extra_browser_args[@]}")
 fi
 
-# Some auxiliary browser perf logs (e.g. `idle_summary`, `worker_wake_summary`) are still emitted on
-# stdout even when FASTR_PERF_LOG_OUT is set (the main structured events go to FASTR_PERF_LOG_OUT).
-# Capture stdout to a temp file and append any JSON lines back into the output so the user gets a
-# complete JSONL stream in one file.
-stdout_tmp=""
-if command -v mktemp >/dev/null 2>&1; then
-  stdout_tmp="$(mktemp "${out_path}.stdout.XXXXXX" 2>/dev/null || true)"
-fi
-if [[ -z "${stdout_tmp}" ]]; then
-  stdout_tmp="${out_path}.stdout.$$"
-  : > "${stdout_tmp}"
-fi
+echo "capture_browser_perf_log: capturing perf JSONL (stdout → tee → ${out_path})" >&2
 
 set +e
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT="${out_path}" "${browser_cmd[@]}" >"${stdout_tmp}"
-browser_status=$?
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= "${browser_cmd[@]}" | tee "${out_path}"
+browser_status=${PIPESTATUS[0]}
+tee_status=${PIPESTATUS[1]}
 set -e
 
-if [[ -s "${stdout_tmp}" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    # Filter to valid JSON object lines so accidental non-JSON stdout output doesn't corrupt the
-    # captured JSONL file.
-    python3 - "${stdout_tmp}" >>"${out_path}" <<'PY'
-import json, sys
-
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8", errors="replace") as f:
-    for raw in f:
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except Exception:
-            continue
-        # Only keep perf-log-like records. `browser_perf_log_summary` expects an object containing at
-        # least an `event` field; dropping other JSON avoids corrupting the captured stream.
-        if isinstance(obj, dict) and isinstance(obj.get("event"), str):
-            sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
-PY
-  else
-    # Best-effort filter without Python: keep only lines that look like JSON objects and contain an
-    # `"event": ...` field. This avoids corrupting the JSONL stream if stdout includes plain-text
-    # output.
-    if command -v awk >/dev/null 2>&1; then
-      awk 'BEGIN { OFS="" }
-        {
-          line=$0
-          sub(/^[[:space:]]+/, "", line)
-          sub(/[[:space:]]+$/, "", line)
-          if (line ~ /^\{/ && line ~ /"event"[[:space:]]*:/) {
-            print line
-          }
-        }' "${stdout_tmp}" >>"${out_path}"
-    else
-      cat "${stdout_tmp}" >>"${out_path}"
-    fi
-  fi
+status="${browser_status}"
+if [[ "${status}" -eq 0 && "${tee_status}" -ne 0 ]]; then
+  status="${tee_status}"
 fi
-rm -f "${stdout_tmp}" 2>/dev/null || true
 
 if [[ "${browser_status}" -ne 0 ]]; then
   echo "capture_browser_perf_log: browser exited with status ${browser_status} (continuing)" >&2
+fi
+if [[ "${tee_status}" -ne 0 ]]; then
+  echo "capture_browser_perf_log: tee exited with status ${tee_status}" >&2
 fi
 
 if [[ ! -s "${out_path}" ]]; then
   echo "capture_browser_perf_log: warning: perf log is empty at ${out_path}" >&2
 fi
 
+echo "capture_browser_perf_log: hint: summarize with browser_perf_log_summary:" >&2
+echo "  timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --input ${out_path}" >&2
+
 if [[ "${run_summary}" -eq 1 ]]; then
   if [[ ! -s "${out_path}" ]]; then
     echo "capture_browser_perf_log: skipping summary (empty log file)" >&2
   else
-    echo "capture_browser_perf_log: running browser_perf_log_summary..." >&2
-    set +e
-    timeout -k 10 600 bash "${repo_root}/scripts/run_limited.sh" --as 64G -- \
-      bash "${repo_root}/scripts/cargo_agent.sh" run --release --bin browser_perf_log_summary -- \
-      --input "${out_path}" \
-      >/dev/null
-    summary_status=$?
-    set -e
-    if [[ "${summary_status}" -ne 0 ]]; then
-      echo "capture_browser_perf_log: warning: browser_perf_log_summary exited with ${summary_status}" >&2
+    summary_bin=""
+    if [[ -n "${CARGO_BIN_EXE_browser_perf_log_summary:-}" && -x "${CARGO_BIN_EXE_browser_perf_log_summary}" ]]; then
+      summary_bin="${CARGO_BIN_EXE_browser_perf_log_summary}"
+    elif command -v browser_perf_log_summary >/dev/null 2>&1; then
+      summary_bin="$(command -v browser_perf_log_summary)"
+    else
+      target_dir="${CARGO_TARGET_DIR:-}"
+      if [[ -z "${target_dir}" ]]; then
+        target_dir="${repo_root}/target"
+      elif [[ "${target_dir}" != /* ]]; then
+        target_dir="${repo_root}/${target_dir}"
+      fi
+      for profile in release debug; do
+        candidate="${target_dir}/${profile}/browser_perf_log_summary${exe_suffix}"
+        if [[ -x "${candidate}" ]]; then
+          summary_bin="${candidate}"
+          break
+        fi
+      done
+    fi
+
+    if [[ -z "${summary_bin}" ]]; then
+      echo "capture_browser_perf_log: browser_perf_log_summary not found; build it with:" >&2
+      echo "  bash scripts/cargo_agent.sh build --release --bin browser_perf_log_summary" >&2
+    else
+      echo "capture_browser_perf_log: running summary (${summary_bin})..." >&2
+      set +e
+      timeout -k 10 600 bash "${repo_root}/scripts/run_limited.sh" --as 64G -- \
+        "${summary_bin}" --input "${out_path}" 1>&2
+      summary_status=$?
+      set -e
+      if [[ "${summary_status}" -ne 0 ]]; then
+        echo "capture_browser_perf_log: warning: browser_perf_log_summary exited with ${summary_status}" >&2
+      fi
     fi
   fi
 fi
 
-exit "${browser_status}"
+exit "${status}"
