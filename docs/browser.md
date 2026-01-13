@@ -139,6 +139,9 @@ JS (and still used heavily by the browser UI for hit-testing and form interactio
 - built-in `about:*` pages (see [about_pages.md](about_pages.md)): `about:newtab`, `about:settings`,
   `about:blank`, `about:error`, `about:help`, `about:version`, `about:gpu`, `about:processes`,
   `about:history`, `about:bookmarks`
+  - `about:processes` is a multiprocess/process-assignment debugging page: today it shows a
+    best-effort open-tabs snapshot and a derived Site column; future work will surface real
+    renderer/network process assignment.
 
 These interactions are exercised by the headless UI worker integration tests; the windowed `browser`
 app uses the same `UiToWorker`/`WorkerToUi` message protocol via the browser UI worker thread
