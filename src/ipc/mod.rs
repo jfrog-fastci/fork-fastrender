@@ -20,6 +20,8 @@ pub mod pixels;
 pub mod protocol;
 pub mod received_frame;
 pub mod shm;
+#[cfg(unix)]
+pub mod validate;
 pub mod sync;
 pub mod types;
 pub mod websocket;
