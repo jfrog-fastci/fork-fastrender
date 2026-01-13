@@ -88,10 +88,10 @@ test(() => {
 
   assert_array_equals(Array.from(list.values()), [a, b], "Array.from(values())");
   assert_array_equals(Array.from(list.keys()), [0, 1], "Array.from(keys())");
-  assert_array_equals(Array.from(list.entries()), [
-    [0, a],
-    [1, b],
-  ]);
+  const entries = Array.from(list.entries());
+  assert_equals(entries.length, 2);
+  assert_array_equals(entries[0], [0, a]);
+  assert_array_equals(entries[1], [1, b]);
 
   const visited = [];
   list.forEach((node) => visited.push(node));
