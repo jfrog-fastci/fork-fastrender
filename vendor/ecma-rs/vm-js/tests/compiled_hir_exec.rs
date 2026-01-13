@@ -3899,6 +3899,33 @@ fn compiled_function_default_initializer_can_read_arguments() -> Result<(), VmEr
 }
 
 #[test]
+fn compiled_strict_arguments_callee_is_poison_pill() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){
+        'use strict';
+        try { arguments.callee; } catch (e) { return e.name; }
+        return "did not throw";
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string result, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "TypeError");
+  Ok(())
+}
+
+#[test]
 fn compiled_rest_parameters_collect_remaining_args() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
