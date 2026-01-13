@@ -24,9 +24,57 @@ fn data_desc(value: Value) -> PropertyDescriptor {
   }
 }
 
+fn const_desc(value: Value) -> PropertyDescriptor {
+  // WebIDL `const`: non-writable, enumerable, non-configurable.
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: false,
+    kind: PropertyKind::Data {
+      value,
+      writable: false,
+    },
+  }
+}
+
 fn method_desc(value: Value) -> PropertyDescriptor {
   // Prototype methods are writable, non-enumerable, configurable.
   data_desc(value)
+}
+
+/// DOMException "legacy codes" as specified by the DOM Standard.
+///
+/// <https://dom.spec.whatwg.org/#dom-domexception-code>
+fn legacy_code_for_dom_exception_name(name: &str) -> u16 {
+  match name {
+    // Keep the mapping table reasonably complete so callers can use `new_instance` for other
+    // DOMException names (e.g. DataCloneError).
+    "IndexSizeError" => 1,
+    "DOMStringSizeError" => 2,
+    "HierarchyRequestError" => 3,
+    "WrongDocumentError" => 4,
+    "InvalidCharacterError" => 5,
+    "NoDataAllowedError" => 6,
+    "NoModificationAllowedError" => 7,
+    "NotFoundError" => 8,
+    "NotSupportedError" => 9,
+    "InUseAttributeError" => 10,
+    "InvalidStateError" => 11,
+    "SyntaxError" => 12,
+    "InvalidModificationError" => 13,
+    "NamespaceError" => 14,
+    "InvalidAccessError" => 15,
+    "ValidationError" => 16,
+    "TypeMismatchError" => 17,
+    "SecurityError" => 18,
+    "NetworkError" => 19,
+    "AbortError" => 20,
+    "URLMismatchError" => 21,
+    "QuotaExceededError" => 22,
+    "TimeoutError" => 23,
+    "InvalidNodeTypeError" => 24,
+    "DataCloneError" => 25,
+    _ => 0,
+  }
 }
 
 impl DomExceptionClassVmJs {
@@ -112,6 +160,41 @@ impl DomExceptionClassVmJs {
       method_desc(Value::Object(to_string_fn)),
     )?;
 
+    // Legacy `DOMException.*_ERR` constants.
+    // These are often used by older libraries.
+    for (name, code) in [
+      ("INDEX_SIZE_ERR", 1u16),
+      ("DOMSTRING_SIZE_ERR", 2u16),
+      ("HIERARCHY_REQUEST_ERR", 3u16),
+      ("WRONG_DOCUMENT_ERR", 4u16),
+      ("INVALID_CHARACTER_ERR", 5u16),
+      ("NO_DATA_ALLOWED_ERR", 6u16),
+      ("NO_MODIFICATION_ALLOWED_ERR", 7u16),
+      ("NOT_FOUND_ERR", 8u16),
+      ("NOT_SUPPORTED_ERR", 9u16),
+      ("INUSE_ATTRIBUTE_ERR", 10u16),
+      ("INVALID_STATE_ERR", 11u16),
+      ("SYNTAX_ERR", 12u16),
+      ("INVALID_MODIFICATION_ERR", 13u16),
+      ("NAMESPACE_ERR", 14u16),
+      ("INVALID_ACCESS_ERR", 15u16),
+      ("VALIDATION_ERR", 16u16),
+      ("TYPE_MISMATCH_ERR", 17u16),
+      ("SECURITY_ERR", 18u16),
+      ("NETWORK_ERR", 19u16),
+      ("ABORT_ERR", 20u16),
+      ("URL_MISMATCH_ERR", 21u16),
+      ("QUOTA_EXCEEDED_ERR", 22u16),
+      ("TIMEOUT_ERR", 23u16),
+      ("INVALID_NODE_TYPE_ERR", 24u16),
+      ("DATA_CLONE_ERR", 25u16),
+    ] {
+      let key_s = scope.alloc_string(name)?;
+      scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      scope.define_property(ctor, key, const_desc(Value::Number(code as f64)))?;
+    }
+
     // Expose DOMException on the global object.
     scope.define_property(global, key_dom_exception, data_desc(Value::Object(ctor)))?;
 
@@ -157,6 +240,12 @@ impl DomExceptionClassVmJs {
     scope.push_root(Value::String(key_message_s))?;
     let key_message = PropertyKey::from_string(key_message_s);
     scope.define_property(obj, key_message, data_desc(Value::String(message_s)))?;
+
+    let code = legacy_code_for_dom_exception_name(name);
+    let key_code_s = scope.alloc_string("code")?;
+    scope.push_root(Value::String(key_code_s))?;
+    let key_code = PropertyKey::from_string(key_code_s);
+    scope.define_property(obj, key_code, data_desc(Value::Number(code as f64)))?;
 
     Ok(Value::Object(obj))
   }
@@ -272,6 +361,13 @@ fn dom_exception_create_instance(
   scope.push_root(Value::String(key_message_s))?;
   let key_message = PropertyKey::from_string(key_message_s);
   scope.define_property(obj, key_message, data_desc(Value::String(message_s)))?;
+
+  let name_utf8 = scope.heap().get_string(name_s)?.to_utf8_lossy();
+  let code = legacy_code_for_dom_exception_name(name_utf8.as_ref());
+  let key_code_s = scope.alloc_string("code")?;
+  scope.push_root(Value::String(key_code_s))?;
+  let key_code = PropertyKey::from_string(key_code_s);
+  scope.define_property(obj, key_code, data_desc(Value::Number(code as f64)))?;
 
   Ok(Value::Object(obj))
 }
@@ -440,6 +536,13 @@ mod tests {
       .to_utf8_lossy()
   }
 
+  fn as_f64(value: Value) -> f64 {
+    let Value::Number(n) = value else {
+      panic!("expected number, got {value:?}");
+    };
+    n
+  }
+
   #[test]
   fn dom_exception_constructs_and_has_name_message_and_to_string() -> Result<(), VmError> {
     let mut vm = Vm::new(VmOptions::default());
@@ -487,6 +590,11 @@ mod tests {
       let message_value = vm.get(&mut scope, obj_handle, message_key)?;
       assert_eq!(as_utf8(&scope, message_value), "m");
 
+      // .code === 12
+      let code_key = key(&mut scope, "code")?;
+      let code_value = vm.get(&mut scope, obj_handle, code_key)?;
+      assert_eq!(as_f64(code_value), 12.0);
+
       // toString() === "SyntaxError: m"
       let to_string_key = key(&mut scope, "toString")?;
       let to_string_fn = vm.get(&mut scope, obj_handle, to_string_key)?;
@@ -511,6 +619,84 @@ mod tests {
       let PropertyKind::Data { .. } = message_desc.kind else {
         panic!("expected message to be a data property");
       };
+
+      let code_desc = scope
+        .heap()
+        .object_get_own_property(obj_handle, &code_key)?
+        .expect("expected own code property");
+      assert!(!code_desc.enumerable);
+      let PropertyKind::Data { .. } = code_desc.kind else {
+        panic!("expected code to be a data property");
+      };
+    }
+
+    realm.teardown(&mut heap);
+
+    Ok(())
+  }
+
+  #[test]
+  fn dom_exception_from_dom_exception_has_code_and_constants() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let class = {
+      let mut scope = heap.scope();
+      DomExceptionClassVmJs::install(&mut vm, &mut scope, &realm)?
+    };
+
+    {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(class.constructor))?;
+
+      let err = DomException::invalid_state_error("bad state");
+      let obj = class.from_dom_exception(&mut scope, &err)?;
+      scope.push_root(obj)?;
+      let Value::Object(obj_handle) = obj else {
+        panic!("expected DOMException instance to be an object, got {obj:?}");
+      };
+
+      let realm_id = realm.id();
+      let mut vm = vm
+        .execution_context_guard(ExecutionContext {
+          realm: realm_id,
+          script_or_module: None,
+        })?;
+
+      let name_key = key(&mut scope, "name")?;
+      let name_value = vm.get(&mut scope, obj_handle, name_key)?;
+      assert_eq!(as_utf8(&scope, name_value), "InvalidStateError");
+
+      let message_key = key(&mut scope, "message")?;
+      let message_value = vm.get(&mut scope, obj_handle, message_key)?;
+      assert_eq!(as_utf8(&scope, message_value), "bad state");
+
+      let code_key = key(&mut scope, "code")?;
+      let code_value = vm.get(&mut scope, obj_handle, code_key)?;
+      assert_eq!(as_f64(code_value), 11.0);
+
+      // DOMException.INVALID_STATE_ERR === 11
+      let invalid_state_err_key = key(&mut scope, "INVALID_STATE_ERR")?;
+      let invalid_state_err_value = vm.get(&mut scope, class.constructor, invalid_state_err_key)?;
+      assert_eq!(as_f64(invalid_state_err_value), 11.0);
+
+      // DOMException.SYNTAX_ERR === 12
+      let syntax_err_key = key(&mut scope, "SYNTAX_ERR")?;
+      let syntax_err_value = vm.get(&mut scope, class.constructor, syntax_err_key)?;
+      assert_eq!(as_f64(syntax_err_value), 12.0);
+
+      // Verify property attributes for a legacy constant: enumerable, non-configurable, non-writable.
+      let desc = scope
+        .heap()
+        .object_get_own_property(class.constructor, &invalid_state_err_key)?
+        .expect("expected DOMException.INVALID_STATE_ERR to exist");
+      assert!(desc.enumerable);
+      assert!(!desc.configurable);
+      let PropertyKind::Data { writable, .. } = desc.kind else {
+        panic!("expected DOMException.INVALID_STATE_ERR to be a data property");
+      };
+      assert!(!writable);
     }
 
     realm.teardown(&mut heap);
