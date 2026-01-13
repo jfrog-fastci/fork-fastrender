@@ -1391,6 +1391,30 @@ where
           inner_node_size.width
         }
       };
+      // Rerun detection probes can be expensive. Build prefix sums for the track predicates we
+      // need so per-item checks are O(1) instead of O(span).
+      let mut prefix_flex_probe_relevant: Vec<u32> = Vec::with_capacity(columns.len() + 1);
+      let mut prefix_nonflex_probe_relevant: Vec<u32> = Vec::with_capacity(columns.len() + 1);
+      prefix_flex_probe_relevant.push(0);
+      prefix_nonflex_probe_relevant.push(0);
+      let mut running_flex = 0u32;
+      let mut running_nonflex = 0u32;
+      for track in columns.iter() {
+        let flex_relevant =
+          track.is_flexible() && track.min_track_sizing_function.is_intrinsic();
+        let nonflex_relevant = track.min_track_sizing_function.is_intrinsic()
+          || !track
+            .max_track_sizing_function
+            .has_definite_value(column_percentage_basis(track));
+
+        running_flex += u32::from(flex_relevant);
+        running_nonflex += u32::from(nonflex_relevant);
+        prefix_flex_probe_relevant.push(running_flex);
+        prefix_nonflex_probe_relevant.push(running_nonflex);
+      }
+      let range_has_any = |prefix: &[u32], start: usize, end: usize| -> bool {
+        prefix[end] - prefix[start] > 0
+      };
 
       let min_content_contribution_changed = items
         .iter_mut()
@@ -1407,18 +1431,11 @@ where
           // In the non-flex batch, min-content contributions can affect both:
           // - base sizes via intrinsic minimums / content-based minimums (11.5.1 / 11.5.2)
           // - growth limits via intrinsic maximums (11.5.5)
-          let spanned_tracks = &columns[item.track_range_excluding_lines(AbstractAxis::Inline)];
+          let range = item.track_range_excluding_lines(AbstractAxis::Inline);
           if item.crosses_flexible_column {
-            spanned_tracks.iter().any(|track| {
-              track.is_flexible() && track.min_track_sizing_function.is_intrinsic()
-            })
+            range_has_any(&prefix_flex_probe_relevant, range.start, range.end)
           } else {
-            spanned_tracks.iter().any(|track| {
-              track.min_track_sizing_function.is_intrinsic()
-                || !track
-                  .max_track_sizing_function
-                  .has_definite_value(column_percentage_basis(track))
-            })
+            range_has_any(&prefix_nonflex_probe_relevant, range.start, range.end)
           }
         })
         .any(|item| {
@@ -1533,6 +1550,28 @@ where
           inner_node_size.height
         }
       };
+      let mut prefix_flex_probe_relevant: Vec<u32> = Vec::with_capacity(rows.len() + 1);
+      let mut prefix_nonflex_probe_relevant: Vec<u32> = Vec::with_capacity(rows.len() + 1);
+      prefix_flex_probe_relevant.push(0);
+      prefix_nonflex_probe_relevant.push(0);
+      let mut running_flex = 0u32;
+      let mut running_nonflex = 0u32;
+      for track in rows.iter() {
+        let flex_relevant =
+          track.is_flexible() && track.min_track_sizing_function.is_intrinsic();
+        let nonflex_relevant = track.min_track_sizing_function.is_intrinsic()
+          || !track
+            .max_track_sizing_function
+            .has_definite_value(row_percentage_basis(track));
+
+        running_flex += u32::from(flex_relevant);
+        running_nonflex += u32::from(nonflex_relevant);
+        prefix_flex_probe_relevant.push(running_flex);
+        prefix_nonflex_probe_relevant.push(running_nonflex);
+      }
+      let range_has_any = |prefix: &[u32], start: usize, end: usize| -> bool {
+        prefix[end] - prefix[start] > 0
+      };
 
       let min_content_contribution_changed = items
         .iter_mut()
@@ -1546,18 +1585,11 @@ where
           //   *minimum* sizing function is intrinsic (11.5.1/11.5.2). Growth-limit steps do not run.
           // - In the non-flex batch, min-content contributions can influence both base sizes (11.5.1/11.5.2)
           //   and growth limits (11.5.5).
-          let spanned_tracks = &rows[item.track_range_excluding_lines(AbstractAxis::Block)];
+          let range = item.track_range_excluding_lines(AbstractAxis::Block);
           if item.crosses_flexible_row {
-            spanned_tracks.iter().any(|track| {
-              track.is_flexible() && track.min_track_sizing_function.is_intrinsic()
-            })
+            range_has_any(&prefix_flex_probe_relevant, range.start, range.end)
           } else {
-            spanned_tracks.iter().any(|track| {
-              track.min_track_sizing_function.is_intrinsic()
-                || !track
-                  .max_track_sizing_function
-                  .has_definite_value(row_percentage_basis(track))
-            })
+            range_has_any(&prefix_nonflex_probe_relevant, range.start, range.end)
           }
         })
         .any(|item| {
