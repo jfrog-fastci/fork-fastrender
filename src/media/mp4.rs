@@ -349,7 +349,9 @@ fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
     // `stsz.sample_count` is a u32, so sample tables should always fit.
     sample_indices_by_pts.push(i as u32);
   }
-  sample_indices_by_pts.sort_by_key(|&i| (pts_ns_by_sample[i as usize], i));
+  // We don't require stable ordering because we include the sample index as a tiebreaker (unique
+  // key), so `sort_unstable_by_key` avoids the extra scratch allocations of the stable sort.
+  sample_indices_by_pts.sort_unstable_by_key(|&i| (pts_ns_by_sample[i as usize], i));
 
   PtsIndex::Sorted { sample_indices_by_pts }
 }
