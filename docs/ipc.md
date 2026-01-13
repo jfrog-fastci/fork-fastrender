@@ -187,6 +187,7 @@ These caps are **security limits**; do not increase casually. Keep the sender + 
 | Browser ↔ renderer (stdio + bincode, dev) | 64 MiB | `fastrender_ipc::MAX_IPC_MESSAGE_BYTES` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) (checked in [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs)) |
 | Generic framing helper (`read_frame`/`write_frame`) | 8 MiB | `crate::ipc::framing::MAX_IPC_MESSAGE_BYTES` in [`src/ipc/framing.rs`](../src/ipc/framing.rs) |
 | Browser ↔ network (`IpcResourceFetcher`, JSON over TCP) | 128 MiB | `IPC_MAX_FRAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Browser ↔ network (`network` subprocess prototype, JSON over TCP) | **UNBOUNDED (unsafe)** | `src/network_process/ipc.rs` frames are length-prefixed but do not enforce a maximum (allocates based on declared length) |
 
 Repo reality warning: the prototype network subprocess framing helpers in
 [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) do **not** currently enforce a maximum
