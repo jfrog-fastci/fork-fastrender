@@ -4841,4 +4841,72 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn async_shift_compound_assignments_support_await_and_private_ordering() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // Keep this relatively small to exercise GC paths while still leaving headroom for async/Promise
+    // machinery. (This matches other async-focused unit tests in this module.)
+    let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+    rt.exec_script(
+      r#"
+        var log = [];
+        var obj = {
+          get x() { log.push("get"); return 1; },
+          set x(v) { log.push("set:" + v); },
+        };
+
+        var a = 1;
+        var b = 8;
+        var c = -1;
+        var d = 4n;
+        var e = 4n;
+        var m = 1n;
+        var err = null;
+        var err2 = null;
+
+        async function f() {
+          // Ensure compound assignment evaluation order: GetValue(obj.x) before evaluating RHS.
+          obj.x <<= await (log.push("rhs"), Promise.resolve(1));
+
+          a <<= await Promise.resolve(2);
+          b >>= await Promise.resolve(1);
+          c >>>= await Promise.resolve(1);
+          d <<= await Promise.resolve(1n);
+
+          try { e >>>= await Promise.resolve(1n); } catch (ex) { err = ex; }
+          try { m <<= await Promise.resolve(1); } catch (ex) { err2 = ex; }
+        }
+      "#,
+    )?;
+
+    rt.exec_script("f()")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let log_value = rt.exec_script("log.join(',')")?;
+    assert_eq!(value_to_string(&rt, log_value), "get,rhs,set:2");
+
+    assert_eq!(rt.exec_script("a")?, Value::Number(4.0));
+    assert_eq!(rt.exec_script("b")?, Value::Number(4.0));
+    assert_eq!(rt.exec_script("c")?, Value::Number(2147483647.0));
+
+    let d_str = rt.exec_script("d.toString()")?;
+    assert_eq!(value_to_string(&rt, d_str), "8");
+
+    let err_msg = rt.exec_script("err && err.message")?;
+    assert_eq!(
+      value_to_string(&rt, err_msg),
+      "BigInt does not support unsigned right shift"
+    );
+
+    let err2_msg = rt.exec_script("err2 && err2.message")?;
+    assert_eq!(
+      value_to_string(&rt, err2_msg),
+      "Cannot mix BigInt and other types"
+    );
+
+    Ok(())
+  }
 }
