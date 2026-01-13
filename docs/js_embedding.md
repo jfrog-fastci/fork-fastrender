@@ -155,7 +155,7 @@ see [`docs/live_rendering_loop.md`](live_rendering_loop.md) for:
 
 - `run_event_loop_until_idle` (tasks/microtasks/timers + `requestIdleCallback`; no rAF; no render),
 - `tick_frame` (step-wise; returns a `Pixmap` when pixels change),
-- `run_until_stable` (deterministic convergence: drains tasks + rAF + renders),
+- `run_until_stable` (deterministic convergence: drains tasks/microtasks/timers/idle callbacks + rAF + renders),
 - how to wake a sleeping host when background threads queue work via `ExternalTaskQueueHandle`,
 - and why `requestAnimationFrame` callbacks run on the **frame schedule**, not during
   `run_event_loop_until_idle`.

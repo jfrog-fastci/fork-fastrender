@@ -98,7 +98,7 @@ live-loop discussion below for wake/sleep strategy).
 
 `run_until_stable(max_frames)` is a deterministic “settle the world” helper:
 
-1. drain tasks/microtasks/timers until idle (bounded by JS run limits),
+1. drain tasks/microtasks/timers/idle callbacks until idle (bounded by JS run limits),
 2. run one animation frame turn (drain rAF callbacks),
 3. run the **microtask checkpoint after rAF**,
 4. render if needed,
@@ -160,7 +160,8 @@ loop {
     }
 
     // Use `next_wake_time()` as a sleep hint: it returns the earliest event-loop timestamp at which
-    // calling `tick_frame()` would make progress (tasks/microtasks, due timers, or an rAF turn).
+    // calling `tick_frame()` would make progress (tasks/microtasks/idle callbacks, due timers, or
+    // an rAF turn).
     //
     // This does not replace external wakeups (input/network); embedders should still wake the loop
     // when external events arrive and then call `tick_frame()` again.
@@ -180,7 +181,8 @@ returns an **absolute timestamp on that clock** (not “sleep for X”):
 
 It considers:
 
-- **Immediate runnable work**: if tasks/microtasks are runnable now, it returns `Some(now)`.
+- **Immediate runnable work**: if tasks/microtasks/idle callbacks are runnable now, it returns
+  `Some(now)`.
 - (This includes pending `requestIdleCallback` callbacks, which are dispatched as tasks when the
   loop is otherwise idle.)
 - **Timers**: if only timers are pending, it returns the next timer due time (clamped to `>= now`).
