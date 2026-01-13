@@ -15,9 +15,12 @@
 //!   Apple; may be removed in future macOS releases). See [`macos_spawn`] for helpers and
 //!   `FASTR_MACOS_USE_SANDBOX_EXEC=1` gating (ignored when sandboxing is disabled via
 //!   `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_MACOS_RENDERER_SANDBOX=off`).
-//! - **Windows**: renderers are intended to be spawned in an AppContainer (no capabilities) with
-//!   a Job Object configured for kill-on-close and active-process limiting. If AppContainer is
-//!   unavailable, a restricted-token + low-integrity fallback is used (see [`windows`]).
+//! - **Windows**: renderers are intended to be spawned in an AppContainer (no capabilities) with a
+//!   Job Object configured for kill-on-close and active-process limiting, plus handle inheritance
+//!   allowlisting (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`) and process mitigations.
+//!   - Sandbox setup **fails closed by default** (to avoid silent security downgrades).
+//!   - Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt into restricted-token / unsandboxed fallback
+//!     on unsupported hosts (see [`windows`]).
 //!
 //! The current policy is intentionally small and focused:
 //! - deny opening filesystem paths (e.g. `open/openat`)
