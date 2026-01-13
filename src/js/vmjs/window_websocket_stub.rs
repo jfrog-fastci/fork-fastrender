@@ -9,7 +9,6 @@
 use crate::js::window_realm::WindowRealmHost;
 use crate::resource::ResourceFetcher;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::sync::mpsc;
 use vm_js::{Heap, Realm, Vm, VmError};
 

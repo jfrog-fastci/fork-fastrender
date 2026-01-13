@@ -45,6 +45,7 @@ quickjs = ["dep:rquickjs"]
 #
 # This is intentionally non-default so non-macOS CI/builds don't even consider the target.
 macos_sandbox_probe = []
+sandbox_diagnostics = []
 # Direct (in-process) networking. Renderer builds should disable this feature so all network
 # requests are mediated by a separate network/IPC process.
 direct_network = ["dep:reqwest", "dep:ureq"]

@@ -23,6 +23,8 @@
 //! ```
 pub mod inspect;
 pub mod runtime;
+#[cfg(any(debug_assertions, feature = "sandbox_diagnostics"))]
+pub mod sandbox;
 pub mod snapshot;
 pub mod trace;
 pub mod tree_printer;
