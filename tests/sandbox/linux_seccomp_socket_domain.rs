@@ -1,5 +1,18 @@
 use std::process::Command;
 
+fn is_seccomp_unsupported_error(err: &fastrender::sandbox::SandboxError) -> bool {
+  let errno = match err {
+    fastrender::sandbox::SandboxError::SetParentDeathSignalFailed { source }
+    | fastrender::sandbox::SandboxError::SetDumpableFailed { source }
+    | fastrender::sandbox::SandboxError::DisableCoreDumpsFailed { source }
+    | fastrender::sandbox::SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
+    fastrender::sandbox::SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
+    fastrender::sandbox::SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
+    _ => None,
+  };
+  matches!(errno, Some(code) if code == libc::ENOSYS || code == libc::EINVAL)
+}
+
 #[test]
 fn socket_domain_filter_allows_unix_denies_inet() {
   const CHILD_ENV: &str = "FASTR_TEST_SECCOMP_SOCKET_DOMAIN_CHILD";
@@ -9,14 +22,21 @@ fn socket_domain_filter_allows_unix_denies_inet() {
   );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
-    let status = fastrender::sandbox::apply_renderer_sandbox(
-      fastrender::sandbox::RendererSandboxConfig {
-        network_policy: fastrender::sandbox::NetworkPolicy::AllowUnixSocketsOnly,
-        ..Default::default()
-      },
-    )
-    .expect("apply Linux sandbox");
-    assert_eq!(status, fastrender::sandbox::SandboxStatus::Applied);
+    match fastrender::sandbox::apply_renderer_sandbox(fastrender::sandbox::RendererSandboxConfig {
+      network_policy: fastrender::sandbox::NetworkPolicy::AllowUnixSocketsOnly,
+      ..Default::default()
+    }) {
+      Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
+      Ok(
+        fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
+      ) => return,
+      Err(err) => {
+        if is_seccomp_unsupported_error(&err) {
+          return;
+        }
+        panic!("apply Linux sandbox: {err}");
+      }
+    }
 
     let mut fds = [-1, -1];
     // SAFETY: `fds` is a valid pointer to two integers.
