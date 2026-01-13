@@ -49,6 +49,12 @@ impl Job {
   ///
   /// If `name` is `None`, an unnamed job is created.
   pub fn new(name: Option<&str>) -> Result<Self> {
+    if let Some(name) = name {
+      if name.chars().any(|c| c == '\0') {
+        return Err(WinSandboxError::InteriorNul { arg: "job_name" });
+      }
+    }
+
     let name_wide;
     let name_ptr = if let Some(name) = name {
       name_wide = OsStr::new(name)
