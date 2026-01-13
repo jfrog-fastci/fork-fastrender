@@ -28,6 +28,7 @@ pub enum TaskSource {
   DOMManipulation,
   Timer,
   MediaQueryList,
+  IdleCallback,
 }
 
 fn task_source_name(source: TaskSource) -> &'static str {
@@ -38,6 +39,7 @@ fn task_source_name(source: TaskSource) -> &'static str {
     TaskSource::DOMManipulation => "DOMManipulation",
     TaskSource::Timer => "Timer",
     TaskSource::MediaQueryList => "MediaQueryList",
+    TaskSource::IdleCallback => "IdleCallback",
   }
 }
 
@@ -194,6 +196,7 @@ pub struct QueueLimits {
   pub max_pending_microtasks: usize,
   pub max_pending_timers: usize,
   pub max_pending_animation_frame_callbacks: usize,
+  pub max_pending_idle_callbacks: usize,
 }
 
 impl QueueLimits {
@@ -203,6 +206,7 @@ impl QueueLimits {
       max_pending_microtasks: usize::MAX,
       max_pending_timers: usize::MAX,
       max_pending_animation_frame_callbacks: usize::MAX,
+      max_pending_idle_callbacks: usize::MAX,
     }
   }
 }
@@ -216,6 +220,7 @@ impl Default for QueueLimits {
       max_pending_microtasks: 100_000,
       max_pending_timers: 100_000,
       max_pending_animation_frame_callbacks: 100_000,
+      max_pending_idle_callbacks: 100_000,
     }
   }
 }
@@ -276,6 +281,12 @@ pub enum RunAnimationFrameOutcome {
 /// without lossy conversions.
 pub type TimerId = i32;
 
+/// JS-visible handle returned by `requestIdleCallback`.
+///
+/// Like timers, the HTML Standard uses integer handles; we use `i32` so this can be exposed to JS
+/// without lossy conversions.
+pub type IdleCallbackId = i32;
+
 /// JS-visible handle returned by `requestAnimationFrame`.
 ///
 /// Like timers, the HTML Standard uses integer handles; we use `i32` so this can be exposed to JS
@@ -302,6 +313,9 @@ type TimerCallback<Host> = Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Res
 type AnimationFrameCallback<Host> =
   Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static>;
 
+type IdleCallback<Host> =
+  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()> + 'static>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerKind {
   Timeout,
@@ -315,6 +329,12 @@ struct TimerState<Host: 'static> {
   due: Duration,
   schedule_seq: u64,
   nesting_level: u32,
+}
+
+struct IdleCallbackState<Host: 'static> {
+  callback: Option<IdleCallback<Host>>,
+  timeout_at: Option<Duration>,
+  schedule_seq: u64,
 }
 
 pub struct EventLoop<Host: 'static> {
@@ -333,6 +353,10 @@ pub struct EventLoop<Host: 'static> {
   next_timer_id: TimerId,
   next_timer_seq: u64,
   timer_nesting_level: u32,
+  idle_callbacks: HashMap<IdleCallbackId, IdleCallbackState<Host>>,
+  idle_callback_queue: VecDeque<IdleCallbackId>,
+  next_idle_callback_id: IdleCallbackId,
+  next_idle_callback_seq: u64,
   animation_frame_callbacks: HashMap<AnimationFrameId, AnimationFrameCallback<Host>>,
   animation_frame_queue: VecDeque<AnimationFrameId>,
   next_animation_frame_id: AnimationFrameId,
@@ -359,6 +383,10 @@ impl<Host: 'static> Default for EventLoop<Host> {
       next_timer_id: 1,
       next_timer_seq: 0,
       timer_nesting_level: 0,
+      idle_callbacks: HashMap::new(),
+      idle_callback_queue: VecDeque::new(),
+      next_idle_callback_id: 1,
+      next_idle_callback_seq: 0,
       animation_frame_callbacks: HashMap::new(),
       animation_frame_queue: VecDeque::new(),
       next_animation_frame_id: 1,
@@ -521,7 +549,10 @@ impl<Host: 'static> EventLoop<Host> {
   ///
   /// This does *not* consider future timers that are not yet due.
   pub fn is_idle(&self) -> bool {
-    self.task_queues.is_empty() && self.microtask_queue.is_empty() && self.external_task_queue.is_empty()
+    self.task_queues.is_empty()
+      && self.microtask_queue.is_empty()
+      && self.external_task_queue.is_empty()
+      && self.idle_callback_queue.is_empty()
   }
 
   pub fn has_pending_animation_frame_callbacks(&self) -> bool {
@@ -533,6 +564,7 @@ impl<Host: 'static> EventLoop<Host> {
   /// This removes:
   /// - pending tasks and microtasks,
   /// - scheduled timers (including their priority queue entries), and
+  /// - pending `requestIdleCallback` callbacks,
   /// - pending `requestAnimationFrame` callbacks.
   ///
   /// Embeddings can use this when abandoning the current document's execution context (for example
@@ -544,6 +576,8 @@ impl<Host: 'static> EventLoop<Host> {
     self.timers.clear();
     self.timer_queue.clear();
     self.timer_nesting_level = 0;
+    self.idle_callbacks.clear();
+    self.idle_callback_queue.clear();
     self.animation_frame_callbacks.clear();
     self.animation_frame_queue.clear();
     let _ = self.external_task_queue.drain();
@@ -644,6 +678,76 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn clear_interval(&mut self, id: TimerId) {
     self.clear_timeout(id);
+  }
+
+  pub fn request_idle_callback<F>(
+    &mut self,
+    timeout: Option<Duration>,
+    callback: F,
+  ) -> Result<IdleCallbackId>
+  where
+    F: FnOnce(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()> + 'static,
+  {
+    if self.idle_callbacks.len() >= self.queue_limits.max_pending_idle_callbacks {
+      return Err(Error::Other(format!(
+        "EventLoop exceeded max pending idle callbacks (limit={})",
+        self.queue_limits.max_pending_idle_callbacks
+      )));
+    }
+
+    let id: IdleCallbackId = loop {
+      if self.next_idle_callback_id == 0 {
+        self.next_idle_callback_id = 1;
+      }
+      let id = self.next_idle_callback_id;
+      self.next_idle_callback_id = self.next_idle_callback_id.wrapping_add(1);
+      if self.next_idle_callback_id == 0 {
+        self.next_idle_callback_id = 1;
+      }
+      if !self.idle_callbacks.contains_key(&id) {
+        break id;
+      }
+    };
+
+    let now = self.clock.now();
+    let timeout_at = timeout.map(|timeout| now.checked_add(timeout).unwrap_or(Duration::MAX));
+
+    let schedule_seq = self.next_idle_callback_seq;
+    self.next_idle_callback_seq = self.next_idle_callback_seq.wrapping_add(1);
+
+    let mut maybe =
+      Some(Box::new(callback)
+        as Box<
+          dyn FnOnce(&mut Host, &mut EventLoop<Host>, bool, f64) -> Result<()>,
+        >);
+    let callback: IdleCallback<Host> = Box::new(move |host, event_loop, did_timeout, remaining_ms| {
+      let runnable = maybe.take().ok_or_else(|| {
+        Error::Other("requestIdleCallback callback invoked more than once".to_string())
+      })?;
+      runnable(host, event_loop, did_timeout, remaining_ms)
+    });
+
+    self.idle_callbacks.insert(
+      id,
+      IdleCallbackState {
+        callback: Some(callback),
+        timeout_at,
+        schedule_seq,
+      },
+    );
+    self.idle_callback_queue.push_back(id);
+    Ok(id)
+  }
+
+  pub fn cancel_idle_callback(&mut self, id: IdleCallbackId) {
+    self.idle_callbacks.remove(&id);
+    if let Some(idx) = self.idle_callback_queue.iter().position(|queued| *queued == id) {
+      let _ = self.idle_callback_queue.remove(idx);
+    }
+    if self.idle_callbacks.is_empty() {
+      // Avoid accumulating stale handles when all callbacks are gone.
+      self.idle_callback_queue.clear();
+    }
   }
 
   pub fn request_animation_frame<F>(&mut self, callback: F) -> Result<AnimationFrameId>
@@ -831,8 +935,20 @@ impl<Host: 'static> EventLoop<Host> {
 
     self.queue_due_timers()?;
 
-    let Some(task) = self.pop_next_task() else {
-      return Ok(false);
+    let task = match self.pop_next_task() {
+      Some(task) => task,
+      None => {
+        // No normal tasks are queued. If the event loop is otherwise idle, run the next idle
+        // callback (if any) as a task turn.
+        if self.queue_next_idle_callback_if_idle()? {
+          match self.pop_next_task() {
+            Some(task) => task,
+            None => return Ok(false),
+          }
+        } else {
+          return Ok(false);
+        }
+      }
     };
 
     let mut trace_span = self.trace.span("js.task.run", "js");
@@ -1056,6 +1172,12 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        if self
+          .queue_next_idle_callback_if_idle()
+          .map_err(RunStepError::Error)?
+        {
+          continue;
+        }
         return Ok(RunUntilIdleOutcome::Idle);
       }
 
@@ -1083,6 +1205,12 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        if self
+          .queue_next_idle_callback_if_idle()
+          .map_err(RunStepError::Error)?
+        {
+          continue;
+        }
         return Ok(RunUntilIdleOutcome::Idle);
       }
 
@@ -1115,6 +1243,12 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        if self
+          .queue_next_idle_callback_if_idle()
+          .map_err(RunStepError::Error)?
+        {
+          continue;
+        }
         return Ok(RunUntilIdleOutcome::Idle);
       }
 
@@ -1148,6 +1282,12 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
       if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+        if self
+          .queue_next_idle_callback_if_idle()
+          .map_err(RunStepError::Error)?
+        {
+          continue;
+        }
         return Ok(RunUntilIdleOutcome::Idle);
       }
 
@@ -1179,7 +1319,11 @@ impl<Host: 'static> EventLoop<Host> {
     // `run_until_idle` is used for bounded execution. If we pop first and then hit `MaxTasks`,
     // we'd effectively drop the task from the queue, which is incorrect (and can break
     // determinism/correctness for embeddings that resume the event loop later).
-    if self.task_queues.is_empty() {
+    if self.task_queues.is_empty()
+      && !self
+        .queue_next_idle_callback_if_idle()
+        .map_err(RunStepError::Error)?
+    {
       return Ok(false);
     }
 
@@ -1238,7 +1382,11 @@ impl<Host: 'static> EventLoop<Host> {
     self.queue_due_timers().map_err(RunStepError::Error)?;
 
     // Same reasoning as `run_next_task_limited`: don't drop tasks when we hit `MaxTasks`.
-    if self.task_queues.is_empty() {
+    if self.task_queues.is_empty()
+      && !self
+        .queue_next_idle_callback_if_idle()
+        .map_err(RunStepError::Error)?
+    {
       return Ok(false);
     }
 
@@ -1637,6 +1785,7 @@ impl<Host: 'static> EventLoop<Host> {
     // Drain any tasks queued from other threads (e.g. WebSocket network callbacks) into the normal
     // task queues before determining what work is runnable.
     self.drain_external_tasks()?;
+    self.queue_due_idle_callbacks()?;
     let now = self.clock.now();
     while let Some(Reverse((due, schedule_seq, id))) = self.timer_queue.peek().copied() {
       if due > now {
@@ -1658,6 +1807,105 @@ impl<Host: 'static> EventLoop<Host> {
       })?;
     }
     Ok(())
+  }
+
+  fn queue_due_idle_callbacks(&mut self) -> Result<()> {
+    let now = self.clock.now();
+    if self.idle_callback_queue.is_empty() {
+      return Ok(());
+    }
+
+    // Promote any timed-out idle callbacks into the normal task queue so they can run even when
+    // regular tasks keep the event loop busy.
+    let mut due: Vec<IdleCallbackId> = Vec::new();
+    self.idle_callback_queue.retain(|id| {
+      let Some(state) = self.idle_callbacks.get(id) else {
+        return false;
+      };
+      if state.timeout_at.is_some_and(|t| t <= now) {
+        due.push(*id);
+        return false;
+      }
+      true
+    });
+
+    for id in due {
+      let Some(state) = self.idle_callbacks.get(&id) else {
+        continue;
+      };
+      let schedule_seq = state.schedule_seq;
+      self.queue_task(TaskSource::IdleCallback, move |host, event_loop| {
+        event_loop.fire_idle_callback(host, id, schedule_seq)
+      })?;
+    }
+
+    Ok(())
+  }
+
+  fn queue_next_idle_callback_if_idle(&mut self) -> Result<bool> {
+    if self.idle_callback_queue.is_empty() {
+      return Ok(false);
+    }
+    // Only run non-timed-out idle callbacks when the event loop is otherwise idle: no pending
+    // tasks or microtasks.
+    if !self.task_queues.is_empty() || !self.microtask_queue.is_empty() {
+      return Ok(false);
+    }
+
+    let Some(id) = self.idle_callback_queue.pop_front() else {
+      return Ok(false);
+    };
+    let Some(state) = self.idle_callbacks.get(&id) else {
+      return Ok(false);
+    };
+    let schedule_seq = state.schedule_seq;
+    self.queue_task(TaskSource::IdleCallback, move |host, event_loop| {
+      event_loop.fire_idle_callback(host, id, schedule_seq)
+    })?;
+    Ok(true)
+  }
+
+  fn fire_idle_callback(
+    &mut self,
+    host: &mut Host,
+    id: IdleCallbackId,
+    schedule_seq: u64,
+  ) -> Result<()> {
+    let Some(mut state) = self.idle_callbacks.remove(&id) else {
+      return Ok(());
+    };
+    if state.schedule_seq != schedule_seq {
+      // Stale task for a cleared/reused handle.
+      return Ok(());
+    }
+
+    let now = self.clock.now();
+    let did_timeout = state.timeout_at.is_some_and(|t| t <= now);
+
+    let remaining_ms: f64 = if did_timeout {
+      0.0
+    } else {
+      const DEFAULT_IDLE_BUDGET: Duration = Duration::from_millis(50);
+      let mut remaining = DEFAULT_IDLE_BUDGET;
+      if let Some(next_due) = self.next_timer_due_time() {
+        let until_next = next_due.saturating_sub(now);
+        remaining = remaining.min(until_next);
+      }
+      duration_to_ms_f64(remaining).max(0.0)
+    };
+
+    let Some(mut callback) = state.callback.take() else {
+      return Err(Error::Other(
+        "Idle callback missing while callback is active".to_string(),
+      ));
+    };
+
+    if self.idle_callbacks.is_empty() {
+      // Avoid accumulating stale handles when all callbacks are gone.
+      self.idle_callback_queue.clear();
+    }
+
+    (callback)(host, self, did_timeout, remaining_ms)
   }
 
   fn fire_timer(&mut self, host: &mut Host, id: TimerId, generation: u64) -> Result<()> {
@@ -3277,6 +3525,7 @@ mod tests {
       max_pending_microtasks: 1,
       max_pending_timers: 1,
       max_pending_animation_frame_callbacks: 1,
+      max_pending_idle_callbacks: 1,
     });
 
     event_loop

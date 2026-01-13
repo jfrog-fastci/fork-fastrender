@@ -8,7 +8,7 @@
 //! String handlers are intentionally rejected with a `TypeError` for now to avoid string-eval and
 //! keep behavior deterministic.
 
-use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
+use crate::js::event_loop::{EventLoop, IdleCallbackId, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
@@ -24,7 +24,7 @@ use vm_js::{
   ExecutionContext, Heap, HostDefined, ImportMetaProperty, Job, JobCallback, ModuleGraph, ModuleId,
   ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseHandle, PromiseRejectionOperation,
   PromiseState, PropertyDescriptor, PropertyKey, PropertyKind, RealmId, RootId, Scope, StackFrame,
-  Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
+  Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, NativeFunctionId,
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
@@ -38,8 +38,11 @@ pub(crate) const QUEUE_MICROTASK_STRING_HANDLER_ERROR: &str =
   "queueMicrotask does not currently support string callbacks";
 pub(crate) const QUEUE_MICROTASK_NOT_CALLABLE_ERROR: &str =
   "queueMicrotask callback is not callable";
+pub(crate) const REQUEST_IDLE_CALLBACK_NOT_CALLABLE_ERROR: &str =
+  "requestIdleCallback callback is not callable";
 
 const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
+const IDLE_CALLBACK_REGISTRY_KEY: &str = "__fastrender_idle_callback_registry";
 // Internal copy of `queueMicrotask` used by host shims that need to schedule microtasks without
 // being affected by user scripts overwriting `globalThis.queueMicrotask`.
 pub(crate) const INTERNAL_QUEUE_MICROTASK_KEY: &str = "__fastrender_queue_microtask";
@@ -52,6 +55,9 @@ const TIMER_GLOBAL_SLOT: usize = 0;
 // Native slot index on `import.meta.resolve` host functions that stores the base URL string
 // (or `undefined` when no base URL is available).
 const IMPORT_META_RESOLVE_BASE_URL_SLOT: usize = 0;
+// Native slot index on `requestIdleCallback` host function that stores the native call id used for
+// `IdleDeadline.timeRemaining()`.
+const REQUEST_IDLE_CALLBACK_TIME_REMAINING_CALL_ID_SLOT: usize = 1;
 
 fn hooks_payload_mut<'a>(hooks: &'a mut dyn VmHostHooks) -> Option<&'a mut VmJsHostHooksPayload> {
   let any = hooks.as_any_mut()?;
@@ -449,6 +455,24 @@ fn get_timer_registry(
     Some(Value::Object(obj)) => Ok(obj),
     _ => Err(VmError::Unimplemented(
       "timer registry missing on global object",
+    )),
+  }
+}
+
+fn get_idle_callback_registry(
+  scope: &mut Scope<'_>,
+  global: vm_js::GcObject,
+) -> Result<vm_js::GcObject, VmError> {
+  let key_s = scope.alloc_string(IDLE_CALLBACK_REGISTRY_KEY)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  match scope
+    .heap()
+    .object_get_own_data_property_value(global, &key)?
+  {
+    Some(Value::Object(obj)) => Ok(obj),
+    _ => Err(VmError::Unimplemented(
+      "idle callback registry missing on global object",
     )),
   }
 }
@@ -2260,7 +2284,281 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   Ok(Value::Undefined)
 }
 
-/// Install `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval`/`queueMicrotask` on the JS global.
+// --- requestIdleCallback / cancelIdleCallback ---
+
+const IDLE_DEADLINE_TIME_REMAINING_VALUE_SLOT: usize = 0;
+
+fn request_idle_callback_time_remaining_call_id_from_callee(
+  scope: &Scope<'_>,
+  callee: vm_js::GcObject,
+) -> Result<NativeFunctionId, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  match slots
+    .get(REQUEST_IDLE_CALLBACK_TIME_REMAINING_CALL_ID_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Number(n) if n.is_finite() && n >= 0.0 && n <= u32::MAX as f64 => {
+      Ok(NativeFunctionId(n as u32))
+    }
+    _ => Err(VmError::InvariantViolation(
+      "requestIdleCallback missing timeRemaining native call id slot",
+    )),
+  }
+}
+
+fn idle_deadline_time_remaining_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let remaining = match slots
+    .get(IDLE_DEADLINE_TIME_REMAINING_VALUE_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined)
+  {
+    Value::Number(n) if n.is_finite() && !n.is_nan() && n >= 0.0 => n,
+    _ => 0.0,
+  };
+  Ok(Value::Number(remaining))
+}
+
+fn make_idle_deadline_object(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  did_timeout: bool,
+  time_remaining_ms: f64,
+  time_remaining_call_id: NativeFunctionId,
+) -> Result<vm_js::GcObject, VmError> {
+  let mut scope = scope.reborrow();
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let did_timeout_key = alloc_key(&mut scope, "didTimeout")?;
+  scope.define_property(obj, did_timeout_key, data_desc(Value::Bool(did_timeout)))?;
+
+  let mut remaining = time_remaining_ms;
+  if !remaining.is_finite() || remaining.is_nan() || remaining < 0.0 {
+    remaining = 0.0;
+  }
+
+  let name_s = scope.alloc_string("timeRemaining")?;
+  scope.push_root(Value::String(name_s))?;
+  let slots = [Value::Number(remaining)];
+  let func = scope.alloc_native_function_with_slots(
+    time_remaining_call_id,
+    None,
+    name_s,
+    0,
+    &slots,
+  )?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope.heap_mut().object_set_prototype(func, Some(intrinsics.function_prototype()))?;
+  }
+  scope.push_root(Value::Object(func))?;
+
+  let time_remaining_key = alloc_key(&mut scope, "timeRemaining")?;
+  scope.define_property(obj, time_remaining_key, data_desc(Value::Object(func)))?;
+
+  Ok(obj)
+}
+
+fn request_idle_callback_native<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !is_callable(scope, callback) {
+    return Err(throw_type_error(REQUEST_IDLE_CALLBACK_NOT_CALLABLE_ERROR));
+  }
+
+  let mut timeout: Option<Duration> = None;
+  if let Some(Value::Object(options_obj)) = args.get(1).copied() {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(options_obj))?;
+    let timeout_key = alloc_key(&mut scope, "timeout")?;
+    let timeout_value = vm.get_with_host_and_hooks(host, &mut scope, hooks, options_obj, timeout_key)?;
+    if !matches!(timeout_value, Value::Undefined) {
+      let timeout_ms = normalize_delay_ms(scope.heap_mut(), timeout_value)?;
+      timeout = Some(Duration::from_millis(timeout_ms));
+    }
+  }
+
+  let time_remaining_call_id =
+    request_idle_callback_time_remaining_call_id_from_callee(scope, callee)?;
+
+  let global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "requestIdleCallback called with invalid this value",
+  )?;
+  let registry = get_idle_callback_registry(scope, global_obj)?;
+
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
+    return Err(throw_type_error(
+      "requestIdleCallback called without an active EventLoop",
+    ));
+  };
+
+  let id_cell = std::rc::Rc::new(std::cell::Cell::new(0));
+  let id_cell_for_cb = id_cell.clone();
+
+  let id = event_loop
+    .request_idle_callback(timeout, move |host, event_loop, did_timeout, time_remaining_ms| {
+      let id = id_cell_for_cb.get();
+      let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
+      window_realm.reset_interrupt();
+      let budget = window_realm.vm_budget_now();
+      let (vm, heap) = window_realm.vm_and_heap_mut();
+
+      let mut vm = vm.push_budget(budget);
+      let tick_result = vm.tick();
+
+      let call_result = tick_result.and_then(|_| {
+        let mut scope = heap.scope();
+        let deadline_obj = make_idle_deadline_object(
+          &*vm,
+          &mut scope,
+          did_timeout,
+          time_remaining_ms,
+          time_remaining_call_id,
+        )?;
+        vm.call_with_host_and_hooks(
+          vm_host,
+          &mut scope,
+          &mut hooks,
+          callback,
+          Value::Object(global_obj),
+          &[Value::Object(deadline_obj)],
+        )
+        .map(|_| ())
+      });
+
+      let mut callback_threw = false;
+      let mut uncaught_error_payload: Option<UncaughtErrorEventTaskPayload> = None;
+      let result: crate::error::Result<()> = match call_result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+          callback_threw = true;
+          if vm_error_format::vm_error_is_js_exception(&err) {
+            uncaught_error_payload =
+              Some(vm_error_to_uncaught_error_event_task_payload(&mut *vm, heap, err));
+            Ok(())
+          } else {
+            Err(vm_error_to_event_loop_error(heap, err))
+          }
+        }
+      };
+
+      let drain_result: crate::error::Result<()> = {
+        let drain_result = {
+          let mut scope = heap.scope();
+          drain_pending_dataset_mutation_observer_microtasks(
+            &mut vm,
+            &mut scope,
+            vm_host,
+            &mut hooks,
+          )
+        };
+        drain_result
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
+          .map(|_| ())
+      };
+
+      // If the callback succeeded, surface any failure to schedule pending dataset mutation observer
+      // delivery. If the callback already failed, preserve the original error.
+      let mut result = if callback_threw {
+        result
+      } else {
+        match (result, drain_result) {
+          (Ok(()), Err(err)) => Err(err),
+          (other, _) => other,
+        }
+      };
+
+      if let Some(payload) = uncaught_error_payload {
+        let host_error = payload.host_error.clone();
+        let error_root = payload.error_root;
+        if queue_uncaught_error_event_task::<Host>(event_loop, payload).is_err() {
+          if let Some(root) = error_root {
+            heap.remove_root(root);
+          }
+          result = Err(crate::error::Error::Other(host_error));
+        }
+      }
+
+      let finish_err = hooks.finish(&mut *heap);
+      {
+        // Always clear the registry entry for one-shot idle callbacks, even if the callback throws.
+        let mut scope = heap.scope();
+        let _ = clear_registry_entry(&mut scope, registry, id);
+      }
+
+      if let Some(err) = finish_err {
+        return Err(err);
+      }
+
+      result
+    })
+    .map_err(|e| throw_error(scope, &format!("{e}")))?;
+
+  id_cell.set(id);
+  if let Err(err) = store_timer_record(scope, registry, id, callback, &[]) {
+    // If we cannot store the record, the callback value may be GC'd (Rust closures are not traced),
+    // so we must cancel the idle callback to avoid UAF.
+    event_loop.cancel_idle_callback(id);
+    return Err(err);
+  }
+
+  Ok(Value::Number(id as f64))
+}
+
+fn cancel_idle_callback_native<Host: WindowRealmHost + 'static>(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: vm_js::GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+  let id: IdleCallbackId = normalize_timer_id(scope.heap_mut(), id_value)?;
+
+  let global_obj = timer_global_from_this(
+    scope,
+    callee,
+    this,
+    "cancelIdleCallback called with invalid this value",
+  )?;
+  let registry = get_idle_callback_registry(scope, global_obj)?;
+
+  let Some(event_loop) = event_loop_mut_from_hooks::<Host>(hooks) else {
+    return Err(throw_type_error(
+      "cancelIdleCallback called without an active EventLoop",
+    ));
+  };
+  event_loop.cancel_idle_callback(id);
+  let _ = clear_registry_entry(scope, registry, id);
+
+  Ok(Value::Undefined)
+}
+
+/// Install `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval`/`queueMicrotask`/
+/// `requestIdleCallback`/`cancelIdleCallback` on the JS global.
 ///
 /// This should be installed on a `Window`-like realm. The native implementations capture the
 /// global object via native slots so identifier calls (`setTimeout(cb, 0)`) work even though
@@ -2280,6 +2578,13 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::Object(registry))?;
   let registry_key = alloc_key(&mut scope, TIMER_REGISTRY_KEY)?;
   scope.define_property(global, registry_key, data_desc(Value::Object(registry)))?;
+
+  // Internal registry that keeps `requestIdleCallback` callbacks alive until they are fired or
+  // canceled.
+  let idle_registry = scope.alloc_object()?;
+  scope.push_root(Value::Object(idle_registry))?;
+  let idle_registry_key = alloc_key(&mut scope, IDLE_CALLBACK_REGISTRY_KEY)?;
+  scope.define_property(global, idle_registry_key, data_desc(Value::Object(idle_registry)))?;
 
   let global_slots = [Value::Object(global)];
 
@@ -2360,11 +2665,51 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   )?;
   scope.push_root(Value::Object(queue_microtask))?;
 
+  let idle_deadline_time_remaining_id = vm.register_native_call(idle_deadline_time_remaining_native)?;
+
+  let request_idle_callback_id = vm.register_native_call(request_idle_callback_native::<Host>)?;
+  let request_idle_callback_name = scope.alloc_string("requestIdleCallback")?;
+  scope.push_root(Value::String(request_idle_callback_name))?;
+  let request_idle_callback_slots = [
+    Value::Object(global),
+    Value::Number(idle_deadline_time_remaining_id.0 as f64),
+  ];
+  let request_idle_callback = scope.alloc_native_function_with_slots(
+    request_idle_callback_id,
+    None,
+    request_idle_callback_name,
+    1,
+    &request_idle_callback_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    request_idle_callback,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(request_idle_callback))?;
+
+  let cancel_idle_callback_id = vm.register_native_call(cancel_idle_callback_native::<Host>)?;
+  let cancel_idle_callback_name = scope.alloc_string("cancelIdleCallback")?;
+  scope.push_root(Value::String(cancel_idle_callback_name))?;
+  let cancel_idle_callback = scope.alloc_native_function_with_slots(
+    cancel_idle_callback_id,
+    None,
+    cancel_idle_callback_name,
+    1,
+    &global_slots,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    cancel_idle_callback,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(cancel_idle_callback))?;
+
   let set_timeout_key = alloc_key(&mut scope, "setTimeout")?;
   let clear_timeout_key = alloc_key(&mut scope, "clearTimeout")?;
   let set_interval_key = alloc_key(&mut scope, "setInterval")?;
   let clear_interval_key = alloc_key(&mut scope, "clearInterval")?;
   let queue_microtask_key = alloc_key(&mut scope, "queueMicrotask")?;
+  let request_idle_callback_key = alloc_key(&mut scope, "requestIdleCallback")?;
+  let cancel_idle_callback_key = alloc_key(&mut scope, "cancelIdleCallback")?;
 
   scope.define_property(
     global,
@@ -2390,6 +2735,16 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
     global,
     queue_microtask_key,
     data_desc(Value::Object(queue_microtask)),
+  )?;
+  scope.define_property(
+    global,
+    request_idle_callback_key,
+    data_desc(Value::Object(request_idle_callback)),
+  )?;
+  scope.define_property(
+    global,
+    cancel_idle_callback_key,
+    data_desc(Value::Object(cancel_idle_callback)),
   )?;
 
   // Keep an internal, non-configurable reference so other host-side shims can safely schedule
@@ -2456,6 +2811,121 @@ mod tests {
     host.perform_microtask_checkpoint()?;
 
     let ok = host.exec_script("globalThis.ok")?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn request_idle_callback_is_exposed_and_runs_when_idle() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    let has_api = host.exec_script(
+      "typeof requestIdleCallback === 'function' && typeof cancelIdleCallback === 'function'",
+    )?;
+    assert_eq!(has_api, Value::Bool(true));
+
+    host.exec_script(
+      r#"
+      globalThis.__log = [];
+      requestIdleCallback((deadline) => {
+        __log.push(typeof deadline.didTimeout);
+        __log.push(typeof deadline.timeRemaining);
+        __log.push(typeof deadline.timeRemaining());
+        __log.push(deadline.timeRemaining() >= 0 && Number.isFinite(deadline.timeRemaining()));
+        __log.push(deadline.didTimeout === true || deadline.didTimeout === false);
+        __log.push("idle");
+        Promise.resolve().then(() => __log.push("micro"));
+      });
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let ok = host.exec_script(
+      r#"
+      __log.length === 7 &&
+      __log[0] === "boolean" &&
+      __log[1] === "function" &&
+      __log[2] === "number" &&
+      __log[3] === true &&
+      __log[4] === true &&
+      __log[5] === "idle" &&
+      __log[6] === "micro"
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn cancel_idle_callback_prevents_invocation() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__called = false;
+      const handle = requestIdleCallback(() => { globalThis.__called = true; });
+      cancelIdleCallback(handle);
+      "#,
+    )?;
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let called = host.exec_script("globalThis.__called")?;
+    assert_eq!(called, Value::Bool(false));
+    Ok(())
+  }
+
+  #[test]
+  fn request_idle_callback_timeout_fires_while_busy() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock.clone());
+    let mut host = crate::js::WindowHost::new_with_event_loop(dom, "https://example.com/", event_loop)?;
+
+    host.exec_script(
+      r#"
+      globalThis.log = [];
+      let count = 0;
+      function tick() {
+        log.push("t" + count);
+        count++;
+        if (count < 5) setTimeout(tick, 0);
+      }
+      setTimeout(tick, 0);
+
+      requestIdleCallback((deadline) => {
+        log.push("idle:" + deadline.didTimeout);
+      }, { timeout: 10 });
+      "#,
+    )?;
+
+    // Drive the event loop one task at a time while advancing the virtual clock so that the idle
+    // callback times out before the timer chain has finished.
+    let step_limits = RunLimits {
+      max_tasks: 1,
+      max_microtasks: 10_000,
+      max_wall_time: None,
+    };
+    for step in 0..10 {
+      let _ = host.run_until_idle(step_limits)?;
+      if step < 2 {
+        clock.advance(Duration::from_millis(5));
+      }
+    }
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let ok = host.exec_script(
+      r#"
+      (function () {
+        const idxIdle = log.indexOf("idle:true");
+        const idxT4 = log.indexOf("t4");
+        return idxIdle !== -1 && idxT4 !== -1 && idxIdle < idxT4;
+      })()
+      "#,
+    )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
@@ -3474,7 +3944,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
       let result = window_realm.exec_script_with_hooks(
@@ -3540,7 +4010,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
       let result = window_realm.exec_script_with_hooks(
@@ -3687,7 +4157,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
       let result = window_realm.exec_script_with_hooks(
@@ -4992,7 +5462,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
       let script = r#"
@@ -5015,7 +5485,7 @@ mod tests {
         setTimeout(() => { throw new Error("boom"); }, 0);
       "#;
 
-      let result = window_realm.exec_script_with_hooks(&mut hooks, script);
+      let result = window_realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, script);
       if let Some(err) = hooks.finish(window_realm.heap_mut()) {
         return Err(err);
       }
@@ -5081,7 +5551,7 @@ mod tests {
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
       let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
       hooks.set_event_loop(event_loop);
-      let (_, window_realm) = host.vm_host_and_window_realm()?;
+      let (vm_host, window_realm) = host.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
       let script = r#"
@@ -5102,7 +5572,7 @@ mod tests {
         queueMicrotask(() => { throw new Error("microboom"); });
       "#;
 
-      let result = window_realm.exec_script_with_hooks(&mut hooks, script);
+      let result = window_realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, script);
       if let Some(err) = hooks.finish(window_realm.heap_mut()) {
         return Err(err);
       }

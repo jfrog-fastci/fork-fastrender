@@ -203,7 +203,7 @@ pub use dom_host::{DomHost, DomHostVmJs};
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use event_loop::{
-  AnimationFrameId, EventLoop, MicrotaskCheckpointLimitedOutcome, QueueLimits,
+  AnimationFrameId, EventLoop, IdleCallbackId, MicrotaskCheckpointLimitedOutcome, QueueLimits,
   RunAnimationFrameOutcome, RunLimits, RunNextTaskLimitedOutcome, RunState, RunUntilIdleOutcome,
   RunUntilIdleStopReason, SpinOutcome, Task, TaskSource, TimerId,
 };
