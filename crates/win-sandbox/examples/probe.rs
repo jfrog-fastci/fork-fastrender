@@ -47,9 +47,9 @@ mod windows {
     FALSE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, TRUE,
   };
   use windows_sys::Win32::Security::{
-    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, TokenGroups, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
-    SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenCapabilities,
+    TokenIntegrityLevel, TokenIsAppContainer, TokenGroups, DACL_SECURITY_INFORMATION, PSID,
+    SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
@@ -1130,6 +1130,17 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
       Err(err) => eprintln!("TokenHasAllApplicationPackages: error: {err}"),
     }
 
+    match token_capability_sids(token.0) {
+      Ok(caps) => {
+        if caps.is_empty() {
+          println!("TokenCapabilities: <empty>");
+        } else {
+          println!("TokenCapabilities: {caps:?}");
+        }
+      }
+      Err(err) => eprintln!("TokenCapabilities: error: {err}"),
+    }
+
     match current_process_in_job() {
       Ok(in_job) => println!("IsProcessInJob: {in_job}"),
       Err(err) => eprintln!("IsProcessInJob: error: {err}"),
@@ -1421,6 +1432,65 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
       }
     }
     Ok(false)
+  }
+
+  fn token_capability_sids(
+    token: windows_sys::Win32::Foundation::HANDLE,
+  ) -> io::Result<Vec<String>> {
+    let mut needed: u32 = 0;
+    let ok = unsafe {
+      GetTokenInformation(
+        token,
+        TokenCapabilities,
+        std::ptr::null_mut(),
+        0,
+        &mut needed,
+      )
+    };
+    if ok != 0 {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "GetTokenInformation(TokenCapabilities) unexpectedly succeeded with null buffer",
+      ));
+    }
+    if needed == 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    // Ensure pointer alignment.
+    let word_count =
+      (needed as usize + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>();
+    let mut buffer_words = vec![0usize; word_count.max(1)];
+    let buffer_ptr = buffer_words.as_mut_ptr().cast::<c_void>();
+
+    let ok = unsafe {
+      GetTokenInformation(
+        token,
+        TokenCapabilities,
+        buffer_ptr,
+        needed,
+        &mut needed,
+      )
+    };
+    if ok == 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    let groups = buffer_ptr.cast::<TOKEN_GROUPS>();
+    let count = unsafe { (*groups).GroupCount as usize };
+    let first = unsafe { (*groups).Groups.as_ptr() as *const SID_AND_ATTRIBUTES };
+    let entries = unsafe { std::slice::from_raw_parts(first, count) };
+
+    let mut out = Vec::new();
+    for entry in entries {
+      let sid = entry.Sid as PSID;
+      if sid.is_null() {
+        continue;
+      }
+      let sid_str = unsafe { sid_to_string(sid)? };
+      out.push(sid_str);
+    }
+    Ok(out)
   }
 
   fn current_process_in_job() -> io::Result<bool> {
