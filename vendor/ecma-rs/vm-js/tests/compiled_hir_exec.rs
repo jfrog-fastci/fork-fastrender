@@ -12232,6 +12232,96 @@ fn compiled_optional_member_callee_parentheses_do_not_short_circuit_call() -> Re
 }
 
 #[test]
+fn compiled_optional_chain_member_continuation_short_circuits() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = null;
+      let ok = 0;
+      try { o?.x.y; ok = 1; } catch (e) { ok = 2; }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chain_member_continuation_does_not_evaluate_computed_key() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let side = 0;
+      let o = null;
+      let ok = 0;
+      try { o?.x[side = 1]; ok = 1; } catch (e) { ok = 2; }
+      ok * 10 + side
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(10.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_optional_chain_call_continuation_does_not_evaluate_computed_key() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let side = 0;
+      let o = null;
+      let ok = 0;
+      try { o?.m()[side = 1]; ok = 1; } catch (e) { ok = 2; }
+      ok * 10 + side
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(10.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_parenthesized_optional_chain_breaks_propagation() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = null;
+      let ok = 0;
+      try { (o?.x).y; ok = 1; } catch (e) { ok = 2; }
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_optional_chaining_call_short_circuits_args() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
