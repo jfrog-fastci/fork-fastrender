@@ -37,8 +37,9 @@ and others are scaffolding. A few important “don’t get surprised” points:
   - WebSocket IPC message schema + validation helpers:
     [`src/ipc/websocket.rs`](../src/ipc/websocket.rs) and [`src/ipc/network.rs`](../src/ipc/network.rs)
 
-If you are changing IPC framing/limits, also read the normative IPC invariants doc:
-[`docs/ipc.md`](ipc.md).
+If you are changing IPC framing/limits, also read:
+- IPC transport invariants (framing + size caps + shared memory safety): [`docs/ipc.md`](ipc.md)
+- Renderer/network threat model: [`docs/multiprocess_threat_model.md`](multiprocess_threat_model.md)
 
 ## Process roles
 
