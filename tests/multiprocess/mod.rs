@@ -12,3 +12,4 @@ mod cors_network_process_test;
 mod site_isolation_file_urls;
 mod websocket_ipc;
 mod network_process_auth;
+mod network_process_smoke;
