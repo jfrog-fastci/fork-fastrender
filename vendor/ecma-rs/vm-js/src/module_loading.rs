@@ -829,12 +829,29 @@ impl ModuleLoadPayload {
     }
   }
 
-  /// Removes any persistent roots held by this payload (best-effort).
+  /// Removes any persistent GC roots held by this payload.
   ///
-  /// This is intended for embedder/runtime teardown paths to avoid leaking roots if module loading
-  /// is abandoned mid-flight.
-  #[allow(dead_code)]
-  pub(crate) fn teardown_roots(&self, heap: &mut crate::Heap) {
+  /// ## When to use this
+  ///
+  /// This method exists for **teardown/cancellation only**: embeddings can call it when a pending
+  /// `HostLoadImportedModule` operation is abandoned mid-flight (navigation cancelled, event loop
+  /// shut down, budgets exhausted, etc.) and the embedder will **not** drive the
+  /// `FinishLoadingImportedModule` state machine to completion.
+  ///
+  /// Calling this ensures that dropping the payload does not leak persistent roots and (in debug
+  /// builds) does not trip leaked-root assertions.
+  ///
+  /// ## Idempotent / best-effort
+  ///
+  /// This is best-effort and **idempotent**: calling it multiple times (or after the payload has
+  /// already been completed via `FinishLoadingImportedModule`) is a no-op.
+  ///
+  /// ## Normal module loading
+  ///
+  /// For real module loads, hosts should still call [`Vm::finish_loading_imported_module`] exactly
+  /// once per `host_load_imported_module` invocation. `teardown_roots` does **not** settle any
+  /// promises or complete module loading; it only releases the payload's persistent roots.
+  pub fn teardown_roots(&self, heap: &mut crate::Heap) {
     match &self.0 {
       ModuleLoadPayloadInner::GraphLoadingState(state) => state.teardown_roots(heap),
       ModuleLoadPayloadInner::PromiseCapability(state) => state.teardown_roots(heap),
@@ -2631,6 +2648,87 @@ mod tests {
         (scope.heap().root_stack.len(), scope.heap().env_root_stack.len()),
         roots_before_reject
       );
+    }));
+
+    realm.teardown(&mut heap);
+    if let Err(panic) = result {
+      std::panic::resume_unwind(panic);
+    }
+  }
+
+  #[test]
+  fn module_load_payload_teardown_roots_allows_abandoned_module_loading() {
+    // `ModuleLoadPayload` contains persistent roots (via `GraphLoadingState`) so that hosts can
+    // keep the payload in non-traced memory across async boundaries.
+    //
+    // If a host abandons module loading mid-flight (navigation cancel, event loop teardown, etc.)
+    // and drops the payload without completing the `FinishLoadingImportedModule` state machine, we
+    // must not panic in debug builds due to leaked-root assertions.
+    struct Host {
+      payload: Option<ModuleLoadPayload>,
+    }
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+
+      fn host_load_imported_module(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _modules: &mut ModuleGraph,
+        _referrer: ModuleReferrer,
+        _module_request: ModuleRequest,
+        _host_defined: HostDefined,
+        payload: ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        self.payload = Some(payload);
+        Ok(())
+      }
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).unwrap();
+
+    // Ensure we always call `Realm::teardown` even if the test panics, otherwise `Realm`'s `Drop`
+    // will panic in debug builds.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      let mut host = Host { payload: None };
+      let mut host_ctx = ();
+      let mut scope = heap.scope();
+      let mut modules = ModuleGraph::new();
+
+      // Create a module with a pending static import so `LoadRequestedModules` enters the
+      // host-driven loading path and passes a `ModuleLoadPayload` to `host_load_imported_module`.
+      let root = modules
+        .add_module(crate::module_record::SourceTextModuleRecord {
+          requested_modules: vec![ModuleRequest::new("dep", Vec::new())],
+          status: ModuleStatus::New,
+          ..Default::default()
+        })
+        .expect("add module");
+
+      let _promise = load_requested_modules_with_host_and_hooks(
+        &mut vm,
+        &mut scope,
+        &mut modules,
+        &mut host_ctx,
+        &mut host,
+        root,
+        HostDefined::default(),
+      )
+      .unwrap();
+
+      let payload = host
+        .payload
+        .take()
+        .expect("expected host_load_imported_module to capture a payload");
+
+      // This should be safe and idempotent.
+      payload.teardown_roots(scope.heap_mut());
+      payload.teardown_roots(scope.heap_mut());
+
+      // Dropping after teardown should not trip debug assertions in `GraphLoadingStateInner::drop`.
+      drop(payload);
     }));
 
     realm.teardown(&mut heap);
