@@ -138,6 +138,23 @@ the renderer is likely trying to write:
 Mitigation: move the write into the privileged process and request it via IPC, or keep the renderer
 fully memory-only.
 
+## Developer overrides (debug only)
+
+The macOS renderer sandbox is a security boundary. These knobs exist to unblock local debugging and
+bring-up; do not rely on them in production.
+
+- Disable Seatbelt sandboxing entirely (INSECURE):
+  - `FASTR_DISABLE_RENDERER_SANDBOX=1`
+- Select a different renderer Seatbelt profile:
+  - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off`
+    - `system-fonts` maps to the relaxed `MacosSandboxMode::RendererSystemFonts` profile (allows
+      read-only access to system font paths; still blocks network + user filesystem).
+- Opt into launching a renderer already sandboxed via Apple’s deprecated `sandbox-exec` wrapper
+  (debug/legacy; see `src/sandbox/macos_spawn.rs`):
+  - `FASTR_MACOS_USE_SANDBOX_EXEC=1`
+
+Renderer-focused quick reference + more examples: [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md).
+
 ## Debugging Seatbelt denials on macOS
 
 Seatbelt denials are visible in macOS’s unified logging.
