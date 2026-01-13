@@ -65,6 +65,7 @@ fn yield_star_throw_suppresses_close_error_from_return_getter() -> Result<(), Vm
         var next1Done = null;
         var throwValue = null;
         var throwDone = null;
+        var returnGetterCalled = false;
         var err = "";
 
         const delegate = {};
@@ -72,7 +73,7 @@ fn yield_star_throw_suppresses_close_error_from_return_getter() -> Result<(), Vm
           return {
             next() { return Promise.resolve({ value: 1, done: false }); },
             // Close error: getting `return` throws.
-            get return() { throw "close"; },
+            get return() { returnGetterCalled = true; throw "close"; },
           };
         };
 
@@ -114,6 +115,9 @@ fn yield_star_throw_suppresses_close_error_from_return_getter() -> Result<(), Vm
     let throw_done = rt.exec_script("throwDone")?;
     assert_eq!(throw_done, Value::Bool(false));
 
+    let return_getter_called = rt.exec_script("returnGetterCalled")?;
+    assert_eq!(return_getter_called, Value::Bool(true));
+
     let err = rt.exec_script("err")?;
     assert_eq!(value_to_string(&rt, err), "");
 
@@ -139,6 +143,7 @@ fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Resul
 
         var next1Value = null;
         var next1Done = null;
+        var returnGetterCalled = false;
         var out = "";
 
         const delegate = {};
@@ -146,7 +151,7 @@ fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Resul
           return {
             next() { return Promise.resolve({ value: 1, done: false }); },
             // Close error: getting `return` throws.
-            get return() { throw "close"; },
+            get return() { returnGetterCalled = true; throw "close"; },
           };
         };
 
@@ -180,6 +185,9 @@ fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Resul
 
     let out = rt.exec_script("out")?;
     assert_eq!(value_to_string(&rt, out), "close");
+
+    let return_getter_called = rt.exec_script("returnGetterCalled")?;
+    assert_eq!(return_getter_called, Value::Bool(true));
     Ok(())
   })();
 
