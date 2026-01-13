@@ -250,7 +250,12 @@ mod linux {
         });
       }
 
-      let region = MappedRegion::map(fd.as_raw_fd(), size, libc::PROT_READ | libc::PROT_WRITE)?;
+      let mut region = MappedRegion::map(fd.as_raw_fd(), size, libc::PROT_READ | libc::PROT_WRITE)?;
+      // Security: make the invariant explicit that freshly-created shared-memory mappings start
+      // zeroed. While kernels typically provide zeroed pages for new allocations, explicitly
+      // clearing the mapping avoids leaking previous-process memory (or stale shared-memory
+      // contents) to an untrusted renderer if a name/fd is ever reused accidentally.
+      region.as_mut_slice().fill(0);
       Ok(Self {
         fd,
         region,
@@ -551,5 +556,14 @@ mod tests {
       Err(other) => panic!("unexpected error variant: {other:?}"),
       Ok(_) => panic!("expected size mismatch error"),
     };
+  }
+
+  #[test]
+  fn owned_shm_new_zero_initializes() {
+    let shm = OwnedShm::new(256).expect("create shm");
+    assert!(
+      shm.as_slice().iter().all(|b| *b == 0),
+      "newly created shared-memory mappings should be zero-initialized"
+    );
   }
 }
