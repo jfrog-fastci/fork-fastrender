@@ -6,6 +6,55 @@ const BYTES_PER_PIXEL: u64 = 4;
 /// Upper bound on a single pixmap allocation to avoid process aborts on OOM.
 pub(crate) const MAX_PIXMAP_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Copies RGBA8 bytes from a tightly packed [`Pixmap`] into an externally-provided RGBA buffer with
+/// a caller-specified stride.
+///
+/// This is used by multiprocess/shared-memory frame transports that may require row padding.
+pub(crate) fn copy_pixmap_rgba_into_strided_buffer(
+  src: &Pixmap,
+  dst: &mut [u8],
+  dst_stride_bytes: usize,
+) -> Result<(), RenderError> {
+  let width = src.width() as usize;
+  let height = src.height() as usize;
+  let src_stride = width
+    .checked_mul(4)
+    .ok_or_else(|| RenderError::InvalidParameters {
+      message: "pixmap copy overflow (src_stride)".to_string(),
+    })?;
+  if dst_stride_bytes < src_stride {
+    return Err(RenderError::InvalidParameters {
+      message: format!(
+        "destination stride is too small for pixmap copy: stride={dst_stride_bytes}, need >= {src_stride}"
+      ),
+    });
+  }
+  let required = dst_stride_bytes
+    .checked_mul(height)
+    .ok_or_else(|| RenderError::InvalidParameters {
+      message: "pixmap copy overflow (dst size)".to_string(),
+    })?;
+  if dst.len() < required {
+    return Err(RenderError::InvalidParameters {
+      message: format!(
+        "destination buffer is too small for pixmap copy: need {required} bytes, got {}",
+        dst.len()
+      ),
+    });
+  }
+
+  let src_data = src.data();
+  for row in 0..height {
+    let src_off = row * src_stride;
+    let dst_off = row * dst_stride_bytes;
+    dst[dst_off..dst_off + src_stride].copy_from_slice(&src_data[src_off..src_off + src_stride]);
+    if dst_stride_bytes > src_stride {
+      dst[dst_off + src_stride..dst_off + dst_stride_bytes].fill(0);
+    }
+  }
+  Ok(())
+}
+
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NewPixmapAllocRecord {

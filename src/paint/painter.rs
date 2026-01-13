@@ -63,7 +63,9 @@ use crate::paint::iframe::{render_iframe_src, render_iframe_srcdoc};
 use crate::paint::object_fit::compute_object_fit;
 use crate::paint::object_fit::default_object_position;
 use crate::paint::optimize::DisplayListOptimizer;
-use crate::paint::pixmap::{new_pixmap, reserve_buffer, MAX_PIXMAP_BYTES};
+use crate::paint::pixmap::{
+  copy_pixmap_rgba_into_strided_buffer, new_pixmap, reserve_buffer, MAX_PIXMAP_BYTES,
+};
 use crate::paint::projective_warp::warp_pixmap;
 use crate::paint::rasterize::fill_rounded_rect;
 use crate::paint::stacking::creates_stacking_context;
@@ -20262,6 +20264,119 @@ pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_tr
   )
 }
 
+pub(crate) fn paint_tree_display_list_into_rgba_with_resources_scaled_offset_depth_with_trace(
+  tree: &FragmentTree,
+  width: u32,
+  height: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  image_cache: ImageCache,
+  scale: f32,
+  offset: Point,
+  paint_parallelism: PaintParallelism,
+  scroll_state: &ScrollState,
+  max_iframe_depth: usize,
+  trace: TraceHandle,
+  out: &mut [u8],
+  stride_bytes: usize,
+) -> Result<()> {
+  let _paint_span = trace.span("paint", "paint");
+  let _display_list_span = trace.span("display_list_build", "paint");
+  record_stage(StageHeartbeat::PaintBuild);
+  check_active(RenderStage::Paint).map_err(Error::Render)?;
+  let diagnostics_enabled = paint_diagnostics_enabled();
+  let build_start = diagnostics_enabled.then(Instant::now);
+  let viewport = tree.viewport_size();
+  let culling_viewport = Size::new(width as f32, height as f32);
+  let build_budget = active_deadline()
+    .and_then(|deadline| deadline.remaining_timeout())
+    .map(display_list_build_budget_from_remaining);
+  let build_display_list_for_root =
+    |root: &FragmentNode| -> Result<crate::paint::display_list::DisplayList> {
+      DisplayListBuilder::with_image_cache(image_cache.clone())
+        .with_font_context(font_ctx.clone())
+        .with_svg_filter_defs(tree.svg_filter_defs.clone())
+        .with_svg_id_defs(tree.svg_id_defs.clone())
+        .with_svg_id_defs_raw(tree.svg_id_defs_raw.clone())
+        .with_appearance_none_form_controls(tree.appearance_none_form_controls.clone())
+        .with_scroll_state(scroll_state.clone())
+        .with_device_pixel_ratio(scale)
+        .with_parallelism(&paint_parallelism)
+        .with_max_iframe_depth(max_iframe_depth)
+        .with_viewport_size(viewport.width, viewport.height)
+        .with_culling_viewport_size(culling_viewport.width, culling_viewport.height)
+        .build_with_stacking_tree_offset_checked(root, offset)
+    };
+  let display_list_result = match build_budget {
+    Some(budget) => {
+      let cancel = active_deadline().and_then(|deadline| deadline.cancel_callback());
+      let deadline = RenderDeadline::new(Some(budget), cancel);
+      with_deadline(Some(&deadline), || {
+        let mut display_list = build_display_list_for_root(&tree.root)?;
+        for extra in &tree.additional_fragments {
+          display_list.append(build_display_list_for_root(extra)?);
+        }
+        Ok(display_list)
+      })
+    }
+    None => {
+      let mut display_list = build_display_list_for_root(&tree.root)?;
+      for extra in &tree.additional_fragments {
+        display_list.append(build_display_list_for_root(extra)?);
+      }
+      Ok(display_list)
+    }
+  };
+  let display_list = match display_list_result {
+    Ok(list) => list,
+    Err(err) => {
+      if build_budget.is_some() && matches!(err, Error::Render(RenderError::Timeout { .. })) {
+        if let Err(err) = check_active(RenderStage::Paint) {
+          return Err(Error::Render(err));
+        }
+        let pixmap = legacy_paint_tree_with_resources_scaled_offset(
+          tree,
+          width,
+          height,
+          background,
+          font_ctx,
+          image_cache,
+          scale,
+          offset,
+          scroll_state,
+          max_iframe_depth,
+          TraceHandle::disabled(),
+        )?;
+        copy_pixmap_rgba_into_strided_buffer(&pixmap, out, stride_bytes).map_err(Error::Render)?;
+        return Ok(());
+      }
+      return Err(err);
+    }
+  };
+  if let (true, Some(start)) = (diagnostics_enabled, build_start) {
+    let build_ms = start.elapsed().as_secs_f64() * 1000.0;
+    with_paint_diagnostics(|diag| {
+      diag.build_ms = build_ms;
+      diag.serial_ms += build_ms;
+      diag.parallel_threads = diag.parallel_threads.max(1);
+    });
+  }
+
+  drop(_display_list_span);
+  paint_display_list_into_rgba_with_resources_scaled_with_trace(
+    &display_list,
+    width,
+    height,
+    background,
+    font_ctx,
+    scale,
+    paint_parallelism,
+    &trace,
+    out,
+    stride_bytes,
+  )
+}
+
 /// Optimizes and rasterizes an already-built display list.
 ///
 /// This lets callers reuse a display list for both debugging output (e.g. pipeline snapshots) and
@@ -20763,6 +20878,112 @@ pub fn paint_tree_display_list_layered_with_resources_scaled_offset_depth(
     layers,
     slots: plan.slots,
   })
+}
+
+/// Optimizes and rasterizes an already-built display list directly into an externally-owned RGBA8
+/// buffer.
+pub(crate) fn paint_display_list_into_rgba_with_resources_scaled_with_trace(
+  display_list: &crate::paint::display_list::DisplayList,
+  width: u32,
+  height: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  scale: f32,
+  paint_parallelism: PaintParallelism,
+  trace: &TraceHandle,
+  out: &mut [u8],
+  stride_bytes: usize,
+) -> Result<()> {
+  let diagnostics_enabled = paint_diagnostics_enabled();
+
+  let _optimize_span = trace.span("display_list_optimize", "paint");
+  let optimizer = DisplayListOptimizer::new();
+  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+  let optimize_start = diagnostics_enabled.then(Instant::now);
+  let optimize_budget = active_deadline()
+    .and_then(|deadline| deadline.remaining_timeout())
+    .map(display_list_optimize_budget_from_remaining);
+  let original_items = display_list.len();
+  let optimize_result = match optimize_budget {
+    Some(budget) => {
+      let cancel = active_deadline().and_then(|deadline| deadline.cancel_callback());
+      let deadline = RenderDeadline::new(Some(budget), cancel);
+      with_deadline(Some(&deadline), || optimizer.optimize_checked(display_list, viewport_rect))
+    }
+    None => optimizer.optimize_checked(display_list, viewport_rect),
+  };
+
+  let (optimized, stats) = match optimize_result {
+    Ok((optimized, stats)) => (Some(optimized), stats),
+    Err(err) => {
+      // Optimization is optional; if we hit the optimization budget, rasterize the original display
+      // list.
+      if optimize_budget.is_some() && matches!(err, Error::Render(RenderError::Timeout { .. })) {
+        if let Err(err) = check_active(RenderStage::Paint) {
+          return Err(Error::Render(err));
+        }
+        (
+          None,
+          crate::paint::optimize::OptimizationStats {
+            original_count: original_items,
+            final_count: original_items,
+            ..Default::default()
+          },
+        )
+      } else {
+        return Err(err);
+      }
+    }
+  };
+
+  let list_to_render = optimized.as_ref().unwrap_or(display_list);
+
+  if let (true, Some(start)) = (diagnostics_enabled, optimize_start) {
+    let optimize_ms = start.elapsed().as_secs_f64() * 1000.0;
+    with_paint_diagnostics(|diag| {
+      diag.optimize_ms = optimize_ms;
+      diag.optimize_original_items = stats.original_count;
+      diag.optimize_final_items = stats.final_count;
+      diag.optimize_culled = stats.culled_count;
+      diag.optimize_transparent_removed = stats.transparent_removed;
+      diag.optimize_noop_removed = stats.noop_removed;
+      diag.optimize_merged = stats.merged_count;
+      diag.serial_ms += optimize_ms;
+      diag.parallel_threads = diag.parallel_threads.max(1);
+    });
+  }
+
+  drop(_optimize_span);
+  let _raster_span = trace.span("rasterize", "paint");
+
+  let mut renderer = DisplayListRenderer::new_scaled_into_rgba_buffer(
+    width,
+    height,
+    background,
+    font_ctx,
+    scale,
+    out,
+    stride_bytes,
+  )?;
+  // `DisplayListRenderer::render_into` is currently a serial path; disable tile-parallelism to keep
+  // behavior aligned with what it executes today.
+  renderer.set_parallelism(PaintParallelism::disabled());
+  record_stage(StageHeartbeat::PaintRasterize);
+  let start = Instant::now();
+  renderer.render_into(list_to_render)?;
+
+  if paint_diagnostics_enabled() {
+    with_paint_diagnostics(|diag| {
+      diag.raster_ms += start.elapsed().as_secs_f64() * 1000.0;
+      diag.command_count = list_to_render.len();
+    });
+  }
+
+  // Preserve the signature of `paint_display_list_with_resources_scaled_with_trace` by leaving
+  // diagnostics accumulation to the caller; for external buffers we do not currently return a full
+  // `RenderReport`.
+  let _ = paint_parallelism;
+  Ok(())
 }
 
 /// Paints a fragment tree via the display-list pipeline using explicit resources.

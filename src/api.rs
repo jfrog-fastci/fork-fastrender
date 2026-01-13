@@ -158,11 +158,12 @@ use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::paint::painter::paint_backend_from_env;
 use crate::paint::painter::paint_display_list_with_resources_scaled_with_trace;
+use crate::paint::painter::paint_tree_display_list_into_rgba_with_resources_scaled_offset_depth_with_trace;
 use crate::paint::painter::paint_tree_display_list_with_resources_scaled_offset_depth_with_trace;
 use crate::paint::painter::paint_tree_with_resources_scaled_offset_backend_with_iframe_depth;
 use crate::paint::painter::paint_tree_with_resources_scaled_offset_with_trace;
 use crate::paint::painter::PaintBackend;
-use crate::paint::pixmap::new_pixmap;
+use crate::paint::pixmap::{copy_pixmap_rgba_into_strided_buffer, new_pixmap, MAX_PIXMAP_BYTES};
 use crate::render_control::{
   record_stage, CancelCallback, DeadlineGuard, RenderDeadline, StageGuard, StageHeartbeat,
 };
@@ -175,6 +176,7 @@ use crate::resource::{
 #[cfg(feature = "direct_network")]
 use crate::resource::{CachingFetcher, HttpFetcher};
 use crate::scroll::ScrollState;
+use crate::ui::browser_limits::BrowserLimits;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
 use crate::style::cascade::attach_starting_styles;
 use crate::style::cascade::ContainerQueryContext;
@@ -2658,6 +2660,169 @@ impl PreparedDocument {
   /// output.
   pub fn paint_with_options_frame(&self, options: PreparedPaintOptions) -> Result<PaintedFrame> {
     self.paint_with_options_frame_internal(options, None)
+  }
+
+  /// Paints the prepared document directly into an externally-provided RGBA8 buffer.
+  ///
+  /// This is intended for zero-copy shared-memory frame transport in the multiprocess renderer.
+  /// The output must be an RGBA8 buffer with the specified row stride.
+  ///
+  /// Note: the current tiny-skia version used by FastRender cannot wrap a borrowed pixmap with a
+  /// custom stride. When `stride_bytes != width_px * 4`, this method falls back to rendering into
+  /// a temporary [`Pixmap`] and copying row-by-row into `out`.
+  #[doc(hidden)]
+  pub fn paint_into_rgba(
+    &self,
+    out: &mut [u8],
+    width_px: u32,
+    height_px: u32,
+    stride_bytes: u32,
+    options: PreparedPaintOptions,
+  ) -> Result<ScrollState> {
+    runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
+      if let Some((w, h)) = options.viewport {
+        if w == 0 || h == 0 {
+          return Err(Error::Render(RenderError::InvalidParameters {
+            message: format!("Invalid viewport override: width={w}, height={h}"),
+          }));
+        }
+      }
+
+      if width_px == 0 || height_px == 0 {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!("Invalid output buffer size: {width_px}x{height_px}"),
+        }));
+      }
+
+      let limits = BrowserLimits::from_env();
+      if width_px > limits.max_dim_px || height_px > limits.max_dim_px {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Output dimensions exceed browser limits: {width_px}x{height_px} (max {}x{})",
+            limits.max_dim_px, limits.max_dim_px
+          ),
+        }));
+      }
+      let total_pixels = (width_px as u64).saturating_mul(height_px as u64);
+      if total_pixels > limits.max_pixels {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Output pixel count exceeds browser limits: {total_pixels} (limit {})",
+            limits.max_pixels
+          ),
+        }));
+      }
+
+      let stride_usize = usize::try_from(stride_bytes).map_err(|_| {
+        Error::Render(RenderError::InvalidParameters {
+          message: format!("Invalid stride_bytes (does not fit usize): {stride_bytes}"),
+        })
+      })?;
+      let row_bytes = (width_px as usize).checked_mul(4).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: format!("Output row byte size overflow: width_px={width_px}"),
+        })
+      })?;
+      if stride_usize < row_bytes {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Invalid stride: stride_bytes={stride_bytes} is smaller than width_px*4={row_bytes}"
+          ),
+        }));
+      }
+
+      let required_bytes_u64 = (stride_bytes as u64).saturating_mul(height_px as u64);
+      if required_bytes_u64 > MAX_PIXMAP_BYTES {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Output buffer would cover {required_bytes_u64} bytes (limit {MAX_PIXMAP_BYTES})"
+          ),
+        }));
+      }
+      let required_bytes = stride_usize.checked_mul(height_px as usize).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Output buffer size overflow".to_string(),
+        })
+      })?;
+      if out.len() < required_bytes {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Output buffer is too small: need {required_bytes} bytes, got {}",
+            out.len()
+          ),
+        }));
+      }
+
+      let viewport_override = options.viewport.map(|(w, h)| Size::new(w as f32, h as f32));
+      let paint_scale = self.device_pixel_ratio.max(f32::EPSILON);
+      let scroll_state = options
+        .scroll
+        .clone()
+        .unwrap_or_else(|| self.default_scroll.clone());
+      let animation_time = options.animation_time.or(self.animation_time);
+      let scrollport_viewport = viewport_override.unwrap_or(self.layout_viewport);
+      let paint_viewport = viewport_override.unwrap_or(self.paint_viewport);
+      let viewport_inset = viewport_scrollport_inset_for_scrollbar_gutter(
+        &self.styled_tree,
+        scrollport_viewport,
+        paint_viewport,
+      );
+      let background = options.background.unwrap_or(self.background_color);
+
+      // No-copy path: only supported for display-list backend with tight row packing.
+      let backend = paint_backend_from_env();
+      if backend == PaintBackend::DisplayList && stride_usize == row_bytes {
+        return paint_fragment_tree_into_rgba_with_state(
+          out,
+          width_px,
+          height_px,
+          stride_usize,
+          self.fragment_tree.clone(),
+          scroll_state,
+          scrollport_viewport,
+          paint_viewport,
+          viewport_inset,
+          background,
+          &self.font_context,
+          &self.image_cache,
+          paint_scale,
+          animation_time,
+          self.paint_parallelism,
+          self.max_iframe_depth,
+          None,
+        );
+      }
+
+      // Fallback: render into a temporary pixmap, then copy into the caller buffer.
+      let PaintedFrame { pixmap, scroll_state } = paint_fragment_tree_with_state(
+        self.fragment_tree.clone(),
+        scroll_state,
+        scrollport_viewport,
+        paint_viewport,
+        viewport_inset,
+        background,
+        &self.font_context,
+        &self.image_cache,
+        paint_scale,
+        animation_time,
+        self.paint_parallelism,
+        self.max_iframe_depth,
+        None,
+      )?;
+      if pixmap.width() != width_px || pixmap.height() != height_px {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Rendered pixmap dimensions {}x{} do not match output buffer {}x{}",
+            pixmap.width(),
+            pixmap.height(),
+            width_px,
+            height_px
+          ),
+        }));
+      }
+      copy_pixmap_rgba_into_strided_buffer(&pixmap, out, stride_usize).map_err(Error::Render)?;
+      Ok(scroll_state)
+    })
   }
 
   pub(crate) fn paint_with_options_frame_with_animation_state_store(
@@ -6429,6 +6594,351 @@ fn paint_fragment_tree_with_state(
     pixmap,
     scroll_state,
   })
+}
+
+fn paint_fragment_tree_into_rgba_with_state(
+  out: &mut [u8],
+  out_width_px: u32,
+  out_height_px: u32,
+  stride_bytes: usize,
+  mut fragment_tree: FragmentTree,
+  mut scroll_state: ScrollState,
+  scrollport_viewport: Size,
+  paint_viewport: Size,
+  viewport_inset: Point,
+  background: Rgba,
+  font_context: &FontContext,
+  image_cache: &ImageCache,
+  device_pixel_ratio: f32,
+  animation_time: Option<f32>,
+  paint_parallelism: PaintParallelism,
+  max_iframe_depth: usize,
+  mut animation_state_store: Option<&mut animation::AnimationStateStore>,
+) -> Result<ScrollState> {
+  let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
+
+  fragment_tree.set_viewport_size(paint_viewport);
+
+  let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
+  scroll_state = scroll_result.state;
+  scroll_state.viewport = Point::new(
+    if scroll_state.viewport.x.is_finite() {
+      scroll_state.viewport.x
+    } else {
+      0.0
+    },
+    if scroll_state.viewport.y.is_finite() {
+      scroll_state.viewport.y
+    } else {
+      0.0
+    },
+  );
+  if let Some(bounds) =
+    crate::scroll::build_scroll_chain(&fragment_tree.root, scrollport_viewport, &[])
+      .first()
+      .map(|state| state.bounds)
+  {
+    scroll_state.viewport = bounds.clamp(scroll_state.viewport);
+  }
+
+  fn resolve_scaled_metrics_for_style(
+    font_context: &FontContext,
+    style: &ComputedStyle,
+  ) -> Option<ScaledMetrics> {
+    let italic = matches!(style.font_style, crate::style::types::FontStyle::Italic);
+    let oblique = matches!(style.font_style, crate::style::types::FontStyle::Oblique(_));
+    let stretch = FontStretch::from_percentage(style.font_stretch.to_percentage());
+    let preferred_aspect = crate::text::pipeline::preferred_font_aspect(style, font_context);
+    font_context
+      .get_font_full(
+        &style.font_family,
+        style.font_weight.to_u16(),
+        if italic {
+          DbFontStyle::Italic
+        } else if oblique {
+          DbFontStyle::Oblique
+        } else {
+          DbFontStyle::Normal
+        },
+        stretch,
+      )
+      .or_else(|| font_context.get_sans_serif())
+      .and_then(|font| {
+        let used_font_size =
+          crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
+        let authored = crate::text::variations::authored_variations_from_style(style);
+        let variations = crate::text::face_cache::with_face(&font, |face| {
+          crate::text::variations::collect_variations_for_face(
+            face,
+            style,
+            &font,
+            used_font_size,
+            &authored,
+          )
+        })
+        .unwrap_or_else(|| authored.clone());
+        font_context.get_scaled_metrics_with_variations(&font, used_font_size, &variations)
+      })
+  }
+
+  fn clamp_element_offsets(
+    node: &FragmentNode,
+    scroll_state: &mut ScrollState,
+    viewport_size: Size,
+    has_fixed_cb_ancestor: bool,
+    font_context: &FontContext,
+  ) {
+    let establishes_fixed_cb = node
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_fixed_containing_block());
+    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+
+    if let Some(box_id) = node.box_id() {
+      let has_stored_offset = scroll_state.elements.contains_key(&box_id);
+
+      let mut is_focused_textarea = false;
+      let mut textarea_value: Option<&str> = None;
+      if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+        if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
+          if let crate::tree::box_tree::FormControlKind::TextArea { value, .. } = &control.control {
+            textarea_value = Some(value);
+            is_focused_textarea = control.focused && !control.disabled;
+          }
+        }
+      }
+
+      if has_stored_offset || textarea_value.is_some() && is_focused_textarea {
+        let existing = scroll_state.elements.get(&box_id).copied().unwrap_or(Point::ZERO);
+        let mut offset = Point::new(
+          if existing.x.is_finite() { existing.x } else { 0.0 },
+          if existing.y.is_finite() { existing.y } else { 0.0 },
+        );
+
+        let mut bounds = crate::scroll::scroll_bounds_for_fragment(
+          node,
+          Point::ZERO,
+          node.bounds.size,
+          viewport_size,
+          false,
+          has_fixed_cb_ancestor,
+        );
+
+        if let Some(style) = node.style.as_deref() {
+          if let FragmentContent::Replaced { replaced_type, .. } = &node.content {
+            if let crate::tree::box_tree::ReplacedType::FormControl(control) = replaced_type {
+              if let crate::tree::box_tree::FormControlKind::Select(select) = &control.control {
+                if select.multiple || select.size > 1 {
+                  let row_height =
+                    crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport(
+                      style,
+                      None,
+                      Some(viewport_size),
+                      None,
+                    );
+                  if row_height.is_finite() && row_height > 0.0 {
+                    let content_height = row_height * select.items.len() as f32;
+                    if content_height.is_finite() {
+                      let viewport_height = node.bounds.height();
+                      if viewport_height.is_finite() {
+                        bounds.min_y = 0.0;
+                        bounds.max_y = (content_height - viewport_height).max(0.0);
+                      }
+                    }
+                  }
+                }
+              }
+
+              if let crate::tree::box_tree::FormControlKind::TextArea { value, caret, .. } =
+                &control.control
+              {
+                let metrics =
+                  matches!(style.line_height, crate::style::types::LineHeight::Normal)
+                    .then(|| resolve_scaled_metrics_for_style(font_context, style))
+                    .flatten();
+                let line_height = compute_line_height_with_metrics_viewport(
+                  style,
+                  metrics.as_ref(),
+                  Some(viewport_size),
+                  font_context.root_font_metrics(),
+                );
+
+                if line_height.is_finite() && line_height > 0.0 {
+                  let border_rect =
+                    Rect::from_xywh(0.0, 0.0, node.bounds.width(), node.bounds.height());
+                  let content_rect =
+                    crate::interaction::content_rect_for_border_rect(border_rect, style, viewport_size);
+                  let text_rect = Rect::from_xywh(
+                    content_rect.x() + 2.0,
+                    content_rect.y() + 2.0,
+                    (content_rect.width() - 4.0).max(0.0),
+                    (content_rect.height() - 4.0).max(0.0),
+                  );
+                  let viewport_height = text_rect.height().max(0.0);
+                  if viewport_height.is_finite() && viewport_height > 0.0 {
+                    let chars_per_line =
+                      crate::textarea::textarea_chars_per_line(style, text_rect.width());
+                    let layout = crate::textarea::build_textarea_visual_lines(value, chars_per_line);
+                    let content_height = layout.lines.len() as f32 * line_height;
+                    let max_scroll_y = if content_height.is_finite() {
+                      (content_height - viewport_height).max(0.0)
+                    } else {
+                      0.0
+                    };
+                    if max_scroll_y.is_finite() {
+                      bounds.min_y = 0.0;
+                      bounds.max_y = max_scroll_y;
+                    }
+
+                    if control.focused && !control.disabled {
+                      let caret_idx = (*caret).min(value.chars().count());
+                      let line_idx = crate::textarea::textarea_visual_line_index_for_caret(
+                        value,
+                        &layout,
+                        caret_idx,
+                      );
+                      let caret_top = line_idx as f32 * line_height;
+                      let caret_bottom = caret_top + line_height;
+
+                      let mut next_scroll_y = if offset.y.is_finite() { offset.y } else { 0.0 };
+                      next_scroll_y = next_scroll_y.max(0.0);
+
+                      let visible_top = next_scroll_y;
+                      let visible_bottom = next_scroll_y + viewport_height;
+                      if caret_top < visible_top {
+                        next_scroll_y = caret_top;
+                      } else if caret_bottom > visible_bottom {
+                        next_scroll_y = caret_bottom - viewport_height;
+                      }
+                      if next_scroll_y.is_finite() {
+                        offset.y = next_scroll_y;
+                      } else {
+                        offset.y = 0.0;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        offset = bounds.clamp(offset);
+        scroll_state.elements.insert(box_id, offset);
+      }
+    }
+
+    for child in node.children.iter() {
+      clamp_element_offsets(
+        child,
+        scroll_state,
+        viewport_size,
+        has_fixed_cb_ancestor_for_children,
+        font_context,
+      );
+    }
+  }
+
+  clamp_element_offsets(
+    &fragment_tree.root,
+    &mut scroll_state,
+    scrollport_viewport,
+    false,
+    font_context,
+  );
+  for root in &fragment_tree.additional_fragments {
+    clamp_element_offsets(root, &mut scroll_state, scrollport_viewport, false, font_context);
+  }
+
+  scroll_state.elements.retain(|_, offset| *offset != Point::ZERO);
+  let scroll = scroll_state.viewport;
+
+  let viewport_rect = Rect::from_xywh(
+    0.0,
+    0.0,
+    scrollport_viewport.width,
+    scrollport_viewport.height,
+  );
+  apply_sticky_offsets_to_root(
+    font_context,
+    &mut fragment_tree.root,
+    viewport_rect,
+    &scroll_state,
+    scrollport_viewport,
+  );
+  for root in &mut fragment_tree.additional_fragments {
+    apply_sticky_offsets_to_root(
+      font_context,
+      root,
+      viewport_rect,
+      &scroll_state,
+      scrollport_viewport,
+    );
+  }
+
+  let animation_time = sanitize_animation_time_ms(animation_time);
+  let mut paint_image_cache = image_cache.clone();
+  paint_image_cache.set_animation_time_ms(animation_time);
+  if let Some(time_ms) = animation_time {
+    animation::apply_transitions(&mut fragment_tree, time_ms, scrollport_viewport);
+  }
+  let animation_duration = animation_time_ms_to_duration(animation_time);
+  if let (Some(duration), Some(store)) = (animation_duration, animation_state_store.as_deref_mut())
+  {
+    animation::apply_animations_with_state(&mut fragment_tree, &scroll_state, duration, store);
+  } else {
+    animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
+  }
+
+  let viewport_width_px = paint_viewport.width.max(1.0).round() as u32;
+  let viewport_height_px = paint_viewport.height.max(1.0).round() as u32;
+
+  let (target_width, target_height) = if expand_full_page {
+    let content_bounds = fragment_tree.content_size();
+    let w = viewport_width_px.max(content_bounds.max_x().ceil().max(1.0) as u32);
+    let h = viewport_height_px.max(content_bounds.max_y().ceil().max(1.0) as u32);
+    (w, h)
+  } else {
+    (viewport_width_px, viewport_height_px)
+  };
+
+  let expected_w_px = ((target_width as f32) * device_pixel_ratio).round().max(1.0) as u32;
+  let expected_h_px = ((target_height as f32) * device_pixel_ratio).round().max(1.0) as u32;
+  if expected_w_px != out_width_px || expected_h_px != out_height_px {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!(
+        "Output buffer dimensions {out_width_px}x{out_height_px} do not match rendered size {expected_w_px}x{expected_h_px}"
+      ),
+    }));
+  }
+
+  if paint_backend_from_env() != PaintBackend::DisplayList {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: "paint_into_rgba is only supported for the display-list paint backend".to_string(),
+    }));
+  }
+
+  let offset = Point::new(viewport_inset.x - scroll.x, viewport_inset.y - scroll.y);
+  let mut scroll_state_for_paint = scroll_state.clone();
+  scroll_state_for_paint.viewport = Point::new(scroll.x - viewport_inset.x, scroll.y - viewport_inset.y);
+  paint_tree_display_list_into_rgba_with_resources_scaled_offset_depth_with_trace(
+    &fragment_tree,
+    target_width,
+    target_height,
+    background,
+    font_context.clone(),
+    paint_image_cache,
+    device_pixel_ratio,
+    offset,
+    paint_parallelism,
+    &scroll_state_for_paint,
+    max_iframe_depth,
+    TraceHandle::disabled(),
+    out,
+    stride_bytes,
+  )?;
+
+  Ok(scroll_state)
 }
 
 /// Options controlling `layout_document` pagination behavior.
@@ -22256,6 +22766,127 @@ mod tests {
       }
     }
     None
+  }
+
+  fn rgba_at(buf: &[u8], stride_bytes: usize, x: u32, y: u32) -> [u8; 4] {
+    let idx = (y as usize) * stride_bytes + (x as usize) * 4;
+    [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+  }
+
+  #[test]
+  fn prepared_document_paint_into_rgba_packed_stride_bytes() {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; background: rgb(10, 20, 30); }
+      #a { position: absolute; left: 0; top: 0; width: 8px; height: 8px; background: rgb(200, 0, 0); }
+      #b { position: absolute; left: 8px; top: 0; width: 8px; height: 8px; background: rgb(0, 200, 0); }
+      #c { position: absolute; left: 0; top: 8px; width: 8px; height: 8px; background: rgb(0, 0, 200); }
+    </style>
+  </head>
+  <body>
+    <div id="a"></div>
+    <div id="b"></div>
+    <div id="c"></div>
+  </body>
+</html>"#;
+
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled());
+    let mut renderer = FastRender::with_config(config).expect("renderer");
+    let prepared = renderer
+      .prepare_html(
+        html,
+        RenderOptions::new()
+          .with_viewport(16, 16)
+          .with_device_pixel_ratio(1.0),
+      )
+      .expect("prepare")
+      ;
+
+    let stride = 16usize * 4;
+    let mut buf = vec![0u8; stride * 16];
+    prepared
+      .paint_into_rgba(
+        &mut buf,
+        16,
+        16,
+        stride as u32,
+        PreparedPaintOptions::default(),
+      )
+      .expect("paint_into_rgba");
+
+    assert_eq!(rgba_at(&buf, stride, 1, 1), [200, 0, 0, 255]);
+    assert_eq!(rgba_at(&buf, stride, 9, 1), [0, 200, 0, 255]);
+    assert_eq!(rgba_at(&buf, stride, 1, 9), [0, 0, 200, 255]);
+    assert_eq!(rgba_at(&buf, stride, 9, 9), [10, 20, 30, 255]);
+  }
+
+  #[test]
+  fn prepared_document_paint_into_rgba_stride_mismatch_falls_back_to_copy() {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; background: rgb(10, 20, 30); }
+      #a { position: absolute; left: 0; top: 0; width: 8px; height: 8px; background: rgb(200, 0, 0); }
+      #b { position: absolute; left: 8px; top: 0; width: 8px; height: 8px; background: rgb(0, 200, 0); }
+      #c { position: absolute; left: 0; top: 8px; width: 8px; height: 8px; background: rgb(0, 0, 200); }
+    </style>
+  </head>
+  <body>
+    <div id="a"></div>
+    <div id="b"></div>
+    <div id="c"></div>
+  </body>
+</html>"#;
+
+    let config = FastRenderConfig::default()
+      .with_runtime_toggles(RuntimeToggles::default())
+      .with_font_sources(FontConfig::bundled_only())
+      .with_paint_parallelism(PaintParallelism::disabled())
+      .with_layout_parallelism(LayoutParallelism::disabled());
+    let mut renderer = FastRender::with_config(config).expect("renderer");
+    let prepared = renderer
+      .prepare_html(
+        html,
+        RenderOptions::new()
+          .with_viewport(16, 16)
+          .with_device_pixel_ratio(1.0),
+      )
+      .expect("prepare")
+      ;
+
+    let stride = 16usize * 4 + 8;
+    let mut buf = vec![0u8; stride * 16];
+    prepared
+      .paint_into_rgba(
+        &mut buf,
+        16,
+        16,
+        stride as u32,
+        PreparedPaintOptions::default(),
+      )
+      .expect("paint_into_rgba (fallback)");
+
+    assert_eq!(rgba_at(&buf, stride, 1, 1), [200, 0, 0, 255]);
+    assert_eq!(rgba_at(&buf, stride, 9, 1), [0, 200, 0, 255]);
+    assert_eq!(rgba_at(&buf, stride, 1, 9), [0, 0, 200, 255]);
+    assert_eq!(rgba_at(&buf, stride, 9, 9), [10, 20, 30, 255]);
+
+    // Padding bytes should be deterministically cleared.
+    let row_bytes = 16usize * 4;
+    for row in 0..16usize {
+      let start = row * stride + row_bytes;
+      assert!(
+        buf[start..start + 8].iter().all(|&b| b == 0),
+        "expected padding bytes to be zeroed"
+      );
+    }
   }
 
   #[test]

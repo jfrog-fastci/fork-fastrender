@@ -70,6 +70,7 @@ use crate::text::pipeline::{GlyphPosition, RunRotation, ShapedRun};
 use rustybuzz::Variation as HbVariation;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::ptr::NonNull;
 use tiny_skia::BlendMode as SkiaBlendMode;
 use tiny_skia::FillRule;
 use tiny_skia::FilterQuality;
@@ -81,6 +82,7 @@ use tiny_skia::PathBuilder;
 use tiny_skia::Pixmap;
 use tiny_skia::PixmapPaint;
 use tiny_skia::PixmapRef;
+use tiny_skia::PixmapMut;
 use tiny_skia::PremultipliedColorU8;
 use tiny_skia::Rect as SkiaRect;
 use tiny_skia::Stroke;
@@ -178,9 +180,316 @@ impl Default for CanvasState {
   }
 }
 
+/// Backing storage for a canvas pixmap.
+///
+/// The vast majority of paint paths allocate an owned [`tiny_skia::Pixmap`]. The multiprocess
+/// renderer, however, wants to paint directly into a shared-memory buffer, which is provided as a
+/// `&mut [u8]`. `tiny-skia` supports painting into a borrowed buffer via [`tiny_skia::PixmapMut`],
+/// so we keep a lightweight "external" variant that can materialize pixmap views on demand.
+///
+/// Safety: the external variant stores a raw pointer to avoid plumbing lifetimes through the paint
+/// pipeline. It must only be constructed from a live `&mut [u8]` and must not outlive that slice.
+#[derive(Debug)]
+pub(crate) enum CanvasPixmap {
+  Owned(Pixmap),
+  External(ExternalPixmap),
+}
+
+#[derive(Debug)]
+pub(crate) struct ExternalPixmap {
+  ptr: NonNull<u8>,
+  len: usize,
+  width: u32,
+  height: u32,
+  stride_bytes: usize,
+}
+
+impl ExternalPixmap {
+  fn new(data: &mut [u8], width: u32, height: u32, stride_bytes: usize) -> Result<Self> {
+    // Keep consistent with `paint::pixmap::MAX_PIXMAP_BYTES`: even though we don't allocate the
+    // buffer here (the caller owns it), we still want a hard cap on the amount of memory we will
+    // treat as a render target to avoid pathological/DoS-sized canvases.
+    if (stride_bytes as u64)
+      .saturating_mul(height as u64)
+      .saturating_mul(1)
+      > crate::paint::pixmap::MAX_PIXMAP_BYTES
+    {
+      return Err(RenderError::InvalidParameters {
+        message: format!(
+          "external pixmap would use {} bytes (limit {})",
+          (stride_bytes as u64).saturating_mul(height as u64),
+          crate::paint::pixmap::MAX_PIXMAP_BYTES
+        ),
+      }
+      .into());
+    }
+    let required = stride_bytes
+      .checked_mul(height as usize)
+      .ok_or_else(|| RenderError::InvalidParameters {
+        message: "external pixmap size overflow".to_string(),
+      })?;
+    if required == 0 {
+      return Err(RenderError::InvalidParameters {
+        message: format!("external pixmap has zero size ({width}x{height})"),
+      }
+      .into());
+    }
+    if data.len() < required {
+      return Err(RenderError::InvalidParameters {
+        message: format!(
+          "external pixmap buffer is too small: need {required} bytes, got {}",
+          data.len()
+        ),
+      }
+      .into());
+    }
+    let ptr = NonNull::new(data.as_mut_ptr()).ok_or_else(|| RenderError::InvalidParameters {
+      message: "external pixmap buffer pointer is null".to_string(),
+    })?;
+    Ok(Self {
+      ptr,
+      len: required,
+      width,
+      height,
+      stride_bytes,
+    })
+  }
+
+  #[inline]
+  unsafe fn as_slice(&self) -> &[u8] {
+    std::slice::from_raw_parts(self.ptr.as_ptr(), self.len)
+  }
+
+  #[inline]
+  unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
+    std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len)
+  }
+
+  #[inline]
+  fn size(&self) -> IntSize {
+    IntSize::from_wh(self.width, self.height).expect("validated external pixmap size")
+  }
+}
+
+impl CanvasPixmap {
+  #[inline]
+  pub(crate) fn width(&self) -> u32 {
+    match self {
+      Self::Owned(pixmap) => pixmap.width(),
+      Self::External(ext) => ext.width,
+    }
+  }
+
+  #[inline]
+  pub(crate) fn height(&self) -> u32 {
+    match self {
+      Self::Owned(pixmap) => pixmap.height(),
+      Self::External(ext) => ext.height,
+    }
+  }
+
+  #[inline]
+  pub(crate) fn stride_bytes(&self) -> usize {
+    match self {
+      Self::Owned(pixmap) => pixmap.width() as usize * 4,
+      Self::External(ext) => ext.stride_bytes,
+    }
+  }
+
+  #[inline]
+  pub(crate) fn data(&self) -> &[u8] {
+    match self {
+      Self::Owned(pixmap) => pixmap.data(),
+      Self::External(ext) => unsafe { ext.as_slice() },
+    }
+  }
+
+  #[inline]
+  pub(crate) fn data_mut(&mut self) -> &mut [u8] {
+    match self {
+      Self::Owned(pixmap) => pixmap.data_mut(),
+      Self::External(ext) => unsafe { ext.as_slice_mut() },
+    }
+  }
+
+  pub(crate) fn clone_to_pixmap(&self) -> Option<Pixmap> {
+    match self {
+      Self::Owned(pixmap) => Some(pixmap.clone()),
+      Self::External(ext) => {
+        let width = ext.width;
+        let height = ext.height;
+        let mut pixmap = new_pixmap(width, height)?;
+        // Copy row-by-row to tolerate an external stride larger than `width*4` (even though the
+        // current no-copy paint path requires tight packing).
+        let src_stride = ext.stride_bytes;
+        let dst_stride = width as usize * 4;
+        let row_bytes = dst_stride;
+        let src = self.data();
+        let dst = pixmap.data_mut();
+        for row in 0..height as usize {
+          let src_off = row * src_stride;
+          let dst_off = row * dst_stride;
+          dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+        Some(pixmap)
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn as_ref(&self) -> PixmapRef<'_> {
+    match self {
+      Self::Owned(pixmap) => pixmap.as_ref(),
+      Self::External(ext) => {
+        // SAFETY: `ext.as_slice()` points to `ext.len` bytes of live memory. `size` and
+        // dimensions were validated at construction.
+        PixmapRef::from_bytes(unsafe { ext.as_slice() }, ext.width, ext.height)
+          .expect("validated external pixmap view")
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn as_mut(&mut self) -> PixmapMut<'_> {
+    match self {
+      Self::Owned(pixmap) => pixmap.as_mut(),
+      Self::External(ext) => {
+        let width = ext.width;
+        let height = ext.height;
+        // SAFETY: `ext.as_slice_mut()` points to `ext.len` bytes of live memory. `size` and
+        // dimensions were validated at construction.
+        PixmapMut::from_bytes(unsafe { ext.as_slice_mut() }, width, height)
+          .expect("validated external pixmap view")
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn fill(&mut self, color: tiny_skia::Color) {
+    match self {
+      Self::Owned(pixmap) => pixmap.fill(color),
+      Self::External(_) => {
+        let mut pixmap = self.as_mut();
+        pixmap.fill(color);
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn fill_path(
+    &mut self,
+    path: &tiny_skia::Path,
+    paint: &Paint<'_>,
+    fill_rule: FillRule,
+    transform: Transform,
+    clip: Option<&Mask>,
+  ) {
+    match self {
+      Self::Owned(pixmap) => pixmap.fill_path(path, paint, fill_rule, transform, clip),
+      Self::External(_) => {
+        let mut pixmap = self.as_mut();
+        pixmap.fill_path(path, paint, fill_rule, transform, clip)
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn stroke_path(
+    &mut self,
+    path: &tiny_skia::Path,
+    paint: &Paint<'_>,
+    stroke: &Stroke,
+    transform: Transform,
+    clip: Option<&Mask>,
+  ) {
+    match self {
+      Self::Owned(pixmap) => pixmap.stroke_path(path, paint, stroke, transform, clip),
+      Self::External(_) => {
+        let mut pixmap = self.as_mut();
+        pixmap.stroke_path(path, paint, stroke, transform, clip)
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn draw_pixmap(
+    &mut self,
+    x: i32,
+    y: i32,
+    src: PixmapRef<'_>,
+    paint: &PixmapPaint,
+    transform: Transform,
+    clip: Option<&Mask>,
+  ) {
+    match self {
+      Self::Owned(pixmap) => pixmap.draw_pixmap(x, y, src, paint, transform, clip),
+      Self::External(_) => {
+        let mut pixmap = self.as_mut();
+        pixmap.draw_pixmap(x, y, src, paint, transform, clip)
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn pixels(&self) -> &[PremultipliedColorU8] {
+    match self {
+      Self::Owned(pixmap) => pixmap.pixels(),
+      Self::External(_) => self.as_ref().pixels(),
+    }
+  }
+
+  #[inline]
+  pub(crate) fn pixels_mut(&mut self) -> &mut [PremultipliedColorU8] {
+    match self {
+      Self::Owned(pixmap) => pixmap.pixels_mut(),
+      Self::External(ext) => {
+        // NOTE: The Canvas code assumes tight packing when it indexes into `pixels_mut()` using
+        // `stride = width`. If we ever want to support external pixmaps with padding, we should
+        // plumb stride-aware row accessors through the internal compositing paths instead of
+        // exposing a flat `[PremultipliedColorU8]` slice.
+        debug_assert_eq!(
+          ext.stride_bytes,
+          ext.width as usize * 4,
+          "pixels_mut requires a tightly packed external pixmap"
+        );
+        let pixels = (ext.width as usize)
+          .checked_mul(ext.height as usize)
+          .expect("validated external pixmap size");
+        // SAFETY: `PremultipliedColorU8` has 1-byte alignment, and the external buffer is a live
+        // writable byte slice at least `width*height*4` bytes long (enforced by `ExternalPixmap::new`).
+        unsafe { std::slice::from_raw_parts_mut(ext.ptr.as_ptr() as *mut PremultipliedColorU8, pixels) }
+      }
+    }
+  }
+
+  #[inline]
+  pub(crate) fn into_owned(self) -> Option<Pixmap> {
+    match self {
+      Self::Owned(pixmap) => Some(pixmap),
+      Self::External(_) => None,
+    }
+  }
+
+  #[inline]
+  pub(crate) fn as_owned(&self) -> Option<&Pixmap> {
+    match self {
+      Self::Owned(pixmap) => Some(pixmap),
+      Self::External(_) => None,
+    }
+  }
+
+  #[inline]
+  pub(crate) fn as_owned_mut(&mut self) -> Option<&mut Pixmap> {
+    match self {
+      Self::Owned(pixmap) => Some(pixmap),
+      Self::External(_) => None,
+    }
+  }
+}
+
 #[derive(Debug)]
 pub(crate) struct LayerRecord {
-  pub(crate) pixmap: Pixmap,
+  pub(crate) pixmap: CanvasPixmap,
   saved_state_depth: usize,
   parent_opacity: f32,
   parent_blend_mode: SkiaBlendMode,
@@ -261,7 +570,7 @@ pub(crate) struct LayerCompositeMetadata<'a> {
 /// plus state stack overhead.
 pub struct Canvas {
   /// The underlying pixel buffer
-  pixmap: Pixmap,
+  pixmap: CanvasPixmap,
   /// Stack of graphics states
   state_stack: Vec<CanvasState>,
   /// Stack of offscreen layers for grouped effects
@@ -318,7 +627,7 @@ impl Canvas {
     background: Rgba,
     text_rasterizer: TextRasterizer,
   ) -> Result<Self> {
-    let pixmap = new_pixmap_with_context(width, height, "canvas")?;
+    let pixmap = CanvasPixmap::Owned(new_pixmap_with_context(width, height, "canvas")?);
 
     let mut canvas = Self {
       pixmap,
@@ -332,6 +641,39 @@ impl Canvas {
     // Fill with background color
     canvas.clear(background);
 
+    Ok(canvas)
+  }
+
+  /// Wraps a packed RGBA buffer in a Canvas without allocating.
+  ///
+  /// The buffer must contain at least `stride_bytes * height` bytes.
+  pub(crate) fn from_rgba_buffer(
+    out: &mut [u8],
+    width: u32,
+    height: u32,
+    stride_bytes: usize,
+    background: Rgba,
+    text_rasterizer: TextRasterizer,
+  ) -> Result<Self> {
+    let expected_stride = width as usize * 4;
+    if stride_bytes != expected_stride {
+      return Err(RenderError::InvalidParameters {
+        message: format!(
+          "external canvas pixmap must be tightly packed (stride_bytes={stride_bytes}, expected={expected_stride})"
+        ),
+      }
+      .into());
+    }
+    let pixmap = CanvasPixmap::External(ExternalPixmap::new(out, width, height, stride_bytes)?);
+    let mut canvas = Self {
+      pixmap,
+      state_stack: Vec::new(),
+      layer_stack: Vec::new(),
+      source_alpha_recording_depth: 0,
+      current_state: CanvasState::new(),
+      text_rasterizer,
+    };
+    canvas.clear(background);
     Ok(canvas)
   }
 
@@ -349,7 +691,7 @@ impl Canvas {
   /// Wraps an existing pixmap in a Canvas without clearing it.
   pub fn from_pixmap(pixmap: Pixmap) -> Self {
     Self {
-      pixmap,
+      pixmap: CanvasPixmap::Owned(pixmap),
       state_stack: Vec::new(),
       layer_stack: Vec::new(),
       source_alpha_recording_depth: 0,
@@ -362,7 +704,7 @@ impl Canvas {
   /// without clearing the pixmap.
   pub fn from_pixmap_with_text_rasterizer(pixmap: Pixmap, text_rasterizer: TextRasterizer) -> Self {
     Self {
-      pixmap,
+      pixmap: CanvasPixmap::Owned(pixmap),
       state_stack: Vec::new(),
       layer_stack: Vec::new(),
       source_alpha_recording_depth: 0,
@@ -416,19 +758,34 @@ impl Canvas {
   /// pixmap.save_png("output.png")?;
   /// ```
   pub fn into_pixmap(self) -> Pixmap {
-    self.pixmap
+    self
+      .pixmap
+      .into_owned()
+      .expect("into_pixmap is only valid for owned canvases")
   }
 
   /// Returns a reference to the underlying pixmap
   #[inline]
   pub fn pixmap(&self) -> &Pixmap {
-    &self.pixmap
+    self
+      .pixmap
+      .as_owned()
+      .expect("pixmap() is only valid for owned canvases")
+  }
+
+  /// Returns a borrowed pixmap view (works for both owned and external canvases).
+  #[inline]
+  pub(crate) fn pixmap_ref(&self) -> PixmapRef<'_> {
+    self.pixmap.as_ref()
   }
 
   /// Returns a mutable reference to the underlying pixmap
   #[inline]
   pub fn pixmap_mut(&mut self) -> &mut Pixmap {
-    &mut self.pixmap
+    self
+      .pixmap
+      .as_owned_mut()
+      .expect("pixmap_mut() is only valid for owned canvases")
   }
 
   /// Runs a mutation against the active pixmap and (when present) the layer's source-alpha
@@ -437,18 +794,22 @@ impl Canvas {
   /// This is primarily used by paint code paths that need direct access to tiny-skia APIs.
   pub(crate) fn with_mirrored_pixmap_mut<F>(&mut self, mut f: F)
   where
-    F: FnMut(&mut Pixmap),
+    F: for<'a> FnMut(&mut PixmapMut<'a>),
   {
     self.mirror_to_source_alpha(|canvas| {
-      f(&mut canvas.pixmap);
+      let mut pixmap = canvas.pixmap.as_mut();
+      f(&mut pixmap);
     });
   }
 
   pub(crate) fn with_mirrored_pixmap_mut_result<T, F>(&mut self, mut f: F) -> Result<T>
   where
-    F: FnMut(&mut Pixmap) -> Result<T>,
+    F: for<'a> FnMut(&mut PixmapMut<'a>) -> Result<T>,
   {
-    self.mirror_to_source_alpha_result(|canvas| f(&mut canvas.pixmap))
+    self.mirror_to_source_alpha_result(|canvas| {
+      let mut pixmap = canvas.pixmap.as_mut();
+      f(&mut pixmap)
+    })
   }
 
   fn mirror_to_source_alpha<F>(&mut self, mut draw: F)
@@ -477,9 +838,11 @@ impl Canvas {
       .last_mut()
       .and_then(|record| record.source_alpha.take());
     if let Some(source_alpha) = source_alpha {
-      let main = std::mem::replace(&mut self.pixmap, source_alpha);
+      let main = std::mem::replace(&mut self.pixmap, CanvasPixmap::Owned(source_alpha));
       draw(self);
-      let source_alpha = std::mem::replace(&mut self.pixmap, main);
+      let source_alpha = std::mem::replace(&mut self.pixmap, main)
+        .into_owned()
+        .expect("source-alpha replay pixmap must be owned");
       if let Some(record) = self.layer_stack.last_mut() {
         record.source_alpha = Some(source_alpha);
       }
@@ -518,9 +881,11 @@ impl Canvas {
       .last_mut()
       .and_then(|record| record.source_alpha.take());
     if let Some(source_alpha) = source_alpha {
-      let main = std::mem::replace(&mut self.pixmap, source_alpha);
+      let main = std::mem::replace(&mut self.pixmap, CanvasPixmap::Owned(source_alpha));
       let replay = draw(self);
-      let source_alpha = std::mem::replace(&mut self.pixmap, main);
+      let source_alpha = std::mem::replace(&mut self.pixmap, main)
+        .into_owned()
+        .expect("source-alpha replay pixmap must be owned");
       if let Some(record) = self.layer_stack.last_mut() {
         record.source_alpha = Some(source_alpha);
       }
@@ -546,7 +911,7 @@ impl Canvas {
   ///
   /// When painting inside an offscreen layer, this refers to the parent layer's pixmap
   /// that already contains the backdrop content.
-  pub(crate) fn backdrop_pixmap_mut(&mut self) -> &mut Pixmap {
+  pub(crate) fn backdrop_pixmap_mut(&mut self) -> &mut CanvasPixmap {
     self
       .layer_stack
       .last_mut()
@@ -560,9 +925,10 @@ impl Canvas {
   /// backdrop while writing into the current offscreen layer.
   ///
   /// Returns `None` when there is no parent pixmap (i.e. no active offscreen layer).
-  pub(crate) fn split_backdrop_and_pixmap_mut(&mut self) -> Option<(&Pixmap, &mut Pixmap)> {
+  pub(crate) fn split_backdrop_and_pixmap_mut(&mut self) -> Option<(&CanvasPixmap, &mut Pixmap)> {
     let backdrop = self.layer_stack.last().map(|layer| &layer.pixmap)?;
-    Some((backdrop, &mut self.pixmap))
+    let pixmap = self.pixmap.as_owned_mut()?;
+    Some((backdrop, pixmap))
   }
 
   /// Ensures the current layer has a source-alpha recording surface.
@@ -605,7 +971,7 @@ impl Canvas {
     &self.layer_stack
   }
 
-  pub(crate) fn layer_stack_pixmap(&self, index: usize) -> Option<&Pixmap> {
+  pub(crate) fn layer_stack_pixmap(&self, index: usize) -> Option<&CanvasPixmap> {
     self.layer_stack.get(index).map(|layer| &layer.pixmap)
   }
 
@@ -614,7 +980,13 @@ impl Canvas {
   }
 
   pub(crate) fn split_layer_stack_and_pixmap_mut(&mut self) -> (&[LayerRecord], &mut Pixmap) {
-    (&self.layer_stack, &mut self.pixmap)
+    (
+      &self.layer_stack,
+      self
+        .pixmap
+        .as_owned_mut()
+        .expect("split_layer_stack_and_pixmap_mut requires an owned active pixmap"),
+    )
   }
 
   // ========================================================================
@@ -894,7 +1266,7 @@ impl Canvas {
     let parent_transform = self.current_state.transform;
 
     let record = LayerRecord {
-      pixmap: std::mem::replace(&mut self.pixmap, new_pixmap),
+      pixmap: std::mem::replace(&mut self.pixmap, CanvasPixmap::Owned(new_pixmap)),
       saved_state_depth: self.state_stack.len(),
       parent_opacity: self.current_state.opacity,
       parent_blend_mode: self.current_state.blend_mode,
@@ -956,7 +1328,7 @@ impl Canvas {
 
   fn copy_pixmap_region(
     dst: &mut Pixmap,
-    src: &Pixmap,
+    src: &CanvasPixmap,
     src_x: i32,
     src_y: i32,
   ) -> RenderResult<()> {
@@ -1105,7 +1477,9 @@ impl Canvas {
       );
     };
 
-    let mut layer_pixmap = std::mem::replace(&mut self.pixmap, record.pixmap);
+    let mut layer_pixmap = std::mem::replace(&mut self.pixmap, record.pixmap)
+      .into_owned()
+      .expect("layer pixmap must be owned");
     self.state_stack.truncate(record.saved_state_depth);
     self.current_state.opacity = record.parent_opacity;
     self.current_state.blend_mode = record.parent_blend_mode;
@@ -1115,7 +1489,7 @@ impl Canvas {
     if record.init_from_backdrop {
       uncomposite_layer_source_over_backdrop(
         &mut layer_pixmap,
-        &self.pixmap,
+        self.pixmap.as_ref(),
         record.origin,
         record.source_alpha.as_ref().map(|alpha| (alpha, (0, 0))),
       )?;
@@ -1156,8 +1530,9 @@ impl Canvas {
     }
     let clip_mask = self.current_state.clip_mask.clone();
     self.mirror_to_source_alpha(|canvas| {
+      let mut target = canvas.pixmap.as_mut();
       composite_layer_into_pixmap_with_clip_rect(
-        &mut canvas.pixmap,
+        &mut target,
         layer,
         opacity,
         blend_mode,
@@ -1176,18 +1551,18 @@ impl Canvas {
   /// Returns the active pixmap at the given canvas layer depth.
   ///
   /// Depth 0 is the root canvas. Depth `layer_depth()` is the currently-active pixmap.
-  pub(crate) fn pixmap_at_depth(&self, depth: usize) -> Option<&Pixmap> {
+  pub(crate) fn pixmap_at_depth(&self, depth: usize) -> Option<PixmapRef<'_>> {
     let current_depth = self.layer_stack.len();
     if depth > current_depth {
       return None;
     }
     if current_depth == 0 {
-      return (depth == 0).then_some(&self.pixmap);
+      return (depth == 0).then_some(self.pixmap.as_ref());
     }
     if depth == current_depth {
-      return Some(&self.pixmap);
+      return Some(self.pixmap.as_ref());
     }
-    self.layer_stack.get(depth).map(|record| &record.pixmap)
+    self.layer_stack.get(depth).map(|record| record.pixmap.as_ref())
   }
 
   /// Returns metadata for compositing the given layer depth into its parent.
@@ -1222,7 +1597,7 @@ impl Canvas {
   ) -> RenderResult<()> {
     fn copy_pixmap_region_with_offset(
       dst: &mut Pixmap,
-      src: &Pixmap,
+      src: &CanvasPixmap,
       src_x: i32,
       src_y: i32,
     ) -> RenderResult<()> {
@@ -1275,8 +1650,8 @@ impl Canvas {
       return Ok(());
     }
 
-    // The parent pixmap is stored in the top record.
-    let parent_layer = stack_len - 1;
+      // The parent pixmap is stored in the top record.
+      let parent_layer = stack_len - 1;
 
     // Find the nearest ancestor backdrop root record, excluding the current layer record.
     let mut root_layer = 0usize;
@@ -1303,7 +1678,7 @@ impl Canvas {
         );
         uncomposite_layer_source_over_backdrop(
           region,
-          &record.pixmap,
+          record.pixmap.as_ref(),
           origin_in_backdrop,
           record
             .source_alpha
@@ -1347,7 +1722,7 @@ impl Canvas {
       );
       uncomposite_layer_source_over_backdrop(
         region,
-        &record.pixmap,
+        record.pixmap.as_ref(),
         origin_in_backdrop,
         record
           .source_alpha
@@ -3592,12 +3967,13 @@ impl Canvas {
     }
 
     let state = self.current_text_state(self.current_state.clip_mask.as_deref());
-    self.text_rasterizer.render_shaped_run_with_state(
+    let mut pixmap = self.pixmap.as_mut();
+    self.text_rasterizer.render_shaped_run_with_state_pixmap_mut(
       run,
       position.x,
       position.y,
       color,
-      &mut self.pixmap,
+      &mut pixmap,
       state,
     )?;
     Ok(())
@@ -3848,7 +4224,10 @@ impl Canvas {
       .collect();
 
     let rotation = rotation_transform(rotation, position.x, position.y);
-    self.text_rasterizer.render_glyph_run_with_stroke(
+    let mut pixmap = self.pixmap.as_mut();
+    self
+      .text_rasterizer
+      .render_glyph_run_with_stroke_pixmap_mut(
       &positions,
       font,
       font_size * run_scale,
@@ -3864,7 +4243,7 @@ impl Canvas {
       color,
       stroke,
       state,
-      &mut self.pixmap,
+      &mut pixmap,
     )?;
     Ok(())
   }
@@ -4352,7 +4731,7 @@ impl Canvas {
 /// twice (CSS Compositing & Blending group invariance).
 pub(crate) fn uncomposite_layer_source_over_backdrop(
   layer: &mut Pixmap,
-  backdrop: &Pixmap,
+  backdrop: PixmapRef<'_>,
   origin: (i32, i32),
   source_alpha: Option<(&Pixmap, (i32, i32))>,
 ) -> RenderResult<()> {
@@ -4521,11 +4900,23 @@ pub(crate) fn composite_layer_into_pixmap(
   origin: (i32, i32),
   clip: Option<&Mask>,
 ) {
+  let mut target = target.as_mut();
+  composite_layer_into_pixmap_with_clip_rect(&mut target, layer, opacity, blend_mode, origin, clip, None)
+}
+
+pub(crate) fn composite_layer_into_pixmap_mut(
+  target: &mut PixmapMut<'_>,
+  layer: &Pixmap,
+  opacity: f32,
+  blend_mode: SkiaBlendMode,
+  origin: (i32, i32),
+  clip: Option<&Mask>,
+) {
   composite_layer_into_pixmap_with_clip_rect(target, layer, opacity, blend_mode, origin, clip, None)
 }
 
 pub(crate) fn composite_layer_into_pixmap_with_clip_rect(
-  target: &mut Pixmap,
+  target: &mut PixmapMut<'_>,
   layer: &Pixmap,
   opacity: f32,
   blend_mode: SkiaBlendMode,
@@ -4534,7 +4925,7 @@ pub(crate) fn composite_layer_into_pixmap_with_clip_rect(
   clip_rect: Option<Rect>,
 ) {
   fn composite_source_over(
-    target: &mut Pixmap,
+    target: &mut PixmapMut<'_>,
     layer: &Pixmap,
     opacity: f32,
     origin: (i32, i32),
@@ -4757,7 +5148,7 @@ pub(crate) fn composite_layer_into_pixmap_with_clip_rect(
   let transform = Transform::identity();
 
   if paint.blend_mode == SkiaBlendMode::Plus {
-    draw_pixmap_with_plus_blend(
+    draw_pixmap_with_plus_blend_mut(
       target,
       origin.0,
       origin.1,
@@ -4774,6 +5165,29 @@ pub(crate) fn composite_layer_into_pixmap_with_clip_rect(
 
 pub(crate) fn draw_pixmap_with_plus_blend(
   target: &mut Pixmap,
+  x: i32,
+  y: i32,
+  src: PixmapRef<'_>,
+  opacity: f32,
+  quality: FilterQuality,
+  transform: Transform,
+  clip: Option<&Mask>,
+) {
+  let mut target_mut = target.as_mut();
+  draw_pixmap_with_plus_blend_mut(
+    &mut target_mut,
+    x,
+    y,
+    src,
+    opacity,
+    quality,
+    transform,
+    clip,
+  );
+}
+
+pub(crate) fn draw_pixmap_with_plus_blend_mut(
+  target: &mut PixmapMut<'_>,
   x: i32,
   y: i32,
   src: PixmapRef<'_>,

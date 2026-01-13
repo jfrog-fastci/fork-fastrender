@@ -80,6 +80,7 @@ use tiny_skia::Mask;
 use tiny_skia::Paint;
 use tiny_skia::Path;
 use tiny_skia::Pixmap;
+use tiny_skia::PixmapMut;
 use tiny_skia::PixmapPaint;
 use tiny_skia::Transform;
 
@@ -1284,7 +1285,7 @@ impl TextRasterizer {
 
   fn fill_path_subpixel_aa(
     &mut self,
-    dst: &mut Pixmap,
+    dst: &mut PixmapMut<'_>,
     path: &Path,
     transform: Transform,
     fill_alpha: f32,
@@ -1540,8 +1541,21 @@ impl TextRasterizer {
     pixmap: &mut Pixmap,
     state: TextRenderState<'_>,
   ) -> Result<f32> {
+    let mut pixmap = pixmap.as_mut();
+    self.render_shaped_run_with_state_pixmap_mut(run, x, baseline_y, color, &mut pixmap, state)
+  }
+
+  pub(crate) fn render_shaped_run_with_state_pixmap_mut(
+    &mut self,
+    run: &ShapedRun,
+    x: f32,
+    baseline_y: f32,
+    color: Rgba,
+    pixmap: &mut PixmapMut<'_>,
+    state: TextRenderState<'_>,
+  ) -> Result<f32> {
     let rotation = rotation_transform(run.rotation, x, baseline_y);
-    self.render_glyph_run(
+    self.render_glyph_run_internal(
       &run.glyphs,
       &run.font,
       run.font_size * run.scale,
@@ -1555,6 +1569,7 @@ impl TextRasterizer {
       x,
       baseline_y,
       color,
+      None,
       state,
       pixmap,
     )?;
@@ -1581,6 +1596,7 @@ impl TextRasterizer {
     state: TextRenderState<'_>,
     pixmap: &mut Pixmap,
   ) -> Result<f32> {
+    let mut pixmap = pixmap.as_mut();
     self.render_glyph_run_internal(
       glyphs,
       font,
@@ -1597,7 +1613,7 @@ impl TextRasterizer {
       color,
       None,
       state,
-      pixmap,
+      &mut pixmap,
     )
   }
 
@@ -1620,6 +1636,47 @@ impl TextRasterizer {
     stroke: Option<TextStroke>,
     state: TextRenderState<'_>,
     pixmap: &mut Pixmap,
+  ) -> Result<f32> {
+    let mut pixmap = pixmap.as_mut();
+    self.render_glyph_run_internal(
+      glyphs,
+      font,
+      font_size,
+      synthetic_bold,
+      synthetic_oblique,
+      palette_index,
+      palette_overrides,
+      palette_override_hash,
+      variations,
+      rotation,
+      x,
+      baseline_y,
+      color,
+      stroke,
+      state,
+      &mut pixmap,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn render_glyph_run_with_stroke_pixmap_mut(
+    &mut self,
+    glyphs: &[GlyphPosition],
+    font: &LoadedFont,
+    font_size: f32,
+    synthetic_bold: f32,
+    synthetic_oblique: f32,
+    palette_index: u16,
+    palette_overrides: &[(u16, Rgba)],
+    palette_override_hash: u64,
+    variations: &[Variation],
+    rotation: Option<Transform>,
+    x: f32,
+    baseline_y: f32,
+    color: Rgba,
+    stroke: Option<TextStroke>,
+    state: TextRenderState<'_>,
+    pixmap: &mut PixmapMut<'_>,
   ) -> Result<f32> {
     self.render_glyph_run_internal(
       glyphs,
@@ -1659,7 +1716,7 @@ impl TextRasterizer {
     color: Rgba,
     stroke: Option<TextStroke>,
     state: TextRenderState<'_>,
-    pixmap: &mut Pixmap,
+    pixmap: &mut PixmapMut<'_>,
   ) -> Result<f32> {
     let raster_timer = text_diagnostics_timer(TextDiagnosticsStage::Rasterize);
     let diag_enabled = raster_timer.is_some();
@@ -2496,7 +2553,7 @@ impl TextRasterizer {
 }
 
 fn draw_color_glyph(
-  target: &mut Pixmap,
+  target: &mut PixmapMut<'_>,
   glyph: &ColorGlyphRaster,
   base_transform: Transform,
   opacity: f32,
@@ -4038,16 +4095,19 @@ mod tests {
       pixmap.fill(tiny_skia::Color::from_rgba8(128, 128, 128, 255));
       let rect = tiny_skia::Rect::from_xywh(0.0, 0.0, 5.1, 4.0).unwrap();
       let path = tiny_skia::PathBuilder::from_rect(rect);
-      rasterizer
-        .fill_path_subpixel_aa(
-          &mut pixmap,
-          &path,
-          Transform::identity(),
-          1.0,
-          Rgba::WHITE,
-          None,
-        )
-        .unwrap();
+      {
+        let mut pixmap_mut = pixmap.as_mut();
+        rasterizer
+          .fill_path_subpixel_aa(
+            &mut pixmap_mut,
+            &path,
+            Transform::identity(),
+            1.0,
+            Rgba::WHITE,
+            None,
+          )
+          .unwrap();
+      }
 
       let mut fringe = false;
       for px in pixmap.data().chunks_exact(4) {
@@ -4069,16 +4129,19 @@ mod tests {
 
       let mut transparent = Pixmap::new(16, 4).unwrap();
       transparent.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 0));
-      rasterizer
-        .fill_path_subpixel_aa(
-          &mut transparent,
-          &path,
-          Transform::identity(),
-          1.0,
-          Rgba::WHITE,
-          None,
-        )
-        .unwrap();
+      {
+        let mut pixmap_mut = transparent.as_mut();
+        rasterizer
+          .fill_path_subpixel_aa(
+            &mut pixmap_mut,
+            &path,
+            Transform::identity(),
+            1.0,
+            Rgba::WHITE,
+            None,
+          )
+          .unwrap();
+      }
       assert!(transparent
         .data()
         .chunks_exact(4)
@@ -4336,16 +4399,19 @@ mod tests {
       // edge.
       let rect = tiny_skia::Rect::from_xywh(4.0, -10.0, 8.0, 24.0).unwrap();
       let path = tiny_skia::PathBuilder::from_rect(rect);
-      rasterizer
-        .fill_path_subpixel_aa(
-          &mut pixmap,
-          &path,
-          Transform::identity(),
-          1.0,
-          Rgba::WHITE,
-          None,
-        )
-        .unwrap();
+      {
+        let mut pixmap_mut = pixmap.as_mut();
+        rasterizer
+          .fill_path_subpixel_aa(
+            &mut pixmap_mut,
+            &path,
+            Transform::identity(),
+            1.0,
+            Rgba::WHITE,
+            None,
+          )
+          .unwrap();
+      }
 
       let sample = |x: usize, y: usize| -> (u8, u8, u8) {
         let idx = (y * pixmap.width() as usize + x) * 4;

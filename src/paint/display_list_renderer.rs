@@ -19,8 +19,8 @@ use crate::paint::blur::{
 };
 use crate::paint::canvas::Canvas;
 use crate::paint::canvas::{
-  apply_mask_with_offset, composite_layer_into_pixmap, crop_mask_i32, draw_pixmap_with_plus_blend,
-  LayerRecord,
+  apply_mask_with_offset, composite_layer_into_pixmap, composite_layer_into_pixmap_mut, crop_mask_i32,
+  draw_pixmap_with_plus_blend, LayerRecord,
 };
 use crate::paint::depth_sort;
 use crate::paint::display_list::BlendMode;
@@ -75,6 +75,7 @@ use crate::paint::filter_outset::filter_outset;
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
   get_gradient_lut, gradient_bucket, paint_linear_gradient_src_over,
+  paint_linear_gradient_src_over_mut,
   rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
   rasterize_linear_gradient_cached, rasterize_radial_gradient, GradientLutCache,
   GradientPixmapCache, GradientPixmapCacheKey, GradientStats,
@@ -159,6 +160,7 @@ use tiny_skia::MaskType;
 use tiny_skia::PathBuilder;
 use tiny_skia::Pattern;
 use tiny_skia::Pixmap;
+use tiny_skia::PixmapMut;
 use tiny_skia::PixmapPaint;
 use tiny_skia::Point as SkiaPoint;
 use tiny_skia::PremultipliedColorU8;
@@ -585,6 +587,18 @@ pub fn composite_manual_layer_pixmap(
   origin: (i32, i32),
   region: Option<&Rect>,
 ) -> Result<()> {
+  let mut target = target.as_mut();
+  composite_manual_layer_pixmap_mut(&mut target, layer, opacity, mode, origin, region)
+}
+
+pub(crate) fn composite_manual_layer_pixmap_mut(
+  target: &mut PixmapMut<'_>,
+  layer: &Pixmap,
+  opacity: f32,
+  mode: BlendMode,
+  origin: (i32, i32),
+  region: Option<&Rect>,
+) -> Result<()> {
   let opacity = opacity.clamp(0.0, 1.0);
   if opacity == 0.0 {
     return Ok(());
@@ -1005,7 +1019,7 @@ fn apply_filters_scoped(
   bbox: Rect,
   bounds: Option<&Rect>,
   cache: Option<&mut (dyn BlurCacheOps + 'static)>,
-  backdrop: Option<&Pixmap>,
+  backdrop: Option<tiny_skia::PixmapRef<'_>>,
   backdrop_origin: (i32, i32),
 ) -> RenderResult<()> {
   if filters.is_empty() {
@@ -1139,8 +1153,7 @@ fn apply_filters_scoped(
       if let Some(mut backdrop_pixmap) = backdrop_pixmap {
         let src_x = backdrop_origin.0.saturating_add(clamped_x as i32);
         let src_y = backdrop_origin.1.saturating_add(clamped_y as i32);
-        if let Err(err) =
-          copy_pixmap_region_with_offset(&mut backdrop_pixmap, backdrop, src_x, src_y)
+        if let Err(err) = copy_pixmap_region_with_offset(&mut backdrop_pixmap, backdrop, src_x, src_y)
         {
           scratch.region = Some(region);
           scratch.svg_backdrop = Some(backdrop_pixmap);
@@ -1215,7 +1228,7 @@ fn apply_filters_with_optional_svg_backdrop(
   scale: f32,
   bbox: Rect,
   cache: Option<&mut (dyn BlurCacheOps + 'static)>,
-  backdrop: Option<&Pixmap>,
+  backdrop: Option<tiny_skia::PixmapRef<'_>>,
   backdrop_origin: (i32, i32),
 ) -> RenderResult<()> {
   let Some(backdrop) = backdrop else {
@@ -1277,7 +1290,7 @@ fn apply_filters_with_optional_svg_backdrop(
 
 fn copy_pixmap_region_with_offset(
   dst: &mut Pixmap,
-  src: &Pixmap,
+  src: tiny_skia::PixmapRef<'_>,
   src_x: i32,
   src_y: i32,
 ) -> RenderResult<()> {
@@ -5611,6 +5624,53 @@ impl DisplayListRenderer {
     )
   }
 
+  /// Creates a renderer that paints directly into an externally-owned RGBA8 buffer.
+  ///
+  /// The buffer is expected to be tightly packed (stride == width_px * 4). The canvas dimensions
+  /// are still specified in CSS pixels; `scale` controls how CSS pixels map to device pixels.
+  pub(crate) fn new_scaled_into_rgba_buffer(
+    width: u32,
+    height: u32,
+    background: Rgba,
+    font_ctx: FontContext,
+    scale: f32,
+    out: &mut [u8],
+    stride_bytes: usize,
+  ) -> Result<Self> {
+    let scale = if scale.is_finite() && scale > 0.0 {
+      scale
+    } else {
+      1.0
+    };
+    let device_w = ((width as f32) * scale).round().max(1.0) as u32;
+    let device_h = ((height as f32) * scale).round().max(1.0) as u32;
+    let color_renderer = shared_color_renderer();
+    let color_cache = shared_color_cache();
+    let glyph_cache = shared_glyph_cache();
+    let text_rasterizer = TextRasterizer::with_caches(
+      glyph_cache.clone(),
+      color_renderer.clone(),
+      color_cache.clone(),
+    );
+    let canvas = Canvas::from_rgba_buffer(
+      out,
+      device_w.max(1),
+      device_h.max(1),
+      stride_bytes,
+      background,
+      text_rasterizer,
+    )?;
+    Self::new_with_canvas(
+      canvas,
+      background,
+      font_ctx,
+      scale,
+      color_renderer,
+      color_cache,
+      glyph_cache,
+    )
+  }
+
   /// Configure parallel painting.
   pub fn with_parallelism(mut self, parallelism: PaintParallelism) -> Self {
     self.paint_parallelism = parallelism;
@@ -5622,9 +5682,8 @@ impl DisplayListRenderer {
     self.paint_parallelism = parallelism;
   }
 
-  fn new_with_text_state(
-    device_width: u32,
-    device_height: u32,
+  fn new_with_canvas(
+    canvas: Canvas,
     background: Rgba,
     font_ctx: FontContext,
     scale: f32,
@@ -5646,19 +5705,9 @@ impl DisplayListRenderer {
       ENV_IMAGE_PIXMAP_CACHE_BYTES,
       DEFAULT_IMAGE_PIXMAP_CACHE_BYTES,
     );
-    let text_rasterizer = TextRasterizer::with_caches(
-      glyph_cache.clone(),
-      color_renderer.clone(),
-      color_cache.clone(),
-    );
     let diagnostics_enabled = paint_diagnostics_enabled();
     Ok(Self {
-      canvas: Canvas::new_with_text_rasterizer(
-        device_width.max(1),
-        device_height.max(1),
-        background,
-        text_rasterizer,
-      )?,
+      canvas,
       font_ctx,
       color_cache,
       color_renderer,
@@ -5731,79 +5780,58 @@ impl DisplayListRenderer {
     } else {
       1.0
     };
-    let toggles = crate::debug::runtime::runtime_toggles();
-    let image_cache_items = toggles.usize_with_default(
-      ENV_IMAGE_PIXMAP_CACHE_ITEMS,
-      DEFAULT_IMAGE_PIXMAP_CACHE_ITEMS,
-    );
-    let image_cache_bytes = toggles.usize_with_default(
-      ENV_IMAGE_PIXMAP_CACHE_BYTES,
-      DEFAULT_IMAGE_PIXMAP_CACHE_BYTES,
-    );
     let text_rasterizer = TextRasterizer::with_caches(
       glyph_cache.clone(),
       color_renderer.clone(),
       color_cache.clone(),
     );
-    let diagnostics_enabled = paint_diagnostics_enabled();
-    Ok(Self {
-      canvas: Canvas::from_pixmap_with_text_rasterizer(pixmap, text_rasterizer),
-      font_ctx,
-      color_cache,
-      color_renderer,
-      glyph_cache,
-      stacking_layers: Vec::new(),
-      blend_stack: Vec::new(),
-      opacity_stack: Vec::new(),
-      scale,
-      transform_stack: vec![Transform3D::identity()],
-      perspective_stack: vec![Transform3D::identity()],
-      culled_depth: 0,
-      preserve_3d_disabled: runtime_flag("FASTR_PRESERVE3D_DISABLE_SCENE"),
-      preserve_3d_scene_depth: 0,
-      projective_warp_enabled: projective_warp_enabled(),
-      projective_warp_depth: 0,
-      preserve_3d_debug: runtime_flag("FASTR_PRESERVE3D_DEBUG"),
+    let canvas = Canvas::from_pixmap_with_text_rasterizer(pixmap, text_rasterizer);
+    Self::new_with_canvas(
+      canvas,
       background,
-      paint_parallelism: PaintParallelism::default(),
-      image_cache: ImagePixmapCache::new(image_cache_items, image_cache_bytes),
-      cropped_image_cache: LruCache::new(
-        NonZeroUsize::new(CROPPED_IMAGE_CACHE_CAPACITY)
-          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
-      ),
-      scaled_image_cache: LruCache::new(
-        NonZeroUsize::new(SCALED_IMAGE_CACHE_CAPACITY)
-          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
-      ),
-      shared_image_pixmaps: None,
-      #[cfg(test)]
-      image_cache_misses: Arc::new(AtomicUsize::new(0)),
-      image_pixmap_diagnostics: diagnostics_enabled
-        .then(|| Arc::new(ImagePixmapDiagnostics::default())),
-      background_paint_diagnostics: diagnostics_enabled
-        .then(|| Arc::new(BackgroundPaintDiagnostics::default())),
-      clip_mask_diagnostics: diagnostics_enabled.then(|| Arc::new(ClipMaskDiagnostics::default())),
-      layer_alloc_diagnostics: diagnostics_enabled
-        .then(|| Arc::new(LayerAllocationDiagnostics::default())),
-      backdrop_composite_diagnostics: diagnostics_enabled
-        .then(|| Arc::new(BackdropCompositeDiagnostics::default())),
-      warp_cache: WarpCache::new(WARP_CACHE_CAPACITY),
-      blur_cache: BlurCache::default(),
-      shared_blur_cache: None,
-      backdrop_filter_cache: BackdropFilterCache::default(),
-      shared_backdrop_filter_cache: None,
-      gradient_cache: GradientLutCache::default(),
-      gradient_pixmap_cache: GradientPixmapCache::default(),
-      gradient_stats: GradientStats::default(),
-      diagnostics_enabled,
-      trace_backdrop_stack: runtime_flag("FASTR_TRACE_BACKDROP_STACK"),
-      backdrop_composite_cache: LruCache::new(
-        NonZeroUsize::new(BACKDROP_COMPOSITE_CACHE_CAPACITY)
-          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
-      ),
-      backdrop_composite_cache_enabled: true,
-      canvas_mutations: vec![0],
-    })
+      font_ctx,
+      scale,
+      color_renderer,
+      color_cache,
+      glyph_cache,
+    )
+  }
+
+  fn new_with_text_state(
+    device_width: u32,
+    device_height: u32,
+    background: Rgba,
+    font_ctx: FontContext,
+    scale: f32,
+    color_renderer: ColorFontRenderer,
+    color_cache: Arc<Mutex<ColorGlyphCache>>,
+    glyph_cache: Arc<Mutex<GlyphCache>>,
+  ) -> Result<Self> {
+    let scale = if scale.is_finite() && scale > 0.0 {
+      scale
+    } else {
+      1.0
+    };
+    let text_rasterizer = TextRasterizer::with_caches(
+      glyph_cache.clone(),
+      color_renderer.clone(),
+      color_cache.clone(),
+    );
+    let canvas = Canvas::new_with_text_rasterizer(
+      device_width.max(1),
+      device_height.max(1),
+      background,
+      text_rasterizer,
+    )?;
+    Self::new_with_canvas(
+      canvas,
+      background,
+      font_ctx,
+      scale,
+      color_renderer,
+      color_cache,
+      glyph_cache,
+    )
   }
 
   #[inline]
@@ -6126,7 +6154,7 @@ impl DisplayListRenderer {
         self
           .canvas
           .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
-            paint_linear_gradient_src_over(
+            paint_linear_gradient_src_over_mut(
               pixmap,
               x0_i32,
               y0_i32,
@@ -6376,7 +6404,7 @@ impl DisplayListRenderer {
       self
         .canvas
         .with_mirrored_pixmap_mut_result(|pixmap| -> Result<()> {
-          paint_linear_gradient_src_over(
+          paint_linear_gradient_src_over_mut(
             pixmap,
             dest_x_dev,
             dest_y_dev,
@@ -6561,7 +6589,7 @@ impl DisplayListRenderer {
         let blend_mode = self.canvas.blend_mode();
         let clip = clip_mask.as_deref();
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          composite_layer_into_pixmap(
+          composite_layer_into_pixmap_mut(
             pixmap,
             &tmp,
             opacity,
@@ -6664,7 +6692,7 @@ impl DisplayListRenderer {
 
       // Seed scratch with the destination contents so blending matches a direct fill.
       {
-        let src = self.canvas.pixmap().data();
+        let src = self.canvas.pixmap_ref().data();
         let dst = tmp.data_mut();
         let src_stride = self.canvas.width() as usize * 4;
         let dst_stride = scratch_w as usize * 4;
@@ -7063,7 +7091,7 @@ impl DisplayListRenderer {
                 let blend_mode = self.canvas.blend_mode();
                 let clip = clip_mask.as_deref();
                 self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-                  composite_layer_into_pixmap(
+                  composite_layer_into_pixmap_mut(
                     pixmap,
                     &tmp,
                     opacity,
@@ -7202,7 +7230,7 @@ impl DisplayListRenderer {
           let blend_mode = self.canvas.blend_mode();
           let clip = clip_mask.as_deref();
           self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-            composite_layer_into_pixmap(
+            composite_layer_into_pixmap_mut(
               pixmap,
               &tmp,
               opacity,
@@ -7307,7 +7335,7 @@ impl DisplayListRenderer {
         let blend_mode = self.canvas.blend_mode();
         let clip = clip_mask.as_deref();
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          composite_layer_into_pixmap(
+          composite_layer_into_pixmap_mut(
             pixmap,
             &tmp,
             opacity,
@@ -10481,7 +10509,7 @@ impl DisplayListRenderer {
           let dest_y = origin_y.round() as i32 + ty;
           let clip_ref = clip.as_deref();
           self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-            composite_layer_into_pixmap(pixmap, &tile, 1.0, blend_mode, (dest_x, dest_y), clip_ref);
+            composite_layer_into_pixmap_mut(pixmap, &tile, 1.0, blend_mode, (dest_x, dest_y), clip_ref);
           });
         }
       }
@@ -10521,7 +10549,7 @@ impl DisplayListRenderer {
         && Self::is_near_integer(transform.tx)
         && Self::is_near_integer(transform.ty)
       {
-        composite_layer_into_pixmap(
+        composite_layer_into_pixmap_mut(
           pixmap,
           &temp,
           1.0,
@@ -10556,7 +10584,7 @@ impl DisplayListRenderer {
     region: Option<&Rect>,
   ) -> Result<()> {
     let result = self.canvas.with_mirrored_pixmap_mut_result(|dest| {
-      composite_manual_layer_pixmap(dest, layer, opacity, mode, origin, region)
+      composite_manual_layer_pixmap_mut(dest, layer, opacity, mode, origin, region)
     });
     if result.is_ok() {
       self.mark_current_pixmap_mutated();
@@ -10567,6 +10595,23 @@ impl DisplayListRenderer {
   /// Consumes the renderer and returns the painted pixmap.
   pub fn render(mut self, list: &DisplayList) -> Result<Pixmap> {
     Ok(self.render_with_report(list)?.pixmap)
+  }
+
+  /// Renders the display list into the renderer's existing canvas.
+  ///
+  /// Unlike [`Self::render_with_report`], this does not attempt to extract an owned [`Pixmap`] from
+  /// the renderer. This makes it usable with canvases backed by an externally-owned RGBA buffer.
+  pub(crate) fn render_into(&mut self, list: &DisplayList) -> Result<()> {
+    let composed = self
+      .preserve_3d_disabled
+      .then(|| crate::paint::preserve_3d::composite_preserve_3d(list));
+    let list = composed.as_ref().unwrap_or(list);
+    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    self.render_slice(list.items())?;
+    // Like the legacy painter, `render_slice` checks periodically before each display item. Run a
+    // final check so we don't miss deadlines expiring during the last item.
+    check_active(RenderStage::Paint).map_err(Error::Render)?;
+    Ok(())
   }
 
   /// Renders the display list and returns timing/parallelism metadata.
@@ -11139,12 +11184,12 @@ impl DisplayListRenderer {
       // accidentally include pixels from above the Backdrop Root boundary.
       let root_initialized_from_backdrop =
         root_depth > 0 && layer_stack[root_depth - 1].is_initialized_from_backdrop();
-      let root_uncomposited: Option<Pixmap>;
-      let start_src: &Pixmap = if let Some(key) = start_key.as_ref() {
+      let mut root_uncomposited: Option<Pixmap> = None;
+      let start_src: tiny_skia::PixmapRef<'_> = if let Some(key) = start_key.as_ref() {
         let Some(entry) = self.backdrop_composite_cache.peek(key) else {
           return Ok(false);
         };
-        &entry.pixmap
+        entry.pixmap.as_ref()
       } else {
         let Some(record) = layer_stack.get(root_depth) else {
           return Ok(false);
@@ -11153,20 +11198,22 @@ impl DisplayListRenderer {
           let Some(root_record) = layer_stack.get(root_depth - 1) else {
             return Ok(false);
           };
-          let mut pixmap = record.pixmap.clone();
+          let Some(mut pixmap) = record.pixmap.clone_to_pixmap() else {
+            return Ok(false);
+          };
           crate::paint::canvas::uncomposite_layer_source_over_backdrop(
             &mut pixmap,
-            &root_record.pixmap,
+            root_record.pixmap.as_ref(),
             root_record.origin,
             root_record.source_alpha().map(|alpha| (alpha, (0, 0))),
           )?;
           root_uncomposited = Some(pixmap);
-          let Some(uncomposited) = root_uncomposited.as_ref() else {
-            return Ok(false);
-          };
-          uncomposited
+          root_uncomposited
+            .as_ref()
+            .expect("just set root_uncomposited")
+            .as_ref()
         } else {
-          &record.pixmap
+          record.pixmap.as_ref()
         }
       };
 
@@ -11195,7 +11242,7 @@ impl DisplayListRenderer {
 
         {
           let src = match current.as_ref() {
-            Some((_, _, pixmap)) => pixmap,
+            Some((_, _, pixmap)) => pixmap.as_ref(),
             None => start_src,
           };
           copy_pixmap_region_with_offset(&mut next, src, origin.0, origin.1)?;
@@ -11447,7 +11494,12 @@ impl DisplayListRenderer {
       Some(backdrop_cache),
       |region, clamped_x, clamped_y| {
         if let Some(backdrop) = cached_backdrop {
-          copy_pixmap_region_with_offset(region, backdrop, clamped_x as i32, clamped_y as i32)
+          copy_pixmap_region_with_offset(
+            region,
+            backdrop.as_ref(),
+            clamped_x as i32,
+            clamped_y as i32,
+          )
         } else {
           if composite_steps > 0 {
             if let Some(diag) = backdrop_diag.as_ref() {
@@ -13382,7 +13434,7 @@ impl DisplayListRenderer {
                     if let Some(backdrop) = nested_backdrop {
                       copy_pixmap_region_with_offset(
                         region,
-                        backdrop,
+                        backdrop.as_ref(),
                         clamped_x as i32,
                         clamped_y as i32,
                       )
@@ -13460,13 +13512,12 @@ impl DisplayListRenderer {
                           (new_pixmap(w, h), new_pixmap(w, h))
                         {
                           let copied_backdrop = {
-                            if let Some(scope_buffer) = nested_backdrop_buffers
-                              .get(scope_id)
-                              .and_then(|buf| buf.as_ref())
+                            if let Some(scope_buffer) =
+                              nested_backdrop_buffers.get(scope_id).and_then(|buf| buf.as_ref())
                             {
                               copy_pixmap_region_with_offset(
                                 &mut backdrop_region,
-                                scope_buffer,
+                                scope_buffer.as_ref(),
                                 warped.offset().0,
                                 warped.offset().1,
                               )?;
@@ -13507,19 +13558,22 @@ impl DisplayListRenderer {
                             // backdrops.
                             crate::paint::canvas::uncomposite_layer_source_over_backdrop(
                               &mut blended_region,
-                              &backdrop_region,
+                              backdrop_region.as_ref(),
                               (0, 0),
                               Some((warped.pixmap(), (0, 0))),
                             )?;
 
-                            composite_layer_into_pixmap(
-                              renderer.canvas.pixmap_mut(),
-                              &blended_region,
-                              1.0,
-                              SkiaBlendMode::SourceOver,
-                              warped.offset(),
-                              None,
-                            );
+                            renderer.canvas.with_mirrored_pixmap_mut(|dest| {
+                              composite_layer_into_pixmap_mut(
+                                dest,
+                                &blended_region,
+                                1.0,
+                                SkiaBlendMode::SourceOver,
+                                warped.offset(),
+                                None,
+                              );
+                            });
+                            renderer.mark_current_pixmap_mutated();
                             for &root_id in &scene_item.backdrop_root_chain {
                               if let Some(buffer) = nested_backdrop_buffers
                                 .get_mut(root_id)
@@ -13567,14 +13621,17 @@ impl DisplayListRenderer {
                           }
                         } else {
                           let blend_mode = map_blend_mode(mode);
-                          composite_layer_into_pixmap(
-                            renderer.canvas.pixmap_mut(),
-                            warped.pixmap(),
-                            1.0,
-                            blend_mode,
-                            warped.offset(),
-                            None,
-                          );
+                          renderer.canvas.with_mirrored_pixmap_mut(|dest| {
+                            composite_layer_into_pixmap_mut(
+                              dest,
+                              warped.pixmap(),
+                              1.0,
+                              blend_mode,
+                              warped.offset(),
+                              None,
+                            );
+                          });
+                          renderer.mark_current_pixmap_mutated();
                           for &root_id in &scene_item.backdrop_root_chain {
                             if let Some(buffer) = nested_backdrop_buffers
                               .get_mut(root_id)
@@ -13594,14 +13651,17 @@ impl DisplayListRenderer {
                       }
                     } else {
                       let blend_mode = renderer.canvas.blend_mode();
-                      composite_layer_into_pixmap(
-                        renderer.canvas.pixmap_mut(),
-                        warped.pixmap(),
-                        1.0,
-                        blend_mode,
-                        warped.offset(),
-                        None,
-                      );
+                      renderer.canvas.with_mirrored_pixmap_mut(|dest| {
+                        composite_layer_into_pixmap_mut(
+                          dest,
+                          warped.pixmap(),
+                          1.0,
+                          blend_mode,
+                          warped.offset(),
+                          None,
+                        );
+                      });
+                      renderer.mark_current_pixmap_mutated();
                       for &root_id in &scene_item.backdrop_root_chain {
                         if let Some(buffer) = nested_backdrop_buffers
                           .get_mut(root_id)
@@ -13756,7 +13816,7 @@ impl DisplayListRenderer {
             ResolvedFilter::SvgFilter(filter) => filter.uses_background_inputs(),
             _ => false,
           });
-          let backdrop = needs_svg_background.then(|| self.canvas.pixmap());
+          let backdrop = needs_svg_background.then(|| self.canvas.pixmap_ref());
           let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut()
           {
             Some(shared) => shared,
@@ -16127,7 +16187,7 @@ impl DisplayListRenderer {
               ResolvedFilter::SvgFilter(filter) => filter.uses_background_inputs(),
               _ => false,
             });
-            let backdrop = needs_svg_background.then(|| self.canvas.pixmap());
+            let backdrop = needs_svg_background.then(|| self.canvas.pixmap_ref());
             let blur_cache: &mut (dyn BlurCacheOps + 'static) =
               match self.shared_blur_cache.as_mut() {
                 Some(shared) => shared,
@@ -16577,7 +16637,7 @@ impl DisplayListRenderer {
     let blend_mode = self.canvas.blend_mode();
     let axis_aligned_transform = Self::is_translation_only_transform(transform);
 
-    let draw_solid_line = |pixmap: &mut Pixmap,
+    let draw_solid_line = |pixmap: &mut PixmapMut<'_>,
                            paint: &tiny_skia::Paint,
                            start: f32,
                            len: f32,
@@ -16666,15 +16726,15 @@ impl DisplayListRenderer {
       }
     };
 
-    let draw_stroked_line = |pixmap: &mut Pixmap,
-                             paint: &tiny_skia::Paint,
-                             segment_start: f32,
-                             start: f32,
-                             len: f32,
-                             center: f32,
-                             thickness: f32,
-                             dash: Option<Vec<f32>>,
-                             round: bool| {
+    let draw_stroked_line = |pixmap: &mut PixmapMut<'_>,
+                              paint: &tiny_skia::Paint,
+                              segment_start: f32,
+                              start: f32,
+                              len: f32,
+                              center: f32,
+                              thickness: f32,
+                              dash: Option<Vec<f32>>,
+                              round: bool| {
       let mut path = PathBuilder::new();
       if inline_vertical {
         path.move_to(center, start);
@@ -16700,7 +16760,7 @@ impl DisplayListRenderer {
       pixmap.stroke_path(&path, paint, &stroke, transform, clip.as_deref());
     };
 
-    let draw_wavy_line = |pixmap: &mut Pixmap,
+    let draw_wavy_line = |pixmap: &mut PixmapMut<'_>,
                           paint: &tiny_skia::Paint,
                           segment_start: f32,
                           start: f32,
@@ -16829,7 +16889,7 @@ impl DisplayListRenderer {
       }
     };
 
-    let render_line = |pixmap: &mut Pixmap,
+    let render_line = |pixmap: &mut PixmapMut<'_>,
                        paint: &tiny_skia::Paint,
                        style: TextDecorationStyle,
                        segment_start: f32,
@@ -17913,7 +17973,7 @@ impl DisplayListRenderer {
       let clip_mask = self.canvas.clip_mask_rc();
       let pixmap_ref = pixmap.as_ref();
       self.canvas.with_mirrored_pixmap_mut(|dest| {
-        composite_layer_into_pixmap(
+        composite_layer_into_pixmap_mut(
           dest,
           pixmap_ref,
           opacity,
@@ -18525,7 +18585,7 @@ impl DisplayListRenderer {
         let blend_mode = self.canvas.blend_mode();
         let clip = clip_mask.as_deref();
         self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-          composite_layer_into_pixmap(
+          composite_layer_into_pixmap_mut(
             pixmap,
             &tmp,
             opacity,
@@ -31362,7 +31422,7 @@ mod tests {
 
     // Start the source at (-1, -1) relative to the destination so only the bottom-right quadrant
     // overlaps.
-    copy_pixmap_region_with_offset(&mut dst, &src, -1, -1).expect("copy ok");
+    copy_pixmap_region_with_offset(&mut dst, src.as_ref(), -1, -1).expect("copy ok");
 
     // Pixels outside the overlap should be cleared to fully transparent.
     for x in 0..dst.width() {

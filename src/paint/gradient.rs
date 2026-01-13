@@ -15,7 +15,7 @@ use rustc_hash::FxHasher;
 use std::hash::BuildHasherDefault;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tiny_skia::{ColorU8, Pixmap, PremultipliedColorU8, SpreadMode};
+use tiny_skia::{ColorU8, Pixmap, PixmapMut, PremultipliedColorU8, SpreadMode};
 
 const DEADLINE_PIXELS_STRIDE: usize = 16 * 1024;
 const GRADIENT_PARALLEL_THRESHOLD_PIXELS: usize = 1_000_000;
@@ -1629,6 +1629,39 @@ fn rasterize_linear_gradient_with_phase(
 
 pub fn paint_linear_gradient_src_over(
   dest: &mut Pixmap,
+  dest_x: i32,
+  dest_y: i32,
+  width: u32,
+  height: u32,
+  start: Point,
+  end: Point,
+  spread: SpreadMode,
+  stops: &[(f32, Rgba)],
+  cache: &GradientLutCache,
+  bucket: u16,
+  dither_phase: u8,
+  clip: Option<&tiny_skia::Mask>,
+) -> Result<(), RenderError> {
+  let mut dest = dest.as_mut();
+  paint_linear_gradient_src_over_mut(
+    &mut dest,
+    dest_x,
+    dest_y,
+    width,
+    height,
+    start,
+    end,
+    spread,
+    stops,
+    cache,
+    bucket,
+    dither_phase,
+    clip,
+  )
+}
+
+pub(crate) fn paint_linear_gradient_src_over_mut(
+  dest: &mut PixmapMut<'_>,
   dest_x: i32,
   dest_y: i32,
   width: u32,
