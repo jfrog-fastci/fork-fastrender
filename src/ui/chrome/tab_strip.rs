@@ -454,21 +454,31 @@ fn group_chip_ui(
 
     ui.separator();
 
-    ui.menu_button("Change color", |ui| {
+    let change_color_menu = ui.menu_button("Change color", |ui| {
       for color in TabGroupColor::ALL {
         let button = egui::Button::new(color.as_str())
           .fill(group_color_fill(color))
           .stroke(Stroke::new(1.0, group_color_egui(color)));
-        if ui.add(button).clicked() {
+        let resp = ui.add(button);
+        resp.widget_info({
+          let label = format!("Set group color: {}", color.as_str());
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+        });
+        if resp.clicked() {
           ops.push(TabStripOp::SetGroupColor(group_id, color));
           ui.close_menu();
         }
       }
     });
+    change_color_menu.response.widget_info(|| {
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Change group color")
+    });
 
     ui.separator();
 
-    if ui.button("Ungroup").clicked() {
+    let ungroup = ui.button("Ungroup");
+    ungroup.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Ungroup"));
+    if ungroup.clicked() {
       ops.push(TabStripOp::Ungroup(group_id));
       ui.close_menu();
     }
@@ -478,7 +488,12 @@ fn group_chip_ui(
     } else {
       "Collapse group"
     };
-    if ui.button(label).clicked() {
+    let collapse_toggle = ui.button(label);
+    collapse_toggle.widget_info({
+      let label = label.to_string();
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+    });
+    if collapse_toggle.clicked() {
       ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
       ui.close_menu();
     }
