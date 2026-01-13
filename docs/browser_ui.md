@@ -661,7 +661,8 @@ Front-ends are encouraged to print these to stderr while developing new protocol
     - basic caret movement + selection are supported for focused `<input>`/`<textarea>` (arrow keys,
       Home/End, Shift+Arrow, Ctrl/Cmd+A)
     - basic clipboard shortcuts (Ctrl/Cmd+C/X/V) are supported for focused `<input>`/`<textarea>`
-  - `<select>` support is basic (listbox clicks + dropdown popup selection; no typeahead/multi-select yet)
+  - `<select>` support is basic (listbox clicks + dropdown popup selection; keyboard navigation and
+    simple typeahead are supported; no multi-select yet)
   - many controls are not yet supported (`contenteditable`, file inputs, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
 
