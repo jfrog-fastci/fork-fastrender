@@ -1,8 +1,9 @@
 use vm_js::{
-  CompiledScript, Heap, HeapLimits, ImportMetaProperty, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey,
-  Realm, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  Heap, HeapLimits, ImportMetaProperty, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm, Scope,
+  SourceText, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 use std::any::Any;
+use std::sync::Arc;
 
 fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
   let mut vm = Vm::new(VmOptions::default());
@@ -124,8 +125,8 @@ fn compiled_module_instantiation_supports_anonymous_default_export_function() ->
 
   // Module A: drop its retained AST and ensure linking/instantiation can proceed using only
   // compiled HIR.
-  let mut rec_a = SourceTextModuleRecord::parse(&mut heap, src_a)?;
-  rec_a.compiled = Some(CompiledScript::compile_module(&mut heap, "a.js", src_a)?);
+  let src_a = Arc::new(SourceText::new_charged(&mut heap, "a.js", src_a)?);
+  let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
   rec_a.ast = None;
   let a = graph.add_module_with_specifier("a.js", rec_a)?;
 

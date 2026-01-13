@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use vm_js::{
-  CompiledScript, Heap, HeapLimits, HostDefined, Job, JsString, MicrotaskQueue, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceTextModuleRecord,
-  Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  Heap, HeapLimits, HostDefined, Job, JsString, MicrotaskQueue, ModuleGraph, ModuleId, ModuleLoadPayload,
+  ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceText, SourceTextModuleRecord, Value,
+  Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 /// Host hooks that:
@@ -330,8 +331,8 @@ fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer_for_co
   // Module A: drop its retained AST and ensure linking/instantiation can proceed using only
   // compiled HIR.
   let src_a = "export function doImport() { return import('dep.js'); }";
-  let mut rec_a = SourceTextModuleRecord::parse(&mut heap, src_a)?;
-  rec_a.compiled = Some(CompiledScript::compile_module(&mut heap, "a.js", src_a)?);
+  let src_a = Arc::new(SourceText::new_charged(&mut heap, "a.js", src_a)?);
+  let mut rec_a = SourceTextModuleRecord::compile_source(&mut heap, src_a)?;
   rec_a.ast = None;
   let a = modules.add_module_with_specifier("a.js", rec_a)?;
 
