@@ -82,6 +82,7 @@ This likely indicates a regression in the AppContainer support code, not missing
   }
 }
 
+#[allow(dead_code)]
 pub(crate) fn require_full_sandbox_support(test_name: &str) -> bool {
   let support = SandboxSupport::detect();
   if support != SandboxSupport::Full {
