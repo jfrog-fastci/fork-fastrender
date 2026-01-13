@@ -88,9 +88,9 @@ end-to-end:
 - **Accessibility (chrome)**: the egui-based chrome UI exposes widget semantics to OS assistive tech
   via AccessKit (VoiceOver/Narrator/Orca). See [chrome_accessibility.md](chrome_accessibility.md).
 - **Accessibility (page content)**: the renderer can compute a page accessibility tree
-  (roles/names/states) as JSON via `dump_a11y`, and the windowed browser UI can expose page content
-  to OS screen readers by merging a `PageA11ySnapshot` from the worker into egui’s AccessKit tree.
-  See [page_accessibility.md](page_accessibility.md).
+  (roles/names/states) as JSON via `dump_a11y` (see [page_accessibility.md](page_accessibility.md)).
+  Wiring page content into the OS-facing AccessKit tree is in progress; today the windowed UI exposes
+  the rendered page primarily as a single labeled region (the pixmap).
 - **Navigation**:
   - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
     → `https://example.com/`, filesystem paths → `file://...`)

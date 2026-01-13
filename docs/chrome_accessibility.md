@@ -3,11 +3,11 @@
 FastRender has two accessibility-related layers:
 
 1. **Renderer semantics export** (FastRender → JSON): `src/accessibility.rs` builds a static accessibility tree derived from the styled DOM (`AccessibilityNode`). This is used by tests, the library API, and the `dump_a11y` CLI.
-2. **OS accessibility** (browser UI → screen readers): the windowed `browser` app (feature `browser_ui`) uses **AccessKit** so the **browser chrome** (tabs/address bar/menus) is exposed to platform assistive tech (VoiceOver/Narrator/Orca). The windowed UI can also merge a page accessibility subtree (from the render worker) into the same AccessKit tree so assistive tech can traverse page content nodes.
+2. **OS accessibility** (browser UI → screen readers): the windowed `browser` app (feature `browser_ui`) uses **AccessKit** so the **browser chrome** (tabs/address bar/menus) is exposed to platform assistive tech (VoiceOver/Narrator/Orca). The windowed UI also has scaffolding to merge a page content accessibility subtree into the same AccessKit tree, but per-element page exposure is still in progress.
    - **Default backend:** egui’s AccessKit integration (the egui widget tree becomes the OS accessibility tree).
    - **Renderer-chrome backend (experimental):** `FASTR_BROWSER_RENDERER_CHROME=1` switches the browser to a custom `accesskit_winit::Adapter` (`ui::compositor_accessibility::CompositorAccessibility`) intended for when the chrome is rendered by FastRender (HTML/CSS) instead of egui. Today this provides a minimal Window/Chrome/Page region tree so platform assistive tech can still discover the main UI regions.
 
-Visually, the rendered page content is still a pixmap; however, the windowed UI can inject a page accessibility subtree (via `PageA11ySnapshot`) into the OS-facing AccessKit tree. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output feeds into AccessKit for page content and will eventually do the same when chrome/content are rendered by FastRender.
+Visually, the rendered page content is still a pixmap. The windowed UI has an intended insertion point for a future page/content subtree by merging additional AccessKit nodes into egui’s `PlatformOutput.accesskit_update`, but the worker-produced page subtree payload is not yet a stable part of the UI↔worker protocol. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output feeds into AccessKit for page content and will eventually do the same when chrome/content are rendered by FastRender.
 
 For a page-focused workflow doc (inspecting the renderer’s accessibility tree via `dump_a11y`, how
 viewport CSS bounds are computed/mapped, and manual screen reader testing), see
@@ -400,8 +400,8 @@ Limitations:
 - `dump_accesskit` only snapshots the **egui** backend (`egui::PlatformOutput::accesskit_update`). It
   does not exercise the renderer-chrome backend (`ui::compositor_accessibility::CompositorAccessibility`).
 - `dump_accesskit` does **not** run the browser worker, so it will not include any injected page
-  content subtree (e.g. `PageA11ySnapshot`). Use the real windowed `browser` + a platform
-  accessibility inspector when debugging page nodes.
+  content subtree update (if/when wired). Use the real windowed `browser` + a platform accessibility
+  inspector when debugging page nodes.
 
 Note: on Linux, building with `--features browser_ui` requires system GUI development headers
 (X11/Wayland headers, EGL/Vulkan, etc). Real-time audio output via `--features audio_cpal`
@@ -471,9 +471,10 @@ If you need a lower-level view than a screen reader, use platform accessibility 
 - **Windows:** Inspect.exe (Windows SDK) / Accessibility Insights
 - **Linux:** Accerciser / other AT-SPI inspection tools
 
-Scope note: the rendered page is still a pixmap, but the windowed UI can inject a page content
-subtree (via `PageA11ySnapshot`) into the OS-facing AccessKit tree so screen readers can traverse
-basic document content. Action/bounds completeness is still evolving; see
+Scope note: the rendered page is still a pixmap. The windowed UI has scaffolding to inject a page
+content subtree into the OS-facing AccessKit tree so screen readers can traverse basic document
+content, but per-element page exposure is still in progress. Action/bounds completeness is still
+evolving; see
 [`docs/browser_ui.md`](browser_ui.md) for the current limitations checklist.
 
 To smoke-test the **renderer-chrome AccessKit adapter path** (even before a real chrome document is
@@ -492,8 +493,9 @@ accessibility tree without panics. (Today it is a placeholder tree; this is pure
 
 ## Future work: composing chrome + content accessibility trees
 
-With the default egui backend, the windowed browser already composes the egui chrome widget tree
-with an injected page subtree. Renderer-chrome (HTML/CSS chrome rendered by FastRender) still needs
+With the default egui backend, the windowed browser composes the egui chrome widget tree with a page
+host region. There is also scaffolding to inject a richer page/content subtree. Renderer-chrome
+(HTML/CSS chrome rendered by FastRender) still needs
 to provide an equivalent single OS-visible tree without relying on egui’s widget/accessibility
 integration.
 

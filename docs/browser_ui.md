@@ -595,9 +595,10 @@ Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
   egui-winit + AccessKit when compiled with `--features browser_ui`.
-- **Page content (renderer tree):** the render worker builds a page accessibility snapshot (derived
-  from the renderer’s accessibility tree) and the UI injects it into egui’s AccessKit tree (currently
-  sent as `PageA11ySnapshot`) so assistive tech can traverse page content nodes.
+- **Page content (renderer tree):** the renderer can compute a semantic accessibility tree
+  (`AccessibilityNode`, via `src/accessibility.rs`). The windowed UI has scaffolding to merge a
+  future page/content subtree into the OS-facing AccessKit tree, but per-element page content
+  exposure is still in progress (see [page_accessibility.md](page_accessibility.md)).
 
 For background and developer workflow:
 
@@ -608,9 +609,9 @@ For background and developer workflow:
 Debugging tip: to inspect the **egui-produced** AccessKit update (chrome widgets) without running a
 screen reader, use the `dump_accesskit` CLI (requires `--features browser_ui`).
 
-Note: `dump_accesskit` does not run the browser worker, so it does **not** include the injected page
-`PageA11ySnapshot` subtree; use the real windowed `browser` + a platform accessibility inspector to
-debug page nodes.
+Note: `dump_accesskit` does not run the browser worker, so it does **not** include any
+worker-produced page/content subtree (if/when wired); use the real windowed `browser` + a platform
+accessibility inspector to debug page nodes.
 
 ```bash
 bash scripts/run_limited.sh --as 64G -- \
@@ -619,16 +620,18 @@ bash scripts/run_limited.sh --as 64G -- \
 
 Current limitations (MVP / in-progress):
 
-- **Action support is evolving:** basic **focus** and **activate/press** work, and the worker also
-  supports additional page actions such as **scroll into view**, **set value** (basic form
-  controls), and **set text selection** (text inputs). Other AccessKit actions may still be
-  unsupported or best-effort, especially for complex controls.
-- **Bounds/geometry may be missing or approximate** for some page nodes, which can affect
+- **Page subtree injection is not complete:** depending on the build/runtime configuration, the OS
+  accessibility tree may contain only the egui chrome widgets + a single labeled page region (pixmap),
+  without per-element page semantics.
+- **Action support is evolving:** chrome widgets support focus/activate via egui. There is
+  infrastructure to forward some AccessKit actions to page content (focus/scroll-into-view/etc), but
+  full parity is still in progress.
+- **Bounds/geometry may be missing or approximate** for page nodes once exposed, which can affect
   hit-testing and “click this element” style commands.
 - **Selection/value reporting may be partial** for some controls (e.g. caret/selection state or
   text values may be missing/incomplete).
-- **Tree updates are coarse:** page accessibility updates are currently best-effort and may lag
-  behind visual updates on complex pages.
+- **Tree updates are coarse:** page accessibility updates are currently best-effort snapshots (not
+  JS-driven live region updates) and may lag behind visual updates on complex pages.
 
 Manual testing checklist (smoke):
 
