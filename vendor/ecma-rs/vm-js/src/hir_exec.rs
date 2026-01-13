@@ -377,6 +377,11 @@ impl<'vm> HirEvaluator<'vm> {
         self.vm.tick()?;
       }
 
+      if !src.is_char_boundary(i) {
+        i = i.saturating_add(1);
+        continue;
+      }
+
       let b = bytes[i];
       match b {
         // ASCII whitespace.
@@ -416,8 +421,9 @@ impl<'vm> HirEvaluator<'vm> {
         b if b < 0x80 => return Ok(Some(b)),
         // Non-ASCII: treat Unicode whitespace as trivia.
         _ => {
-          // `i` should always be at a char boundary here.
-          let ch = src[i..].chars().next().unwrap();
+          let Some(ch) = src[i..].chars().next() else {
+            return Ok(None);
+          };
           if ch.is_whitespace() {
             i = i.saturating_add(ch.len_utf8());
             continue;

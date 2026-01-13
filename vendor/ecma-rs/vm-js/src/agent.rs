@@ -500,7 +500,9 @@ impl Agent {
       return Some(message);
     }
 
-    let (mut name, mut truncated) = name.unwrap();
+    let Some((mut name, mut truncated)) = name else {
+      return None;
+    };
     if message_value.is_none() || message_is_empty {
       if truncated && name.len().saturating_add(3) <= max_bytes {
         let _ = push_str_best_effort(&mut name, "...");

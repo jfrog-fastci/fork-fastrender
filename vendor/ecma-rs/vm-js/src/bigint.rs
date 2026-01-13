@@ -557,7 +557,9 @@ impl JsBigInt {
     }
 
     let n_bits = {
-      let last = *dividend.last().unwrap();
+      let Some(&last) = dividend.last() else {
+        return Ok((Vec::new(), Vec::new()));
+      };
       let hi = 32u32 - last.leading_zeros();
       ((dividend.len() - 1) as u64) * 32 + hi as u64
     };

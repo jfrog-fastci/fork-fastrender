@@ -1889,22 +1889,21 @@ impl RegExpProgram {
               exec_mem,
               Some(&state.captures),
             )?;
-            match (sub.is_some(), *negative) {
-              (true, true) => {
+            match (sub, *negative) {
+              (Some(_), true) => {
                 // Negative lookahead matched => fail this branch.
                 break;
               }
-              (false, false) => {
+              (None, false) => {
                 // Positive lookahead failed.
                 break;
               }
-              (false, true) => {
+              (None, true) => {
                 // Negative lookahead failed => success, consume nothing.
                 state.pc += 1;
               }
-              (true, false) => {
+              (Some(matched), false) => {
                 // Positive lookahead matched => merge captures (excluding group 0).
-                let matched = sub.unwrap();
                 state.merge_captures_from(&matched);
                 state.pc += 1;
               }
@@ -1921,22 +1920,21 @@ impl RegExpProgram {
               exec_mem,
               Some(&state.captures),
             )?;
-            match (sub.is_some(), *negative) {
-              (true, true) => {
+            match (sub, *negative) {
+              (Some(_), true) => {
                 // Negative lookbehind matched => fail this branch.
                 break;
               }
-              (false, false) => {
+              (None, false) => {
                 // Positive lookbehind failed.
                 break;
               }
-              (false, true) => {
+              (None, true) => {
                 // Negative lookbehind failed => success, consume nothing.
                 state.pc += 1;
               }
-              (true, false) => {
+              (Some(matched), false) => {
                 // Positive lookbehind matched => merge captures (excluding group 0).
-                let matched = sub.unwrap();
                 state.merge_captures_from(&matched);
                 state.pc += 1;
               }
@@ -3515,7 +3513,9 @@ impl<'a> Parser<'a> {
           && (0xD800..=0xDBFF).contains(&x)
           && self.peek().is_some_and(|u2| (0xDC00..=0xDFFF).contains(&u2))
         {
-          let low = self.next().unwrap();
+          let Some(low) = self.next() else {
+            return Ok(Atom::Literal(x as u32));
+          };
           Ok(Atom::Literal(utf16_decode_surrogate_pair(x, low)))
         } else {
           Ok(Atom::Literal(x as u32))
@@ -4352,7 +4352,9 @@ impl<'a> Parser<'a> {
           && (0xD800..=0xDBFF).contains(&other)
           && self.peek().is_some_and(|u2| (0xDC00..=0xDFFF).contains(&u2))
         {
-          let low = self.next().unwrap();
+          let Some(low) = self.next() else {
+            return Ok(CharClassItem::Char(other as u32));
+          };
           Ok(CharClassItem::Char(utf16_decode_surrogate_pair(other, low)))
         } else {
           Ok(CharClassItem::Char(other as u32))
@@ -4682,10 +4684,17 @@ impl<'a> Parser<'a> {
           .iter()
           .all(|&u| hex_value(u).is_some())
       {
+        let save = self.idx;
         let mut value: u32 = 0;
         for _ in 0..4 {
-          let u = self.next().unwrap();
-          let d = hex_value(u).unwrap();
+          let Some(u) = self.next() else {
+            self.idx = save;
+            return Ok(b'u' as u32);
+          };
+          let Some(d) = hex_value(u) else {
+            self.idx = save;
+            return Ok(b'u' as u32);
+          };
           value = (value << 4) | d;
         }
         return Ok(value);
@@ -4718,7 +4727,10 @@ impl<'a> Parser<'a> {
           if digits.iter().all(|&u| hex_value(u).is_some()) {
             let mut trail: u32 = 0;
             for &u in digits {
-              let d = hex_value(u).unwrap();
+              let Some(d) = hex_value(u) else {
+                trail = 0;
+                break;
+              };
               trail = (trail << 4) | d;
             }
             if (0xDC00..=0xDFFF).contains(&(trail as u16)) {
@@ -4954,7 +4966,10 @@ impl ProgramBuilder {
     }
     let mut alts = disj.alts;
     if alts.len() == 1 {
-      return self.compile_alternative_dir(ctx, alts.pop().unwrap(), dir);
+      let Some(alt) = alts.pop() else {
+        return Ok(());
+      };
+      return self.compile_alternative_dir(ctx, alt, dir);
     }
 
     let last_idx = alts.len().saturating_sub(1);
