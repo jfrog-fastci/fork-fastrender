@@ -304,6 +304,10 @@ harness = false
 name = "image_compare_bench"
 harness = false
 
+[[bench]]
+name = "downloads_panel_ui"
+harness = false
+
 [[bin]]
 name = "bench_compare"
 path = "tools/bench_compare.rs"
