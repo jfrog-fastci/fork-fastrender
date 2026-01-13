@@ -158,6 +158,21 @@ IPC implication: prefer **inherited IPC endpoints** (e.g. `socketpair()`) and br
 shared memory (`memfd_create`) passed to the renderer before the sandbox is installed; see
 [ipc.md](ipc.md) and [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
+### Debug / developer overrides (Linux)
+
+FastRender exposes lightweight runtime knobs for iterating on Linux sandbox bring-up. These are
+documented in [`docs/env-vars.md`](env-vars.md) and are primarily consumed by:
+
+- the `sandbox_probe` tool (`src/bin/sandbox_probe.rs`), and
+- Linux renderer spawn helpers (e.g. `fastrender::sandbox::spawn::configure_renderer_command`).
+
+Key env vars:
+
+- Master disable (debug escape hatch; **INSECURE**): `FASTR_DISABLE_RENDERER_SANDBOX=1`
+- Disable seccomp: `FASTR_RENDERER_SECCOMP=0`
+- Disable Landlock: `FASTR_RENDERER_LANDLOCK=0`
+- FD hygiene toggle (currently used by `sandbox_probe`): `FASTR_RENDERER_CLOSE_FDS=0|1`
+
 ## macOS sandbox notes
 
 Renderer sandboxing on macOS uses Seatbelt profiles. For iteration tooling and IPC capability

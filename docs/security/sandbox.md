@@ -12,6 +12,19 @@ It explains:
 
 ---
 
+## Runtime configuration knobs (developer ergonomics)
+
+FastRender exposes lightweight **runtime** toggles for iterating on sandbox behavior without
+rebuilding. See [`docs/env-vars.md`](../env-vars.md) for the full list.
+
+Linux-specific knobs (also consumed by the `sandbox_probe` tool and Linux renderer spawn helpers):
+
+- Master disable (debug escape hatch; **INSECURE**): `FASTR_DISABLE_RENDERER_SANDBOX=1`
+- Disable/enable layers:
+  - `FASTR_RENDERER_SECCOMP=0|1`
+  - `FASTR_RENDERER_LANDLOCK=0|1`
+  - `FASTR_RENDERER_CLOSE_FDS=0|1` (currently used by `sandbox_probe`)
+
 ## Threat model
 
 Assume the attacker controls:

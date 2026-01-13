@@ -160,6 +160,13 @@ Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc
 See also: [docs/sandboxing.md](../docs/sandboxing.md) for repo-specific sandbox implementation notes
 (including the Windows debug escape hatch).
 
+Linux quick reference (developer overrides; documented fully in [`docs/env-vars.md`](../docs/env-vars.md)):
+
+- Disable sandbox entirely (debug escape hatch; **INSECURE**): `FASTR_DISABLE_RENDERER_SANDBOX=1`
+- Disable individual layers:
+  - `FASTR_RENDERER_SECCOMP=0`
+  - `FASTR_RENDERER_LANDLOCK=0`
+
 macOS note: FastRender prefers the system-provided Seatbelt profile `pure-computation` when
 applying a strict sandbox. Some macOS versions do not ship that named profile (or treat it as
 invalid), so the implementation falls back to an embedded SBPL profile string with:
