@@ -3,19 +3,126 @@
 //! The chrome frame is intended to be rendered by FastRender (trusted browser process) and driven
 //! without JS for P0/P1 by using `chrome-action:` URLs.
 
-/// Escape a string for safe inclusion inside a double-quoted HTML attribute.
-fn escape_html_attr(value: &str) -> String {
-  let mut out = String::with_capacity(value.len());
-  for ch in value.chars() {
-    match ch {
-      '&' => out.push_str("&amp;"),
-      '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
-      '"' => out.push_str("&quot;"),
-      '\'' => out.push_str("&#39;"),
-      _ => out.push(ch),
-    }
+use crate::ui::html_escape::escape_html;
+use crate::ui::{BrowserAppState, OmniboxAction, OmniboxSearchSource, OmniboxSuggestion};
+use std::fmt::Write;
+
+fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
+  match suggestion.action {
+    OmniboxAction::NavigateToUrl(_) => "omnibox-type-url",
+    OmniboxAction::Search(_) => "omnibox-type-search",
+    OmniboxAction::ActivateTab(_) => "omnibox-type-tab",
   }
+}
+
+fn omnibox_suggestion_source_class(suggestion: &OmniboxSuggestion) -> &'static str {
+  use crate::ui::OmniboxSuggestionSource;
+  use crate::ui::OmniboxUrlSource;
+
+  match suggestion.source {
+    OmniboxSuggestionSource::Primary => "omnibox-source-primary",
+    OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => {
+      "omnibox-source-remote-suggest"
+    }
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => "omnibox-source-about",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => "omnibox-source-bookmark",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => "omnibox-source-closed-tab",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => "omnibox-source-open-tab",
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => "omnibox-source-visited",
+  }
+}
+
+fn omnibox_suggestion_destination(suggestion: &OmniboxSuggestion) -> Option<&str> {
+  match &suggestion.action {
+    OmniboxAction::NavigateToUrl(url) => Some(url.as_str()),
+    // `chrome-action:navigate` is treated as a typed navigation; passing the raw query preserves the
+    // same behaviour as pressing Enter in the address bar.
+    OmniboxAction::Search(query) => Some(query.as_str()),
+    // TODO(renderer-chrome): switching tabs should be encoded as a dedicated chrome-action, but for
+    // now fall back to a typed navigation to the tab's URL so the row remains clickable without JS.
+    OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
+  }
+}
+
+fn omnibox_popup_html(app: &BrowserAppState) -> String {
+  let omnibox = &app.chrome.omnibox;
+  if !omnibox.open || omnibox.suggestions.is_empty() {
+    return String::new();
+  }
+
+  let selected_idx = omnibox
+    .selected
+    .filter(|idx| *idx < omnibox.suggestions.len());
+
+  let mut out = String::new();
+  out.push_str(r#"<div id="omnibox-popup" class="omnibox-popup" role="listbox">"#);
+
+  for (idx, suggestion) in omnibox.suggestions.iter().enumerate() {
+    let destination = omnibox_suggestion_destination(suggestion).unwrap_or_default();
+    let destination_encoded = urlencoding::encode(destination);
+    let href = format!("chrome-action:navigate?url={destination_encoded}");
+
+    let mut classes = String::new();
+    classes.push_str("omnibox-suggestion");
+    classes.push(' ');
+    classes.push_str(omnibox_suggestion_type_class(suggestion));
+    classes.push(' ');
+    classes.push_str(omnibox_suggestion_source_class(suggestion));
+    if selected_idx == Some(idx) {
+      classes.push_str(" selected");
+    }
+
+    let aria_selected = if selected_idx == Some(idx) {
+      "true"
+    } else {
+      "false"
+    };
+
+    let title = suggestion
+      .title
+      .as_deref()
+      .map(str::trim)
+      .filter(|t| !t.is_empty())
+      .or_else(|| match &suggestion.action {
+        OmniboxAction::NavigateToUrl(url) => Some(url.as_str()),
+        OmniboxAction::Search(query) => Some(query.as_str()),
+        OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
+      })
+      .unwrap_or_default();
+
+    let mut secondary = suggestion
+      .url
+      .as_deref()
+      .map(str::trim)
+      .filter(|u| !u.is_empty());
+    if secondary.is_some_and(|u| u == title) {
+      secondary = None;
+    }
+
+    let safe_href = escape_html(&href);
+    let safe_title = escape_html(title);
+
+    let row_id = format!("omnibox-suggestion-{idx}");
+
+    write!(
+      &mut out,
+      r#"<a id="{row_id}" class="{classes}" role="option" aria-selected="{aria_selected}" href="{safe_href}"><span class="omnibox-icon" aria-hidden="true"></span><span class="omnibox-text"><span class="omnibox-title">{safe_title}</span>"#
+    )
+    .expect("write omnibox suggestion html");
+
+    if let Some(url) = secondary {
+      let safe_url = escape_html(url);
+      write!(
+        &mut out,
+        r#"<span class="omnibox-url">{safe_url}</span>"#
+      )
+      .expect("write omnibox suggestion url");
+    }
+
+    out.push_str("</span></a>");
+  }
+
+  out.push_str("</div>");
   out
 }
 
@@ -23,9 +130,10 @@ fn escape_html_attr(value: &str) -> String {
 ///
 /// The document is expected to be served at a `chrome://` URL (or similar trusted internal origin)
 /// so linked resources like `chrome://styles/chrome.css` can be resolved by the embedding browser.
-pub fn chrome_frame_html(current_url: Option<&str>) -> String {
-  let current_url = current_url.unwrap_or_default();
-  let safe_current_url = escape_html_attr(current_url);
+pub fn chrome_frame_html(app: &BrowserAppState) -> String {
+  let current_url = app.chrome.address_bar_text.as_str();
+  let safe_current_url = escape_html(current_url);
+  let omnibox_popup = omnibox_popup_html(app);
 
   // Keep this template intentionally minimal. It should remain JS-free so the chrome can be driven
   // via simple `chrome-action:` navigations while JS support is still being brought up.
@@ -44,16 +152,19 @@ pub fn chrome_frame_html(current_url: Option<&str>) -> String {
         <a class="toolbar-button" href="chrome-action:forward" aria-label="Forward">Forward</a>
         <a class="toolbar-button" href="chrome-action:reload" aria-label="Reload">Reload</a>
       </div>
-      <form class="address-bar" action="chrome-action:navigate" method="get" autocomplete="off">
-        <input
-          class="address-input"
-          name="url"
-          type="text"
-          value="{safe_current_url}"
-          placeholder="Enter URL"
-          aria-label="Address bar"
-        >
-      </form>
+      <div class="address-bar-wrap">
+        <form class="address-bar" action="chrome-action:navigate" method="get" autocomplete="off">
+          <input
+            class="address-input"
+            name="url"
+            type="text"
+            value="{safe_current_url}"
+            placeholder="Enter URL"
+            aria-label="Address bar"
+          >
+        </form>
+        {omnibox_popup}
+      </div>
     </div>
 
     <div id="content-frame" class="content-frame"></div>
@@ -65,6 +176,7 @@ pub fn chrome_frame_html(current_url: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::{OmniboxAction, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::{BrowserDocument, FastRender, FontConfig, RenderOptions};
 
   fn count_nodes_with_id(root: &crate::dom::DomNode, id: &str) -> usize {
@@ -84,7 +196,8 @@ mod tests {
 
   #[test]
   fn chrome_frame_template_is_complete_and_parseable() {
-    let html = chrome_frame_html(Some("https://example.invalid/"));
+    let app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    let html = chrome_frame_html(&app);
 
     // Static string invariants.
     assert!(
@@ -129,5 +242,68 @@ mod tests {
       "#content-frame should exist exactly once"
     );
   }
-}
 
+  #[test]
+  fn chrome_frame_template_renders_omnibox_suggestions_dropdown() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    app.chrome.omnibox.open = true;
+    app.chrome.omnibox.selected = Some(1);
+    app.chrome.omnibox.suggestions = vec![
+      OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl("https://example.com/".to_string()),
+        title: Some("Example".to_string()),
+        url: Some("https://example.com/".to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+      },
+      OmniboxSuggestion {
+        action: OmniboxAction::NavigateToUrl("https://rust-lang.org/?a=1&b=2".to_string()),
+        title: Some("Rust".to_string()),
+        url: Some("https://rust-lang.org/?a=1&b=2".to_string()),
+        source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+      },
+    ];
+
+    let html = chrome_frame_html(&app);
+    assert!(
+      html.contains(r#"id="omnibox-popup""#) && html.contains(r#"role="listbox""#),
+      "expected omnibox dropdown element in chrome frame HTML"
+    );
+
+    let expected_href_0 = format!(
+      r#"href="chrome-action:navigate?url={}""#,
+      urlencoding::encode("https://example.com/")
+    );
+    assert!(
+      html.contains(&expected_href_0),
+      "expected first suggestion href, got html: {html}"
+    );
+
+    let expected_href_1 = format!(
+      r#"href="chrome-action:navigate?url={}""#,
+      urlencoding::encode("https://rust-lang.org/?a=1&b=2")
+    );
+    assert!(
+      html.contains(&expected_href_1),
+      "expected second suggestion href, got html: {html}"
+    );
+
+    assert!(
+      html.contains(r#"id="omnibox-suggestion-0""#) && html.contains(r#"id="omnibox-suggestion-1""#),
+      "expected stable ids for suggestion rows"
+    );
+
+    assert!(
+      html.contains(r#"id="omnibox-suggestion-1" class="omnibox-suggestion"#)
+        && html.contains(r#"selected" role="option" aria-selected="true""#),
+      "expected selected suggestion row to be marked selected"
+    );
+
+    // Ensure the template remains parseable by BrowserDocument.
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let _doc = BrowserDocument::new(renderer, &html, RenderOptions::default())
+      .expect("parse chrome frame with omnibox dropdown");
+  }
+}
