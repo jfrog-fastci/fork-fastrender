@@ -132,6 +132,14 @@ binary)”). Notably:
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
 
+## Sandboxing
+
+FastRender is moving toward a multiprocess architecture where untrusted page content runs in a
+separate OS-sandboxed renderer process.
+
+Windows sandboxing details (AppContainer + Job Objects + restricted-token fallback) and the
+Windows-only debug escape hatch live in [sandboxing.md](sandboxing.md).
+
 ## Implementation notes
 
 For implementation details (code layout, message protocol, cancellation, platform prerequisites),

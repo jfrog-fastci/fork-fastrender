@@ -13,6 +13,9 @@
 //! - **macOS**: renderers can call `sandbox_init(3)` (Seatbelt) in-process, but the browser process
 //!   may also want a *pre-main* sandbox when spawning renderers from a multithreaded parent. See
 //!   [`macos_spawn`] for a `/usr/bin/sandbox-exec` based launcher helper.
+//! - **Windows**: renderers are intended to be spawned in an AppContainer (no capabilities) with
+//!   a Job Object configured for kill-on-close and active-process limiting. If AppContainer is
+//!   unavailable, a restricted-token + low-integrity fallback is used (see [`windows`]).
 //!
 //! The current policy is intentionally small and focused:
 //! - deny opening filesystem paths (e.g. `open/openat`)
@@ -124,6 +127,9 @@ mod linux_seccomp;
 
 #[cfg(target_os = "macos")]
 pub mod macos_spawn;
+
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {

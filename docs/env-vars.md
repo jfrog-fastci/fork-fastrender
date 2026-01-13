@@ -52,6 +52,9 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_FETCH_ALTERNATE_STYLESHEETS=0|1` – allow skipping `<link rel="alternate stylesheet">` entries when disabled (defaults to on).
 - `FASTR_FETCH_ENFORCE_CORS=0|false|no|off` – opt out of browser-like CORS checks (`Access-Control-Allow-Origin`) for cross-origin web fonts and `<img crossorigin>` images (enabled by default).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
+- `FASTR_DISABLE_RENDERER_SANDBOX=0|1` – **Windows-only** debug escape hatch: disable the Windows renderer sandbox (AppContainer/restricted-token).
+  - Alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off`
+  - When set, FastRender logs a warning to stderr so insecure runs are not silent.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
 ## Browser UI (`browser` binary)
