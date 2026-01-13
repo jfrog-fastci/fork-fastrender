@@ -449,10 +449,20 @@ function assert_throws_dom(name, target, func, message) {
   var expected_name = name;
   var expected_for_message = name;
   try {
-    var mapped_name = __dom_exception_legacy_name_map[name];
-    if (typeof mapped_name === "string") {
-      expected_name = mapped_name;
-      expected_for_message = [name, " (", mapped_name, ")"].join("");
+    var is_legacy_expected_name = false;
+    if (typeof name === "string") {
+      if (typeof name.endsWith === "function") {
+        is_legacy_expected_name = name.endsWith("_ERR");
+      } else {
+        is_legacy_expected_name = /_ERR$/.test(name);
+      }
+    }
+    if (is_legacy_expected_name === true) {
+      var mapped_name = __dom_exception_legacy_name_map[name];
+      if (typeof mapped_name === "string") {
+        expected_name = mapped_name;
+        expected_for_message = [name, " (", mapped_name, ")"].join("");
+      }
     }
   } catch (_e0) {}
   //
@@ -496,9 +506,17 @@ function assert_throws_dom(name, target, func, message) {
   var canonical_thrown_name = thrown_name;
   try {
     if (typeof canonical_thrown_name === "string") {
-      var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
-      if (typeof mapped_thrown_name === "string") {
-        canonical_thrown_name = mapped_thrown_name;
+      var is_legacy_thrown_name = false;
+      if (typeof canonical_thrown_name.endsWith === "function") {
+        is_legacy_thrown_name = canonical_thrown_name.endsWith("_ERR");
+      } else {
+        is_legacy_thrown_name = /_ERR$/.test(canonical_thrown_name);
+      }
+      if (is_legacy_thrown_name === true) {
+        var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
+        if (typeof mapped_thrown_name === "string") {
+          canonical_thrown_name = mapped_thrown_name;
+        }
       }
     }
   } catch (_e3) {}
