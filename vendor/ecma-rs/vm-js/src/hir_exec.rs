@@ -8,6 +8,7 @@ use crate::iterator;
 use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
+use crate::vm::EcmaFunctionKind;
 use crate::{EnvBinding, GcBigInt, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -574,13 +575,14 @@ impl<'vm> HirEvaluator<'vm> {
     is_arrow: bool,
     is_constructable: bool,
     name_binding: Option<&str>,
+    kind: EcmaFunctionKind,
   ) -> Result<GcObject, VmError> {
     // Avoid holding references into `self.script.hir` across `vm.tick()` calls below: `tick()`
     // requires `&mut Vm`, so borrow HIR via a standalone `Arc` clone of the compiled script.
     let script = self.script.clone();
     let outer_strict = self.strict;
 
-    let (length, is_async, is_generator, body_has_use_strict) = {
+    let (length, is_async, is_generator, body_has_use_strict, def_span) = {
       let func_body = script
         .hir
         .body(body_id)
@@ -590,6 +592,16 @@ impl<'vm> HirEvaluator<'vm> {
       let Some(func_meta) = func_body.function.as_ref() else {
         return Err(VmError::InvariantViolation("function body missing function metadata"));
       };
+      // `hir_js::Body.span` only covers the function's parameter list + body, which is not a valid
+      // standalone snippet to parse as a function declaration/expression/method. Use the owning
+      // `Def` span so we capture the full syntactic form (`function* f() {}`, `async () => {}`,
+      // `{ m() {} }` member, etc).
+      let def_span = script
+        .hir
+        .def(func_body.owner)
+        .map(|d| d.span)
+        // Best-effort fallback: use the body span if the owning def is missing.
+        .unwrap_or(func_body.span);
 
       // ECMA-262 `length` is the number of parameters before the first one with a default/rest.
       //
@@ -623,21 +635,13 @@ impl<'vm> HirEvaluator<'vm> {
         func_meta.async_,
         func_meta.generator,
         body_has_use_strict,
+        def_span,
       )
     };
 
     let is_strict = outer_strict || body_has_use_strict;
-
-    if is_generator {
-      return Err(VmError::Unimplemented(if is_async {
-        "async generator functions"
-      } else {
-        "generator functions"
-      }));
-    }
-    if is_async {
-      return Err(VmError::Unimplemented("async functions (hir-js compiled path)"));
-    }
+    let is_async_generator = is_async && is_generator;
+    let is_constructable = is_constructable && !is_async && !is_generator;
 
     // Root inputs across string allocation + function allocation in case either triggers GC.
     let mut scope = scope.reborrow();
@@ -672,18 +676,36 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
-    let func_obj = scope.alloc_user_function_with_env(
-      CompiledFunctionRef {
-        script,
-        body: body_id,
-      },
-      is_constructable,
-      name_s,
-      length,
-      this_mode,
-      is_strict,
-      closure_env,
-    )?;
+    let func_obj = if is_async || is_generator {
+      let code_id = self.vm.register_ecma_function(
+        self.env.source(),
+        def_span.start,
+        def_span.end,
+        kind,
+      )?;
+      scope.alloc_ecma_function(
+        code_id,
+        is_constructable,
+        name_s,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?
+    } else {
+      scope.alloc_user_function_with_env(
+        CompiledFunctionRef {
+          script,
+          body: body_id,
+        },
+        is_constructable,
+        name_s,
+        length,
+        this_mode,
+        is_strict,
+        closure_env,
+      )?
+    };
 
     // Root the function object while performing any additional allocations (e.g. `.prototype`
     // creation) and while assigning metadata that can invoke GC (directly or indirectly).
@@ -717,9 +739,33 @@ impl<'vm> HirEvaluator<'vm> {
 
     // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
     if let Some(intr) = self.vm.intrinsics() {
+      let func_prototype = if is_generator {
+        if is_async_generator {
+          intr.async_generator_function_prototype()
+        } else {
+          intr.generator_function_prototype()
+        }
+      } else {
+        intr.function_prototype()
+      };
       scope
         .heap_mut()
-        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
+        .object_set_prototype(func_obj, Some(func_prototype))?;
+      if is_generator {
+        if is_async_generator {
+          crate::function_properties::make_async_generator_function_instance_prototype(
+            &mut scope,
+            func_obj,
+            intr.async_generator_prototype(),
+          )?;
+        } else {
+          crate::function_properties::make_generator_function_instance_prototype(
+            &mut scope,
+            func_obj,
+            intr.generator_prototype(),
+          )?;
+        }
+      }
     }
     scope
       .heap_mut()
@@ -1234,6 +1280,7 @@ impl<'vm> HirEvaluator<'vm> {
               /* is_arrow */ false,
               /* is_constructable */ true,
               /* name_binding */ None,
+              EcmaFunctionKind::Decl,
             )?;
           // Root the function object while assigning into the environment.
           let mut assign_scope = scope.reborrow();
@@ -1417,6 +1464,7 @@ impl<'vm> HirEvaluator<'vm> {
         /* is_arrow */ false,
         /* is_constructable */ true,
         /* name_binding */ None,
+        EcmaFunctionKind::Decl,
       )?;
 
       let mut init_scope = scope.reborrow();
@@ -3175,6 +3223,7 @@ impl<'vm> HirEvaluator<'vm> {
           // Named function expressions create an inner binding for their own name.
           // Arrow functions are always anonymous at the syntax level.
           /* name_binding */ (!*is_arrow && !name_str.is_empty()).then_some(name_str.as_str()),
+          EcmaFunctionKind::Expr,
         )?;
         Ok(Value::Object(func_obj))
       }
@@ -6674,6 +6723,7 @@ impl<'vm> HirEvaluator<'vm> {
                 *is_arrow,
                 /* is_constructable */ false,
                 /* name_binding */ None,
+                EcmaFunctionKind::ObjectMember,
               )?),
               _ => self.eval_expr(&mut member_scope, body, *value)?,
             }
@@ -6742,6 +6792,7 @@ impl<'vm> HirEvaluator<'vm> {
             /* is_arrow */ false,
             /* is_constructable */ false,
             /* name_binding */ None,
+            EcmaFunctionKind::ObjectMember,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
           crate::function_properties::set_function_length(&mut member_scope, func_obj, 0)?;
@@ -6779,6 +6830,7 @@ impl<'vm> HirEvaluator<'vm> {
             /* is_arrow */ false,
             /* is_constructable */ false,
             /* name_binding */ None,
+            EcmaFunctionKind::ObjectMember,
           )?;
           crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
           crate::function_properties::set_function_length(&mut member_scope, func_obj, 1)?;
@@ -7162,6 +7214,7 @@ impl<'vm> HirEvaluator<'vm> {
               /* is_arrow */ false,
               /* is_constructable */ true,
               /* name_binding */ None,
+              EcmaFunctionKind::ClassMember,
             )?;
           ctor_length = scope.heap().get_function(body_func)?.length;
 
@@ -7304,6 +7357,7 @@ impl<'vm> HirEvaluator<'vm> {
               /* is_arrow */ false,
               /* is_constructable */ false,
               /* name_binding */ None,
+              EcmaFunctionKind::ClassMember,
             )?;
 
             match kind {
