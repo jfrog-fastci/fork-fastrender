@@ -11,6 +11,9 @@ couples:
 This doc describes how to **drive a long-lived, event-driven tab loop** and clarifies which helper
 methods run **tasks** vs **animation frames** vs **renders**.
 
+If you’re first trying to decide which public container type to use (document vs tab, JS vs no JS),
+start with [`docs/runtime_stacks.md`](runtime_stacks.md).
+
 ---
 
 ## Three “drivers”: tasks-only vs step-wise vs converge-to-stable
@@ -239,4 +242,3 @@ If/when `BrowserTab::next_wake_time()` is available, a deterministic harness can
 - repeat
 
 without ever sleeping in real time.
-

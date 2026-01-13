@@ -4,8 +4,12 @@
 
 **STOP. Read [`AGENTS.md`](../AGENTS.md) BEFORE doing anything.**
 
-See also: [`docs/runtime_stacks.md`](../docs/runtime_stacks.md) for a concrete map of which public API
-types currently include JavaScript execution, an event loop, and live DOM mutation → rerendering.
+See also:
+
+- [`docs/runtime_stacks.md`](../docs/runtime_stacks.md) for a concrete map of which public API types
+  currently include JavaScript execution, an event loop, and live DOM mutation → rerendering.
+- [`docs/live_rendering_loop.md`](../docs/live_rendering_loop.md) for the intended `BrowserTab`
+  “tick loop” driver API shape (`tick_frame`, `run_until_stable`, event loop vs rAF).
 
 ### Assume every process can misbehave
 

@@ -156,6 +156,9 @@ loop {
 ```
 
 See also: [`instructions/live_rendering.md`](../instructions/live_rendering.md).
+For a more detailed breakdown of the different `BrowserTab` drivers (`run_event_loop_until_idle`,
+`tick_frame`, `run_until_stable`) and how rAF fits in, see
+[`docs/live_rendering_loop.md`](live_rendering_loop.md).
 
 ## `api::BrowserDocumentJs` (legacy JS host wrapper)
 
