@@ -3649,6 +3649,60 @@ mod tests {
   }
 
   #[test]
+  fn resolve_imports_caps_unique_resolved_imports() {
+    let base_url = "https://example.com/root.css";
+    let mut base_css = String::new();
+    let mut responses = Vec::new();
+    for idx in 0..129usize {
+      base_css.push_str(&format!("@import \"i{idx}.css\";\n"));
+      responses.push((
+        format!("https://example.com/i{idx}.css"),
+        format!(".r{idx} {{ color: red; }}"),
+      ));
+    }
+
+    let loader = RecordingLoader::new(responses);
+    let stylesheet = parse_stylesheet(&base_css).expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports(&loader, Some(base_url), &media_ctx)
+      .expect("imports resolve");
+
+    assert_eq!(
+      loader.request_count(),
+      128,
+      "expected import resolution to cap unique fetches at MAX_RESOLVED_IMPORTS"
+    );
+    assert!(
+      rules_contain_selector(&resolved.rules, ".r0"),
+      "expected first import to be inlined"
+    );
+    assert!(
+      rules_contain_selector(&resolved.rules, ".r127"),
+      "expected last permitted import to be inlined"
+    );
+    assert!(
+      !rules_contain_selector(&resolved.rules, ".r128"),
+      "expected imports past MAX_RESOLVED_IMPORTS to be ignored"
+    );
+
+    let style_rule_count = resolved
+      .rules
+      .iter()
+      .filter(|rule| matches!(rule, CssRule::Style(_)))
+      .count();
+    assert_eq!(
+      style_rule_count, 128,
+      "expected only MAX_RESOLVED_IMPORTS style rules to be inlined"
+    );
+    assert!(
+      !rules_contain_import(&resolved.rules),
+      "resolved stylesheet should not retain @import rules"
+    );
+  }
+
+  #[test]
   fn failed_layered_import_still_establishes_layer_order() {
     struct FailingLoader {
       requests: RefCell<Vec<String>>,
