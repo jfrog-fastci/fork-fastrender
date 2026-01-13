@@ -135,6 +135,7 @@
 //! see [`docs::regexp_unicode_properties`](crate::docs::regexp_unicode_properties).
 
 mod agent;
+mod async_generator;
 mod bigint;
 mod builtins;
 mod class_fields;
