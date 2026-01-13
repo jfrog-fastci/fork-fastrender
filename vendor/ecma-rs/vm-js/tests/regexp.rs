@@ -638,3 +638,29 @@ fn regexp_lookbehind_global_exec_merges_captures() {
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "def,abc,def,abcdef,9");
 }
+
+#[test]
+fn regexp_lookbehind_alternations_ordering_and_atomicity() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function m(s, r) {
+          var res = s.match(r);
+          return res === null ? "null" : res.join(",");
+        }
+        [
+          m("xabcd", /.*(?<=(..|...|....))(.*)/),
+          m("xabcd", /.*(?<=(xx|...|....))(.*)/),
+          m("xxabcd", /.*(?<=(xx|...))(.*)/),
+          m("xxabcd", /.*(?<=(xx|xxx))(.*)/),
+        ].join("|")
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "xabcd,cd,|xabcd,bcd,|xxabcd,bcd,|xxabcd,xx,abcd"
+  );
+}
