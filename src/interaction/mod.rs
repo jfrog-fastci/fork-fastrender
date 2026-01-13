@@ -16,6 +16,7 @@ pub mod hit_test;
 pub mod hit_testing;
 pub(crate) mod label_assoc_dom2;
 mod image_maps;
+pub(crate) mod paint_overlays;
 pub mod selection_serialize;
 pub mod scroll_wheel;
 pub mod state;
