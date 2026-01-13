@@ -588,6 +588,8 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
+- clipboard actions (`Copy`, `Cut`, `Paste`, `SelectAll`) for the focused page `<input>`/`<textarea>`
+- find-in-page actions (`FindQuery`, `FindNext`, `FindPrev`, `FindStop`)
 - `DropFiles { tab_id, pos_css, paths }` — OS file drop (used to populate `<input type=file>` controls)
 - `SelectDropdownChoose { tab_id, select_node_id, option_node_id }` — user selected an option from
   a dropdown popup (sent after `WorkerToUi::SelectDropdownOpened`)
@@ -598,6 +600,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
   user interaction with a date/time picker popup for `<input type=date|time|datetime-local|month|week>`.
 - `FilePickerChoose { tab_id, input_node_id, paths }` / `FilePickerCancel { tab_id }` — user
   interaction with a file picker popup for `<input type=file>`.
+- Downloads: `SetDownloadDirectory`, `StartDownload`, `CancelDownload`
 
 Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
 at the top-left of the viewport). They must **not** include the current scroll offset; worker loops
@@ -606,6 +609,8 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 **Worker → UI** (`WorkerToUi`) includes:
 
 - `FrameReady { tab_id, frame }` — a rendered `tiny_skia::Pixmap` + viewport/scroll metadata
+- `HoverChanged { tab_id, hovered_url, cursor }` — hovered link URL + cursor updates (drives the
+  status/URL bubble and the OS cursor icon).
 - `Warning { tab_id, text }` — non-fatal, user-facing warnings (e.g. viewport/DPR clamping to avoid
   huge pixmap allocations); the windowed `browser` UI surfaces this as:
   - a small warning badge in the address bar, and
@@ -627,6 +632,9 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
   - Can be surfaced by chrome UIs while loading (e.g. [`src/ui/chrome.rs`](../src/ui/chrome.rs)).
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
+- `FindResult { tab_id, query, case_sensitive, match_count, active_match_index }` — find-in-page
+  match count + active match updates.
+- `SetClipboardText { tab_id, text }` — request the UI update the OS clipboard (copy/cut).
 - Downloads: `DownloadStarted` / `DownloadProgress` / `DownloadFinished` (used to drive the downloads
   panel UI).
 
