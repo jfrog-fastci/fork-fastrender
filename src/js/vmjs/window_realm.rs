@@ -39956,6 +39956,39 @@ fn html_media_element_can_play_type_native(
   Ok(Value::String(scope.alloc_string(result.as_str())?))
 }
 
+fn html_media_element_fast_seek_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+
+  let mut time = scope
+    .heap_mut()
+    .to_number(args.get(0).copied().unwrap_or(Value::Undefined))?;
+  if !time.is_finite() || time.is_nan() || time < 0.0 {
+    time = 0.0;
+  }
+
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let state = data.media_element_state_registry_mut().get_or_create(key);
+  state.current_time = time;
+
+  dispatch_dom_event_from_global_event_ctor_best_effort(vm, scope, host, hooks, obj, "timeupdate")?;
+  Ok(Value::Undefined)
+}
+
 fn element_reflected_string_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -51699,6 +51732,30 @@ fn init_window_globals(
       data_desc(Value::Object(pause_func)),
     )?;
 
+    // HTMLMediaElement.prototype.fastSeek(time)
+    let fast_seek_key = alloc_key(&mut scope, "fastSeek")?;
+    if scope
+      .heap()
+      .object_get_own_property(html_media_element_proto, &fast_seek_key)?
+      .is_none()
+    {
+      let fast_seek_call_id = vm.register_native_call(html_media_element_fast_seek_native)?;
+      let fast_seek_name = scope.alloc_string("fastSeek")?;
+      scope.push_root(Value::String(fast_seek_name))?;
+      let fast_seek_func =
+        scope.alloc_native_function(fast_seek_call_id, None, fast_seek_name, 1)?;
+      scope.heap_mut().object_set_prototype(
+        fast_seek_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(fast_seek_func))?;
+      scope.define_property(
+        html_media_element_proto,
+        fast_seek_key,
+        data_desc(Value::Object(fast_seek_func)),
+      )?;
+    }
+
     // HTMLTextAreaElement.prototype.value
     let text_area_value_get_call_id =
       vm.register_native_call(html_text_area_element_value_get_native)?;
@@ -59627,6 +59684,25 @@ mod tests {
       !out.is_empty(),
       "expected HTMLMediaElement.canPlayType() to return a non-empty string for vp9+opus webm"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_fast_seek_updates_current_time() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        if (typeof v.fastSeek !== 'function') return false;
+        if (v.fastSeek(10) !== undefined) return false;
+        return v.currentTime === 10;
+      })()"#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
