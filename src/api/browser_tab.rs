@@ -7231,7 +7231,8 @@ mod tests {
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     let mut event_loop = EventLoop::new();
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
+    event_loop
+      .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
     Ok((host, event_loop))
   }
 
@@ -7607,7 +7608,8 @@ mod tests {
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
 
     let mut event_loop = EventLoop::new();
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
+    event_loop
+      .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
 
     let discovered = host.discover_scripts_best_effort(None);
     assert_eq!(discovered.len(), 1, "expected one module <script> element");
@@ -8010,7 +8012,8 @@ mod tests {
     )?;
     host.reset_scripting_state(None, ReferrerPolicy::default())?;
     let mut event_loop = EventLoop::new();
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
+    event_loop
+      .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
     Ok((host, event_loop))
   }
 
