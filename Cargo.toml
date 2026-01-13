@@ -315,11 +315,27 @@ harness = false
 name = "gradient_raster"
 harness = false
 
+# Default release profile: fast compilation, good performance.
+#
+# This is what agents and developers use for day-to-day work. Optimized but
+# without the extreme compilation cost of full LTO or aggressive optimizations.
 [profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
+opt-level = 1         # Fast compilation, basic optimization
+lto = false           # No LTO for fast iteration
+codegen-units = 32    # Parallel codegen
+strip = false         # Keep symbols for debugging/profiling
+debug = 1             # Basic debug info for backtraces
+
+# Maximum optimization profile for final distribution.
+#
+# Use only for shipping binaries. Extremely slow to compile (30-60 min for all targets).
+#   cargo build --profile release-max --bin fetch_and_render
+[profile.release-max]
+inherits = "release"
+lto = true            # Full link-time optimization
+codegen-units = 1     # Maximum optimization (no parallelism)
+strip = true          # Remove all symbols
+debug = false         # No debug info
 
 [profile.bench]
 # Benchmarks should be representative (optimized) but also fast to build in CI/agent environments.

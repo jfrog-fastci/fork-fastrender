@@ -15,6 +15,13 @@
 - `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
 - `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 
+### Build speed matters
+
+See [`docs/build_performance.md`](../docs/build_performance.md). Key rules:
+- Use `cargo check` for validation (10-50x faster)
+- Use `--release` for performance testing (fast, no LTO)
+- Use `--features browser_ui --bin browser` when testing browser interaction
+
 ---
 
 This workstream owns how users **interact with page content**: forms, text selection, focus, scrolling, and input handling.

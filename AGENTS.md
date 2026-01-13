@@ -80,6 +80,64 @@ A change counts if it lands at least one of:
 
 If you find yourself "improving the harness" without changing renderer behavior, **stop and implement the missing behavior**.
 
+## Build performance (critical for agent productivity)
+
+**Read [`docs/build_performance.md`](docs/build_performance.md)** for the full guide.
+
+### Why builds are slow
+
+FastRender is a **1.38 million line** single-crate Rust project (mega-crate architecture). This means:
+- rustc processes everything as one compilation unit
+- Changes to core modules invalidate huge portions of code
+- Full LTO release builds take 30-60 minutes
+
+### Mandatory rules for fast iteration
+
+1. **Use `cargo check` for validation** — 10-50x faster than `cargo build`:
+   ```bash
+   timeout -k 10 120 bash scripts/cargo_agent.sh check -p fastrender
+   ```
+
+2. **Always scope builds to specific targets**:
+   ```bash
+   # GOOD - Build specific binary
+   timeout -k 10 300 bash scripts/cargo_agent.sh build --bin fetch_and_render
+   
+   # BAD - Builds ALL 20+ binaries
+   timeout -k 10 1800 bash scripts/cargo_agent.sh build
+   ```
+
+3. **Use `--profile release-dev` for performance-sensitive work**:
+   ```bash
+   # GOOD - Fast release-quality build (thin LTO, ~3-5x faster than full release)
+   timeout -k 10 300 bash scripts/cargo_agent.sh build --profile release-dev --bin fetch_and_render
+   
+   # BAD - Full LTO, extremely slow
+   timeout -k 10 1800 bash scripts/cargo_agent.sh build --release --bin fetch_and_render
+   ```
+
+4. **Incremental compilation is ON by default** — don't disable it unless you need reproducibility.
+
+5. **Never run bare `cargo build --release`** — this compiles all 20+ binaries with full LTO (30-60 minutes).
+
+### Build profiles
+
+| Profile | Use Case | Speed |
+|---------|----------|-------|
+| `dev` (default) | Day-to-day iteration, debugging | Fast |
+| `release-dev` | Testing release behavior, performance work | Medium |
+| `release` | Final artifacts, CI releases only | **Very slow** |
+
+### Quick reference
+
+| Task | Command | Time |
+|------|---------|------|
+| Type check | `cargo check -p fastrender` | 10-30s |
+| Build one binary (dev) | `cargo build --bin fetch_and_render` | 30-60s |
+| Build one binary (release-dev) | `cargo build --profile release-dev --bin <name>` | 60-120s |
+| Build one binary (release) | `cargo build --release --bin <name>` | 5-10min |
+| **Build ALL release** | `cargo build --release` | **30-60min ⚠️** |
+
 ## System resources (RAM / time / disk) — mandatory safety
 
 ### The cardinal rule: assume everything can misbehave
@@ -198,32 +256,6 @@ if [[ -d target ]]; then
     du -xsh target 2>/dev/null || true
   fi
 fi
-```
-
-### Repo hygiene (avoid committing noise)
-
-Sometimes `git status` shows a huge number of unrelated modifications under `scripts/`, `tools/`,
-`vendor/`, or marks submodules (e.g. `specs/*`, `vendor/ecma-rs/*` corpora) as "modified content".
-This is usually metadata noise (executable-bit flips) or accidental submodule dirt, not real product
-work.
-
-Before committing, confirm what changed:
-
-```bash
-git diff --summary
-```
-
-To discard accidental changes in the main repo (safe):
-
-```bash
-git restore scripts tools vendor/ecma-rs
-```
-
-To discard accidental changes inside submodules (destructive — only do this if you have no
-intentional local edits inside submodules):
-
-```bash
-git submodule foreach --recursive 'git reset --hard && git clean -fd'
 ```
 
 ## Regression philosophy (required)

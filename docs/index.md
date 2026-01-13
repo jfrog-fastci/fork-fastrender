@@ -7,6 +7,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 ## Start here
 
 - Common agent rules & resource safety: [`AGENTS.md`](../AGENTS.md)
+- **Build performance** (why builds are slow, how to be fast): [build_performance.md](build_performance.md)
 - **Philosophy & culture** (hard-won lessons, mindset): [philosophy.md](philosophy.md)
 - **Triage & operations** (priority order, failure classification, operating model): [triage.md](triage.md)
 - **Accuracy workflow** (how to fix rendering issues): [accuracy_workflow.md](accuracy_workflow.md)

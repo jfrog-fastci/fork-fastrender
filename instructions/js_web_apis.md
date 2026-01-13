@@ -15,6 +15,13 @@
 - `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
 - `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 
+### Build speed matters
+
+Web APIs are implemented in FastRender's `src/js/`. See [`docs/build_performance.md`](../docs/build_performance.md):
+- Use `cargo check` for validation
+- Scope tests: `cargo test --lib js::web_apis` not `cargo test`
+- For WebIDL work, see `docs/webidl_stack.md`
+
 ---
 
 This workstream owns **Web Platform APIs** beyond the core DOM: fetch, URL, timers, storage, encoding, crypto, and other browser APIs.

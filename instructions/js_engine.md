@@ -18,6 +18,13 @@ cargo test  # WRONG
 
 If a command times out, that's a bug to investigate — not a limit to raise.
 
+### Build speed matters
+
+vm-js builds are relatively fast (separate workspace), but still:
+- Use `cargo check -p vm-js` for validation when possible
+- Use `--lib` to avoid building binaries you don't need
+- See [`docs/build_performance.md`](../docs/build_performance.md) for general guidance
+
 ---
 
 This workstream owns the **vm-js JavaScript runtime**: execution, garbage collection, built-in objects, and ECMA-262 spec compliance.

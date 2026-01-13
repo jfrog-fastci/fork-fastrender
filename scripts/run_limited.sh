@@ -272,15 +272,17 @@ if [[ "${prlimit_ok}" -eq 1 ]]; then
 fi
 
 # Fallback: ulimit. (Not all resources are enforceable; RSS is typically ignored.)
+# Note: macOS doesn't support ulimit -v (virtual memory limit). We try it anyway
+# and ignore failures on platforms where it's unsupported.
 if [[ -n "${AS}" && "${AS}" != "0" ]]; then
   if [[ "${AS}" == "unlimited" ]]; then
-    ulimit -v unlimited
+    ulimit -v unlimited 2>/dev/null || true
   else
     as_kib="$(to_kib "${AS}")" || {
       echo "invalid --as size: ${AS}" >&2
       exit 2
     }
-    ulimit -v "${as_kib}"
+    ulimit -v "${as_kib}" 2>/dev/null || true
   fi
 fi
 if [[ -n "${STACK}" && "${STACK}" != "0" ]]; then

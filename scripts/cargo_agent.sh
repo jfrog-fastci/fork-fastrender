@@ -1,22 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Some environments inject `RUSTC_WRAPPER=sccache` without a running sccache daemon, which causes
-# builds to fail with errors like "Failed to send data to or receive data from server".
-# Prefer deterministic builds by default; opt back in with FASTR_CARGO_USE_SCCACHE=1.
+# sccache (shared compilation cache) can dramatically speed up multi-agent environments
+# by caching compiled artifacts. However, some environments inject RUSTC_WRAPPER=sccache
+# without a running daemon, causing failures.
+#
+# Enable sccache explicitly with:
+#   FASTR_CARGO_USE_SCCACHE=1 bash scripts/cargo_agent.sh build ...
+#
+# Note: sccache and incremental compilation don't mix well. When sccache is enabled,
+# consider disabling incremental for clean builds:
+#   FASTR_CARGO_USE_SCCACHE=1 FASTR_CARGO_INCREMENTAL=0 bash scripts/cargo_agent.sh build ...
 if [[ "${FASTR_CARGO_USE_SCCACHE:-0}" != "1" ]]; then
   export RUSTC_WRAPPER=
   export CARGO_BUILD_RUSTC_WRAPPER=
   export SCCACHE_DISABLE=1
 fi
 
-# CI/agent builds are typically one-shot and prioritize throughput over debuggability.
-# Incremental compilation and full debug info can add meaningful overhead for this workspace, so
-# disable them by default. Opt back in via:
-#   FASTR_CARGO_INCREMENTAL=1  (or set CARGO_INCREMENTAL yourself)
-#   FASTR_CARGO_DEBUG_INFO=1   (or set CARGO_PROFILE_{DEV,TEST}_DEBUG yourself)
-if [[ "${FASTR_CARGO_INCREMENTAL:-0}" != "1" && -z "${CARGO_INCREMENTAL:-}" ]]; then
-  export CARGO_INCREMENTAL=0
+# Incremental compilation is ENABLED by default for faster iteration.
+#
+# Previous rationale for disabling: "one-shot CI builds". However, analysis shows that:
+# - Agent iteration on the same clone benefits massively from incremental (~11s vs ~60s)
+# - Even "clean" builds with incremental enabled have minimal overhead
+# - The mega-crate architecture (1.38M lines) makes incremental essential
+#
+# Disable only for CI release builds where reproducibility matters:
+#   FASTR_CARGO_INCREMENTAL=0 bash scripts/cargo_agent.sh build --release
+if [[ "${FASTR_CARGO_INCREMENTAL:-1}" != "0" && -z "${CARGO_INCREMENTAL:-}" ]]; then
+  export CARGO_INCREMENTAL=1
 fi
 if [[ "${FASTR_CARGO_DEBUG_INFO:-0}" != "1" ]]; then
   if [[ -z "${CARGO_PROFILE_DEV_DEBUG:-}" ]]; then
@@ -70,7 +81,7 @@ fi
 # Tuning knobs (env vars):
 #   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
 #   FASTR_CARGO_JOBS         cargo build jobs per command (default: auto from CPU/slots)
-#   FASTR_CARGO_INCREMENTAL  Enable incremental compilation (default: 0)
+#   FASTR_CARGO_INCREMENTAL  Enable incremental compilation (default: 1, ENABLED)
 #   FASTR_CARGO_DEBUG_INFO   Keep debug info enabled for dev/test builds (default: 0)
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
 #   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)
@@ -99,7 +110,7 @@ Examples:
 Environment:
   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
   FASTR_CARGO_JOBS         cargo build jobs per command (default: auto from CPU/slots)
-  FASTR_CARGO_INCREMENTAL  Enable incremental compilation (default: 0)
+  FASTR_CARGO_INCREMENTAL  Enable incremental compilation (default: 1, ENABLED)
   FASTR_CARGO_DEBUG_INFO   Keep debug info enabled for dev/test builds (default: 0)
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
   FASTR_XTASK_LIMIT_AS     Address-space cap for `scripts/cargo_agent.sh xtask ...` runs (default: 96G)

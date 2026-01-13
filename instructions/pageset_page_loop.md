@@ -25,6 +25,15 @@ If something exceeds limits, that's a **bug to investigate**, not a limit to rai
 - `cargo build` / `cargo test` / `cargo check` without wrapper scripts
 - `cargo test --all-features` or unscoped `cargo test`
 
+### Build speed matters
+
+FastRender is a 1.38M line single-crate project. See [`docs/build_performance.md`](../docs/build_performance.md) for why and how to stay fast:
+
+- **Use `cargo check`** for validation (10-50x faster than build)
+- **Use `--release`** for performance testing (fast, no LTO)
+- **Use `--profile release-max`** only for final distribution (full LTO, very slow)
+- **Always scope builds**: `--bin <name>` not bare `cargo build`
+
 ---
 
 This workstream owns **fixing pages end-to-end**: pick a pageset page, diagnose issues, fix root causes, and make it render correctly.

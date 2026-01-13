@@ -15,6 +15,13 @@
 - `timeout -k 10 600 bash scripts/cargo_agent.sh ...` for ALL cargo commands
 - `timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- ...` for renderer binaries
 
+### Build speed matters
+
+DOM bindings touch both FastRender and ecma-rs. See [`docs/build_performance.md`](../docs/build_performance.md):
+- Use `cargo check` for validation
+- Scope tests: `cargo test --lib js::dom` not `cargo test`
+- WebIDL codegen can be slow; only regenerate when needed
+
 ---
 
 This workstream owns the **DOM API surface exposed to JavaScript**: Document, Element, Node, events, and related APIs.

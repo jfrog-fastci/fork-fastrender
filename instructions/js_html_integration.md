@@ -18,6 +18,13 @@ cargo test  # WRONG
 
 If a command times out, that's a bug to investigate — not a limit to raise.
 
+### Build speed matters
+
+See [`docs/build_performance.md`](../docs/build_performance.md):
+- Use `cargo check` for validation
+- Scope tests: `cargo test --lib js::event_loop` not `cargo test`
+- For ecma-rs work: `bash vendor/ecma-rs/scripts/cargo_agent.sh check -p vm-js`
+
 ---
 
 This workstream owns how **JavaScript integrates with HTML**: script loading, module execution, the event loop, host hooks, and the execution lifecycle.
