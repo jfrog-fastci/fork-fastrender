@@ -85,8 +85,9 @@ It must **not** be enabled for:
 
 When implemented, `chrome://` URLs should be resolved as:
 
-1. Parse the URL (`chrome://<namespace>/<path>` or similar).
-2. Map `(namespace, path)` to a **fixed allowlisted asset key**.
+1. Parse the URL as `chrome://<host>/<path>`, where `<host>` is an **asset namespace** (e.g.
+   `styles`, `icons`) and `<path>` is the asset path under that namespace.
+2. Map `(host, path)` to a **fixed allowlisted asset key**.
 3. Serve bytes from a trusted source (typically embedded via `include_bytes!` or a read-only bundle).
 
 Implementation reference (existing pattern): repo-owned UI assets are already embedded via
