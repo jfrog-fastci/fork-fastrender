@@ -62,11 +62,17 @@ Code map (repo reality):
       - Sets up a Job object (kill-on-close + active-process limit; optional memory cap) and (when
         supported) an AppContainer profile with zero capabilities, then spawns the child suspended,
         assigns it to the job, and resumes it.
+      - Attempts to remove the broad `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the
+        AppContainer token via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (best-effort /
+        retried without on unsupported Windows builds).
       - Used primarily by `crates/win-sandbox` tests/tooling; it does **not** include `fastrender`’s
         environment sanitization or executable relocation workarounds.
     - AppContainer-only convenience spawner (`win_sandbox::RendererSandbox`)
       - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
       - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
+      - Attempts to remove the broad `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the
+        AppContainer token via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (best-effort /
+        retried without on unsupported Windows builds).
       - Applies the default renderer mitigation policy via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`
         (best-effort; escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
       - Does **not** assign the child to a Job object (callers must do that separately).
@@ -605,6 +611,9 @@ Repo reality (`src/sandbox/windows.rs::spawn_appcontainer`):
 - If the first `CreateProcessW` fails with `ERROR_ACCESS_DENIED`, we copy the image to a temporary
   directory and grant read/execute ACLs (prefer the derived AppContainer SID; fallback to **ALL
   APPLICATION PACKAGES**), then retry.
+  - Note: when the AppContainer token is hardened to remove `ALL APPLICATION PACKAGES` (via
+    `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`), granting ACLs to the `ALL APPLICATION
+    PACKAGES` SID is only useful when the hardening attribute is disabled/unsupported on the host.
 - We also set `lpCurrentDirectory` to the temp dir on retry to avoid inheriting a parent CWD the
   AppContainer can’t read.
 
