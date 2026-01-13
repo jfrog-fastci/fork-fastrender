@@ -80,7 +80,12 @@ impl<'a> Parser<'a> {
       let mode = p.var_decl_mode()?;
       let mut declarators = Vec::new();
       loop {
-        let pattern = p.pat_decl(ctx)?;
+        // Explicit Resource Management declarations (`using` / `await using`) only allow a
+        // BindingIdentifier (not a BindingPattern).
+        let pattern = match mode {
+          VarDeclMode::Using | VarDeclMode::AwaitUsing => p.id_pat_decl(ctx)?,
+          _ => p.pat_decl(ctx)?,
+        };
 
         // TypeScript: definite assignment assertion
         let definite_assignment =
