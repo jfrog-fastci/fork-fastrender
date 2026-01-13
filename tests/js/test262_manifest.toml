@@ -1239,7 +1239,7 @@ status = "pass"
 [[expectations]]
 glob = "built-ins/RegExp/lookBehind/**"
 status = "xfail"
-reason = "vm-js: RegExp lookbehind assertions are not implemented."
+reason = "lookbehind not implemented yet"
 
 [[expectations]]
 glob = "built-ins/RegExp/match-indices/**"
