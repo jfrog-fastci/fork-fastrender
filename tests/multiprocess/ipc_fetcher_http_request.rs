@@ -231,10 +231,10 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
     .with_referrer_policy(ReferrerPolicy::UnsafeUrl)
     .with_credentials_mode(fastrender::resource::FetchCredentialsMode::Include);
   let user_headers = vec![
-    ("X-Test".to_string(), "hello".to_string()),
+    ("X-Test".to_string(), "1".to_string()),
     ("Accept".to_string(), "text/plain".to_string()),
   ];
-  let body = b"payload";
+  let body = b"hello";
   let req = HttpRequest {
     fetch,
     method: "POST",
@@ -243,6 +243,7 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
     body: Some(body),
   };
   let res = fetcher.fetch_http_request(req).expect("fetch_http_request");
+  assert_eq!(res.status, Some(200));
   assert_eq!(res.bytes, b"ok");
 
   let captured_http = http_rx
@@ -252,7 +253,7 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
   assert_eq!(captured_http.path, "/submit");
   assert_eq!(
     captured_http.headers.get("x-test").map(String::as_str),
-    Some("hello")
+    Some("1")
   );
   assert_eq!(
     captured_http.headers.get("accept").map(String::as_str),
@@ -282,7 +283,7 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
           .iter()
           .find(|(k, _)| k.eq_ignore_ascii_case("x-test"))
           .map(|(_, v)| v.as_str()),
-        Some("hello")
+        Some("1")
       );
       let decoded = req.decode_body().unwrap().unwrap();
       assert_eq!(decoded, body);
@@ -369,6 +370,89 @@ fn ipc_fetcher_http_request_redirect_updates_final_url() {
     second.body.is_empty(),
     "redirected request should drop body"
   );
+
+  http_handle.join().unwrap();
+  ipc_handle.join().unwrap();
+}
+
+#[test]
+fn ipc_fetcher_http_request_redirect_error_does_not_follow() {
+  let _net_guard = net_test_lock();
+  let Some(listener) =
+    try_bind_localhost("ipc_fetcher_http_request_redirect_error_does_not_follow")
+  else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+
+  let (tx, rx) = mpsc::channel::<CapturedRequest>();
+  let http_handle = thread::spawn(move || {
+    listener.set_nonblocking(true).unwrap();
+    // Redirect response.
+    let mut stream = accept_with_timeout(&listener);
+    stream
+      .set_read_timeout(Some(Duration::from_millis(500)))
+      .unwrap();
+    let raw = read_http_request_with_body(&mut stream);
+    tx.send(parse_request(raw)).unwrap();
+    let response =
+      "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    stream.write_all(response.as_bytes()).unwrap();
+    drop(stream);
+
+    // Ensure no follow-up request arrives when redirect mode is `error`.
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_millis(200) {
+      match listener.accept() {
+        Ok((_stream, _addr)) => panic!("unexpected redirected request; redirect mode should be error"),
+        Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+          thread::sleep(Duration::from_millis(5));
+        }
+        Err(err) => panic!("accept after redirect: {err}"),
+      }
+    }
+  });
+
+  let ipc_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+  let ipc_addr = ipc_listener.local_addr().unwrap();
+  let (ipc_tx, ipc_rx) = mpsc::channel::<IpcRequest>();
+  let ipc_handle = spawn_ipc_server(ipc_listener, ipc_tx);
+
+  let fetcher = IpcResourceFetcher::new(ipc_addr.to_string()).expect("connect ipc fetcher");
+  let url = format!("http://{addr}/redirect");
+  let fetch = FetchRequest::new(&url, FetchDestination::Fetch);
+  let req = HttpRequest {
+    fetch,
+    method: "POST",
+    redirect: RequestRedirect::Error,
+    headers: &[],
+    body: Some(b"hello"),
+  };
+  let err = fetcher
+    .fetch_http_request(req)
+    .expect_err("expected redirect mode error");
+  let msg = err.to_string();
+  assert!(
+    msg.contains("redirect") && msg.contains("error"),
+    "unexpected error: {msg}"
+  );
+
+  let captured_http = rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("captured http request");
+  assert_eq!(captured_http.method, "POST");
+  assert_eq!(captured_http.path, "/redirect");
+  assert_eq!(captured_http.body, b"hello");
+
+  let captured_ipc = ipc_rx
+    .recv_timeout(Duration::from_secs(1))
+    .expect("captured ipc request");
+  match captured_ipc {
+    IpcRequest::FetchHttpRequest { req } => {
+      assert_eq!(req.redirect, RequestRedirect::Error);
+    }
+    other => panic!("unexpected ipc request: {other:?}"),
+  }
 
   http_handle.join().unwrap();
   ipc_handle.join().unwrap();
