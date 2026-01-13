@@ -43,6 +43,9 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
   [`tests/browser_integration/browser_cli_start_url_scheme.rs`](../tests/browser_integration/browser_cli_start_url_scheme.rs).
 - Defense-in-depth for subresource fetches: [`src/resource.rs`](../src/resource.rs) (scheme classification and
   `ResourcePolicy::allowed_schemes`) treats unknown schemes as `Other` and blocks them by default.
+- Web Storage origin classification already treats `chrome://<host>` as a **non-opaque origin**
+  (persistent `localStorage`), while treating `about:`/`data:`/`file:` as opaque:
+  [`src/js/web_storage.rs`](../src/js/web_storage.rs) (`origin_key_from_document_url`).
 
 **Invariant:** The content renderer must treat `chrome://…` and `chrome-action:…` as unsupported
 schemes (no navigation, no fetch, no side effects).
@@ -99,6 +102,17 @@ Security requirements for the resolver/fetcher:
 - Not a network request: no DNS/TLS/headers/cookies/redirects.
 - Not a file request: no host filesystem access; the allowlist is the only source of bytes.
 - Intended to be available offline and under aggressive network/file sandboxing.
+
+### Origin / storage semantics
+
+The intended `chrome://` form is host-based (`chrome://<host>/<path>`), so chrome documents have a
+stable origin (`chrome://<host>`) that can be used for same-origin checks and Web Storage.
+
+Implementation reference: `localStorage` keys are derived via
+[`src/js/web_storage.rs`](../src/js/web_storage.rs) (`origin_key_from_document_url`), which already
+treats `chrome://<host>` as a persistent origin (unlike `about:`/`file:` which are treated as
+opaque). This only remains safe if untrusted content cannot create chrome documents (enforced by the
+navigation/fetch allowlists above).
 
 ---
 
