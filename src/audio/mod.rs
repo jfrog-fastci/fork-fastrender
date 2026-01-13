@@ -1,3 +1,4 @@
+use crate::clock::Clock;
 use crate::debug::runtime::runtime_toggles;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -534,6 +535,19 @@ pub trait AudioBackend: Send + Sync {
   /// Implementations may have side effects (e.g. writing to a file) but should always return the
   /// mixed samples for test/debug inspection.
   fn render_frames(&self, frames: usize) -> AudioBackendResult<Vec<f32>>;
+
+  /// Test/debug helper: render the number of frames implied by a clock delta.
+  ///
+  /// Callers advance a [`VirtualClock`](crate::clock::VirtualClock) (or any [`Clock`]) and then
+  /// call this with a mutable `last_time` cursor. This makes audio drain behaviour deterministic
+  /// without relying on wall-clock sleeps.
+  fn render_for_clock(&self, clock: &dyn Clock, last_time: &mut Duration) -> AudioBackendResult<Vec<f32>> {
+    let now = clock.now();
+    let delta = now.saturating_sub(*last_time);
+    *last_time = now;
+    let frames = duration_to_frames_floor(delta, self.mixer().sample_rate_hz()) as usize;
+    self.render_frames(frames)
+  }
 }
 
 /// A backend that does not talk to a real audio device.

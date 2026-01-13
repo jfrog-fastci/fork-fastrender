@@ -41,9 +41,11 @@ fn wav_audio_backend_writes_valid_header_and_length() {
     stream.enqueue_samples(tone).expect("enqueue samples");
     stream.play();
 
+    let mut last_time = Duration::ZERO;
     clock.advance(render_duration);
-    let _ = clock.now();
-    backend.render_frames(frames).expect("render");
+    backend
+      .render_for_clock(&clock, &mut last_time)
+      .expect("render");
     // Drop backend to finalize WAV header.
   });
 
