@@ -320,8 +320,6 @@ fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter
     libc::SYS_epoll_pwait,
     libc::SYS_eventfd2,
     libc::SYS_signalfd4,
-    // Local IPC primitives (not network).
-    libc::SYS_socketpair,
     // Misc.
     libc::SYS_uname,
     libc::SYS_sysinfo,

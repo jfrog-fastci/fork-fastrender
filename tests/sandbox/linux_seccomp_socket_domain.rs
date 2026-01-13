@@ -37,6 +37,18 @@ fn socket_domain_filter_allows_unix_denies_inet() {
       libc::close(fds[1]);
     }
 
+    // SAFETY: `socket` is a raw libc call.
+    let unix_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    assert!(
+      unix_fd >= 0,
+      "socket(AF_UNIX, SOCK_STREAM) should succeed: {}",
+      std::io::Error::last_os_error()
+    );
+    // SAFETY: fd is valid on success.
+    unsafe {
+      libc::close(unix_fd);
+    }
+
     // SAFETY: direct libc syscall wrapper.
     let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
     assert_eq!(fd, -1, "socket(AF_INET) should be blocked by seccomp");
