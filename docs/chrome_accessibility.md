@@ -171,6 +171,7 @@ Maintainability rules (to keep ids stable and avoid collisions):
 - Use `ui.push_id(...)` / `id.with(...)` to namespace repeating widgets (tab rows, menu items, list entries) so ids don’t collide.
 - In tests, prefer **name/role snapshots** over comparing raw ids. AccessKit ids are implementation details and can change when egui’s internal hashing changes.
   - See [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs) helpers used by chrome/menu unit tests.
+  - For tests that merge or inject additional AccessKit nodes (e.g. page/content subtree injection), use the reachability helpers (`AccessKitTestTree`, `accesskit_reachable_*`, `accesskit_connectivity_*`) to assert that injected nodes are connected to the root (no orphans / target nodes are reachable).
 
 #### Dynamic list rows: avoid auto-generated egui ids (omnibox suggestions, tab search results)
 
