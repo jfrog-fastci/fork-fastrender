@@ -99,6 +99,18 @@ test(() => {
 }, "Document.createTreeWalker: whatToShow is converted using ToUint32 (-1 => SHOW_ALL)");
 
 test(() => {
+  const root = document.createElement("div");
+  const tw = document.createTreeWalker(root, NaN, null);
+  assert_equals(tw.whatToShow, 0);
+}, "Document.createTreeWalker: whatToShow is converted using ToUint32 (NaN => 0)");
+
+test(() => {
+  const root = document.createElement("div");
+  const tw = document.createTreeWalker(root, 4294967297, null); // 2^32 + 1
+  assert_equals(tw.whatToShow, NodeFilter.SHOW_ELEMENT);
+}, "Document.createTreeWalker: whatToShow is converted using ToUint32 (2^32+1 => 1)");
+
+test(() => {
   clear_children(document.body);
 
   const before = document.createElement("div");
