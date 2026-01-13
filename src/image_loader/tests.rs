@@ -1,6 +1,8 @@
 use crate::api::ResourceContext;
 use crate::error::{Error, Result};
-use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use crate::resource::{
+  origin_from_url, FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher,
+};
 use crate::image_loader::ImageCache;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -42,6 +44,7 @@ impl ResourceFetcher for RecordingFetcher {
       .push((req.url.to_string(), req.referrer_url.map(|r| r.to_string())));
 
     let referrer = req.referrer_url.unwrap_or_default();
+    let client_origin = req.client_origin.map(|o| o.to_string()).unwrap_or_default();
     match req.url {
       "https://example.com/sprite.svg" => {
         let color = if referrer.ends_with("/a.svg") { "red" } else { "blue" };
@@ -50,8 +53,42 @@ impl ResourceFetcher for RecordingFetcher {
         );
         Ok(FetchedResource::new(svg.into_bytes(), Some("image/svg+xml".to_string())))
       }
+      "https://example.com/sprite_by_origin.svg" => {
+        let color = if client_origin.contains("a.example") { "red" } else { "blue" };
+        let svg = format!(
+          r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="{color}"/></symbol></svg>"#
+        );
+        Ok(FetchedResource::new(svg.into_bytes(), Some("image/svg+xml".to_string())))
+      }
+      "https://example.com/sprite_by_policy.svg" => {
+        let color = if req.referrer_policy == ReferrerPolicy::NoReferrer {
+          "red"
+        } else {
+          "blue"
+        };
+        let svg = format!(
+          r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="{color}"/></symbol></svg>"#
+        );
+        Ok(FetchedResource::new(svg.into_bytes(), Some("image/svg+xml".to_string())))
+      }
       "https://example.com/img.png" => {
         let bytes = if referrer.ends_with("/a.svg") { b"A".to_vec() } else { b"B".to_vec() };
+        Ok(FetchedResource::new(bytes, None))
+      }
+      "https://example.com/img_by_origin.png" => {
+        let bytes = if client_origin.contains("a.example") {
+          b"C".to_vec()
+        } else {
+          b"D".to_vec()
+        };
+        Ok(FetchedResource::new(bytes, None))
+      }
+      "https://example.com/img_by_policy.png" => {
+        let bytes = if req.referrer_policy == ReferrerPolicy::NoReferrer {
+          b"P".to_vec()
+        } else {
+          b"Q".to_vec()
+        };
         Ok(FetchedResource::new(bytes, None))
       }
       other => Err(Error::Other(format!("unexpected url {other}"))),
@@ -380,5 +417,224 @@ fn svg_subresource_cache_partitions_by_referrer_for_inlined_images() {
     fetcher.count_url("https://example.com/img.png"),
     2,
     "expected image to be fetched once per referrer context"
+  );
+}
+
+#[test]
+fn svg_subresource_cache_partitions_by_client_origin_for_sprites() {
+  let fetcher = RecordingFetcher::default();
+  let subresource_cache: super::SvgSubresourceCache =
+    Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
+
+  let mut ctx_a = ResourceContext::default();
+  ctx_a.policy.document_origin = origin_from_url("https://a.example");
+  assert!(ctx_a.policy.document_origin.is_some(), "origin a");
+  let mut ctx_b = ResourceContext::default();
+  ctx_b.policy.document_origin = origin_from_url("https://b.example");
+  assert!(ctx_b.policy.document_origin.is_some(), "origin b");
+
+  let svg =
+    r#"<svg xmlns="http://www.w3.org/2000/svg"><use href="https://example.com/sprite_by_origin.svg#icon"/></svg>"#;
+
+  let out_a_1 = super::inline_svg_use_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <use> (origin a)")
+  .into_owned();
+  let out_b = super::inline_svg_use_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_b),
+    Some(&subresource_cache),
+  )
+  .expect("inline <use> (origin b)")
+  .into_owned();
+  let out_a_2 = super::inline_svg_use_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <use> (origin a again)")
+  .into_owned();
+
+  assert!(
+    out_a_1.contains(r#"fill="red""#),
+    "expected sprite variant for origin a, got: {out_a_1}"
+  );
+  assert!(
+    out_b.contains(r#"fill="blue""#),
+    "expected sprite variant for origin b, got: {out_b}"
+  );
+  assert_eq!(out_a_1, out_a_2, "expected origin a to hit svg_subresource_cache");
+  assert_eq!(
+    fetcher.count_url("https://example.com/sprite_by_origin.svg"),
+    2,
+    "expected sprite to be fetched once per client origin"
+  );
+}
+
+#[test]
+fn svg_subresource_cache_partitions_by_client_origin_for_inlined_images() {
+  let fetcher = RecordingFetcher::default();
+  let subresource_cache: super::SvgSubresourceCache =
+    Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
+
+  let mut ctx_a = ResourceContext::default();
+  ctx_a.policy.document_origin = origin_from_url("https://a.example");
+  assert!(ctx_a.policy.document_origin.is_some(), "origin a");
+  let mut ctx_b = ResourceContext::default();
+  ctx_b.policy.document_origin = origin_from_url("https://b.example");
+  assert!(ctx_b.policy.document_origin.is_some(), "origin b");
+
+  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://example.com/img_by_origin.png" width="1" height="1"/></svg>"#;
+
+  let out_a_1 = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (origin a)")
+  .into_owned();
+  let out_b = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_b),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (origin b)")
+  .into_owned();
+  let out_a_2 = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (origin a again)")
+  .into_owned();
+
+  assert!(
+    out_a_1.contains("Qw=="),
+    "expected data URL for origin a (base64 C=Qw==), got: {out_a_1}"
+  );
+  assert!(
+    out_b.contains("RA=="),
+    "expected data URL for origin b (base64 D=RA==), got: {out_b}"
+  );
+  assert_eq!(out_a_1, out_a_2, "expected origin a to hit svg_subresource_cache");
+  assert_eq!(
+    fetcher.count_url("https://example.com/img_by_origin.png"),
+    2,
+    "expected image to be fetched once per client origin"
+  );
+}
+
+#[test]
+fn svg_subresource_cache_partitions_by_referrer_policy_for_inlined_images() {
+  let fetcher = RecordingFetcher::default();
+  let subresource_cache: super::SvgSubresourceCache =
+    Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
+
+  let mut ctx_a = ResourceContext::default();
+  ctx_a.referrer_policy = ReferrerPolicy::NoReferrer;
+  let mut ctx_b = ResourceContext::default();
+  ctx_b.referrer_policy = ReferrerPolicy::Origin;
+
+  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://example.com/img_by_policy.png" width="1" height="1"/></svg>"#;
+
+  let out_a_1 = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (policy a)")
+  .into_owned();
+  let out_b = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_b),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (policy b)")
+  .into_owned();
+  let out_a_2 = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (policy a again)")
+  .into_owned();
+
+  assert!(
+    out_a_1.contains("UA=="),
+    "expected data URL for NoReferrer (base64 P=UA==), got: {out_a_1}"
+  );
+  assert!(
+    out_b.contains("UQ=="),
+    "expected data URL for Origin (base64 Q=UQ==), got: {out_b}"
+  );
+  assert_eq!(out_a_1, out_a_2, "expected NoReferrer ctx to hit svg_subresource_cache");
+  assert_eq!(
+    fetcher.count_url("https://example.com/img_by_policy.png"),
+    2,
+    "expected image to be fetched once per referrer policy"
+  );
+}
+
+#[test]
+fn svg_subresource_cache_referrer_policy_empty_string_matches_chromium_default() {
+  let fetcher = RecordingFetcher::default();
+  let subresource_cache: super::SvgSubresourceCache =
+    Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
+
+  let ctx_empty = ResourceContext::default();
+  let mut ctx_default = ResourceContext::default();
+  ctx_default.referrer_policy = ReferrerPolicy::CHROMIUM_DEFAULT;
+
+  let svg =
+    r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://example.com/img.png" width="1" height="1"/></svg>"#;
+
+  let out_empty = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_empty),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (empty policy)")
+  .into_owned();
+  let out_default = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_default),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (chromium default policy)")
+  .into_owned();
+
+  assert_eq!(
+    out_empty, out_default,
+    "expected empty-string and chromium default referrer policy to share svg_subresource_cache"
+  );
+  assert_eq!(
+    fetcher.count_url("https://example.com/img.png"),
+    1,
+    "expected fetch to occur once when policy is effectively the Chromium default"
   );
 }
