@@ -6314,28 +6314,32 @@ impl<'a> Evaluator<'a> {
     // Root the running completion value so it cannot be collected while evaluating subsequent
     // statements (which may allocate and trigger GC).
     let last_root = scope.heap_mut().add_root(Value::Undefined)?;
-    let mut last_value: Option<Value> = None;
+    let result: Result<Completion, VmError> = (|| {
+      let mut last_value: Option<Value> = None;
 
-    for stmt in stmts {
-      let completion = self.eval_stmt(scope, stmt)?;
-      let completion = completion.update_empty(last_value);
+      for stmt in stmts {
+        let completion = self.eval_stmt(scope, stmt)?;
+        let completion = completion.update_empty(last_value);
 
-      match completion {
-        Completion::Normal(v) => {
-          if let Some(v) = v {
-            last_value = Some(v);
-            scope.heap_mut().set_root(last_root, v);
+        match completion {
+          Completion::Normal(v) => {
+            if let Some(v) = v {
+              last_value = Some(v);
+              scope.heap_mut().set_root(last_root, v);
+            }
           }
-        }
-        abrupt => {
-          scope.heap_mut().remove_root(last_root);
-          return Ok(abrupt);
+          abrupt => return Ok(abrupt),
         }
       }
-    }
 
+      Ok(Completion::Normal(last_value))
+    })();
+
+    // Ensure the persistent root is always removed, even if we return early on a hard-stop error
+    // (Termination/OOM) or other internal failure. Otherwise we leak persistent roots and make the
+    // heap unsafe to reuse after aborted execution.
     scope.heap_mut().remove_root(last_root);
-    Ok(Completion::Normal(last_value))
+    result
   }
 
   fn eval_block_stmt(
