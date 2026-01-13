@@ -26,6 +26,7 @@ These env vars are read in the rendering binaries (`render_pages`, `fetch_and_re
 
 - `FASTR_RENDER_TIMINGS=1` — prints high-level timing for parse/cascade/box_tree/layout/paint per page in the render binaries.
 - `FASTR_LAYOUT_PROFILE=1` — enables layout-context profiling (block/inline/flex/grid/table/absolute) with call counts and inclusive times.
+- `FASTR_GRID_MEASURE_CACHE_PROFILE=1` — enables grid item measurement cache counters (thread-local/shared hits + misses, including style-override key breakdown). Pair with `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES=1` to experiment with sharing override-key measurements across rayon threads.
 - `FASTR_FLEX_PROFILE=1` — flex-specific profiling (measure/compute/convert stats, cache hits). Optional helpers:
   - `FASTR_FLEX_PROFILE_NODES=1`
   - `FASTR_FLEX_PROFILE_NODE_KEYS=1`
