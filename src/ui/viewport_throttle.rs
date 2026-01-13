@@ -1,4 +1,20 @@
+use crate::debug::runtime::runtime_toggles;
 use std::time::{Duration, Instant};
+
+/// Environment variable override for [`ViewportThrottleConfig::max_hz`] in normal mode.
+pub const ENV_VIEWPORT_MAX_HZ: &str = "FASTR_BROWSER_VIEWPORT_MAX_HZ";
+/// Environment variable override for [`ViewportThrottleConfig::debounce`] (milliseconds) in normal mode.
+pub const ENV_VIEWPORT_DEBOUNCE_MS: &str = "FASTR_BROWSER_VIEWPORT_DEBOUNCE_MS";
+/// Environment variable override for [`ViewportThrottleConfig::max_hz`] in interactive resize mode.
+pub const ENV_VIEWPORT_RESIZE_MAX_HZ: &str = "FASTR_BROWSER_VIEWPORT_RESIZE_MAX_HZ";
+/// Environment variable override for [`ViewportThrottleConfig::debounce`] (milliseconds) in interactive resize mode.
+pub const ENV_VIEWPORT_RESIZE_DEBOUNCE_MS: &str = "FASTR_BROWSER_VIEWPORT_RESIZE_DEBOUNCE_MS";
+
+/// Maximum debounce window accepted from env overrides (milliseconds).
+///
+/// Keeping this bounded avoids accidentally stalling viewport propagation for huge durations due to
+/// misconfiguration (e.g. `FASTR_BROWSER_VIEWPORT_DEBOUNCE_MS=9999999`).
+pub const MAX_VIEWPORT_DEBOUNCE_MS: u64 = 2000;
 
 /// Configuration knobs for [`ViewportThrottle`].
 #[derive(Debug, Clone, Copy)]
@@ -22,6 +38,72 @@ impl Default for ViewportThrottleConfig {
       debounce: Duration::from_millis(80),
     }
   }
+}
+
+impl ViewportThrottleConfig {
+  /// Load viewport-throttling configuration from `FASTR_BROWSER_VIEWPORT_*` environment variables.
+  ///
+  /// Invalid / empty values are ignored (defaults remain in effect).
+  pub fn from_env() -> Self {
+    let base = Self::default();
+    Self::from_env_with_defaults(base, ENV_VIEWPORT_MAX_HZ, ENV_VIEWPORT_DEBOUNCE_MS)
+  }
+
+  /// Load interactive-resize viewport throttling configuration from environment variables.
+  ///
+  /// This first applies the "normal" overrides (`FASTR_BROWSER_VIEWPORT_*`) to the provided defaults,
+  /// then applies the interactive-resize specific overrides (`FASTR_BROWSER_VIEWPORT_RESIZE_*`).
+  pub fn resize_from_env() -> Self {
+    Self::resize_from_env_with_defaults(Self::default())
+  }
+
+  /// Like [`Self::resize_from_env`], but allows the caller to supply different defaults for
+  /// interactive resize mode.
+  pub fn resize_from_env_with_defaults(defaults: Self) -> Self {
+    let base = Self::from_env_with_defaults(defaults, ENV_VIEWPORT_MAX_HZ, ENV_VIEWPORT_DEBOUNCE_MS);
+    Self::from_env_with_defaults(base, ENV_VIEWPORT_RESIZE_MAX_HZ, ENV_VIEWPORT_RESIZE_DEBOUNCE_MS)
+  }
+
+  fn from_env_with_defaults(
+    mut base: Self,
+    max_hz_key: &str,
+    debounce_ms_key: &str,
+  ) -> Self {
+    let toggles = runtime_toggles();
+
+    if let Some(v) = parse_env_u32(toggles.get(max_hz_key)) {
+      base.max_hz = v.max(1);
+    }
+    if let Some(ms) = parse_env_u64_allow_zero(toggles.get(debounce_ms_key)) {
+      base.debounce = Duration::from_millis(ms.min(MAX_VIEWPORT_DEBOUNCE_MS));
+    }
+
+    // Ensure invariants even when defaults were nonsense.
+    base.max_hz = base.max_hz.max(1);
+    let debounce_ms = base.debounce.as_millis().min(MAX_VIEWPORT_DEBOUNCE_MS as u128) as u64;
+    base.debounce = Duration::from_millis(debounce_ms);
+    base
+  }
+}
+
+fn parse_env_u32(raw: Option<&str>) -> Option<u32> {
+  let raw = raw?;
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let raw = raw.replace('_', "");
+  raw.parse::<u32>().ok()
+}
+
+fn parse_env_u64_allow_zero(raw: Option<&str>) -> Option<u64> {
+  let raw = raw?;
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let raw = raw.replace('_', "");
+  raw.parse::<u64>().ok()
 }
 
 /// A `(viewport_css, dpr)` pair suitable for emission to the render worker.
@@ -194,6 +276,9 @@ impl ViewportThrottle {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
+  use std::sync::Arc;
 
   fn cfg_for_tests() -> ViewportThrottleConfig {
     ViewportThrottleConfig {
@@ -401,5 +486,101 @@ mod tests {
       Some(ViewportUpdate::new((200, 100), 1.0))
     );
     assert!(throttle.next_deadline().is_none());
+  }
+
+  #[test]
+  fn viewport_throttle_config_from_env_uses_defaults_when_unset() {
+    with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+      assert_eq!(ViewportThrottleConfig::from_env(), ViewportThrottleConfig::default());
+    });
+  }
+
+  #[test]
+  fn viewport_throttle_config_resize_from_env_uses_provided_defaults_when_unset() {
+    let defaults = ViewportThrottleConfig {
+      max_hz: 12,
+      debounce: Duration::from_millis(140),
+    };
+    with_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+      assert_eq!(
+        ViewportThrottleConfig::resize_from_env_with_defaults(defaults),
+        defaults
+      );
+    });
+  }
+
+  #[test]
+  fn viewport_throttle_config_from_env_parses_values() {
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        (ENV_VIEWPORT_MAX_HZ.to_string(), "120".to_string()),
+        (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "150".to_string()),
+      ]))),
+      || {
+        assert_eq!(
+          ViewportThrottleConfig::from_env(),
+          ViewportThrottleConfig {
+            max_hz: 120,
+            debounce: Duration::from_millis(150),
+          }
+        );
+      },
+    );
+  }
+
+  #[test]
+  fn viewport_throttle_config_from_env_clamps_values() {
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        (ENV_VIEWPORT_MAX_HZ.to_string(), "0".to_string()),
+        (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "9_999".to_string()),
+      ]))),
+      || {
+        let cfg = ViewportThrottleConfig::from_env();
+        assert_eq!(cfg.max_hz, 1);
+        assert_eq!(cfg.debounce, Duration::from_millis(MAX_VIEWPORT_DEBOUNCE_MS));
+      },
+    );
+  }
+
+  #[test]
+  fn viewport_throttle_config_from_env_ignores_invalid_values() {
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        (ENV_VIEWPORT_MAX_HZ.to_string(), "nope".to_string()),
+        (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "   ".to_string()),
+      ]))),
+      || {
+        assert_eq!(ViewportThrottleConfig::from_env(), ViewportThrottleConfig::default());
+      },
+    );
+  }
+
+  #[test]
+  fn viewport_throttle_config_resize_from_env_overrides_normal() {
+    with_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        (ENV_VIEWPORT_MAX_HZ.to_string(), "15".to_string()),
+        (ENV_VIEWPORT_DEBOUNCE_MS.to_string(), "100".to_string()),
+        (ENV_VIEWPORT_RESIZE_MAX_HZ.to_string(), "45".to_string()),
+        (ENV_VIEWPORT_RESIZE_DEBOUNCE_MS.to_string(), "250".to_string()),
+      ]))),
+      || {
+        assert_eq!(
+          ViewportThrottleConfig::from_env(),
+          ViewportThrottleConfig {
+            max_hz: 15,
+            debounce: Duration::from_millis(100),
+          }
+        );
+        assert_eq!(
+          ViewportThrottleConfig::resize_from_env(),
+          ViewportThrottleConfig {
+            max_hz: 45,
+            debounce: Duration::from_millis(250),
+          }
+        );
+      },
+    );
   }
 }

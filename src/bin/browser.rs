@@ -6540,9 +6540,13 @@ impl App {
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
       viewport_cache_dpr: 0.0,
-      viewport_throttle: fastrender::ui::ViewportThrottle::new(),
+      viewport_throttle: fastrender::ui::ViewportThrottle::with_config(
+        fastrender::ui::ViewportThrottleConfig::from_env(),
+      ),
       viewport_throttle_resizing: fastrender::ui::ViewportThrottle::with_config(
-        Self::RESIZE_VIEWPORT_THROTTLE_CONFIG,
+        fastrender::ui::ViewportThrottleConfig::resize_from_env_with_defaults(
+          Self::RESIZE_VIEWPORT_THROTTLE_CONFIG,
+        ),
       ),
       viewport_throttle_tab: None,
       last_resize_event_at: None,
