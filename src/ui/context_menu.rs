@@ -414,11 +414,10 @@ pub fn apply_page_context_menu_action(
       if url.is_empty() {
         return ApplyPageContextMenuActionResult::default();
       }
-      let before = bookmarks.contains_url(url);
       let mut deltas = Vec::new();
-      let after = bookmarks.toggle_with_deltas(url, None, &mut deltas);
+      let _after = bookmarks.toggle_with_deltas(url, None, &mut deltas);
       ApplyPageContextMenuActionResult {
-        bookmarks_changed: before != after,
+        bookmarks_changed: !deltas.is_empty(),
         ui_changed: false,
         bookmark_deltas: deltas,
       }

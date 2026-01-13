@@ -13532,12 +13532,11 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       return;
     };
 
-    let before = self.bookmarks.contains_url(&url);
     let mut deltas = Vec::new();
-    let after = self
+    let _after = self
       .bookmarks
       .toggle_with_deltas(&url, title.as_deref(), &mut deltas);
-    if before != after {
+    if !deltas.is_empty() {
       self.record_bookmark_deltas(deltas, false);
     }
   }
