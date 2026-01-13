@@ -637,6 +637,14 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   tab.js_dom_mapping = Some(mapping);
   tab.js_dom_dirty = false;
   tab.js_dom_mutation_generation = generation;
+
+  // The DOM replacement can change renderer preorder ids and invalidate cached hover targets.
+  // Queue a best-effort hover resync so cursor/hover state (and JS hover transitions) reflect the
+  // new DOM without requiring the UI to send a synthetic pointer move.
+  tab.last_hovered_dom_node_id = None;
+  tab.last_hovered_dom_element_id = None;
+  tab.last_hovered_dom2_node = None;
+  tab.pending_hover_sync_pos_css = tab.pending_hover_sync_pos_css.or(tab.last_pointer_pos_css);
 }
 
 fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
