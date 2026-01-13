@@ -1366,11 +1366,10 @@ pub(crate) fn estimated_regexp_compilation_bytes(pattern_len: usize) -> usize {
   const END_JUMPS_PER_UNIT: usize = 2;
   const CLASS_ITEMS_PER_UNIT: usize = 2;
   const PROGRAMS_PER_UNIT: usize = 1;
-  // Named groups + quantified-capture bookkeeping (approximate).
+  // Named groups bookkeeping (approximate).
   const NAMED_GROUPS_PER_UNIT: usize = 1;
   const NAME_UNITS_PER_UNIT: usize = 1;
   const CAPTURE_INDEX_PER_UNIT: usize = 1;
-  const REPEAT_CAPTURE_INDEX_PER_UNIT: usize = 1;
   let per_unit = INSTS_PER_UNIT
     .saturating_mul(mem::size_of::<Inst>())
     .saturating_add(TERMS_PER_UNIT.saturating_mul(mem::size_of::<Term>()))
@@ -1380,12 +1379,7 @@ pub(crate) fn estimated_regexp_compilation_bytes(pattern_len: usize) -> usize {
     .saturating_add(PROGRAMS_PER_UNIT.saturating_mul(mem::size_of::<RegExpProgram>()))
     .saturating_add(NAMED_GROUPS_PER_UNIT.saturating_mul(mem::size_of::<NamedCaptureGroup>()))
     .saturating_add(NAME_UNITS_PER_UNIT.saturating_mul(mem::size_of::<u16>()))
-    .saturating_add(
-      CAPTURE_INDEX_PER_UNIT
-        .saturating_add(REPEAT_CAPTURE_INDEX_PER_UNIT)
-        .saturating_mul(mem::size_of::<u32>()),
-    )
-    .saturating_add(REPEAT_CAPTURE_INDEX_PER_UNIT.saturating_mul(mem::size_of::<Vec<u32>>()));
+    .saturating_add(CAPTURE_INDEX_PER_UNIT.saturating_mul(mem::size_of::<u32>()));
 
   // Fixed overhead for vector headers, builder state, etc.
   const OVERHEAD_BYTES: usize = 8 * 1024;
