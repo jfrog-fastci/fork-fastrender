@@ -116,8 +116,8 @@ When FastRender ships as a macOS `.app`, we want the **untrusted renderer helper
 content) to run with **App Sandbox** enabled, with a deny-by-default posture:
 
 - no direct network access
-- no filesystem access outside the app bundle + sandbox container (no extra file entitlements
-  granting access to user/system paths)
+- no filesystem entitlements granting access to arbitrary user/system paths (no
+  `com.apple.security.files.*` entitlements)
 - all OS I/O brokered by the trusted browser/UI process (or a dedicated network process) over IPC
 
 This repository includes placeholder entitlement files for that future packaging step:
