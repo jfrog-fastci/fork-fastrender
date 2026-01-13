@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 /// - The UI thread drops the channels/senders that tell a worker thread to exit.
 /// - It then hands the `JoinHandle` to `ShutdownJoinTracker::track_join`, which spawns a tiny
 ///   join-helper thread and returns immediately.
-/// - The event loop periodically calls `poll()` to observe completion and log outcomes.
+/// - The event loop periodically calls `poll()` to observe completion and log failures/timeouts.
 /// - If the join does not complete within `detach_timeout`, the tracker stops tracking it (the
 ///   join-helper thread remains detached and will finish whenever the worker does).
 #[derive(Debug)]
@@ -100,10 +100,7 @@ impl ShutdownJoinTracker {
 
     for entry in self.joins.drain(..) {
       match entry.rx.try_recv() {
-        Ok(Ok(())) => {
-          let elapsed = now.saturating_duration_since(entry.started_at);
-          eprintln!("shutdown join completed: {} (took {:?})", entry.label, elapsed);
-        }
+        Ok(Ok(())) => {}
         Ok(Err(_)) => {
           let elapsed = now.saturating_duration_since(entry.started_at);
           eprintln!("shutdown join observed panic: {} (after {:?})", entry.label, elapsed);
