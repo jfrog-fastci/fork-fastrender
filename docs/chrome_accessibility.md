@@ -9,6 +9,10 @@ FastRender has two accessibility-related layers:
 
 Today these are *separate*: the rendered page content is a pixmap, so only the egui chrome participates in OS accessibility. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output will eventually feed into AccessKit when chrome/content are rendered by FastRender.
 
+For a page-focused workflow doc (inspecting the renderer’s accessibility tree via `dump_a11y`, how
+viewport CSS bounds are computed/mapped, and manual screen reader testing), see
+[page_accessibility.md](page_accessibility.md).
+
 ---
 
 ## Overview: why AccessKit + where it lives

@@ -584,6 +584,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Purpose: emit the computed accessibility tree for a document as JSON (without painting).
 - Entry: `src/bin/dump_a11y.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- --help`
+- Workflow details (a11y tree inspection + bounds mapping + screen reader testing): [page_accessibility.md](page_accessibility.md)
 
 ## `dump_accesskit`
 

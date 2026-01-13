@@ -4,6 +4,9 @@ FastRender currently has **page accessibility semantics** (roles/names/states) i
 renderer, but **page→OS screen reader integration is not wired yet**. The desktop `browser` UI does
 use **AccessKit** for the *chrome* (egui widgets), so you can already regression-test that layer.
 
+For deeper details on the browser chrome’s AccessKit wiring (including the experimental non-egui
+backend), see [chrome_accessibility.md](chrome_accessibility.md).
+
 This doc is a short, “what exists today” guide for:
 
 - Inspecting the computed page accessibility tree.
@@ -19,7 +22,7 @@ This doc is a short, “what exists today” guide for:
   - Entry point: `build_accessibility_tree` (returns `AccessibilityNode`).
   - Output schema: [`AccessibilityNode`](../src/accessibility.rs) is `Serialize` and is what
     `dump_a11y` prints as JSON.
-  - Input: styled DOM (`StyledNode`) + optional [`InteractionState`](../src/interaction/mod.rs) to
+  - Input: styled DOM (`StyledNode`) + optional [`InteractionState`](../src/interaction/state.rs) to
     populate dynamic state such as focus/selection (when available).
 
 The public API entrypoint used by the CLI is:
@@ -81,6 +84,11 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
 - Test utilities for extracting AccessKit output: [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs)
 - Egui code uses `ctx.enable_accesskit()` in tests (search for `enable_accesskit` in
   `src/ui/chrome.rs`, `src/ui/menu_bar.rs`, etc).
+- Future-facing (page/chrome rendered by FastRender rather than egui):
+  - AccessKit update gating (avoid building trees/bounds when no AT is connected):
+    [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)
+  - Action routing (screen reader “press/focus/set value” → `InteractionEngine`):
+    [`src/ui/fast_accesskit_actions.rs`](../src/ui/fast_accesskit_actions.rs)
 
 Page content is currently rendered as a bitmap in an egui panel, so screen readers can only see the
 chrome tree today.
@@ -98,7 +106,7 @@ Examples:
 
 ```bash
 # Local HTML file (optionally with a sidecar .meta file)
-cargo run --bin dump_a11y -- tests/pages/fixtures/example.html
+cargo run --bin dump_a11y -- tests/pages/fixtures/apple.com/index.html
 
 # URL
 cargo run --bin dump_a11y -- https://example.com/
@@ -112,6 +120,8 @@ cargo run --bin dump_a11y -- https://example.com/ | jq '.role, .children[0].role
 
 Notes:
 
+- In agent/CI environments, prefer the repo wrappers for resource limits and consistent Cargo flags:
+  `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- ...`
 - Cached HTML produced by `fetch_pages` (under `fetches/html/*.html`) can be passed directly; the tool
   will auto-load the `*.html.meta` sidecar when present.
 - Debug-only fields:
