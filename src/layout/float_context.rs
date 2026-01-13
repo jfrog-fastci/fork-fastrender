@@ -1430,6 +1430,13 @@ impl FloatContext {
   }
 
   fn advance_sweep_to(&self, target_y: f32, state: &mut FloatSweepState) {
+    // `FloatSweepState` relies on monotonic float comparisons to stop consuming events once it has
+    // passed `target_y`. In Rust/IEEE-754, comparisons with NaN are always false, which would cause
+    // the `event.y > target_y` break condition below to never trigger and drain the entire heap in
+    // one call. Avoid both the accidental O(n) work and poisoning `state.current_y` with NaN.
+    if target_y.is_nan() {
+      return;
+    }
     if target_y < state.current_y {
       *state = FloatSweepState::new(self.float_map.len(), &self.events);
     }
@@ -2493,6 +2500,9 @@ impl FloatContext {
   /// Returns the X coordinate where content can start at the given Y.
   pub fn left_edge_at_y(&self, y: f32) -> f32 {
     profile_count_width_query();
+    if !y.is_finite() {
+      return 0.0;
+    }
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let (left_edge, _) = self.edges_at_with_state(&mut state, y);
@@ -2504,6 +2514,9 @@ impl FloatContext {
   /// Returns the X coordinate where content must end at the given Y.
   pub fn right_edge_at_y(&self, y: f32) -> f32 {
     profile_count_width_query();
+    if !y.is_finite() {
+      return clamp_positive_finite(self.containing_block_width);
+    }
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let (_, right_edge) = self.edges_at_with_state(&mut state, y);
@@ -2535,6 +2548,9 @@ impl FloatContext {
   /// ```
   pub fn available_width_at_y(&self, y: f32) -> (f32, f32) {
     profile_count_width_query();
+    if !y.is_finite() {
+      return (0.0, clamp_positive_finite(self.containing_block_width));
+    }
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let (left_edge, right_edge) = self.edges_at_with_state(&mut state, y);
@@ -2565,6 +2581,9 @@ impl FloatContext {
     };
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
+    if !y.is_finite() {
+      return (containing_left, containing_width);
+    }
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
@@ -2593,6 +2612,9 @@ impl FloatContext {
   /// A tuple of (left_edge, available_width) representing the most
   /// constrained position within the range.
   pub fn available_width_in_range(&self, y_start: f32, y_end: f32) -> (f32, f32) {
+    if !y_start.is_finite() || !y_end.is_finite() {
+      return (0.0, clamp_positive_finite(self.containing_block_width));
+    }
     let end = if y_end > y_start { y_end } else { y_start };
     let (left_edge, right_edge, _) = self.edges_in_range_min_width(y_start, end);
     (left_edge, (right_edge - left_edge).max(0.0))
@@ -2606,7 +2628,6 @@ impl FloatContext {
     containing_block_left: f32,
     containing_block_width: f32,
   ) -> (f32, f32) {
-    let end = if y_end > y_start { y_end } else { y_start };
     let containing_left = if containing_block_left.is_finite() {
       containing_block_left
     } else {
@@ -2614,6 +2635,10 @@ impl FloatContext {
     };
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
+    if !y_start.is_finite() || !y_end.is_finite() {
+      return (containing_left, containing_width);
+    }
+    let end = if y_end > y_start { y_end } else { y_start };
     let mut state = self.ensure_sweep_state(y_start);
     let (left_edge, right_edge, _) = self.edges_in_range_min_width_with_state(
       &mut state,
@@ -2633,6 +2658,9 @@ impl FloatContext {
   /// be positioned below `y`, so callers must consider upcoming float start boundaries as well as
   /// ends.
   pub fn next_float_boundary_after(&self, y: f32) -> f32 {
+    if !y.is_finite() {
+      return 0.0;
+    }
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let next = self.next_float_boundary_after_internal(&mut state, y);
@@ -2684,6 +2712,16 @@ impl FloatContext {
     };
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
+
+    let min_y = if min_y.is_finite() {
+      min_y
+    } else if self.current_y.is_finite() {
+      self.current_y
+    } else {
+      0.0
+    };
+    let min_width = clamp_positive_finite(min_width);
+    let height = clamp_positive_finite(height);
 
     self.find_fit_using_range_cache(
       min_width,
@@ -2817,7 +2855,12 @@ impl FloatContext {
   ) -> (f32, f32) {
     // Enforce the source-order "float ceiling" tracked in `current_y` so floats encountered later
     // in the tree cannot rise above earlier floats even if the caller passes a smaller `min_y`.
-    let min_y = min_y.max(self.current_y);
+    let ceiling = if self.current_y.is_finite() {
+      self.current_y
+    } else {
+      0.0
+    };
+    let min_y = if min_y.is_finite() { min_y } else { ceiling }.max(ceiling);
     self.compute_float_position_in_containing_block(
       side,
       width,
@@ -2846,7 +2889,12 @@ impl FloatContext {
     containing_block_width: f32,
   ) -> (f32, f32) {
     // Apply the source-order float ceiling (see `compute_float_position`).
-    let min_y = min_y.max(self.current_y);
+    let ceiling = if self.current_y.is_finite() {
+      self.current_y
+    } else {
+      0.0
+    };
+    let min_y = if min_y.is_finite() { min_y } else { ceiling }.max(ceiling);
     let containing_left = if containing_block_left.is_finite() {
       containing_block_left
     } else {
@@ -2885,6 +2933,13 @@ impl FloatContext {
       self.containing_block_width.max(containing_left)
     };
 
+    let min_y = if min_y.is_finite() {
+      min_y
+    } else if self.current_y.is_finite() {
+      self.current_y
+    } else {
+      0.0
+    };
     let target_width = clamp_positive_finite(width);
     let target_height = clamp_positive_finite(height);
     // Allow a small epsilon when deciding whether a float "fits" next to existing floats.
@@ -2969,6 +3024,16 @@ impl FloatContext {
   /// `min_y` such that the most constrained segment within `[y, y + height)` still has at least
   /// `min_width` available width.
   pub fn find_fit_with_edges(&self, min_width: f32, height: f32, min_y: f32) -> (f32, f32, f32) {
+    let min_y = if min_y.is_finite() {
+      min_y
+    } else if self.current_y.is_finite() {
+      self.current_y
+    } else {
+      0.0
+    };
+    let min_width = clamp_positive_finite(min_width);
+    let height = clamp_positive_finite(height);
+
     self.find_fit_using_range_cache(
       min_width,
       height,
