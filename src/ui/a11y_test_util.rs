@@ -704,12 +704,10 @@ pub fn assert_accesskit_full_output_node_is_reachable(
 ///
 /// Returns `None` when no matching node is present. Panics if more than one node matches the
 /// provided name (tests should disambiguate by using a more specific name).
-pub fn accesskit_node_by_name_from_platform_output<'a>(
-  output: &'a egui::PlatformOutput,
+pub fn accesskit_node_by_name<'a>(
+  update: &'a accesskit::TreeUpdate,
   name: &str,
 ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
-  let update = accesskit_update_from_platform_output(output);
-
   let needle = name.trim();
   let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
   let mut duplicates: Vec<(String, String)> = Vec::new();
@@ -741,6 +739,14 @@ pub fn accesskit_node_by_name_from_platform_output<'a>(
   None
 }
 
+pub fn accesskit_node_by_name_from_platform_output<'a>(
+  output: &'a egui::PlatformOutput,
+  name: &str,
+) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+  let update = accesskit_update_from_platform_output(output);
+  accesskit_node_by_name(update, name)
+}
+
 pub fn accesskit_node_by_name_from_full_output<'a>(
   output: &'a egui::FullOutput,
   name: &str,
@@ -752,8 +758,7 @@ pub fn accesskit_node_by_name_from_full_output<'a>(
 ///
 /// Returns `None` when the update has no focus, the focused node is missing from the update, or the
 /// focused node has an empty name.
-pub fn accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) -> Option<String> {
-  let update = accesskit_update_from_platform_output(output);
+pub fn accesskit_focus_name(update: &accesskit::TreeUpdate) -> Option<String> {
   let focus_id = update.focus?;
   let node = update
     .nodes
@@ -761,6 +766,11 @@ pub fn accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) 
     .find_map(|(id, node)| (*id == focus_id).then_some(node))?;
   let name = node.name().unwrap_or("").trim();
   (!name.is_empty()).then_some(name.to_string())
+}
+
+pub fn accesskit_focus_name_from_platform_output(output: &egui::PlatformOutput) -> Option<String> {
+  let update = accesskit_update_from_platform_output(output);
+  accesskit_focus_name(update)
 }
 
 pub fn accesskit_focus_name_from_full_output(output: &egui::FullOutput) -> Option<String> {
@@ -1060,6 +1070,12 @@ mod tests {
       focus: Some(id(2)),
     };
 
+    let (found_id, found_node) =
+      accesskit_node_by_name(&update, "Focus target").expect("expected node by name");
+    assert_eq!(found_id, id(2));
+    assert_eq!(found_node.name().unwrap_or("").trim(), "Focus target");
+    assert_eq!(accesskit_focus_name(&update), Some("Focus target".to_string()));
+
     let platform_output = output_with_update(update);
 
     let (found_id, found_node) =
@@ -1073,6 +1089,37 @@ mod tests {
       Some("Focus target".to_string())
     );
     assert!(accesskit_node_by_name_from_platform_output(&platform_output, "Missing").is_none());
+  }
+
+  #[test]
+  #[should_panic(expected = "multiple AccessKit nodes matched name")]
+  fn node_by_name_panics_on_duplicate_names() {
+    let mut classes = NodeClassSet::new();
+
+    let mut root = NodeBuilder::new(Role::Window);
+    root.set_name("Root");
+    root.push_child(id(2));
+    root.push_child(id(3));
+
+    let mut a = NodeBuilder::new(Role::Button);
+    a.set_name("Dup");
+    let mut b = NodeBuilder::new(Role::Button);
+    b.set_name("Dup");
+
+    let update = TreeUpdate {
+      nodes: vec![
+        (id(1), root.build(&mut classes)),
+        (id(2), a.build(&mut classes)),
+        (id(3), b.build(&mut classes)),
+      ],
+      tree: Some(accesskit::Tree {
+        root: id(1),
+        root_scroller: None,
+      }),
+      focus: None,
+    };
+
+    let _ = accesskit_node_by_name(&update, "Dup");
   }
 
   #[test]
