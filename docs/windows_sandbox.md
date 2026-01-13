@@ -85,6 +85,8 @@ Code map (repo reality):
       - Does **not** assign the child to a Job object (callers must do that separately).
     - Manual sandbox probe example (`crates/win-sandbox/examples/probe.rs`)
       - `bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- --connect-localhost`
+      - Pass `--no-aap-hardening` to compare behavior with/without
+        `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`.
       - Spawns a sandboxed copy of itself and prints observed sandbox state from inside the child
         (AppContainer + integrity level + `ALL APPLICATION PACKAGES` group presence + Job membership
         + selected mitigations), with optional filesystem/network probes for quick regression triage.
