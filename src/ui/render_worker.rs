@@ -6375,12 +6375,19 @@ impl BrowserRuntime {
     let (changed, hit_info) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let hit_tree = hit_tree.as_ref().unwrap_or(fragment_tree);
-        let hit = hit_test_dom(dom, box_tree, hit_tree, page_point);
+        let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
+        let box_index = crate::interaction::hit_test::BoxIndex::new(box_tree);
+        let hit = crate::interaction::hit_test::hit_test_dom_with_indices(
+          &*dom,
+          &dom_index,
+          &box_index,
+          hit_tree,
+          page_point,
+        );
         // `hit_test_dom` resolves `dom_node_id` to a *semantic* target (e.g. link ancestor). For JS
         // `contextmenu` dispatch, we want the deepest element under the cursor so listeners on nested
         // elements (like an `<img>` inside a link) fire correctly.
         let dispatch_target_id = hit.as_ref().map(|hit| {
-          let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
           let mut current = hit.styled_node_id;
           // 1) Prefer the styled node if it is an element.
           let mut found = dom_index
@@ -6407,7 +6414,8 @@ impl BrowserRuntime {
           found.unwrap_or(hit.dom_node_id)
         });
         let dispatch_target_element_id = dispatch_target_id.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+          dom_index
+            .node(target_id)
             .and_then(|node| node.get_attribute_ref("id"))
             .map(|id| id.to_string())
         });
@@ -6431,7 +6439,7 @@ impl BrowserRuntime {
             });
             resolve_link_url(base_url, selected.url)
           } else {
-            let node = crate::dom::find_node_mut_by_preorder_id(dom, styled_id)?;
+            let node = dom_index.node(styled_id)?;
             // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
             if node
               .tag_name()
@@ -6454,49 +6462,52 @@ impl BrowserRuntime {
           }
         });
 
-      // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
-      // When a text control is clicked, mirror native browser behavior by focusing it and placing
-      // the caret at the click position so subsequent Paste inserts at the expected offset.
-      let mut changed = false;
-      let mut text_control_target: Option<usize> = None;
-      let mut text_control_disabled = false;
-      let mut text_control_readonly = false;
-      if let Some(hit) = hit.as_ref() {
-        let node_id = hit.dom_node_id;
-        let box_id = hit.box_id;
-        if let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, node_id) {
-          let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
-          if is_text_control {
-            text_control_target = Some(node_id);
-            text_control_readonly = node.get_attribute_ref("readonly").is_some();
+        // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
+        // When a text control is clicked, mirror native browser behavior by focusing it and placing
+        // the caret at the click position so subsequent Paste inserts at the expected offset.
+        let mut changed = false;
+        let mut text_control_target: Option<usize> = None;
+        let mut text_control_disabled = false;
+        let mut text_control_readonly = false;
+        if let Some(hit) = hit.as_ref() {
+          let node_id = hit.dom_node_id;
+          let box_id = hit.box_id;
+          if let Some(node) = dom_index.node(node_id) {
+            let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
+            if is_text_control {
+              text_control_target = Some(node_id);
+              text_control_readonly = node.get_attribute_ref("readonly").is_some();
 
-            let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
-            let disabled = crate::interaction::effective_disabled::is_effectively_disabled(node_id, &dom_index);
-            let inert_or_hidden =
-              crate::interaction::effective_disabled::is_effectively_inert_or_hidden(node_id, &dom_index);
-            text_control_disabled = disabled || inert_or_hidden;
+              let disabled =
+                crate::interaction::effective_disabled::is_effectively_disabled(node_id, &dom_index);
+              let inert_or_hidden =
+                crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
+                  node_id,
+                  &dom_index,
+                );
+              text_control_disabled = disabled || inert_or_hidden;
 
-            if !text_control_disabled {
-              let (focused_changed, _) = engine.focus_node_id(dom, Some(node_id), false);
-              changed |= focused_changed;
-              changed |= engine.set_text_caret_from_page_point(
-                dom,
-                box_tree,
-                hit_tree,
-                scroll,
-                node_id,
-                box_id,
-                page_point,
-              );
+              if !text_control_disabled {
+                let (focused_changed, _) = engine.focus_node_id(dom, Some(node_id), false);
+                changed |= focused_changed;
+                changed |= engine.set_text_caret_from_page_point(
+                  dom,
+                  box_tree,
+                  hit_tree,
+                  scroll,
+                  node_id,
+                  box_id,
+                  page_point,
+                );
+              }
             }
           }
         }
-      }
 
-      (
-        false,
         (
-          changed,
+          false,
+          (
+            changed,
             HitContextMenuInfo {
               href,
               dispatch_target_id,
@@ -6506,9 +6517,9 @@ impl BrowserRuntime {
               text_control_disabled,
               text_control_readonly,
             },
-        ),
-      )
-    }) {
+          ),
+        )
+      }) {
       Ok(result) => result,
       Err(_) => (
         false,
