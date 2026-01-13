@@ -17,6 +17,7 @@ pub mod framing;
 pub mod framed_codec;
 pub mod frame_pool;
 pub mod network;
+pub mod network_service;
 pub mod pixels;
 pub mod protocol;
 pub mod received_frame;
@@ -47,5 +48,6 @@ pub use framing::{
   write_bincode_frame, write_frame, write_frame_with_max, MAX_IPC_MESSAGE_BYTES,
 };
 pub use network::{NetworkToRenderer, RendererToNetwork};
+pub use network_service::IpcFetchServer;
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};
 pub use types::{PointF32, RectF32, ScrollMetricsIpc, ScrollStateIpc};
