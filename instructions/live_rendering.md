@@ -91,7 +91,7 @@ Parse HTML → Style → Layout → Paint → Display
 - CSS `animation` and `transition` are parsed but don't progress
 - `requestAnimationFrame` callbacks may never fire
 - Animated GIFs may show only first frame
-- Video doesn't play (see `video_support.md`)
+- Video doesn't play (see `video_support.md` and the A/V clocking model in `docs/media_clocking.md`)
 
 ### 4. Event loop isn't running
 
