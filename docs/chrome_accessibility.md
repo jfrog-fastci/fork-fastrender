@@ -172,6 +172,30 @@ Maintainability rules (to keep ids stable and avoid collisions):
 - In tests, prefer **name/role snapshots** over comparing raw ids. AccessKit ids are implementation details and can change when egui’s internal hashing changes.
   - See [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs) helpers used by chrome/menu unit tests.
 
+#### Dynamic list rows: avoid auto-generated egui ids (omnibox suggestions, tab search results)
+
+**Do not** rely on egui’s auto-generated ids (`ui.allocate_*` / `ui.add` without an explicit id) for list rows whose contents can change between frames (items added/removed/reordered).
+
+Why this matters:
+
+- In the egui backend, **AccessKit `NodeId`s are derived from egui ids**. When a row’s egui id changes, AccessKit sees the old node disappear and a new one appear.
+- Screen readers often keep a “virtual cursor” / focus target by node id. If ids churn:
+  - accessibility focus can jump unexpectedly,
+  - screen readers may repeatedly re-announce “new” rows while navigating,
+  - pending action requests can target stale nodes.
+
+Required conventions for dynamic rows:
+
+- Give each row an id derived from a **stable key** (tab id, suggestion id/key), not the row’s index.
+  - Indices are only stable if the list never reorders or changes length ahead of the item, which is not true for omnibox suggestion lists.
+- Prefer `ui.interact(rect, id, sense)` with an explicit id:
+  - `let id = ui.make_persistent_id(("omnibox_row", suggestion_key));`
+  - `let response = ui.interact(rect, id, egui::Sense::click());`
+- Alternatively, wrap each row in `ui.push_id(stable_key, |ui| { ... })` so any nested auto ids are scoped by a stable parent.
+
+If you need to validate id stability, use `dump_accesskit` for manual inspection and add/extend headless tests like
+`error_infobar_details_toggle_keeps_focus_and_id_when_label_changes` in [`src/bin/browser.rs`](../src/bin/browser.rs).
+
 ### FastRender node ids (renderer-chrome / page content)
 
 When chrome and/or page content are rendered by FastRender (instead of egui widgets), we will need to mint AccessKit ids from FastRender’s own node identifiers (e.g. DOM/styled/layout node ids).
@@ -223,15 +247,89 @@ Two patterns are used in this repo:
 1. **Provide good names/roles** so default actions are meaningful:
    - Use `Response::widget_info(...)` to give icon-only controls an accessible label.
    - Many icon buttons should go through `crate::ui::BrowserIcon` + `crate::ui::icon_button` so labels are centralized (see [`src/ui/a11y.rs`](../src/ui/a11y.rs) and `BrowserIcon::a11y_label` in [`src/ui/icons.rs`](../src/ui/icons.rs)).
-2. **Explicitly handle non-default AccessKit actions** for stateful widgets:
-   - Some controls expose expanded/collapsed state and support `accesskit::Action::{Expand,Collapse}`.
-   - In [`src/bin/browser.rs`](../src/bin/browser.rs), toggles check for requests via `has_accesskit_action_request(..., Action::Expand/Collapse)` and update their `accesskit_node_builder` to advertise the correct actions each frame.
+2. **Expose stateful widget semantics** (state + any non-default actions):
+   - Popup opener buttons should expose `expanded` state and support `accesskit::Action::{Expand,Collapse}`.
+   - Toggle buttons should expose a pressed/checked state (don’t rely on swapping icons/text alone).
+   - Tabs should expose selected state.
+   - In [`src/bin/browser.rs`](../src/bin/browser.rs), expandable toggles check for requests via `has_accesskit_action_request(..., Action::Expand/Collapse)` and update their `accesskit_node_builder` to advertise the correct actions each frame.
 
 If you add a new stateful chrome control, make sure:
 
 - its egui id is stable (see NodeId section),
 - it emits a meaningful label via `WidgetInfo`,
-- if it has an “expanded” concept, it sets `expanded` state and exposes `Expand`/`Collapse` actions consistently.
+- if it has an “expanded” concept, it sets `expanded` state and exposes `Expand`/`Collapse` actions consistently,
+- if it is a toggle, it exposes pressed/checked state,
+- if it is part of a tab strip, it exposes selected state.
+
+### Stateful chrome controls (expanded / pressed / selected)
+
+Screen readers rely on explicit state properties on AccessKit nodes. Swapping labels (“Bookmark this page” → “Remove bookmark”) or swapping icons (outline → filled) is not a substitute for exposing state.
+
+This repo’s egui backend uses two key APIs:
+
+- `egui::Context::accesskit_node_builder(id, |builder| { ... })` — mutate AccessKit node properties for a widget each frame (state, role, supported actions).
+- `egui::InputState::has_accesskit_action_request(id, action)` — detect OS-originated action requests (e.g. `Expand`/`Collapse`) and update your chrome state accordingly.
+
+#### Popup opener buttons (Menu, Appearance, ...)
+
+Buttons that open/close a popup (menu, appearance panel, tab search overlay, etc) must:
+
+- expose `expanded=true/false` on the opener node, and
+- expose **exactly one** of `Expand` / `Collapse` as a supported action (matching the current state).
+
+Use the same pattern as the expandable controls in [`src/bin/browser.rs`](../src/bin/browser.rs) (warning toast title, error infobar details toggle):
+
+```rust
+let expand_requested = ui.input(|i| {
+  i.has_accesskit_action_request(opener.id, accesskit::Action::Expand)
+});
+let collapse_requested = ui.input(|i| {
+  i.has_accesskit_action_request(opener.id, accesskit::Action::Collapse)
+});
+
+if expand_requested {
+  popup_open = true;
+  opener.request_focus();
+} else if collapse_requested {
+  popup_open = false;
+  opener.request_focus();
+}
+
+let _ = opener.ctx.accesskit_node_builder(opener.id, |builder| {
+  builder.set_expanded(popup_open);
+  if popup_open {
+    builder.add_action(accesskit::Action::Collapse);
+    builder.remove_action(accesskit::Action::Expand);
+  } else {
+    builder.add_action(accesskit::Action::Expand);
+    builder.remove_action(accesskit::Action::Collapse);
+  }
+});
+```
+
+Tests to reference:
+
+- `error_infobar_details_toggle_exposes_expanded_state_and_expand_collapse_actions` in [`src/bin/browser.rs`](../src/bin/browser.rs)
+
+#### Toggle buttons (bookmark star, case-sensitive, ...)
+
+If a control represents an on/off state, expose that state explicitly:
+
+- Use a pressed/checked state on the AccessKit node (and keep a stable egui id).
+- Pick the semantic that matches the control’s role:
+  - “toggle button” style controls (e.g. bookmark star) should expose a **pressed**-like state,
+  - checkbox-style controls should expose a **checked** state.
+
+When implementing custom-painted toggles via `ui.interact`, you will typically need to set this with `accesskit_node_builder` (egui does not infer toggle semantics from “icon changed”).
+
+#### Tabs
+
+Tabs should expose which tab is currently selected:
+
+- Ensure each tab node has a stable id derived from the tab id (not its index in the strip).
+- Expose `selected=true` for the active tab, `selected=false` for all others.
+
+This keeps screen-reader navigation predictable when the active tab changes, and allows assistive tech to announce which tab is selected.
 
 ### FastRender documents: mapping AccessKit actions into the interaction engine (prototype)
 
