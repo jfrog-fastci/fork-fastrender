@@ -449,6 +449,36 @@ impl Drop for BudgetGuard<'_> {
   }
 }
 
+/// RAII guard returned by [`Vm::push_active_host_hooks_guard`].
+///
+/// Dropping the guard restores the previous active host hook override (if any).
+#[derive(Debug)]
+#[must_use = "dropping the guard restores the previous host hooks override; bind it to keep hooks active"]
+pub(crate) struct ActiveHostHooksGuard<'vm> {
+  vm: &'vm mut Vm,
+  previous: Option<*mut (dyn VmHostHooks + 'static)>,
+}
+
+impl ops::Deref for ActiveHostHooksGuard<'_> {
+  type Target = Vm;
+
+  fn deref(&self) -> &Self::Target {
+    &*self.vm
+  }
+}
+
+impl ops::DerefMut for ActiveHostHooksGuard<'_> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut *self.vm
+  }
+}
+
+impl Drop for ActiveHostHooksGuard<'_> {
+  fn drop(&mut self) {
+    self.vm.pop_active_host_hooks(self.previous);
+  }
+}
+
 /// RAII helper that pushes an [`ExecutionContext`] on creation and pops it on drop.
 ///
 /// This is intended to prevent mismatched `push_execution_context` / `pop_execution_context`
@@ -1157,21 +1187,8 @@ impl Vm {
     host: &mut dyn VmHostHooks,
     f: impl FnOnce(&mut Vm) -> R,
   ) -> R {
-    struct Guard<'a> {
-      vm: &'a mut Vm,
-      prev: Option<*mut (dyn VmHostHooks + 'static)>,
-    }
-
-    impl Drop for Guard<'_> {
-      fn drop(&mut self) {
-        self.vm.host_hooks_override = self.prev;
-      }
-    }
-
-    let prev = self.host_hooks_override;
-    self.host_hooks_override = Some(Self::erase_host_hooks_lifetime(host));
-    let guard = Guard { vm: self, prev };
-    f(&mut *guard.vm)
+    let mut guard = self.push_active_host_hooks_guard(host);
+    f(&mut *guard)
   }
 
   /// Returns the currently-active host hook implementation pointer, if one is installed.
@@ -2162,6 +2179,22 @@ impl Vm {
     Ok(())
   }
 
+  /// Temporarily override the active host hook implementation, restoring the previous override
+  /// when the returned guard is dropped.
+  ///
+  /// This is a safer alternative to manual `push_active_host_hooks` / `pop_active_host_hooks`
+  /// sequences, ensuring the VM never retains a dangling raw pointer on early returns or panics.
+  pub(crate) fn push_active_host_hooks_guard(
+    &mut self,
+    host: &mut dyn VmHostHooks,
+  ) -> ActiveHostHooksGuard<'_> {
+    let previous = self.push_active_host_hooks(host);
+    ActiveHostHooksGuard {
+      vm: self,
+      previous,
+    }
+  }
+
   pub(crate) fn push_active_host_hooks(
     &mut self,
     host: &mut dyn VmHostHooks,
@@ -2626,9 +2659,10 @@ impl Vm {
     // stores a default microtask queue inside itself. Temporarily move it out so it can serve as
     // the host hook implementation for this call.
     let mut hooks = mem::take(&mut self.microtasks);
-    let prev_hooks = self.push_active_host_hooks(&mut hooks);
-    let result = self.call_impl(host, scope, &mut hooks, callee, this, args, call_site);
-    self.pop_active_host_hooks(prev_hooks);
+    let result = {
+      let mut vm_hooks = self.push_active_host_hooks_guard(&mut hooks);
+      vm_hooks.call_impl(host, scope, &mut hooks, callee, this, args, call_site)
+    };
     // If a native handler enqueued jobs directly onto the VM-owned microtask queue while it was
     // temporarily moved out (via `vm.microtask_queue_mut()`), merge them back before restoring.
     while let Some((realm, job)) = self.microtasks.pop_front() {
@@ -2697,10 +2731,8 @@ impl Vm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let prev_hooks = self.push_active_host_hooks(hooks);
-    let result = self.call_impl(host, scope, hooks, callee, this, args, None);
-    self.pop_active_host_hooks(prev_hooks);
-    result
+    let mut vm_hooks = self.push_active_host_hooks_guard(hooks);
+    vm_hooks.call_impl(host, scope, hooks, callee, this, args, None)
   }
 
   pub(crate) fn call_with_host_and_hooks_at_location(
@@ -2715,10 +2747,8 @@ impl Vm {
     call_site_offset: u32,
   ) -> Result<Value, VmError> {
     let call_site = CallSite::from_source_offset(call_site_source, call_site_offset);
-    let prev_hooks = self.push_active_host_hooks(hooks);
-    let result = self.call_impl(host, scope, hooks, callee, this, args, Some(call_site));
-    self.pop_active_host_hooks(prev_hooks);
-    result
+    let mut vm_hooks = self.push_active_host_hooks_guard(hooks);
+    vm_hooks.call_impl(host, scope, hooks, callee, this, args, Some(call_site))
   }
 
   fn push_roots_with_ticks(
@@ -3254,9 +3284,10 @@ impl Vm {
     }
 
     let mut hooks = mem::take(&mut self.microtasks);
-    let prev_hooks = self.push_active_host_hooks(&mut hooks);
-    let result = self.construct_impl(host, scope, &mut hooks, callee, args, new_target, call_site);
-    self.pop_active_host_hooks(prev_hooks);
+    let result = {
+      let mut vm_hooks = self.push_active_host_hooks_guard(&mut hooks);
+      vm_hooks.construct_impl(host, scope, &mut hooks, callee, args, new_target, call_site)
+    };
     while let Some((realm, job)) = self.microtasks.pop_front() {
       hooks.enqueue_promise_job(job, realm);
     }
@@ -3319,10 +3350,8 @@ impl Vm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let prev_hooks = self.push_active_host_hooks(hooks);
-    let result = self.construct_impl(host, scope, hooks, callee, args, new_target, None);
-    self.pop_active_host_hooks(prev_hooks);
-    result
+    let mut vm_hooks = self.push_active_host_hooks_guard(hooks);
+    vm_hooks.construct_impl(host, scope, hooks, callee, args, new_target, None)
   }
 
   pub(crate) fn construct_with_host_and_hooks_at_location(
@@ -3337,10 +3366,8 @@ impl Vm {
     call_site_offset: u32,
   ) -> Result<Value, VmError> {
     let call_site = CallSite::from_source_offset(call_site_source, call_site_offset);
-    let prev_hooks = self.push_active_host_hooks(hooks);
-    let result = self.construct_impl(host, scope, hooks, callee, args, new_target, Some(call_site));
-    self.pop_active_host_hooks(prev_hooks);
-    result
+    let mut vm_hooks = self.push_active_host_hooks_guard(hooks);
+    vm_hooks.construct_impl(host, scope, hooks, callee, args, new_target, Some(call_site))
   }
 
   fn construct_impl(
@@ -4142,6 +4169,29 @@ mod tests {
     _new_target: Value,
   ) -> Result<Value, VmError> {
     panic!("host construct handler panicked");
+  }
+
+  #[test]
+  fn active_host_hooks_guard_restores_override_on_early_return() {
+    use crate::microtasks::MicrotaskQueue;
+
+    fn install_then_fail(vm: &mut Vm, hooks: &mut dyn VmHostHooks) -> Result<(), VmError> {
+      let _guard = vm.push_active_host_hooks_guard(hooks);
+      // Use `?` so we exercise early-return (and therefore Drop) behavior.
+      Err(VmError::OutOfMemory)?;
+      Ok(())
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut hooks = MicrotaskQueue::new();
+    assert_eq!(vm.active_host_hooks_ptr(), None);
+
+    let err = install_then_fail(&mut vm, &mut hooks).unwrap_err();
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    // The hooks override stores a raw pointer; ensure it is not left dangling after the early
+    // return.
+    assert_eq!(vm.active_host_hooks_ptr(), None);
   }
 
   #[test]
