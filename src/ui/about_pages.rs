@@ -2899,6 +2899,55 @@ mod tests {
 
   #[cfg(feature = "browser_ui")]
   #[test]
+  fn about_snapshot_from_stores_preserves_paths_and_other_fields() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = about_page_snapshot();
+
+    let open_tabs = vec![OpenTabSnapshot {
+      tab_id: 1,
+      url: "https://tab.example/".to_string(),
+    }];
+    let accent = Some(RgbaColor::new(1, 2, 3, 4));
+    set_about_page_snapshot(AboutPageSnapshot {
+      open_tabs: open_tabs.clone(),
+      chrome_accent: accent,
+      session_path: Some("/tmp/session<test>.json".to_string()),
+      bookmarks_path: Some("/tmp/bookmarks<test>.json".to_string()),
+      history_path: Some("/tmp/history<test>.json".to_string()),
+      download_dir: Some("/tmp/downloads<test>".to_string()),
+      ..Default::default()
+    });
+
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        None,
+      )
+      .unwrap();
+    let history = GlobalHistoryStore::default();
+    set_about_snapshot_from_stores(&bookmarks, &history);
+
+    let snapshot = about_page_snapshot();
+    assert_eq!(snapshot.open_tabs.len(), 1);
+    assert_eq!(snapshot.open_tabs[0].url, "https://tab.example/");
+    assert_eq!(snapshot.chrome_accent, accent);
+    assert_eq!(snapshot.session_path.as_deref(), Some("/tmp/session<test>.json"));
+    assert_eq!(
+      snapshot.bookmarks_path.as_deref(),
+      Some("/tmp/bookmarks<test>.json")
+    );
+    assert_eq!(snapshot.history_path.as_deref(), Some("/tmp/history<test>.json"));
+    assert_eq!(snapshot.download_dir.as_deref(), Some("/tmp/downloads<test>"));
+
+    set_about_page_snapshot(before);
+  }
+
+  #[cfg(feature = "browser_ui")]
+  #[test]
   fn about_settings_renders_snapshot_paths_with_html_escaping() {
     let _lock = SNAPSHOT_TEST_LOCK
       .lock()
