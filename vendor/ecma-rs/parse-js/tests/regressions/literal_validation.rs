@@ -197,9 +197,14 @@ fn regex_named_backreference_can_appear_before_group_definition() {
 }
 
 #[test]
-fn regex_duplicate_named_captures_are_allowed() {
+fn regex_duplicate_named_captures_are_rejected() {
   for src in ["/(?<a>a)(?<a>b)/", "/(?<a>a)(?<a>b)/u", "/(?<a>a)(?<a>b)/v"] {
-    assert!(parse(src).is_ok(), "{src}");
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
   }
 }
 
