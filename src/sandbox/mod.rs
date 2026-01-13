@@ -263,6 +263,9 @@ pub struct RendererSandboxReport {
   /// `true` when `PR_SET_DUMPABLE=0` was applied successfully.
   pub dumpable_disabled: Option<bool>,
 
+  /// (soft, hard) values observed after applying `RLIMIT_AS`.
+  pub rlimit_as: Option<(u64, u64)>,
+
   /// (soft, hard) values observed after applying `RLIMIT_CORE`.
   pub rlimit_core: Option<(u64, u64)>,
 
@@ -276,6 +279,7 @@ pub struct RendererSandboxReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxWarningKind {
   PrctlDumpable,
+  RlimitAs,
   RlimitCore,
   RlimitNofile,
   RlimitNproc,

@@ -8,6 +8,7 @@ pub(super) fn apply_linux_hardening(
   report: &mut RendererSandboxReport,
 ) {
   apply_pr_set_dumpable(report);
+  apply_rlimit_as(config.address_space_limit_bytes, report);
   apply_rlimit_core(config.core_limit_bytes, report);
   apply_rlimit_nofile(config.nofile_limit, report);
 
@@ -48,6 +49,22 @@ fn apply_rlimit_core(limit_bytes: Option<u64>, report: &mut RendererSandboxRepor
     report,
   );
   report.rlimit_core = get_rlimit(libc::RLIMIT_CORE).ok();
+}
+
+fn apply_rlimit_as(limit_bytes: Option<u64>, report: &mut RendererSandboxReport) {
+  let Some(limit_bytes) = limit_bytes else {
+    report.rlimit_as = get_rlimit(libc::RLIMIT_AS).ok();
+    return;
+  };
+
+  apply_rlimit_clamp(
+    libc::RLIMIT_AS,
+    limit_bytes,
+    SandboxWarningKind::RlimitAs,
+    "RLIMIT_AS",
+    report,
+  );
+  report.rlimit_as = get_rlimit(libc::RLIMIT_AS).ok();
 }
 
 fn apply_rlimit_nofile(max_open_files: Option<u64>, report: &mut RendererSandboxReport) {
