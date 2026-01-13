@@ -14,6 +14,13 @@ fn assert_value_is_utf8(rt: &JsRuntime, value: Value, expected: &str) {
   assert_eq!(actual, expected);
 }
 
+fn assert_value_is_number(value: Value, expected: f64) {
+  let Value::Number(n) = value else {
+    panic!("expected number, got {value:?}");
+  };
+  assert_eq!(n, expected);
+}
+
 #[test]
 fn delete_super_property_instance_method_throws_reference_error() {
   let mut rt = new_runtime();
@@ -75,4 +82,51 @@ fn delete_super_property_computed_member_throws_reference_error() {
     .unwrap();
 
   assert_value_is_utf8(&rt, value, "ReferenceError");
+}
+
+#[test]
+fn delete_super_property_computed_member_evaluates_key_expression() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class B { m(){} }
+      class D extends B {
+        del() {
+          let side = 0;
+          try { delete super[(side = 1, "m")]; return "no"; }
+          catch (e) { return side; }
+        }
+      }
+      new D().del()
+      "#,
+    )
+    .unwrap();
+
+  assert_value_is_number(value, 1.0);
+}
+
+#[test]
+fn delete_super_property_computed_member_propagates_to_property_key_errors() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      class B { m(){} }
+      class D extends B {
+        del() {
+          try {
+            delete super[{ toString() { throw "x"; } }];
+            return "no";
+          } catch (e) {
+            return e;
+          }
+        }
+      }
+      new D().del()
+      "#,
+    )
+    .unwrap();
+
+  assert_value_is_utf8(&rt, value, "x");
 }
