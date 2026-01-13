@@ -12,6 +12,11 @@ let pixmap = renderer.render_html("<h1>Hello</h1>", 800, 600)?;
 pixmap.save_png("out.png")?;
 ```
 
+Note: `FastRender::new()` constructs the built-in network-capable fetcher by default when the
+crate is compiled with the `direct_network` feature. Sandboxed/multiprocess renderer builds should
+disable `direct_network` and inject an IPC-based `ResourceFetcher` via
+`FastRender::builder().fetcher(...)` (or `FastRender::with_config_and_fetcher`).
+
 Use `FastRender::builder()` to set defaults (viewport size, background color, base URL, etc.) when constructing a renderer.
 
 ## Live documents, JS, and “tabs”

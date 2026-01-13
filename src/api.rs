@@ -169,10 +169,11 @@ use crate::render_control::{
 use crate::resource::CachingFetcherConfig;
 use crate::resource::{
   cors_enforcement_enabled, ensure_http_success, ensure_stylesheet_mime_sane, origin_from_url,
-  validate_cors_allow_origin, CachingFetcher, CorsMode, DocumentOrigin, FetchDestination,
-  FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
-  ResourcePolicy,
+  validate_cors_allow_origin, CorsMode, DocumentOrigin, FetchDestination, FetchRequest, PolicyError,
+  ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, ResourcePolicy,
 };
+#[cfg(feature = "direct_network")]
+use crate::resource::{CachingFetcher, HttpFetcher};
 use crate::scroll::ScrollState;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
 use crate::style::cascade::attach_starting_styles;
@@ -1067,6 +1068,9 @@ impl FastRenderBuilder {
   }
 
   /// Builds the FastRender instance
+  ///
+  /// When the crate is built without the `direct_network` feature, a custom
+  /// [`ResourceFetcher`] must be supplied via [`FastRenderBuilder::fetcher`].
   pub fn build(self) -> Result<FastRender> {
     FastRender::with_config_and_fetcher(self.config, self.fetcher)
   }
@@ -4575,7 +4579,7 @@ impl FastRenderFactory {
   ///
   /// Note: [`FastRenderPoolConfig::pool_size`] is ignored by factories.
   pub fn with_config(config: FastRenderPoolConfig) -> Result<Self> {
-    let (shared, _pool_size) = build_shared_renderer_resources(config);
+    let (shared, _pool_size) = build_shared_renderer_resources(config)?;
     Ok(Self { shared })
   }
 
@@ -4987,7 +4991,7 @@ impl SharedRendererResources {
 
 fn build_shared_renderer_resources(
   config: FastRenderPoolConfig,
-) -> (Arc<SharedRendererResources>, usize) {
+) -> Result<(Arc<SharedRendererResources>, usize)> {
   let FastRenderPoolConfig {
     renderer,
     pool_size,
@@ -4996,11 +5000,11 @@ fn build_shared_renderer_resources(
     fetcher,
   } = config;
   let pool_size = pool_size.max(1);
-  let fetcher = resolve_fetcher(&renderer, fetcher);
+  let fetcher = resolve_fetcher(&renderer, fetcher)?;
   let shared_image_cache = build_image_cache(&renderer.base_url, Arc::clone(&fetcher), image_cache);
   let (font_db, bundled_face_ids) = font_db_for_pool(&renderer.font_config);
 
-  (
+  Ok((
     Arc::new(SharedRendererResources {
       config: renderer,
       font_cache,
@@ -5010,7 +5014,7 @@ fn build_shared_renderer_resources(
       image_cache: shared_image_cache,
     }),
     pool_size,
-  )
+  ))
 }
 
 impl FastRenderPool {
@@ -5021,7 +5025,7 @@ impl FastRenderPool {
 
   /// Create a new pool using the provided configuration.
   pub fn with_config(config: FastRenderPoolConfig) -> Result<Self> {
-    let (shared, pool_size) = build_shared_renderer_resources(config);
+    let (shared, pool_size) = build_shared_renderer_resources(config)?;
     let inner = PoolInner {
       shared,
       pool_size,
@@ -6505,19 +6509,32 @@ unsafe impl Send for CascadeReuse {}
 fn resolve_fetcher(
   config: &FastRenderConfig,
   fetcher: Option<Arc<dyn ResourceFetcher>>,
-) -> Arc<dyn ResourceFetcher> {
+) -> Result<Arc<dyn ResourceFetcher>> {
   if let Some(fetcher) = fetcher {
-    return fetcher;
+    return Ok(fetcher);
   }
 
-  if let Some(cache) = config.resource_cache {
-    let policy = config.resource_policy.clone();
-    Arc::new(
-      CachingFetcher::with_config(HttpFetcher::new().with_policy(policy.clone()), cache)
-        .with_policy(policy),
-    )
-  } else {
-    Arc::new(HttpFetcher::new().with_policy(config.resource_policy.clone()))
+  #[cfg(feature = "direct_network")]
+  {
+    if let Some(cache) = config.resource_cache {
+      let policy = config.resource_policy.clone();
+      return Ok(Arc::new(
+        CachingFetcher::with_config(HttpFetcher::new().with_policy(policy.clone()), cache)
+          .with_policy(policy),
+      ));
+    }
+    return Ok(Arc::new(
+      HttpFetcher::new().with_policy(config.resource_policy.clone()),
+    ));
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  {
+    Err(Error::Other(
+      "no ResourceFetcher provided and `direct_network` feature is disabled; \
+use FastRenderBuilder::fetcher(...) (or FastRender::with_config_and_fetcher) to inject one"
+        .to_string(),
+    ))
   }
 }
 
@@ -6688,6 +6705,9 @@ impl FastRender {
   /// Returns an error if:
   /// - Font system initialization fails
   /// - No system fonts are available
+  /// - The crate is built without the `direct_network` feature (networkless build).
+  ///   In that configuration, a [`ResourceFetcher`] must be injected via
+  ///   [`FastRenderBuilder::fetcher`] or [`FastRender::with_config_and_fetcher`].
   pub fn new() -> Result<Self> {
     Self::with_config(FastRenderConfig::default())
   }
@@ -6745,13 +6765,18 @@ impl FastRender {
   /// # Arguments
   ///
   /// * `config` - Configuration options for the renderer
-  /// * `fetcher` - Optional custom resource fetcher (uses HttpFetcher if None)
+  /// * `fetcher` - Optional custom resource fetcher.
+  ///
+  ///   When the crate is compiled with the `direct_network` feature, omitting this uses the
+  ///   built-in [`HttpFetcher`] (optionally wrapped in [`CachingFetcher`]).
+  ///
+  ///   When `direct_network` is disabled (networkless/sandboxed builds), `fetcher` is required.
   pub fn with_config_and_fetcher(
     config: FastRenderConfig,
     fetcher: Option<Arc<dyn ResourceFetcher>>,
   ) -> Result<Self> {
     let font_config = config.font_config.clone();
-    let fetcher = resolve_fetcher(&config, fetcher);
+    let fetcher = resolve_fetcher(&config, fetcher)?;
     let font_context =
       FontContext::with_resource_fetcher_and_config(font_config, Arc::clone(&fetcher));
     let image_cache = build_image_cache(
@@ -27063,12 +27088,24 @@ mod tests {
     );
   }
 
-  // ===  // Creation Tests (these should always pass)
+  // ===
+  // Creation Tests
+  //
+  // Note: When built without the `direct_network` feature, the public constructors that do not
+  // accept a fetcher are expected to fail deterministically.
   // ===
   #[test]
   fn test_fastrender_new() {
     let result = FastRender::new();
-    assert!(result.is_ok());
+    if cfg!(feature = "direct_network") {
+      assert!(result.is_ok());
+    } else {
+      let err = result.expect_err("FastRender::new should require an injected fetcher");
+      assert!(
+        err.to_string().contains("direct_network"),
+        "expected direct_network hint; got {err:?}"
+      );
+    }
   }
 
   #[test]
@@ -27078,25 +27115,39 @@ mod tests {
       .with_default_viewport(1024, 768);
 
     let result = FastRender::with_config(config);
-    assert!(result.is_ok());
+    if cfg!(feature = "direct_network") {
+      assert!(result.is_ok());
 
-    let renderer = result.unwrap();
-    assert_eq!(renderer.background_color().r, 128);
-    assert_eq!(renderer.background_color().g, 128);
-    assert_eq!(renderer.background_color().b, 128);
+      let renderer = result.unwrap();
+      assert_eq!(renderer.background_color().r, 128);
+      assert_eq!(renderer.background_color().g, 128);
+      assert_eq!(renderer.background_color().b, 128);
+    } else {
+      let err = result.expect_err("FastRender::with_config should require an injected fetcher");
+      assert!(
+        err.to_string().contains("direct_network"),
+        "expected direct_network hint; got {err:?}"
+      );
+    }
   }
 
   #[test]
   fn builder_sets_max_iframe_depth() {
-    let renderer = FastRender::builder()
-      .max_iframe_depth(0)
-      .build()
-      .expect("builder should forward iframe depth to renderer");
-    assert_eq!(renderer.max_iframe_depth, 0);
+    let renderer = FastRender::builder().max_iframe_depth(0).build();
+    if cfg!(feature = "direct_network") {
+      let renderer = renderer.expect("builder should forward iframe depth to renderer");
+      assert_eq!(renderer.max_iframe_depth, 0);
 
-    let renderer_from_config =
-      FastRender::with_config(FastRenderConfig::new().with_max_iframe_depth(5)).unwrap();
-    assert_eq!(renderer_from_config.max_iframe_depth, 5);
+      let renderer_from_config =
+        FastRender::with_config(FastRenderConfig::new().with_max_iframe_depth(5)).unwrap();
+      assert_eq!(renderer_from_config.max_iframe_depth, 5);
+    } else {
+      let err = renderer.expect_err("builder should require injected fetcher");
+      assert!(
+        err.to_string().contains("direct_network"),
+        "expected direct_network hint; got {err:?}"
+      );
+    }
   }
 
   #[test]

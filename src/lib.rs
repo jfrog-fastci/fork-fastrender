@@ -143,6 +143,11 @@
 //! # }
 //! ```
 //!
+//! Note: `FastRender::new()` uses the built-in network-capable fetcher when the crate is compiled
+//! with the `direct_network` feature. Sandboxed/multiprocess renderer builds should disable
+//! `direct_network` and inject a custom [`resource::ResourceFetcher`] via
+//! [`FastRenderBuilder::fetcher`] (or [`FastRender::with_config_and_fetcher`]).
+//!
 //! ## Stateful document/tab containers (live DOM, optional JS)
 //!
 //! In addition to one-shot rendering via [`FastRender`], FastRender exposes stateful containers for
@@ -156,7 +161,6 @@
 //!   scheduling).
 //!
 //! For a fuller comparison and usage guidance, see `docs/runtime_stacks.md` in the repository.
-//!
 //! # Architecture
 //!
 //! FastRender uses a pipeline architecture:
