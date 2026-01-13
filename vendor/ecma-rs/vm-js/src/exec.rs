@@ -6626,17 +6626,56 @@ impl<'a> Evaluator<'a> {
     let mut catch_scope = scope.reborrow();
     catch_scope.push_root(thrown)?;
 
-    let catch_env = catch_scope.env_create(Some(outer))?;
-    self.env.set_lexical_env(catch_scope.heap_mut(), catch_env);
+    // ECMA-262 CatchClauseEvaluation:
+    // - If the catch parameter is present, it is bound in a fresh environment (paramEnv).
+    // - The catch block itself is evaluated in a separate environment (blockEnv) whose outer is
+    //   paramEnv. This ensures:
+    //   - catch-parameter destructuring defaults observe TDZ for the parameter bindings, and
+    //   - closures created in the catch body capture block lexical bindings, not the parameter env.
+    let result = (|| {
+      if let Some(param) = &catch.parameter {
+        // --- Catch parameter binding ---
+        let param_env = catch_scope.env_create(Some(outer))?;
+        self.env.set_lexical_env(catch_scope.heap_mut(), param_env);
 
-    let result = self
-      .instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)
-      .and_then(|_| {
-        if let Some(param) = &catch.parameter {
-          self.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env)?;
-        }
+        // Create uninitialized mutable bindings for BoundNames(CatchParameter) before evaluating
+        // destructuring defaults.
+        self.instantiate_lexical_names_from_pat(
+          &mut catch_scope,
+          param_env,
+          &param.stx.pat.stx,
+          param.stx.pat.loc,
+          /* mutable */ true,
+        )?;
+
+        self.bind_catch_param(&mut catch_scope, &param.stx, thrown, param_env)?;
+
+        // --- Catch block evaluation ---
+        let block_env = catch_scope.env_create(Some(param_env))?;
+        self.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+
+        self.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
         self.eval_stmt_list(&mut catch_scope, &catch.body)
-      });
+      } else {
+        // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
+        let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
+          Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+          Stmt::ClassDecl(_) => true,
+          Stmt::FunctionDecl(_) => self.strict,
+          _ => false,
+        });
+        if !needs_lexical_env {
+          return self.eval_stmt_list(&mut catch_scope, &catch.body);
+        }
+
+        let block_env = catch_scope.env_create(Some(outer))?;
+        self.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+        self.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
+        self.eval_stmt_list(&mut catch_scope, &catch.body)
+      }
+    })();
+
+    // Always restore the outer lexical environment so later statements run in the correct scope.
     self.env.set_lexical_env(catch_scope.heap_mut(), outer);
     result
   }
@@ -13157,29 +13196,28 @@ fn async_eval_catch(
   thrown: Value,
 ) -> Result<AsyncEval<Completion>, VmError> {
   let outer = evaluator.env.lexical_env;
-  let catch_env = scope.env_create(Some(outer))?;
-  evaluator.env.set_lexical_env(scope.heap_mut(), catch_env);
 
+  // Root thrown across environment setup and binding instantiation which may allocate.
   {
-    // Root thrown across catch binding instantiation which may allocate.
     let mut catch_scope = scope.reborrow();
     catch_scope.push_root(thrown)?;
-    if let Err(err) =
-      evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)
-    {
-      evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
-      return Err(err);
-    }
+
     if let Some(param) = &catch.parameter {
+      // --- Catch parameter binding (paramEnv) ---
+      let param_env = catch_scope.env_create(Some(outer))?;
+      evaluator.env.set_lexical_env(catch_scope.heap_mut(), param_env);
+
+      evaluator.instantiate_lexical_names_from_pat(
+        &mut catch_scope,
+        param_env,
+        &param.stx.pat.stx,
+        param.stx.pat.loc,
+        /* mutable */ true,
+      )?;
+
       let pat = &param.stx.pat.stx;
       if pat_contains_await(pat) {
-        match async_bind_pattern(
-          evaluator,
-          &mut catch_scope,
-          pat,
-          thrown,
-          BindingKind::Let,
-        ) {
+        match async_bind_pattern(evaluator, &mut catch_scope, pat, thrown, BindingKind::Let) {
           Ok(AsyncEval::Complete(())) => {}
           Ok(AsyncEval::Suspend(mut suspend)) => {
             if let Err(_) = suspend.frames.try_reserve(1) {
@@ -13189,6 +13227,7 @@ fn async_eval_catch(
               evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
               return Err(VmError::OutOfMemory);
             }
+            // Parameter binding suspended; continue catch evaluation after the binding finishes.
             suspend.frames.push_back(AsyncFrame::CatchAfterParamBind {
               catch: catch as *const CatchBlock,
               outer,
@@ -13200,9 +13239,37 @@ fn async_eval_catch(
             return Err(err);
           }
         }
-      } else if let Err(err) = evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env) {
+      } else if let Err(err) = evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, param_env) {
         evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
         return Err(err);
+      }
+
+      // --- Catch block evaluation (blockEnv) ---
+      let block_env = catch_scope.env_create(Some(param_env))?;
+      evaluator.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+      if let Err(err) =
+        evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)
+      {
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+        return Err(err);
+      }
+    } else {
+      // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
+      let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
+        Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+        Stmt::ClassDecl(_) => true,
+        Stmt::FunctionDecl(_) => evaluator.strict,
+        _ => false,
+      });
+      if needs_lexical_env {
+        let block_env = catch_scope.env_create(Some(outer))?;
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+        if let Err(err) =
+          evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)
+        {
+          evaluator.env.set_lexical_env(catch_scope.heap_mut(), outer);
+          return Err(err);
+        }
       }
     }
   }
@@ -24581,6 +24648,18 @@ fn async_resume_from_frames(
         AsyncState::Expr(param_res) => match param_res {
           Ok(_) => {
             let catch = unsafe { &*catch };
+            // Catch parameter binding has finished in paramEnv; evaluate the catch body in a fresh
+            // blockEnv nested in paramEnv (ECMA-262 CatchClauseEvaluation).
+            let param_env = evaluator.env.lexical_env;
+            let block_env = scope.env_create(Some(param_env))?;
+            evaluator.env.set_lexical_env(scope.heap_mut(), block_env);
+
+            if let Err(err) = evaluator.instantiate_block_decls_in_stmt_list(scope, block_env, &catch.body)
+            {
+              evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+              return Err(err);
+            }
+
             match async_eval_stmt_list(evaluator, scope, &catch.body) {
               Ok(AsyncEval::Complete(c)) => {
                 evaluator.env.set_lexical_env(scope.heap_mut(), outer);
@@ -26264,17 +26343,52 @@ fn gen_eval_catch(
   thrown: Value,
 ) -> Result<GenEval<Completion>, VmError> {
   let outer = evaluator.env.lexical_env;
-  let catch_env = scope.env_create(Some(outer))?;
-  evaluator.env.set_lexical_env(scope.heap_mut(), catch_env);
 
-  {
+  // Set up catch environments and instantiate bindings. Any throw completion during setup must
+  // restore the outer lexical environment before propagating.
+  let setup_res: Result<(), VmError> = (|| {
     // Root thrown across catch binding instantiation which may allocate.
     let mut catch_scope = scope.reborrow();
     catch_scope.push_root(thrown)?;
-    evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, catch_env, &catch.body)?;
+
     if let Some(param) = &catch.parameter {
-      evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, catch_env)?;
+      // --- Catch parameter binding (paramEnv) ---
+      let param_env = catch_scope.env_create(Some(outer))?;
+      evaluator.env.set_lexical_env(catch_scope.heap_mut(), param_env);
+
+      evaluator.instantiate_lexical_names_from_pat(
+        &mut catch_scope,
+        param_env,
+        &param.stx.pat.stx,
+        param.stx.pat.loc,
+        /* mutable */ true,
+      )?;
+
+      evaluator.bind_catch_param(&mut catch_scope, &param.stx, thrown, param_env)?;
+
+      // --- Catch block evaluation (blockEnv) ---
+      let block_env = catch_scope.env_create(Some(param_env))?;
+      evaluator.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+      evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
+    } else {
+      // Optional catch binding (`catch { ... }`): evaluate the catch body as a normal block.
+      let needs_lexical_env = catch.body.iter().any(|stmt| match &*stmt.stx {
+        Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
+        Stmt::ClassDecl(_) => true,
+        Stmt::FunctionDecl(_) => evaluator.strict,
+        _ => false,
+      });
+      if needs_lexical_env {
+        let block_env = catch_scope.env_create(Some(outer))?;
+        evaluator.env.set_lexical_env(catch_scope.heap_mut(), block_env);
+        evaluator.instantiate_block_decls_in_stmt_list(&mut catch_scope, block_env, &catch.body)?;
+      }
     }
+    Ok(())
+  })();
+  if let Err(err) = setup_res {
+    evaluator.env.set_lexical_env(scope.heap_mut(), outer);
+    return Err(err);
   }
 
   match gen_eval_stmt_list(evaluator, scope, &catch.body)? {

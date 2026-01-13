@@ -945,6 +945,60 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_catch(&mut self, ctx: &mut ControlContext, catch: &CatchBlock) -> Result<(), VmError> {
+    // --- TryStatement early errors (ECMA-262) ---
+    //
+    // It is a Syntax Error if:
+    // - BoundNames(CatchParameter) contains any duplicate elements.
+    // - Any element of BoundNames(CatchParameter) occurs in LexicallyDeclaredNames(CatchBlock).
+    //
+    // Note: LexicallyDeclaredNames includes hoistable declarations (function declarations) even in
+    // non-strict mode; this is independent of Annex B runtime scoping.
+    if let Some(param) = &catch.parameter {
+      // Collect BoundNames(CatchParameter) and report duplicates.
+      let mut param_names = HashSet::<String>::new();
+      let empty = HashSet::<String>::new();
+      self.collect_lexical_decl_names_from_pat(&param.stx.pat, param.loc, &mut param_names, &empty)?;
+
+      // Collect LexicallyDeclaredNames(CatchBlock) from the top-level statement list.
+      let mut lexical_names = HashSet::<String>::new();
+      for stmt in &catch.body {
+        self.step()?;
+        match &*stmt.stx {
+          Stmt::VarDecl(var)
+            if var.stx.mode == VarDeclMode::Let || var.stx.mode == VarDeclMode::Const =>
+          {
+            for declarator in &var.stx.declarators {
+              self.step()?;
+              self.collect_var_names_from_pat(&declarator.pattern.stx.pat.stx, &mut lexical_names)?;
+            }
+          }
+          Stmt::ClassDecl(class) => {
+            if let Some(name) = class.stx.name.as_ref() {
+              lexical_names.insert(name.stx.name.clone());
+            }
+          }
+          Stmt::FunctionDecl(decl) => {
+            let Some(name) = &decl.stx.name else {
+              if decl.stx.export_default {
+                continue;
+              }
+              self.push_error(stmt.loc, "anonymous function declaration")?;
+              continue;
+            };
+            lexical_names.insert(name.stx.name.clone());
+          }
+          _ => {}
+        }
+      }
+
+      // Report collisions between the catch parameter bindings and catch block lexical names.
+      for name in param_names.iter() {
+        if lexical_names.contains(name) {
+          self.push_error(param.loc, "Identifier has already been declared")?;
+        }
+      }
+    }
+
     // Catch binding patterns can contain identifier bindings that are restricted in strict mode
     // (e.g. `catch (eval) {}`) and destructuring defaults that may contain invalid `await`.
     if let Some(param) = &catch.parameter {
