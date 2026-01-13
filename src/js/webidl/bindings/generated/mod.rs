@@ -270,6 +270,43 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn d_o_m_token_list_supports(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DOMTokenList",
+        "supports",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn d_o_m_token_list_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -4438,6 +4475,23 @@ pub mod window {
         rt.define_data_property_str(
           proto_d_o_m_token_list,
           "contains",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("supports")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_d_o_m_token_list, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(d_o_m_token_list_supports, None, "supports", 1)?;
+        rt.define_data_property_str(
+          proto_d_o_m_token_list,
+          "supports",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

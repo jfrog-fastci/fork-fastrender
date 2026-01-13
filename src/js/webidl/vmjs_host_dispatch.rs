@@ -37,6 +37,7 @@ const URLSP_ITER_INDEX_SLOT: &str = "__fastrender_urlsp_iter_index";
 const URLSP_ITER_LEN_SLOT: &str = "__fastrender_urlsp_iter_len";
 const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
+const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3405,22 +3406,101 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::String(js))?;
         Ok(Value::String(js))
       }
+      ("DOMTokenList", "supports", 0) => {
+        let obj = Self::require_receiver_object(receiver)?;
+        let slots = match scope.heap().object_host_slots(obj) {
+          Ok(slots) => slots,
+          Err(VmError::InvalidHandle { .. }) if scope.heap().is_valid_object(obj) => None,
+          Err(err) => return Err(err),
+        };
+        if !matches!(slots, Some(slots) if slots.b == DOM_TOKEN_LIST_HOST_TAG) {
+          return Err(VmError::TypeError("Illegal invocation"));
+        }
+        Err(VmError::TypeError(
+          "DOMTokenList.supports: supported tokens not available",
+        ))
+      }
       ("Element", "classList", 0) => {
-        let (_element_id, obj) = require_element_receiver(vm, scope, receiver)?;
- 
-        // TODO: Replace this placeholder with a real DOMTokenList wrapper (separate task). For now,
-        // return a stable per-element object so `element.classList` access does not crash.
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+
+        // Transitional: return a stable per-element object so `element.classList` access does not
+        // crash, and brand it enough to support `DOMTokenList.prototype.supports` dispatch.
         let key = key_from_str(scope, ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT)?;
-        if let Some(Value::Object(existing)) =
-          scope
+        let mut ensure_supports = |token_list: GcObject| -> Result<(), VmError> {
+          let supports_key = key_from_str(scope, "supports")?;
+          if scope
             .heap()
-            .object_get_own_data_property_value(obj, &key)?
+            .object_get_own_property(token_list, &supports_key)?
+            .is_some()
+          {
+            return Ok(());
+          }
+
+          let global = self
+            .global
+            .or_else(|| vm.user_data_mut::<WindowRealmUserData>().and_then(|data| data.window_obj()));
+          let Some(global) = global else {
+            return Ok(());
+          };
+
+          scope.push_root(Value::Object(global))?;
+          let ctor_key = key_from_str(scope, "DOMTokenList")?;
+          let Some(Value::Object(ctor_obj)) = scope
+            .heap()
+            .object_get_own_data_property_value(global, &ctor_key)?
+          else {
+            return Ok(());
+          };
+          scope.push_root(Value::Object(ctor_obj))?;
+          let proto_key = key_from_str(scope, "prototype")?;
+          let Some(Value::Object(proto_obj)) = scope
+            .heap()
+            .object_get_own_data_property_value(ctor_obj, &proto_key)?
+          else {
+            return Ok(());
+          };
+          scope.push_root(Value::Object(proto_obj))?;
+          let Some(Value::Object(func_obj)) = scope
+            .heap()
+            .object_get_own_data_property_value(proto_obj, &supports_key)?
+          else {
+            return Ok(());
+          };
+          scope.push_root(Value::Object(func_obj))?;
+
+          scope.define_property(
+            token_list,
+            supports_key,
+            data_property(Value::Object(func_obj), true, false, true),
+          )?;
+          Ok(())
+        };
+
+        if let Some(Value::Object(existing)) =
+          scope.heap().object_get_own_data_property_value(obj, &key)?
         {
+          scope.push_root(Value::Object(existing))?;
+          scope.heap_mut().object_set_host_slots(
+            existing,
+            HostSlots {
+              a: element_id.index() as u64,
+              b: DOM_TOKEN_LIST_HOST_TAG,
+            },
+          )?;
+          ensure_supports(existing)?;
           return Ok(Value::Object(existing));
         }
- 
+
         let class_list = scope.alloc_object()?;
         scope.push_root(Value::Object(class_list))?;
+        scope.heap_mut().object_set_host_slots(
+          class_list,
+          HostSlots {
+            a: element_id.index() as u64,
+            b: DOM_TOKEN_LIST_HOST_TAG,
+          },
+        )?;
+        ensure_supports(class_list)?;
         scope.define_property(
           obj,
           key,
@@ -3604,9 +3684,11 @@ mod window_document_tests {
   use super::*;
   use crate::dom2;
   use crate::dom2::DomError;
+  use crate::js::window_realm::DomBindingsBackend;
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::window_timers::VmJsEventLoopHooks;
   use crate::js::{DocumentHostState, WindowHostState};
+  use selectors::context::QuirksMode;
   use vm_js::{
     GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
     Vm, VmError, VmHost, VmHostHooks, VmOptions,
@@ -3721,6 +3803,44 @@ mod window_document_tests {
       &mut dummy_vm_host,
       &mut hooks,
       "typeof document === 'object' && document === globalThis.__fastrender_document_keepalive",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_dom_token_list_supports_throws_for_class_list() -> Result<(), VmError> {
+    let config = WindowRealmConfig::new("https://example.invalid/")
+      .with_dom_bindings_backend(DomBindingsBackend::WebIdl);
+    let mut window = WindowRealm::new(config)?;
+    let mut dom_host = DocumentHostState::new(dom2::Document::new(QuirksMode::NoQuirks));
+    let mut webidl_host =
+      VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(window.global_object());
+
+    // Ensure DOMTokenList bindings (and `DOMTokenList.prototype.supports`) exist in the realm.
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      crate::js::bindings::install_window_bindings_vm_js(vm, heap, realm)?;
+    }
+
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut dom_host,
+      &mut window,
+      Some(&mut webidl_host),
+    );
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      "typeof document.createElement('div').classList.supports === 'function'",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    let out = window.exec_script_with_host_and_hooks(
+      &mut dom_host,
+      &mut hooks,
+      "(() => { try { document.createElement('div').classList.supports('x'); return false; } catch (e) { return e instanceof TypeError; } })()",
     )?;
     assert_eq!(out, Value::Bool(true));
 
