@@ -93,6 +93,25 @@ impl Job {
     Ok(())
   }
 
+  /// Applies the baseline renderer restrictions to this job.
+  ///
+  /// This is a convenience wrapper around the individual `set_*` methods and
+  /// is intended for the common "sandbox a renderer process" case:
+  ///
+  /// - Kill all processes in the job when the last job handle closes.
+  /// - Prevent child process creation (`ActiveProcessLimit = 1`).
+  /// - Optionally cap total committed memory for the job.
+  /// - Apply headless UI restrictions (**best-effort**, ignored on failure).
+  pub fn set_renderer_limits(&self, job_memory_limit_bytes: Option<usize>) -> Result<()> {
+    self.set_kill_on_close()?;
+    self.set_active_process_limit(1)?;
+    if let Some(bytes) = job_memory_limit_bytes {
+      self.set_job_memory_limit_bytes(bytes)?;
+    }
+    let _ = self.set_ui_restrictions_headless();
+    Ok(())
+  }
+
   /// Enables `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
   pub fn set_kill_on_close(&self) -> Result<()> {
     self.update_extended_limits(|info| {
@@ -210,6 +229,9 @@ mod tests {
   #[test]
   fn job_api_smoke() {
     let job = Job::new(None).expect("create job");
+    job
+      .set_renderer_limits(Some(64 * 1024 * 1024))
+      .expect("renderer limits");
     job.set_kill_on_close().expect("kill on close");
     job
       .set_active_process_limit(1)
