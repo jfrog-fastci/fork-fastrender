@@ -477,6 +477,10 @@ where
   }
 }
 
+fn mitigation_policy_attribute_unsupported(err: &io::Error) -> bool {
+  matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87)
+}
+
 pub fn spawn_sandboxed(
   exe: &Path,
   args: &[OsString],
@@ -680,12 +684,22 @@ fn spawn_appcontainer(
         handles.len() * std::mem::size_of::<HANDLE>(),
       )?;
     }
-    attrs.update_raw(
+    if let Err(err) = attrs.update_raw(
       PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
       std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
       std::mem::size_of::<u64>(),
-    )?;
-    Some(attrs)
+    ) {
+      if mitigation_policy_attribute_unsupported(&err) {
+        log_sandbox_debug(&format!(
+          "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
+        ));
+        None
+      } else {
+        return Err(err);
+      }
+    } else {
+      Some(attrs)
+    }
   } else {
     None
   };
@@ -750,7 +764,7 @@ fn spawn_appcontainer(
         Err(err) => {
           // Older/odd Windows builds may reject `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`. If so,
           // retry without mitigations rather than failing the spawn entirely.
-          if matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87) {
+          if mitigation_policy_attribute_unsupported(&err) {
             log_sandbox_debug(&format!(
               "windows sandbox: CreateProcessW rejected mitigation policy attribute ({err}); retrying without mitigations"
             ));
@@ -1032,47 +1046,28 @@ fn spawn_restricted_token(
   let mut mitigation_policy_value = mitigation_policy;
 
   let (pi, used_breakaway) = if handles.is_empty() {
-    if mitigation_policy_value == 0 {
-      let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-      startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-
-      let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
-        let mut cmdline = build_command_line(exe, args);
-        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        let ok = unsafe {
-          CreateProcessAsUserW(
-            restricted.as_raw_handle() as HANDLE,
-            application_name.as_ptr(),
-            cmdline.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            FALSE,
-            flags,
-            env_ptr,
-            std::ptr::null(),
-            &mut startup,
-            &mut pi,
-          )
-        };
-        if ok == 0 {
-          return Err(io::Error::last_os_error());
-        }
-        Ok(pi)
-      };
-
-      spawn_with_optional_breakaway(
-        parent_in_job,
-        &mut create_process,
-        CREATE_SUSPENDED | env_flags,
-      )?
-    } else {
+    let mut attrs_with_mitigations: Option<AttributeList> = None;
+    if mitigation_policy_value != 0 {
       let mut attrs = AttributeList::new(1)?;
-      attrs.update_raw(
+      if let Err(err) = attrs.update_raw(
         PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
         std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
         std::mem::size_of::<u64>(),
-      )?;
+      ) {
+        if mitigation_policy_attribute_unsupported(&err) {
+          log_sandbox_debug(&format!(
+            "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
+          ));
+          mitigation_policy_value = 0;
+        } else {
+          return Err(err);
+        }
+      } else {
+        attrs_with_mitigations = Some(attrs);
+      }
+    }
 
+    if let Some(attrs) = attrs_with_mitigations {
       let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | env_flags;
 
       let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
@@ -1100,7 +1095,7 @@ fn spawn_restricted_token(
         };
         if ok == 0 {
           let err = io::Error::last_os_error();
-          if matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87) {
+          if mitigation_policy_attribute_unsupported(&err) {
             log_sandbox_debug(&format!(
               "windows sandbox: CreateProcessAsUserW rejected mitigation policy attribute ({err}); retrying without mitigations"
             ));
@@ -1134,6 +1129,39 @@ fn spawn_restricted_token(
       };
 
       spawn_with_optional_breakaway(parent_in_job, &mut create_process, base_flags)?
+    } else {
+      let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+      startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+
+      let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
+        let mut cmdline = build_command_line(exe, args);
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+          CreateProcessAsUserW(
+            restricted.as_raw_handle() as HANDLE,
+            application_name.as_ptr(),
+            cmdline.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            FALSE,
+            flags,
+            env_ptr,
+            std::ptr::null(),
+            &mut startup,
+            &mut pi,
+          )
+        };
+        if ok == 0 {
+          return Err(io::Error::last_os_error());
+        }
+        Ok(pi)
+      };
+
+      spawn_with_optional_breakaway(
+        parent_in_job,
+        &mut create_process,
+        CREATE_SUSPENDED | env_flags,
+      )?
     }
   } else {
     let mut attrs_without_mitigations = AttributeList::new(1)?;
@@ -1150,12 +1178,22 @@ fn spawn_restricted_token(
         handles.as_mut_ptr().cast(),
         handles.len() * std::mem::size_of::<HANDLE>(),
       )?;
-      attrs.update_raw(
+      if let Err(err) = attrs.update_raw(
         PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
         std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
         std::mem::size_of::<u64>(),
-      )?;
-      Some(attrs)
+      ) {
+        if mitigation_policy_attribute_unsupported(&err) {
+          log_sandbox_debug(&format!(
+            "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
+          ));
+          None
+        } else {
+          return Err(err);
+        }
+      } else {
+        Some(attrs)
+      }
     } else {
       None
     };
@@ -1196,7 +1234,7 @@ fn spawn_restricted_token(
         match create_process_with_attrs(attrs.list) {
           Ok(pi) => Ok(pi),
           Err(err) => {
-            if matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87) {
+            if mitigation_policy_attribute_unsupported(&err) {
               log_sandbox_debug(&format!(
                 "windows sandbox: CreateProcessAsUserW rejected mitigation policy attribute ({err}); retrying without mitigations"
               ));
@@ -1255,46 +1293,28 @@ fn spawn_unsandboxed(
   let mut mitigation_policy_value = mitigation_policy;
 
   let (pi, used_breakaway) = if handles.is_empty() {
-    if mitigation_policy_value == 0 {
-      let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-      startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-
-      let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
-        let mut cmdline = build_command_line(exe, args);
-        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        let ok = unsafe {
-          CreateProcessW(
-            application_name.as_ptr(),
-            cmdline.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            FALSE,
-            flags,
-            env_ptr,
-            std::ptr::null(),
-            &mut startup,
-            &mut pi,
-          )
-        };
-        if ok == 0 {
-          return Err(io::Error::last_os_error());
-        }
-        Ok(pi)
-      };
-
-      spawn_with_optional_breakaway(
-        parent_in_job,
-        &mut create_process,
-        CREATE_SUSPENDED | env_flags,
-      )?
-    } else {
+    let mut attrs_with_mitigations: Option<AttributeList> = None;
+    if mitigation_policy_value != 0 {
       let mut attrs = AttributeList::new(1)?;
-      attrs.update_raw(
+      if let Err(err) = attrs.update_raw(
         PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
         std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
         std::mem::size_of::<u64>(),
-      )?;
+      ) {
+        if mitigation_policy_attribute_unsupported(&err) {
+          log_sandbox_debug(&format!(
+            "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
+          ));
+          mitigation_policy_value = 0;
+        } else {
+          return Err(err);
+        }
+      } else {
+        attrs_with_mitigations = Some(attrs);
+      }
+    }
 
+    if let Some(attrs) = attrs_with_mitigations {
       let base_flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | env_flags;
 
       let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
@@ -1321,7 +1341,7 @@ fn spawn_unsandboxed(
         };
         if ok == 0 {
           let err = io::Error::last_os_error();
-          if matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87) {
+          if mitigation_policy_attribute_unsupported(&err) {
             log_sandbox_debug(&format!(
               "windows sandbox: CreateProcessW rejected mitigation policy attribute ({err}); retrying without mitigations"
             ));
@@ -1354,6 +1374,38 @@ fn spawn_unsandboxed(
       };
 
       spawn_with_optional_breakaway(parent_in_job, &mut create_process, base_flags)?
+    } else {
+      let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+      startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+
+      let mut create_process = |flags: u32| -> io::Result<PROCESS_INFORMATION> {
+        let mut cmdline = build_command_line(exe, args);
+        let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+          CreateProcessW(
+            application_name.as_ptr(),
+            cmdline.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            FALSE,
+            flags,
+            env_ptr,
+            std::ptr::null(),
+            &mut startup,
+            &mut pi,
+          )
+        };
+        if ok == 0 {
+          return Err(io::Error::last_os_error());
+        }
+        Ok(pi)
+      };
+
+      spawn_with_optional_breakaway(
+        parent_in_job,
+        &mut create_process,
+        CREATE_SUSPENDED | env_flags,
+      )?
     }
   } else {
     let mut attrs_without_mitigations = AttributeList::new(1)?;
@@ -1370,12 +1422,22 @@ fn spawn_unsandboxed(
         handles.as_mut_ptr().cast(),
         handles.len() * std::mem::size_of::<HANDLE>(),
       )?;
-      attrs.update_raw(
+      if let Err(err) = attrs.update_raw(
         PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
         std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
         std::mem::size_of::<u64>(),
-      )?;
-      Some(attrs)
+      ) {
+        if mitigation_policy_attribute_unsupported(&err) {
+          log_sandbox_debug(&format!(
+            "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
+          ));
+          None
+        } else {
+          return Err(err);
+        }
+      } else {
+        Some(attrs)
+      }
     } else {
       None
     };
@@ -1415,7 +1477,7 @@ fn spawn_unsandboxed(
         match create_process_with_attrs(attrs.list) {
           Ok(pi) => Ok(pi),
           Err(err) => {
-            if matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87) {
+            if mitigation_policy_attribute_unsupported(&err) {
               log_sandbox_debug(&format!(
                 "windows sandbox: CreateProcessW rejected mitigation policy attribute ({err}); retrying without mitigations"
               ));
