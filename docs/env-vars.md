@@ -117,6 +117,10 @@ call [`fastrender::sandbox::apply_macos_sandbox_from_env`](../src/sandbox/mod.rs
 Note: the debug escape hatches `FASTR_DISABLE_RENDERER_SANDBOX=1` and `FASTR_MACOS_RENDERER_SANDBOX=off`
 also disable in-process Seatbelt sandboxing, overriding `FASTR_RENDERER_SANDBOX`.
 
+`FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts` can also override the strict/relaxed mode
+selection while still keeping sandboxing enabled (useful for forcing or testing a specific profile
+when the process is configured via `FASTR_RENDERER_SANDBOX`).
+
 Recommended: leave unset in production builds so macOS renderers default to `strict`. Use `relaxed`
 when you need system fonts, and use `off` only when debugging sandbox behaviour.
 
