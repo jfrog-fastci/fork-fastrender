@@ -20,7 +20,6 @@ use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
-use std::sync::Arc;
 use crate::tick;
 
 fn strict_mode_stmts_contain_with(
@@ -5900,11 +5899,8 @@ pub fn async_function_constructor_construct(
 
   let this_mode = if is_strict { ThisMode::Strict } else { ThisMode::Global };
 
-  let source = Arc::new(SourceText::new_charged(
-    scope.heap_mut(),
-    "<AsyncFunction>",
-    source,
-  )?);
+  // Avoid `Arc::new`, which can abort the process on allocator OOM.
+  let source = SourceText::new_charged_arc(scope.heap_mut(), "<AsyncFunction>", source)?;
   let span_end = u32::try_from(source.text.len()).unwrap_or(u32::MAX);
   let code_id = vm.register_ecma_function(source, 0, span_end, crate::vm::EcmaFunctionKind::Decl)?;
 
