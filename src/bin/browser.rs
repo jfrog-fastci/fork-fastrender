@@ -10048,7 +10048,36 @@ impl App {
           return;
         }
 
-        let Some(pos_points) = self.last_cursor_pos_points else {
+        let pos_points = self.last_cursor_pos_points.or_else(|| {
+          // Winit's `MouseInput` events do not contain cursor coordinates. On some platforms winit
+          // can deliver a click without a preceding `CursorMoved` (e.g. first click after focusing
+          // the window), leaving `last_cursor_pos_points` unset. Fall back to egui's tracked hover
+          // position, then to a direct window query.
+          let egui_hover_pos = self.egui_ctx.input(|i| i.pointer.hover_pos());
+          let window_cursor_pos = self.window.cursor_position().ok();
+          let resolved = resolve_cursor_pos_points_for_mouse_input(
+            egui_hover_pos,
+            window_cursor_pos,
+            self.pixels_per_point,
+          );
+          self.last_cursor_pos_points = resolved;
+          resolved
+        });
+
+        let Some(pos_points) = pos_points else {
+          // Cursor position is unknown. Conservatively treat this as a chrome/non-page click so we
+          // don't misroute the next typed character to the page.
+          clear_page_focus_for_unknown_cursor_pos(
+            &mut self.page_has_focus,
+            &mut self.cursor_in_page,
+          );
+          if self.scrollbar_drag.is_some() {
+            self.cancel_scrollbar_drag();
+          }
+          if self.pointer_captured {
+            self.cancel_pointer_capture();
+          }
+          self.window.request_redraw();
           return;
         };
 
@@ -13399,6 +13428,73 @@ fn reveal_file_in_os_file_manager(path: &std::path::Path) {
       "failed to reveal file {} in file manager: {err}",
       path.display()
     );
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+fn resolve_cursor_pos_points_for_mouse_input(
+  egui_hover_pos_points: Option<egui::Pos2>,
+  window_cursor_pos_physical: Option<winit::dpi::PhysicalPosition<f64>>,
+  pixels_per_point: f32,
+) -> Option<egui::Pos2> {
+  if let Some(pos_points) = egui_hover_pos_points {
+    return Some(pos_points);
+  }
+
+  let physical = window_cursor_pos_physical?;
+  if pixels_per_point <= 0.0 {
+    return None;
+  }
+  Some(egui::pos2(
+    physical.x as f32 / pixels_per_point,
+    physical.y as f32 / pixels_per_point,
+  ))
+}
+
+#[cfg(feature = "browser_ui")]
+fn clear_page_focus_for_unknown_cursor_pos(page_has_focus: &mut bool, cursor_in_page: &mut bool) {
+  *page_has_focus = false;
+  *cursor_in_page = false;
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod mouse_input_cursor_pos_resolution_tests {
+  use super::{clear_page_focus_for_unknown_cursor_pos, resolve_cursor_pos_points_for_mouse_input};
+  use winit::dpi::PhysicalPosition;
+
+  #[test]
+  fn none_inputs_returns_none_and_clears_focus() {
+    let resolved = resolve_cursor_pos_points_for_mouse_input(None, None, 1.0);
+    assert!(resolved.is_none());
+
+    let mut page_has_focus = true;
+    let mut cursor_in_page = true;
+    if resolved.is_none() {
+      clear_page_focus_for_unknown_cursor_pos(&mut page_has_focus, &mut cursor_in_page);
+    }
+    assert!(!page_has_focus);
+    assert!(!cursor_in_page);
+  }
+
+  #[test]
+  fn prefers_egui_hover_position() {
+    let hover = egui::pos2(12.5, 99.0);
+    let resolved = resolve_cursor_pos_points_for_mouse_input(
+      Some(hover),
+      Some(PhysicalPosition::new(5.0, 6.0)),
+      2.0,
+    );
+    assert_eq!(resolved, Some(hover));
+  }
+
+  #[test]
+  fn converts_physical_cursor_position_to_points() {
+    let resolved = resolve_cursor_pos_points_for_mouse_input(
+      None,
+      Some(PhysicalPosition::new(200.0, 100.0)),
+      2.0,
+    );
+    assert_eq!(resolved, Some(egui::pos2(100.0, 50.0)));
   }
 }
 
