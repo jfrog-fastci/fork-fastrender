@@ -12098,6 +12098,40 @@ impl<'a> Evaluator<'a> {
           Ok(value)
         }
       },
+      OperatorName::AssignmentLogicalAnd
+      | OperatorName::AssignmentLogicalOr
+      | OperatorName::AssignmentNullishCoalescing => match &*expr.left.stx {
+        Expr::ObjPat(_) | Expr::ArrPat(_) => Err(VmError::Unimplemented(
+          "logical assignment to destructuring patterns",
+        )),
+        _ => {
+          let reference = self.eval_reference(scope, &expr.left)?;
+          let mut op_scope = scope.reborrow();
+          self.root_reference(&mut op_scope, &reference)?;
+
+          let left = self.get_value_from_reference(&mut op_scope, &reference)?;
+
+          let should_assign = match expr.operator {
+            OperatorName::AssignmentLogicalAnd => to_boolean(op_scope.heap(), left)?,
+            OperatorName::AssignmentLogicalOr => !to_boolean(op_scope.heap(), left)?,
+            OperatorName::AssignmentNullishCoalescing => is_nullish(left),
+            _ => unreachable!(),
+          };
+          if !should_assign {
+            return Ok(left);
+          }
+
+          // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+          op_scope.push_root(left)?;
+          let right = self.eval_expr(&mut op_scope, &expr.right)?;
+
+          // Root `right` across anonymous function name inference + `PutValue`.
+          op_scope.push_root(right)?;
+          self.maybe_set_anonymous_function_name_for_assignment(&mut op_scope, &reference, right)?;
+          self.put_value_to_reference(&mut op_scope, &reference, right)?;
+          Ok(right)
+        }
+      },
       OperatorName::LogicalAnd => {
         let left = self.eval_expr(scope, &expr.left)?;
         if !to_boolean(scope.heap(), left)? {
@@ -35013,6 +35047,126 @@ mod tests {
       "expected message to include unimplemented reason, got {msg:?}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn logical_assignment_short_circuit_and_ordering() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        const log = [];
+        let stored = 1;
+        const obj = {
+          get a() { log.push("get"); return stored; },
+          set a(v) { log.push("set:" + v); stored = v; },
+        };
+        function key() { log.push("key"); return "a"; }
+        function rhs() { log.push("rhs"); return 2; }
+
+        // `&&=` short-circuits when the LHS is falsy.
+        let res = (obj[key()] &&= rhs());
+        if (res !== 2 || stored !== 2 || log.join(",") !== "key,get,rhs,set:2") return false;
+
+        log.length = 0;
+        stored = 0;
+        res = (obj[key()] &&= rhs());
+        if (res !== 0 || stored !== 0 || log.join(",") !== "key,get") return false;
+
+        // `||=` short-circuits when the LHS is truthy.
+        log.length = 0;
+        stored = 0;
+        res = (obj[key()] ||= rhs());
+        if (res !== 2 || stored !== 2 || log.join(",") !== "key,get,rhs,set:2") return false;
+
+        log.length = 0;
+        stored = 5;
+        res = (obj[key()] ||= rhs());
+        if (res !== 5 || stored !== 5 || log.join(",") !== "key,get") return false;
+
+        // `??=` short-circuits only on non-nullish values, even when falsy.
+        log.length = 0;
+        stored = 0;
+        res = (obj[key()] ??= rhs());
+        if (res !== 0 || stored !== 0 || log.join(",") !== "key,get") return false;
+
+        log.length = 0;
+        stored = undefined;
+        res = (obj[key()] ??= rhs());
+        if (res !== 2 || stored !== 2 || log.join(",") !== "key,get,rhs,set:2") return false;
+
+        return true;
+      })()
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn logical_assignment_anonymous_function_name_inference() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        // Binding refs.
+        let x = 0;
+        x ||= function () {};
+        if (x.name !== "x") return false;
+
+        let y = 1;
+        y &&= function () {};
+        if (y.name !== "y") return false;
+
+        let z;
+        z ??= function () {};
+        if (z.name !== "z") return false;
+
+        // Property refs.
+        const o = {};
+        o.p ||= function () {};
+        if (o.p.name !== "p") return false;
+
+        o.q = 1;
+        o.q &&= function () {};
+        if (o.q.name !== "q") return false;
+
+        o.r = null;
+        o.r ??= function () {};
+        if (o.r.name !== "r") return false;
+
+        // Computed refs.
+        const prop = "comp";
+        o[prop] ||= function () {};
+        if (o[prop].name !== "comp") return false;
+
+        // Private refs: assignment works, but private fields do not participate in name inference.
+        //
+        // Note: private *instance* fields are not yet supported by this execution path, so use a
+        // private static field to exercise `Reference::Private`.
+        class C {
+          static #f = 1;
+          static test() {
+            C.#f &&= function () {};
+            return C.#f.name;
+          }
+        }
+        if (C.test() !== "") return false;
+
+        return true;
+      })()
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Bool(true));
     Ok(())
   }
 }
