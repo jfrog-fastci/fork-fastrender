@@ -167,9 +167,9 @@ fn module_namespace_can_export_itself_as_namespace() -> Result<(), VmError> {
         export default null;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
-  graph.link(&mut vm, &mut heap, realm.global_object(), module)?;
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), module)?;
 
   let mut host = ();
   let mut hooks = MicrotaskQueue::new();

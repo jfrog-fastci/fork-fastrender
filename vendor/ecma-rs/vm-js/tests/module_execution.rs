@@ -571,7 +571,7 @@ fn import_meta_is_scoped_to_defining_module_across_function_calls() -> Result<()
         export function getMeta() { return import.meta; }
       "#,
     )?,
-  );
+  )?;
   let a = graph.add_module_with_specifier(
     "a.js",
     SourceTextModuleRecord::parse(
@@ -586,7 +586,7 @@ fn import_meta_is_scoped_to_defining_module_across_function_calls() -> Result<()
         export const import_equals_call = metaB === metaB_from_call;
       "#,
     )?,
-  );
+  )?;
   graph.link_all_by_specifier();
 
   let promise = graph.evaluate(
