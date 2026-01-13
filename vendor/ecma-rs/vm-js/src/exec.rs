@@ -3089,9 +3089,9 @@ impl<'a> Evaluator<'a> {
   /// Implements `IteratorClose` error precedence for operations that return `Result<_, VmError>`.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, errors thrown while getting/calling
-  /// `iterator.return` override the incoming completion **even when the incoming completion is a
-  /// throw completion**. The only special-case for throw completions is that the non-object
-  /// return-result TypeError check is skipped when the incoming completion is a throw completion.
+  /// `iterator.return` are ignored when the incoming completion is a throw completion, and the
+  /// incoming throw completion is preserved. The only other special-case for throw completions is
+  /// that the non-object return-result TypeError check is skipped.
   ///
   /// `vm-js` also has non-catchable VM failures (termination, OOM, etc) which must never be
   /// replaced by a JavaScript catchable exception from iterator closing.
@@ -21253,10 +21253,10 @@ fn async_iterator_close_on_error(
   }
 
   // `IteratorClose` error precedence (ECMA-262):
-  // - Errors thrown while getting/calling `iterator.return` override the incoming completion, even
-  //   when the incoming completion is a throw completion.
-  // - The only special-case for throw completions is that the non-object return-result TypeError
-  //   check is skipped (since we close with `CloseCompletionKind::Throw`).
+  // - When the incoming completion is a throw completion, errors thrown while getting/calling
+  //   `iterator.return` are ignored (the original throw completion is preserved).
+  // - The non-object return-result TypeError check is also skipped for throw completions (since we
+  //   close with `CloseCompletionKind::Throw`).
   //
   // `vm-js` also has non-catchable VM failures (OOM/termination/etc); those are never replaced by a
   // JavaScript catchable exception from iterator closing.

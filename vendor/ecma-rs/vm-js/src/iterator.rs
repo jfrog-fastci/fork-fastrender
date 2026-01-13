@@ -18,13 +18,16 @@ pub enum CloseCompletionKind {
   /// Closing on a *throw* completion.
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` and
-  /// `Call(return, iterator)` are still performed, and any *abrupt completion* produced while
-  /// getting/calling `iterator.return` overrides the incoming completion (even when the incoming
-  /// completion is itself a throw completion).
+  /// `Call(return, iterator)` are still performed when possible, but if the incoming completion is
+  /// a throw completion then it is returned *before* propagating any throw completion produced
+  /// while closing. In other words, JavaScript exceptions thrown while getting/calling
+  /// `iterator.return` are **ignored** when closing on a throw completion.
   ///
-  /// The only behaviour difference for throw completions is that the non-object return-result
-  /// TypeError check is skipped (because for throw completions the original throw is returned
-  /// before the return-result type check is performed).
+  /// The non-object return-result TypeError check is also skipped for throw completions (because
+  /// the incoming throw completion is returned before that check is performed).
+  ///
+  /// Note: `vm-js` has non-catchable VM failures (OOM/termination/etc). Those are still propagated
+  /// even when closing on a throw completion.
   Throw,
   /// Closing on a *non-throw* completion.
   ///
@@ -329,7 +332,11 @@ pub fn iterator_close(
   ) {
     Ok(m) => m,
     Err(err) => {
-      // Spec: errors thrown while getting `iterator.return` override the incoming completion.
+      // ECMA-262 `IteratorClose` / `AsyncIteratorClose`: if the incoming completion is a throw
+      // completion, return it before propagating `innerResult` errors.
+      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        return Ok(());
+      }
       return Err(err);
     }
   };
@@ -348,7 +355,11 @@ pub fn iterator_close(
   ) {
     Ok(v) => v,
     Err(err) => {
-      // Spec: errors thrown while calling `iterator.return` override the incoming completion.
+      // ECMA-262 `IteratorClose`: if the incoming completion is a throw completion, return it
+      // before propagating errors produced by calling `iterator.return`.
+      if completion_kind == CloseCompletionKind::Throw && err.is_throw_completion() {
+        return Ok(());
+      }
       return Err(err);
     }
   };
@@ -377,7 +388,10 @@ pub fn iterator_close(
 /// This is a convenience wrapper for callers that need the *full* `IteratorClose` semantics from
 /// ECMA-262 (which takes an input completion):
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - Errors thrown while getting/calling `iterator.return` override the completion.
+/// - If `completion_is_throw` is `true`, any JavaScript exceptions thrown while getting/calling
+///   `iterator.return` are ignored (the incoming throw completion is preserved).
+/// - If `completion_is_throw` is `false`, errors thrown while getting/calling `iterator.return`
+///   override the completion.
 /// - If `completion_is_throw` is `true`, the return-result type check is skipped.
 /// - If `completion_is_throw` is `false`, a non-object return result throws a TypeError.
 pub fn iterator_close_strict(
@@ -401,7 +415,10 @@ pub fn iterator_close_strict(
 /// This is the spec-shaped form of iterator closing used by `for..of` and iterator-consuming
 /// algorithms:
 /// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
-/// - Errors thrown while getting/calling `iterator.return` override `completion` and are returned.
+/// - If `completion` is a throw completion, JavaScript exceptions thrown while getting/calling
+///   `iterator.return` are ignored and `completion` is returned.
+/// - If `completion` is not a throw completion, errors thrown while getting/calling
+///   `iterator.return` override `completion` and are returned.
 /// - If `completion` is a throw completion, the non-object return-result TypeError check is skipped.
 /// - If `completion` is a non-throw completion, a non-object return result throws a TypeError.
 pub fn iterator_close_with_completion(
@@ -526,9 +543,10 @@ pub(crate) fn async_from_sync_iterator_close_call(
   };
 
   // `closeIterator` implements `IteratorClose(syncIteratorRecord, ThrowCompletion(reason))`.
-  // Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` override the
-  // incoming completion (even when it is a throw completion). Only the non-object return-result
-  // TypeError check is skipped for throw completions.
+  // Per ECMA-262 `IteratorClose`, errors thrown while getting/calling `iterator.return` are ignored
+  // when closing on a throw completion. Only the non-object return-result TypeError check is
+  // skipped for throw completions (since the incoming throw completion is returned before the
+  // return-result type check is performed).
   iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)?;
   Err(VmError::Throw(reason))
 }
