@@ -2776,6 +2776,210 @@ fn row_subgrid_respects_local_direction_for_columns() {
   assert_approx(second.bounds.width(), 30.0, "second column width preserved");
 }
 
+#[test]
+fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_horizontal() {
+  let col1 = 20.0;
+  let col2 = 30.0;
+  let row = 40.0;
+  let item = 10.0;
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.writing_mode = WritingMode::HorizontalTb;
+  parent_style.direction = Direction::Rtl;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(col1)),
+    GridTrack::Length(Length::px(col2)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
+  parent_style.width = Some(Length::px(col1 + col2));
+  parent_style.height = Some(Length::px(row));
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.writing_mode = WritingMode::VerticalRl;
+  subgrid_style.direction = Direction::Rtl;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_row_subgrid = true;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 3;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut first_style = ComputedStyle::default();
+  first_style.display = Display::Block;
+  first_style.width = Some(Length::px(item));
+  first_style.height = Some(Length::px(item));
+  first_style.justify_self = Some(AlignItems::Start);
+  first_style.align_self = Some(AlignItems::Start);
+  first_style.grid_column_start = 1;
+  first_style.grid_column_end = 2;
+  first_style.grid_row_start = 1;
+  first_style.grid_row_end = 2;
+
+  let mut second_style = ComputedStyle::default();
+  second_style.display = Display::Block;
+  second_style.width = Some(Length::px(item));
+  second_style.height = Some(Length::px(item));
+  second_style.justify_self = Some(AlignItems::Start);
+  second_style.align_self = Some(AlignItems::Start);
+  second_style.grid_column_start = 2;
+  second_style.grid_column_end = 3;
+  second_style.grid_row_start = 1;
+  second_style.grid_row_end = 2;
+
+  let child1 = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let child2 = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![child1, child2],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let subgrid_fragment = &fragment.children[0];
+  assert_approx(
+    subgrid_fragment.bounds.width(),
+    col1 + col2,
+    "subgrid width inherits parent columns",
+  );
+  assert_approx(
+    subgrid_fragment.bounds.height(),
+    row,
+    "subgrid height inherits parent rows",
+  );
+
+  let first = &subgrid_fragment.children[0];
+  let second = &subgrid_fragment.children[1];
+
+  // In horizontal writing mode, `direction: rtl` mirrors the inline axis on physical X. The subgrid
+  // must keep using the parent grid's axes even though its own `writing-mode` is vertical.
+  assert_approx(first.bounds.y(), 0.0, "block-start is top");
+  assert_approx(second.bounds.y(), 0.0, "block-start is top");
+  assert_approx(
+    first.bounds.x(),
+    col1 + col2 - item,
+    "column 1 aligns to inline-start (right) in rtl",
+  );
+  assert_approx(
+    second.bounds.x(),
+    col2 - item,
+    "column 2 aligns to its inline-start (right edge) in rtl",
+  );
+  assert!(first.bounds.x() > second.bounds.x(), "rtl mirrors column ordering");
+}
+
+#[test]
+fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_vertical() {
+  let col1 = 20.0;
+  let col2 = 30.0;
+  let row = 40.0;
+  let item = 10.0;
+
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.writing_mode = WritingMode::VerticalRl;
+  parent_style.direction = Direction::Rtl;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(col1)),
+    GridTrack::Length(Length::px(col2)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
+  parent_style.width = Some(Length::px(row));
+  parent_style.height = Some(Length::px(col1 + col2));
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.writing_mode = WritingMode::HorizontalTb;
+  subgrid_style.direction = Direction::Rtl;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_row_subgrid = true;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 3;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut first_style = ComputedStyle::default();
+  first_style.display = Display::Block;
+  first_style.width = Some(Length::px(item));
+  first_style.height = Some(Length::px(item));
+  first_style.justify_self = Some(AlignItems::Start);
+  first_style.align_self = Some(AlignItems::Start);
+  first_style.grid_column_start = 1;
+  first_style.grid_column_end = 2;
+  first_style.grid_row_start = 1;
+  first_style.grid_row_end = 2;
+
+  let mut second_style = ComputedStyle::default();
+  second_style.display = Display::Block;
+  second_style.width = Some(Length::px(item));
+  second_style.height = Some(Length::px(item));
+  second_style.justify_self = Some(AlignItems::Start);
+  second_style.align_self = Some(AlignItems::Start);
+  second_style.grid_column_start = 2;
+  second_style.grid_column_end = 3;
+  second_style.grid_row_start = 1;
+  second_style.grid_row_end = 2;
+
+  let child1 = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let child2 = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![child1, child2],
+  );
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let subgrid_fragment = &fragment.children[0];
+  assert_approx(
+    subgrid_fragment.bounds.width(),
+    row,
+    "subgrid width uses parent's vertical-mode row track",
+  );
+  assert_approx(
+    subgrid_fragment.bounds.height(),
+    col1 + col2,
+    "subgrid height uses parent's vertical-mode column tracks",
+  );
+
+  let first = &subgrid_fragment.children[0];
+  let second = &subgrid_fragment.children[1];
+
+  // In vertical writing modes, `direction: rtl` mirrors the inline axis on physical Y. The subgrid
+  // must keep using the parent grid's axes even though its own `writing-mode` is horizontal.
+  assert_approx(first.bounds.x(), row - item, "block-start is right in vertical-rl");
+  assert_approx(second.bounds.x(), row - item, "block-start is right in vertical-rl");
+  assert_approx(
+    first.bounds.y(),
+    col1 + col2 - item,
+    "column 1 aligns to inline-start (bottom) in rtl vertical mode",
+  );
+  assert_approx(
+    second.bounds.y(),
+    col2 - item,
+    "column 2 aligns just above column 1",
+  );
+  assert!(first.bounds.y() > second.bounds.y(), "rtl mirrors column ordering");
+}
+
 // Per CSS Writing Modes, `direction` affects the inline base direction even when the inline axis is
 // vertical. For vertical writing modes this means `direction: rtl` flips inline-start/inline-end on
 // the physical Y axis, so grid "columns" (the inline axis) flow bottom-to-top.
