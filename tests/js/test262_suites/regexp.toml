@@ -28,7 +28,14 @@ include = [
   "built-ins/RegExp/prototype/source/**/*.js",
   "built-ins/RegExp/prototype/unicodeSets/**/*.js",
   "built-ins/RegExp/unicode_restricted_octal_escape.js",
+  # --- DecimalEscape / backreference parsing (`\0`, `\1`, `\10`, forward refs) ---
+  "built-ins/RegExp/S15.10.2.11_A1_T1.js",
+  "built-ins/RegExp/S15.10.2.11_A1_T4.js",
   "built-ins/RegExp/S15.10.2.11_A1_T5.js",
+  "built-ins/RegExp/S15.10.2.11_A1_T6.js",
+  "built-ins/RegExp/S15.10.2.11_A1_T7.js",
+  "built-ins/RegExp/S15.10.2.11_A1_T8.js",
+  "built-ins/RegExp/S15.10.2.11_A1_T9.js",
 
   # --- Named capture groups (`(?<name>...)`, match result `.groups`) ---
   "built-ins/RegExp/named-groups/**/*.js",

@@ -1510,7 +1510,7 @@ glob = "built-ins/RegExp/unicode_restricted_*.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/S15.10.2.11_A1_T5.js"
+glob = "built-ins/RegExp/S15.10.2.11_A1_T*.js"
 status = "pass"
 
 # TODO: Fix the remaining lookbehind xfails and flip them to `pass`.
