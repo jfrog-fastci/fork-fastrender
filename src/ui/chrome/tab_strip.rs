@@ -1,6 +1,6 @@
 use crate::ui::browser_app::{
-  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor,
-  TabGroupId, TabGroupState,
+  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor, TabGroupId,
+  TabGroupState, UiFocusToken,
 };
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
@@ -12,6 +12,14 @@ use std::time::Duration;
 
 use super::ChromeAction;
 use super::FocusRingStyle;
+
+pub(super) fn tab_strip_tab_widget_id(tab_id: TabId) -> egui::Id {
+  egui::Id::new(("tab_strip_tab", tab_id))
+}
+
+fn rect_from_points_tuple(r: (f32, f32, f32, f32)) -> Rect {
+  Rect::from_min_max(Pos2::new(r.0, r.1), Pos2::new(r.2, r.3))
+}
 
 const TAB_STRIP_HEIGHT: f32 = 34.0;
 const TAB_HEIGHT: f32 = 32.0;
@@ -541,7 +549,7 @@ fn unpinned_tab_preview_ui(
   favicon_tex: Option<egui::TextureId>,
   group_color: Option<Color32>,
 ) {
-  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
   let visuals = ui.style().visuals.clone();
@@ -676,7 +684,7 @@ fn pinned_tab_preview_ui(
   tab_rect: Rect,
   favicon_tex: Option<egui::TextureId>,
 ) {
-  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
   let visuals = ui.style().visuals.clone();
@@ -1478,7 +1486,7 @@ fn tab_ui(
   let interactive = interactive && !closing;
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
-  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
   let mut response = ui.interact(
@@ -1787,7 +1795,7 @@ fn tab_ui(
       chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
         tab_id: tab.id,
         anchor_points: (pos.x, pos.y),
-        opener_id: response.id,
+        opener_focus: Some(UiFocusToken(tab.id.0)),
       });
       chrome.tab_context_menu_rect = None;
     }
@@ -1836,7 +1844,7 @@ fn pinned_tab_ui(
   };
 
   let (_, tab_rect) = ui.allocate_space(Vec2::new(tab_width.max(0.0), TAB_HEIGHT));
-  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let tab_id = tab_strip_tab_widget_id(tab.id);
   let title = tab.display_title();
   let (err, warn) = tab_status_messages(tab);
   let mut response = ui.interact(
@@ -1993,7 +2001,7 @@ fn pinned_tab_ui(
       chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
         tab_id: tab.id,
         anchor_points: (pos.x, pos.y),
-        opener_id: response.id,
+        opener_focus: Some(UiFocusToken(tab.id.0)),
       });
       chrome.tab_context_menu_rect = None;
     }
@@ -2660,8 +2668,9 @@ pub(super) fn tab_strip_ui(
                   if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
                     chrome.dragging_tab_id = Some(tab_id);
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-                    chrome.drag_start_pointer_pos = pointer_pos;
-                    chrome.drag_start_tab_rect = Some(tab_rect);
+                    chrome.drag_start_pointer_pos = pointer_pos.map(|p| (p.x, p.y));
+                    chrome.drag_start_tab_rect =
+                      Some((tab_rect.min.x, tab_rect.min.y, tab_rect.max.x, tab_rect.max.y));
                     chrome.tab_drag_session = chrome.tab_drag_session.wrapping_add(1);
                   }
                 }
@@ -3060,8 +3069,9 @@ pub(super) fn tab_strip_ui(
                       if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
                         app.chrome.dragging_tab_id = Some(tab_id);
                         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-                        app.chrome.drag_start_pointer_pos = pointer_pos;
-                        app.chrome.drag_start_tab_rect = Some(tab_rect);
+                        app.chrome.drag_start_pointer_pos = pointer_pos.map(|p| (p.x, p.y));
+                        app.chrome.drag_start_tab_rect =
+                          Some((tab_rect.min.x, tab_rect.min.y, tab_rect.max.x, tab_rect.max.y));
                         app.chrome.tab_drag_session = app.chrome.tab_drag_session.wrapping_add(1);
                       }
                     }
@@ -3187,8 +3197,9 @@ pub(super) fn tab_strip_ui(
                   if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
                     app.chrome.dragging_tab_id = Some(tab_id);
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-                    app.chrome.drag_start_pointer_pos = pointer_pos;
-                    app.chrome.drag_start_tab_rect = Some(tab_rect);
+                    app.chrome.drag_start_pointer_pos = pointer_pos.map(|p| (p.x, p.y));
+                    app.chrome.drag_start_tab_rect =
+                      Some((tab_rect.min.x, tab_rect.min.y, tab_rect.max.x, tab_rect.max.y));
                     app.chrome.tab_drag_session = app.chrome.tab_drag_session.wrapping_add(1);
                   }
                 }
@@ -3662,7 +3673,7 @@ pub(super) fn tab_strip_ui(
     let preview_size = app
       .chrome
       .drag_start_tab_rect
-      .map(|r| r.size())
+      .map(|r| rect_from_points_tuple(r).size())
       .or_else(|| dragged_tab_rect.map(|r| r.size()))
       .unwrap_or_else(|| {
         Vec2::new(
@@ -3678,11 +3689,12 @@ pub(super) fn tab_strip_ui(
     let delta = app
       .chrome
       .drag_start_pointer_pos
-      .map(|start| pos - start)
+      .map(|(x, y)| pos - Pos2::new(x, y))
       .unwrap_or_default();
     let mut preview_rect = app
       .chrome
       .drag_start_tab_rect
+      .map(rect_from_points_tuple)
       .or(dragged_tab_rect)
       .map(|rect| rect.translate(delta))
       .unwrap_or_else(|| Rect::from_center_size(pos, preview_size));
@@ -3881,7 +3893,7 @@ pub(super) fn tab_strip_ui(
         let preview_size = app
           .chrome
           .drag_start_tab_rect
-          .map(|r| r.size())
+          .map(|r| rect_from_points_tuple(r).size())
           .unwrap_or_else(|| {
             Vec2::new(
               if dragging_is_pinned {
@@ -3895,11 +3907,12 @@ pub(super) fn tab_strip_ui(
         let delta = app
           .chrome
           .drag_start_pointer_pos
-          .map(|start| pos - start)
+          .map(|(x, y)| pos - Pos2::new(x, y))
           .unwrap_or_default();
         let base_rect = app
           .chrome
           .drag_start_tab_rect
+          .map(rect_from_points_tuple)
           .map(|rect| rect.translate(delta))
           .unwrap_or_else(|| Rect::from_center_size(pos, preview_size));
         ctx.data_mut(|d| {

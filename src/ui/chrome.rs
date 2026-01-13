@@ -6,7 +6,7 @@ use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
 use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkId, BookmarkStore};
-use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+use crate::ui::browser_app::{BrowserAppState, BrowserTabState, UiFocusToken};
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
@@ -343,6 +343,10 @@ fn tab_search_input_id() -> egui::Id {
 
 fn tab_search_overlay_id() -> egui::Id {
   egui::Id::new("tab_search_overlay")
+}
+
+fn egui_id_from_focus_token(token: UiFocusToken) -> egui::Id {
+  tab_strip::tab_strip_tab_widget_id(TabId(token.0))
 }
 
 fn restore_focus_or_clear_popup_focus(
@@ -809,7 +813,7 @@ pub fn chrome_ui_with_bookmarks(
       restore_focus_or_clear_popup_focus(
         ctx,
         close_on_escape,
-        Some(open_menu.opener_id),
+        open_menu.opener_focus.map(egui_id_from_focus_token),
         &focus_ids,
       );
       app.chrome.open_tab_context_menu = None;
@@ -3525,7 +3529,11 @@ pub fn chrome_ui_with_bookmarks(
       }
 
       if app.chrome.open_tab_context_menu.is_none() {
-        let opener = restore_focus_on_close.then_some(open_menu.opener_id);
+        let opener = if restore_focus_on_close {
+          open_menu.opener_focus.map(egui_id_from_focus_token)
+        } else {
+          None
+        };
         restore_focus_or_clear_popup_focus(ctx, restore_focus_on_close, opener, &popup_focus_ids);
       }
 
@@ -3568,7 +3576,7 @@ pub fn chrome_ui_with_bookmarks(
 
         if let Some(url) = hovered_url.clone() {
           app.chrome.link_drag_url = Some(url);
-          app.chrome.link_drag_start_pos = Some(pos);
+          app.chrome.link_drag_start_pos = Some((pos.x, pos.y));
           app.chrome.link_drag_active = false;
         } else {
           app.chrome.clear_link_drag();
@@ -3583,8 +3591,8 @@ pub fn chrome_ui_with_bookmarks(
             .chrome
             .link_drag_start_pos
             .expect("checked is_some above");
-          let dx = pos.x - start.x;
-          let dy = pos.y - start.y;
+          let dx = pos.x - start.0;
+          let dy = pos.y - start.1;
           let dist_sq = dx * dx + dy * dy;
           if dist_sq >= LINK_DRAG_THRESHOLD_POINTS * LINK_DRAG_THRESHOLD_POINTS {
             app.chrome.link_drag_active = true;
@@ -3904,7 +3912,13 @@ mod tests {
         continue;
       }
 
-      if app.chrome.request_close_tab(ctx, tab_id) {
+      let motion = crate::ui::motion::UiMotion::from_ctx(ctx);
+      let animations_enabled = ctx.style().animation_time > 0.0;
+      let now = ctx.input(|i| i.time);
+      if app
+        .chrome
+        .request_close_tab(tab_id, now, motion, animations_enabled)
+      {
         app.remove_tab(tab_id);
         app.chrome.clear_tab_close(tab_id);
       }

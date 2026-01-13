@@ -11907,10 +11907,17 @@ impl App {
           // first request starts the close animation and we return without closing. The tab strip
           // re-emits `CloseTab` once the animation finishes.
           let was_closing = self.browser_state.chrome.closing_tabs.contains_key(&tab_id);
-          let should_close_now = self
-            .browser_state
-            .chrome
-            .request_close_tab(&self.egui_ctx, tab_id);
+          let should_close_now = {
+            let motion = fastrender::ui::motion::UiMotion::from_settings(
+              self.browser_state.appearance.reduced_motion,
+            );
+            let animations_enabled = self.egui_ctx.style().animation_time > 0.0;
+            let now = self.egui_ctx.input(|i| i.time);
+            self
+              .browser_state
+              .chrome
+              .request_close_tab(tab_id, now, motion, animations_enabled)
+          };
           if !should_close_now {
             if !was_closing {
               // Chrome UI has already been built for this frame; request another redraw so the tab

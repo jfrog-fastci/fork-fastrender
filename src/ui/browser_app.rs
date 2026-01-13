@@ -49,6 +49,13 @@ impl TabGroupId {
   }
 }
 
+/// Opaque focus token used to restore focus to a UI element after dismissing a popup/context menu.
+///
+/// This is intentionally UI-backend-agnostic: egui-based front-ends can convert from/to egui ids,
+/// while other UIs can use whatever stable widget/focus identifiers they prefer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UiFocusToken(pub u64);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TabGroupColor {
   #[default]
@@ -822,10 +829,10 @@ pub struct ChromeState {
   #[cfg(feature = "browser_ui")]
   pub dragging_tab_id: Option<TabId>,
   #[cfg(feature = "browser_ui")]
-  pub drag_start_pointer_pos: Option<egui::Pos2>,
+  pub drag_start_pointer_pos: Option<(f32, f32)>,
   /// Screen-space rect of the tab when the drag started (used for rendering a floating drag ghost).
   #[cfg(feature = "browser_ui")]
-  pub drag_start_tab_rect: Option<egui::Rect>,
+  pub drag_start_tab_rect: Option<(f32, f32, f32, f32)>,
   /// Monotonic counter incremented each time a tab drag starts.
   ///
   /// This is used to namespace egui animation ids so drag animations (lift/indicator/pulse) reset
@@ -846,7 +853,7 @@ pub struct ChromeState {
   #[cfg(feature = "browser_ui")]
   pub link_drag_url: Option<String>,
   #[cfg(feature = "browser_ui")]
-  pub link_drag_start_pos: Option<egui::Pos2>,
+  pub link_drag_start_pos: Option<(f32, f32)>,
   #[cfg(feature = "browser_ui")]
   pub link_drag_active: bool,
   /// Per-tab close animation state, keyed by tab id.
@@ -913,15 +920,19 @@ impl ChromeState {
   /// When motion is disabled (reduced motion or egui animations disabled), this returns `true`
   /// immediately.
   #[cfg(feature = "browser_ui")]
-  pub fn request_close_tab(&mut self, ctx: &egui::Context, tab_id: TabId) -> bool {
-    let motion = crate::ui::motion::UiMotion::from_ctx(ctx);
+  pub fn request_close_tab(
+    &mut self,
+    tab_id: TabId,
+    now: f64,
+    motion: crate::ui::motion::UiMotion,
+    animations_enabled: bool,
+  ) -> bool {
     let duration = motion.durations.tab_close;
-    let motion_enabled = motion.enabled && duration > 0.0 && ctx.style().animation_time > 0.0;
+    let motion_enabled = motion.enabled && animations_enabled && duration > 0.0;
     if !motion_enabled {
       return true;
     }
 
-    let now = ctx.input(|i| i.time);
     match self.closing_tabs.get(&tab_id).copied() {
       None => {
         self.closing_tabs.insert(
@@ -947,10 +958,8 @@ impl ChromeState {
 pub struct OpenTabContextMenuState {
   pub tab_id: TabId,
   pub anchor_points: (f32, f32),
-  /// Egui widget id for the invoking tab control, used to restore focus when the context menu
-  /// closes.
-  #[cfg(feature = "browser_ui")]
-  pub opener_id: egui::Id,
+  /// Focus token for the invoking tab control, used to restore focus when the context menu closes.
+  pub opener_focus: Option<UiFocusToken>,
 }
 
 #[derive(Debug, Clone)]
