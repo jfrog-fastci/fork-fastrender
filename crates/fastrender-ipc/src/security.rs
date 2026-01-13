@@ -603,6 +603,7 @@ mod tests {
           referrer_policy: None,
           sandbox_flags: crate::SandboxFlags::NONE,
           opaque_origin: false,
+          effects: crate::SubframeEffects::default(),
         }],
       },
     );
@@ -652,6 +653,7 @@ mod tests {
           referrer_policy: None,
           sandbox_flags: crate::SandboxFlags::NONE,
           opaque_origin: false,
+          effects: crate::SubframeEffects::default(),
         }],
       },
     );
@@ -817,6 +819,7 @@ mod tests {
       referrer_policy: None,
       sandbox_flags: crate::SandboxFlags::NONE,
       opaque_origin: false,
+      effects: crate::SubframeEffects::default(),
     }
   }
 

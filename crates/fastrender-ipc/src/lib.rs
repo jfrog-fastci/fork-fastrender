@@ -912,6 +912,28 @@ impl AffineTransform {
   }
 }
 
+/// Summary of visual effects affecting an out-of-process subframe at its embedding point.
+///
+/// The browser compositor currently supports only a small subset of CSS effects when compositing
+/// out-of-process iframes:
+/// - axis-aligned affine transforms (translate/scale),
+/// - axis-aligned rectangular/rounded clipping (via [`SubframeInfo::clip_stack`]).
+///
+/// When any other effect (opacity groups, blend modes, filters/masks, non-axis-aligned transforms)
+/// is present, embedders should conservatively fall back to in-process ("inline") rendering until
+/// compositor support lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SubframeEffects {
+  /// True when a non-identity transform affects the subframe embedding.
+  pub has_transform: bool,
+  /// True when an opacity group affects the subframe embedding.
+  pub has_opacity: bool,
+  /// True when a non-normal blend mode affects the subframe embedding.
+  pub has_blend_mode: bool,
+  /// True when filters and/or masks affect the subframe embedding.
+  pub has_filters_or_masks: bool,
+}
+
 /// Metadata describing how a child frame's surface should be composited into its embedder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubframeInfo {
@@ -940,6 +962,13 @@ pub struct SubframeInfo {
   /// True when the subframe's origin must be treated as opaque (e.g. sandbox without
   /// `allow-same-origin`).
   pub opaque_origin: bool,
+  /// Summary of visual effects active at the embedding point.
+  ///
+  /// This is primarily used by early OOPIF implementations to decide whether the subframe can be
+  /// safely composited out-of-process (MVP compositor limitations) or should be rendered inline as
+  /// a temporary fallback.
+  #[serde(default)]
+  pub effects: SubframeEffects,
 }
 
 /// Metadata emitted by a renderer describing iframe elements discovered in a parent frame.
@@ -1809,6 +1838,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -1852,6 +1882,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -1893,6 +1924,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -1936,6 +1968,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let info_blue = SubframeInfo {
@@ -1956,6 +1989,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     // Provide in reverse input order; blue should still end up on top due to z_index sorting.
@@ -1998,6 +2032,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let plan = FramePaintPlan {
@@ -2044,6 +2079,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let infos = vec![info; MAX_SUBFRAMES_PER_FRAME + 1];
@@ -2075,6 +2111,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let err = composite_subframes(parent, [(&info, &child)])
@@ -2094,6 +2131,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
     let layer = solid_buffer(1, 1, [0, 0, 0, 0]);
     let plan = FramePaintPlan {
@@ -2136,6 +2174,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let err = composite_subframe(&mut parent, &child, &info).unwrap_err();
@@ -2165,6 +2204,7 @@ mod compositor_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let out = composite_subframes(parent, [(&info, &child)]).unwrap();
@@ -2193,6 +2233,7 @@ mod navigation_tests {
       referrer_policy: Some(ReferrerPolicy::NoReferrer),
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let ctx = NavigationContext::for_subframe_navigation_from_info(
@@ -2224,6 +2265,7 @@ mod navigation_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
 
     let ctx = NavigationContext::for_subframe_navigation_from_info(
@@ -2319,6 +2361,7 @@ mod navigation_tests {
       referrer_policy: None,
       sandbox_flags: SandboxFlags::NONE,
       opaque_origin: false,
+      effects: SubframeEffects::default(),
     };
     let inherited = NavigationContext::for_subframe_navigation_from_info(
       &factory,
@@ -2377,6 +2420,7 @@ mod frame_hit_testing_tests {
         referrer_policy: None,
         sandbox_flags: SandboxFlags::NONE,
         opaque_origin: false,
+        effects: SubframeEffects::default(),
       }],
     );
 
@@ -2414,6 +2458,7 @@ mod frame_hit_testing_tests {
         referrer_policy: None,
         sandbox_flags: SandboxFlags::NONE,
         opaque_origin: false,
+        effects: SubframeEffects::default(),
       }],
     );
 

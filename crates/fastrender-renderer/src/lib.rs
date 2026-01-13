@@ -3,7 +3,7 @@
 use fastrender_ipc::{
   AffineTransform, BrowserToRenderer, ClipItem, CursorKind, FrameBuffer, FrameId, HoverState,
   IframeNavigation, IpcTransport, NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags,
-  SiteLock, SubframeInfo,
+  SiteLock, SubframeEffects, SubframeInfo,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -585,10 +585,38 @@ fn parse_sandbox_flags(raw: &str) -> SandboxFlags {
   flags
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ParsedTransform {
+  Identity,
+  /// Axis-aligned 2D transform (translate/scale), suitable for the MVP compositor.
+  Supported(AffineTransform),
+  /// Non-axis-aligned / otherwise unsupported transform (rotate/skew/3D/etc).
+  Unsupported,
+}
+
+impl Default for ParsedTransform {
+  fn default() -> Self {
+    Self::Identity
+  }
+}
+
+impl ParsedTransform {
+  fn has_transform(self) -> bool {
+    !matches!(self, Self::Identity)
+  }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct IframeInteractionStyle {
   pointer_events_none: bool,
   visibility_hidden: bool,
+  /// Opacity group affecting the embedding point.
+  has_opacity: bool,
+  /// Non-normal mix-blend-mode affecting the embedding point.
+  has_blend_mode: bool,
+  /// Filters and/or masks affecting the embedding point.
+  has_filters_or_masks: bool,
+  transform: ParsedTransform,
 }
 
 fn is_ident_char(b: u8) -> bool {
@@ -623,12 +651,276 @@ fn apply_style_declarations(style: &mut IframeInteractionStyle, decls: &str) {
     };
     let name = raw_name.trim().to_ascii_lowercase();
     let value = raw_value.trim();
-    let token = value.split_ascii_whitespace().next().unwrap_or("");
     if name == "pointer-events" {
+      let token = value.split_ascii_whitespace().next().unwrap_or("");
       style.pointer_events_none = token.eq_ignore_ascii_case("none");
     } else if name == "visibility" {
+      let token = value.split_ascii_whitespace().next().unwrap_or("");
       style.visibility_hidden = token.eq_ignore_ascii_case("hidden");
+    } else if name == "opacity" {
+      style.has_opacity = match parse_css_number(value) {
+        Some(v) => (v - 1.0).abs() > 1e-6,
+        None => true,
+      };
+    } else if name == "mix-blend-mode" {
+      let token = value.split_ascii_whitespace().next().unwrap_or("");
+      style.has_blend_mode = !token.is_empty() && !token.eq_ignore_ascii_case("normal");
+    } else if name == "filter" {
+      style.has_filters_or_masks = !value.is_empty() && !value.eq_ignore_ascii_case("none");
+    } else if name == "mask"
+      || name.starts_with("mask-")
+      || name == "-webkit-mask"
+      || name.starts_with("-webkit-mask-")
+    {
+      style.has_filters_or_masks = !value.is_empty() && !value.eq_ignore_ascii_case("none");
+    } else if name == "transform" {
+      style.transform = parse_transform(value);
     }
+  }
+}
+
+fn parse_css_number(raw: &str) -> Option<f32> {
+  raw.trim().parse::<f32>().ok()
+}
+
+fn parse_css_length_px(raw: &str) -> Option<f32> {
+  let raw = raw.trim();
+  if raw.eq_ignore_ascii_case("0") || raw.eq_ignore_ascii_case("0.0") {
+    return Some(0.0);
+  }
+  if let Some(px) = raw.strip_suffix("px") {
+    return px.trim().parse::<f32>().ok();
+  }
+  // Be conservative: refuse to guess other units/percentages.
+  if raw.ends_with('%') || raw.ends_with("em") || raw.ends_with("rem") {
+    return None;
+  }
+  raw.parse::<f32>().ok()
+}
+
+fn split_transform_args(args: &str) -> Vec<&str> {
+  args
+    .split(|c: char| c == ',' || c.is_ascii_whitespace())
+    .filter(|s| !s.is_empty())
+    .collect()
+}
+
+fn affine_mul(a: AffineTransform, b: AffineTransform) -> AffineTransform {
+  // 2D affine multiply for matrices in the form:
+  //   [ a c e ]
+  //   [ b d f ]
+  //   [ 0 0 1 ]
+  AffineTransform {
+    a: a.a * b.a + a.c * b.b,
+    b: a.b * b.a + a.d * b.b,
+    c: a.a * b.c + a.c * b.d,
+    d: a.b * b.c + a.d * b.d,
+    e: a.a * b.e + a.c * b.f + a.e,
+    f: a.b * b.e + a.d * b.f + a.f,
+  }
+}
+
+fn parse_transform(raw: &str) -> ParsedTransform {
+  let raw = raw.trim();
+  if raw.is_empty() || raw.eq_ignore_ascii_case("none") {
+    return ParsedTransform::Identity;
+  }
+
+  let mut cursor = raw;
+  let mut out = AffineTransform::IDENTITY;
+
+  while !cursor.trim_start().is_empty() {
+    cursor = cursor.trim_start();
+    let Some(open_rel) = cursor.find('(') else {
+      return ParsedTransform::Unsupported;
+    };
+    let name = cursor[..open_rel].trim().to_ascii_lowercase();
+    let after_open = &cursor[open_rel + 1..];
+    let Some(close_rel) = after_open.find(')') else {
+      return ParsedTransform::Unsupported;
+    };
+    let args_raw = &after_open[..close_rel];
+    cursor = &after_open[close_rel + 1..];
+
+    let matrix = match name.as_str() {
+      "translate" => {
+        let args = split_transform_args(args_raw);
+        if args.is_empty() || args.len() > 2 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(tx) = parse_css_length_px(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let ty = if args.len() == 2 {
+          let Some(ty) = parse_css_length_px(args[1]) else {
+            return ParsedTransform::Unsupported;
+          };
+          ty
+        } else {
+          0.0
+        };
+        AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: tx,
+          f: ty,
+        }
+      }
+      "translatex" => {
+        let args = split_transform_args(args_raw);
+        if args.len() != 1 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(tx) = parse_css_length_px(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: tx,
+          f: 0.0,
+        }
+      }
+      "translatey" => {
+        let args = split_transform_args(args_raw);
+        if args.len() != 1 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(ty) = parse_css_length_px(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: 0.0,
+          f: ty,
+        }
+      }
+      "scale" => {
+        let args = split_transform_args(args_raw);
+        if args.is_empty() || args.len() > 2 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(sx) = parse_css_number(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let sy = if args.len() == 2 {
+          let Some(sy) = parse_css_number(args[1]) else {
+            return ParsedTransform::Unsupported;
+          };
+          sy
+        } else {
+          sx
+        };
+        AffineTransform {
+          a: sx,
+          b: 0.0,
+          c: 0.0,
+          d: sy,
+          e: 0.0,
+          f: 0.0,
+        }
+      }
+      "scalex" => {
+        let args = split_transform_args(args_raw);
+        if args.len() != 1 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(sx) = parse_css_number(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        AffineTransform {
+          a: sx,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: 0.0,
+          f: 0.0,
+        }
+      }
+      "scaley" => {
+        let args = split_transform_args(args_raw);
+        if args.len() != 1 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(sy) = parse_css_number(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: sy,
+          e: 0.0,
+          f: 0.0,
+        }
+      }
+      "matrix" => {
+        let args = split_transform_args(args_raw);
+        if args.len() != 6 {
+          return ParsedTransform::Unsupported;
+        }
+        let Some(a) = parse_css_number(args[0]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let Some(b) = parse_css_number(args[1]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let Some(c) = parse_css_number(args[2]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let Some(d) = parse_css_number(args[3]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let Some(e) = parse_css_number(args[4]) else {
+          return ParsedTransform::Unsupported;
+        };
+        let Some(f) = parse_css_number(args[5]) else {
+          return ParsedTransform::Unsupported;
+        };
+
+        // MVP compositor only supports axis-aligned matrices.
+        const EPS: f32 = 1e-6;
+        if b.abs() > EPS || c.abs() > EPS {
+          return ParsedTransform::Unsupported;
+        }
+
+        AffineTransform {
+          a,
+          b: 0.0,
+          c: 0.0,
+          d,
+          e,
+          f,
+        }
+      }
+      _ => return ParsedTransform::Unsupported,
+    };
+
+    out = affine_mul(out, matrix);
+  }
+
+  if !out.a.is_finite()
+    || !out.d.is_finite()
+    || !out.e.is_finite()
+    || !out.f.is_finite()
+    || out.a == 0.0
+    || out.d == 0.0
+  {
+    return ParsedTransform::Unsupported;
+  }
+
+  // Treat an exact identity matrix as no transform so callers don't need to special-case.
+  if out.a == 1.0 && out.b == 0.0 && out.c == 0.0 && out.d == 1.0 && out.e == 0.0 && out.f == 0.0 {
+    ParsedTransform::Identity
+  } else {
+    ParsedTransform::Supported(out)
   }
 }
 
@@ -703,7 +995,7 @@ pub fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
   iframe_tags
     .into_iter()
     .enumerate()
-    .map(|(idx, tag)| {
+    .filter_map(|(idx, tag)| {
       let attrs = parse_tag_attributes(tag);
       let src = attrs
         .get("src")
@@ -726,17 +1018,38 @@ pub fn subframes_from_html(frame_id: FrameId, html: &str) -> Vec<SubframeInfo> {
       }
       let hit_testable = !style.pointer_events_none && !style.visibility_hidden && !inert;
 
-      SubframeInfo {
+      let effects = SubframeEffects {
+        has_transform: style.transform.has_transform(),
+        has_opacity: style.has_opacity,
+        has_blend_mode: style.has_blend_mode,
+        has_filters_or_masks: style.has_filters_or_masks,
+      };
+
+      // MVP compositor limitation: only axis-aligned translate/scale transforms are supported.
+      // If any other stacking/effect state is present, fall back to inline rendering by omitting
+      // the placement from the OOPIF subframe list.
+      if effects.has_opacity || effects.has_blend_mode || effects.has_filters_or_masks {
+        return None;
+      }
+
+      let transform = match style.transform {
+        ParsedTransform::Identity => AffineTransform::IDENTITY,
+        ParsedTransform::Supported(t) => t,
+        ParsedTransform::Unsupported => return None,
+      };
+
+      Some(SubframeInfo {
         child: FrameId(frame_id.0.saturating_mul(1000).saturating_add(idx as u64 + 1)),
         src,
-        transform: AffineTransform::IDENTITY,
+        transform,
         clip_stack: Vec::<ClipItem>::new(),
         z_index: idx as u64,
         hit_testable,
         referrer_policy,
         sandbox_flags,
         opaque_origin,
-      }
+        effects,
+      })
     })
     .collect()
 }
@@ -1336,6 +1649,31 @@ mod tests {
     let subframes = subframes_from_html(FrameId(1), html);
     assert_eq!(subframes.len(), 1);
     assert_eq!(subframes[0].src.as_deref(), Some("/frame.html"));
+  }
+
+  #[test]
+  fn iframe_with_rotate_transform_is_not_reported_for_oopif_compositing() {
+    let html = r#"<!doctype html><iframe style="transform: rotate(10deg)" src="https://child.test/"></iframe>"#;
+    let subframes = subframes_from_html(FrameId(1), html);
+    assert!(
+      subframes.is_empty(),
+      "non-axis-aligned transforms should fall back to inline rendering"
+    );
+  }
+
+  #[test]
+  fn iframe_with_translate_transform_reports_axis_aligned_matrix() {
+    let html = r#"<!doctype html><iframe style="transform: translate(10px, 20px)" src="https://child.test/"></iframe>"#;
+    let subframes = subframes_from_html(FrameId(1), html);
+    assert_eq!(subframes.len(), 1);
+    let t = subframes[0].transform;
+    assert!(t.is_axis_aligned());
+    assert_eq!(t.e, 10.0);
+    assert_eq!(t.f, 20.0);
+    assert!(
+      subframes[0].effects.has_transform,
+      "expected transform presence to be reflected in SubframeEffects"
+    );
   }
 
   #[test]

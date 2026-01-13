@@ -1262,7 +1262,7 @@ fn oopif_parent_csp_base_href_affects_iframe_src_resolution() {
   });
   parent_renderer.send(&BrowserToRenderer::Navigate {
     frame_id: parent_frame,
-    url: parent_url.clone(),
+    navigation: IframeNavigation::Url(parent_url.clone()),
     context: NavigationContext {
       referrer_url: None,
       referrer_policy: ReferrerPolicy::default(),
