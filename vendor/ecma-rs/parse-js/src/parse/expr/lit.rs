@@ -1885,7 +1885,7 @@ fn validate_regex_pattern(
       } else {
         // Disallowed syntax characters in UnicodeSets mode when unescaped.
         match ch {
-          '(' | '{' | '}' | '/' | '|' | ')' => {
+          '(' | '{' | '}' | '/' | '|' | ')' | ']' => {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + i,
