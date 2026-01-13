@@ -237,6 +237,20 @@ impl OwnedHandle {
 }
 
 #[cfg(windows)]
+impl std::os::windows::io::AsRawHandle for OwnedHandle {
+  fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+    self.as_raw() as _
+  }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::IntoRawHandle for OwnedHandle {
+  fn into_raw_handle(self) -> std::os::windows::io::RawHandle {
+    self.into_raw() as _
+  }
+}
+
+#[cfg(windows)]
 impl Drop for OwnedHandle {
   fn drop(&mut self) {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
