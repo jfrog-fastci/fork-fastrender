@@ -20,6 +20,8 @@ const TAB_PADDING_X: f32 = 10.0;
 const GROUP_CHIP_MIN_WIDTH: f32 = 90.0;
 const GROUP_CHIP_MAX_WIDTH: f32 = 180.0;
 const GROUP_CHIP_PADDING_X: f32 = 10.0;
+const GROUP_CHIP_ICON_SIZE: f32 = 10.0;
+const GROUP_CHIP_ICON_GAP: f32 = 6.0;
 const CONTROL_BUTTON_SIZE: f32 = 28.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_GAP: f32 = 8.0;
@@ -244,14 +246,19 @@ fn placeholder_favicon(painter: &egui::Painter, rect: Rect, visuals: &egui::Visu
 fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
   let font_id = egui::TextStyle::Button.resolve(ui.style());
   let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, ui.visuals().text_color()));
-  (galley.size().x + GROUP_CHIP_PADDING_X * 2.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH)
+  // Reserve fixed space for the collapse/expand affordance icon so the chip width remains stable
+  // across collapsed/expanded states.
+  (galley.size().x + GROUP_CHIP_PADDING_X * 2.0 + GROUP_CHIP_ICON_SIZE + GROUP_CHIP_ICON_GAP)
+    .clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH)
 }
 
 fn group_chip_ui(
   ui: &mut egui::Ui,
+  motion: UiMotion,
   app: &mut BrowserAppState,
   group_id: TabGroupId,
   ops: &mut Vec<TabStripOp>,
+  focus_ring: FocusRingStyle,
 ) {
   let Some(group) = app.tab_groups.get(&group_id) else {
     return;
@@ -265,21 +272,88 @@ fn group_chip_ui(
     group.title.clone()
   };
 
-  let arrow = if collapsed { "▸" } else { "▾" };
-  let label = format!("{arrow} {title}");
-  let width = group_chip_width(ui, &label);
-
   let id = ui.make_persistent_id(("tab_group_chip", group_id.0));
-  let mut response = ui
-    .push_id(id, |ui| {
-      ui.add_sized(
-        Vec2::new(width, TAB_HEIGHT),
-        egui::Button::new(label)
-          .fill(group_color_fill(color))
-          .stroke(Stroke::new(1.0, group_color_egui(color))),
-      )
-    })
-    .inner;
+  let width = group_chip_width(ui, &title);
+  let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
+  let mut response = ui.interact(chip_rect, id, Sense::click());
+  if response.hovered() {
+    response = response.on_hover_text(title.as_str());
+  }
+  response.widget_info({
+    let label = format!("Tab group: {title}");
+    move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+  });
+
+  let visuals = ui.style().visuals.clone();
+
+  // Micro-interaction: fade hover highlight in/out (keeping group color identity).
+  let hover_t = motion.animate_bool(
+    ui.ctx(),
+    id.with("hover"),
+    response.hovered(),
+    motion.durations.hover_fade,
+  );
+
+  let (r, g, b) = color.rgb();
+  let fill_base = Color32::from_rgba_unmultiplied(r, g, b, 48);
+  let fill_hover = Color32::from_rgba_unmultiplied(r, g, b, 72);
+  let fill_active = Color32::from_rgba_unmultiplied(r, g, b, 92);
+  let mut fill = lerp_color(fill_base, fill_hover, hover_t);
+  if response.is_pointer_button_down_on() {
+    fill = fill_active;
+  }
+
+  let stroke_base = with_alpha(group_color_egui(color), 0.85);
+  let stroke_hover = group_color_egui(color);
+  let stroke_color = lerp_color(stroke_base, stroke_hover, hover_t);
+  let stroke = Stroke::new(1.0, stroke_color);
+
+  let rounding = visuals.widgets.inactive.rounding;
+  ui.painter().rect_filled(chip_rect, rounding, fill);
+  ui
+    .painter()
+    .rect_stroke(chip_rect.shrink(0.5), rounding, stroke);
+
+  // Collapse/expand indicator: paint a small rotating triangle instead of swapping text glyphs.
+  let expanded_t = motion.animate_bool(
+    ui.ctx(),
+    id.with("expanded"),
+    !collapsed,
+    motion.durations.tab_underline,
+  );
+  let angle = expanded_t * std::f32::consts::FRAC_PI_2;
+
+  let icon_min = Pos2::new(
+    chip_rect.min.x + GROUP_CHIP_PADDING_X,
+    chip_rect.center().y - GROUP_CHIP_ICON_SIZE * 0.5,
+  );
+  let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(GROUP_CHIP_ICON_SIZE));
+  let icon_center = icon_rect.center();
+  let (sin, cos) = angle.sin_cos();
+  let rot = |v: Vec2| Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+  let half = GROUP_CHIP_ICON_SIZE * 0.5;
+  let tri = [
+    Vec2::new(-half * 0.35, -half * 0.55),
+    Vec2::new(-half * 0.35, half * 0.55),
+    Vec2::new(half * 0.55, 0.0),
+  ];
+  let points: Vec<Pos2> = tri.iter().map(|v| icon_center + rot(*v)).collect();
+  ui.painter()
+    .add(egui::Shape::convex_polygon(points, visuals.text_color(), Stroke::NONE));
+
+  // Title.
+  let title_start_x = icon_rect.max.x + GROUP_CHIP_ICON_GAP;
+  let title_end_x = chip_rect.max.x - GROUP_CHIP_PADDING_X;
+  if title_end_x > title_start_x + 4.0 {
+    let title_rect = Rect::from_min_max(
+      Pos2::new(title_start_x, chip_rect.min.y),
+      Pos2::new(title_end_x, chip_rect.max.y),
+    );
+    let label = egui::Label::new(egui::RichText::new(title.clone()))
+      .truncate(true)
+      .wrap(false);
+    let _ = ui.put(title_rect, label);
+  }
 
   if response.clicked() {
     ops.push(TabStripOp::ToggleGroupCollapsed(group_id));
@@ -318,6 +392,8 @@ fn group_chip_ui(
       ui.close_menu();
     }
   });
+
+  super::paint_focus_ring(ui, &response, focus_ring);
 }
 
 fn tab_ui(
@@ -930,7 +1006,7 @@ pub(super) fn tab_strip_ui(
               if let Some(group_id) = tab_group {
                 let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
                 if is_first {
-                  group_chip_ui(ui, app, group_id, &mut ops);
+                  group_chip_ui(ui, motion, app, group_id, &mut ops, focus_ring);
                 }
 
                 if app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed) {
