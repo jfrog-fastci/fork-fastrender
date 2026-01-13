@@ -276,6 +276,9 @@ pub use browser_document_js::{BrowserDocumentJs, RunUntilStableOutcome, RunUntil
 mod browser_document2;
 pub use browser_document2::BrowserDocument2;
 
+mod chrome_frame_document;
+pub use chrome_frame_document::ChromeFrameDocument;
+
 mod dom2_geometry;
 pub use dom2_geometry::Dom2GeometryContext;
 
