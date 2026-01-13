@@ -2518,6 +2518,54 @@ mod tests {
   }
 
   #[test]
+  fn reorder_root_rejects_invalid_permutations_and_duplicates() {
+    let mut store = BookmarkStore::default();
+    let a = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .unwrap();
+    let b = store
+      .add(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        None,
+      )
+      .unwrap();
+    let c = store
+      .add(
+        "https://c.example/".to_string(),
+        Some("C".to_string()),
+        None,
+      )
+      .unwrap();
+
+    assert_eq!(store.roots, vec![a, b, c]);
+
+    // Wrong length (missing items).
+    assert_eq!(
+      store.reorder_root(&[a, b]).unwrap_err(),
+      BookmarkError::InvalidReorder
+    );
+
+    // Duplicate IDs (also implies one missing).
+    assert_eq!(
+      store.reorder_root(&[a, a, b]).unwrap_err(),
+      BookmarkError::InvalidReorder
+    );
+
+    // Unknown ID not present in the current roots list.
+    assert_eq!(
+      store
+        .reorder_root(&[a, b, BookmarkId(999)])
+        .unwrap_err(),
+      BookmarkError::InvalidReorder
+    );
+  }
+
+  #[test]
   fn remove_by_url_removes_all_duplicates() {
     let mut store = BookmarkStore::default();
     let a1 = store
