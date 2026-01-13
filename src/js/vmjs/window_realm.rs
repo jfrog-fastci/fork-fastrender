@@ -30185,7 +30185,7 @@ fn character_data_append_data_native(
           (Ok(needs), is_text_node && changed)
         }
         Err(err) => {
-          let exc = match make_dom_exception(scope, err.code(), "") {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
             Ok(v) => VmError::Throw(v),
             Err(e) => e,
           };
@@ -30209,7 +30209,7 @@ fn character_data_append_data_native(
       _ => return Err(VmError::TypeError("Illegal invocation")),
     };
     if let Err(err) = dom.replace_data(handle.node_id, offset, 0, &data) {
-      let exc = make_dom_exception(scope, err.code(), "")?;
+      let exc = make_dom_exception(vm, scope, err.code(), "")?;
       return Err(VmError::Throw(exc));
     }
     dom.take_mutation_observer_microtask_needed()
@@ -30261,7 +30261,7 @@ fn character_data_insert_data_native(
           (Ok(needs), is_text_node && changed)
         }
         Err(err) => {
-          let exc = match make_dom_exception(scope, err.code(), "") {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
             Ok(v) => VmError::Throw(v),
             Err(e) => e,
           };
@@ -30283,7 +30283,7 @@ fn character_data_insert_data_native(
       _ => return Err(VmError::TypeError("Illegal invocation")),
     }
     if let Err(err) = dom.replace_data(handle.node_id, offset, 0, &data) {
-      let exc = make_dom_exception(scope, err.code(), "")?;
+      let exc = make_dom_exception(vm, scope, err.code(), "")?;
       return Err(VmError::Throw(exc));
     }
     dom.take_mutation_observer_microtask_needed()
@@ -30330,7 +30330,7 @@ fn character_data_delete_data_native(
           (Ok(needs), is_text_node && changed)
         }
         Err(err) => {
-          let exc = match make_dom_exception(scope, err.code(), "") {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
             Ok(v) => VmError::Throw(v),
             Err(e) => e,
           };
@@ -30352,7 +30352,7 @@ fn character_data_delete_data_native(
       _ => return Err(VmError::TypeError("Illegal invocation")),
     }
     if let Err(err) = dom.replace_data(handle.node_id, offset, count, "") {
-      let exc = make_dom_exception(scope, err.code(), "")?;
+      let exc = make_dom_exception(vm, scope, err.code(), "")?;
       return Err(VmError::Throw(exc));
     }
     dom.take_mutation_observer_microtask_needed()
@@ -30407,7 +30407,7 @@ fn character_data_replace_data_native(
           (Ok(needs), is_text_node && changed)
         }
         Err(err) => {
-          let exc = match make_dom_exception(scope, err.code(), "") {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
             Ok(v) => VmError::Throw(v),
             Err(e) => e,
           };
@@ -30429,7 +30429,7 @@ fn character_data_replace_data_native(
       _ => return Err(VmError::TypeError("Illegal invocation")),
     }
     if let Err(err) = dom.replace_data(handle.node_id, offset, count, &data) {
-      let exc = make_dom_exception(scope, err.code(), "")?;
+      let exc = make_dom_exception(vm, scope, err.code(), "")?;
       return Err(VmError::Throw(exc));
     }
     dom.take_mutation_observer_microtask_needed()
