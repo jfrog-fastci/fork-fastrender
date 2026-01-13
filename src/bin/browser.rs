@@ -7809,23 +7809,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
               }
 
-              let omnibox_has_visited_suggestions = win.app.browser_state.chrome.omnibox.open
-                && win
+              let mut omnibox_changed_due_to_history = false;
+              let omnibox_open_before = win.app.browser_state.chrome.omnibox.open;
+              if omnibox_open_before {
+                let selected_before = win.app.browser_state.chrome.omnibox.selected;
+                let omnibox_query = win
                   .app
                   .browser_state
                   .chrome
                   .omnibox
-                  .suggestions
-                  .iter()
-                  .any(|s| {
-                    s.source
-                      == fastrender::ui::OmniboxSuggestionSource::Url(
-                        fastrender::ui::OmniboxUrlSource::Visited,
-                      )
-                  });
-
-              if omnibox_has_visited_suggestions {
-                let input = win.app.browser_state.chrome.address_bar_text.as_str();
+                  .original_input
+                  .as_deref()
+                  .unwrap_or(win.app.browser_state.chrome.address_bar_text.as_str());
                 let ctx = fastrender::ui::OmniboxContext {
                   open_tabs: &win.app.browser_state.tabs,
                   closed_tabs: &win.app.browser_state.closed_tabs,
@@ -7835,21 +7830,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   remote_search_suggest: Some(&win.app.browser_state.chrome.remote_search_cache),
                 };
                 let suggestions =
-                  fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, input);
+                  fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, omnibox_query);
+                omnibox_changed_due_to_history =
+                  suggestions != win.app.browser_state.chrome.omnibox.suggestions;
                 win.app.browser_state.chrome.omnibox.suggestions = suggestions;
+                win.app.browser_state.chrome.omnibox.last_built_for_input.clear();
                 win
                   .app
                   .browser_state
                   .chrome
                   .omnibox
                   .last_built_for_input
-                  .clone_from(&win.app.browser_state.chrome.address_bar_text);
-                win
-                  .app
-                  .browser_state
-                  .chrome
-                  .omnibox
-                  .last_built_remote_fetched_at =
+                  .push_str(omnibox_query);
+                win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
                   win.app.browser_state.chrome.remote_search_cache.fetched_at;
                 if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
                   win.app.browser_state.chrome.omnibox.open = false;
@@ -7865,7 +7858,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   win.app.browser_state.chrome.omnibox.selected = None;
                   win.app.browser_state.chrome.omnibox.original_input = None;
                 }
-              } else if !win.app.browser_state.chrome.omnibox.open {
+                omnibox_changed_due_to_history |= win.app.browser_state.chrome.omnibox.open
+                  != omnibox_open_before
+                  || win.app.browser_state.chrome.omnibox.selected != selected_before;
+              } else {
                 // Invalidate cached suggestions built from the old history store so the next time
                 // the user opens the omnibox dropdown it rebuilds against the updated global
                 // history/visited state.
@@ -7897,7 +7893,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               let needs_redraw_due_to_history = *id == window_id
                 || Some(*id) == active_window_id
                 || win.app.history_panel_open
-                || omnibox_has_visited_suggestions
+                || omnibox_changed_due_to_history
                 || about_history_visible;
               if needs_redraw_due_to_history
                 && !(win.app.window_occluded || win.app.window_minimized)
@@ -8695,21 +8691,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       for (id, win) in windows.iter_mut() {
         let is_source_window = *id == source_window_id;
         let is_active_window = Some(*id) == active_window_id;
-
-        let omnibox_has_bookmark_suggestions = win.app.browser_state.chrome.omnibox.open
-          && win
-            .app
-            .browser_state
-            .chrome
-            .omnibox
-            .suggestions
-            .iter()
-            .any(|s| {
-              s.source
-                == fastrender::ui::OmniboxSuggestionSource::Url(
-                  fastrender::ui::OmniboxUrlSource::Bookmark,
-                )
-            });
+        let omnibox_open_before = win.app.browser_state.chrome.omnibox.open;
 
         let active_url_for_star = win
           .app
@@ -8737,8 +8719,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .is_some_and(|url| win.app.bookmarks.contains_url(url));
         let star_state_changed = star_state_before != star_state_after;
 
-        if omnibox_has_bookmark_suggestions {
-          let input = win.app.browser_state.chrome.address_bar_text.as_str();
+        let mut omnibox_changed_due_to_bookmarks = false;
+        if omnibox_open_before {
+          let selected_before = win.app.browser_state.chrome.omnibox.selected;
+          let omnibox_query = win
+            .app
+            .browser_state
+            .chrome
+            .omnibox
+            .original_input
+            .as_deref()
+            .unwrap_or(win.app.browser_state.chrome.address_bar_text.as_str());
           let ctx = fastrender::ui::OmniboxContext {
             open_tabs: &win.app.browser_state.tabs,
             closed_tabs: &win.app.browser_state.closed_tabs,
@@ -8747,21 +8738,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             bookmarks: Some(&win.app.bookmarks),
             remote_search_suggest: Some(&win.app.browser_state.chrome.remote_search_cache),
           };
-          let suggestions = fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, input);
+          let suggestions =
+            fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, omnibox_query);
+          omnibox_changed_due_to_bookmarks =
+            suggestions != win.app.browser_state.chrome.omnibox.suggestions;
           win.app.browser_state.chrome.omnibox.suggestions = suggestions;
+          win.app.browser_state.chrome.omnibox.last_built_for_input.clear();
           win
             .app
             .browser_state
             .chrome
             .omnibox
             .last_built_for_input
-            .clone_from(&win.app.browser_state.chrome.address_bar_text);
-          win
-            .app
-            .browser_state
-            .chrome
-            .omnibox
-            .last_built_remote_fetched_at =
+            .push_str(omnibox_query);
+          win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
             win.app.browser_state.chrome.remote_search_cache.fetched_at;
           if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
             win.app.browser_state.chrome.omnibox.open = false;
@@ -8777,13 +8767,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             win.app.browser_state.chrome.omnibox.selected = None;
             win.app.browser_state.chrome.omnibox.original_input = None;
           }
+          omnibox_changed_due_to_bookmarks |= win.app.browser_state.chrome.omnibox.open
+            != omnibox_open_before
+            || win.app.browser_state.chrome.omnibox.selected != selected_before;
+        } else {
+          win.app.browser_state.chrome.omnibox.reset();
         }
 
         let needs_redraw_due_to_bookmarks = is_source_window
           || is_active_window
           || win.app.bookmarks_panel_open
           || star_state_changed
-          || omnibox_has_bookmark_suggestions;
+          || omnibox_changed_due_to_bookmarks;
         if needs_redraw_due_to_bookmarks && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
@@ -8829,23 +8824,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         win.app.browser_state.visited.clear();
         win.app.browser_state.seed_visited_from_history();
 
-        let omnibox_has_visited_suggestions = win.app.browser_state.chrome.omnibox.open
-          && win
+        let mut omnibox_changed_due_to_history = false;
+        let omnibox_open_before = win.app.browser_state.chrome.omnibox.open;
+        if omnibox_open_before {
+          let selected_before = win.app.browser_state.chrome.omnibox.selected;
+          let omnibox_query = win
             .app
             .browser_state
             .chrome
             .omnibox
-            .suggestions
-            .iter()
-            .any(|s| {
-              s.source
-                == fastrender::ui::OmniboxSuggestionSource::Url(
-                  fastrender::ui::OmniboxUrlSource::Visited,
-                )
-            });
-
-        if omnibox_has_visited_suggestions {
-          let input = win.app.browser_state.chrome.address_bar_text.as_str();
+            .original_input
+            .as_deref()
+            .unwrap_or(win.app.browser_state.chrome.address_bar_text.as_str());
           let ctx = fastrender::ui::OmniboxContext {
             open_tabs: &win.app.browser_state.tabs,
             closed_tabs: &win.app.browser_state.closed_tabs,
@@ -8854,21 +8844,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             bookmarks: Some(&win.app.bookmarks),
             remote_search_suggest: Some(&win.app.browser_state.chrome.remote_search_cache),
           };
-          let suggestions = fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, input);
+          let suggestions =
+            fastrender::ui::build_omnibox_suggestions_default_limit(&ctx, omnibox_query);
+          omnibox_changed_due_to_history =
+            suggestions != win.app.browser_state.chrome.omnibox.suggestions;
           win.app.browser_state.chrome.omnibox.suggestions = suggestions;
+          win.app.browser_state.chrome.omnibox.last_built_for_input.clear();
           win
             .app
             .browser_state
             .chrome
             .omnibox
             .last_built_for_input
-            .clone_from(&win.app.browser_state.chrome.address_bar_text);
-          win
-            .app
-            .browser_state
-            .chrome
-            .omnibox
-            .last_built_remote_fetched_at =
+            .push_str(omnibox_query);
+          win.app.browser_state.chrome.omnibox.last_built_remote_fetched_at =
             win.app.browser_state.chrome.remote_search_cache.fetched_at;
           if win.app.browser_state.chrome.omnibox.suggestions.is_empty() {
             win.app.browser_state.chrome.omnibox.open = false;
@@ -8884,7 +8873,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             win.app.browser_state.chrome.omnibox.selected = None;
             win.app.browser_state.chrome.omnibox.original_input = None;
           }
-        } else if !win.app.browser_state.chrome.omnibox.open {
+          omnibox_changed_due_to_history |= win.app.browser_state.chrome.omnibox.open
+            != omnibox_open_before
+            || win.app.browser_state.chrome.omnibox.selected != selected_before;
+        } else {
           win.app.browser_state.chrome.omnibox.reset();
         }
 
@@ -8913,7 +8905,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let needs_redraw_due_to_history = *id == history_source_id
           || Some(*id) == active_window_id
           || win.app.history_panel_open
-          || omnibox_has_visited_suggestions
+          || omnibox_changed_due_to_history
           || about_history_visible;
         if needs_redraw_due_to_history && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
