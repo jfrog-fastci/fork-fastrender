@@ -4,8 +4,8 @@
 //! Each context records (among other things) the current Realm and the currently-running Script or
 //! Module record.
 //!
-//! This crate does **not** implement modules yet; however, the host hooks for module loading and
-//! dynamic `import()` need to observe:
+//! `vm-js` implements ES module records + a module graph. Host hooks (module loading, dynamic
+//! `import()`, `import.meta`) still need to observe:
 //!
 //! - the **current Realm** ("where should new objects/closures be created?"), and
 //! - the **active script or module** (used for `import.meta`, dynamic import, etc.).
@@ -17,10 +17,8 @@ use crate::RealmId;
 
 /// Opaque identifier for a Script Record.
 ///
-/// This is currently a placeholder newtype so host embeddings can thread through a stable token
-/// while the engine is still evaluator-independent.
-///
-/// In a future module/script implementation, this will be backed by real Script Records.
+/// `vm-js` does not yet model full Script Records, so this is a host-provided identity token used
+/// for `GetActiveScriptOrModule` and related host hook integration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct ScriptId(u64);
@@ -43,10 +41,9 @@ impl ScriptId {
 
 /// Opaque identifier for a Module Record.
 ///
-/// This is currently a placeholder newtype so host embeddings can thread through a stable token
-/// while the engine is still evaluator-independent.
-///
-/// In a future module implementation, this will be backed by real Module Records.
+/// In `vm-js` this identifies a module record stored in a [`crate::ModuleGraph`]. It is backed by an
+/// opaque numeric value (currently an index); embeddings should treat it as an identity token and
+/// must not interpret the numeric representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct ModuleId(u64);
@@ -86,4 +83,3 @@ pub struct ExecutionContext {
   pub realm: RealmId,
   pub script_or_module: Option<ScriptOrModule>,
 }
-

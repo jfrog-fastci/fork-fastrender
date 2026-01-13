@@ -123,6 +123,11 @@
 //! `prototype` objects, native methods/attributes, wrapper identity caches), see
 //! [`docs::webidl_host_objects`](crate::docs::webidl_host_objects).
 //!
+//! # ECMAScript modules
+//!
+//! For an embedder-facing guide to ES modules (module loading hooks, [`ModuleGraph`], dynamic
+//! `import()`, top-level `await`), see [`docs::modules`](crate::docs::modules).
+//!
 //! # RegExp: Unicode property escapes (`\p{…}` / `\P{…}`)
 //!
 //! RegExp Unicode property escapes are extremely data-driven. For the supported properties,
@@ -399,6 +404,10 @@ pub mod docs {
   /// WebIDL binding initialization patterns (constructors, prototypes, host objects).
   #[doc = include_str!("../docs/webidl_host_objects.md")]
   pub mod webidl_host_objects {}
+
+  /// ECMAScript modules embedding guide (module loading, dynamic import, top-level await).
+  #[doc = include_str!("../docs/modules.md")]
+  pub mod modules {}
 
   /// RegExp Unicode property escapes (`\p{…}` / `\P{…}`) and Unicode data update procedure.
   #[doc = include_str!("../docs/regexp_unicode_properties.md")]
