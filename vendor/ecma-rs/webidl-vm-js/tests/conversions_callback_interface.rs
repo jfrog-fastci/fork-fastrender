@@ -73,7 +73,7 @@ fn noop_native_call(
 }
 
 #[test]
-fn callback_interface_conversion_accepts_callable_or_handle_event_object() -> Result<(), VmError> {
+fn callback_interface_conversion_accepts_callable_or_operation_object() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -104,6 +104,20 @@ fn callback_interface_conversion_accepts_callable_or_handle_event_object() -> Re
   let converted =
     conversions::to_callback_interface(&mut rt, &mut dummy_host, &mut hooks, listener_val)?;
   assert_eq!(converted, listener_val);
+
+  // Object with callable acceptNode method (NodeFilter-style callback interface).
+  let filter_obj = rt.alloc_object()?;
+  rt.scope.push_root(Value::Object(filter_obj))?;
+  rt.define_data_property_str(
+    filter_obj,
+    "acceptNode",
+    cb_val,
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+  let filter_val = Value::Object(filter_obj);
+  let converted =
+    conversions::to_callback_interface(&mut rt, &mut dummy_host, &mut hooks, filter_val)?;
+  assert_eq!(converted, filter_val);
 
   // Object without handleEvent -> TypeError.
   let no_handle = rt.alloc_object()?;
