@@ -4910,6 +4910,8 @@ impl BrowserRuntime {
     }
   }
 
+  // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
+  // borrowed from `self.tabs` without triggering borrow-checker errors (E0502).
   fn sync_js_tab_for_committed_navigation(
     runtime_toggles: &Arc<RuntimeToggles>,
     tab_id: TabId,
