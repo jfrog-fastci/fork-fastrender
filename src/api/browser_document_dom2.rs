@@ -2294,25 +2294,11 @@ impl BrowserDocumentDom2 {
     // Clone and patch the fragment tree so paint-only interaction overlays do not mutate the cached
     // `PreparedDocument` layout artifacts.
     let mut fragment_tree = prepared.fragment_tree.clone();
-    crate::interaction::paint_overlays::apply_interaction_state_paint_overlays_to_fragment_tree(
+    crate::interaction::paint_overlays::apply_form_control_paint_overlays_to_fragment_tree(
       prepared.box_tree(),
       &mut fragment_tree,
       self.interaction_state.as_ref(),
     );
-    // `paint_overlays` applies document selection using the renderer-preorder selection stored in
-    // `InteractionState`. When a stable `dom2` selection is active, reapply it here so the cached
-    // paint path respects `document_selection_dom2` even when `InteractionState.document_selection`
-    // is unset.
-    if let (Some(selection_dom2), Some(mapping)) =
-      (self.document_selection_dom2.as_ref(), self.last_dom_mapping.as_ref())
-    {
-      crate::interaction::document_selection::apply_document_selection_to_fragment_tree_dom2(
-        prepared.box_tree(),
-        &mut fragment_tree,
-        mapping,
-        Some(selection_dom2),
-      );
-    }
 
     let frame =
       prepared.paint_with_options_frame_with_animation_state_store_and_fragment_tree(

@@ -27,6 +27,20 @@ pub(crate) fn apply_interaction_state_paint_overlays_to_fragment_tree(
     interaction_state.and_then(|state| state.document_selection.as_ref()),
   );
 
+  apply_form_control_paint_overlays_to_fragment_tree(box_tree, fragment_tree, interaction_state);
+}
+
+/// Apply paint-time form-control overlays (caret/selection/IME/file label) to an already-laid-out
+/// fragment tree.
+///
+/// This intentionally does **not** touch document selection; callers that manage selection overlays
+/// separately (e.g. `BrowserDocumentDom2` with `document_selection_dom2`) can use this helper without
+/// clearing existing selection metadata.
+pub(crate) fn apply_form_control_paint_overlays_to_fragment_tree(
+  box_tree: &BoxTree,
+  fragment_tree: &mut FragmentTree,
+  interaction_state: Option<&InteractionState>,
+) {
   let box_id_to_styled_node_id = collect_box_id_to_styled_node_id(box_tree);
 
   apply_form_control_overlays_to_fragment_node(
