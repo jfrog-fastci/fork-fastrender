@@ -156,8 +156,11 @@ pub fn history_panel_ui(
       // Results list
       // -------------------------------------------------------------------
       const HISTORY_PANEL_LIMIT: usize = 500;
+      // Avoid holding an `&str` borrow into `search_text` across UI closures, since some empty
+      // states mutate `search_text` (e.g. "Clear search").
       let query = search_text.trim().to_string();
-      let results: Vec<(usize, &GlobalHistoryEntry)> = if query.is_empty() {
+      let query_is_empty = query.is_empty();
+      let results: Vec<(usize, &GlobalHistoryEntry)> = if query_is_empty {
         history.iter_recent().take(HISTORY_PANEL_LIMIT).collect()
       } else {
         history.search(&query, HISTORY_PANEL_LIMIT)
@@ -191,7 +194,7 @@ pub fn history_panel_ui(
               .color(ui.visuals().weak_text_color()),
           );
 
-          if !history.entries.is_empty() && !query.is_empty() {
+          if !history.entries.is_empty() && !query_is_empty {
             ui.add_space(10.0);
             let clear_search = ui.button("Clear search");
             clear_search.widget_info(|| {

@@ -4286,8 +4286,9 @@ impl App {
               let icon_side = ui.spacing().icon_width;
               let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
               let icon_a11y_label = format!("Warning: {title_text}");
-              icon_resp.widget_info(move || {
-                egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label)
+              icon_resp.widget_info({
+                let label = icon_a11y_label.clone();
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
               });
 
               // Make the title an explicit, focusable control so it is discoverable by both
