@@ -145,14 +145,13 @@ fn iterator_close_on_error(
   }
 
   // `IteratorClose` error precedence (ECMA-262):
-  // - Errors thrown while getting/calling `iterator.return` override the incoming completion, even
-  //   when the incoming completion is a throw completion.
-  // - The only special-case for throw completions is that the non-object return-result TypeError
-  //   check is skipped (handled inside `crate::iterator::iterator_close` via
-  //   `CloseCompletionKind::Throw`).
+  // - When closing on a throw completion, abrupt completions from getting/calling `iterator.return`
+  //   are ignored and the incoming completion is preserved.
+  // - When closing on a non-throw completion, errors from getting/calling `iterator.return`
+  //   override the incoming completion.
   //
-  // `vm-js` also has non-catchable VM failures (termination, OOM, etc) which must never be
-  // replaced by a JavaScript catchable exception from iterator closing.
+  // `vm-js` also has non-catchable VM failures (termination, OOM, etc). These must always
+  // propagate, even when iterator closing is otherwise specified to ignore a JavaScript exception.
   let original_is_throw = err.is_throw_completion();
 
   // Root the pending thrown value across `IteratorClose`, which can allocate and trigger GC.
@@ -9837,9 +9836,8 @@ pub fn array_prototype_find_last(
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 
-    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
-      continue;
-    }
+    // Unlike `find` / `findIndex`, `findLast` visits indices even when the property is missing
+    // (treating holes as `undefined`), so do not guard with `HasProperty`.
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
@@ -9894,9 +9892,8 @@ pub fn array_prototype_find_last_index(
     iter_scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
 
-    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
-      continue;
-    }
+    // Unlike `find` / `findIndex`, `findLastIndex` visits indices even when the property is missing
+    // (treating holes as `undefined`), so do not guard with `HasProperty`.
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
 
     let call_args = [value, Value::Number(k as f64), Value::Object(obj)];
