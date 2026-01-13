@@ -5,7 +5,7 @@ use std::os::windows::io::AsRawHandle;
 use std::path::PathBuf;
 use std::process::Command;
 
-use fastrender::sandbox::windows::spawn_sandboxed;
+use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
 use windows_sys::Win32::Foundation::{
   GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
@@ -14,6 +14,7 @@ use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_NO_CHILD_PROCESS_CHILD";
 const CMD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_CMD_EXE";
+const DISABLE_SANDBOX_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
 
 // Windows error codes we explicitly treat as "cmd.exe could not be found" rather than "sandbox
 // blocked process creation".
@@ -237,6 +238,103 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
   assert_eq!(
     exit_code, 0,
     "sandboxed child process exited non-zero (exit_code={exit_code}, pid={}, level={:?})",
+    child.pid, child.level
+  );
+}
+
+#[test]
+fn job_object_still_blocks_child_process_when_sandbox_disabled() {
+  let is_child = std::env::var_os(CHILD_ENV).is_some();
+  if is_child {
+    let cmd_exe = cmd_exe_path_for_child();
+    match Command::new(&cmd_exe).arg("/C").arg("exit 0").status() {
+      Ok(status) => panic!(
+        "job object did not block spawning a child process (cmd.exe). cmd={}, status={:?}",
+        cmd_exe.display(),
+        status
+      ),
+      Err(err) => {
+        let raw = err.raw_os_error();
+        eprintln!(
+          "CreateProcess blocked as expected (sandbox disabled). cmd={}, err={} (raw_os_error={raw:?})",
+          cmd_exe.display(),
+          err
+        );
+        if matches!(raw, Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND)) {
+          panic!(
+            "cmd.exe could not be resolved (raw_os_error={raw:?}); this is not a Job Object failure. cmd={}",
+            cmd_exe.display()
+          );
+        }
+      }
+    }
+    return;
+  }
+
+  let cmd_exe = cmd_exe_path().expect("determine cmd.exe path");
+  // Sanity check: cmd.exe should spawn successfully in the unsandboxed parent process.
+  assert_cmd_spawn_works(&cmd_exe);
+
+  let exe = std::env::current_exe().expect("current test exe path");
+  let test_name =
+    "sandbox::windows_no_child_process::job_object_still_blocks_child_process_when_sandbox_disabled";
+
+  let std_handles = collect_std_handles();
+  let inherit_handles: Vec<std::os::windows::io::RawHandle> =
+    std_handles.iter().copied().map(|h| h as _).collect();
+  let args = vec![
+    OsString::from("--exact"),
+    OsString::from(test_name),
+    OsString::from("--nocapture"),
+  ];
+
+  let cmd_exe_env = cmd_exe.to_string_lossy();
+  let child = crate::common::with_env_vars(
+    &[
+      (CHILD_ENV, "1"),
+      (CMD_ENV, &cmd_exe_env),
+      // Disable token/AppContainer sandboxing but keep the job object guardrails.
+      (DISABLE_SANDBOX_ENV, "1"),
+    ],
+    || {
+      let _inherit_guard = HandleInheritGuard::new(&std_handles);
+      // The Windows sandbox may not have access to the repository working directory; use System32 as a
+      // conservative working directory during process creation.
+      let prev_dir = std::env::current_dir().ok();
+      if let Some(root) = std::env::var_os("SystemRoot") {
+        let system32 = PathBuf::from(root).join("System32");
+        let _ = std::env::set_current_dir(&system32);
+      }
+      let child = spawn_sandboxed(&exe, &args, &inherit_handles);
+      if let Some(prev_dir) = prev_dir {
+        let _ = std::env::set_current_dir(prev_dir);
+      }
+      child.expect("spawn sandbox-disabled child test process")
+    },
+  );
+
+  assert_eq!(
+    child.level,
+    WindowsSandboxLevel::None,
+    "expected sandbox opt-out to spawn an unsandboxed child (job object still applied)"
+  );
+
+  let timeout_ms: u32 = 10_000;
+  // SAFETY: waiting on a valid process handle.
+  let wait_rc = unsafe { WaitForSingleObject(child.process.as_raw_handle() as HANDLE, timeout_ms) };
+  if wait_rc != 0 {
+    panic!(
+      "sandbox-disabled child did not exit cleanly within {timeout_ms}ms (WaitForSingleObject rc={wait_rc})"
+    );
+  }
+
+  let mut exit_code: u32 = 0;
+  // SAFETY: querying exit code for a valid process handle.
+  let ok = unsafe { GetExitCodeProcess(child.process.as_raw_handle() as HANDLE, &mut exit_code) };
+  assert!(ok != 0, "GetExitCodeProcess failed");
+  assert_eq!(
+    exit_code, 0,
+    "sandbox-disabled child process exited non-zero (exit_code={exit_code}, pid={}, level={:?})",
     child.pid, child.level
   );
 }
