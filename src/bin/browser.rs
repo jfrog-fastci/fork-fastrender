@@ -2841,7 +2841,12 @@ struct BrowserCliArgs {
   /// Renderer watchdog timeout in milliseconds.
   ///
   /// When unset, defaults to `FASTR_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS`.
-  #[arg(long = "renderer-watchdog-timeout-ms", value_name = "MS", value_parser = parse_u64_ms)]
+  #[arg(
+    long = "renderer-watchdog-timeout-ms",
+    alias = "renderer-watchdog-ms",
+    value_name = "MS",
+    value_parser = parse_u64_ms
+  )]
   renderer_watchdog_timeout_ms: Option<u64>,
 
   /// Allow navigating to `crash://` URLs (testing hook).
@@ -4065,9 +4070,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   };
 
   let renderer_watchdog_timeout = if renderer_watchdog_enabled {
-    Some(std::time::Duration::from_millis(
-      renderer_watchdog_timeout_ms.unwrap_or(DEFAULT_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS),
-    ))
+    let ms = renderer_watchdog_timeout_ms.unwrap_or(DEFAULT_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS);
+    // Allow explicitly disabling the watchdog by setting a zero timeout.
+    (ms != 0).then_some(std::time::Duration::from_millis(ms))
+  } else {
+    None
+  };
+
+  // Windowed UI "page unresponsive" watchdog timeout:
+  // - If explicitly overridden, reuse the same ms value as the headless watchdog.
+  // - Otherwise, keep the interactive default tuned for UI responsiveness.
+  let ui_unresponsive_watchdog_timeout = if renderer_watchdog_enabled {
+    match renderer_watchdog_timeout_ms {
+      Some(0) => None,
+      Some(ms) => Some(std::time::Duration::from_millis(ms)),
+      None => Some(RENDERER_UNRESPONSIVE_TIMEOUT),
+    }
   } else {
     None
   };
@@ -4281,6 +4299,80 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
       }
+    }
+
+    fn restart_worker(
+      &mut self,
+      download_dir: &std::path::PathBuf,
+      worker_wake_coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
+    ) {
+      use fastrender::ui::UiToWorker;
+
+      // Best-effort: ask the old worker to shut down (may fail if it's deadlocked).
+      self.app.renderer_backend.shutdown();
+
+      // Drop any pending messages from the old backend and detach the old bridge thread.
+      self.worker_msg_backlog.clear();
+      let _ = self.bridge_join.take();
+
+      self.app.worker_restart_seq = self.app.worker_restart_seq.saturating_add(1);
+      let worker_name = format!(
+        "{}-restart-{}",
+        self.app.worker_name_base, self.app.worker_restart_seq
+      );
+
+      let renderer_backend =
+        match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
+          Ok(v) => v,
+          Err(err) => {
+            eprintln!("failed to restart worker {worker_name:?}: {err}");
+            return;
+          }
+        };
+
+      // Reapply per-worker configuration on the new backend before recreating tabs.
+      let _ = renderer_backend.send(UiToWorker::SetDebugLogEnabled {
+        enabled: self.app.debug_log_ui_enabled,
+      });
+      let _ = renderer_backend.send(UiToWorker::SetDownloadDirectory {
+        path: download_dir.clone(),
+      });
+
+      self.app.renderer_backend = renderer_backend.clone();
+
+      let window_id = self.app.window.id();
+      let worker_wake_counters = self
+        .app
+        .hud
+        .as_ref()
+        .map(|hud| Arc::clone(&hud.worker_wake_counters))
+        .or_else(|| {
+          self
+            .worker_perf_log
+            .as_ref()
+            .map(|log| Arc::clone(&log.counters))
+        });
+      match spawn_worker_ui_bridge(
+        window_id,
+        renderer_backend,
+        self.app.event_loop_proxy.clone(),
+        worker_wake_coalescer,
+        worker_wake_counters,
+      ) {
+        Ok((worker_msgs, worker_wake_pending, bridge_join)) => {
+          // Replace the queue + wake flags so any old worker bridge thread is forced to exit (its
+          // pusher will fail once the old queue receiver is dropped).
+          self.worker_msgs = worker_msgs;
+          self.worker_wake_pending = worker_wake_pending;
+          self.bridge_join = Some(bridge_join);
+        }
+        Err(err) => {
+          eprintln!("failed to spawn restarted worker bridge thread: {err}");
+          self.bridge_join = None;
+        }
+      }
+
+      self.app.on_worker_restarted();
     }
   }
 
@@ -4662,6 +4754,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       appearance_env,
       startup_applied_appearance.clone(),
       theme_accent,
+      worker_name.clone(),
+      ui_unresponsive_watchdog_timeout,
       bookmarks_path.clone(),
       history_path.clone(),
       download_dir.clone(),
@@ -5209,6 +5303,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           appearance_env,
           applied_appearance.clone(),
           theme_accent,
+          worker_name.clone(),
+          ui_unresponsive_watchdog_timeout,
           bookmarks_path.clone(),
           history_path.clone(),
           download_dir.clone(),
@@ -5364,6 +5460,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           appearance_env,
           applied_appearance.clone(),
           theme_accent,
+          worker_name.clone(),
+          ui_unresponsive_watchdog_timeout,
           bookmarks_path.clone(),
           history_path.clone(),
           download_dir.clone(),
@@ -5440,6 +5538,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut proposed_home_url: Option<String> = None;
         if let Some(win) = windows.get_mut(&window_id) {
           session_dirty = win.app.render_frame(control_flow);
+          if win.app.take_worker_restart_request() {
+            win.restart_worker(&download_dir, Arc::clone(&worker_wake_coalescer));
+            session_dirty = true;
+          }
           // If this window diverged from the current global settings, treat it as a proposed update
           // (this is how appearance changes made via egui settings propagate across all windows).
           if win.app.browser_state.appearance != global_appearance {
@@ -8441,6 +8543,10 @@ struct App {
   clear_color: wgpu::Color,
 
   renderer_backend: fastrender::ui::RendererBackendHandle,
+  worker_name_base: String,
+  worker_restart_seq: u64,
+  worker_restart_requested: bool,
+  unresponsive_watchdog_timeout: Option<std::time::Duration>,
   browser_state: fastrender::ui::BrowserAppState,
   /// Configured home page URL (default: `about:newtab`).
   home_url: String,
@@ -9128,6 +9234,8 @@ impl App {
     appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
     applied_appearance: fastrender::ui::appearance::AppearanceSettings,
     theme_accent: Option<egui::Color32>,
+    worker_name_base: String,
+    unresponsive_watchdog_timeout: Option<std::time::Duration>,
     bookmarks_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
     download_dir: std::path::PathBuf,
@@ -9337,6 +9445,10 @@ impl App {
       theme,
       clear_color,
       renderer_backend,
+      worker_name_base,
+      worker_restart_seq: 0,
+      worker_restart_requested: false,
+      unresponsive_watchdog_timeout,
       browser_state,
       home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
       search_suggest: fastrender::ui::SearchSuggestService::new_with_wake(
@@ -10347,6 +10459,74 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       other => fallback_tab_id_from_debug(other),
     };
 
+    // Arm the unresponsive watchdog timer for tab-scoped UI actions that expect some kind of worker
+    // activity. This allows the watchdog to detect hangs even when a tab is not currently in a
+    // `loading` state (e.g. user scrolls/clicks but the renderer never responds).
+    if self.unresponsive_watchdog_timeout.is_some() {
+      if let Some(tab_id) = tab_id {
+        let now = std::time::SystemTime::now();
+        let should_arm = match &msg {
+          UiToWorker::Navigate { .. }
+          | UiToWorker::NavigateRequest { .. }
+          | UiToWorker::GoBack { .. }
+          | UiToWorker::GoForward { .. }
+          | UiToWorker::Reload { .. }
+          | UiToWorker::StopLoading { .. }
+          | UiToWorker::ViewportChanged { .. }
+          | UiToWorker::RequestRepaint { .. }
+          | UiToWorker::ContextMenuRequest { .. } => true,
+          UiToWorker::Scroll { delta_css, .. } => {
+            let dx = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
+            let dy = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
+            if dx == 0.0 && dy == 0.0 {
+              false
+            } else if let Some(metrics) =
+              self.browser_state.tab(tab_id).and_then(|tab| tab.scroll_metrics)
+            {
+              let current = fastrender::Point::new(metrics.scroll_css.0, metrics.scroll_css.1);
+              let desired = fastrender::Point::new(current.x + dx, current.y + dy);
+              let clamped = metrics.bounds_css.clamp(desired);
+              (clamped.x - current.x).abs() > 0.01 || (clamped.y - current.y).abs() > 0.01
+            } else {
+              true
+            }
+          }
+          UiToWorker::ScrollTo { pos_css, .. } => {
+            if !pos_css.0.is_finite() || !pos_css.1.is_finite() {
+              false
+            } else if let Some(metrics) =
+              self.browser_state.tab(tab_id).and_then(|tab| tab.scroll_metrics)
+            {
+              let current = fastrender::Point::new(metrics.scroll_css.0, metrics.scroll_css.1);
+              let desired = fastrender::Point::new(pos_css.0, pos_css.1);
+              let clamped = metrics.bounds_css.clamp(desired);
+              (clamped.x - current.x).abs() > 0.01 || (clamped.y - current.y).abs() > 0.01
+            } else {
+              true
+            }
+          }
+          UiToWorker::PointerDown { button, .. } | UiToWorker::PointerUp { button, .. } => {
+            use fastrender::ui::CursorKind;
+            use fastrender::ui::PointerButton;
+
+            if !matches!(button, PointerButton::Primary | PointerButton::Middle) {
+              false
+            } else {
+              self
+                .browser_state
+                .tab(tab_id)
+                .is_some_and(|tab| tab.hovered_url.is_some() || tab.cursor != CursorKind::Default)
+            }
+          }
+          _ => false,
+        };
+
+        if should_arm {
+          let _ = self.browser_state.arm_tab_watchdog(tab_id, now);
+        }
+      }
+    }
+
     if let Some(tab_id) = tab_id {
       if let Some(cancel) = self.tab_cancel.get(&tab_id) {
         match &msg {
@@ -10807,7 +10987,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     multiple: bool,
     accept: Option<String>,
   ) {
-    let tx = self.ui_to_worker_tx.clone();
+    let tx = self.renderer_backend.clone();
     let cancel: Option<fastrender::ui::cancel::CancelGens> = self.tab_cancel.get(&tab_id).cloned();
 
     let spawn_result = std::thread::Builder::new()
@@ -11153,6 +11333,120 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     if let Some(item_idx) = matched_item_idx {
       self.update_open_select_dropdown_selection_for_item_index(item_idx, false);
     }
+  }
+
+  fn request_worker_restart(&mut self) {
+    self.worker_restart_requested = true;
+  }
+
+  fn take_worker_restart_request(&mut self) -> bool {
+    std::mem::take(&mut self.worker_restart_requested)
+  }
+
+  fn on_worker_restarted(&mut self) {
+    use fastrender::ui::UiToWorker;
+
+    let now = std::time::SystemTime::now();
+
+    // Drop per-worker scheduling state; the new worker will resurface what it needs via
+    // `FrameReady`/`RequestWakeAfter`.
+    self.animation_tick_tab = None;
+    self.next_animation_tick = None;
+    self.next_media_wakeup.clear();
+    self.last_media_wakeup_tick.clear();
+
+    // Drop any pending worker output from the previous backend.
+    self.pending_frame_uploads.clear();
+    self.last_page_upload_at = None;
+    self.next_page_upload_redraw = None;
+
+    // Close transient page-scoped UI so we don't retain stale node ids after the worker restarts.
+    self.close_context_menu();
+    self.close_select_dropdown();
+    self.close_date_time_picker();
+    self.close_color_picker();
+    self.close_file_picker();
+    self.close_media_controls();
+
+    self.scrollbar_drag = None;
+    self.pending_scroll_drag = None;
+    self.pending_pointer_move = None;
+    self.pending_scroll.clear();
+    self.pointer_captured = false;
+    self.captured_button = fastrender::ui::PointerButton::None;
+    self.primary_click_sequence = None;
+    self.cursor_in_page = false;
+    self.page_cursor_override = None;
+    self.hover_sync_pending = true;
+
+    // Invalidate cached viewport state so the new worker is configured promptly.
+    self.viewport_cache_tab = None;
+    self.viewport_throttle_tab = None;
+    self.viewport_throttle.reset();
+
+    // Refresh the renderer's prefers-* defaults (theme/high contrast/reduced motion).
+    self.sync_media_preferences_to_worker(self.window.theme());
+
+    // Reset per-tab UI state and recreate tabs in the new worker.
+    let mut create_msgs: Vec<UiToWorker> = Vec::with_capacity(self.browser_state.tabs.len());
+    for tab in &mut self.browser_state.tabs {
+      let tab_id = tab.id;
+      let url = tab
+        .committed_url
+        .clone()
+        .or_else(|| tab.current_url.clone())
+        .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+
+      let cancel = self
+        .tab_cancel
+        .get(&tab_id)
+        .cloned()
+        .unwrap_or_else(|| tab.cancel.clone());
+      self.tab_cancel.insert(tab_id, cancel.clone());
+
+      create_msgs.push(UiToWorker::CreateTab {
+        tab_id,
+        initial_url: Some(url),
+        cancel,
+      });
+
+      tab.crashed = false;
+      tab.crash_reason = None;
+      tab.renderer_crashed = false;
+      tab.renderer_protocol_violation = None;
+      tab.loading = true;
+      tab.watchdog_armed = false;
+      tab.unresponsive = false;
+      tab.last_worker_msg_at = now;
+      tab.error = None;
+      tab.warning = None;
+      tab.stage = None;
+      tab.load_stage = None;
+      tab.reset_load_progress();
+      tab.can_go_back = false;
+      tab.can_go_forward = false;
+      tab.hovered_url = None;
+      tab.cursor = fastrender::ui::CursorKind::Default;
+      tab.scroll_state = fastrender::scroll::ScrollState::default();
+      tab.rendered_scroll_state = fastrender::scroll::ScrollState::default();
+      tab.scroll_metrics = None;
+      tab.latest_frame_meta = None;
+    }
+
+    for msg in create_msgs {
+      let _ = self.send_worker_msg(msg);
+    }
+
+    if let Some(tab_id) = self.browser_state.active_tab_id() {
+      let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
+      self.force_send_viewport_now();
+      let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: fastrender::ui::RepaintReason::Explicit,
+      });
+    }
+
+    self.window.request_redraw();
   }
 
   fn shutdown(&mut self) {
@@ -19282,21 +19576,23 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     // Mark tabs as unresponsive when they are loading but we haven't observed *any* worker→UI
     // messages for a while. This runs purely on the browser/UI side so we can surface hangs before
     // implementing thread/process killing.
-    let watchdog_now = std::time::SystemTime::now();
-    if self
-      .browser_state
-      .update_unresponsive_tabs(watchdog_now, RENDERER_UNRESPONSIVE_TIMEOUT)
-    {
-      // Ensure the overlay appears/disappears immediately even if no other UI state changed.
-      ctx.request_repaint();
-    }
-    if let Some(next_check) = self
-      .browser_state
-      .next_unresponsive_check_in(watchdog_now, RENDERER_UNRESPONSIVE_TIMEOUT)
-    {
-      // Keep the event loop waking up to run the watchdog even when reduced motion disables
-      // animated spinners (which would otherwise trigger continuous repaints during loading).
-      ctx.request_repaint_after(next_check);
+    if let Some(timeout) = self.unresponsive_watchdog_timeout {
+      let watchdog_now = std::time::SystemTime::now();
+      if self
+        .browser_state
+        .update_unresponsive_tabs(watchdog_now, timeout)
+      {
+        // Ensure the overlay appears/disappears immediately even if no other UI state changed.
+        ctx.request_repaint();
+      }
+      if let Some(next_check) = self
+        .browser_state
+        .next_unresponsive_check_in(watchdog_now, timeout)
+      {
+        // Keep the event loop waking up to run the watchdog even when reduced motion disables
+        // animated spinners (which would otherwise trigger continuous repaints during loading).
+        ctx.request_repaint_after(next_check);
+      }
     }
 
     let mut crash_reload_requested = false;
@@ -19481,7 +19777,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
         let loading_ui =
           fastrender::ui::loading_overlay::decide_page_loading_ui(true, tab_loading, tab_stage);
-        self.page_loading_overlay_blocks_input = loading_ui.intercept_pointer_events;
+        self.page_loading_overlay_blocks_input =
+          loading_ui.intercept_pointer_events || tab_unresponsive;
 
         let viewport_css_for_mapping = self
           .browser_state
@@ -19988,28 +20285,17 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                     ui.label(egui::RichText::new("Page unresponsive").strong().size(16.0));
                     ui.horizontal(|ui| {
                       let wait = ui.button("Wait");
-                      let reload = ui.button("Reload");
+                      let kill = ui.button("Kill");
                       if wait.clicked() {
                         let _ = self
                           .browser_state
                           .dismiss_tab_unresponsive(active_tab, std::time::SystemTime::now());
                         ctx.request_repaint();
                       }
-                      if reload.clicked() {
+                      if kill.clicked() {
                         let now = std::time::SystemTime::now();
                         let _ = self.browser_state.dismiss_tab_unresponsive(active_tab, now);
-                        if let Some(tab) = self.browser_state.tab_mut(active_tab) {
-                          tab.loading = true;
-                          tab.error = None;
-                          tab.stage = None;
-                          tab.title = None;
-                          tab.last_worker_msg_at = now;
-                          tab.unresponsive = false;
-                        }
-                        self.force_send_viewport_now();
-                        let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Reload {
-                          tab_id: active_tab,
-                        });
+                        self.request_worker_restart();
                         ctx.request_repaint();
                       }
                     });
@@ -20025,6 +20311,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       } else {
         let loading_ui =
           fastrender::ui::loading_overlay::decide_page_loading_ui(false, tab_loading, tab_stage);
+        self.page_loading_overlay_blocks_input =
+          loading_ui.intercept_pointer_events || tab_unresponsive;
 
         let size_points = logical_viewport_points.max(egui::Vec2::ZERO);
         let (rect, _) = ui.allocate_exact_size(size_points, egui::Sense::hover());
@@ -20115,28 +20403,17 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                     ui.label(egui::RichText::new("Page unresponsive").strong().size(16.0));
                     ui.horizontal(|ui| {
                       let wait = ui.button("Wait");
-                      let reload = ui.button("Reload");
+                      let kill = ui.button("Kill");
                       if wait.clicked() {
                         let _ = self
                           .browser_state
                           .dismiss_tab_unresponsive(active_tab, std::time::SystemTime::now());
                         ctx.request_repaint();
                       }
-                      if reload.clicked() {
+                      if kill.clicked() {
                         let now = std::time::SystemTime::now();
                         let _ = self.browser_state.dismiss_tab_unresponsive(active_tab, now);
-                        if let Some(tab) = self.browser_state.tab_mut(active_tab) {
-                          tab.loading = true;
-                          tab.error = None;
-                          tab.stage = None;
-                          tab.title = None;
-                          tab.last_worker_msg_at = now;
-                          tab.unresponsive = false;
-                        }
-                        self.force_send_viewport_now();
-                        self.send_worker_msg(fastrender::ui::UiToWorker::Reload {
-                          tab_id: active_tab,
-                        });
+                        self.request_worker_restart();
                         ctx.request_repaint();
                       }
                     });

@@ -491,11 +491,21 @@ pub struct BrowserTabState {
   pub crashed: bool,
   /// Optional crash reason for this tab, sanitized and bounded.
   pub crash_reason: Option<String>,
+  /// Whether the unresponsive watchdog is currently armed for this tab.
+  ///
+  /// The watchdog is armed when the UI sends an action that expects *some* worker activity (e.g.
+  /// navigation, scroll, pointer click). It is disarmed when the UI observes any `WorkerToUi`
+  /// message for the tab (the renderer appears responsive again).
+  ///
+  /// This keeps the watchdog from spuriously firing on otherwise-idle pages that simply haven't sent
+  /// a message recently.
+  pub watchdog_armed: bool,
   /// Whether the tab is currently considered unresponsive by the browser UI watchdog.
   ///
-  /// This is set when `loading == true` but the UI has not observed any `WorkerToUi` messages for
-  /// the tab within a configured timeout. It is cleared when new worker messages arrive or when
-  /// the user dismisses the watchdog UI (e.g. "Wait" or "Reload").
+  /// This is set when the watchdog is armed (either because `loading == true` or because
+  /// [`Self::watchdog_armed`] is true) but the UI has not observed any `WorkerToUi` messages for the
+  /// tab within a configured timeout. It is cleared when new worker messages arrive or when the
+  /// user dismisses the watchdog UI (e.g. "Wait" / "Kill").
   pub unresponsive: bool,
   /// Last time the UI observed activity from the renderer for this tab.
   ///
@@ -563,6 +573,7 @@ impl BrowserTabState {
       loading: false,
       crashed: false,
       crash_reason: None,
+      watchdog_armed: false,
       unresponsive: false,
       last_worker_msg_at: SystemTime::UNIX_EPOCH,
       renderer_crashed: false,
@@ -756,6 +767,7 @@ impl BrowserTabState {
     self.renderer_protocol_violation = None;
     self.current_url = Some(normalized.clone());
     self.loading = true;
+    self.watchdog_armed = false;
     self.unresponsive = false;
     self.last_worker_msg_at = SystemTime::now();
     self.error = None;
@@ -2286,6 +2298,7 @@ impl BrowserAppState {
       tabs_changed = tab.current_url.as_deref() != Some(normalized.as_str());
       tab.current_url = Some(normalized.clone());
       tab.loading = true;
+      tab.watchdog_armed = false;
       tab.unresponsive = false;
       tab.last_worker_msg_at = SystemTime::now();
       tab.error = None;
@@ -2306,14 +2319,10 @@ impl BrowserAppState {
   ) -> bool {
     let mut changed = false;
     for tab in &mut self.tabs {
-      if !tab.loading {
-        if tab.unresponsive {
-          tab.unresponsive = false;
-          changed = true;
-        }
+      if tab.unresponsive {
         continue;
       }
-      if tab.unresponsive {
+      if !tab.loading && !tab.watchdog_armed {
         continue;
       }
 
@@ -2340,7 +2349,7 @@ impl BrowserAppState {
   ) -> Option<std::time::Duration> {
     let mut next: Option<std::time::Duration> = None;
     for tab in &self.tabs {
-      if !tab.loading || tab.unresponsive {
+      if tab.unresponsive || (!tab.loading && !tab.watchdog_armed) {
         continue;
       }
       let elapsed = now
@@ -2362,6 +2371,27 @@ impl BrowserAppState {
     true
   }
 
+  /// Arm/refresh the unresponsive watchdog timer for a tab in response to a UI action.
+  ///
+  /// This is intended for actions that *expect* some worker activity (e.g. scroll/click navigation
+  /// requests) so we can detect hung renderers even when the tab is not in a `loading` state.
+  ///
+  /// Returns `true` when the tab state was updated.
+  pub fn arm_tab_watchdog(&mut self, tab_id: TabId, now: SystemTime) -> bool {
+    let Some(tab) = self.tab_mut(tab_id) else {
+      return false;
+    };
+    // Do not automatically clear the overlay once a tab is already marked unresponsive; require
+    // explicit "Wait" / worker activity.
+    if tab.unresponsive {
+      return false;
+    }
+
+    tab.watchdog_armed = true;
+    tab.last_worker_msg_at = now;
+    true
+  }
+
   pub fn apply_worker_msg(&mut self, msg: WorkerToUi) -> AppUpdate {
     self.apply_worker_msg_at(msg, SystemTime::now())
   }
@@ -2371,6 +2401,7 @@ impl BrowserAppState {
     let tab_id = msg.tab_id();
     if let Some(tab) = self.tab_mut(tab_id) {
       tab.last_worker_msg_at = now;
+      tab.watchdog_armed = false;
       tab.unresponsive = false;
     }
     let mut tabs_changed = false;
@@ -4727,6 +4758,7 @@ mod tab_group_tests {
     let tab_id = TabId(1);
     let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
     tab.loading = false;
+    tab.watchdog_armed = false;
     tab.last_worker_msg_at = SystemTime::UNIX_EPOCH;
     app.push_tab(tab, true);
 
@@ -4734,6 +4766,24 @@ mod tab_group_tests {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
     assert!(!app.update_unresponsive_tabs(now, timeout));
     assert!(!app.tab(tab_id).unwrap().unresponsive);
+  }
+
+  #[test]
+  fn watchdog_marks_armed_tab_unresponsive_after_timeout() {
+    use std::time::Duration;
+
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.loading = false;
+    tab.watchdog_armed = true;
+    tab.last_worker_msg_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+    app.push_tab(tab, true);
+
+    let timeout = Duration::from_secs(5);
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(16);
+    assert!(app.update_unresponsive_tabs(now, timeout));
+    assert!(app.tab(tab_id).unwrap().unresponsive);
   }
 
   #[test]
@@ -4745,6 +4795,7 @@ mod tab_group_tests {
     let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
     tab.loading = true;
     tab.unresponsive = true;
+    tab.watchdog_armed = true;
     tab.last_worker_msg_at = SystemTime::UNIX_EPOCH;
     app.push_tab(tab, true);
 
@@ -4759,6 +4810,7 @@ mod tab_group_tests {
 
     let tab = app.tab(tab_id).unwrap();
     assert!(!tab.unresponsive);
+    assert!(!tab.watchdog_armed);
     assert_eq!(tab.last_worker_msg_at, now);
   }
 
@@ -4781,6 +4833,38 @@ mod tab_group_tests {
     let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(7);
     assert!(app.dismiss_tab_unresponsive(tab_id, t2));
     assert!(!app.tab(tab_id).unwrap().unresponsive);
+
+    // Not enough time has elapsed since dismissal.
+    app.update_unresponsive_tabs(t2 + Duration::from_secs(4), timeout);
+    assert!(!app.tab(tab_id).unwrap().unresponsive);
+
+    // Timeout elapsed since dismissal.
+    app.update_unresponsive_tabs(t2 + Duration::from_secs(6), timeout);
+    assert!(app.tab(tab_id).unwrap().unresponsive);
+  }
+
+  #[test]
+  fn dismiss_tab_unresponsive_keeps_watchdog_armed() {
+    use std::time::Duration;
+
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.loading = false;
+    tab.watchdog_armed = true;
+    tab.last_worker_msg_at = SystemTime::UNIX_EPOCH;
+    app.push_tab(tab, true);
+
+    let timeout = Duration::from_secs(5);
+    let t1 = SystemTime::UNIX_EPOCH + Duration::from_secs(6);
+    app.update_unresponsive_tabs(t1, timeout);
+    assert!(app.tab(tab_id).unwrap().unresponsive);
+
+    let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(7);
+    assert!(app.dismiss_tab_unresponsive(tab_id, t2));
+    let tab = app.tab(tab_id).unwrap();
+    assert!(!tab.unresponsive);
+    assert!(tab.watchdog_armed);
 
     // Not enough time has elapsed since dismissal.
     app.update_unresponsive_tabs(t2 + Duration::from_secs(4), timeout);
