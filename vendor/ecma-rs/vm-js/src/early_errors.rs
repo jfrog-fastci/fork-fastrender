@@ -2061,6 +2061,78 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       }
     }
 
+    // ECMA-262 early error: It is a Syntax Error if any element of BoundNames(FormalParameters)
+    // also occurs in LexicallyDeclaredNames(FunctionBody).
+    //
+    // Note: `LexicallyDeclaredNames` for a statement list includes only declarations that are
+    // *direct* children of that list (e.g. `function f(x) { { let x; } }` is allowed).
+    if let Some(FuncBody::Block(stmts)) = &func.stx.body {
+      let mut param_names: HashSet<String> = HashSet::new();
+      for param in params {
+        self.step()?;
+        let mut names: Vec<(String, Loc)> = Vec::new();
+        Self::collect_bound_names_from_pat(&param.stx.pattern.stx.pat, &mut names)?;
+        for (name, _) in names {
+          if !param_names.contains(name.as_str()) {
+            param_names
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            param_names.insert(name);
+          }
+        }
+      }
+
+      if !param_names.is_empty() {
+        // Collect `LexicallyDeclaredNames` from the top-level statement list (direct children
+        // only).
+        let mut body_lex_names: HashMap<String, Loc> = HashMap::new();
+        for stmt in stmts {
+          self.step()?;
+          match &*stmt.stx {
+            Stmt::VarDecl(decl)
+              if matches!(
+                decl.stx.mode,
+                VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+              ) =>
+            {
+              for declarator in &decl.stx.declarators {
+                self.step()?;
+                let mut names: Vec<(String, Loc)> = Vec::new();
+                Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names)?;
+                for (name, loc) in names {
+                  if !body_lex_names.contains_key(name.as_str()) {
+                    body_lex_names
+                      .try_reserve(1)
+                      .map_err(|_| VmError::OutOfMemory)?;
+                    body_lex_names.insert(name, loc);
+                  }
+                }
+              }
+            }
+            Stmt::ClassDecl(decl) => {
+              if let Some(name) = &decl.stx.name {
+                let name_str = name.stx.name.as_str();
+                if !body_lex_names.contains_key(name_str) {
+                  body_lex_names
+                    .try_reserve(1)
+                    .map_err(|_| VmError::OutOfMemory)?;
+                  body_lex_names.insert(try_clone_string(name_str)?, name.loc);
+                }
+              }
+            }
+            _ => {}
+          }
+        }
+
+        for (name, loc) in body_lex_names {
+          if param_names.contains(name.as_str()) {
+            self.push_error(loc, "Identifier has already been declared")?;
+            return Err(VmError::Syntax(std::mem::take(&mut self.diags)));
+          }
+        }
+      }
+    }
+
     let body_strict = match &func.stx.body {
       Some(FuncBody::Block(stmts)) => self.detect_use_strict_directive(stmts)?,
       _ => false,
