@@ -64,12 +64,15 @@ impl TrackCounts {
 
   /// The OriginZeroLine representing the start of the implicit grid
   pub fn implicit_start_line(&self) -> OriginZeroLine {
-    OriginZeroLine(-(self.negative_implicit as i16))
+    let neg = (self.negative_implicit as i32).clamp(0, i16::MAX as i32) as i16;
+    OriginZeroLine(-neg)
   }
 
   /// The OriginZeroLine representing the end of the implicit grid
   pub fn implicit_end_line(&self) -> OriginZeroLine {
-    OriginZeroLine((self.explicit + self.positive_implicit) as i16)
+    let end = (self.explicit as i32 + self.positive_implicit as i32)
+      .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    OriginZeroLine(end)
   }
 }
 
@@ -79,7 +82,8 @@ impl TrackCounts {
   /// Converts a grid line in OriginZero coordinates into the track immediately
   /// following that grid line as an index into the CellOccupancyMatrix.
   pub fn oz_line_to_next_track(&self, index: OriginZeroLine) -> i16 {
-    index.0 + (self.negative_implicit as i16)
+    let neg = (self.negative_implicit as i32).clamp(0, i16::MAX as i32);
+    (index.0 as i32 + neg).clamp(i16::MIN as i32, i16::MAX as i32) as i16
   }
 
   /// Converts start and end grid lines in OriginZero coordinates into a range of tracks
@@ -93,7 +97,9 @@ impl TrackCounts {
   /// Converts a track as an index into the CellOccupancyMatrix into the grid line immediately
   /// preceding that track in OriginZero coordinates.
   pub fn track_to_prev_oz_line(&self, index: u16) -> OriginZeroLine {
-    OriginZeroLine((index as i16) - (self.negative_implicit as i16))
+    let neg = (self.negative_implicit as i32).clamp(0, i16::MAX as i32);
+    let oz = (index as i32 - neg).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    OriginZeroLine(oz)
   }
 
   /// Converts a range of tracks as indexes into the CellOccupancyMatrix into

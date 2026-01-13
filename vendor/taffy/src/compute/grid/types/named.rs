@@ -418,7 +418,9 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
   ) -> OriginZeroLine {
     let idx = idx.min(i16::MAX as u16).max(1);
     let (_, explicit_track_count) = self.axis_line_maps(axis);
-    let explicit_end_line = OriginZeroLine(explicit_track_count as i16);
+    let explicit_end_line = OriginZeroLine(
+      (explicit_track_count as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+    );
 
     let normalized_start_line = if start_line.0 >= 0 {
       (start_line.0 as i32 + 1).clamp(0, u16::MAX as i32) as u16
@@ -505,16 +507,17 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     let name = name.as_ref();
     let mut idx = idx;
     let explicit_track_count = match axis {
-      GridAreaAxis::Row => self.explicit_row_count as i16,
-      GridAreaAxis::Column => self.explicit_column_count as i16,
-    };
+      GridAreaAxis::Row => self.explicit_row_count as i32,
+      GridAreaAxis::Column => self.explicit_column_count as i32,
+    }
+    .clamp(0, i16::MAX as i32);
 
     // An index of 0 is used to represent "no index specified".
     if idx == 0 {
       idx = 1;
     }
 
-    fn get_line(lines: &[u16], explicit_track_count: i16, idx: i16) -> i16 {
+    fn get_line(lines: &[u16], explicit_track_count: i32, idx: i16) -> i16 {
       let abs_idx_u16 = idx.unsigned_abs();
       let enough_lines = abs_idx_u16 as usize <= lines.len();
       if enough_lines {
@@ -527,7 +530,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
         }
       } else {
         let remaining_lines = (abs_idx_u16 as i32 - lines.len() as i32) * idx.signum() as i32;
-        let base = explicit_track_count as i32 + 1;
+        let base = explicit_track_count + 1;
         let line = if idx > 0 {
           base + remaining_lines
         } else {
@@ -571,7 +574,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     // grid line than it has tracks. And the fallback line is the line *after* that.
     //
     // See: <https://github.com/w3c/csswg-drafts/issues/966#issuecomment-277042153>
-    let base = explicit_track_count as i32 + 1;
+    let base = explicit_track_count + 1;
     let line = if idx > 0 {
       base + idx as i32
     } else {

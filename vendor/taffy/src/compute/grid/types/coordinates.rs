@@ -125,15 +125,20 @@ impl OriginZeroLine {
   /// The infallible version above if used when placing regular in-flow grid items.
   pub(crate) fn try_into_track_vec_index(self, track_counts: TrackCounts) -> Option<usize> {
     // OriginZero grid line cannot be less than the number of negative grid lines
-    if self.0 < -(track_counts.negative_implicit as i16) {
+    let neg_implicit = (track_counts.negative_implicit as i32).clamp(0, i16::MAX as i32);
+    if (self.0 as i32) < -neg_implicit {
       return None;
     };
     // OriginZero grid line cannot be more than the number of positive grid lines
-    if self.0 > (track_counts.explicit + track_counts.positive_implicit) as i16 {
+    let pos_end_line = (track_counts.explicit as i32 + track_counts.positive_implicit as i32)
+      .clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    if self.0 > pos_end_line {
       return None;
     };
 
-    Some(2 * ((self.0 + track_counts.negative_implicit as i16) as usize))
+    let idx = (self.0 as i32) + neg_implicit;
+    debug_assert!(idx >= 0, "OriginZeroLine track index must be non-negative");
+    Some(2 * (idx as usize))
   }
 
   /// The minimum number of negative implicit track there must be if a grid item starts at this line.
@@ -147,8 +152,12 @@ impl OriginZeroLine {
 
   /// The minimum number of positive implicit track there must be if a grid item end at this line.
   pub(crate) fn implied_positive_implicit_tracks(self, explicit_track_count: u16) -> u16 {
-    if self.0 > explicit_track_count as i16 {
-      self.0 as u16 - explicit_track_count
+    let explicit_track_count_i16 =
+      (explicit_track_count as i32).clamp(0, i16::MAX as i32) as i16;
+    if self.0 > explicit_track_count_i16 {
+      // At this point both values are non-negative and `self.0 > explicit_track_count_i16`,
+      // so subtraction is safe.
+      (self.0 as u16).saturating_sub(explicit_track_count)
     } else {
       0
     }
