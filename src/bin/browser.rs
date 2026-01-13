@@ -2999,7 +2999,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
           // Always redraw on keyboard events so chrome shortcuts (handled inside the egui frame via
           // `ui::chrome_ui`) are evaluated even when egui doesn't request a repaint.
-          if response.repaint
+          let is_resize_event = matches!(
+            event,
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+          );
+          if (response.repaint && !is_resize_event)
             || matches!(
               event,
               WindowEvent::KeyboardInput { .. } | WindowEvent::MouseWheel { .. }
@@ -3015,7 +3019,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             WindowEvent::Resized(new_size) => {
               win.app.window_minimized = new_size.width == 0 || new_size.height == 0;
               win.app.resize(new_size);
-              win.app.window.request_redraw();
+              win.app.schedule_resize_redraw();
             }
             WindowEvent::ScaleFactorChanged {
               scale_factor,
@@ -3024,7 +3028,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               win.app.window_minimized = new_inner_size.width == 0 || new_inner_size.height == 0;
               win.app.set_system_pixels_per_point(scale_factor as f32);
               win.app.resize(*new_inner_size);
-              win.app.window.request_redraw();
+              win.app.schedule_resize_redraw();
             }
             WindowEvent::ThemeChanged(theme) => {
               if win.app.refresh_theme_from_system_theme(Some(theme)) {
@@ -5220,6 +5224,13 @@ struct App {
   ///
   /// Used to rate-limit "immediate" (`Duration::ZERO`) repaint requests so we don't busy loop.
   last_egui_redraw_request: Option<std::time::Instant>,
+  /// Last time we requested a redraw due to a resize event (`WindowEvent::Resized` / `ScaleFactorChanged`).
+  ///
+  /// This is separate from `last_egui_redraw_request` so resize-driven redraw throttling does not
+  /// interfere with other repaint sources (input events, worker messages, egui repaint scheduling).
+  last_resize_redraw_request: Option<std::time::Instant>,
+  /// Deadline for the next resize-driven redraw when resize events arrive faster than the frame cadence.
+  next_resize_redraw: Option<std::time::Instant>,
 
   /// Periodic tick driver state for animated documents.
   ///
@@ -5251,6 +5262,11 @@ impl App {
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const RESIZE_PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
+  /// Minimum interval between resize-driven redraw requests.
+  ///
+  /// Resize events can arrive at very high frequency on some platforms/window managers; throttling
+  /// them avoids spamming `window.request_redraw()` faster than a typical display refresh.
+  const MIN_RESIZE_REDRAW_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const CLOSE_ANIM_FAVICON_TTL: std::time::Duration = std::time::Duration::from_millis(250);
   const MAX_CLOSING_TAB_FAVICONS: usize = 64;
   const RESIZE_VIEWPORT_THROTTLE_CONFIG: fastrender::ui::ViewportThrottleConfig =
@@ -5840,6 +5856,8 @@ impl App {
       chrome_toast_rect: None,
       next_egui_repaint: None,
       last_egui_redraw_request: None,
+      last_resize_redraw_request: None,
+      next_resize_redraw: None,
       animation_tick_tab: None,
       next_animation_tick: None,
       next_media_wakeup: std::collections::HashMap::new(),
@@ -6029,6 +6047,7 @@ impl App {
     self.drive_egui_repaint();
     self.drive_page_upload_redraw();
     self.drive_touch_long_press();
+    self.drive_resize_redraw();
     self.update_control_flow_for_animation_ticks(control_flow);
   }
 
@@ -6179,6 +6198,58 @@ impl App {
     }
   }
 
+  fn schedule_resize_redraw(&mut self) {
+    if self.window_occluded || self.window_minimized {
+      self.next_resize_redraw = None;
+      return;
+    }
+
+    let now = std::time::Instant::now();
+    let Some(last) = self.last_resize_redraw_request else {
+      self.last_resize_redraw_request = Some(now);
+      self.next_resize_redraw = None;
+      self.window.request_redraw();
+      return;
+    };
+
+    if now.saturating_duration_since(last) >= Self::MIN_RESIZE_REDRAW_INTERVAL {
+      self.last_resize_redraw_request = Some(now);
+      self.next_resize_redraw = None;
+      self.window.request_redraw();
+      return;
+    }
+
+    let Some(deadline) = last.checked_add(Self::MIN_RESIZE_REDRAW_INTERVAL) else {
+      self.last_resize_redraw_request = Some(now);
+      self.next_resize_redraw = None;
+      self.window.request_redraw();
+      return;
+    };
+
+    self.next_resize_redraw = Some(match self.next_resize_redraw {
+      Some(existing) => existing.min(deadline),
+      None => deadline,
+    });
+  }
+
+  fn drive_resize_redraw(&mut self) {
+    if self.window_occluded || self.window_minimized {
+      self.next_resize_redraw = None;
+      return;
+    }
+
+    let Some(deadline) = self.next_resize_redraw else {
+      return;
+    };
+
+    let now = std::time::Instant::now();
+    if now >= deadline {
+      self.next_resize_redraw = None;
+      self.last_resize_redraw_request = Some(now);
+      self.window.request_redraw();
+    }
+  }
+
   fn update_control_flow_for_animation_ticks(
     &mut self,
     control_flow: &mut winit::event_loop::ControlFlow,
@@ -6242,6 +6313,14 @@ impl App {
       deadline = Some(match deadline {
         Some(existing) => existing.min(upload_deadline),
         None => upload_deadline,
+      });
+    }
+
+    // Resize-driven redraw throttling (interactive window resize / DPI changes).
+    if let Some(resize_deadline) = self.next_resize_redraw {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(resize_deadline),
+        None => resize_deadline,
       });
     }
 
