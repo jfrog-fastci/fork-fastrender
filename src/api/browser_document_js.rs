@@ -294,6 +294,7 @@ impl BrowserDocumentJs {
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
     if !self.document.is_dirty()
+      && !self.document.needs_animation_frame()
       && self.event_loop.as_ref().is_some_and(|event_loop| {
         event_loop.is_idle() && !event_loop.has_pending_animation_frame_callbacks()
       })
@@ -366,7 +367,7 @@ impl BrowserDocumentJs {
 
       self.event_loop = Some(event_loop);
 
-      if self.document.is_dirty() {
+      if self.document.is_dirty() || self.document.needs_animation_frame() {
         let _pixmap = self.document.render_frame()?;
         frames_rendered += 1;
       }
@@ -536,6 +537,59 @@ mod tests {
   }
 
   #[test]
+  fn run_until_stable_rerenders_for_realtime_animation_progress() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: black;
+          animation: fade 1000ms linear forwards;
+        }
+        @keyframes fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+
+    let clock = Arc::new(crate::js::VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let event_loop = EventLoop::<BrowserDocumentJs>::with_clock(clock_for_loop);
+
+    let mut runtime = BrowserDocumentJs::with_event_loop_and_js_execution_options(
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?,
+      event_loop,
+      js_options,
+    );
+    runtime.document_mut().set_realtime_animations_enabled(true);
+
+    // Baseline paint captures the initial animation timestamp.
+    runtime.document_mut().render_frame()?;
+
+    // Advance time with no DOM mutations; run_until_stable should still repaint.
+    clock.advance(Duration::from_millis(500));
+    let outcome = runtime.run_until_stable(1)?;
+    match outcome {
+      RunUntilStableOutcome::Stable { frames_rendered } => {
+        assert!(
+          frames_rendered > 0,
+          "expected run_until_stable to render after realtime animation clock advance"
+        );
+      }
+      other => panic!("expected Stable outcome, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn tick_frame_rerenders_each_task_turn() -> Result<()> {
     let renderer = renderer_for_tests();
     let mut js_options = JsExecutionOptions::default();
@@ -631,7 +685,10 @@ mod tests {
       panic!("expected text node");
     };
     assert_eq!(content, "raf");
-    assert!(*microtask_ran.borrow(), "expected microtask queued by rAF to run");
+    assert!(
+      *microtask_ran.borrow(),
+      "expected microtask queued by rAF to run"
+    );
 
     Ok(())
   }
