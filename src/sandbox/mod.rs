@@ -246,6 +246,17 @@ pub fn apply_pure_computation_sandbox() -> io::Result<()> {
   ));
 }
 
+#[cfg(all(test, not(target_os = "macos")))]
+mod pure_computation_sandbox_tests {
+  use super::apply_pure_computation_sandbox;
+
+  #[test]
+  fn apply_pure_computation_sandbox_is_unsupported() {
+    let err = apply_pure_computation_sandbox().expect_err("expected unsupported platform error");
+    assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+  }
+}
+
 /// Network socket policy for sandboxed renderer processes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkPolicy {
