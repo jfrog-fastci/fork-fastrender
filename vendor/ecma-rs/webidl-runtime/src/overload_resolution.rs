@@ -345,6 +345,34 @@ mod tests {
     assert_eq!(rt.heap().get_string(handle).unwrap().to_utf8_lossy(), "foo");
   }
 
+  #[test]
+  fn promise_argument_conversion_wraps_value_in_promise() {
+    let mut rt = VmJsRuntime::new();
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: IdlType::Promise(Box::new(IdlType::Any)),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    // Non-Promise input should be coerced via `PromiseResolve(%Promise%, V)`.
+    let out = resolve_overload(&mut rt, &overloads, &[Value::Number(1.0)]).unwrap();
+    assert_eq!(out.overload_index, 0);
+
+    let [ConvertedArgument::Value(WebIdlValue::JsValue(promise))] = out.values.as_slice() else {
+      panic!("expected exactly one converted Promise argument");
+    };
+
+    let Value::Object(obj) = *promise else {
+      panic!("expected Promise conversion to return an object");
+    };
+    assert!(rt.heap().is_promise_object(obj));
+  }
+
   fn alloc_iterable_from_values(
     rt: &mut VmJsRuntime,
     values: Vec<Value>,

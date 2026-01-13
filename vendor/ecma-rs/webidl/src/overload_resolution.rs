@@ -1309,9 +1309,19 @@ fn convert_js_to_idl_inner<R: WebIdlJsRuntime>(
         Ok(WebIdlValue::JsValue(value))
       })
     }
-    IdlType::Promise(_) => Err(rt.throw_type_error(
-      "conversion for this WebIDL type is not implemented yet",
-    )),
+    IdlType::Promise(_inner_ty) => {
+      if !int_attrs.is_empty() {
+        return Err(
+          rt.throw_type_error("[Clamp]/[EnforceRange] annotations cannot apply to `Promise`"),
+        );
+      }
+      // Spec: https://webidl.spec.whatwg.org/#es-promise
+      //
+      // WebIDL `Promise<T>` conversion:
+      // 1. Let `promise` be ? PromiseResolve(%Promise%, V).
+      let promise = rt.with_stack_roots(&[value], |rt| rt.promise_resolve(value))?;
+      Ok(WebIdlValue::JsValue(promise))
+    }
   }
 }
 
