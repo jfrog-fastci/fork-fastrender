@@ -19789,56 +19789,6 @@ fn node_list_iterator_next_entries_native(
   Ok(Value::Object(result_obj))
 }
 
-fn node_list_for_each_native(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let Value::Object(list_obj) = this else {
-    return Err(VmError::TypeError("Illegal invocation"));
-  };
-
-  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(callback, Value::Object(_)) || !scope.heap().is_callable(callback)? {
-    return Err(VmError::TypeError("forEach requires a callable callback"));
-  }
-
-  let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
-
-  let length_key = alloc_key(scope, "length")?;
-  let len_value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, length_key)?;
-  let len_n = match len_value {
-    Value::Number(n) => n,
-    other => scope.to_number(vm, host, hooks, other)?,
-  };
-  let len = if len_n.is_finite() && len_n >= 0.0 {
-    len_n.trunc() as usize
-  } else {
-    0usize
-  };
-
-  for idx in 0..len {
-    let mut idx_buf = [0u8; 20];
-    let idx_str = decimal_str_for_usize(idx, &mut idx_buf);
-    let key = alloc_key(scope, idx_str)?;
-    let value = vm.get_with_host_and_hooks(host, scope, hooks, list_obj, key)?;
-    vm.call_with_host_and_hooks(
-      host,
-      scope,
-      hooks,
-      callback,
-      this_arg,
-      &[value, Value::Number(idx as f64), this],
-    )?;
-  }
-
-  Ok(Value::Undefined)
-}
-
 fn alloc_node_array(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
