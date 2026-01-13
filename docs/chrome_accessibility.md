@@ -3,11 +3,11 @@
 FastRender has two accessibility-related layers:
 
 1. **Renderer semantics export** (FastRender → JSON): `src/accessibility.rs` builds a static accessibility tree derived from the styled DOM (`AccessibilityNode`). This is used by tests, the library API, and the `dump_a11y` CLI.
-2. **OS accessibility** (browser UI → screen readers): the windowed `browser` app (feature `browser_ui`) uses **AccessKit** so the **browser chrome** (tabs/address bar/menus) is exposed to platform assistive tech (VoiceOver/Narrator/Orca).
+2. **OS accessibility** (browser UI → screen readers): the windowed `browser` app (feature `browser_ui`) uses **AccessKit** so the **browser chrome** (tabs/address bar/menus) is exposed to platform assistive tech (VoiceOver/Narrator/Orca). The windowed UI can also merge a page accessibility subtree (from the render worker) into the same AccessKit tree so assistive tech can traverse page content nodes.
    - **Default backend:** egui’s AccessKit integration (the egui widget tree becomes the OS accessibility tree).
    - **Renderer-chrome backend (experimental):** `FASTR_BROWSER_RENDERER_CHROME=1` switches the browser to a custom `accesskit_winit::Adapter` (`ui::compositor_accessibility::CompositorAccessibility`) intended for when the chrome is rendered by FastRender (HTML/CSS) instead of egui. Today this provides a minimal Window/Chrome/Page region tree so platform assistive tech can still discover the main UI regions.
 
-Today these are *separate*: the rendered page content is a pixmap, so only the egui chrome participates in OS accessibility. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output will eventually feed into AccessKit when chrome/content are rendered by FastRender.
+Visually, the rendered page content is still a pixmap; however, the windowed UI can inject a page accessibility subtree (via `PageA11ySnapshot`) into the OS-facing AccessKit tree. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output feeds into AccessKit for page content and will eventually do the same when chrome/content are rendered by FastRender.
 
 For a page-focused workflow doc (inspecting the renderer’s accessibility tree via `dump_a11y`, how
 viewport CSS bounds are computed/mapped, and manual screen reader testing), see

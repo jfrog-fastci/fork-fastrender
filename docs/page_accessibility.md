@@ -1,8 +1,9 @@
 # Page accessibility (status + developer workflow)
 
 FastRender currently has **page accessibility semantics** (roles/names/states) implemented in the
-renderer, but **page→OS screen reader integration is not wired yet**. The desktop `browser` UI does
-use **AccessKit** for the *chrome* (egui widgets), so you can already regression-test that layer.
+renderer, and the desktop `browser` UI can expose that tree to OS screen readers via **AccessKit**.
+The page is still *visually* rendered as a pixel buffer, but the windowed UI receives a
+`PageA11ySnapshot` from the worker and merges it into egui’s AccessKit tree.
 
 For deeper details on the browser chrome’s AccessKit wiring (including the experimental non-egui
 backend), see [chrome_accessibility.md](chrome_accessibility.md).
@@ -11,8 +12,7 @@ This doc is a short, “what exists today” guide for:
 
 - Inspecting the computed page accessibility tree.
 - Understanding how page element bounds are computed (for UI overlays and eventual a11y bounds).
-- Testing the existing screen reader integration (browser chrome), and what to do once page a11y is
-  connected.
+- Testing screen reader integration (browser chrome + page content).
 
 ## Current architecture (what runs today)
 
@@ -69,27 +69,19 @@ see [`src/api/dom2_geometry.rs`](../src/api/dom2_geometry.rs) (`Dom2GeometryCont
 
 ### Browser UI worker protocol (page a11y snapshot status)
 
-The render worker currently sends frames and some element geometry (for popups/overlays), but it does
-**not** currently send a full page accessibility snapshot.
+The render worker sends frames and some element geometry (for popups/overlays), and also sends a
+`PageA11ySnapshot` that the windowed UI can inject into the OS accessibility tree.
 
 - UI↔worker messages: [`src/ui/messages.rs`](../src/ui/messages.rs)
 - Worker loop: [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
 
-When page accessibility is wired into the browser UI, the intended shape is:
+High-level flow:
 
-- Add a `WorkerToUi::PageAccessibility { ... }` message in `src/ui/messages.rs` that carries:
-  - The `AccessibilityNode` tree (semantics).
-  - Per-node bounds in viewport-local CSS px (geometry), if/when bounds are implemented.
-- UI maps those bounds through `InputMapping` into whatever coordinate space AccessKit needs.
-  - In practice, the worker will likely reuse existing library plumbing:
-    - Semantics: `RenderOptions::with_accessibility(true)` (see `FastRender::render_html_with_accessibility`)
-      or `FastRender::accessibility_tree_with_interaction_state(...)`.
-    - Construction should be gated on whether assistive tech is connected (see
-      [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)) so normal browsing doesn’t pay
-      the full a11y build cost.
-
-(As of this commit, `WorkerToUi::PageAccessibility` does **not** exist yet; the name is included here
-to document the intended routing point.)
+- The worker builds a page accessibility snapshot (semantics + best-effort geometry) and sends it to
+  the UI as a `PageA11ySnapshot`.
+- The UI merges the snapshot into egui’s `PlatformOutput.accesskit_update` so assistive tech sees a
+  web content subtree under the window’s accessibility tree.
+- AccessKit action requests (e.g. focus/activate) are routed back to the worker as DOM interactions.
 
 ### AccessKit integration (browser chrome)
 
@@ -99,10 +91,10 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
 - Test utilities for extracting AccessKit output: [`src/ui/a11y_test_util.rs`](../src/ui/a11y_test_util.rs)
 - Egui code uses `ctx.enable_accesskit()` in tests (search for `enable_accesskit` in
   `src/ui/chrome.rs`, `src/ui/menu_bar.rs`, etc).
-- Page/content in the windowed UI is currently a single **egui image widget**. It is given a stable
-  accessible label (“Web page content (rendered image)”) so screen readers can identify the region,
-  but it does not expose a web content subtree yet. See `response.widget_info(...)` in
-  [`src/bin/browser.rs`](../src/bin/browser.rs).
+- Page/content in the windowed UI is still drawn as a single **egui image widget**, with a stable
+  accessible label (“Web page content (rendered image)”). When a `PageA11ySnapshot` is available,
+  the UI injects a web content subtree into the AccessKit tree so screen readers can traverse page
+  content nodes.
 - Future-facing (page/chrome rendered by FastRender rather than egui):
   - AccessKit update gating (avoid building trees/bounds when no AT is connected):
     [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)
@@ -112,8 +104,8 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
     [env-vars.md](env-vars.md#appearance--accessibility--debugging-browser-ux) and
     [chrome_accessibility.md](chrome_accessibility.md)).
 
-Page content is currently rendered as a bitmap in an egui panel, so screen readers can only see the
-chrome tree today.
+Page content is still rendered as a bitmap in an egui panel, but screen readers can traverse page
+content nodes via the injected `PageA11ySnapshot` subtree.
 
 ## Tooling: inspect the page accessibility tree
 
@@ -201,9 +193,9 @@ bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help
 ```
 
-This tool only reflects the egui widget tree (tabs/address bar/menus). It is useful as a regression
-test/debugging aid when working on screen reader support for the browser UI itself; page content is
-still a bitmap and is not represented in AccessKit yet.
+This tool only snapshots the egui widget tree (tabs/address bar/menus). It does **not** run the
+render worker, so it will not include the injected `PageA11ySnapshot` subtree; use the real windowed
+browser + a platform accessibility inspector to validate page content exposure.
 
 See [chrome_accessibility.md](chrome_accessibility.md) for recommended `dump_accesskit` invocations
 and how to interpret the output.
@@ -269,7 +261,8 @@ cargo test --features browser_ui accesskit
 
 - Screen readers should be able to navigate and announce **browser chrome controls** (tabs, address
   bar, toolbar buttons, menus).
-- Page content is *not* exposed yet (rendered as a bitmap).
+- Screen readers should be able to traverse basic **page content nodes** (e.g. headings/links/buttons)
+  and trigger focus/activate on at least one page control.
 
 ### Inspecting the OS accessibility tree (optional)
 
@@ -280,8 +273,8 @@ exposed, instead of relying on screen reader speech alone.
 - Windows: **Inspect.exe** (Windows SDK, UI Automation tree)
 - Linux: **Accerciser** (AT-SPI tree)
 
-Note: today these tools will mostly show the browser chrome (egui widgets). The rendered page is a
-bitmap so it won’t expose a rich web content subtree yet.
+Note: these tools should show both the browser chrome (egui widgets) and the injected page subtree
+when a `PageA11ySnapshot` is available.
 
 ### macOS: VoiceOver
 
@@ -302,9 +295,9 @@ bitmap so it won’t expose a rich web content subtree yet.
 2. Launch `browser`.
 3. Use `Tab` / arrow-key navigation and ensure Orca announces chrome widgets.
 
-### Once page a11y is wired
+### With page a11y wired
 
-When page content starts emitting an AccessKit tree, manual testing should expand to:
+Manual testing should include:
 
 - Screen reader “read all” on actual pages.
 - Heading/landmark navigation.
