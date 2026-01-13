@@ -138,7 +138,10 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
         return real + "|" + fake;
       })()"#,
     )?,
-    "[object WeakMap]|[object Object]"
+    // WeakMap is not part of the legacy builtinTag table; removing `@@toStringTag` falls back to
+    // "Object" for both real WeakMap instances and ordinary objects that inherit from
+    // `%WeakMap.prototype%`.
+    "[object Object]|[object Object]"
   );
 
   assert_eq!(
@@ -162,7 +165,10 @@ fn object_prototype_to_string_tags_and_proto_accessors() -> Result<(), VmError> 
         return real + "|" + fake;
       })()"#,
     )?,
-    "[object WeakSet]|[object Object]"
+    // WeakSet is not part of the legacy builtinTag table; removing `@@toStringTag` falls back to
+    // "Object" for both real WeakSet instances and ordinary objects that inherit from
+    // `%WeakSet.prototype%`.
+    "[object Object]|[object Object]"
   );
 
   assert_eq!(
