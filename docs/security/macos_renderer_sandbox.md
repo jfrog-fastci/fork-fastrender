@@ -159,6 +159,11 @@ codesign -d --entitlements :- FastRender.app/Contents/MacOS/renderer
 App Sandbox requires **codesigning** and `.app`-style packaging. Typical development runs (and many
 CI harnesses) execute unsigned binaries, so entitlements are not available.
 
+Additionally, FastRender is not yet shipped as a real `.app` bundle with a separate renderer helper
+executable to sign; the in-tree desktop `browser` binary still runs the “renderer” on a worker thread.
+For developer/CI sandbox iteration we therefore rely on Seatbelt (`sandbox_init` / `sandbox-exec`),
+which works for unsigned binaries and can be applied independently of packaging.
+
 Even after `.app` distribution exists, we still expect to use Seatbelt as a fine-grained,
 per-process sandbox layer for renderer isolation, because it works for unsigned binaries and can be
 tailored more narrowly than coarse app-level entitlements.
