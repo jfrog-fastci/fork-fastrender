@@ -161,6 +161,13 @@ fn regexp_unicode_mode_rejects_invalid_numeric_escape_backreference() {
 }
 
 #[test]
+fn regexp_unicode_mode_allows_forward_numeric_escape_backreference() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"new RegExp("\\1(a)", "u").test("a")"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn regexp_unicode_mode_rejects_legacy_octal_escape_sequence_00() {
   let mut rt = new_runtime();
   let value = rt
