@@ -56,11 +56,11 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Any non-empty value **other than** `0`/`false`/`no`/`off` disables sandboxing (e.g. `1`).
   - Alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off` (`off`/`0`/`false`/`no` disable sandboxing).
   - When set, FastRender logs a warning to stderr so insecure runs are not silent.
-- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).
-  - This does **not** disable AppContainer / restricted-token sandboxing or job-object limits; it only skips the optional mitigation policy attribute layer.
-  - Intended for debugging and compatibility with older/unusual Windows configurations.
+  - Note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the spawn helper
+    still uses a Job Object (kill-on-close, active-process cap) and the handle-inheritance allowlist.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
-- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable applying Windows process mitigation policies during sandboxed spawn in `crates/win-sandbox` (mitigation-only spawner).
+  - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
+- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable applying Windows process mitigation policies (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`) when spawning via `crates/win-sandbox`.
   - This does **not** disable AppContainer/restricted-token/Job/handle-allowlist layers in `fastrender::sandbox::windows::spawn_sandboxed(...)` (they are separate codepaths).
   - Intended as an escape hatch for debugging/compatibility on unusual Windows configurations.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
