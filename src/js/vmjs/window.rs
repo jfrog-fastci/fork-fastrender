@@ -1835,46 +1835,46 @@ mod tests {
 
   #[test]
   fn window_realm_webidl_dom_backend_does_not_clobber_element_child_accessors() -> Result<()> {
-    let mut realm = WindowRealm::new(
-      WindowRealmConfig::new("https://example.invalid/")
-        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
-    )
-    .map_err(|err| Error::Other(err.to_string()))?;
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
 
-    let mut exec = |source: &str| -> Result<Value> {
-      match realm.exec_script(source) {
-        Ok(value) => Ok(value),
-        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
-      }
-    };
-
-    exec("document.body.innerHTML = '<div id=\"p\"><span></span><b></b></div>'")?;
-
-    assert_eq!(
-      exec("document.getElementById('p').firstElementChild.tagName === 'SPAN'")?,
-      Value::Bool(true)
-    );
-    assert_eq!(
-      exec("document.getElementById('p').lastElementChild.tagName === 'B'")?,
-      Value::Bool(true)
-    );
-    assert_eq!(exec("document.getElementById('p').childElementCount")?, Value::Number(2.0));
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
 
     // The WebIDL-generated installer defines these accessors as enumerable, while the legacy
     // handwritten WindowRealm shim uses `enumerable: false`. If WindowRealm overwrites the
-    // WebIDL-defined property, these assertions will fail (guarding migration correctness).
-    assert_eq!(
-      exec("Object.getOwnPropertyDescriptor(Element.prototype,'firstElementChild').enumerable")?,
-      Value::Bool(true)
-    );
-    assert_eq!(
-      exec("Object.getOwnPropertyDescriptor(Element.prototype,'lastElementChild').enumerable")?,
-      Value::Bool(true)
-    );
-    assert_eq!(
-      exec("Object.getOwnPropertyDescriptor(Element.prototype,'childElementCount').enumerable")?,
-      Value::Bool(true)
-    );
+    // WebIDL-defined property, the descriptor checks below will fail (guarding migration
+    // correctness).
+    let ok = host.exec_script_in_event_loop(
+      &mut event_loop,
+      "(() => {\n\
+        const firstDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'firstElementChild');\n\
+        const lastDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'lastElementChild');\n\
+        const countDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'childElementCount');\n\
+        if (!firstDesc || !lastDesc || !countDesc) return false;\n\
+        if (firstDesc.enumerable !== true) return false;\n\
+        if (lastDesc.enumerable !== true) return false;\n\
+        if (countDesc.enumerable !== true) return false;\n\
+\n\
+        const parent = document.createElement('div');\n\
+        const a = document.createElement('span');\n\
+        const b = document.createElement('b');\n\
+        parent.appendChild(a);\n\
+        parent.appendChild(b);\n\
+        if (parent.firstElementChild !== a) return false;\n\
+        if (parent.lastElementChild !== b) return false;\n\
+        if (parent.childElementCount !== 2) return false;\n\
+        return parent.firstElementChild.tagName === 'SPAN' && parent.lastElementChild.tagName === 'B';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
 
     Ok(())
   }
