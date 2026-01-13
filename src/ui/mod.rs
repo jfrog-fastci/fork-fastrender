@@ -2,6 +2,7 @@ pub mod about_pages;
 pub(crate) mod about_pages_fetcher;
 pub mod html_escape;
 pub mod appearance;
+pub mod compositor;
 pub mod renderer_media_prefs;
 pub mod chrome_assets;
 pub mod bookmarks;
