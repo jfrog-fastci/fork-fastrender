@@ -742,7 +742,7 @@ pub fn eval_script_with_host_and_hooks(
   env.teardown(scope.heap_mut());
 
   // Syntax errors from instantiation/evaluation should also be catchable.
-  match result {
+  let result = match result {
     Err(VmError::Syntax(diags)) => {
       let message = diags
         .first()
@@ -751,6 +751,17 @@ pub fn eval_script_with_host_and_hooks(
       let err_obj = crate::error_object::new_syntax_error_object(&mut scope, &intr, message)?;
       Err(VmError::Throw(err_obj))
     }
+    other => other,
+  };
+
+  // Ensure host-visible failures never leak internal helper errors (TypeError, NotCallable, etc.)
+  // when intrinsics are available.
+  match result {
+    Err(err) if err.is_throw_completion() => Err(crate::vm::coerce_error_to_throw_with_stack(
+      &*vm_frame,
+      &mut scope,
+      err,
+    )),
     other => other,
   }
 }
