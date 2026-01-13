@@ -892,22 +892,9 @@ fn run_scroll_fixture(
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
-  let fixture_path = Path::new("tests/pages/fixtures/ui_perf_smoke/index.html");
-  let url = match file_url(fixture_path) {
-    Ok(url) => url,
-    Err(err) => {
-      return ScenarioSummary {
-        name: "scroll_fixture".to_string(),
-        url: fixture_path.display().to_string(),
-        viewport_css: DEFAULT_VIEWPORT_CSS,
-        dpr: DEFAULT_DPR,
-        status: ScenarioStatus::Error,
-        error: Some(err.to_string()),
-        samples_ms: Vec::new(),
-        metrics_ms: BTreeMap::new(),
-      };
-    }
-  };
+  // Use the built-in layout stress fixture so scroll measurements reflect a non-trivial layout tree
+  // (useful for responsiveness regressions).
+  let url = fastrender::ui::about_pages::ABOUT_TEST_LAYOUT_STRESS.to_string();
 
   let viewport_css = DEFAULT_VIEWPORT_CSS;
   let dpr = DEFAULT_DPR;
@@ -1026,22 +1013,9 @@ fn run_resize_fixture(
   run_config: &RunConfig,
   verbose: bool,
 ) -> ScenarioSummary {
-  let fixture_path = Path::new("tests/pages/fixtures/ui_perf_smoke/index.html");
-  let url = match file_url(fixture_path) {
-    Ok(url) => url,
-    Err(err) => {
-      return ScenarioSummary {
-        name: "resize_fixture".to_string(),
-        url: fixture_path.display().to_string(),
-        viewport_css: DEFAULT_VIEWPORT_CSS,
-        dpr: DEFAULT_DPR,
-        status: ScenarioStatus::Error,
-        error: Some(err.to_string()),
-        samples_ms: Vec::new(),
-        metrics_ms: BTreeMap::new(),
-      };
-    }
-  };
+  // Use the built-in layout stress fixture so resize measurements include a meaningful reflow cost
+  // (the fixture's layout changes with width due to an auto-fit grid + wrapping text).
+  let url = fastrender::ui::about_pages::ABOUT_TEST_LAYOUT_STRESS.to_string();
 
   let dpr = DEFAULT_DPR;
   let tab_id = TabId::new();
