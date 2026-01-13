@@ -15026,6 +15026,9 @@ impl App {
       | UiToWorker::Cut { tab_id }
       | UiToWorker::SelectAll { tab_id }
       | UiToWorker::KeyAction { tab_id, .. }
+      | UiToWorker::A11ySetFocus { tab_id, .. }
+      | UiToWorker::A11yActivate { tab_id, .. }
+      | UiToWorker::A11yScrollIntoView { tab_id, .. }
       | UiToWorker::MediaCommand { tab_id, .. }
       | UiToWorker::FindQuery { tab_id, .. }
       | UiToWorker::FindNext { tab_id }
@@ -15160,6 +15163,9 @@ impl App {
           | UiToWorker::Paste { .. }
           | UiToWorker::Cut { .. }
           | UiToWorker::KeyAction { .. }
+          | UiToWorker::A11ySetFocus { .. }
+          | UiToWorker::A11yActivate { .. }
+          | UiToWorker::A11yScrollIntoView { .. }
           | UiToWorker::MediaCommand { .. }
           | UiToWorker::FindQuery { .. }
           | UiToWorker::FindNext { .. }
@@ -25604,13 +25610,18 @@ impl App {
       self.viewport_cache_tab = None;
     }
     let mut session_dirty = false;
-
     let egui_timer_start = breakdown_enabled.then(std::time::Instant::now);
     {
       let _span = self.trace.span("egui.begin_frame", "ui.frame");
       let raw_input = {
         let mut raw = self.egui_state.take_egui_input(&self.window);
         raw.pixels_per_point = Some(self.pixels_per_point);
+
+        // Intercept AccessKit action requests that target page nodes (document accessibility) so they
+        // can be forwarded to the render worker. Requests targeting egui chrome widgets are retained
+        // so `has_accesskit_action_request` continues to work for UI affordances like expand/collapse.
+        let page_accesskit_action_requests =
+          fastrender::ui::page_accesskit::drain_page_accesskit_action_requests(&mut raw);
 
         // PERF: Avoid per-frame allocation churn by extracting wheel/paste events into reusable
         // buffers instead of collecting into new `Vec`s every frame. The common case (no wheel/paste)
@@ -25660,6 +25671,72 @@ impl App {
             );
           }
         }
+
+        if !page_accesskit_action_requests.is_empty() {
+          use fastrender::ui::UiToWorker;
+
+          let active_tab_id = self.browser_state.active_tab_id();
+          let mut msgs: Vec<UiToWorker> = Vec::new();
+          let mut page_focus_requested = false;
+
+          for req in page_accesskit_action_requests {
+            let Some(msg) = fastrender::ui::page_accesskit::action_request_to_ui_message(&req) else {
+              continue;
+            };
+
+            // Defensive: ignore requests for tabs that are not active in this window.
+            let msg_tab_id = match &msg {
+              UiToWorker::A11ySetFocus { tab_id, .. }
+              | UiToWorker::A11yActivate { tab_id, .. }
+              | UiToWorker::A11yScrollIntoView { tab_id, .. }
+              | UiToWorker::A11ySetTextValue { tab_id, .. }
+              | UiToWorker::A11ySetTextSelectionRange { tab_id, .. } => *tab_id,
+              _ => continue,
+            };
+            if Some(msg_tab_id) != active_tab_id {
+              continue;
+            }
+
+            if matches!(msg, UiToWorker::A11ySetFocus { .. } | UiToWorker::A11yActivate { .. }) {
+              page_focus_requested = true;
+            }
+
+            // Coalesce multiple action requests in a single frame when possible.
+            let should_replace = |existing: &UiToWorker| match (&msg, existing) {
+              // Only the latest requested focus matters.
+              (UiToWorker::A11ySetFocus { .. }, UiToWorker::A11ySetFocus { .. }) => true,
+              // Keep only the latest request per target node.
+              (
+                UiToWorker::A11yActivate { node_id: a, .. },
+                UiToWorker::A11yActivate { node_id: b, .. },
+              ) => a == b,
+              (
+                UiToWorker::A11yScrollIntoView { node_id: a, .. },
+                UiToWorker::A11yScrollIntoView { node_id: b, .. },
+              ) => a == b,
+              (
+                UiToWorker::A11ySetTextValue { node_id: a, .. },
+                UiToWorker::A11ySetTextValue { node_id: b, .. },
+              ) => a == b,
+              (
+                UiToWorker::A11ySetTextSelectionRange { node_id: a, .. },
+                UiToWorker::A11ySetTextSelectionRange { node_id: b, .. },
+              ) => a == b,
+              _ => false,
+            };
+            msgs.retain(|existing| !should_replace(existing));
+            msgs.push(msg);
+          }
+
+          if page_focus_requested {
+            self.page_has_focus = true;
+          }
+
+          for msg in msgs {
+            let _ = self.send_worker_msg(msg);
+          }
+        }
+
         raw
       };
 

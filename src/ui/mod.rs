@@ -139,6 +139,11 @@ pub mod accesskit_winit_adapter;
 #[cfg(feature = "browser_ui")]
 pub mod accesskit_bounds;
 
+// Browser UI helpers for routing AccessKit action requests targeting *page* nodes (document
+// accessibility) to the render worker.
+#[cfg(feature = "browser_ui")]
+pub mod page_accesskit;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
