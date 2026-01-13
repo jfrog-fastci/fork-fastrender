@@ -2014,6 +2014,7 @@ impl<'a> Parser<'a> {
       }
       .into());
     };
+    let unicode_mode = self.flags.has_either_unicode_flag();
 
     match u {
       x if x == (b'.' as u16) => Ok(Atom::Any),
@@ -2027,10 +2028,22 @@ impl<'a> Parser<'a> {
         .into())
       }
       x if x == (b'{' as u16) => {
-        // `{` is only a quantifier delimiter when it follows an atom; here it's an atom itself.
-        Ok(Atom::Literal(x))
+        // Annex B (extended pattern characters) treats `{` as a literal atom when it is not parsed
+        // as a quantifier. This extension is not applied in UnicodeMode (`u` or `v`).
+        if unicode_mode {
+          Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into())
+        } else {
+          Ok(Atom::Literal(x))
+        }
       }
-      x if x == (b'}' as u16) && self.flags.has_either_unicode_flag() => Err(RegExpSyntaxError {
+      x if x == (b']' as u16) && unicode_mode => Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into()),
+      x if x == (b'}' as u16) && unicode_mode => Err(RegExpSyntaxError {
         message: "Invalid regular expression",
       }
       .into()),
@@ -2581,6 +2594,7 @@ impl<'a> Parser<'a> {
     let Some(u) = self.peek() else {
       return Ok(None);
     };
+    let unicode_mode = self.flags.has_either_unicode_flag();
     let (mut min, max): (u32, Option<u32>) = match u {
       x if x == (b'*' as u16) => {
         self.next();
@@ -2598,11 +2612,23 @@ impl<'a> Parser<'a> {
         let save = self.idx;
         self.next();
         let Some(first) = self.peek() else {
+          if unicode_mode {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
           self.idx = save;
           return Ok(None);
         };
         if !(b'0' as u16..=b'9' as u16).contains(&first) {
           // Not a quantifier; treat `{` as a literal.
+          if unicode_mode {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
           self.idx = save;
           return Ok(None);
         }
@@ -2620,12 +2646,18 @@ impl<'a> Parser<'a> {
           n = Some(m);
         }
         if !self.eat(b'}' as u16) {
+          if unicode_mode {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
           self.idx = save;
           return Ok(None);
         }
         (m, n)
       }
-      x if x == (b'}' as u16) && self.flags.has_either_unicode_flag() => {
+      x if x == (b'}' as u16) && unicode_mode => {
         return Err(RegExpSyntaxError {
           message: "Invalid regular expression",
         }
