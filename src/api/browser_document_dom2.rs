@@ -4663,9 +4663,9 @@ mod tests {
     let counters_before = doc.invalidation_counters();
 
     let mut selected_state = base_state.clone();
-    selected_state.document_selection =
-      Some(crate::interaction::state::DocumentSelectionState::All);
-    selected_state.mark_paint_hash_dirty();
+    selected_state.set_document_selection(Some(
+      crate::interaction::state::DocumentSelectionState::All,
+    ));
     doc.set_interaction_state(Some(selected_state));
 
     let pixmap1 = doc
@@ -4737,10 +4737,9 @@ mod tests {
     let counters_before = doc.invalidation_counters();
 
     let mut state_start = state_end.clone();
-    if let Some(edit) = state_start.text_edit.as_mut() {
+    if let Some(edit) = state_start.text_edit_mut().as_mut() {
       edit.caret = 0;
     }
-    state_start.mark_paint_hash_dirty();
     doc.set_interaction_state(Some(state_start));
 
     let pixmap_start = doc

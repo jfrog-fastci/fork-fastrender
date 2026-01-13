@@ -600,6 +600,10 @@ pub(crate) fn document_selection_contains_point_dom2(
 /// Note: `visited_links` and `user_validity` are kept private; use
 /// [`visited_links_mut`](Self::visited_links_mut) / [`user_validity_mut`](Self::user_validity_mut)
 /// (or the `insert_*` helpers) to mutate them, which automatically dirties the CSS hash.
+///
+/// For paint-only state (`document_selection`, `text_edit`, `ime_preedit`, and file-input state),
+/// prefer the helper setters/mutable accessors on [`InteractionState`] so the cached paint hash is
+/// dirtied automatically.
 #[derive(Debug)]
 pub struct InteractionState {
   /// Currently focused element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
@@ -884,6 +888,77 @@ impl InteractionState {
       .text_edit
       .as_ref()
       .filter(|state| state.node_id == node_id)
+  }
+
+  /// Set (or clear) the document selection, marking the cached paint hash dirty on change.
+  pub fn set_document_selection(&mut self, selection: Option<DocumentSelectionState>) {
+    if self.document_selection == selection {
+      return;
+    }
+    self.document_selection = selection;
+    self.mark_paint_hash_dirty();
+  }
+
+  /// Mutably access the document selection, marking the cached paint hash dirty.
+  pub fn document_selection_mut(&mut self) -> &mut Option<DocumentSelectionState> {
+    self.mark_paint_hash_dirty();
+    &mut self.document_selection
+  }
+
+  /// Set (or clear) the focused-control text-edit paint state, marking the cached paint hash dirty
+  /// on change.
+  pub fn set_text_edit(&mut self, edit: Option<TextEditPaintState>) {
+    if self.text_edit == edit {
+      return;
+    }
+    self.text_edit = edit;
+    self.mark_paint_hash_dirty();
+  }
+
+  /// Mutably access the focused-control text-edit paint state, marking the cached paint hash dirty.
+  pub fn text_edit_mut(&mut self) -> &mut Option<TextEditPaintState> {
+    self.mark_paint_hash_dirty();
+    &mut self.text_edit
+  }
+
+  /// Set (or clear) the IME preedit state, marking the cached paint hash dirty on change.
+  pub fn set_ime_preedit(&mut self, preedit: Option<ImePreeditState>) {
+    if self.ime_preedit == preedit {
+      return;
+    }
+    self.ime_preedit = preedit;
+    self.mark_paint_hash_dirty();
+  }
+
+  /// Mutably access the IME preedit state, marking the cached paint hash dirty.
+  pub fn ime_preedit_mut(&mut self) -> &mut Option<ImePreeditState> {
+    self.mark_paint_hash_dirty();
+    &mut self.ime_preedit
+  }
+
+  /// Mutably access the file-input selection map, marking the cached paint hash dirty.
+  pub fn file_inputs_mut(&mut self) -> &mut FxHashMap<usize, Vec<FileSelection>> {
+    self.mark_paint_hash_dirty();
+    &mut self.form_state.file_inputs
+  }
+
+  /// Set (or clear) the selected files for an `<input type=file>` control, marking the cached paint
+  /// hash dirty when the entry changes.
+  pub fn set_file_input_files(&mut self, node_id: usize, files: Vec<FileSelection>) -> bool {
+    let changed = match self.form_state.file_inputs.get(&node_id) {
+      Some(existing) => existing.as_slice() != files.as_slice(),
+      None => !files.is_empty(),
+    };
+    if !changed {
+      return false;
+    }
+    if files.is_empty() {
+      self.form_state.file_inputs.remove(&node_id);
+    } else {
+      self.form_state.file_inputs.insert(node_id, files);
+    }
+    self.mark_paint_hash_dirty();
+    true
   }
 
   #[inline]
