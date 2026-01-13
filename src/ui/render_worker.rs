@@ -4921,6 +4921,7 @@ impl BrowserRuntime {
               focused_is_input || focused_is_textarea || focused_is_select || focused_is_button;
             let focus_consumes_arrows = focused_is_input || focused_is_textarea || focused_is_select;
             let focus_consumes_home_end = focus_consumes_arrows;
+            let focus_consumes_page = focus_consumes_arrows;
 
             let allow_scroll = match key {
               crate::interaction::KeyAction::Space | crate::interaction::KeyAction::ShiftSpace => {
@@ -4933,6 +4934,9 @@ impl BrowserRuntime {
               | crate::interaction::KeyAction::End
               | crate::interaction::KeyAction::ShiftHome
               | crate::interaction::KeyAction::ShiftEnd => !focus_consumes_home_end,
+              crate::interaction::KeyAction::PageUp | crate::interaction::KeyAction::PageDown => {
+                !focus_consumes_page
+              }
               _ => false,
             };
 
@@ -4970,6 +4974,24 @@ impl BrowserRuntime {
                 })
               }
               crate::interaction::KeyAction::ShiftSpace => {
+                let h = tab.viewport_css.1.max(1) as f32;
+                let dy = -((h * 0.9).max(1.0));
+                Some(UiToWorker::Scroll {
+                  tab_id,
+                  delta_css: (0.0, dy),
+                  pointer_css: None,
+                })
+              }
+              crate::interaction::KeyAction::PageDown => {
+                let h = tab.viewport_css.1.max(1) as f32;
+                let dy = (h * 0.9).max(1.0);
+                Some(UiToWorker::Scroll {
+                  tab_id,
+                  delta_css: (0.0, dy),
+                  pointer_css: None,
+                })
+              }
+              crate::interaction::KeyAction::PageUp => {
                 let h = tab.viewport_css.1.max(1) as f32;
                 let dy = -((h * 0.9).max(1.0));
                 Some(UiToWorker::Scroll {

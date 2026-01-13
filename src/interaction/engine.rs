@@ -112,6 +112,8 @@ pub enum KeyAction {
   ShiftTab,
   Space,
   ShiftSpace,
+  PageUp,
+  PageDown,
   ArrowLeft,
   ArrowRight,
   WordLeft,
@@ -8465,6 +8467,11 @@ impl InteractionEngine {
             }
           }
         }
+        KeyAction::PageUp | KeyAction::PageDown => {
+          // Native text controls typically consume PageUp/PageDown for internal scrolling/caret
+          // navigation. We do not implement textarea scrolling yet, so treat these keys as a no-op
+          // rather than falling back to viewport scrolling.
+        }
         KeyAction::Space | KeyAction::ShiftSpace => {
           // Handled by `key_activate` (may trigger navigation).
         }
@@ -8715,7 +8722,12 @@ impl InteractionEngine {
         }
       }
       KeyAction::Space | KeyAction::ShiftSpace => {}
-      KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
+      KeyAction::ArrowUp
+      | KeyAction::ArrowDown
+      | KeyAction::Home
+      | KeyAction::End
+      | KeyAction::PageUp
+      | KeyAction::PageDown => {
         return (
           self.key_action_with_box_tree(dom, box_tree, key),
           InteractionAction::None,
@@ -9167,7 +9179,12 @@ impl InteractionEngine {
         }
       }
       KeyAction::Space | KeyAction::ShiftSpace => {}
-      KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
+      KeyAction::ArrowUp
+      | KeyAction::ArrowDown
+      | KeyAction::Home
+      | KeyAction::End
+      | KeyAction::PageUp
+      | KeyAction::PageDown => {
         return (
           self.key_action_with_layout_artifacts(dom, box_tree, fragment_tree, key),
           InteractionAction::None,

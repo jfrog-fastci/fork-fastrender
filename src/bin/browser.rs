@@ -10212,9 +10212,7 @@ impl App {
               ShortcutAction::Copy
               | ShortcutAction::Cut
               | ShortcutAction::Paste
-              | ShortcutAction::SelectAll
-              | ShortcutAction::PageUp
-              | ShortcutAction::PageDown => {
+              | ShortcutAction::SelectAll => {
                 // If egui is actively editing text (e.g. the address bar), don't handle page-level
                 // key events.
                 if self.chrome_has_text_focus {
@@ -10228,28 +10226,6 @@ impl App {
                 };
 
                 match action {
-                  ShortcutAction::PageUp | ShortcutAction::PageDown => {
-                    let viewport_css = self
-                      .page_viewport_css
-                      .or_else(|| {
-                        self
-                          .browser_state
-                          .tab(tab_id)
-                          .and_then(|tab| tab.latest_frame_meta.as_ref())
-                          .map(|meta| meta.viewport_css)
-                      })
-                      .unwrap_or((0, 0));
-                    let h = viewport_css.1.max(1) as f32;
-                    let mut dy = (h * 0.9).max(1.0);
-                    if matches!(action, ShortcutAction::PageUp) {
-                      dy = -dy;
-                    }
-                    self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-                      tab_id,
-                      delta_css: (0.0, dy),
-                      pointer_css: None,
-                    });
-                  }
                   ShortcutAction::Copy => {
                     self.send_worker_msg(fastrender::ui::UiToWorker::Copy { tab_id })
                   }
@@ -10276,7 +10252,11 @@ impl App {
 
               // Allow these keys to be forwarded to the page so focused text controls can handle
               // them for caret navigation and text entry.
-              ShortcutAction::Space | ShortcutAction::Home | ShortcutAction::End => {}
+              ShortcutAction::Space
+              | ShortcutAction::Home
+              | ShortcutAction::End
+              | ShortcutAction::PageUp
+              | ShortcutAction::PageDown => {}
               // Any other mapped shortcut should not be forwarded into the page. Most are handled
               // inside the egui chrome layer; swallowing here prevents pages from intercepting
               // browser shortcuts even if we haven't added a dedicated winit-layer handler.
@@ -10438,6 +10418,8 @@ impl App {
           }),
           VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
           VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
+          VirtualKeyCode::PageUp => Some(fastrender::interaction::KeyAction::PageUp),
+          VirtualKeyCode::PageDown => Some(fastrender::interaction::KeyAction::PageDown),
           VirtualKeyCode::Home => Some(if self.modifiers.shift() {
             fastrender::interaction::KeyAction::ShiftHome
           } else {

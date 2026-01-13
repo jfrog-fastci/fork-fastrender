@@ -120,8 +120,9 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
 
   let step_y = (viewport_css.1 as f32) * 0.9;
 
-  // PageDown / Space.
-  tx.send(scroll_msg(tab_id, (0.0, step_y), None)).unwrap();
+  // PageDown should scroll down by ~0.9 * viewport height.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::PageDown))
+    .unwrap();
   let (_scroll_y, frame_y) =
     wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| next > y + 1.0);
   assert!(
@@ -130,8 +131,9 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
   );
   y = frame_y;
 
-  // PageUp / Shift+Space.
-  tx.send(scroll_msg(tab_id, (0.0, -step_y), None)).unwrap();
+  // PageUp should scroll back up by ~0.9 * viewport height.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::PageUp))
+    .unwrap();
   let (_scroll_y, frame_y) = wait_for_scroll_response(&rx, tab_id, DEFAULT_TIMEOUT, |next| {
     next < y - 1.0 || next <= 1.0
   });
