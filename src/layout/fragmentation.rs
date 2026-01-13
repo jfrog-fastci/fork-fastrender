@@ -380,6 +380,7 @@ fn grid_item_parallel_flow_required_block_size(
           item_writing_mode,
           true,
           false,
+          false,
         );
         collection
           .opportunities
@@ -540,6 +541,7 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
             child_writing_mode,
             true,
             false,
+            false,
           );
           let mut positions: Vec<f32> = collection
             .opportunities
@@ -657,6 +659,7 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
               child_writing_mode,
               true,
               false,
+              false,
             );
             collection
               .opportunities
@@ -754,6 +757,7 @@ pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
         context,
         axis,
         node_writing_mode,
+        false,
         false,
         false,
       );
@@ -859,6 +863,7 @@ pub(crate) fn apply_abspos_parallel_flow_forced_break_shifts(
         node_writing_mode,
         false,
         false,
+        false,
       );
 
       let abs_end = abs_start + node_block_size;
@@ -875,6 +880,107 @@ pub(crate) fn apply_abspos_parallel_flow_forced_break_shifts(
 
       // Like floats, avoid applying shifts multiple times within this subtree.
       return;
+    }
+
+    for child in node.children_mut().iter_mut() {
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      let child_writing_mode = child
+        .style
+        .as_ref()
+        .map(|s| s.writing_mode)
+        .unwrap_or(node_writing_mode);
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        fragmentainer_size,
+        context,
+        child_writing_mode,
+        default_style,
+      );
+    }
+  }
+
+  walk(
+    root,
+    0.0,
+    &axis,
+    fragmentainer_size,
+    context,
+    root_writing_mode,
+    default_style,
+  );
+}
+
+pub(crate) fn apply_table_cell_parallel_flow_forced_break_shifts(
+  root: &mut FragmentNode,
+  axes: FragmentAxes,
+  fragmentainer_size: f32,
+  context: FragmentationContext,
+) {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return;
+  }
+
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+  let root_writing_mode = root
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+
+  fn walk(
+    node: &mut FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    fragmentainer_size: f32,
+    context: FragmentationContext,
+    inherited_writing_mode: WritingMode,
+    default_style: &ComputedStyle,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_writing_mode = node
+      .style
+      .as_ref()
+      .map(|s| s.writing_mode)
+      .unwrap_or(inherited_writing_mode);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    if matches!(style.display, Display::TableCell) {
+      // CSS Break 3 §3: Table cells establish a parallel fragmentation flow. Forced breaks inside a
+      // cell must not propagate out to the row/table; instead continuation content is shifted to the
+      // next fragmentainer boundary.
+      let mut collection = BreakCollection::default();
+      collect_break_opportunities(
+        node,
+        abs_start,
+        &mut collection,
+        0,
+        0,
+        context,
+        axis,
+        node_writing_mode,
+        true,
+        false,
+        true,
+      );
+
+      let abs_end = abs_start + node_block_size;
+      let mut positions: Vec<f32> = collection
+        .opportunities
+        .into_iter()
+        .filter(|o| matches!(o.strength, BreakStrength::Forced))
+        .map(|o| o.pos)
+        .collect();
+      positions.retain(|p| *p > abs_start + BREAK_EPSILON && *p < abs_end - BREAK_EPSILON);
+      if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+        apply_parallel_flow_shifts_to_descendants(node, abs_start, 0.0, axis, &shifts);
+      }
     }
 
     for child in node.children_mut().iter_mut() {
@@ -1366,6 +1472,7 @@ impl FragmentationAnalyzer {
       &axis,
       root_writing_mode,
       true,
+      false,
       false,
     );
 
@@ -2257,6 +2364,12 @@ fn fragment_tree_impl(
     context,
   );
   apply_abspos_parallel_flow_forced_break_shifts(
+    &mut root,
+    axes,
+    options.fragmentainer_size,
+    context,
+  );
+  apply_table_cell_parallel_flow_forced_break_shifts(
     &mut root,
     axes,
     options.fragmentainer_size,
@@ -3746,6 +3859,7 @@ fn collect_break_opportunities(
   inherited_writing_mode: WritingMode,
   suppress_parallel_flow_descendants: bool,
   suppress_forced_breaks: bool,
+  parallel_flow_root: bool,
 ) {
   let default_style = default_style();
   let style = node
@@ -3775,11 +3889,12 @@ fn collect_break_opportunities(
     ));
 
   // Parallel fragmentation flows (CSS Break 3 §3) must not contribute their internal break
-  // opportunities to the parent flow. Floats and absolutely-positioned elements establish parallel
-  // flows, so suppress them when requested.
-  if suppress_parallel_flow_descendants
-    && (style.float.is_floating() || style.position.is_absolutely_positioned())
-  {
+  // opportunities to the parent flow. Floats, absolutely-positioned elements, and table cells all
+  // establish parallel flows, so suppress them when requested.
+  let is_parallel_flow = style.float.is_floating()
+    || style.position.is_absolutely_positioned()
+    || matches!(style.display, Display::TableCell);
+  if suppress_parallel_flow_descendants && !parallel_flow_root && is_parallel_flow {
     return;
   }
 
@@ -4047,6 +4162,7 @@ fn collect_break_opportunities(
           suppress_parallel_flow_descendants,
           suppress_forced_breaks
             || (is_row_flex_container_in_context && child_style.position.is_in_flow()),
+          false,
         );
       }
       return;
@@ -4252,6 +4368,7 @@ fn collect_break_opportunities(
         node_writing_mode,
         suppress_parallel_flow_descendants,
         child_suppress_forced_breaks,
+        false,
       );
     }
 

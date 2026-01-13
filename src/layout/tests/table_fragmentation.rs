@@ -1171,3 +1171,178 @@ fn table_footers_repeat_in_multicol_vertical_writing() {
     "rows should flow into the second column"
   );
 }
+
+#[test]
+fn forced_page_break_inside_table_cell_does_not_force_sibling_cells() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; }
+          table { width: 100%; border-collapse: collapse; border-spacing: 0; }
+          td { padding: 0; vertical-align: top; }
+          .c1, .c2 { height: 20px; }
+          .c1 { break-after: page; }
+          .tall { height: 80px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr>
+            <td>
+              <div class="c1">C1</div>
+              <div class="c2">C2</div>
+            </td>
+            <td>
+              <div class="tall">TALL</div>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected forced break in cell to create a continuation page; page_count={}",
+    page_roots.len()
+  );
+
+  let mut texts_page1 = Vec::new();
+  collect_text_fragments(page_roots[0], &mut texts_page1);
+  let mut texts_page2 = Vec::new();
+  collect_text_fragments(page_roots[1], &mut texts_page2);
+
+  let numbers_page1 = collect_numbers(&texts_page1);
+  let numbers_page2 = collect_numbers(&texts_page2);
+
+  assert!(
+    numbers_page1.contains(&1),
+    "page 1 should contain C1 (numbers={numbers_page1:?}, texts={:?})",
+    texts_page1.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+  assert!(
+    !numbers_page1.contains(&2),
+    "page 1 should not contain C2 (numbers={numbers_page1:?}, texts={:?})",
+    texts_page1.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+  assert!(
+    texts_page1.iter().any(|t| t.text.contains("TALL")),
+    "page 1 should contain sibling cell content (texts={:?})",
+    texts_page1.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+
+  assert!(
+    numbers_page2.contains(&2),
+    "page 2 should contain C2 (numbers={numbers_page2:?}, texts={:?})",
+    texts_page2.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+  assert!(
+    !texts_page2.iter().any(|t| t.text.contains("TALL")),
+    "page 2 should not contain sibling cell content (texts={:?})",
+    texts_page2.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+}
+
+#[test]
+fn forced_column_break_inside_table_cell_does_not_force_sibling_cells() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          div.columns { column-count: 2; column-gap: 20px; width: 260px; height: 100px; }
+          table { width: 100%; border-collapse: collapse; border-spacing: 0; }
+          td { padding: 0; vertical-align: top; }
+          .c1, .c2 { height: 20px; }
+          .c1 { break-after: column; }
+          .tall { height: 80px; }
+        </style>
+      </head>
+      <body>
+        <div class="columns">
+          <table>
+            <tr>
+              <td>
+                <div class="c1">C1</div>
+                <div class="c2">C2</div>
+              </td>
+              <td>
+                <div class="tall">TALL</div>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
+
+  let mut texts = Vec::new();
+  collect_text_fragments(&tree.root, &mut texts);
+
+  let numbers = collect_numbers_with_positions(&texts, |t| t.x);
+  let mut c1_x = Vec::new();
+  let mut c2_x = Vec::new();
+  for number in &numbers {
+    match number.value {
+      1 => c1_x.push(number.pos),
+      2 => c2_x.push(number.pos),
+      _ => {}
+    }
+  }
+
+  assert!(
+    !c1_x.is_empty() && !c2_x.is_empty(),
+    "expected to find both C1 and C2 digits (numbers={numbers:?}, texts={:?})",
+    texts.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+  let min_x = numbers
+    .iter()
+    .map(|n| n.pos)
+    .fold(f32::INFINITY, f32::min);
+  let max_x = numbers
+    .iter()
+    .map(|n| n.pos)
+    .fold(f32::NEG_INFINITY, f32::max);
+  assert!(
+    (max_x - min_x) > 10.0,
+    "expected content to flow into the second column (min_x={min_x}, max_x={max_x}, numbers={numbers:?})"
+  );
+  let midpoint = (min_x + max_x) / 2.0;
+
+  assert!(
+    c1_x.iter().all(|x| *x < midpoint),
+    "C1 should appear in the first column (c1_x={c1_x:?}, midpoint={midpoint})"
+  );
+  assert!(
+    c2_x.iter().all(|x| *x > midpoint),
+    "C2 should appear in the second column (c2_x={c2_x:?}, midpoint={midpoint})"
+  );
+
+  let tall_x: Vec<f32> = texts
+    .iter()
+    .filter(|t| t.text.contains("TALL"))
+    .map(|t| t.x)
+    .collect();
+  assert!(
+    !tall_x.is_empty(),
+    "expected to find TALL fragment(s); texts={:?}",
+    texts.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+  );
+  assert!(
+    tall_x.iter().all(|x| *x < midpoint),
+    "TALL content should remain in the first column (tall_x={tall_x:?}, midpoint={midpoint})"
+  );
+}
