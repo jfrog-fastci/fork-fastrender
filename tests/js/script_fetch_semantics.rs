@@ -7,7 +7,8 @@ use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::dom2::NodeId;
 use fastrender::error::Result;
 use fastrender::js::{
-  EventLoop, HtmlScriptId, RunLimits, ScriptElementSpec, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  EventLoop, HtmlScriptId, JsExecutionOptions, RunLimits, ScriptElementSpec, WindowRealm, WindowRealmConfig,
+  WindowRealmHost,
 };
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -288,6 +289,60 @@ fn sri_sha256_mismatch_blocks_script_execution_without_aborting() -> Result<()> 
   tab.register_script_source(script_url, script_body);
 
   // SRI mismatches should behave like script load failures: no execution, but the run completes.
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  assert_eq!(executor.take_log(), Vec::<String>::new());
+  Ok(())
+}
+
+#[test]
+fn module_sri_sha256_allows_matching_digest() -> Result<()> {
+  let script_url = "https://example.com/a.mjs";
+  let script_body = "export default 1;";
+  let digest = Sha256::digest(script_body.as_bytes());
+  let b64 = BASE64_STANDARD.encode(digest);
+
+  let html = format!(
+    r#"<!doctype html><script type="module" src="{script_url}" integrity="sha256-{b64}"></script>"#
+  );
+
+  let executor = LogExecutor::default();
+  let mut js_execution_options = JsExecutionOptions::default();
+  js_execution_options.supports_module_scripts = true;
+  let mut tab = BrowserTab::from_html_with_js_execution_options(
+    &html,
+    RenderOptions::default(),
+    executor.clone(),
+    js_execution_options,
+  )?;
+  tab.register_script_source(script_url, script_body);
+  tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+  assert_eq!(executor.take_log(), vec![script_body.to_string()]);
+  Ok(())
+}
+
+#[test]
+fn module_sri_sha256_mismatch_blocks_script_execution_without_aborting() -> Result<()> {
+  let script_url = "https://example.com/a.mjs";
+  let script_body = "export default 1;";
+  let digest = Sha256::digest(b"wrong");
+  let b64 = BASE64_STANDARD.encode(digest);
+
+  let html = format!(
+    r#"<!doctype html><script type="module" src="{script_url}" integrity="sha256-{b64}"></script>"#
+  );
+
+  let executor = LogExecutor::default();
+  let mut js_execution_options = JsExecutionOptions::default();
+  js_execution_options.supports_module_scripts = true;
+  let mut tab = BrowserTab::from_html_with_js_execution_options(
+    &html,
+    RenderOptions::default(),
+    executor.clone(),
+    js_execution_options,
+  )?;
+  tab.register_script_source(script_url, script_body);
   tab.run_event_loop_until_idle(RunLimits::unbounded())?;
 
   assert_eq!(executor.take_log(), Vec::<String>::new());
