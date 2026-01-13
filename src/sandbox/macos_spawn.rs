@@ -113,7 +113,11 @@ fn log_sandbox_disabled_once() {
   LOGGED.get_or_init(|| {
     eprintln!(
       "warning: macOS Seatbelt renderer sandbox is DISABLED (debug escape hatch; INSECURE). \
-Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1 or {ENV_MACOS_RENDERER_SANDBOX}=pure-computation|system-fonts|off to control this."
+Set {ENV_DISABLE_RENDERER_SANDBOX}=0/1, {config}={strict}|{relaxed}|{off}, or {ENV_MACOS_RENDERER_SANDBOX}=pure-computation|system-fonts|off to control this.",
+      config = config::ENV_RENDERER_SANDBOX,
+      strict = "strict",
+      relaxed = "relaxed",
+      off = "off",
     );
   });
 }
