@@ -3105,6 +3105,7 @@ const ELEMENT_SLOT_GET_KEY: &str = "__fastrender_element_slot_get";
 const ELEMENT_SLOT_SET_KEY: &str = "__fastrender_element_slot_set";
 const ELEMENT_SRC_GET_KEY: &str = "__fastrender_element_src_get";
 const ELEMENT_SRC_SET_KEY: &str = "__fastrender_element_src_set";
+const HTML_MEDIA_ELEMENT_CURRENT_SRC_GET_KEY: &str = "__fastrender_html_media_element_current_src_get";
 const ELEMENT_SRCSET_GET_KEY: &str = "__fastrender_element_srcset_get";
 const ELEMENT_SRCSET_SET_KEY: &str = "__fastrender_element_srcset_set";
 const ELEMENT_SIZES_GET_KEY: &str = "__fastrender_element_sizes_get";
@@ -8497,6 +8498,20 @@ fn get_or_create_node_wrapper(
       DomInterface::primary_for_node_kind(&dom.node(node_id).kind).implements(DomInterface::HTMLElement)
     })
     .unwrap_or(false);
+  let is_html_media_element = dom
+    .map(|dom| match &dom.node(node_id).kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+        is_html
+          && (tag_name.eq_ignore_ascii_case("video") || tag_name.eq_ignore_ascii_case("audio"))
+      }
+      _ => false,
+    })
+    .unwrap_or(false);
 
   let element_query_selector = {
     let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_KEY)?;
@@ -8772,6 +8787,10 @@ fn get_or_create_node_wrapper(
   };
   let src_set = {
     let key = alloc_key(scope, ELEMENT_SRC_SET_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
+  let media_current_src_get = {
+    let key = alloc_key(scope, HTML_MEDIA_ELEMENT_CURRENT_SRC_GET_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
   let srcset_get = {
@@ -9334,6 +9353,26 @@ fn get_or_create_node_wrapper(
           },
         },
       )?;
+    }
+  }
+
+  if is_html_media_element {
+    if let Some(Value::Object(get)) = media_current_src_get {
+      let key = alloc_key(scope, "currentSrc")?;
+      if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+        scope.define_property(
+          wrapper,
+          key,
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(get),
+              set: Value::Undefined,
+            },
+          },
+        )?;
+      }
     }
   }
 
@@ -38174,6 +38213,155 @@ fn element_reflected_bool_set_native(
   Ok(Value::Undefined)
 }
 
+fn html_media_element_current_src_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let Some(handle) = element_handle_from_wrapper_obj_opt(vm, scope, obj) else {
+    return Ok(Value::Undefined);
+  };
+  let Some(dom_ptr) = dom_ptr_for_document_id_read(vm, host, handle.document_id) else {
+    return Ok(Value::Undefined);
+  };
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  // Identify the media element type so we can prefer matching <source type="video/*"> or
+  // <source type="audio/*"> candidates.
+  let preferred_prefix = match &dom.node(handle.node_id).kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } if (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+      && tag_name.eq_ignore_ascii_case("video") =>
+    {
+      "video/"
+    }
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } if (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+      && tag_name.eq_ignore_ascii_case("audio") =>
+    {
+      "audio/"
+    }
+    _ => {
+      // Should be unreachable: wrappers only install `currentSrc` on <video>/<audio>, but keep
+      // the getter total and side-effect free.
+      return Ok(Value::String(scope.alloc_string("")?));
+    }
+  };
+
+  fn src_is_unusable(candidate: &str) -> bool {
+    let trimmed = crate::js::trim_ascii_whitespace(candidate);
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+      return true;
+    }
+    const ABOUT_BLANK: &str = "about:blank";
+    if trimmed
+      .get(..ABOUT_BLANK.len())
+      .is_some_and(|head| head.eq_ignore_ascii_case(ABOUT_BLANK))
+    {
+      return matches!(
+        trimmed.as_bytes().get(ABOUT_BLANK.len()),
+        None | Some(b'#') | Some(b'?')
+      );
+    }
+    false
+  }
+
+  fn src_from_source_children(
+    dom: &dom2::Document,
+    element: NodeId,
+    preferred_prefix: &str,
+  ) -> Option<String> {
+    let mut first_any: Option<String> = None;
+    for &child in &dom.node(element).children {
+      let NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } = &dom.node(child).kind
+      else {
+        continue;
+      };
+      let is_html = namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE;
+      if !is_html || !tag_name.eq_ignore_ascii_case("source") {
+        continue;
+      }
+
+      let Some(src_attr) = dom.get_attribute(child, "src").ok().flatten() else {
+        continue;
+      };
+      let src_trimmed = crate::js::trim_ascii_whitespace(src_attr);
+      if src_trimmed.is_empty() {
+        continue;
+      }
+
+      if first_any.is_none() {
+        first_any = Some(src_trimmed.to_string());
+      }
+
+      if let Some(type_attr) = dom.get_attribute(child, "type").ok().flatten() {
+        let type_trimmed = crate::js::trim_ascii_whitespace(type_attr);
+        if type_trimmed
+          .get(..preferred_prefix.len())
+          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(preferred_prefix))
+        {
+          return Some(src_trimmed.to_string());
+        }
+      }
+    }
+    first_any
+  }
+
+  let candidate = {
+    let src = dom
+      .get_attribute(handle.node_id, "src")
+      .ok()
+      .flatten()
+      .map(crate::js::trim_ascii_whitespace)
+      .unwrap_or("");
+    if !src_is_unusable(src) {
+      src.to_string()
+    } else {
+      src_from_source_children(dom, handle.node_id, preferred_prefix).unwrap_or_default()
+    }
+  };
+
+  // Post-process the chosen candidate: trim and apply the same unusable checks browsers use for
+  // `currentSrc` (empty / fragment-only / about:blank).
+  let candidate = crate::js::trim_ascii_whitespace(&candidate);
+  if src_is_unusable(candidate) {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  let base_url = vm.user_data::<WindowRealmUserData>().map(|data| {
+    data
+      .base_url
+      .as_deref()
+      .unwrap_or_else(|| data.document_url.as_str())
+  });
+
+  let resolved = match crate::js::url_resolve::resolve_url(candidate, base_url) {
+    Ok(url) => url,
+    Err(_) => String::new(),
+  };
+
+  Ok(Value::String(scope.alloc_string(&resolved)?))
+}
+
 fn input_value_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -54314,6 +54502,32 @@ fn init_window_globals(
     scope.define_property(document_obj, set_key, data_desc(Value::Object(set_func)))?;
   }
 
+  // HTMLMediaElement.currentSrc: selected media URL (after source selection).
+  //
+  // Task 194 intentionally left this un-resolved; for browser compatibility we resolve the chosen
+  // candidate against the current document base URL in the getter implementation.
+  let media_current_src_get_call_id =
+    vm.register_native_call(html_media_element_current_src_get_native)?;
+  let media_current_src_get_name = scope.alloc_string("get currentSrc")?;
+  scope.push_root(Value::String(media_current_src_get_name))?;
+  let media_current_src_get_func = scope.alloc_native_function(
+    media_current_src_get_call_id,
+    None,
+    media_current_src_get_name,
+    0,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    media_current_src_get_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(media_current_src_get_func))?;
+  let media_current_src_get_key = alloc_key(&mut scope, HTML_MEDIA_ELEMENT_CURRENT_SRC_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    media_current_src_get_key,
+    data_desc(Value::Object(media_current_src_get_func)),
+  )?;
+
   // Form controls: store shared accessors on `document` so wrappers can reuse them.
   let input_value_get_call_id = vm.register_native_call(input_value_get_native)?;
   let input_value_get_name = scope.alloc_string("get value")?;
@@ -68382,6 +68596,81 @@ mod tests {
       })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_current_src_resolves_against_document_url() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        v.src = 'v.mp4';
+        document.body.appendChild(v);
+        return v.currentSrc;
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), value), "https://example.com/dir/v.mp4");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_current_src_resolves_source_child() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        const s = document.createElement('source');
+        s.src = 'a.webm';
+        v.appendChild(s);
+        document.body.appendChild(v);
+        return v.currentSrc;
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), value), "https://example.com/dir/a.webm");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_current_src_uses_realm_base_url_override() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    realm.set_base_url(Some("https://cdn.example/x/".to_string()));
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        v.src = 'v.mp4';
+        document.body.appendChild(v);
+        return v.currentSrc;
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), value), "https://cdn.example/x/v.mp4");
+    Ok(())
+  }
+
+  #[test]
+  fn html_media_element_current_src_invalid_url_returns_empty_string() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const v = document.createElement('video');
+        v.src = 'http://[';
+        document.body.appendChild(v);
+        return v.currentSrc;
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), value), "");
     Ok(())
   }
 
