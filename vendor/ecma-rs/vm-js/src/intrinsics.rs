@@ -7,7 +7,9 @@ use crate::{
 /// ECMAScript well-known symbols (ECMA-262 "Well-known Symbols" table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WellKnownSymbols {
+  pub async_dispose: GcSymbol,
   pub async_iterator: GcSymbol,
+  pub dispose: GcSymbol,
   pub has_instance: GcSymbol,
   pub is_concat_spreadable: GcSymbol,
   pub iterator: GcSymbol,
@@ -4430,7 +4432,9 @@ impl Intrinsics {
     {
       let wks = &well_known_symbols;
       let cases = [
+        ("asyncDispose", wks.async_dispose),
         ("asyncIterator", wks.async_iterator),
+        ("dispose", wks.dispose),
         ("hasInstance", wks.has_instance),
         ("isConcatSpreadable", wks.is_concat_spreadable),
         ("iterator", wks.iterator),
@@ -7215,20 +7219,7 @@ impl Intrinsics {
 
 impl WellKnownSymbols {
   fn init(scope: &mut Scope<'_>, roots: &mut Vec<RootId>) -> Result<Self, VmError> {
-    Ok(Self {
-      async_iterator: alloc_rooted_symbol(scope, roots, "Symbol.asyncIterator")?,
-      has_instance: alloc_rooted_symbol(scope, roots, "Symbol.hasInstance")?,
-      is_concat_spreadable: alloc_rooted_symbol(scope, roots, "Symbol.isConcatSpreadable")?,
-      iterator: alloc_rooted_symbol(scope, roots, "Symbol.iterator")?,
-      match_: alloc_rooted_symbol(scope, roots, "Symbol.match")?,
-      match_all: alloc_rooted_symbol(scope, roots, "Symbol.matchAll")?,
-      replace: alloc_rooted_symbol(scope, roots, "Symbol.replace")?,
-      search: alloc_rooted_symbol(scope, roots, "Symbol.search")?,
-      species: alloc_rooted_symbol(scope, roots, "Symbol.species")?,
-      split: alloc_rooted_symbol(scope, roots, "Symbol.split")?,
-      to_primitive: alloc_rooted_symbol(scope, roots, "Symbol.toPrimitive")?,
-      to_string_tag: alloc_rooted_symbol(scope, roots, "Symbol.toStringTag")?,
-      unscopables: alloc_rooted_symbol(scope, roots, "Symbol.unscopables")?,
-    })
+    let _ = roots;
+    scope.heap_mut().ensure_well_known_symbols()
   }
 }

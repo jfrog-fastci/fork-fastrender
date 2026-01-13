@@ -769,4 +769,25 @@ mod tests {
     realm.teardown(&mut heap);
     Ok(())
   }
+
+  #[test]
+  fn well_known_symbols_are_agent_wide_and_survive_realm_teardown() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+    let mut realm_a = Realm::new(&mut vm, &mut heap)?;
+    let wks_a = *realm_a.well_known_symbols();
+    realm_a.teardown(&mut heap);
+
+    // Ensure nothing else is keeping the symbols alive besides the heap's agent-wide storage.
+    heap.collect_garbage();
+
+    let mut realm_b = Realm::new(&mut vm, &mut heap)?;
+    let wks_b = *realm_b.well_known_symbols();
+
+    assert_eq!(wks_a, wks_b);
+
+    realm_b.teardown(&mut heap);
+    Ok(())
+  }
 }
