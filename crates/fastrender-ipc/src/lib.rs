@@ -1596,17 +1596,6 @@ impl WebSocketEvent {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WebSocketConnState {
-  Connecting,
-  Closed,
-}
-
-#[derive(Debug)]
-struct WebSocketConnEntry {
-  state: WebSocketConnState,
-}
-
 /// Network-process side WebSocket connection registry keyed by `(renderer_id, conn_id)`.
 ///
 /// Security invariants:
@@ -1616,7 +1605,7 @@ struct WebSocketConnEntry {
 /// - Commands for unknown `conn_id` values are ignored (no panic).
 #[derive(Debug, Default)]
 pub struct NetworkWebSocketManager {
-  conns: HashMap<RendererId, HashMap<WebSocketConnId, WebSocketConnEntry>>,
+  conns: HashMap<RendererId, HashMap<WebSocketConnId, ()>>,
   limits: NetworkWebSocketManagerLimits,
   active_total: usize,
 }
@@ -1714,9 +1703,7 @@ impl NetworkWebSocketManager {
 
         renderer_conns.insert(
           conn_id,
-          WebSocketConnEntry {
-            state: WebSocketConnState::Connecting,
-          },
+          (),
         );
         self.active_total = self.active_total.saturating_add(1);
 
@@ -1728,10 +1715,7 @@ impl NetworkWebSocketManager {
         let Some(renderer_conns) = self.conns.get_mut(&renderer_id) else {
           return Vec::new();
         };
-        let Some(conn) = renderer_conns.get_mut(&conn_id) else {
-          return Vec::new();
-        };
-        if conn.state == WebSocketConnState::Closed {
+        if !renderer_conns.contains_key(&conn_id) {
           return Vec::new();
         }
         // In the real implementation this would write to the socket; keep this logic-only manager
