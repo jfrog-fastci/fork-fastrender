@@ -2248,6 +2248,13 @@ error: {err}",
 }
 
 #[cfg(feature = "browser_ui")]
+struct ClosingTabFavicon {
+  tab_id: fastrender::ui::TabId,
+  expires_at: std::time::Instant,
+  texture: fastrender::ui::WgpuPixmapTexture,
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -2303,6 +2310,9 @@ struct App {
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
   tab_favicons: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
+  /// Recently closed tab favicons that are kept alive briefly so tab-close animations can render a
+  /// "ghost" closing tab with its original favicon.
+  closing_tab_favicons: std::collections::VecDeque<ClosingTabFavicon>,
   tab_cancel: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
   /// Pending session scroll restores keyed by tab id.
   ///
@@ -2422,6 +2432,8 @@ struct WorkerMessageResult {
 impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+  const CLOSE_ANIM_FAVICON_TTL: std::time::Duration = std::time::Duration::from_millis(250);
+  const MAX_CLOSING_TAB_FAVICONS: usize = 64;
   const SELECT_DROPDOWN_EDGE_PADDING_POINTS: f32 = 8.0;
   const SELECT_DROPDOWN_MIN_WIDTH_POINTS: f32 = 180.0;
   const SELECT_DROPDOWN_MAX_WIDTH_POINTS: f32 = 600.0;
@@ -2806,6 +2818,7 @@ impl App {
       clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
       tab_textures: std::collections::HashMap::new(),
       tab_favicons: std::collections::HashMap::new(),
+      closing_tab_favicons: std::collections::VecDeque::new(),
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
@@ -2945,6 +2958,7 @@ impl App {
     // the current event so that:
     // - animation ticks are driven even when a given window is otherwise idle, and
     // - the global `ControlFlow::WaitUntil` deadline accounts for the earliest wakeup across all windows.
+    self.drain_expired_closing_tab_favicons();
     self.drive_animation_tick();
     self.drive_viewport_throttle();
     self.drive_egui_repaint();
@@ -3058,6 +3072,14 @@ impl App {
       deadline = Some(match deadline {
         Some(existing) => existing.min(egui_deadline),
         None => egui_deadline,
+      });
+    }
+
+    // Delayed-destroy favicons for closing-tab animations.
+    if let Some(favicon_deadline) = self.next_closing_tab_favicon_deadline() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(favicon_deadline),
+        None => favicon_deadline,
       });
     }
 
@@ -3273,6 +3295,70 @@ impl App {
     for (_, tex) in std::mem::take(&mut self.tab_favicons) {
       tex.destroy(&mut self.egui_renderer);
     }
+    for entry in std::mem::take(&mut self.closing_tab_favicons) {
+      entry.texture.destroy(&mut self.egui_renderer);
+    }
+  }
+
+  fn close_anim_favicon_ttl(&self) -> std::time::Duration {
+    let motion =
+      fastrender::ui::motion::UiMotion::from_settings(self.browser_state.appearance.reduced_motion);
+    if motion.enabled {
+      Self::CLOSE_ANIM_FAVICON_TTL
+    } else {
+      std::time::Duration::ZERO
+    }
+  }
+
+  fn move_tab_favicon_into_delayed_destroy(&mut self, tab_id: fastrender::ui::TabId) {
+    let Some(tex) = self.tab_favicons.remove(&tab_id) else {
+      return;
+    };
+
+    let ttl = self.close_anim_favicon_ttl();
+    if ttl.is_zero() {
+      tex.destroy(&mut self.egui_renderer);
+      return;
+    }
+
+    let expires_at = std::time::Instant::now() + ttl;
+    self.closing_tab_favicons.push_back(ClosingTabFavicon {
+      tab_id,
+      expires_at,
+      texture: tex,
+    });
+
+    while self.closing_tab_favicons.len() > Self::MAX_CLOSING_TAB_FAVICONS {
+      if let Some(entry) = self.closing_tab_favicons.pop_front() {
+        entry.texture.destroy(&mut self.egui_renderer);
+      }
+    }
+  }
+
+  fn drain_expired_closing_tab_favicons(&mut self) {
+    let now = std::time::Instant::now();
+    if self.closing_tab_favicons.is_empty() {
+      return;
+    }
+
+    let mut remaining: std::collections::VecDeque<ClosingTabFavicon> =
+      std::collections::VecDeque::with_capacity(self.closing_tab_favicons.len());
+    for entry in std::mem::take(&mut self.closing_tab_favicons) {
+      if now >= entry.expires_at {
+        entry.texture.destroy(&mut self.egui_renderer);
+      } else {
+        remaining.push_back(entry);
+      }
+    }
+    self.closing_tab_favicons = remaining;
+  }
+
+  fn next_closing_tab_favicon_deadline(&self) -> Option<std::time::Instant> {
+    self
+      .closing_tab_favicons
+      .iter()
+      .map(|entry| entry.expires_at)
+      .min()
   }
 
   fn close_context_menu(&mut self) {
@@ -7702,9 +7788,7 @@ impl App {
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
-          if let Some(tex) = self.tab_favicons.remove(&tab_id) {
-            tex.destroy(&mut self.egui_renderer);
-          }
+          self.move_tab_favicon_into_delayed_destroy(tab_id);
 
           let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
@@ -7775,9 +7859,7 @@ impl App {
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
-            if let Some(tex) = self.tab_favicons.remove(&closed_tab_id) {
-              tex.destroy(&mut self.egui_renderer);
-            }
+            self.move_tab_favicon_into_delayed_destroy(closed_tab_id);
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
@@ -7822,9 +7904,7 @@ impl App {
             if let Some(tex) = self.tab_textures.remove(&closed_tab_id) {
               tex.destroy(&mut self.egui_renderer);
             }
-            if let Some(tex) = self.tab_favicons.remove(&closed_tab_id) {
-              tex.destroy(&mut self.egui_renderer);
-            }
+            self.move_tab_favicon_into_delayed_destroy(closed_tab_id);
             if let Some(cancel) = self.tab_cancel.remove(&closed_tab_id) {
               cancel.bump_nav();
             }
@@ -8290,7 +8370,17 @@ impl App {
       &ctx,
       &mut self.browser_state,
       Some(&self.bookmarks),
-      |tab_id| self.tab_favicons.get(&tab_id).map(|tex| tex.id()),
+      |tab_id| {
+        if let Some(tex) = self.tab_favicons.get(&tab_id) {
+          Some(tex.id())
+        } else {
+          self
+            .closing_tab_favicons
+            .iter()
+            .find(|entry| entry.tab_id == tab_id)
+            .map(|entry| entry.texture.id())
+        }
+      },
     );
     let zoom_after = self.browser_state.active_tab().map(|t| t.zoom);
     let appearance_after = self.browser_state.appearance;
