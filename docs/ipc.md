@@ -282,6 +282,10 @@ Rules:
 - Use `bincode` (or an equivalent bounded binary codec) **only** with a decode limit:
   - The limit must be `<= MAX_MESSAGE_BYTES` for the relevant channel (e.g.
     `fastrender_ipc::MAX_IPC_MESSAGE_BYTES`).
+- Reject trailing bytes after decode (decoder must consume the entire frame payload). Trailing bytes
+  indicate either:
+  - protocol desynchronization (wrong framing/length), or
+  - an attempted “smuggling” ambiguity (multiple logical messages in one frame).
 - Treat any decode error as a **protocol violation** (malformed input from an untrusted peer).
   - The safe default is to close the connection and tear down the child process.
 
