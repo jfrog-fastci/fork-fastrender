@@ -900,6 +900,14 @@ fn compiled_hir_exec_unary_minus_bigint() -> Result<(), VmError> {
   Ok(())
 }
 
+// Keep the original test names referenced by older docs/notes; the `compiled_hir_exec_*` variants
+// ensure `cargo test -p vm-js --tests compiled_hir_exec` actually executes these assertions (Cargo
+// treats the trailing arg as a libtest filter, not a test-binary selector).
+#[test]
+fn compiled_unary_minus_bigint() -> Result<(), VmError> {
+  compiled_hir_exec_unary_minus_bigint()
+}
+
 #[test]
 fn compiled_hir_exec_unary_plus_coerces_object() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -935,6 +943,11 @@ fn compiled_hir_exec_unary_plus_coerces_object() -> Result<(), VmError> {
   // Avoid leaking persistent roots (and tripping the Realm drop assertion).
   realm.teardown(&mut heap);
   Ok(())
+}
+
+#[test]
+fn compiled_unary_plus_coerces_object() -> Result<(), VmError> {
+  compiled_hir_exec_unary_plus_coerces_object()
 }
 
 #[test]
