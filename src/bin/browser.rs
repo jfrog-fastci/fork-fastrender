@@ -6946,6 +6946,25 @@ impl App {
       let _ = writeln!(&mut hud.text_buf, "viewport_throttle: idle");
     }
 
+    if self.resize_burst_active {
+      let ttl_left_ms = self
+        .last_resize_event_at
+        .map(|t| {
+          (t + RESIZE_BURST_TTL)
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis()
+        })
+        .unwrap_or(0);
+      let _ = writeln!(
+        &mut hud.text_buf,
+        "resize_burst: yes (ttl {}ms, dpr×{:.2})",
+        ttl_left_ms,
+        self.resize_dpr_scale
+      );
+    } else {
+      let _ = writeln!(&mut hud.text_buf, "resize_burst: no");
+    }
+
     egui::Area::new(egui::Id::new("fastr_browser_hud"))
       .order(egui::Order::Foreground)
       .interactable(false)
