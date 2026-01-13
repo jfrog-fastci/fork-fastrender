@@ -5,6 +5,9 @@
 //!
 //! Low-level primitives like file-descriptor passing and shared-memory buffers are also defined in
 //! this module so higher-level protocol layers can stay dependency-light.
+//!
+//! Linux-only: [`frame_slots`] provides a test-only reference implementation for a "browser
+//! allocates SHM slots once, subsequent messages are control-only" transport.
 
 pub mod ancillary;
 pub mod error;
@@ -16,6 +19,9 @@ pub mod network;
 pub mod protocol;
 pub mod shm;
 pub mod websocket;
+
+#[cfg(target_os = "linux")]
+pub mod frame_slots;
 
 pub use error::IpcError;
 pub use framing::{
