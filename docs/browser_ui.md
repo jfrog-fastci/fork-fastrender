@@ -309,7 +309,8 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
     to) open a real window/GPU-backed swapchain.
 - `browser_perf_log_summary` summarizes a captured perf log into p50/p95/max numbers.
 - `scripts/capture_browser_perf_log.sh` wraps an interactive windowed run (under `run_limited`) and
-  tees stdout JSONL to a file; pass `--summary` to run `browser_perf_log_summary` automatically.
+  writes the JSONL stream to a file via `FASTR_PERF_LOG_OUT`; pass `--summary` to run
+  `browser_perf_log_summary` automatically.
 
 See [perf-logging.md#browser-responsiveness](perf-logging.md#browser-responsiveness) (and the
 “Measuring browser responsiveness” section below) for full details.
@@ -995,7 +996,7 @@ For machine-readable UI responsiveness metrics (frame times during scroll/resize
 navigation TTFP), enable JSONL perf logging:
 
 ```bash
-# Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1, and tees stdout JSONL to a file.
+# Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1, and writes JSONL to a file.
 scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
 ```
 
