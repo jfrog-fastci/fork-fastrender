@@ -2527,7 +2527,37 @@ pub fn chrome_ui_with_bookmarks(
       #[cfg(test)]
       store_test_id(ctx, "chrome_appearance_button_id", appearance_response.id);
       appearance_button_rect = Some(appearance_response.rect);
-      if appearance_response.clicked() {
+      // AccessKit may request explicit expand/collapse actions when the node exposes an expanded
+      // state. Use those (rather than the default action) so screen readers can open/close the
+      // popup with consistent semantics.
+      let expand_requested = ui.input(|i| {
+        i.has_accesskit_action_request(appearance_response.id, accesskit::Action::Expand)
+      });
+      let collapse_requested = ui.input(|i| {
+        i.has_accesskit_action_request(appearance_response.id, accesskit::Action::Collapse)
+      });
+
+      if expand_requested || collapse_requested {
+        let desired_open = expand_requested && !collapse_requested;
+        if app.chrome.appearance_popup_open != desired_open {
+          app.chrome.appearance_popup_open = desired_open;
+          appearance_opened_now = desired_open;
+          if desired_open {
+            // Record the opener so we can restore focus when the popup closes.
+            ctx.data_mut(|d| {
+              d.insert_temp(
+                egui::Id::new("fastr_appearance_popup").with("opener_id"),
+                Some(appearance_response.id),
+              );
+            });
+          } else {
+            // Closing via AccessKit does not necessarily move egui focus. Explicitly restore focus
+            // to the opener to avoid leaving focus on hidden popup widgets.
+            appearance_response.request_focus();
+            ctx.request_repaint();
+          }
+        }
+      } else if appearance_response.clicked() {
         app.chrome.appearance_popup_open = !app.chrome.appearance_popup_open;
         appearance_opened_now = app.chrome.appearance_popup_open;
         if appearance_opened_now {
@@ -2540,6 +2570,19 @@ pub fn chrome_ui_with_bookmarks(
           });
         }
       }
+
+      // Expose expanded state + expand/collapse actions to assistive tech (AccessKit) so screen
+      // readers can announce and toggle the open/closed state of the popup.
+      let _ = ctx.accesskit_node_builder(appearance_response.id, |builder| {
+        builder.set_expanded(app.chrome.appearance_popup_open);
+        if app.chrome.appearance_popup_open {
+          builder.add_action(accesskit::Action::Collapse);
+          builder.remove_action(accesskit::Action::Expand);
+        } else {
+          builder.add_action(accesskit::Action::Expand);
+          builder.remove_action(accesskit::Action::Collapse);
+        }
+      });
     });
 
     // ---------------------------------------------------------------------------
@@ -2970,6 +3013,8 @@ pub fn chrome_ui_with_bookmarks(
         let first_radio = ui.radio_value(&mut app.appearance.theme, ThemeChoice::System, "System");
         let light_radio = ui.radio_value(&mut app.appearance.theme, ThemeChoice::Light, "Light");
         let dark_radio = ui.radio_value(&mut app.appearance.theme, ThemeChoice::Dark, "Dark");
+        #[cfg(test)]
+        store_test_id(ctx, "appearance_theme_system_radio_id", first_radio.id);
         popup_focus_ids.push(first_radio.id);
         popup_focus_ids.push(light_radio.id);
         popup_focus_ids.push(dark_radio.id);
@@ -3773,6 +3818,24 @@ mod tests {
     ctx.begin_frame(raw);
   }
 
+  fn begin_frame_with_accesskit_action_requests(
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+    requests: Vec<accesskit::ActionRequest>,
+  ) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.events = events;
+    raw.accesskit_action_requests = requests;
+    ctx.begin_frame(raw);
+  }
+
   fn begin_frame_with_time(ctx: &egui::Context, time: f64, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
     raw.screen_rect = Some(egui::Rect::from_min_size(
@@ -4215,6 +4278,136 @@ mod tests {
         .iter()
         .any(|n| n.name == crate::ui::a11y::ADDRESS_BAR_LABEL && n.role == "TextField"),
       "expected address bar to appear as a TextField when editing.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  fn accesskit_node_by_role_and_name<'a>(
+    output: &'a egui::FullOutput,
+    role: accesskit::Role,
+    expected_name: &str,
+  ) -> (accesskit::NodeId, &'a accesskit::Node) {
+    let update = output
+      .platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update to be emitted");
+    update
+      .nodes
+      .iter()
+      .find_map(|(id, node)| {
+        (node.role() == role && node.name().unwrap_or("").trim() == expected_name)
+          .then_some((*id, node))
+      })
+      .unwrap_or_else(|| {
+        let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(output);
+        panic!(
+          "expected to find AccessKit node with role={role:?} name={expected_name:?}.\n\nsnapshot:\n{snapshot}"
+        )
+      })
+  }
+
+  #[test]
+  fn appearance_button_accesskit_expand_collapse_opens_closes_popup_and_manages_focus() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    // Frame 0: capture ids + AccessKit node id.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+    let appearance_button_id = expect_temp_id(&ctx, "chrome_appearance_button_id");
+    let (appearance_node_id, _) =
+      accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
+
+    // Frame 1: focus the appearance button.
+    ctx.memory_mut(|mem| mem.request_focus(appearance_button_id));
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(appearance_button_id)),
+      "expected appearance button to have focus"
+    );
+
+    // Frame 2: screen-reader Expand should open the popup and focus the first radio button.
+    begin_frame_with_accesskit_action_requests(
+      &ctx,
+      Vec::new(),
+      vec![accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target: appearance_node_id,
+        data: None,
+      }],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+
+    assert!(
+      app.chrome.appearance_popup_open,
+      "expected appearance popup to be open after AccessKit Expand"
+    );
+
+    let (_id, node) = accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
+    assert_eq!(
+      node.is_expanded(),
+      Some(true),
+      "expected appearance button expanded state to be true when popup is open"
+    );
+    assert!(
+      node.supports_action(accesskit::Action::Collapse),
+      "expected expanded appearance button to expose Collapse action"
+    );
+    assert!(
+      !node.supports_action(accesskit::Action::Expand),
+      "expected expanded appearance button to not expose Expand action"
+    );
+
+    let system_radio_id = expect_temp_id(&ctx, "appearance_theme_system_radio_id");
+    assert!(
+      ctx.memory(|mem| mem.has_focus(system_radio_id)),
+      "expected the first appearance theme radio (System) to receive focus when opening the popup"
+    );
+
+    // Frame 3: screen-reader Collapse should close the popup and restore focus to the opener.
+    begin_frame_with_accesskit_action_requests(
+      &ctx,
+      Vec::new(),
+      vec![accesskit::ActionRequest {
+        action: accesskit::Action::Collapse,
+        target: appearance_node_id,
+        data: None,
+      }],
+    );
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+
+    assert!(
+      !app.chrome.appearance_popup_open,
+      "expected appearance popup to be closed after AccessKit Collapse"
+    );
+    let (_id, node) = accesskit_node_by_role_and_name(&output, accesskit::Role::Button, "Appearance");
+    assert_eq!(
+      node.is_expanded(),
+      Some(false),
+      "expected appearance button expanded state to be false when popup is closed"
+    );
+    assert!(
+      node.supports_action(accesskit::Action::Expand),
+      "expected collapsed appearance button to expose Expand action"
+    );
+    assert!(
+      !node.supports_action(accesskit::Action::Collapse),
+      "expected collapsed appearance button to not expose Collapse action"
+    );
+    assert!(
+      ctx.memory(|mem| mem.has_focus(appearance_button_id)),
+      "expected focus to return to appearance button after closing the popup"
     );
   }
 
