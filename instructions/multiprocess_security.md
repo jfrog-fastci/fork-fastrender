@@ -184,6 +184,8 @@ become no-ops.
 
 Other useful macOS debug overrides:
 
+- Control multiprocess renderer sandbox mode (recommended):
+  - `FASTR_RENDERER_SANDBOX=strict|relaxed|off` (legacy aliases: `1` = `strict`, `0` = `off`).
 - Disable Seatbelt sandboxing entirely (INSECURE): `FASTR_DISABLE_RENDERER_SANDBOX=1` or
   `FASTR_RENDERER_SANDBOX=off` or `FASTR_MACOS_RENDERER_SANDBOX=off`.
 - Select a relaxed “system fonts” Seatbelt profile for bring-up:
