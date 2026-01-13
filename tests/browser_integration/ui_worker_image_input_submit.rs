@@ -32,10 +32,12 @@ fn click_image_input_submits_form() {
     <style>
       html, body {{ margin: 0; padding: 0; }}
       #img {{ position: absolute; left: 0; top: 0; width: 120px; height: 40px; }}
+      #q {{ position: absolute; left: 0; top: 60px; width: 120px; height: 24px; }}
     </style>
   </head>
   <body>
     <form action="result.html">
+      <input id="q" name="q" value="a b">
       <input id="img" type="image" name="img" src="{image_src}">
     </form>
   </body>
@@ -127,15 +129,27 @@ fn click_image_input_submits_form() {
 
   let mut x_val: Option<i32> = None;
   let mut y_val: Option<i32> = None;
+  let mut has_q = false;
   if let Some(query) = submitted.query() {
-    for (key, _value) in url::form_urlencoded::parse(query.as_bytes()) {
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
       if key == "img.x" {
-        x_val = _value.parse::<i32>().ok();
+        x_val = value.parse::<i32>().ok();
       } else if key == "img.y" {
-        y_val = _value.parse::<i32>().ok();
+        y_val = value.parse::<i32>().ok();
+      } else if key == "q" {
+        assert_eq!(
+          value,
+          "a b",
+          "expected submitted URL to include q=a+b; got {submitted_url}"
+        );
+        has_q = true;
       }
     }
   }
+  assert!(
+    has_q,
+    "expected submitted URL to include q=a+b; got {submitted_url}"
+  );
   let x = x_val.unwrap_or_else(|| {
     panic!("expected submitted URL to include integer img.x parameter; got {submitted_url}")
   });
