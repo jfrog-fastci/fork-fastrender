@@ -1864,6 +1864,22 @@ mod tests {
   }
 
   #[test]
+  fn session_roundtrips_non_default_home_url() {
+    let mut session = BrowserSession::single("about:newtab".to_string());
+    session.home_url = "https://example.com/".to_string();
+    let session = session.sanitized();
+
+    let json = serde_json::to_string(&session).expect("serialize session");
+    assert!(
+      json.contains("\"home_url\""),
+      "expected non-default home_url to be serialized, got: {json}"
+    );
+
+    let parsed = parse_session_json(&json).expect("parse session JSON");
+    assert_eq!(parsed.home_url, session.home_url);
+  }
+
+  #[test]
   fn session_roundtrips_appearance_settings() {
     use crate::ui::theme_parsing::BrowserTheme;
 

@@ -1253,6 +1253,19 @@ fn is_path_within_dir(dir: &std::path::Path, path: &std::path::Path) -> bool {
   path_abs.starts_with(&dir_abs)
 }
 
+/// Resolve/normalize/validate a home page URL input (e.g. settings dialog).
+///
+/// This matches the address bar's typed navigation semantics (including search query resolution),
+/// but treats an empty/whitespace-only input as the default new-tab URL.
+#[cfg(any(test, feature = "browser_ui"))]
+fn resolve_home_url_input(raw: &str) -> Result<String, String> {
+  let raw_trimmed = trim_ascii_whitespace(raw);
+  if raw_trimmed.is_empty() {
+    return Ok(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+  }
+  resolve_typed_navigation_url(raw_trimmed, None)
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn open_url_in_new_tab_state(
   browser_state: &mut fastrender::ui::BrowserAppState,
@@ -5298,6 +5311,53 @@ mod tests {
   }
 
   #[test]
+  fn home_url_input_rejects_javascript_scheme() {
+    let err = resolve_home_url_input("javascript:alert(1)").expect_err("expected rejection");
+    assert!(
+      err.to_ascii_lowercase().contains("javascript"),
+      "expected error to mention javascript, got: {err}"
+    );
+  }
+
+  #[test]
+  fn home_url_input_rejects_unknown_scheme() {
+    let err = resolve_home_url_input("chrome://version").expect_err("expected rejection");
+    assert!(
+      err.to_ascii_lowercase().contains("unsupported url scheme"),
+      "expected error to mention unsupported scheme, got: {err}"
+    );
+  }
+
+  #[test]
+  fn home_url_input_allows_search_queries_and_normalizes_to_search_url() {
+    let expected = fastrender::ui::url::search_url_for_query(
+      "hello world",
+      fastrender::ui::url::DEFAULT_SEARCH_ENGINE_TEMPLATE,
+    )
+    .expect("build search url");
+    assert_eq!(
+      resolve_home_url_input("hello world").expect("search query should resolve"),
+      expected
+    );
+  }
+
+  #[test]
+  fn home_url_input_resolves_empty_to_default_newtab() {
+    assert_eq!(
+      resolve_home_url_input("   ").expect("empty home url should resolve"),
+      fastrender::ui::about_pages::ABOUT_NEWTAB
+    );
+  }
+
+  #[test]
+  fn home_url_input_normalizes_host_without_scheme() {
+    assert_eq!(
+      resolve_home_url_input("example.com").expect("home url should resolve"),
+      "https://example.com/"
+    );
+  }
+
+  #[test]
   fn bookmark_reorder_failure_toast_maps_invalid_reorder_to_error_toast() {
     let (kind, text) =
       bookmark_reorder_failure_toast(&fastrender::ui::BookmarkError::InvalidReorder);
@@ -5331,6 +5391,9 @@ mod tests {
       detail.ends_with('…'),
       "expected clamped detail to be marked with an ellipsis"
     );
+    assert!(lines.next().is_none(), "toast should be at most two lines");
+  }
+
   #[test]
   fn session_restore_startup_plan_navigates_only_active_tab() {
     use fastrender::ui::{BrowserSessionTab, BrowserSessionWindow, NavigationReason, UiToWorker};
@@ -6917,7 +6980,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       force_fallback_adapter: wgpu_options.force_fallback_adapter,
     }
   };
-  let home_url = startup_session.home_url.clone();
+  let mut home_url = startup_session.home_url.clone();
   let startup_active_window_index = startup_session.active_window_index;
   let startup_windows = startup_session.windows;
   let window_count = startup_windows.len();
@@ -12478,6 +12541,10 @@ struct App {
   browser_state: fastrender::ui::BrowserAppState,
   /// Configured home page URL (default: `about:newtab`).
   home_url: String,
+  set_home_page_dialog_open: bool,
+  set_home_page_dialog_request_focus: bool,
+  set_home_page_dialog_text: String,
+  set_home_page_dialog_error: Option<String>,
   search_suggest: fastrender::ui::SearchSuggestService,
 
   bookmarks_path: std::path::PathBuf,
@@ -13537,6 +13604,10 @@ impl App {
       unresponsive_watchdog_timeout,
       browser_state,
       home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+      set_home_page_dialog_open: false,
+      set_home_page_dialog_request_focus: false,
+      set_home_page_dialog_text: String::new(),
+      set_home_page_dialog_error: None,
       search_suggest: fastrender::ui::SearchSuggestService::new_with_wake(
         fastrender::ui::SearchSuggestConfig::default(),
         Some(search_suggest_wake),
@@ -15893,6 +15964,177 @@ impl App {
     if let Err(err) = spawn_result {
       eprintln!("failed to spawn native file picker dialog thread: {err}");
     }
+  }
+
+  fn open_set_home_page_dialog(&mut self) {
+    // Avoid stacking multiple modal dialogs.
+    if self.clear_browsing_data_dialog_open {
+      return;
+    }
+
+    self.set_home_page_dialog_open = true;
+    self.set_home_page_dialog_request_focus = true;
+    self.set_home_page_dialog_text = self.home_url.clone();
+    self.set_home_page_dialog_error = None;
+
+    // Treat as a modal: clear chrome/page focus surfaces so keyboard input stays inside the dialog.
+    self.browser_state.chrome.request_focus_address_bar = false;
+    self.browser_state.chrome.request_select_all_address_bar = false;
+    self.browser_state.chrome.address_bar_has_focus = false;
+    self.browser_state.chrome.omnibox.reset();
+    self.browser_state.chrome.appearance_popup_open = false;
+    self.browser_state.chrome.tab_search.open = false;
+    self.browser_state.chrome.open_tab_context_menu = None;
+    self.browser_state.chrome.tab_context_menu_rect = None;
+    self.browser_state.chrome.clear_tab_drag();
+    self.browser_state.chrome.clear_link_drag();
+    self.page_has_focus = false;
+    self.cancel_scrollbar_drag();
+    self.window.request_redraw();
+  }
+
+  fn render_set_home_page_dialog(&mut self, ctx: &egui::Context) -> bool {
+    if !self.set_home_page_dialog_open {
+      self.set_home_page_dialog_request_focus = false;
+      self.set_home_page_dialog_error = None;
+      return false;
+    }
+
+    let mut session_dirty = false;
+
+    let mut open = self.set_home_page_dialog_open;
+    let request_initial_focus = std::mem::take(&mut self.set_home_page_dialog_request_focus);
+    let mut text = std::mem::take(&mut self.set_home_page_dialog_text);
+    let mut error = self.set_home_page_dialog_error.take();
+
+    // Esc closes the dialog (Chrome-like) and should not leak to other overlays.
+    let escape_pressed = ctx.input_mut(|i| i.consume_key(Default::default(), egui::Key::Escape));
+    if escape_pressed {
+      open = false;
+    }
+
+    let mut close_dialog = false;
+    let mut apply_requested = false;
+
+    // Backdrop (modal scrim). Draw behind the window to dim the underlying UI and intercept pointer
+    // events so the dialog feels modal.
+    let screen_rect = ctx.screen_rect();
+    egui::Area::new("set_home_page_backdrop")
+      .order(egui::Order::Middle)
+      .fixed_pos(screen_rect.min)
+      .show(ctx, |ui| {
+        ui.set_min_size(screen_rect.size());
+        let (rect, _resp) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
+        let alpha = if ui.visuals().dark_mode { 140 } else { 96 };
+        ui.painter().rect_filled(
+          rect,
+          egui::Rounding::none(),
+          egui::Color32::from_black_alpha(alpha),
+        );
+      });
+
+    egui::Window::new("Set Home Page")
+      .collapsible(false)
+      .resizable(false)
+      .title_bar(false)
+      .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+      .open(&mut open)
+      .show(ctx, |ui| {
+        ui.set_min_width(460.0);
+
+        fastrender::ui::panel_header(ui, fastrender::ui::BrowserIcon::Home, "Set Home Page", || {
+          close_dialog = true;
+        });
+        ui.add_space(8.0);
+        ui.label(
+          egui::RichText::new("Enter the URL to open when you press the Home button.")
+            .color(ui.visuals().weak_text_color()),
+        );
+
+        ui.add_space(14.0);
+        ui.label(egui::RichText::new("Home page URL").strong());
+
+        let resp = ui.add(
+          egui::TextEdit::singleline(&mut text)
+            .desired_width(f32::INFINITY)
+            .hint_text("about:newtab"),
+        );
+        resp.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Home page URL")
+        });
+        if request_initial_focus {
+          resp.request_focus();
+        }
+        if resp.changed() {
+          error = None;
+        }
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+          apply_requested = true;
+        }
+
+        ui.add_space(6.0);
+        ui.label(
+          egui::RichText::new("Allowed schemes: http, https, file, about")
+            .small()
+            .weak(),
+        );
+
+        if let Some(err) = error.as_deref().filter(|e| !e.trim().is_empty()) {
+          ui.add_space(8.0);
+          ui.label(egui::RichText::new(err).color(ui.visuals().error_fg_color));
+        }
+
+        ui.add_space(14.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+          let save_resp = ui.button("Save");
+          save_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save home page"));
+          if save_resp.clicked() {
+            apply_requested = true;
+          }
+
+          let cancel_resp = ui.button("Cancel");
+          cancel_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Cancel"));
+          if cancel_resp.clicked() {
+            close_dialog = true;
+          }
+        });
+      });
+
+    if close_dialog {
+      open = false;
+    }
+
+    if apply_requested && open {
+      match resolve_home_url_input(&text) {
+        Ok(url) => {
+          if url != self.home_url {
+            self.home_url = url;
+            session_dirty = true;
+          }
+          open = false;
+          error = None;
+        }
+        Err(err) => {
+          error = Some(err);
+          // Ensure we repaint so the error becomes visible immediately.
+          ctx.request_repaint();
+        }
+      }
+    }
+
+    if self.set_home_page_dialog_open && !open {
+      // Restore keyboard focus after closing the modal.
+      self.page_has_focus = self.should_restore_page_focus();
+      self.window.request_redraw();
+    }
+
+    self.set_home_page_dialog_open = open;
+    self.set_home_page_dialog_text = text;
+    self.set_home_page_dialog_error = error;
+
+    session_dirty
   }
 
   fn flush_pending_scroll_drag(&mut self) {
@@ -25181,6 +25423,10 @@ impl App {
       self.page_has_focus = false;
       self.cancel_media_controls();
     }
+    // Similarly, treat the home page settings dialog as a modal.
+    if self.set_home_page_dialog_open {
+      self.page_has_focus = false;
+    }
 
     // When using a full-size content view on macOS (transparent titlebar / unified toolbar),
     // the top chrome is drawn into the titlebar area. Reserve a left inset so the system traffic
@@ -25273,6 +25519,9 @@ impl App {
             }
             fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
               self.toggle_bookmark_for_active_tab();
+            }
+            fastrender::ui::MenuCommand::SetHomePage => {
+              self.open_set_home_page_dialog();
             }
             fastrender::ui::MenuCommand::Quit => {
               self.shutdown();
@@ -25654,6 +25903,10 @@ impl App {
     }
     if let Some(index) = history_delete_index.take() {
       self.delete_history_entry_at(index);
+    }
+
+    if self.set_home_page_dialog_open {
+      session_dirty |= self.render_set_home_page_dialog(&ctx);
     }
 
     if self.clear_browsing_data_dialog_open {

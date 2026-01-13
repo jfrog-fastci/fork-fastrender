@@ -163,6 +163,7 @@ pub enum MenuCommand {
   Back,
   Forward,
   ReopenClosedTab,
+  SetHomePage,
   OpenHelp,
   OpenAbout,
 }
@@ -554,6 +555,23 @@ pub fn menu_bar_ui(
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Window menu"));
 
         // -------------------------------------------------------------------
+        // Settings
+        // -------------------------------------------------------------------
+        ui
+          .menu_button("Settings", |ui| {
+            let set_home_resp = ui.button("Set Home Page…");
+            set_home_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Set browser home page")
+            });
+            if set_home_resp.clicked() {
+              commands.push(MenuCommand::SetHomePage);
+              ui.close_menu();
+            }
+          })
+          .response
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Settings menu"));
+
+        // -------------------------------------------------------------------
         // Help
         // -------------------------------------------------------------------
         ui.menu_button("Help", |ui| {
@@ -602,6 +620,9 @@ pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) ->
     MenuCommand::Back => vec![ChromeAction::Back],
     MenuCommand::Forward => vec![ChromeAction::Forward],
     MenuCommand::ReopenClosedTab => vec![ChromeAction::ReopenClosedTab],
+    // Handled by the front-end (e.g. `src/bin/browser.rs`) since updating home page requires
+    // coordinating session persistence and multi-window sync.
+    MenuCommand::SetHomePage => Vec::new(),
     MenuCommand::ToggleBookmarksManager => vec![ChromeAction::ToggleBookmarksManager],
     MenuCommand::ToggleDownloadsPanel => vec![ChromeAction::ToggleDownloadsPanel],
     MenuCommand::ToggleFullScreen => vec![ChromeAction::ToggleFullScreen],
@@ -1000,6 +1021,7 @@ mod tests {
       "History menu",
       "Bookmarks menu",
       "Window menu",
+      "Settings menu",
       "Help menu",
     ] {
       assert!(
@@ -1042,6 +1064,18 @@ mod tests {
         .iter()
         .any(|n| n.role == "CheckBox" && n.name == "Show debug log"),
       "expected \"Show debug log\" to appear as a CheckBox in AccessKit output.\n\nsnapshot:\n{snapshot}"
+    );
+  }
+
+  #[test]
+  fn settings_set_home_page_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let app = BrowserAppState::new();
+    let cmds = click_menu_item(&ctx, &app, "Settings", "Set Home Page…");
+
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::SetHomePage)),
+      "expected Settings → Set Home Page… to emit MenuCommand::SetHomePage, got {cmds:?}"
     );
   }
 }
