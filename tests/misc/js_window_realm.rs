@@ -1273,6 +1273,28 @@ fn shadow_root_is_distinct_interface_with_core_attributes() -> Result<()> {
       const openSr = openHost.attachShadow({ mode: 'open', delegatesFocus: true, slotAssignment: 'manual' });\n\
       const closedSr = closedHost.attachShadow({ mode: 'closed' });\n\
 \n\
+      // Shadow roots must not appear in light DOM traversal.\n\
+      const openLight = document.createElement('span');\n\
+      openHost.appendChild(openLight);\n\
+      if (openHost.firstChild !== openLight) return false;\n\
+      if (openHost.lastChild !== openLight) return false;\n\
+      if (openHost.childNodes.length !== 1) return false;\n\
+      if (openHost.childNodes[0] !== openLight) return false;\n\
+      if (openLight.previousSibling !== null) return false;\n\
+      if (openLight.nextSibling !== null) return false;\n\
+      if (openSr.parentNode !== null) return false;\n\
+      if (openSr.previousSibling !== null) return false;\n\
+      if (openSr.nextSibling !== null) return false;\n\
+\n\
+      const closedLight = document.createElement('span');\n\
+      closedHost.appendChild(closedLight);\n\
+      if (closedHost.firstChild !== closedLight) return false;\n\
+      if (closedHost.childNodes.length !== 1) return false;\n\
+      if (closedLight.previousSibling !== null) return false;\n\
+      if (closedSr.parentNode !== null) return false;\n\
+      if (closedSr.previousSibling !== null) return false;\n\
+      if (closedSr.nextSibling !== null) return false;\n\
+\n\
       if (!(openSr instanceof ShadowRoot)) return false;\n\
       if (!(openSr instanceof DocumentFragment)) return false;\n\
 \n\
@@ -1283,6 +1305,7 @@ fn shadow_root_is_distinct_interface_with_core_attributes() -> Result<()> {
       if (openSr.mode !== 'open') return false;\n\
       if (openSr.delegatesFocus !== true) return false;\n\
       if (openSr.slotAssignment !== 'manual') return false;\n\
+      if (openHost.shadowRoot !== openSr) return false;\n\
 \n\
       if (closedSr.host !== closedHost) return false;\n\
       if (closedSr.mode !== 'closed') return false;\n\
@@ -1328,6 +1351,28 @@ fn shadow_root_works_in_webidl_dom_backend() -> Result<()> {
       const openSr = openHost.attachShadow({ mode: 'open', delegatesFocus: true, slotAssignment: 'manual' });\n\
       const closedSr = closedHost.attachShadow({ mode: 'closed' });\n\
 \n\
+      // Shadow roots must not appear in light DOM traversal.\n\
+      const openLight = document.createElement('span');\n\
+      openHost.appendChild(openLight);\n\
+      if (openHost.firstChild !== openLight) return false;\n\
+      if (openHost.lastChild !== openLight) return false;\n\
+      if (openHost.childNodes.length !== 1) return false;\n\
+      if (openHost.childNodes[0] !== openLight) return false;\n\
+      if (openLight.previousSibling !== null) return false;\n\
+      if (openLight.nextSibling !== null) return false;\n\
+      if (openSr.parentNode !== null) return false;\n\
+      if (openSr.previousSibling !== null) return false;\n\
+      if (openSr.nextSibling !== null) return false;\n\
+\n\
+      const closedLight = document.createElement('span');\n\
+      closedHost.appendChild(closedLight);\n\
+      if (closedHost.firstChild !== closedLight) return false;\n\
+      if (closedHost.childNodes.length !== 1) return false;\n\
+      if (closedLight.previousSibling !== null) return false;\n\
+      if (closedSr.parentNode !== null) return false;\n\
+      if (closedSr.previousSibling !== null) return false;\n\
+      if (closedSr.nextSibling !== null) return false;\n\
+\n\
       if (!(openSr instanceof ShadowRoot)) return false;\n\
       if (!(openSr instanceof DocumentFragment)) return false;\n\
 \n\
@@ -1338,6 +1383,7 @@ fn shadow_root_works_in_webidl_dom_backend() -> Result<()> {
       if (openSr.mode !== 'open') return false;\n\
       if (openSr.delegatesFocus !== true) return false;\n\
       if (openSr.slotAssignment !== 'manual') return false;\n\
+      if (openHost.shadowRoot !== openSr) return false;\n\
 \n\
       if (closedSr.host !== closedHost) return false;\n\
       if (closedSr.mode !== 'closed') return false;\n\
