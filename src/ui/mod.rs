@@ -278,7 +278,7 @@ pub use render_worker::{
   spawn_browser_ui_worker, spawn_browser_worker, spawn_browser_worker_with_factory,
   spawn_browser_worker_with_name,
   spawn_test_browser_worker, spawn_ui_worker, spawn_ui_worker_for_test,
-  spawn_ui_worker_with_factory, BrowserWorkerHandle, UiThreadWorkerHandle,
+  spawn_ui_worker_with_factory, BrowserWorkerHandle, UiThreadWorkerHandle, WorkerWakeCallback,
 };
 pub use renderer_backend::{RendererBackend, RendererBackendHandle, ThreadRendererBackend};
 pub use worker::RenderWorker;

@@ -80,8 +80,9 @@ impl ThreadRendererBackend {
   /// Spawn the production browser UI worker and wrap it in a [`ThreadRendererBackend`].
   pub fn spawn_browser_ui_worker(
     name: impl Into<String>,
+    worker_wake: Option<super::render_worker::WorkerWakeCallback>,
   ) -> std::io::Result<RendererBackendHandle> {
-    let (tx, rx, join) = super::render_worker::spawn_browser_ui_worker(name)?;
+    let (tx, rx, join) = super::render_worker::spawn_browser_ui_worker(name, worker_wake)?;
     Ok(Arc::new(Self::new(tx, WorkerToUiInbox::new(rx), join)))
   }
 

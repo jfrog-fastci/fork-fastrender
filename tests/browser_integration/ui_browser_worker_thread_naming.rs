@@ -7,7 +7,7 @@ fn spawn_browser_ui_worker_uses_requested_thread_name() {
 
   let expected = "fastr-browser-ui-worker-test";
   let (ui_tx, _ui_rx, join) =
-    fastrender::ui::spawn_browser_ui_worker(expected).expect("spawn_browser_ui_worker");
+    fastrender::ui::spawn_browser_ui_worker(expected, None).expect("spawn_browser_ui_worker");
 
   assert_eq!(
     join.thread().name(),

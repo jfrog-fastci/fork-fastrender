@@ -249,6 +249,7 @@ mod ui_worker_scroll_to_coalescing;
 mod ui_worker_shadow_dom_composed_click;
 mod ui_worker_shutdown;
 mod ui_worker_disconnect;
+mod ui_worker_wake_callback;
 mod ui_worker_stage_listener_scoping;
 mod ui_worker_stop_loading;
 mod ui_worker_tab_resource_isolation;

@@ -1912,12 +1912,12 @@ fn sanitize_worker_to_ui_for_windowed_browser(
   }
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
+#[cfg(test)]
 struct WorkerMsgQueue {
   inner: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<QueuedMsg>>>,
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
+#[cfg(test)]
 #[derive(Clone)]
 struct WorkerMsgQueuePusher {
   inner: std::sync::Weak<parking_lot::Mutex<std::collections::VecDeque<QueuedMsg>>>,
@@ -2175,7 +2175,7 @@ fn sanitize_worker_to_ui_untrusted_payloads(
   }
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
+#[cfg(test)]
 impl WorkerMsgQueue {
   fn new() -> Self {
     Self {
@@ -2195,7 +2195,7 @@ impl WorkerMsgQueue {
   }
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
+#[cfg(test)]
 impl WorkerMsgQueuePusher {
   fn push(&self, msg: QueuedMsg) -> Result<(), QueuedMsg> {
     let Some(inner) = self.inner.upgrade() else {
@@ -2271,7 +2271,7 @@ mod worker_msg_queue_tests {
     let queue = WorkerMsgQueue::new();
     let pusher = queue.pusher();
     let worker_wake_pending = AtomicBool::new(true);
-    let mut backlog: VecDeque<fastrender::ui::WorkerToUi> = VecDeque::new();
+    let mut backlog: VecDeque<QueuedMsg> = VecDeque::new();
 
     // Simulate the UI thread draining a window's worker queue (finding it empty) while the window's
     // wake flag is still set.
@@ -2281,10 +2281,10 @@ mod worker_msg_queue_tests {
     // A worker message arrives *before* the UI clears the wake flag. The bridge thread sets the
     // flag again, but since it was already true it won't queue another wake event.
     pusher
-      .push(fastrender::ui::WorkerToUi::DebugLog {
+      .push(QueuedMsg::Worker(fastrender::ui::WorkerToUi::DebugLog {
         tab_id: fastrender::ui::TabId(1),
         line: "hello".to_string(),
-      })
+      }))
       .expect("queue should accept message");
     assert!(
       worker_wake_pending.swap(true, Ordering::AcqRel),
@@ -2315,14 +2315,14 @@ mod worker_msg_queue_tests {
     let queue = WorkerMsgQueue::new();
     let pusher = queue.pusher();
     let worker_wake_pending = AtomicBool::new(true);
-    let mut backlog: VecDeque<fastrender::ui::WorkerToUi> = VecDeque::new();
+    let mut backlog: VecDeque<QueuedMsg> = VecDeque::new();
 
     // A worker message is already queued when the UI begins draining.
     pusher
-      .push(fastrender::ui::WorkerToUi::DebugLog {
+      .push(QueuedMsg::Worker(fastrender::ui::WorkerToUi::DebugLog {
         tab_id: fastrender::ui::TabId(1),
         line: "hello".to_string(),
-      })
+      }))
       .expect("queue should accept message");
 
     backlog = queue.drain();
@@ -7071,36 +7071,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
   struct BrowserWindow {
     app: App,
-    worker_msgs: WorkerMsgQueue,
     worker_msg_backlog: VecDeque<QueuedMsg>,
     worker_wake_pending: Arc<AtomicBool>,
     worker_perf_log: Option<WorkerWakePerfLogger>,
-    bridge_join: Option<std::thread::JoinHandle<()>>,
   }
 
   impl BrowserWindow {
     fn shutdown(self, shutdown_join_tracker: &mut fastrender::ui::ShutdownJoinTracker) {
-      let BrowserWindow {
-        mut app,
-        worker_msgs,
-        worker_msg_backlog: _,
-        worker_wake_pending: _,
-        worker_perf_log: _,
-        mut bridge_join,
-      } = self;
-
-      app.shutdown(shutdown_join_tracker);
-
-      // Drop the queue receiver before waiting on the bridge thread so it can stop forwarding
-      // messages even if the worker is still producing output.
-      drop(worker_msgs);
-
-      if let Some(join) = bridge_join.take() {
-        shutdown_join_tracker.track_join(
-          format!("browser worker bridge thread {:?}", app.window.id()),
-          join,
-        );
-      }
+      self.app.shutdown(shutdown_join_tracker);
     }
 
     fn restart_worker(
@@ -7113,9 +7091,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       // Best-effort: ask the old worker to shut down (may fail if it's deadlocked).
       self.app.renderer_backend.shutdown();
 
-      // Drop any pending messages from the old backend and detach the old bridge thread.
+      // Drop any pending messages from the old backend.
       self.worker_msg_backlog.clear();
-      let _ = self.bridge_join.take();
+      drop(self.app.frame_ready_bridge_coalescer.drain());
 
       self.app.worker_restart_seq = self.app.worker_restart_seq.saturating_add(1);
       let worker_name = format!(
@@ -7123,8 +7101,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         self.app.worker_name_base, self.app.worker_restart_seq
       );
 
+      let worker_wake_pending = Arc::new(AtomicBool::new(false));
+      let worker_wake_counters = self
+        .app
+        .hud
+        .as_ref()
+        .map(|hud| Arc::clone(&hud.worker_wake_counters))
+        .or_else(|| {
+          self
+            .worker_perf_log
+            .as_ref()
+            .map(|log| Arc::clone(&log.counters))
+        });
+      let worker_wake: fastrender::ui::WorkerWakeCallback = {
+        let proxy = std::sync::Mutex::new(self.app.event_loop_proxy.clone());
+        let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
+        let pending = Arc::clone(&worker_wake_pending);
+        let counters = worker_wake_counters.clone();
+        Arc::new(move || {
+          let window_first = !pending.swap(true, Ordering::AcqRel);
+          let sent_global = window_first
+            && worker_wake_coalescer.request_wake(|| {
+              let proxy = proxy.lock().map_err(|_| ())?;
+              proxy.send_event(UserEvent::WorkerWake).map_err(|_| ())
+            });
+          if let Some(counters) = counters.as_ref() {
+            if sent_global {
+              counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+            } else {
+              counters.wake_events_coalesced.fetch_add(1, Ordering::Relaxed);
+            }
+          }
+        })
+      };
+
       let renderer_backend =
-        match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
+        match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+          &worker_name,
+          Some(worker_wake),
+        ) {
           Ok(v) => v,
           Err(err) => {
             eprintln!("failed to restart worker {worker_name:?}: {err}");
@@ -7149,126 +7164,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       });
 
       self.app.renderer_backend = renderer_backend.clone();
-
-      let window_id = self.app.window.id();
-      let worker_wake_counters = self
-        .app
-        .hud
-        .as_ref()
-        .map(|hud| Arc::clone(&hud.worker_wake_counters))
-        .or_else(|| {
-          self
-            .worker_perf_log
-            .as_ref()
-            .map(|log| Arc::clone(&log.counters))
-        });
-      match spawn_worker_ui_bridge(
-        window_id,
-        renderer_backend,
-        self.app.frame_ready_bridge_coalescer.clone(),
-        self.app.event_loop_proxy.clone(),
-        worker_wake_coalescer,
-        worker_wake_counters,
-      ) {
-        Ok((worker_msgs, worker_wake_pending, bridge_join)) => {
-          // Replace the queue + wake flags so any old worker bridge thread is forced to exit (its
-          // pusher will fail once the old queue receiver is dropped).
-          self.worker_msgs = worker_msgs;
-          self.worker_wake_pending = worker_wake_pending;
-          self.bridge_join = Some(bridge_join);
-        }
-        Err(err) => {
-          eprintln!("failed to spawn restarted worker bridge thread: {err}");
-          let detail = format_new_window_error_detail(&err.to_string());
-          let text = if detail.is_empty() {
-            "Failed to restart renderer bridge".to_string()
-          } else {
-            format!("Failed to restart renderer bridge\n{detail}")
-          };
-          self.app.show_chrome_toast_kind(ToastKind::Error, text);
-          self.app.window.request_redraw();
-          self.bridge_join = None;
-        }
-      }
+      self.worker_wake_pending = worker_wake_pending;
 
       self.app.on_worker_restarted();
     }
   }
-
-  fn spawn_worker_ui_bridge(
-    window_id: WindowId,
-    renderer_backend: fastrender::ui::RendererBackendHandle,
-    frame_ready_bridge_coalescer: FrameReadyBridgeCoalescer,
-    event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    worker_wake_coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
-    worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
-  ) -> std::io::Result<(WorkerMsgQueue, Arc<AtomicBool>, std::thread::JoinHandle<()>)> {
-    let worker_msgs = WorkerMsgQueue::new();
-    let worker_msgs_pusher = worker_msgs.pusher();
-    let worker_wake_pending = Arc::new(AtomicBool::new(false));
-    let bridge_join = std::thread::Builder::new()
-      .name(format!("browser_worker_bridge_{window_id:?}"))
-      .spawn({
-        let renderer_backend = renderer_backend.clone();
-        let frame_ready_bridge_coalescer = frame_ready_bridge_coalescer.clone();
-        let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
-        let worker_wake_pending = Arc::clone(&worker_wake_pending);
-        let worker_wake_counters = worker_wake_counters.clone();
-        move || {
-          while let Ok(msg) = renderer_backend.recv() {
-            // If the UI message queue has been dropped (window closed or worker restarted), stop
-            // the bridge thread immediately so we don't retain pixmaps or keep the worker→UI
-            // channel alive indefinitely.
-            if worker_msgs_pusher.inner.strong_count() == 0 {
-              break;
-            }
-            match msg {
-              fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
-                frame_ready_bridge_coalescer.insert(tab_id, frame);
-              }
-              msg => {
-                let enqueued = match sanitize_worker_to_ui_for_bridge_queue(msg) {
-                  BridgeSanitizedMsgs::Drop => Ok(false),
-                  BridgeSanitizedMsgs::One(item) => worker_msgs_pusher.push(item).map(|_| true),
-                  BridgeSanitizedMsgs::Two(a, b) => worker_msgs_pusher
-                    .push(a)
-                    .and_then(|_| worker_msgs_pusher.push(b))
-                    .map(|_| true),
-                };
-                match enqueued {
-                  Ok(false) => continue,
-                  Ok(true) => {}
-                  Err(_) => break,
-                }
-              }
-            }
-            // Coalesce wakes:
-            // - the per-window `worker_wake_pending` flag ensures we only request a wake once per
-            //   burst for this window
-            // - the global `worker_wake_coalescer` ensures only one `WorkerWake` user event is ever
-            //   queued at a time across all windows
-            let window_first = !worker_wake_pending.swap(true, Ordering::AcqRel);
-            let sent_global = window_first
-              && worker_wake_coalescer.request_wake(|| {
-                // Ignore failures during shutdown (event loop already dropped).
-                event_loop_proxy.send_event(UserEvent::WorkerWake)
-              });
-            if let Some(counters) = worker_wake_counters.as_ref() {
-              if sent_global {
-                counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
-              } else {
-                counters
-                  .wake_events_coalesced
-                  .fetch_add(1, Ordering::Relaxed);
-              }
-            }
-            // `request_wake` already enqueues the wake event (if this is the first request).
-          }
-        }
-      })?;
-    Ok((worker_msgs, worker_wake_pending, bridge_join))
-  }
-
   fn show_profile_autosave_flush_failure(
     windows: &mut HashMap<WindowId, BrowserWindow>,
     window_order: &[WindowId],
@@ -7598,9 +7498,49 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       continue;
     };
 
+    let window_id = window.id();
+    window_ids_by_index[idx] = Some(window_id);
+
     let worker_name = format!("fastr-browser-ui-worker-{idx}");
-    let renderer_backend =
-      fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name)?;
+    let worker_wake_pending = Arc::new(AtomicBool::new(false));
+    // Wake/perf counters are used both by the optional HUD and the perf-log mode. Ensure a single
+    // shared counter instance feeds all consumers.
+    let worker_wake_counters = (browser_hud_enabled_from_env() || perf_log_enabled)
+      .then(|| Arc::new(WorkerWakeHudCounters::default()));
+    let worker_wake: fastrender::ui::WorkerWakeCallback = {
+      // Wrap `EventLoopProxy` in a `Mutex` so the wake callback is `Sync` (the worker wants an
+      // `Arc<dyn Fn() + Send + Sync>`).
+      let proxy = std::sync::Mutex::new(event_loop_proxy.clone());
+      let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
+      let pending = Arc::clone(&worker_wake_pending);
+      let counters = worker_wake_counters.clone();
+      Arc::new(move || {
+        // Coalesce wakes:
+        // - the per-window `worker_wake_pending` flag ensures we only request a wake once per burst
+        //   for this window
+        // - the global `worker_wake_coalescer` ensures only one `WorkerWake` user event is ever
+        //   queued at a time across all windows
+        let window_first = !pending.swap(true, Ordering::AcqRel);
+        let sent_global = window_first
+          && worker_wake_coalescer.request_wake(|| {
+            let proxy = proxy.lock().map_err(|_| ())?;
+            proxy.send_event(UserEvent::WorkerWake).map_err(|_| ())
+          });
+        if let Some(counters) = counters.as_ref() {
+          if sent_global {
+            counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+          } else {
+            counters
+              .wake_events_coalesced
+              .fetch_add(1, Ordering::Relaxed);
+          }
+        }
+      })
+    };
+    let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+      &worker_name,
+      Some(worker_wake),
+    )?;
 
     // Enable/disable debug-log message traffic up-front so production browsing sessions that do not
     // show the debug log UI do not pay for high-volume `DebugLog` delivery.
@@ -7644,6 +7584,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     app.profile_autosave_tx = profile_autosave_tx.clone();
     app.home_url = home_url.clone();
     app.browser_state.appearance = startup_appearance.clone();
+    if let (Some(hud), Some(counters)) = (app.hud.as_mut(), worker_wake_counters.as_ref()) {
+      hud.worker_wake_counters = Arc::clone(counters);
+    }
     app.startup(session_window);
     // `App::startup` restores any persisted download history for this window. Downloads are
     // profile-global, so fold any restored entries into the shared store as we create windows.
@@ -7718,17 +7661,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
       }
     }
-
-    let window_id = app.window.id();
-    window_ids_by_index[idx] = Some(window_id);
-
-    let worker_wake_counters = if let Some(hud) = app.hud.as_ref() {
-      Some(Arc::clone(&hud.worker_wake_counters))
-    } else if perf_log_enabled {
-      Some(Arc::new(WorkerWakeHudCounters::default()))
-    } else {
-      None
-    };
     let worker_perf_log = if perf_log_enabled {
       if let (Some(counters), Some(writer)) =
         (worker_wake_counters.as_ref(), perf_log_writer.as_ref())
@@ -7744,15 +7676,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
       None
     };
-    let (worker_msgs, worker_wake_pending, bridge_join) = spawn_worker_ui_bridge(
-      window_id,
-      renderer_backend.clone(),
-      frame_ready_bridge_coalescer.clone(),
-      event_loop_proxy.clone(),
-      Arc::clone(&worker_wake_coalescer),
-      worker_wake_counters,
-    )?;
-
     // Kick the first frame so the window shows chrome immediately even before the worker responds.
     app.window.request_redraw();
 
@@ -7760,11 +7683,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       window_id,
       BrowserWindow {
         app,
-        worker_msgs,
         worker_msg_backlog: VecDeque::new(),
         worker_wake_pending,
         worker_perf_log,
-        bridge_join: Some(bridge_join),
       },
     );
   }
@@ -8265,17 +8186,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for window_id in window_order.iter().copied() {
           let mut request_redraw = false;
           let mut history_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
-          let mut needs_follow_up_wake = false;
 
           if let Some(win) = windows.get_mut(&window_id) {
-            // Skip windows with no pending worker work; the bridge thread sets this flag before
-            // requesting the global wake.
-            //
-            // Note: we keep the per-window flag set while draining so that bursts of worker messages
-            // don't enqueue redundant wakes while the UI thread is already awake and processing
-            // messages. The flag is cleared after draining below.
-            if !win.worker_wake_pending.load(Ordering::Acquire) && win.worker_msg_backlog.is_empty()
-            {
+            // Skip windows with no pending worker work. The worker's wake callback sets this flag
+            // before requesting the global wake.
+            let had_pending = win.worker_wake_pending.swap(false, Ordering::AcqRel);
+            if !had_pending && win.worker_msg_backlog.is_empty() {
               continue;
             }
 
@@ -8287,25 +8203,54 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               .frame_breakdown_enabled()
               .then(std::time::Instant::now);
 
-            // Pull any newly-arrived worker messages into the local backlog with a single lock so we
-            // can process them without holding the mutex.
-            if win.worker_msg_backlog.is_empty() {
-              win.worker_msg_backlog = win.worker_msgs.drain();
-            } else {
-              let mut drained = win.worker_msgs.drain();
-              win.worker_msg_backlog.append(&mut drained);
-            }
-
             let budget = DrainBudget {
               max_messages: 512,
               max_duration: std::time::Duration::from_millis(2),
             };
             let start = std::time::Instant::now();
             let mut drained_count = 0usize;
+            let mut disconnected = false;
+
             while drained_count < budget.max_messages && start.elapsed() < budget.max_duration {
-              let Some(item) = win.worker_msg_backlog.pop_front() else {
-                break;
+              let item = if let Some(item) = win.worker_msg_backlog.pop_front() {
+                item
+              } else {
+                let msg = match win.app.renderer_backend.try_recv() {
+                  Ok(msg) => msg,
+                  Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                  Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                  }
+                };
+
+                // `FrameReady` carries a potentially multi-megabyte pixmap; keep at most one pending
+                // frame per tab to avoid retaining unbounded memory when the UI thread is busy.
+                if let fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } = msg {
+                  win.app.frame_ready_bridge_coalescer.insert(tab_id, frame);
+                  continue;
+                }
+
+                match sanitize_worker_to_ui_for_bridge_queue(msg) {
+                  BridgeSanitizedMsgs::Drop => continue,
+                  BridgeSanitizedMsgs::One(item) => item,
+                  BridgeSanitizedMsgs::Two(first, second) => {
+                    // Maintain order: process the first message now and push the second to the
+                    // front of the backlog so it is handled next.
+                    win.worker_msg_backlog.push_front(second);
+                    first
+                  }
+                }
               };
+
+              let item = match item {
+                QueuedMsg::Worker(fastrender::ui::WorkerToUi::FrameReady { tab_id, frame }) => {
+                  win.app.frame_ready_bridge_coalescer.insert(tab_id, frame);
+                  continue;
+                }
+                other => other,
+              };
+
               drained_count = drained_count.saturating_add(1);
               if let QueuedMsg::Worker(msg) = &item {
                 session_dirty |= matches!(
@@ -8340,15 +8285,83 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               history_deltas.extend(result.history_deltas);
             }
 
-            let outcome = DrainOutcome {
-              drained: drained_count,
-              stop_reason: if win.worker_msg_backlog.is_empty() {
-                DrainStopReason::Empty
-              } else {
+            let hit_budget =
+              drained_count >= budget.max_messages || start.elapsed() >= budget.max_duration;
+            let stop_reason = if hit_budget {
+              // Determine whether more messages remain. If so, request a follow-up wake.
+              let mut more = !win.worker_msg_backlog.is_empty();
+              if !more && !disconnected {
+                let mut saw_any = false;
+                // Pull a small number of messages so we don't miss scheduling a follow-up wake due
+                // to queue head items being dropped by sanitization.
+                for _ in 0..8 {
+                  match win.app.renderer_backend.try_recv() {
+                    Ok(msg) => {
+                      saw_any = true;
+                      if let fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } = msg {
+                        win.app.frame_ready_bridge_coalescer.insert(tab_id, frame);
+                        continue;
+                      }
+                      match sanitize_worker_to_ui_for_bridge_queue(msg) {
+                        BridgeSanitizedMsgs::Drop => continue,
+                        BridgeSanitizedMsgs::One(item) => {
+                          win.worker_msg_backlog.push_back(item);
+                          more = true;
+                          break;
+                        }
+                        BridgeSanitizedMsgs::Two(a, b) => {
+                          win.worker_msg_backlog.push_back(a);
+                          win.worker_msg_backlog.push_back(b);
+                          more = true;
+                          break;
+                        }
+                      }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                      disconnected = true;
+                      break;
+                    }
+                  }
+                }
+
+                if !more && saw_any {
+                  // We consumed at least one message, but it was dropped by sanitization. Treat
+                  // this as "more work may remain" so we schedule a follow-up wake and continue
+                  // draining.
+                  more = true;
+                }
+              }
+
+              if more {
                 DrainStopReason::Budget
-              },
+              } else if disconnected {
+                DrainStopReason::Disconnected
+              } else {
+                DrainStopReason::Empty
+              }
+            } else if disconnected {
+              DrainStopReason::Disconnected
+            } else {
+              DrainStopReason::Empty
             };
-            needs_follow_up_wake = outcome.stop_reason == DrainStopReason::Budget;
+
+            let window_is_active = active_window_id == Some(window_id);
+            let mut drained_frames = 0usize;
+            for (tab_id, frame) in win.app.frame_ready_bridge_coalescer.drain() {
+              drained_frames = drained_frames.saturating_add(1);
+              let result = win.app.handle_worker_message(
+                fastrender::ui::WorkerToUi::FrameReady { tab_id, frame },
+                window_is_active,
+              );
+              request_redraw |= result.request_redraw;
+              history_deltas.extend(result.history_deltas);
+            }
+
+            let outcome = DrainOutcome {
+              drained: drained_count.saturating_add(drained_frames),
+              stop_reason,
+            };
 
             if hud_enabled {
               if let Some(hud) = win.app.hud.as_mut() {
@@ -8360,45 +8373,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             span.arg_u64("messages", outcome.drained as u64);
 
-            let window_is_active = active_window_id == Some(window_id);
-            for (tab_id, frame) in win.app.frame_ready_bridge_coalescer.drain() {
-              let result = win.app.handle_worker_message(
-                fastrender::ui::WorkerToUi::FrameReady { tab_id, frame },
-                window_is_active,
-              );
-              request_redraw |= result.request_redraw;
-              history_deltas.extend(result.history_deltas);
-            }
-
             if request_redraw {
               win.app.schedule_worker_redraw(std::time::Instant::now());
             }
-            // Clear the per-window pending bit now that we've drained the current batch, then
-            // re-check the queue for any messages that arrived during the drain.
-            //
-            // This ensures:
-            // - At most one wake is queued per window while we're draining (messages arriving during
-            //   the drain won't schedule an extra wake).
-            // - We don't miss a wake when messages arrive after the last dequeue but before we
-            //   clear the flag (we immediately re-drain after clearing).
-            win.worker_wake_pending.store(false, Ordering::Release);
-
-            let mut drained = win.worker_msgs.drain();
-            win.worker_msg_backlog.append(&mut drained);
-
-            let has_pending_frames = !win.app.frame_ready_bridge_coalescer.is_empty();
-            if !win.worker_msg_backlog.is_empty() || has_pending_frames {
+            // If we hit the drain budget, ensure the per-window pending bit stays set so the
+            // follow-up scheduling logic below queues another wake.
+            if outcome.stop_reason == DrainStopReason::Budget {
               win.worker_wake_pending.store(true, Ordering::Release);
-              if needs_follow_up_wake {
-                needs_follow_up_wake_any = true;
-                if hud_enabled {
-                  if let Some(hud) = win.app.hud.as_mut() {
-                    hud.record_worker_followup_wake();
-                  }
+              needs_follow_up_wake_any = true;
+              if hud_enabled {
+                if let Some(hud) = win.app.hud.as_mut() {
+                  hud.record_worker_followup_wake();
                 }
-                if let Some(perf_log) = win.worker_perf_log.as_mut() {
-                  perf_log.record_followup_wake();
-                }
+              }
+              if let Some(perf_log) = win.worker_perf_log.as_mut() {
+                perf_log.record_followup_wake();
               }
             }
 
@@ -8552,7 +8541,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         // Re-arm the global wake coalescer now that we've drained the worker message queues.
         //
-        // We intentionally clear the global "pending" bit *after* draining so that bridge threads
+        // We intentionally clear the global "pending" bit *after* draining so that worker threads
         // don't enqueue redundant `WorkerWake` events while the UI thread is already awake and
         // draining messages. Any messages that arrive during the drain set the per-window
         // `worker_wake_pending` flag and will be picked up below to schedule exactly one follow-up
@@ -8692,7 +8681,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           &mut windows,
           &mut window_order,
           &mut active_window_id,
-          |win| win.shutdown(),
+          |win| win.shutdown(&mut shutdown_join_tracker),
         );
 
         request_autosave(&windows, &window_order, active_window_id);
@@ -8747,12 +8736,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return;
           }
         };
+        let window_id = window.id();
 
         let worker_name = format!("fastr-browser-ui-worker-{next_window_index}");
         next_window_index = next_window_index.saturating_add(1);
 
-        let renderer_backend =
-          match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
+        let worker_wake_pending = Arc::new(AtomicBool::new(false));
+        let worker_wake_counters = (browser_hud_enabled_from_env() || perf_log_enabled)
+          .then(|| Arc::new(WorkerWakeHudCounters::default()));
+        let worker_wake: fastrender::ui::WorkerWakeCallback = {
+          let proxy = std::sync::Mutex::new(event_loop_proxy.clone());
+          let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
+          let pending = Arc::clone(&worker_wake_pending);
+          let counters = worker_wake_counters.clone();
+          Arc::new(move || {
+            let window_first = !pending.swap(true, Ordering::AcqRel);
+            let sent_global = window_first
+              && worker_wake_coalescer.request_wake(|| {
+                let proxy = proxy.lock().map_err(|_| ())?;
+                proxy.send_event(UserEvent::WorkerWake).map_err(|_| ())
+              });
+            if let Some(counters) = counters.as_ref() {
+              if sent_global {
+                counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+              } else {
+                counters
+                  .wake_events_coalesced
+                  .fetch_add(1, Ordering::Relaxed);
+              }
+            }
+          })
+        };
+        let renderer_backend = match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+          &worker_name,
+          Some(worker_wake),
+        ) {
             Ok(v) => v,
             Err(err) => {
               if let Some(win) = windows.get_mut(&from_id) {
@@ -8827,6 +8845,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.home_url = global_home_url.clone();
         app.browser_state.appearance = global_appearance.clone();
         app.set_session_autosave_status(session_autosave_status.clone());
+        if let (Some(hud), Some(counters)) = (app.hud.as_mut(), worker_wake_counters.as_ref()) {
+          hud.worker_wake_counters = Arc::clone(counters);
+        }
 
         app.startup(fastrender::ui::BrowserSessionWindow {
           tabs: vec![fastrender::ui::BrowserSessionTab {
@@ -8845,14 +8866,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window_state: None,
         });
 
-        let window_id = app.window.id();
-        let worker_wake_counters = if let Some(hud) = app.hud.as_ref() {
-          Some(Arc::clone(&hud.worker_wake_counters))
-        } else if perf_log_enabled {
-          Some(Arc::new(WorkerWakeHudCounters::default()))
-        } else {
-          None
-        };
         let worker_perf_log = if perf_log_enabled {
           if let (Some(counters), Some(writer)) =
             (worker_wake_counters.as_ref(), perf_log_writer.as_ref())
@@ -8868,35 +8881,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
           None
         };
-        let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
-          window_id,
-          renderer_backend.clone(),
-          frame_ready_bridge_coalescer.clone(),
-          event_loop_proxy.clone(),
-          Arc::clone(&worker_wake_coalescer),
-          worker_wake_counters,
-        ) {
-          Ok(v) => v,
-          Err(err) => {
-            if let Some(win) = windows.get_mut(&from_id) {
-              win
-                .app
-                .toast_new_window_error(format_args!("spawn worker bridge thread: {err}"));
-            }
-            return;
-          }
-        };
-
         app.window.request_redraw();
         windows.insert(
           window_id,
           BrowserWindow {
             app,
-            worker_msgs,
             worker_msg_backlog: VecDeque::new(),
             worker_wake_pending,
             worker_perf_log,
-            bridge_join: Some(bridge_join),
           },
         );
         window_order.push(window_id);
@@ -8951,12 +8943,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             return;
           }
         };
+        let window_id = window.id();
 
         let worker_name = format!("fastr-browser-ui-worker-{next_window_index}");
         next_window_index = next_window_index.saturating_add(1);
 
-        let renderer_backend =
-          match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(&worker_name) {
+        let worker_wake_pending = Arc::new(AtomicBool::new(false));
+        let worker_wake_counters = (browser_hud_enabled_from_env() || perf_log_enabled)
+          .then(|| Arc::new(WorkerWakeHudCounters::default()));
+        let worker_wake: fastrender::ui::WorkerWakeCallback = {
+          let proxy = std::sync::Mutex::new(event_loop_proxy.clone());
+          let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
+          let pending = Arc::clone(&worker_wake_pending);
+          let counters = worker_wake_counters.clone();
+          Arc::new(move || {
+            let window_first = !pending.swap(true, Ordering::AcqRel);
+            let sent_global = window_first
+              && worker_wake_coalescer.request_wake(|| {
+                let proxy = proxy.lock().map_err(|_| ())?;
+                proxy.send_event(UserEvent::WorkerWake).map_err(|_| ())
+              });
+            if let Some(counters) = counters.as_ref() {
+              if sent_global {
+                counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+              } else {
+                counters
+                  .wake_events_coalesced
+                  .fetch_add(1, Ordering::Relaxed);
+              }
+            }
+          })
+        };
+        let renderer_backend = match fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
+          &worker_name,
+          Some(worker_wake),
+        ) {
             Ok(v) => v,
             Err(err) => {
               if let Some(win) = windows.get_mut(&from_id) {
@@ -9031,6 +9052,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.home_url = global_home_url.clone();
         app.browser_state.appearance = global_appearance.clone();
         app.set_session_autosave_status(session_autosave_status.clone());
+        if let (Some(hud), Some(counters)) = (app.hud.as_mut(), worker_wake_counters.as_ref()) {
+          hud.worker_wake_counters = Arc::clone(counters);
+        }
 
         app.startup(session_window);
         let downloads_changed = app.browser_state.downloads != global_downloads;
@@ -9045,14 +9069,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.browser_state.chrome.address_bar_editing = false;
         app.browser_state.chrome.address_bar_has_focus = false;
 
-        let window_id = app.window.id();
-        let worker_wake_counters = if let Some(hud) = app.hud.as_ref() {
-          Some(Arc::clone(&hud.worker_wake_counters))
-        } else if perf_log_enabled {
-          Some(Arc::new(WorkerWakeHudCounters::default()))
-        } else {
-          None
-        };
         let worker_perf_log = if perf_log_enabled {
           if let (Some(counters), Some(writer)) =
             (worker_wake_counters.as_ref(), perf_log_writer.as_ref())
@@ -9068,35 +9084,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         } else {
           None
         };
-        let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
-          window_id,
-          renderer_backend.clone(),
-          frame_ready_bridge_coalescer.clone(),
-          event_loop_proxy.clone(),
-          Arc::clone(&worker_wake_coalescer),
-          worker_wake_counters,
-        ) {
-          Ok(v) => v,
-          Err(err) => {
-            if let Some(win) = windows.get_mut(&from_id) {
-              win
-                .app
-                .toast_new_window_error(format_args!("spawn worker bridge thread: {err}"));
-            }
-            return;
-          }
-        };
-
         app.window.request_redraw();
         windows.insert(
           window_id,
           BrowserWindow {
             app,
-            worker_msgs,
             worker_msg_backlog: VecDeque::new(),
             worker_wake_pending,
             worker_perf_log,
-            bridge_join: Some(bridge_join),
           },
         );
         window_order.push(window_id);
@@ -10203,6 +10198,7 @@ fn run_headless_smoke_mode(
 
       let renderer_backend = fastrender::ui::ThreadRendererBackend::spawn_browser_ui_worker(
         "fastr-browser-headless-smoke-worker",
+        None,
       )?;
 
       fastrender::ui::about_pages::sync_about_page_snapshot_download_dir(Some(

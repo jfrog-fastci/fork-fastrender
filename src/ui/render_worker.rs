@@ -65,6 +65,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// Optional callback invoked when the worker successfully enqueues a `WorkerToUi` message.
+///
+/// This is used by windowed UIs to wake their event loop without requiring an extra bridge thread.
+pub type WorkerWakeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
 // -----------------------------------------------------------------------------
 // Test hooks
 // -----------------------------------------------------------------------------
@@ -260,10 +265,11 @@ mod media_controls_anchor_fallback_tests {
 
     let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
-    let worker_rx = WorkerToUiInbox::new(worker_rx);
+    let worker_inbox = WorkerToUiInbox::new(worker_rx);
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory.clone(), downloads);
+    let ui_tx = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx, factory.clone(), downloads);
 
     let tab_id = TabId::new();
     let mut tab = TabState::new(CancelGens::new());
@@ -333,7 +339,7 @@ mod media_controls_anchor_fallback_tests {
     });
 
     let mut opened: Option<WorkerToUi> = None;
-    while let Ok(msg) = worker_rx.try_recv() {
+    while let Ok(msg) = worker_inbox.try_recv() {
       if matches!(msg, WorkerToUi::MediaControlsOpened { .. }) {
         opened = Some(msg);
         break;
@@ -369,6 +375,33 @@ pub struct BrowserWorkerHandle {
   pub tx: Sender<UiToWorker>,
   pub rx: WorkerToUiInbox,
   pub join: std::thread::JoinHandle<()>,
+}
+
+#[derive(Clone)]
+struct WorkerToUiSender {
+  tx: Sender<WorkerToUiMsg>,
+  wake: Option<WorkerWakeCallback>,
+}
+
+impl WorkerToUiSender {
+  fn new(tx: Sender<WorkerToUiMsg>, wake: Option<WorkerWakeCallback>) -> Self {
+    Self { tx, wake }
+  }
+
+  fn send(
+    &self,
+    msg: WorkerToUiMsg,
+  ) -> Result<(), std::sync::mpsc::SendError<WorkerToUiMsg>> {
+    match self.tx.send(msg) {
+      Ok(()) => {
+        if let Some(wake) = &self.wake {
+          wake();
+        }
+        Ok(())
+      }
+      Err(err) => Err(err),
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -1093,7 +1126,7 @@ fn hit_test_fragment_tree_for_scroll_cached(
   Some(tree)
 }
 
-fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUiMsg>) {
+fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &WorkerToUiSender) {
   let Some(doc) = tab.document.as_mut() else {
     return;
   };
@@ -1228,7 +1261,7 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   tab.pending_hover_sync_pos_css = tab.pending_hover_sync_pos_css.or(tab.last_pointer_pos_css);
 }
 
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUiMsg>) -> StageListenerGuard {
+fn forward_stage_heartbeats(tab_id: TabId, sender: WorkerToUiSender) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
     let _ = sender.send(WorkerToUiMsg::Single(WorkerToUi::Stage { tab_id, stage }));
@@ -1658,7 +1691,7 @@ fn js_dom_node_for_preorder_id(
 }
 
 fn js_dom_node_for_preorder_id_with_log(
-  ui_tx: &Sender<WorkerToUiMsg>,
+  ui_tx: &WorkerToUiSender,
   tab_id: TabId,
   js_tab: &mut BrowserTab,
   preorder_id: usize,
@@ -2834,7 +2867,7 @@ struct ActiveDownload {
 
 struct BrowserRuntime {
   ui_rx: Receiver<UiToWorker>,
-  ui_tx: Sender<WorkerToUiMsg>,
+  ui_tx: WorkerToUiSender,
   factory: FastRenderFactory,
   base_runtime_toggles: Arc<RuntimeToggles>,
   runtime_toggles: Arc<RuntimeToggles>,
@@ -2943,7 +2976,7 @@ impl BrowserRuntime {
 
   fn new(
     ui_rx: Receiver<UiToWorker>,
-    ui_tx: Sender<WorkerToUiMsg>,
+    ui_tx: WorkerToUiSender,
     factory: FastRenderFactory,
     downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
   ) -> Self {
@@ -6064,7 +6097,7 @@ impl BrowserRuntime {
     }
   }
 
-  fn scroll_to_active_find_match(ui_tx: &Sender<WorkerToUiMsg>, tab_id: TabId, tab: &mut TabState) {
+  fn scroll_to_active_find_match(ui_tx: &WorkerToUiSender, tab_id: TabId, tab: &mut TabState) {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
@@ -6218,7 +6251,7 @@ impl BrowserRuntime {
   }
 
   fn maybe_emit_hover_changed(
-    ui_tx: &Sender<WorkerToUiMsg>,
+    ui_tx: &WorkerToUiSender,
     tab_id: TabId,
     last_cursor: &mut CursorKind,
     last_hovered_url: &mut Option<String>,
@@ -6254,7 +6287,7 @@ impl BrowserRuntime {
   // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
   // borrowed from `self.tabs` without triggering borrow-checker errors (E0499/E0502).
   fn pump_js_event_loop_after_dom_event_dispatch_for_tab(
-    ui_tx: &Sender<WorkerToUiMsg>,
+    ui_tx: &WorkerToUiSender,
     debug_log_enabled: bool,
     tab_id: TabId,
     tab: &mut TabState,
@@ -13408,7 +13441,7 @@ fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
 /// navigation events, etc). It is intended to be driven by a UI thread/event loop, but it is also
 /// usable from tests to exercise end-to-end interaction wiring.
 pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiThreadWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)
+  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, None)
 }
 
 /// Spawn a UI worker with an optional per-frame artificial delay (test-only).
@@ -13420,6 +13453,7 @@ pub fn spawn_ui_worker_for_test(
     name.into(),
     test_render_delay_ms,
     default_ui_worker_factory()?,
+    None,
   )
 }
 
@@ -13430,13 +13464,14 @@ pub fn spawn_ui_worker_with_factory(
   name: impl Into<String>,
   factory: FastRenderFactory,
 ) -> crate::Result<UiThreadWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), None, factory)
+  spawn_worker_with_factory_inner(name.into(), None, factory, None)
 }
 
 fn spawn_worker_with_factory_inner(
   name: String,
   test_render_delay_ms: Option<u64>,
   factory: FastRenderFactory,
+  worker_wake: Option<WorkerWakeCallback>,
 ) -> crate::Result<UiThreadWorkerHandle> {
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
@@ -13560,7 +13595,8 @@ fn spawn_worker_with_factory_inner(
 
       let _runtime_toggles_guard =
         crate::debug::runtime::set_thread_runtime_toggles(factory.runtime_toggles());
-      let mut runtime = BrowserRuntime::new(runtime_rx, worker_to_ui_tx, factory, downloads);
+      let ui_tx = WorkerToUiSender::new(worker_to_ui_tx, worker_wake);
+      let mut runtime = BrowserRuntime::new(runtime_rx, ui_tx, factory, downloads);
       runtime.run();
 
       let _ = router_join.join();
@@ -13587,7 +13623,8 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
 pub fn spawn_browser_worker_with_name(
   name: impl Into<String>,
 ) -> crate::Result<BrowserWorkerHandle> {
-  let handle = spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)?;
+  let handle =
+    spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, None)?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,
@@ -13600,7 +13637,7 @@ pub fn spawn_browser_worker_with_name(
 pub fn spawn_browser_worker_with_factory(
   factory: FastRenderFactory,
 ) -> crate::Result<BrowserWorkerHandle> {
-  let handle = spawn_worker_with_factory_inner("browser_worker".to_string(), None, factory)?;
+  let handle = spawn_worker_with_factory_inner("browser_worker".to_string(), None, factory, None)?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,
@@ -13616,6 +13653,7 @@ pub fn spawn_browser_worker_for_test(
     "browser_worker".to_string(),
     test_render_delay_ms,
     default_ui_worker_factory()?,
+    None,
   )?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
@@ -13630,6 +13668,7 @@ pub fn spawn_browser_worker_for_test(
 /// FastRender's internal `Error` into an `io::Error` and returns the raw channel endpoints.
 pub fn spawn_browser_ui_worker(
   name: impl Into<String>,
+  worker_wake: Option<WorkerWakeCallback>,
 ) -> std::io::Result<(
   std::sync::mpsc::Sender<UiToWorker>,
   std::sync::mpsc::Receiver<WorkerToUiMsg>,
@@ -13647,9 +13686,15 @@ pub fn spawn_browser_ui_worker(
     ));
   }
 
-  let handle = spawn_browser_worker_with_name(name)
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-  Ok((handle.tx, handle.rx.into_inner(), handle.join))
+  let handle = spawn_worker_with_factory_inner(
+    name.into(),
+    None,
+    default_ui_worker_factory()
+      .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?,
+    worker_wake,
+  )
+  .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+  Ok((handle.ui_tx, handle.ui_rx.into_inner(), handle.join))
 }
 
 /// Convenience wrapper for browser integration tests.
@@ -13748,12 +13793,13 @@ mod media_wakeup_tests {
   fn media_wakeup_requests_are_emitted_and_cancelled() -> crate::Result<()> {
     let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
     let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
-    let worker_rx = WorkerToUiInbox::new(worker_rx);
+    let worker_inbox = WorkerToUiInbox::new(worker_rx);
 
     let factory = default_ui_worker_factory()?;
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+    let ui_tx = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx, factory, downloads);
 
     let tab_id = TabId::new();
     runtime.handle_message(UiToWorker::CreateTab {
@@ -13769,7 +13815,7 @@ mod media_wakeup_tests {
       command: MediaCommand::TogglePlayPause,
     });
 
-    let (wake_tab, after0, reason0) = recv_media_wake(&worker_rx);
+    let (wake_tab, after0, reason0) = recv_media_wake(&worker_inbox);
     assert_eq!(wake_tab, tab_id);
     assert_eq!(reason0, WakeReason::Media);
     assert_ne!(after0, Duration::MAX, "expected playing media to request a wakeup");
@@ -13780,7 +13826,7 @@ mod media_wakeup_tests {
       delta: Duration::from_millis(16),
     });
 
-    let (wake_tab, after1, reason1) = recv_media_wake(&worker_rx);
+    let (wake_tab, after1, reason1) = recv_media_wake(&worker_inbox);
     assert_eq!(wake_tab, tab_id);
     assert_eq!(reason1, WakeReason::Media);
     assert_ne!(after1, Duration::MAX, "expected media playback to continue scheduling wakeups");
@@ -13792,7 +13838,7 @@ mod media_wakeup_tests {
       command: MediaCommand::TogglePlayPause,
     });
 
-    let (wake_tab, after2, reason2) = recv_media_wake(&worker_rx);
+    let (wake_tab, after2, reason2) = recv_media_wake(&worker_inbox);
     assert_eq!(wake_tab, tab_id);
     assert_eq!(reason2, WakeReason::Media);
     assert_eq!(after2, Duration::MAX, "expected paused media to cancel wakeups");
@@ -13803,7 +13849,7 @@ mod media_wakeup_tests {
       node_id: 1,
       command: MediaCommand::TogglePlayPause,
     });
-    let (wake_tab, after3, reason3) = recv_media_wake(&worker_rx);
+    let (wake_tab, after3, reason3) = recv_media_wake(&worker_inbox);
     assert_eq!(wake_tab, tab_id);
     assert_eq!(reason3, WakeReason::Media);
     assert_ne!(after3, Duration::MAX, "expected restarted media to request a wakeup");
@@ -13813,7 +13859,7 @@ mod media_wakeup_tests {
       url: "about:blank".to_string(),
       reason: NavigationReason::TypedUrl,
     });
-    let (wake_tab, after4, reason4) = recv_media_wake(&worker_rx);
+    let (wake_tab, after4, reason4) = recv_media_wake(&worker_inbox);
     assert_eq!(wake_tab, tab_id);
     assert_eq!(reason4, WakeReason::Media);
     assert_eq!(
@@ -13941,7 +13987,8 @@ mod drain_messages_viewport_coalescing_tests {
     let factory = default_ui_worker_factory()?;
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
-    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+    let ui_tx_out = WorkerToUiSender::new(worker_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_rx, ui_tx_out, factory, downloads);
 
     let tab_id = TabId::new();
     ui_tx
@@ -14167,7 +14214,8 @@ mod hover_composed_shadow_dom_tests {
     let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
       Arc::new(Mutex::new(HashMap::new()));
     let factory = default_ui_worker_factory().expect("default ui worker factory");
-    let mut runtime = BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory, downloads);
+    let ui_tx = WorkerToUiSender::new(worker_to_ui_tx, None);
+    let mut runtime = BrowserRuntime::new(ui_to_worker_rx, ui_tx, factory, downloads);
 
     let tab_id = TabId::new();
     let mut tab = TabState::new(CancelGens::new());
@@ -14226,5 +14274,70 @@ mod hover_composed_shadow_dom_tests {
       dom.containing_shadow_root(js_target).is_some(),
       "expected hover target to be inside a shadow root"
     );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Wake-callback plumbing tests
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod worker_wake_callback_tests {
+  use super::*;
+  use std::sync::atomic::{AtomicUsize, Ordering};
+
+  #[test]
+  fn wake_callback_invoked_on_successful_send() {
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    let inbox = WorkerToUiInbox::new(rx);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let wake = {
+      let calls = Arc::clone(&calls);
+      let wake: WorkerWakeCallback = Arc::new(move || {
+        calls.fetch_add(1, Ordering::Relaxed);
+      });
+      wake
+    };
+    let sender = WorkerToUiSender::new(tx, Some(wake));
+
+    sender
+      .send(WorkerToUiMsg::Single(WorkerToUi::LoadingState {
+        tab_id: TabId(1),
+        loading: true,
+      }))
+      .expect("send should succeed");
+
+    // Ensure the message made it into the channel.
+    let _ = inbox.recv().expect("rx should see message");
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+  }
+
+  #[test]
+  fn wake_callback_not_invoked_after_receiver_drop() {
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerToUiMsg>();
+    drop(rx);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let wake = {
+      let calls = Arc::clone(&calls);
+      let wake: WorkerWakeCallback = Arc::new(move || {
+        calls.fetch_add(1, Ordering::Relaxed);
+      });
+      wake
+    };
+    let sender = WorkerToUiSender::new(tx, Some(wake));
+
+    assert!(
+      sender
+        .send(WorkerToUiMsg::Single(WorkerToUi::LoadingState {
+          tab_id: TabId(1),
+          loading: false,
+        }))
+        .is_err(),
+      "send should fail after receiver drop"
+    );
+
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
   }
 }
