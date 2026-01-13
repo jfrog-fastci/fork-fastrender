@@ -1082,22 +1082,74 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
     }
   } else if let Some(cmd_rx) = cmd_rx_opt {
     let fetcher = with_env_state(env_id, |state| Ok(Arc::clone(&state.env.fetcher)))?;
-    let handle = std::thread::spawn(move || {
-      websocket_thread_main::<Host>(
-        env_id,
-        ws_id,
-        fetcher,
-        resolved_url_string,
-        document_is_secure,
-        protocols,
-        cmd_rx,
-        task_queue,
-      )
-    });
+    let thread_task_queue = task_queue.clone();
+    let spawn_result = std::thread::Builder::new()
+      .name(format!("ws-{env_id}-{ws_id}"))
+      .spawn(move || {
+        websocket_thread_main::<Host>(
+          env_id,
+          ws_id,
+          fetcher,
+          resolved_url_string,
+          document_is_secure,
+          protocols,
+          cmd_rx,
+          thread_task_queue,
+        )
+      });
+
+    let handle = match spawn_result {
+      Ok(handle) => Some(handle),
+      Err(_err) => {
+        // If the OS refuses to create a thread (resource exhaustion), treat it as a connection
+        // failure: mark the socket closed and emit `error` + `close` events.
+        let url_snapshot = with_env_state(env_id, |state| {
+          Ok(
+            state
+              .sockets
+              .get(&ws_id)
+              .map(|ws| ws.url.clone())
+              .unwrap_or_default(),
+          )
+        })
+        .unwrap_or_default();
+
+        let _ = with_env_state_mut(env_id, |state| {
+          if let Some(ws) = state.sockets.get_mut(&ws_id) {
+            ws.ready_state = WS_CLOSED;
+            ws.buffered_amount = 0;
+            // Drop the sender so `send()` calls fail immediately.
+            ws.cmd_tx = None;
+            ws.thread = None;
+          }
+          Ok(())
+        });
+
+        queue_ws_task::<Host>(
+          &task_queue,
+          env_id,
+          ws_id,
+          WsTaskKind::Close,
+          move |vm_host, heap, vm, hooks, ws_obj| {
+            let mut scope = heap.scope();
+            let ev = make_simple_event(&mut scope, "error")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
+            let close_ev = make_simple_event(&mut scope, "close")?;
+            dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(close_ev), "onclose")?;
+
+            let _ = set_ws_tombstone_props(&mut scope, ws_obj, &url_snapshot, "", WS_CLOSED, 0);
+            let _ = with_env_state_mut(env_id, |state| Ok(state.sockets.remove(&ws_id)));
+            Ok(())
+          },
+        );
+
+        None
+      }
+    };
 
     let _ = with_env_state_mut(env_id, |state| {
       if let Some(ws) = state.sockets.get_mut(&ws_id) {
-        ws.thread = Some(handle);
+        ws.thread = handle;
       }
       Ok(())
     });
@@ -2207,7 +2259,40 @@ fn ensure_ipc_event_thread_started<Host: WindowRealmHost + 'static>(
     return Ok(());
   };
 
-  let handle = std::thread::spawn(move || websocket_ipc_event_thread_main::<Host>(env_id, rx, task_queue, stop));
+  // `std::thread::spawn` will panic if the OS refuses to create a thread (e.g. RLIMIT_NPROC or
+  // memory pressure). Treat that as a normal VM error instead so untrusted JS cannot crash the
+  // renderer.
+  //
+  // We also avoid moving the IPC receiver into the spawn closure directly so we can restore it to
+  // the env state if thread creation fails.
+  let (ready_tx, ready_rx) = mpsc::channel::<mpsc::Receiver<WebSocketIpcEvent>>();
+  let thread_env_id = env_id;
+  let handle = match std::thread::Builder::new()
+    .name(format!("ws-ipc-events-{env_id}"))
+    .spawn(move || {
+      let Ok(rx) = ready_rx.recv() else {
+        return;
+      };
+      websocket_ipc_event_thread_main::<Host>(thread_env_id, rx, task_queue, stop)
+    }) {
+    Ok(handle) => {
+      // Hand off the actual IPC receiver to the spawned thread.
+      let _ = ready_tx.send(rx);
+      handle
+    }
+    Err(_err) => {
+      // Restore the receiver so a later attempt can retry starting the thread.
+      let _ = with_env_state_mut(env_id, |state| {
+        if let Some(ipc) = state.ipc.as_mut() {
+          if ipc.event_rx.is_none() {
+            ipc.event_rx = Some(rx);
+          }
+        }
+        Ok(())
+      });
+      return Err(VmError::TypeError("failed to start WebSocket IPC event thread"));
+    }
+  };
   let _ = with_env_state_mut(env_id, |state| {
     if let Some(ipc) = state.ipc.as_mut() {
       ipc.thread = Some(handle);
