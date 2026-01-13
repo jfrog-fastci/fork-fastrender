@@ -4340,17 +4340,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         &global_bookmarks,
       );
 
-      if let Some(tx) = profile_autosave_tx.as_ref() {
-        let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
-          global_bookmarks.clone(),
-        ));
-        if flush {
-          let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-          let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
-          let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
-        }
-      }
-
       for (id, win) in windows.iter_mut() {
         if *id == source_window_id && !force_full_sync {
           win.app.window.request_redraw();
@@ -4365,6 +4354,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         win.app.window.request_redraw();
+      }
+
+      if let Some(tx) = profile_autosave_tx.as_ref() {
+        if force_full_sync {
+          // If we fell back to a full-store sync (multiple writers or delta application failure),
+          // persist the canonical store snapshot to keep on-disk state consistent.
+          let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateBookmarks(
+            global_bookmarks.clone(),
+          ));
+        } else {
+          // Normal case: forward deltas to the autosave worker to avoid cloning the entire store
+          // on every bookmark mutation batch.
+          let _ = tx.send(fastrender::ui::AutosaveMsg::ApplyBookmarkDeltas(deltas));
+        }
+
+        if flush {
+          let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+          let _ = tx.send(fastrender::ui::AutosaveMsg::Flush(done_tx));
+          let _ = done_rx.recv_timeout(std::time::Duration::from_millis(200));
+        }
       }
     }
 

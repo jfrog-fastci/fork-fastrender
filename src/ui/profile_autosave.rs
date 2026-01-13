@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use super::bookmarks::BookmarkStore;
+use super::bookmarks::{BookmarkDelta, BookmarkStore};
 use super::global_history::GlobalHistoryStore;
 #[cfg(test)]
 use super::global_history::GlobalHistoryEntry;
@@ -13,6 +13,7 @@ const DEFAULT_HISTORY_DEBOUNCE: Duration = Duration::from_secs(8);
 #[derive(Debug)]
 pub enum AutosaveMsg {
   UpdateBookmarks(BookmarkStore),
+  ApplyBookmarkDeltas(Vec<BookmarkDelta>),
   UpdateHistory(GlobalHistoryStore),
   /// Test hook: force an immediate write of the latest pending snapshots.
   Flush(mpsc::Sender<()>),
@@ -116,7 +117,20 @@ fn autosave_worker_main(
   bookmarks_debounce: Duration,
   history_debounce: Duration,
 ) {
-  let mut pending_bookmarks: Option<BookmarkStore> = None;
+  // Keep an in-memory snapshot of bookmarks so we can apply incremental deltas without cloning the
+  // entire store for each update.
+  let mut bookmarks_state: BookmarkStore =
+    match crate::ui::profile_persistence::load_bookmarks(&bookmarks_path) {
+      Ok(outcome) => outcome.value,
+      Err(err) => {
+        eprintln!(
+          "failed to load bookmarks from {} for autosave baseline: {err}",
+          bookmarks_path.display()
+        );
+        BookmarkStore::default()
+      }
+    };
+  let mut bookmarks_dirty = false;
   let mut pending_history: Option<GlobalHistoryStore> = None;
   let mut next_bookmarks_write: Option<Instant> = None;
   let mut next_history_write: Option<Instant> = None;
@@ -137,8 +151,19 @@ fn autosave_worker_main(
 
     match msg {
       Ok(AutosaveMsg::UpdateBookmarks(bookmarks)) => {
-        pending_bookmarks = Some(bookmarks);
+        bookmarks_state = bookmarks;
+        bookmarks_dirty = true;
         next_bookmarks_write = Some(Instant::now() + bookmarks_debounce);
+      }
+      Ok(AutosaveMsg::ApplyBookmarkDeltas(deltas)) => {
+        if !deltas.is_empty() {
+          if let Err(err) = bookmarks_state.apply_deltas(&deltas) {
+            eprintln!("failed to apply bookmark deltas in autosave worker: {err:?}");
+          } else {
+            bookmarks_dirty = true;
+            next_bookmarks_write = Some(Instant::now() + bookmarks_debounce);
+          }
+        }
       }
       Ok(AutosaveMsg::UpdateHistory(history)) => {
         pending_history = Some(history);
@@ -148,7 +173,8 @@ fn autosave_worker_main(
         flush_pending(
           &bookmarks_path,
           &history_path,
-          &mut pending_bookmarks,
+          &bookmarks_state,
+          &mut bookmarks_dirty,
           &mut pending_history,
         );
         next_bookmarks_write = None;
@@ -159,22 +185,22 @@ fn autosave_worker_main(
         flush_pending(
           &bookmarks_path,
           &history_path,
-          &mut pending_bookmarks,
+          &bookmarks_state,
+          &mut bookmarks_dirty,
           &mut pending_history,
         );
         break;
       }
       Err(mpsc::RecvTimeoutError::Timeout) => {
         let now = Instant::now();
-        if next_bookmarks_write.is_some_and(|t| now >= t) {
-          if let Some(bookmarks) = pending_bookmarks.take() {
-            if let Err(err) = save_bookmarks_atomic(&bookmarks_path, &bookmarks) {
-              eprintln!(
-                "failed to autosave bookmarks to {}: {err}",
-                bookmarks_path.display()
-              );
-            }
+        if next_bookmarks_write.is_some_and(|t| now >= t) && bookmarks_dirty {
+          if let Err(err) = save_bookmarks_atomic(&bookmarks_path, &bookmarks_state) {
+            eprintln!(
+              "failed to autosave bookmarks to {}: {err}",
+              bookmarks_path.display()
+            );
           }
+          bookmarks_dirty = false;
           next_bookmarks_write = None;
         }
 
@@ -195,16 +221,18 @@ fn autosave_worker_main(
 fn flush_pending(
   bookmarks_path: &Path,
   history_path: &Path,
-  pending_bookmarks: &mut Option<BookmarkStore>,
+  bookmarks_state: &BookmarkStore,
+  bookmarks_dirty: &mut bool,
   pending_history: &mut Option<GlobalHistoryStore>,
 ) {
-  if let Some(bookmarks) = pending_bookmarks.take() {
-    if let Err(err) = save_bookmarks_atomic(bookmarks_path, &bookmarks) {
+  if *bookmarks_dirty {
+    if let Err(err) = save_bookmarks_atomic(bookmarks_path, bookmarks_state) {
       eprintln!(
         "failed to autosave bookmarks to {}: {err}",
         bookmarks_path.display()
       );
     }
+    *bookmarks_dirty = false;
   }
 
   if let Some(history) = pending_history.take() {
@@ -316,6 +344,44 @@ mod tests {
 
     // History file should not exist (no history updates were sent).
     assert!(!history_path.exists());
+  }
+
+  #[test]
+  fn apply_bookmark_deltas_writes_updated_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let bookmarks_path = dir.path().join("bookmarks.json");
+    let history_path = dir.path().join("history.json");
+
+    let autosave = ProfileAutosaveHandle::spawn_with_debounce(
+      bookmarks_path.clone(),
+      history_path,
+      Duration::from_secs(3600),
+      Duration::from_secs(3600),
+    )
+    .unwrap();
+
+    let mut expected = BookmarkStore::default();
+    let mut deltas = Vec::new();
+    expected
+      .add_with_deltas(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        None,
+        &mut deltas,
+      )
+      .unwrap();
+
+    autosave
+      .send(AutosaveMsg::ApplyBookmarkDeltas(deltas))
+      .unwrap();
+
+    autosave.flush(Duration::from_millis(500)).unwrap();
+
+    let saved_bookmarks: BookmarkStore =
+      serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).unwrap()).unwrap();
+    assert_eq!(saved_bookmarks, expected);
+
+    autosave.shutdown_with_timeout(Duration::from_millis(500));
   }
 
   #[test]
