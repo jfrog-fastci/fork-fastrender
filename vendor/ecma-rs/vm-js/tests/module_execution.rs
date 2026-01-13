@@ -581,10 +581,10 @@ fn import_meta_is_scoped_to_defining_module_across_function_calls() -> Result<()
         export const metaA = import.meta;
         export const metaB_from_import = metaB;
         export const metaB_from_call = getMeta();
-        export const import_binding_distinct = metaA !== metaB;
-        export const call_distinct = metaA !== metaB_from_call;
-        export const import_equals_call = metaB === metaB_from_call;
-      "#,
+         export const import_binding_distinct = metaA !== metaB;
+         export const call_distinct = metaA !== metaB_from_call;
+         export const import_equals_call = metaB === metaB_from_call;
+       "#,
     )?,
   )?;
   graph.link_all_by_specifier();
