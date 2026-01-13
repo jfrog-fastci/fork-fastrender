@@ -319,7 +319,8 @@ pub use crate::chrome_frame::{
 pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]
 pub use session::{
-  BrowserSession, BrowserSessionTab, BrowserSessionTabGroup, BrowserSessionWindow, BrowserWindowState,
+  BrowserSession, BrowserSessionClosedTab, BrowserSessionTab, BrowserSessionTabGroup,
+  BrowserSessionWindow, BrowserWindowState,
 };
 #[cfg(feature = "browser_ui")]
 pub use session_autosave::SessionAutosave;

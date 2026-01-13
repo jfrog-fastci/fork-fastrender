@@ -84,6 +84,10 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
       "tab_groups": [
         {"title": "My Group", "color": "purple", "collapsed": true}
       ],
+      "closed_tabs": [
+        {"url": "about:blank", "title": "Closed (pinned)", "pinned": true},
+        {"url": "about:newtab"}
+      ],
       "active_tab_index": 1,
       "bookmarks_bar_visible": true,
       "show_menu_bar": false,
@@ -179,6 +183,33 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_eq!(
     groups[0].get("collapsed").and_then(|v| v.as_bool()),
     Some(true)
+  );
+
+  let closed_tabs = win0
+    .get("closed_tabs")
+    .and_then(|v| v.as_array())
+    .expect("expected closed_tabs array");
+  assert_eq!(closed_tabs.len(), 2);
+  assert_eq!(
+    closed_tabs[0].get("url").and_then(|v| v.as_str()),
+    Some("about:blank")
+  );
+  assert_eq!(
+    closed_tabs[0].get("pinned").and_then(|v| v.as_bool()),
+    Some(true)
+  );
+  assert_eq!(
+    closed_tabs[0].get("title").and_then(|v| v.as_str()),
+    Some("Closed (pinned)")
+  );
+  // `pinned=false` and `title=null` should be omitted for cleanliness/backwards compatibility.
+  assert!(
+    closed_tabs[1].get("pinned").is_none(),
+    "expected pinned=false to be omitted for second closed tab, got: {closed_tabs:?}"
+  );
+  assert!(
+    closed_tabs[1].get("title").is_none(),
+    "expected missing title for second closed tab, got: {closed_tabs:?}"
   );
   let appearance_value = persisted_value
     .get("appearance")

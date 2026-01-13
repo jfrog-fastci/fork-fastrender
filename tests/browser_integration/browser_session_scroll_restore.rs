@@ -116,6 +116,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
         group: None,
       }],
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
       bookmarks_bar_visible: false,
       show_menu_bar: !cfg!(target_os = "macos"),

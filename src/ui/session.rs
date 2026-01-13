@@ -5,8 +5,12 @@
 use crate::ui::about_pages;
 use crate::ui::appearance;
 use crate::ui::appearance::AppearanceSettings;
-use crate::ui::browser_app::{BrowserAppState, DownloadStatus, TabGroupColor, TabGroupId};
+use crate::ui::browser_app::{
+  BrowserAppState, DownloadStatus, TabGroupColor, TabGroupId, CLOSED_TAB_STACK_CAPACITY,
+};
 use crate::ui::protocol_limits;
+use crate::ui::protocol_limits::MAX_TITLE_BYTES;
+use crate::ui::untrusted::clamp_untrusted_utf8;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
@@ -127,6 +131,16 @@ pub struct BrowserSessionTab {
   /// Optional tab group membership, represented as an index into [`BrowserSessionWindow::tab_groups`].
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub group: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserSessionClosedTab {
+  pub url: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub title: Option<String>,
+  /// Whether this tab was pinned in the tab strip.
+  #[serde(default, skip_serializing_if = "is_false")]
+  pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -285,6 +299,11 @@ pub struct BrowserSessionWindow {
   pub downloads: Vec<BrowserSessionDownload>,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub tab_groups: Vec<BrowserSessionTabGroup>,
+  /// Stack of recently closed tabs for "Reopen closed tab" UX.
+  ///
+  /// Oldest entries first; newest/most-recent entry at the end (LIFO stack semantics).
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub closed_tabs: Vec<BrowserSessionClosedTab>,
   #[serde(default)]
   pub active_tab_index: usize,
   #[serde(default, skip_serializing_if = "is_false")]
@@ -370,11 +389,29 @@ impl BrowserSessionWindow {
       let overflow = downloads.len() - MAX_PERSISTED_DOWNLOADS;
       downloads.drain(0..overflow);
     }
+    let closed_tabs = if CLOSED_TAB_STACK_CAPACITY == 0 || app.closed_tabs.is_empty() {
+      Vec::new()
+    } else {
+      // Keep only the most recent entries, mirroring the in-memory stack behaviour.
+      let start = app
+        .closed_tabs
+        .len()
+        .saturating_sub(CLOSED_TAB_STACK_CAPACITY);
+      app.closed_tabs[start..]
+        .iter()
+        .map(|tab| BrowserSessionClosedTab {
+          url: tab.url.clone(),
+          title: tab.title.clone(),
+          pinned: tab.pinned,
+        })
+        .collect()
+    };
 
     Self {
       tabs,
       downloads,
       tab_groups,
+      closed_tabs,
       active_tab_index,
       bookmarks_bar_visible: app.chrome.bookmarks_bar_visible,
       show_menu_bar: app.chrome.show_menu_bar,
@@ -478,6 +515,37 @@ impl BrowserSessionWindow {
       }
     }
 
+    // Sanitize recently closed tabs (reopen-closed-tab stack).
+    if CLOSED_TAB_STACK_CAPACITY == 0 {
+      self.closed_tabs.clear();
+    } else if !self.closed_tabs.is_empty() {
+      // Preserve stack semantics by keeping the newest entries (end of the vec).
+      let raw = std::mem::take(&mut self.closed_tabs);
+      let mut keep_rev: Vec<BrowserSessionClosedTab> =
+        Vec::with_capacity(raw.len().min(CLOSED_TAB_STACK_CAPACITY));
+      for mut tab in raw.into_iter().rev() {
+        if keep_rev.len() >= CLOSED_TAB_STACK_CAPACITY {
+          break;
+        }
+        let trimmed = tab.url.trim();
+        if trimmed.is_empty() {
+          continue;
+        }
+        tab.url = trimmed.to_string();
+        if validate_user_navigation_url_scheme(&tab.url).is_err() {
+          continue;
+        }
+        if let Some(title) = tab.title.as_mut() {
+          if title.len() > MAX_TITLE_BYTES {
+            *title = clamp_untrusted_utf8(title, MAX_TITLE_BYTES);
+          }
+        }
+        keep_rev.push(tab);
+      }
+      keep_rev.reverse();
+      self.closed_tabs = keep_rev;
+    }
+
     self.window_state = self
       .window_state
       .take()
@@ -542,6 +610,7 @@ impl BrowserSession {
         }],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -612,6 +681,7 @@ impl BrowserSession {
         }],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -785,6 +855,7 @@ mod tests {
         ],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -923,6 +994,7 @@ mod tests {
         ],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -1000,6 +1072,7 @@ mod tests {
           collapsed: false,
         },
       ],
+      closed_tabs: Vec::new(),
       active_tab_index: 0,
       bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
@@ -1044,6 +1117,7 @@ mod tests {
         color: TabGroupColor::Blue,
         collapsed: true,
       }],
+      closed_tabs: Vec::new(),
       active_tab_index: 1,
       bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),
@@ -1192,6 +1266,7 @@ mod tests {
             collapsed: false,
           },
         ],
+        closed_tabs: Vec::new(),
         active_tab_index: 2,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -1429,6 +1504,7 @@ mod tests {
           tabs: vec![],
           downloads: Vec::new(),
           tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
           active_tab_index: 123,
           bookmarks_bar_visible: false,
           show_menu_bar: default_show_menu_bar(),
@@ -1444,6 +1520,7 @@ mod tests {
           }],
           downloads: Vec::new(),
           tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
           active_tab_index: 999,
           bookmarks_bar_visible: false,
           show_menu_bar: default_show_menu_bar(),
@@ -1691,6 +1768,7 @@ mod tests {
         }],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -1821,6 +1899,7 @@ mod tests {
         }],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -1854,6 +1933,7 @@ mod tests {
         }],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -1887,6 +1967,7 @@ mod tests {
         }],
         downloads: Vec::new(),
         tab_groups: Vec::new(),
+        closed_tabs: Vec::new(),
         active_tab_index: 0,
         bookmarks_bar_visible: false,
         show_menu_bar: default_show_menu_bar(),
@@ -2210,6 +2291,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
       tabs: v1.tabs,
       downloads: Vec::new(),
       tab_groups: Vec::new(),
+      closed_tabs: Vec::new(),
       active_tab_index: v1.active_tab_index,
       bookmarks_bar_visible: false,
       show_menu_bar: default_show_menu_bar(),

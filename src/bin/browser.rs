@@ -7838,6 +7838,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }],
           downloads: Vec::new(),
           tab_groups: Vec::new(),
+          closed_tabs: Vec::new(),
           active_tab_index: 0,
           bookmarks_bar_visible: inherit_bookmarks_bar_visible.unwrap_or(false),
           show_menu_bar: inherit_show_menu_bar.unwrap_or(!cfg!(target_os = "macos")),
@@ -12956,6 +12957,7 @@ impl App {
       tabs,
       downloads,
       tab_groups,
+      closed_tabs,
       active_tab_index,
       bookmarks_bar_visible,
       show_menu_bar,
@@ -12977,6 +12979,15 @@ impl App {
     self.browser_state.chrome.show_menu_bar = show_menu_bar;
 
     self.browser_state.chrome.bookmarks_bar_visible = bookmarks_bar_visible;
+
+    self.browser_state.closed_tabs = closed_tabs
+      .into_iter()
+      .map(|tab| fastrender::ui::ClosedTabState {
+        url: tab.url,
+        title: tab.title,
+        pinned: tab.pinned,
+      })
+      .collect();
 
     // Recreate runtime tab group ids (session indices are stable; runtime ids are process-unique).
     let mut runtime_groups: Vec<fastrender::ui::TabGroupId> = Vec::with_capacity(tab_groups.len());
@@ -23376,6 +23387,7 @@ impl App {
             }],
             downloads: Vec::new(),
             tab_groups,
+            closed_tabs: Vec::new(),
             active_tab_index: 0,
             bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,
             show_menu_bar: self.browser_state.chrome.show_menu_bar,

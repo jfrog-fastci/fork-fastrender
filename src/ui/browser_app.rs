@@ -37,7 +37,11 @@ use std::time::{Duration, SystemTime};
 use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = protocol_limits::MAX_DEBUG_LOG_LINES;
-const CLOSED_TAB_STACK_CAPACITY: usize = 20;
+/// Maximum number of recently closed tabs retained per window.
+///
+/// This bounds memory usage and is also persisted in the session schema
+/// (`BrowserSessionWindow::closed_tabs`) so "Reopen closed tab" works after relaunch.
+pub(crate) const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 /// Maximum number of download entries stored in the browser UI state.
 ///
 /// This bounds memory growth and keeps the downloads panel responsive in long sessions. In a
