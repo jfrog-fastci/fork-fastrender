@@ -6982,9 +6982,21 @@ impl FormattingContext for TableFormattingContext {
       let used_border_box_height = constraints
         .used_border_box_height
         .filter(|h| h.is_finite() && *h >= 0.0);
-      let table_height = used_border_box_height
+      let target_table_height = used_border_box_height
         .or(specified_height)
         .map(|h| clamp_to_min_max(h, min_height, max_height));
+      // Row percentage heights only resolve when the table establishes a definite percentage base.
+      //
+      // `LayoutConstraints::with_used_border_box_size_for_layout_only` can force a used height
+      // without establishing such a base (e.g. grid stretch in content-sized tracks), in which
+      // case row `height: <percent>` must behave as `auto`.
+      let percent_height_base_border_box = if used_border_box_height.is_some()
+        && !constraints.used_border_box_size_forces_block_percentage_base
+      {
+        None
+      } else {
+        target_table_height
+      };
 
       // Helper to position out-of-flow children against containing blocks.
       let place_out_of_flow = |fragment: &mut FragmentNode,
@@ -7534,7 +7546,7 @@ impl FormattingContext for TableFormattingContext {
 
       if (structure.column_count == 0 || structure.row_count == 0) && captions.is_empty() {
         let width = specified_width.or(containing_width).unwrap_or(0.0);
-        let height = table_height.unwrap_or(0.0);
+        let height = target_table_height.unwrap_or(0.0);
         let mut fragment = FragmentNode::new_with_style(
           Rect::from_xywh(0.0, 0.0, width, height),
           FragmentContent::Block {
@@ -7918,7 +7930,7 @@ impl FormattingContext for TableFormattingContext {
         } else {
           content_width + padding_h
         };
-        let padding_height = table_height
+        let padding_height = target_table_height
           .map(|h| (h - border_top - border_bottom).max(0.0))
           .unwrap_or(padding_v.max(0.0));
         let block_base = if table_root_style.height.is_some() {
@@ -8145,7 +8157,8 @@ impl FormattingContext for TableFormattingContext {
         content_base
       };
 
-      let percent_height_base = table_height.map(|base| compute_percent_height_base(base));
+      let percent_height_base =
+        percent_height_base_border_box.map(|base| compute_percent_height_base(base));
 
       let row_floor = |idx: usize, current: f32| -> f32 {
         let row = structure.rows.get(idx);
@@ -8202,7 +8215,8 @@ impl FormattingContext for TableFormattingContext {
       // Preserve the content-driven minimums so later distribution never shrinks below cell content.
       let content_min_heights = row_heights.clone();
 
-      let percent_height_base = table_height.map(|base| compute_percent_height_base(base));
+      let percent_height_base =
+        percent_height_base_border_box.map(|base| compute_percent_height_base(base));
 
       // Enforce row-specified minimums (length or percentage of table height) and percent targets.
       for (idx, row) in structure.rows.iter().enumerate() {
@@ -8385,7 +8399,7 @@ impl FormattingContext for TableFormattingContext {
       }
 
       // If the table has a definite (or minimum) height and rows don't fill it, distribute the extra.
-      if let Some(target_height) = table_height {
+      if let Some(target_height) = target_table_height {
         let rows_space: f32 = row_metrics.iter().map(|r| r.height).sum();
         let target_rows =
           percent_height_base.unwrap_or_else(|| compute_percent_height_base(target_height));
@@ -8396,7 +8410,8 @@ impl FormattingContext for TableFormattingContext {
             .iter()
             .enumerate()
             .filter_map(|(idx, row)| match row.specified_height {
-              Some(SpecifiedHeight::Fixed(_)) | Some(SpecifiedHeight::Percent(_)) => None,
+              Some(SpecifiedHeight::Fixed(_)) => None,
+              Some(SpecifiedHeight::Percent(_)) if percent_height_base.is_some() => None,
               _ => {
                 if rows_collapse_due_to_empty_cells
                   .get(idx)
@@ -9253,7 +9268,7 @@ impl FormattingContext for TableFormattingContext {
         content_width + padding_h + border_h
       };
       total_width = clamp_to_min_max(total_width, min_width, max_width);
-      let mut total_height = if let Some(specified) = table_height {
+      let mut total_height = if let Some(specified) = target_table_height {
         specified
       } else {
         let mut h = content_height
@@ -15566,6 +15581,84 @@ mod tests {
     assert_eq!(tops.len(), 2);
     assert!((tops[1] - tops[0]) < 10.0);
     assert!(fragment.bounds.height() >= 100.0);
+  }
+
+  #[test]
+  fn percent_rows_treated_as_auto_when_used_height_is_layout_only() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row1_style = ComputedStyle::default();
+    row1_style.display = Display::TableRow;
+    row1_style.height = Some(Length::percent(100.0));
+    row1_style.height_keyword = None;
+
+    let mut row2_style = ComputedStyle::default();
+    row2_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+
+    let row1_cell = BoxNode::new_block(
+      Arc::new(cell_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    let row1 = BoxNode::new_block(
+      Arc::new(row1_style),
+      FormattingContextType::Block,
+      vec![row1_cell],
+    );
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.height = Some(Length::px(10.0));
+    inner_style.height_keyword = None;
+    let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+    let row2_cell = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![inner],
+    );
+    let row2 = BoxNode::new_block(
+      Arc::new(row2_style),
+      FormattingContextType::Block,
+      vec![row2_cell],
+    );
+
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row1, row2],
+    );
+
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(200.0),
+      AvailableSpace::Indefinite,
+    )
+    .with_used_border_box_size_for_layout_only(None, Some(200.0));
+
+    let tfc = TableFormattingContext::new();
+    let fragment = tfc.layout(&table, &constraints).expect("table layout");
+
+    assert!((fragment.bounds.height() - 200.0).abs() < 0.1);
+
+    let mut cells = Vec::new();
+    collect_table_cell_fragments(&fragment, &mut cells);
+    cells.sort_by(|a, b| a.bounds.y().partial_cmp(&b.bounds.y()).unwrap());
+    assert_eq!(cells.len(), 2);
+
+    let row1_height = cells[0].bounds.height();
+    let row2_height = cells[1].bounds.height();
+
+    assert!(row1_height > 10.0, "row1 height should receive extra space");
+    assert!(
+      row2_height < 190.0,
+      "row2 height should not swallow almost all extra space"
+    );
   }
 
   #[test]
