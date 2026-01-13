@@ -194,6 +194,13 @@ If the parent process is already running inside a Windows Job (common in CI/supe
 On Windows, a sandbox boundary can be defeated if the child inherits **powerful handles** from the
 broker (even if the child runs with a restricted token).
 
+Key idea: **handles are capabilities**.
+
+- AppContainer / restricted tokens mostly control what the process can do *when opening new
+  resources*.
+- If the broker hands the renderer an already-open handle (file, process, pipe, section), the
+  renderer can usually use it with whatever access rights the handle was created with.
+
 Examples of dangerous inherited handles:
 
 - File handles (read/write access to arbitrary files the broker opened).
@@ -222,6 +229,10 @@ This is an *explicit allowlist* of inheritable handles:
 Note: handles still need to be created/marked inheritable (e.g. `bInheritHandle=TRUE` at creation,
 or `SetHandleInformation(HANDLE_FLAG_INHERIT, ...)`). The allowlist prevents *extra* inheritable
 handles from leaking into the sandboxed child.
+
+Practical example: if the broker opens a sensitive file (cookies DB, bookmarks, arbitrary user
+documents) and accidentally leaves the handle inheritable, then without a handle allowlist the
+renderer may inherit it and read/write it **despite** being in an AppContainer.
 
 Why this matters:
 
@@ -298,7 +309,8 @@ The builder adds only flags supported by the current OS (best-effort compatibili
 
 If AppContainer is unavailable or fails to initialize, we fall back to a “best-effort” sandbox:
 
-- Create a **restricted token** via `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, ...)`.
+- Create a **restricted token** via
+  `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, /* no SID restrictions */ ...)`.
 - Set the token’s **Integrity Level (IL)** to **Low** (`S-1-16-4096`).
 
 Then we spawn the child using `CreateProcessAsUserW` with the restricted primary token (see
@@ -309,6 +321,9 @@ This is meaningfully weaker than AppContainer:
 - **Network is not reliably blocked.** A restricted/low-IL process can usually still open outbound
   sockets unless additional OS policy/firewall rules exist. Do *not* assume “no network” in this
   mode.
+- The current restricted-token configuration primarily disables privileges; it does not attempt to
+  comprehensively remove group SIDs or implement a hardened “deny-only” token. Treat it as a
+  compatibility fallback.
 - Filesystem access is reduced, but not eliminated: ACLs that allow read access to low-IL or “Everyone”
   may still be readable.
 - Many Windows resources are not designed around Low IL as a strict sandbox boundary.
