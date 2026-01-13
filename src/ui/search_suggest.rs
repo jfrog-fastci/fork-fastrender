@@ -100,7 +100,14 @@ struct SearchSuggestRequest {
 }
 
 impl SearchSuggestService {
-  pub fn new(mut config: SearchSuggestConfig) -> Self {
+  pub fn new(config: SearchSuggestConfig) -> Self {
+    Self::new_with_wake(config, None)
+  }
+
+  pub fn new_with_wake(
+    mut config: SearchSuggestConfig,
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+  ) -> Self {
     if let Ok(raw) = std::env::var(ENV_ENDPOINT_BASE) {
       let trimmed = raw.trim();
       if !trimmed.is_empty() {
@@ -127,7 +134,7 @@ impl SearchSuggestService {
     let worker_latest_gen = Arc::clone(&latest_gen);
     let worker_join = std::thread::Builder::new()
       .name("search_suggest_worker".to_string())
-      .spawn(move || worker_loop(config, worker_latest_gen, request_rx, update_tx))
+      .spawn(move || worker_loop(config, worker_latest_gen, request_rx, update_tx, wake))
       .ok();
 
     Self {
@@ -212,6 +219,7 @@ fn worker_loop(
   latest_gen: Arc<AtomicU64>,
   request_rx: mpsc::Receiver<SearchSuggestRequest>,
   update_tx: mpsc::Sender<SearchSuggestUpdate>,
+  wake: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
   while let Ok(mut req) = request_rx.recv() {
     // Debounce: collapse rapid keystrokes into a single network request.
@@ -244,11 +252,20 @@ fn worker_loop(
       continue;
     }
 
-    let _ = update_tx.send(SearchSuggestUpdate {
-      query: query_trimmed.to_string(),
-      suggestions,
-      fetched_at: SystemTime::now(),
-    });
+    if update_tx
+      .send(SearchSuggestUpdate {
+        query: query_trimmed.to_string(),
+        suggestions,
+        fetched_at: SystemTime::now(),
+      })
+      .is_err()
+    {
+      return;
+    }
+
+    if let Some(wake) = wake.as_ref() {
+      wake();
+    }
   }
 }
 

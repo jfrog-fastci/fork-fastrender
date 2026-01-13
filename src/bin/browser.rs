@@ -1365,6 +1365,7 @@ use fastrender::ui::os_clipboard;
 #[derive(Debug, Clone)]
 enum UserEvent {
   WorkerWake(winit::window::WindowId),
+  SearchSuggestWake(winit::window::WindowId),
   RequestNewWindow(winit::window::WindowId),
   RequestNewWindowWithSession {
     from_id: winit::window::WindowId,
@@ -3118,6 +3119,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if session_dirty {
           request_autosave(&windows, &window_order, active_window_id);
+        }
+      }
+      Event::UserEvent(UserEvent::SearchSuggestWake(window_id)) => {
+        let mut request_redraw = false;
+        if let Some(win) = windows.get_mut(&window_id) {
+          while let Some(update) = win.app.search_suggest.try_recv() {
+            win.app.browser_state.chrome.remote_search_cache.query = update.query;
+            win.app.browser_state.chrome.remote_search_cache.suggestions = update.suggestions;
+            win.app.browser_state.chrome.remote_search_cache.fetched_at = update.fetched_at;
+            request_redraw = true;
+          }
+
+          if request_redraw {
+            win.app.window.request_redraw();
+          }
         }
       }
       Event::UserEvent(UserEvent::AccessKitAction { window_id, request }) => {
@@ -5573,10 +5589,23 @@ impl App {
         surface_config.height
       );
     }
+    let window_id = window.id();
 
     let mut browser_state = fastrender::ui::BrowserAppState::new();
     browser_state.history = history;
     browser_state.seed_visited_from_history();
+
+    let search_suggest_wake: std::sync::Arc<dyn Fn() + Send + Sync> = {
+      // `SearchSuggestService` is winit-agnostic, so bridge back into the event loop via a callback.
+      // Use a `Mutex` so the callback is `Sync` even if `EventLoopProxy` is `Send`-only.
+      let proxy = std::sync::Mutex::new(event_loop_proxy.clone());
+      std::sync::Arc::new(move || {
+        if let Ok(proxy) = proxy.lock() {
+          // Ignore failures during shutdown (event loop already dropped).
+          let _ = proxy.send_event(UserEvent::SearchSuggestWake(window_id));
+        }
+      })
+    };
 
     Ok(Self {
       window,
@@ -5609,8 +5638,9 @@ impl App {
       worker_join: Some(worker_join),
       browser_state,
       home_url: fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
-      search_suggest: fastrender::ui::SearchSuggestService::new(
+      search_suggest: fastrender::ui::SearchSuggestService::new_with_wake(
         fastrender::ui::SearchSuggestConfig::default(),
+        Some(search_suggest_wake),
       ),
       bookmarks_path,
       history_path,
@@ -13019,11 +13049,6 @@ impl App {
     // platform window controls).
     self.window_fullscreen = self.window.fullscreen().is_some();
     let mut session_dirty = false;
-    while let Some(update) = self.search_suggest.try_recv() {
-      self.browser_state.chrome.remote_search_cache.query = update.query;
-      self.browser_state.chrome.remote_search_cache.suggestions = update.suggestions;
-      self.browser_state.chrome.remote_search_cache.fetched_at = update.fetched_at;
-    }
 
     let (wheel_events, paste_events) = {
       let _span = self.trace.span("egui.begin_frame", "ui.frame");
@@ -13304,14 +13329,7 @@ impl App {
       if let Some(query) =
         fastrender::ui::resolve_omnibox_search_query(&self.browser_state.chrome.address_bar_text)
       {
-        let needs_remote_suggest_poll = self.browser_state.chrome.remote_search_cache.query != query;
         self.search_suggest.request(query);
-
-        // Ensure we poll for remote suggestions even when the user pauses typing (the suggest
-        // service runs on a background thread).
-        if needs_remote_suggest_poll {
-          ctx.request_repaint_after(std::time::Duration::from_millis(50));
-        }
       }
     }
     session_dirty |= zoom_before != zoom_after;
