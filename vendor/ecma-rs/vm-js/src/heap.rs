@@ -16,6 +16,7 @@ use crate::{
   EnvRootId, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, HeapId, Job, JobKind, RealmId, RootId,
   Value, Vm, WellKnownSymbols,
   VmError, VmHost, VmHostHooks, WeakGcObject,
+  WeakGcSymbol,
 };
 use std::cell::Cell;
 use core::mem;
@@ -820,11 +821,12 @@ impl Heap {
 
           for entry in wm.entries.iter() {
             // Ignore stale/out-of-bounds keys and treat unmarked keys as absent.
-            let key_idx = entry.key.index() as usize;
+            let key_id = entry.key.id();
+            let key_idx = key_id.index() as usize;
             let Some(key_slot) = slots.get(key_idx) else {
               continue;
             };
-            if key_slot.generation != entry.key.generation() {
+            if key_slot.generation != key_id.generation() {
               continue;
             }
             if key_slot.value.is_none() {
@@ -905,7 +907,7 @@ impl Heap {
         };
         mem::take(&mut ws.entries)
       };
-      entries.retain(|entry| entry.upgrade(&*self).is_some());
+      entries.retain(|entry| entry.upgrade_value(&*self).is_some());
       let Some(HeapObject::WeakSet(ws)) = self.slots[idx].value.as_mut() else {
         continue;
       };
@@ -925,7 +927,7 @@ impl Heap {
         };
         mem::take(&mut wm.entries)
       };
-      entries.retain(|entry| entry.key.upgrade(&*self).is_some());
+      entries.retain(|entry| entry.key.upgrade_value(&*self).is_some());
       let Some(HeapObject::WeakMap(wm)) = self.slots[idx].value.as_mut() else {
         continue;
       };
@@ -2778,28 +2780,40 @@ impl Heap {
     Ok(())
   }
 
+  /// Implements the `CanBeHeldWeakly` abstract operation.
+  ///
+  /// This is used by WeakMap/WeakSet to accept Symbols as weak keys/values while rejecting
+  /// registered (global) symbols (see the `symbols-as-weakmap-keys` proposal).
+  pub(crate) fn can_be_held_weakly(&self, value: Value) -> Result<bool, VmError> {
+    match value {
+      Value::Object(_) => Ok(true),
+      Value::Symbol(sym) => Ok(self.symbol_key_for(sym)?.is_none()),
+      _ => Ok(false),
+    }
+  }
+
   /// Returns the value associated with `key` in `map`, if present.
   ///
   /// Dead/stale keys are treated as absent.
-  pub fn weak_map_get(&self, map: GcObject, key: GcObject) -> Result<Option<Value>, VmError> {
+  pub fn weak_map_get(&self, map: GcObject, key: Value) -> Result<Option<Value>, VmError> {
     self.weak_map_get_with_tick(map, key, || Ok(()))
   }
 
   pub fn weak_map_get_with_tick(
     &self,
     map: GcObject,
-    key: GcObject,
+    key: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Option<Value>, VmError> {
-    if !self.is_valid_object(key) {
-      return Ok(None);
-    }
+    let key_weak = match WeakGcKey::from_value(key, self)? {
+      Some(k) => k,
+      None => return Ok(None),
+    };
 
     let HeapObject::WeakMap(wm) = self.get_heap_object(map.0)? else {
       return Err(VmError::invalid_handle());
     };
 
-    let key_weak = WeakGcObject::from(key);
     const TICK_EVERY: usize = 1024;
     for (i, entry) in wm.entries.iter().enumerate() {
       if i != 0 && i % TICK_EVERY == 0 {
@@ -2810,7 +2824,7 @@ impl Heap {
       }
       // WeakMap operations must treat dead keys as absent. Entries are expected to be GC-pruned,
       // but this check prevents stale keys from being observed even if pruning falls behind.
-      if entry.key.upgrade(self).is_none() {
+      if entry.key.upgrade_value(self).is_none() {
         continue;
       }
       return Ok(Some(entry.value));
@@ -2821,14 +2835,14 @@ impl Heap {
   /// Returns whether `key` is present in `map`.
   ///
   /// Dead/stale keys are treated as absent.
-  pub fn weak_map_has(&self, map: GcObject, key: GcObject) -> Result<bool, VmError> {
+  pub fn weak_map_has(&self, map: GcObject, key: Value) -> Result<bool, VmError> {
     self.weak_map_has_with_tick(map, key, || Ok(()))
   }
 
   pub fn weak_map_has_with_tick(
     &self,
     map: GcObject,
-    key: GcObject,
+    key: Value,
     tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
     Ok(self.weak_map_get_with_tick(map, key, tick)?.is_some())
@@ -2837,14 +2851,14 @@ impl Heap {
   /// Sets `map[key] = value`.
   ///
   /// Dead/stale keys are ignored.
-  pub fn weak_map_set(&mut self, map: GcObject, key: GcObject, value: Value) -> Result<(), VmError> {
+  pub fn weak_map_set(&mut self, map: GcObject, key: Value, value: Value) -> Result<(), VmError> {
     self.weak_map_set_with_tick(map, key, value, || Ok(()))
   }
 
   pub fn weak_map_set_with_tick(
     &mut self,
     map: GcObject,
-    key: GcObject,
+    key: Value,
     value: Value,
     tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<(), VmError> {
@@ -2853,22 +2867,20 @@ impl Heap {
     if !self.is_valid_object(map) {
       return Err(VmError::invalid_handle());
     }
-    if !self.is_valid_object(key) {
+    if WeakGcKey::from_value(key, self)?.is_none() {
       return Ok(());
     }
 
     // Root inputs across any potential GC while growing the entry vector.
     let mut scope = self.scope();
-    scope.push_roots(&[Value::Object(map), Value::Object(key), value])?;
-    scope
-      .heap
-      .weak_map_set_rooted_with_tick(map, key, value, tick)
+    scope.push_roots(&[Value::Object(map), key, value])?;
+    scope.heap.weak_map_set_rooted_with_tick(map, key, value, tick)
   }
 
   fn weak_map_set_rooted_with_tick(
     &mut self,
     map: GcObject,
-    key: GcObject,
+    key: Value,
     value: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<(), VmError> {
@@ -2876,7 +2888,9 @@ impl Heap {
       .validate(map.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    let key_weak = WeakGcObject::from(key);
+    let Some(key_weak) = WeakGcKey::from_value(key, self)? else {
+      return Ok(());
+    };
 
     let (existing_idx, entry_len, entry_cap, property_count, old_bytes) = {
       let slot = &self.slots[slot_idx];
@@ -2890,7 +2904,7 @@ impl Heap {
         if i != 0 && i % TICK_EVERY == 0 {
           tick()?;
         }
-        if entry.key == key_weak && entry.key.upgrade(self).is_some() {
+        if entry.key == key_weak && entry.key.upgrade_value(self).is_some() {
           existing_idx = Some(i);
           break;
         }
@@ -2946,25 +2960,24 @@ impl Heap {
   /// Removes `key` from `map`, returning whether it was present.
   ///
   /// Dead/stale keys are treated as absent.
-  pub fn weak_map_delete(&mut self, map: GcObject, key: GcObject) -> Result<bool, VmError> {
+  pub fn weak_map_delete(&mut self, map: GcObject, key: Value) -> Result<bool, VmError> {
     self.weak_map_delete_with_tick(map, key, || Ok(()))
   }
 
   pub fn weak_map_delete_with_tick(
     &mut self,
     map: GcObject,
-    key: GcObject,
+    key: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
-    if !self.is_valid_object(key) {
+    let Some(key_weak) = WeakGcKey::from_value(key, self)? else {
       return Ok(false);
-    }
+    };
 
     let slot_idx = self
       .validate(map.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    let key_weak = WeakGcObject::from(key);
     let mut removed = false;
 
     // No allocation: compact the entry vector in-place.
@@ -2984,11 +2997,11 @@ impl Heap {
       }
       let entry = entries[i];
 
-      let Some(obj) = entry.key.upgrade(&*self) else {
+      let Some(live_key) = entry.key.upgrade_value(&*self) else {
         // Drop dead keys.
         continue;
       };
-      if entry.key == key_weak && obj == key {
+      if entry.key == key_weak && live_key == key {
         removed = true;
         continue;
       }
@@ -3019,19 +3032,19 @@ impl Heap {
   /// Returns `true` if `key` is present in `set`.
   ///
   /// Dead/stale keys are treated as absent.
-  pub fn weak_set_has(&self, set: GcObject, key: GcObject) -> Result<bool, VmError> {
+  pub fn weak_set_has(&self, set: GcObject, key: Value) -> Result<bool, VmError> {
     self.weak_set_has_with_tick(set, key, || Ok(()))
   }
 
   pub fn weak_set_has_with_tick(
     &self,
     set: GcObject,
-    key: GcObject,
+    key: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
-    if !self.is_valid_object(key) {
+    let Some(key_weak) = WeakGcKey::from_value(key, self)? else {
       return Ok(false);
-    }
+    };
 
     let HeapObject::WeakSet(ws) = self.get_heap_object(set.0)? else {
       return Err(VmError::invalid_handle());
@@ -3042,10 +3055,10 @@ impl Heap {
       if i != 0 && i % TICK_EVERY == 0 {
         tick()?;
       }
-      let Some(obj) = entry.upgrade(self) else {
+      let Some(live_key) = entry.upgrade_value(self) else {
         continue;
       };
-      if obj == key {
+      if live_key == key && *entry == key_weak {
         return Ok(true);
       }
     }
@@ -3055,40 +3068,42 @@ impl Heap {
   /// Inserts `key` into `set`.
   ///
   /// Dead/stale keys are ignored.
-  pub fn weak_set_add(&mut self, set: GcObject, key: GcObject) -> Result<(), VmError> {
+  pub fn weak_set_add(&mut self, set: GcObject, key: Value) -> Result<(), VmError> {
     self.weak_set_add_with_tick(set, key, || Ok(()))
   }
 
   pub fn weak_set_add_with_tick(
     &mut self,
     set: GcObject,
-    key: GcObject,
+    key: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<(), VmError> {
     if !self.is_valid_object(set) {
       return Err(VmError::invalid_handle());
     }
-    if !self.is_valid_object(key) {
+    if WeakGcKey::from_value(key, self)?.is_none() {
       return Ok(());
     }
 
     // Root inputs across any potential GC while growing the entry vector.
     let mut scope = self.scope();
-    scope.push_roots(&[Value::Object(set), Value::Object(key)])?;
+    scope.push_roots(&[Value::Object(set), key])?;
     scope.heap.weak_set_add_rooted_with_tick(set, key, &mut tick)
   }
 
   fn weak_set_add_rooted_with_tick(
     &mut self,
     set: GcObject,
-    key: GcObject,
+    key: Value,
     tick: &mut impl FnMut() -> Result<(), VmError>,
   ) -> Result<(), VmError> {
     let slot_idx = self
       .validate(set.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    let key_weak = WeakGcObject::from(key);
+    let Some(key_weak) = WeakGcKey::from_value(key, self)? else {
+      return Ok(());
+    };
 
     let (entry_len, entry_cap, property_count, old_bytes) = {
       let slot = &self.slots[slot_idx];
@@ -3103,7 +3118,7 @@ impl Heap {
         if i != 0 && i % TICK_EVERY == 0 {
           tick()?;
         }
-        if *entry == key_weak && entry.upgrade(self).is_some() {
+        if *entry == key_weak && entry.upgrade_value(self).is_some() {
           return Ok(());
         }
       }
@@ -3130,7 +3145,7 @@ impl Heap {
       let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
         return Err(VmError::invalid_handle());
       };
-      reserve_vec_to_len::<WeakGcObject>(&mut ws.entries, required_len)?;
+      reserve_vec_to_len::<WeakGcKey>(&mut ws.entries, required_len)?;
     }
 
     let Some(HeapObject::WeakSet(ws)) = self.slots[slot_idx].value.as_mut() else {
@@ -3148,25 +3163,24 @@ impl Heap {
   /// Removes `key` from `set`, returning whether it was present.
   ///
   /// Dead/stale keys are treated as absent.
-  pub fn weak_set_delete(&mut self, set: GcObject, key: GcObject) -> Result<bool, VmError> {
+  pub fn weak_set_delete(&mut self, set: GcObject, key: Value) -> Result<bool, VmError> {
     self.weak_set_delete_with_tick(set, key, || Ok(()))
   }
 
   pub fn weak_set_delete_with_tick(
     &mut self,
     set: GcObject,
-    key: GcObject,
+    key: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
-    if !self.is_valid_object(key) {
+    let Some(key_weak) = WeakGcKey::from_value(key, self)? else {
       return Ok(false);
-    }
+    };
 
     let slot_idx = self
       .validate(set.0)
       .ok_or_else(|| VmError::invalid_handle())?;
 
-    let key_weak = WeakGcObject::from(key);
     let mut removed = false;
 
     // No allocation: compact the entry vector in-place.
@@ -3186,11 +3200,11 @@ impl Heap {
       }
       let entry = entries[i];
 
-      let Some(obj) = entry.upgrade(&*self) else {
+      let Some(live_key) = entry.upgrade_value(&*self) else {
         // Drop dead keys.
         continue;
       };
-      if entry == key_weak && obj == key {
+      if entry == key_weak && live_key == key {
         removed = true;
         continue;
       }
@@ -9796,9 +9810,39 @@ impl Trace for JsSet {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum WeakGcKey {
+  Object(WeakGcObject),
+  Symbol(WeakGcSymbol),
+}
+
+impl WeakGcKey {
+  fn from_value(value: Value, heap: &Heap) -> Result<Option<Self>, VmError> {
+    Ok(match value {
+      Value::Object(obj) => heap.is_valid_object(obj).then_some(Self::Object(WeakGcObject::from(obj))),
+      Value::Symbol(sym) => heap.is_valid_symbol(sym).then_some(Self::Symbol(WeakGcSymbol::from(sym))),
+      _ => None,
+    })
+  }
+
+  fn id(self) -> HeapId {
+    match self {
+      Self::Object(obj) => obj.id(),
+      Self::Symbol(sym) => sym.id(),
+    }
+  }
+
+  fn upgrade_value(self, heap: &Heap) -> Option<Value> {
+    match self {
+      Self::Object(obj) => obj.upgrade(heap).map(Value::Object),
+      Self::Symbol(sym) => sym.upgrade(heap).map(Value::Symbol),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WeakMapEntry {
-  key: WeakGcObject,
+  key: WeakGcKey,
   value: Value,
 }
 
@@ -9840,7 +9884,7 @@ impl Trace for JsWeakMap {
 #[derive(Debug)]
 struct JsWeakSet {
   base: ObjectBase,
-  entries: Vec<WeakGcObject>,
+  entries: Vec<WeakGcKey>,
 }
 
 impl JsWeakSet {
@@ -9858,7 +9902,7 @@ impl JsWeakSet {
   fn heap_size_bytes_for_counts(property_count: usize, entry_capacity: usize) -> usize {
     let props_bytes = ObjectBase::properties_heap_size_bytes_for_count(property_count);
     let entries_bytes = entry_capacity
-      .checked_mul(mem::size_of::<WeakGcObject>())
+      .checked_mul(mem::size_of::<WeakGcKey>())
       .unwrap_or(usize::MAX);
     props_bytes.saturating_add(entries_bytes)
   }

@@ -171,6 +171,56 @@ impl GcSymbol {
   }
 }
 
+/// A weak, generation-checked handle to a GC-managed JavaScript symbol.
+///
+/// This is analogous to [`WeakGcObject`], but for `Symbol` allocations.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(transparent)]
+pub struct WeakGcSymbol(HeapId);
+
+impl WeakGcSymbol {
+  /// Creates a weak handle pointing at `sym`.
+  #[inline]
+  pub fn new(sym: GcSymbol) -> Self {
+    Self(sym.id())
+  }
+
+  /// Attempts to upgrade this weak handle to a strong [`GcSymbol`].
+  ///
+  /// Returns `Some(GcSymbol)` only if the handle still points to a currently-live symbol
+  /// allocation.
+  #[inline]
+  pub fn upgrade(self, heap: &Heap) -> Option<GcSymbol> {
+    let sym = GcSymbol(self.0);
+    heap.is_valid_symbol(sym).then_some(sym)
+  }
+
+  /// The underlying [`HeapId`].
+  #[inline]
+  pub fn id(self) -> HeapId {
+    self.0
+  }
+
+  /// The slot index within the heap.
+  #[inline]
+  pub fn index(self) -> u32 {
+    self.0.index()
+  }
+
+  /// The slot generation within the heap.
+  #[inline]
+  pub fn generation(self) -> u32 {
+    self.0.generation()
+  }
+}
+
+impl From<GcSymbol> for WeakGcSymbol {
+  #[inline]
+  fn from(sym: GcSymbol) -> Self {
+    Self::new(sym)
+  }
+}
+
 /// A GC-managed ECMAScript Environment Record.
 ///
 /// Environment Records are not JavaScript values (ECMA-262), so they use a dedicated handle type

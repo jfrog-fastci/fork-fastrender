@@ -87,6 +87,17 @@ include = [
   # Map / Set
   "built-ins/Map/**/*.js",
   "built-ins/Set/**/*.js",
+
+  # WeakMap / WeakSet (symbols-as-weakmap-keys)
+  "built-ins/WeakMap/prototype/set/**/*.js",
+  "built-ins/WeakMap/prototype/get/**/*.js",
+  "built-ins/WeakMap/prototype/has/**/*.js",
+  "built-ins/WeakMap/prototype/delete/**/*.js",
+  "built-ins/WeakMap/iterable-with-symbol-keys.js",
+  "built-ins/WeakSet/prototype/add/**/*.js",
+  "built-ins/WeakSet/prototype/has/**/*.js",
+  "built-ins/WeakSet/prototype/delete/**/*.js",
+  "built-ins/WeakSet/iterable-with-symbol-values.js",
 ]
 
 exclude = [

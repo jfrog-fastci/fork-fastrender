@@ -1967,6 +1967,53 @@ id = "built-ins/Set/valid-values.js"
 status = "xfail"
 reason = "vm-js: language operator support is incomplete (test uses an unimplemented binary operator)."
 
+# --- WeakMap / WeakSet (symbols-as-weakmap-keys) ---
+[[expectations]]
+glob = "built-ins/WeakMap/prototype/set/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakMap/prototype/get/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakMap/prototype/has/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakMap/prototype/delete/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakMap/iterable-with-symbol-keys.js"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakSet/prototype/add/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakSet/prototype/has/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakSet/prototype/delete/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakSet/iterable-with-symbol-values.js"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakMap/**"
+status = "xfail"
+reason = "vm-js: WeakMap conformance is still incomplete; incremental bring-up."
+
+[[expectations]]
+glob = "built-ins/WeakSet/**"
+status = "xfail"
+reason = "vm-js: WeakSet conformance is still incomplete; incremental bring-up."
+
 [[expectations]]
 glob = "built-ins/JSON/**"
 status = "xfail"

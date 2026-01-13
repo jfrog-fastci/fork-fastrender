@@ -30,10 +30,13 @@ fn weakmap_values_are_ephemeron_traced_during_gc() -> Result<(), VmError> {
     let value = scope.alloc_object()?;
     scope
       .heap_mut()
-      .weak_map_set(wm, key, Value::Object(value))?;
+      .weak_map_set(wm, Value::Object(key), Value::Object(value))?;
 
     assert_eq!(scope.heap().weak_map_entry_count(wm)?, 1);
-    assert_eq!(scope.heap().weak_map_get(wm, key)?, Some(Value::Object(value)));
+    assert_eq!(
+      scope.heap().weak_map_get(wm, Value::Object(key))?,
+      Some(Value::Object(value))
+    );
 
     (wm, wm_root, key, key_root, value)
   };
@@ -46,7 +49,10 @@ fn weakmap_values_are_ephemeron_traced_during_gc() -> Result<(), VmError> {
   assert!(heap.is_valid_object(value));
   assert!(WeakGcObject::from(value).upgrade(&heap).is_some());
   assert_eq!(heap.weak_map_entry_count(wm)?, 1);
-  assert_eq!(heap.weak_map_get(wm, key)?, Some(Value::Object(value)));
+  assert_eq!(
+    heap.weak_map_get(wm, Value::Object(key))?,
+    Some(Value::Object(value))
+  );
 
   // Once the key is unreachable, the value should no longer be kept alive via the WeakMap.
   heap.remove_root(key_root);
@@ -91,8 +97,12 @@ fn weakmap_ephemeron_marking_reaches_fixpoint() -> Result<(), VmError> {
 
     let v2 = scope.alloc_object()?;
 
-    scope.heap_mut().weak_map_set(wm, k1, Value::Object(v1))?;
-    scope.heap_mut().weak_map_set(wm, k2, Value::Object(v2))?;
+    scope
+      .heap_mut()
+      .weak_map_set(wm, Value::Object(k1), Value::Object(v1))?;
+    scope
+      .heap_mut()
+      .weak_map_set(wm, Value::Object(k2), Value::Object(v2))?;
 
     assert_eq!(scope.heap().weak_map_entry_count(wm)?, 2);
 

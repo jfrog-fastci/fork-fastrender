@@ -24606,13 +24606,13 @@ pub fn weak_map_prototype_get(
   }
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
+  if !scope.heap().can_be_held_weakly(key)? {
     return Ok(Value::Undefined);
   };
 
   Ok(scope
     .heap()
-    .weak_map_get_with_tick(map, key_obj, || vm.tick())?
+    .weak_map_get_with_tick(map, key, || vm.tick())?
     .unwrap_or(Value::Undefined))
 }
 
@@ -24637,13 +24637,13 @@ pub fn weak_map_prototype_set(
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
   let value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
-    return Err(VmError::TypeError("WeakMap key must be an object"));
-  };
+  if !scope.heap().can_be_held_weakly(key)? {
+    return Err(VmError::TypeError("WeakMap key cannot be held weakly"));
+  }
 
   scope
     .heap_mut()
-    .weak_map_set_with_tick(map, key_obj, value, || vm.tick())?;
+    .weak_map_set_with_tick(map, key, value, || vm.tick())?;
   Ok(Value::Object(map))
 }
 
@@ -24667,14 +24667,14 @@ pub fn weak_map_prototype_has(
   }
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
+  if !scope.heap().can_be_held_weakly(key)? {
     return Ok(Value::Bool(false));
-  };
+  }
 
   Ok(Value::Bool(
     scope
       .heap()
-      .weak_map_has_with_tick(map, key_obj, || vm.tick())?,
+      .weak_map_has_with_tick(map, key, || vm.tick())?,
   ))
 }
 
@@ -24698,14 +24698,14 @@ pub fn weak_map_prototype_delete(
   }
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
+  if !scope.heap().can_be_held_weakly(key)? {
     return Ok(Value::Bool(false));
-  };
+  }
 
   Ok(Value::Bool(
     scope
       .heap_mut()
-      .weak_map_delete_with_tick(map, key_obj, || vm.tick())?,
+      .weak_map_delete_with_tick(map, key, || vm.tick())?,
   ))
 }
 
@@ -24729,13 +24729,13 @@ pub fn weak_set_prototype_add(
   }
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
-    return Err(VmError::TypeError("WeakSet key must be an object"));
-  };
+  if !scope.heap().can_be_held_weakly(key)? {
+    return Err(VmError::TypeError("WeakSet value cannot be held weakly"));
+  }
 
   scope
     .heap_mut()
-    .weak_set_add_with_tick(set, key_obj, || vm.tick())?;
+    .weak_set_add_with_tick(set, key, || vm.tick())?;
   Ok(Value::Object(set))
 }
 
@@ -24759,14 +24759,14 @@ pub fn weak_set_prototype_has(
   }
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
+  if !scope.heap().can_be_held_weakly(key)? {
     return Ok(Value::Bool(false));
-  };
+  }
 
   Ok(Value::Bool(
     scope
       .heap()
-      .weak_set_has_with_tick(set, key_obj, || vm.tick())?,
+      .weak_set_has_with_tick(set, key, || vm.tick())?,
   ))
 }
 
@@ -24790,14 +24790,14 @@ pub fn weak_set_prototype_delete(
   }
 
   let key = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(key_obj) = key else {
+  if !scope.heap().can_be_held_weakly(key)? {
     return Ok(Value::Bool(false));
-  };
+  }
 
   Ok(Value::Bool(
     scope
       .heap_mut()
-      .weak_set_delete_with_tick(set, key_obj, || vm.tick())?,
+      .weak_set_delete_with_tick(set, key, || vm.tick())?,
   ))
 }
 

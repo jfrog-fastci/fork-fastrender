@@ -25,12 +25,12 @@ fn weakset_prunes_dead_keys_during_gc() -> Result<(), VmError> {
       if i == 0 {
         first = Some(key);
       }
-      scope.heap_mut().weak_set_add(ws, key)?;
+      scope.heap_mut().weak_set_add(ws, Value::Object(key))?;
     }
     dead_key = first.unwrap();
 
     assert!(
-      scope.heap().weak_set_has(ws, dead_key)?,
+      scope.heap().weak_set_has(ws, Value::Object(dead_key))?,
       "expected WeakSet to contain key before GC"
     );
     assert_eq!(scope.heap().weak_set_entry_count(ws)?, N);
@@ -44,7 +44,7 @@ fn weakset_prunes_dead_keys_during_gc() -> Result<(), VmError> {
   assert!(!heap.is_valid_object(dead_key));
 
   // `has` treats dead keys as absent.
-  assert!(!heap.weak_set_has(ws, dead_key)?);
+  assert!(!heap.weak_set_has(ws, Value::Object(dead_key))?);
 
   // The GC should also prune dead entries from the WeakSet's internal table.
   assert_eq!(heap.weak_set_entry_count(ws)?, 0);

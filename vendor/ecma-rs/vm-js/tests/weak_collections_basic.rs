@@ -345,7 +345,7 @@ fn weak_map_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
       };
       scope
         .heap_mut()
-        .weak_map_set_with_tick(wm, key, Value::Number(0.0), || Ok(()))?;
+        .weak_map_set_with_tick(wm, Value::Object(key), Value::Number(0.0), || Ok(()))?;
     }
 
     let bytes_after_inserts = scope.heap().estimated_total_bytes();
@@ -384,7 +384,7 @@ fn weak_map_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
     };
     match scope
       .heap_mut()
-      .weak_map_set_with_tick(wm, key, Value::Number(0.0), || Ok(()))
+      .weak_map_set_with_tick(wm, Value::Object(key), Value::Number(0.0), || Ok(()))
     {
       Ok(()) => inserted += 1,
       Err(VmError::OutOfMemory) => {
@@ -445,7 +445,9 @@ fn weak_set_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
       let Value::Object(key) = *value else {
         unreachable!();
       };
-      scope.heap_mut().weak_set_add_with_tick(ws, key, || Ok(()))?;
+      scope
+        .heap_mut()
+        .weak_set_add_with_tick(ws, Value::Object(key), || Ok(()))?;
     }
 
     let bytes_after_inserts = scope.heap().estimated_total_bytes();
@@ -482,7 +484,10 @@ fn weak_set_entry_growth_is_accounted_and_respects_heap_limits() -> Result<(), V
     let Value::Object(key) = value else {
       unreachable!();
     };
-    match scope.heap_mut().weak_set_add_with_tick(ws, key, || Ok(())) {
+    match scope
+      .heap_mut()
+      .weak_set_add_with_tick(ws, Value::Object(key), || Ok(()))
+    {
       Ok(()) => inserted += 1,
       Err(VmError::OutOfMemory) => {
         saw_oom = true;
