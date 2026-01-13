@@ -100,7 +100,10 @@ impl AffineTransform {
 
   #[inline]
   pub fn is_axis_aligned(self) -> bool {
-    self.b == 0.0 && self.c == 0.0
+    // Allow tiny floating-point noise from transform resolution while still rejecting true
+    // non-axis-aligned transforms like rotations/skews.
+    const EPS: f32 = 1e-6;
+    self.b.abs() <= EPS && self.c.abs() <= EPS
   }
 }
 
@@ -122,6 +125,10 @@ pub struct FrameBuffer {
   pub width: u32,
   pub height: u32,
   /// RGBA8 pixel data, row-major, length = `width * height * 4`.
+  ///
+  /// The pixel format is **premultiplied alpha** (matching `tiny-skia`'s `Pixmap` storage): RGB
+  /// channels have already been multiplied by `alpha/255`. This makes compositor blending
+  /// straightforward and avoids per-frame conversion when the renderer is backed by `tiny-skia`.
   pub rgba8: Vec<u8>,
 }
 
@@ -183,11 +190,16 @@ fn blend_src_over(dst: &mut [u8; 4], src: [u8; 4]) {
   if src_a == 0 {
     return;
   }
+  // Premultiplied-alpha SRC_OVER:
+  //   out.rgb = src.rgb + dst.rgb * (1 - src.a)
+  //   out.a   = src.a   + dst.a   * (1 - src.a)
   let inv_a = 255 - src_a;
-  dst[0] = ((src[0] as u32 * src_a + dst[0] as u32 * inv_a) / 255) as u8;
-  dst[1] = ((src[1] as u32 * src_a + dst[1] as u32 * inv_a) / 255) as u8;
-  dst[2] = ((src[2] as u32 * src_a + dst[2] as u32 * inv_a) / 255) as u8;
-  dst[3] = (src_a + (dst[3] as u32 * inv_a) / 255).min(255) as u8;
+  for chan in 0..3 {
+    let blended = src[chan] as u32 + (dst[chan] as u32 * inv_a + 127) / 255;
+    dst[chan] = blended.min(255) as u8;
+  }
+  let out_a = src_a + (dst[3] as u32 * inv_a + 127) / 255;
+  dst[3] = out_a.min(255) as u8;
 }
 
 fn point_in_rounded_rect(rect: Rect, radius: BorderRadius, x: f32, y: f32) -> bool {
@@ -269,10 +281,13 @@ pub fn composite_subframe(
     return Err(CompositeError::BufferSizeMismatch);
   }
 
-  let t = info.transform;
+  let mut t = info.transform;
   if !t.is_axis_aligned() {
     return Err(CompositeError::NonAxisAlignedTransform);
   }
+  // Treat near-zero shear terms as zero for the MVP axis-aligned compositor.
+  t.b = 0.0;
+  t.c = 0.0;
   if !t.a.is_finite() || !t.d.is_finite() || !t.e.is_finite() || !t.f.is_finite() {
     return Err(CompositeError::InvalidTransform);
   }
@@ -368,8 +383,19 @@ mod compositor_tests {
 
   fn solid_buffer(width: u32, height: u32, rgba: [u8; 4]) -> FrameBuffer {
     let mut data = vec![0u8; (width * height * 4) as usize];
+    let a = rgba[3] as u32;
+    let premul = if a == 255 {
+      rgba
+    } else {
+      [
+        ((rgba[0] as u32 * a + 127) / 255) as u8,
+        ((rgba[1] as u32 * a + 127) / 255) as u8,
+        ((rgba[2] as u32 * a + 127) / 255) as u8,
+        rgba[3],
+      ]
+    };
     for px in data.chunks_exact_mut(4) {
-      px.copy_from_slice(&rgba);
+      px.copy_from_slice(&premul);
     }
     FrameBuffer {
       width,
@@ -570,6 +596,33 @@ mod compositor_tests {
 
     let err = composite_subframe(&mut parent, &child, &info).unwrap_err();
     assert_eq!(err, CompositeError::NonAxisAlignedTransform);
+  }
+
+  #[test]
+  fn composites_premultiplied_alpha() {
+    let parent = solid_buffer(2, 2, [0, 255, 0, 255]);
+    let child = solid_buffer(2, 2, [255, 0, 0, 128]);
+
+    let info = SubframeInfo {
+      child: FrameId(1),
+      transform: AffineTransform::IDENTITY,
+      clip_stack: vec![ClipItem {
+        rect: Rect {
+          x: 0.0,
+          y: 0.0,
+          width: 2.0,
+          height: 2.0,
+        },
+        radius: BorderRadius::ZERO,
+      }],
+      z_index: 0,
+    };
+
+    let out = composite_subframes(parent, [(&info, &child)]).unwrap();
+
+    // src-over premultiplied with alpha=128 over opaque green:
+    // out.r = 128, out.g = 127 (rounded), out.a = 255.
+    assert_eq!(pixel(&out, 0, 0), [128, 127, 0, 255]);
   }
 }
 
