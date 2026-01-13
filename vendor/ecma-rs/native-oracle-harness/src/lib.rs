@@ -2275,9 +2275,9 @@ impl VmHostHooks for FixtureModuleLoader {
     let _ = host_defined;
 
     let base_dir = self.base_dir_for_referrer(referrer)?;
-    let specifier = module_request.specifier.as_str();
+    let specifier = module_request.specifier.to_utf8_lossy();
 
-    let spec_path = Path::new(specifier);
+    let spec_path = Path::new(specifier.as_str());
     if spec_path.is_absolute() {
       let intr = vm
         .intrinsics()
