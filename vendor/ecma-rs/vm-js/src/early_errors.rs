@@ -14,9 +14,9 @@ use parse_js::ast::func::{Func, FuncBody};
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::decl::{ClassDecl, FuncDecl, ParamDecl, PatDecl, VarDecl, VarDeclMode};
 use parse_js::ast::stmt::{
-  BlockStmt, CatchBlock, ForBody, ForInOfLhs, ForInStmt, ForOfStmt, ForTripleStmt, ForTripleStmtInit,
-  ContinueStmt, IfStmt, LabelStmt, ReturnStmt, Stmt, SwitchBranch, SwitchStmt, TryStmt, WhileStmt,
-  WithStmt,
+  BlockStmt, CatchBlock, ContinueStmt, ForBody, ForInOfLhs, ForInStmt, ForOfStmt, ForTripleStmt,
+  ForTripleStmtInit, IfStmt, LabelStmt, ReturnStmt, Stmt, SwitchBranch, SwitchStmt, TryStmt,
+  WhileStmt, WithStmt,
 };
 use parse_js::loc::Loc;
 use parse_js::operator::OperatorName;
@@ -211,7 +211,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn push_error(&mut self, loc: Loc, message: impl Into<String>) -> Result<(), VmError> {
-    self.diags.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    self
+      .diags
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     let span = loc.to_diagnostics_span(FileId(0));
     self
       .diags
@@ -441,7 +444,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           } else {
             LexicalNameKind::OrdinaryFunction
           };
-          self.insert_lexical_name(ctx, &name.stx.name, kind, name.loc, &mut lexical_seen, &var_names)?;
+          self.insert_lexical_name(
+            ctx,
+            &name.stx.name,
+            kind,
+            name.loc,
+            &mut lexical_seen,
+            &var_names,
+          )?;
         }
         _ => {}
       }
@@ -520,7 +530,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             } else {
               LexicalNameKind::OrdinaryFunction
             };
-            self.insert_lexical_name(ctx, &name.stx.name, kind, name.loc, &mut lexical_seen, &var_names)?;
+            self.insert_lexical_name(
+              ctx,
+              &name.stx.name,
+              kind,
+              name.loc,
+              &mut lexical_seen,
+              &var_names,
+            )?;
           }
           _ => {}
         }
@@ -554,9 +571,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       if let Some(_first) = seen.get(name) {
         self.push_error(*loc, "duplicate binding name")?;
       } else {
-        seen
-          .try_reserve(1)
-          .map_err(|_| VmError::OutOfMemory)?;
+        seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
         seen.insert(try_clone_string(name.as_str())?, *loc);
       }
     }
@@ -604,9 +619,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
     match seen.get(name) {
       None => {
-        seen
-          .try_reserve(1)
-          .map_err(|_| VmError::OutOfMemory)?;
+        seen.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
         seen.insert(try_clone_string(name)?, kind);
       }
       Some(prev) => {
@@ -621,7 +634,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
     Ok(())
   }
- 
+
   fn collect_var_names(&mut self, stmt: &Stmt, out: &mut HashSet<String>) -> Result<(), VmError> {
     // `VarDeclaredNames` can traverse large statement trees (e.g. nested blocks/ifs with no `var`
     // declarations). Budget it so strict-mode scripts can't bypass fuel/interrupt checks during
@@ -722,7 +735,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       _ => Ok(()),
     }
   }
- 
+
   fn collect_var_names_from_pat_decl(
     &mut self,
     pat_decl: &PatDecl,
@@ -730,8 +743,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     self.collect_var_names_from_pat(&pat_decl.pat.stx, out)
   }
- 
-  fn collect_var_names_from_pat(&mut self, pat: &Pat, out: &mut HashSet<String>) -> Result<(), VmError> {
+
+  fn collect_var_names_from_pat(
+    &mut self,
+    pat: &Pat,
+    out: &mut HashSet<String>,
+  ) -> Result<(), VmError> {
     match pat {
       Pat::Id(id) => {
         let name_str = id.stx.name.as_str();
@@ -768,7 +785,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Pat::AssignTarget(_) => Ok(()),
     }
   }
- 
+
   fn collect_sloppy_function_decl_names(
     &mut self,
     stmt: &Stmt,
@@ -857,7 +874,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       _ => Ok(()),
     }
   }
- 
+
   fn collect_lexical_decl_names_from_pat(
     &mut self,
     ctx: &ControlContext,
@@ -866,9 +883,16 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     seen: &mut HashMap<String, LexicalNameKind>,
     var_names: &HashSet<String>,
   ) -> Result<(), VmError> {
-      match &*pat.stx {
+    match &*pat.stx {
       Pat::Id(id) => {
-        self.insert_lexical_name(ctx, &id.stx.name, LexicalNameKind::Other, loc, seen, var_names)?;
+        self.insert_lexical_name(
+          ctx,
+          &id.stx.name,
+          LexicalNameKind::Other,
+          loc,
+          seen,
+          var_names,
+        )?;
         Ok(())
       }
       Pat::Obj(obj) => {
@@ -1008,7 +1032,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
           {
             for declarator in &var.stx.declarators {
               self.step()?;
-              self.collect_var_names_from_pat(&declarator.pattern.stx.pat.stx, &mut lexical_names)?;
+              self
+                .collect_var_names_from_pat(&declarator.pattern.stx.pat.stx, &mut lexical_names)?;
             }
           }
           Stmt::ClassDecl(class) => {
@@ -1121,7 +1146,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     stmt: &ForOfStmt,
   ) -> Result<(), VmError> {
     if stmt.await_ && !ctx.await_allowed {
-      self.push_error(loc, "for-await-of is only valid in async functions and modules")?;
+      self.push_error(
+        loc,
+        "for-await-of is only valid in async functions and modules",
+      )?;
     }
     self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
     self.visit_expr(ctx, &stmt.rhs)?;
@@ -1174,13 +1202,21 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.visit_stmt_list(ctx, StmtListKind::BlockLike, &branch.body)
   }
 
-  fn visit_label(&mut self, ctx: &mut ControlContext, loc: Loc, stmt: &LabelStmt) -> Result<(), VmError> {
+  fn visit_label(
+    &mut self,
+    ctx: &mut ControlContext,
+    loc: Loc,
+    stmt: &LabelStmt,
+  ) -> Result<(), VmError> {
     let is_iteration = Self::is_iteration_statement(&stmt.statement);
     if ctx.labels.iter().any(|l| l.name == stmt.name) {
       let message = try_format_error_message("duplicate label '", &stmt.name, "'")?;
       self.push_error(loc, message)?;
     }
-    ctx.labels.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    ctx
+      .labels
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
     ctx.labels.push(LabelInfo {
       name: try_clone_string(&stmt.name)?,
       is_iteration,
@@ -1205,7 +1241,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     Ok(())
   }
 
-  fn visit_break(&mut self, ctx: &mut ControlContext, loc: Loc, stmt: &parse_js::ast::stmt::BreakStmt) -> Result<(), VmError> {
+  fn visit_break(
+    &mut self,
+    ctx: &mut ControlContext,
+    loc: Loc,
+    stmt: &parse_js::ast::stmt::BreakStmt,
+  ) -> Result<(), VmError> {
     match stmt.label.as_ref() {
       Some(label) => {
         if !ctx.labels.iter().any(|l| l.name == *label) {
@@ -1248,7 +1289,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     Ok(())
   }
 
-  fn visit_with(&mut self, ctx: &mut ControlContext, loc: Loc, stmt: &WithStmt) -> Result<(), VmError> {
+  fn visit_with(
+    &mut self,
+    ctx: &mut ControlContext,
+    loc: Loc,
+    stmt: &WithStmt,
+  ) -> Result<(), VmError> {
     if ctx.strict {
       self.push_error(loc, "with statements are not allowed in strict mode")?;
     }
@@ -1256,7 +1302,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.visit_stmt(ctx, &stmt.body)
   }
 
-  fn visit_class_decl(&mut self, ctx: &mut ControlContext, decl: &ClassDecl) -> Result<(), VmError> {
+  fn visit_class_decl(
+    &mut self,
+    ctx: &mut ControlContext,
+    decl: &ClassDecl,
+  ) -> Result<(), VmError> {
     if ctx.strict {
       if let Some(name) = &decl.name {
         if is_restricted_identifier(&name.stx.name) {
@@ -1275,7 +1325,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     self.visit_class_members(ctx, &decl.members, decl.extends.is_some())
   }
 
-  fn visit_class_expr(&mut self, ctx: &mut ControlContext, expr: &ClassExpr) -> Result<(), VmError> {
+  fn visit_class_expr(
+    &mut self,
+    ctx: &mut ControlContext,
+    expr: &ClassExpr,
+  ) -> Result<(), VmError> {
     if ctx.strict {
       if let Some(name) = &expr.name {
         if is_restricted_identifier(&name.stx.name) {
@@ -1366,7 +1420,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               private_name_decl_state
                 .try_reserve(1)
                 .map_err(|_| VmError::OutOfMemory)?;
-              private_name_decl_state.insert(try_clone_string(name)?, PrivateNameDeclState::default());
+              private_name_decl_state
+                .insert(try_clone_string(name)?, PrivateNameDeclState::default());
               // Safe: just inserted.
               private_name_decl_state
                 .get_mut(name)
@@ -1493,12 +1548,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     // - language/statements/class/static-init-invalid-{await,yield,return}.js
     // - language/statements/{break,continue}/static-init-*.js
     let saved = self.save_and_enter_function(
-      ctx,
-      /* strict */ true,
-      /* await_allowed */ false,
-      /* yield_allowed */ false,
-      /* super_call_allowed */ false,
-      /* arguments_allowed */ false,
+      ctx, /* strict */ true, /* await_allowed */ false, /* yield_allowed */ false,
+      /* super_call_allowed */ false, /* arguments_allowed */ false,
     );
     ctx.return_allowed = false;
     self.static_block_declared_name_early_errors(stmts)?;
@@ -1530,8 +1581,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
 
   fn visit_var_decl(&mut self, ctx: &mut ControlContext, decl: &VarDecl) -> Result<(), VmError> {
     for declarator in &decl.declarators {
-      if declarator.initializer.is_none()
-      {
+      if declarator.initializer.is_none() {
         if decl.mode == VarDeclMode::Const {
           self.push_error(
             declarator.pattern.loc,
@@ -1566,7 +1616,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     })
   }
 
-  fn collect_bound_names_from_pat(pat: &Node<Pat>, out: &mut Vec<(String, Loc)>) -> Result<(), VmError> {
+  fn collect_bound_names_from_pat(
+    pat: &Node<Pat>,
+    out: &mut Vec<(String, Loc)>,
+  ) -> Result<(), VmError> {
     match &*pat.stx {
       Pat::Id(id) => {
         out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
@@ -1723,7 +1776,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
   }
 
-  fn static_block_declared_name_early_errors(&mut self, stmts: &[Node<Stmt>]) -> Result<(), VmError> {
+  fn static_block_declared_name_early_errors(
+    &mut self,
+    stmts: &[Node<Stmt>],
+  ) -> Result<(), VmError> {
     // `VarDeclaredNames` can traverse large statement trees. Budget the traversal.
     let mut var_names: HashSet<String> = HashSet::new();
     for stmt in stmts {
@@ -1926,7 +1982,10 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Expr::Func(func) => self.visit_func_expr(ctx, &func.stx),
       Expr::Id(id) => {
         if id.stx.name == "arguments" && !ctx.arguments_allowed {
-          self.push_error(expr.loc, "arguments is not allowed in class static initialization blocks")?;
+          self.push_error(
+            expr.loc,
+            "arguments is not allowed in class static initialization blocks",
+          )?;
         }
         if id.stx.name.starts_with('#') {
           // parse-js parses `PrivateIdentifier` tokens as identifier expressions (e.g. `#x` is an
@@ -1962,7 +2021,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     }
   }
 
-  fn visit_arrow_func_expr(&mut self, ctx: &mut ControlContext, expr: &ArrowFuncExpr) -> Result<(), VmError> {
+  fn visit_arrow_func_expr(
+    &mut self,
+    ctx: &mut ControlContext,
+    expr: &ArrowFuncExpr,
+  ) -> Result<(), VmError> {
     self.visit_func(
       ctx,
       None,
@@ -2071,27 +2134,27 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   fn visit_binary(&mut self, ctx: &mut ControlContext, expr: &BinaryExpr) -> Result<(), VmError> {
     if expr.operator.is_assignment() {
       // `eval = ...` and `arguments = ...` are strict-mode early errors.
-        if ctx.strict {
-          match &*expr.left.stx {
-            Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
-              let message = try_format_error_message(
-                "cannot assign to '",
-                id.stx.name.as_str(),
-                "' in strict mode",
-              )?;
-              self.push_error(expr.left.loc, message)?;
-            }
-            Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
-              let message = try_format_error_message(
-                "cannot assign to '",
-                id.stx.name.as_str(),
-                "' in strict mode",
-              )?;
-              self.push_error(expr.left.loc, message)?;
-            }
-            _ => {}
+      if ctx.strict {
+        match &*expr.left.stx {
+          Expr::Id(id) if is_restricted_identifier(&id.stx.name) => {
+            let message = try_format_error_message(
+              "cannot assign to '",
+              id.stx.name.as_str(),
+              "' in strict mode",
+            )?;
+            self.push_error(expr.left.loc, message)?;
           }
+          Expr::IdPat(id) if is_restricted_identifier(&id.stx.name) => {
+            let message = try_format_error_message(
+              "cannot assign to '",
+              id.stx.name.as_str(),
+              "' in strict mode",
+            )?;
+            self.push_error(expr.left.loc, message)?;
+          }
+          _ => {}
         }
+      }
 
       // Optional chaining is a static early error in assignment targets.
       if matches!(&*expr.left.stx, Expr::ArrPat(_) | Expr::ObjPat(_)) {
@@ -2263,7 +2326,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     Ok(())
   }
 
-  fn visit_lit_arr(&mut self, ctx: &mut ControlContext, arr: &parse_js::ast::expr::lit::LitArrExpr) -> Result<(), VmError> {
+  fn visit_lit_arr(
+    &mut self,
+    ctx: &mut ControlContext,
+    arr: &parse_js::ast::expr::lit::LitArrExpr,
+  ) -> Result<(), VmError> {
     for elem in &arr.elements {
       match elem {
         LitArrElem::Single(expr) | LitArrElem::Rest(expr) => self.visit_expr(ctx, expr)?,
@@ -2273,7 +2340,11 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     Ok(())
   }
 
-  fn visit_lit_obj(&mut self, ctx: &mut ControlContext, members: &[Node<ObjMember>]) -> Result<(), VmError> {
+  fn visit_lit_obj(
+    &mut self,
+    ctx: &mut ControlContext,
+    members: &[Node<ObjMember>],
+  ) -> Result<(), VmError> {
     for member in members {
       match &member.stx.typ {
         ObjMemberType::Valued { key, val } => {
@@ -2379,7 +2450,12 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     Ok(())
   }
 
-  fn visit_pat(&mut self, ctx: &mut ControlContext, pat: &Node<Pat>, role: PatRole) -> Result<(), VmError> {
+  fn visit_pat(
+    &mut self,
+    ctx: &mut ControlContext,
+    pat: &Node<Pat>,
+    role: PatRole,
+  ) -> Result<(), VmError> {
     self.step()?;
     match &*pat.stx {
       Pat::Arr(arr) => self.visit_arr_pat(ctx, &arr.stx, role),

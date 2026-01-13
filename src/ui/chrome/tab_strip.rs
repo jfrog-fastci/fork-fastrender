@@ -1,5 +1,6 @@
 use crate::ui::browser_app::{
-  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor, TabGroupId,
+  BrowserAppState, BrowserTabState, ChromeState, OpenTabContextMenuState, TabGroupColor,
+  TabGroupId, TabGroupState,
 };
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
@@ -1083,6 +1084,14 @@ fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
     .clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH)
 }
 
+fn group_chip_title(group: &TabGroupState) -> &str {
+  if group.title.trim().is_empty() {
+    "Group"
+  } else {
+    group.title.as_str()
+  }
+}
+
 fn group_chip_a11y_label(title: &str, collapsed: bool) -> String {
   if collapsed {
     format!("Expand tab group: {title}")
@@ -1106,24 +1115,20 @@ fn group_chip_ui(
 
   let color = group.color;
   let collapsed = group.collapsed;
-  let title = if group.title.trim().is_empty() {
-    "Group".to_string()
-  } else {
-    group.title.clone()
-  };
+  let title = group_chip_title(group);
 
   let id = ui.make_persistent_id(("tab_group_chip", group_id.0));
   let width = precomputed_width
     .filter(|w| w.is_finite())
     .map(|w| w.max(0.0).clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH))
-    .unwrap_or_else(|| group_chip_width(ui, &title));
+    .unwrap_or_else(|| group_chip_width(ui, title));
   let (_, chip_rect) = ui.allocate_space(Vec2::new(width, TAB_HEIGHT));
   let mut response = ui.interact(chip_rect, id, Sense::click());
   if response.hovered() {
-    response = response.on_hover_text(title.as_str());
+    response = response.on_hover_text(title);
   }
   response.widget_info({
-    let label = group_chip_a11y_label(&title, collapsed);
+    let label = group_chip_a11y_label(title, collapsed);
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
   });
 
@@ -1199,10 +1204,9 @@ fn group_chip_ui(
       Pos2::new(title_start_x, chip_rect.min.y),
       Pos2::new(title_end_x, chip_rect.max.y),
     );
-    let label =
-      egui::Label::new(egui::RichText::new(title.clone()).text_style(egui::TextStyle::Button))
-        .truncate(true)
-        .wrap(false);
+    let label = egui::Label::new(egui::RichText::new(title).text_style(egui::TextStyle::Button))
+      .truncate(true)
+      .wrap(false);
     let _ = ui.put(title_rect, label);
   }
 
@@ -2176,11 +2180,7 @@ pub(super) fn tab_strip_ui(
 
       let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
       if is_first {
-        let title = if group.title.trim().is_empty() {
-          "Group"
-        } else {
-          group.title.as_str()
-        };
+        let title = group_chip_title(group);
         let w = group_chip_width(ui, title);
         group_chip_total_width += w;
         group_chip_widths.insert(group_id, w);
@@ -2774,8 +2774,7 @@ pub(super) fn tab_strip_ui(
               maybe_insert_source_placeholder!(false);
 
               let tab_id = app.tabs[idx].id;
-              let tab_group = app
-                .tabs[idx]
+              let tab_group = app.tabs[idx]
                 .group
                 .filter(|group_id| app.tab_groups.contains_key(group_id));
 
@@ -3654,6 +3653,18 @@ mod tests {
   use super::*;
   use crate::ui::a11y_test_util;
 
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(Rect::from_min_size(
+      Pos2::new(0.0, 0.0),
+      Vec2::new(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
   #[test]
   fn tab_a11y_label_formats_active_pinned_loading_error_warning_states() {
     let title = "Example title";
@@ -3826,7 +3837,10 @@ mod tests {
       now,
     );
 
-    assert!(clamping, "expected clamp to trigger when offset exceeds max");
+    assert!(
+      clamping,
+      "expected clamp to trigger when offset exceeds max"
+    );
     assert!(
       (clamped - max_scroll_x).abs() < 1e-6,
       "expected clamp to snap immediately when animation_time=0"
@@ -3839,7 +3853,10 @@ mod tests {
     let anim = ctx
       .data(|d| d.get_temp::<TabStripScrollClampAnim>(clamp_anim_id))
       .unwrap_or_default();
-    assert!(!anim.active, "expected no active animation when animation_time=0");
+    assert!(
+      !anim.active,
+      "expected no active animation when animation_time=0"
+    );
   }
 
   #[test]
@@ -3861,7 +3878,10 @@ mod tests {
       now,
     );
 
-    assert!(clamping, "expected clamp to trigger when offset exceeds max");
+    assert!(
+      clamping,
+      "expected clamp to trigger when offset exceeds max"
+    );
     assert!(
       (clamped - max_scroll_x).abs() < 1e-6,
       "expected clamp to snap immediately when motion is disabled"
@@ -3874,7 +3894,10 @@ mod tests {
     let anim = ctx
       .data(|d| d.get_temp::<TabStripScrollClampAnim>(clamp_anim_id))
       .unwrap_or_default();
-    assert!(!anim.active, "expected no active animation when motion is disabled");
+    assert!(
+      !anim.active,
+      "expected no active animation when motion is disabled"
+    );
   }
 
   #[test]
@@ -4175,6 +4198,62 @@ mod tests {
   }
 
   #[test]
+  fn group_chip_width_is_based_on_title_only_and_stable_across_collapsed_state() {
+    let ctx = egui::Context::default();
+    begin_frame(&ctx);
+
+    let mut found_case = false;
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      for len in 1..128 {
+        let title = "W".repeat(len);
+        let group_id = TabGroupId(1);
+        let group_collapsed = TabGroupState {
+          id: group_id,
+          title: title.clone(),
+          color: TabGroupColor::Blue,
+          collapsed: true,
+        };
+        let mut group_expanded = group_collapsed.clone();
+        group_expanded.collapsed = false;
+
+        let title_collapsed = group_chip_title(&group_collapsed);
+        let title_expanded = group_chip_title(&group_expanded);
+        assert_eq!(title_collapsed, title.as_str());
+        assert_eq!(title_expanded, title.as_str());
+
+        let width_collapsed = group_chip_width(ui, title_collapsed);
+        let width_expanded = group_chip_width(ui, title_expanded);
+        // The chip's collapse icon is painted at a fixed size, so the width should not depend on
+        // collapsed/expanded state.
+        assert!((width_collapsed - width_expanded).abs() < 0.01);
+
+        // Ensure we picked a title where the clamp isn't masking the effect.
+        if width_collapsed <= GROUP_CHIP_MIN_WIDTH + 0.5
+          || width_collapsed >= GROUP_CHIP_MAX_WIDTH - 0.5
+        {
+          continue;
+        }
+
+        // If the width calculation accidentally included the old arrow glyph + space, we'd
+        // over-estimate the chip width. This would shrink tab widths / trigger overflow earlier.
+        let arrow_label = format!("▸ {title}");
+        let arrow_width = group_chip_width(ui, &arrow_label);
+        if arrow_width > width_collapsed + 0.01 {
+          found_case = true;
+          break;
+        }
+      }
+
+      assert!(
+        found_case,
+        "expected to find a title where an arrow-prefixed label measures wider than title-only"
+      );
+    });
+
+    let _ = ctx.end_frame();
+  }
+
+  #[test]
   fn insertion_index_beginning_middle_end() {
     let rects = vec![
       (
@@ -4277,7 +4356,10 @@ mod tests {
   #[test]
   fn tab_strip_emits_accesskit_name_for_new_tab_button() {
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = egui::Context::default();
     ctx.enable_accesskit();

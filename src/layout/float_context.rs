@@ -499,7 +499,9 @@ impl FloatSweepState {
     // separate heap so range scans can cheaply tell whether any new floats begin within a queried
     // band.
     self.pending_start_events.clear();
-    self.pending_start_events.extend(events.iter().copied().map(Reverse));
+    self
+      .pending_start_events
+      .extend(events.iter().copied().map(Reverse));
 
     self.active_left.clear();
     self.active_right.clear();
@@ -1326,13 +1328,19 @@ impl FloatContext {
       );
 
       if let Some((edge, bottom)) = state.active_left.peek_constraining_at(current_y) {
-        eprintln!("    constraining_left: edge={:.2} bottom={:.2}", edge, bottom);
+        eprintln!(
+          "    constraining_left: edge={:.2} bottom={:.2}",
+          edge, bottom
+        );
       } else {
         eprintln!("    constraining_left: none");
       }
 
       if let Some((edge, bottom)) = state.active_right.peek_constraining_at(current_y) {
-        eprintln!("    constraining_right: edge={:.2} bottom={:.2}", edge, bottom);
+        eprintln!(
+          "    constraining_right: edge={:.2} bottom={:.2}",
+          edge, bottom
+        );
       } else {
         eprintln!("    constraining_right: none");
       }
@@ -1357,9 +1365,11 @@ impl FloatContext {
     match self.range_cache.try_borrow() {
       Ok(cache) => {
         let seg_count = cache.segments.len();
-        let coverage = cache.segments.first().zip(cache.segments.last()).map(|(first, last)| {
-          (first.start_y, last.end_y)
-        });
+        let coverage = cache
+          .segments
+          .first()
+          .zip(cache.segments.last())
+          .map(|(first, last)| (first.start_y, last.end_y));
         match coverage {
           Some((start, end)) => {
             eprintln!(
@@ -1408,7 +1418,13 @@ impl FloatContext {
           } else {
             eprintln!("    segments:");
           }
-          for (idx, seg) in cache.segments.iter().enumerate().skip(start_idx).take(max_segs) {
+          for (idx, seg) in cache
+            .segments
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(max_segs)
+          {
             eprintln!(
               "      seg[{idx}]: y=[{:.2}, {:.2}] left={:.2} right={:.2}",
               seg.start_y, seg.end_y, seg.left_edge, seg.right_edge
@@ -1440,13 +1456,10 @@ impl FloatContext {
 
   /// Returns and clears the recorded timeout, if any.
   pub fn take_timeout_error(&self) -> Option<LayoutError> {
-    self
-      .timeout_elapsed
-      .take()
-      .map(|elapsed| {
-        self.debug_dump("take_timeout_error");
-        LayoutError::Timeout { elapsed }
-      })
+    self.timeout_elapsed.take().map(|elapsed| {
+      self.debug_dump("take_timeout_error");
+      LayoutError::Timeout { elapsed }
+    })
   }
 
   fn float_info(&self, id: usize) -> &FloatInfo {
@@ -2181,7 +2194,8 @@ impl FloatContext {
 
     // Helper to add a segment into the monotonic deque.
     let mut push_segment = |idx: usize, cache: &FloatRangeCache, deque: &mut VecDeque<usize>| {
-      let (left, _right, width) = segment_edges_in_span(&cache.segments[idx], containing_left, containing_right);
+      let (left, _right, width) =
+        segment_edges_in_span(&cache.segments[idx], containing_left, containing_right);
       while let Some(&back_idx) = deque.back() {
         let (back_left, _back_right, back_width) =
           segment_edges_in_span(&cache.segments[back_idx], containing_left, containing_right);
@@ -2219,7 +2233,11 @@ impl FloatContext {
 
       // Ensure we have segments covering the window end.
       window_end = y + target_height;
-      if cache.segments.last().is_none_or(|seg| seg.end_y < window_end) {
+      if cache
+        .segments
+        .last()
+        .is_none_or(|seg| seg.end_y < window_end)
+      {
         self.ensure_range_cache_coverage(&mut cache, y, window_end);
       }
 
@@ -2826,13 +2844,7 @@ impl FloatContext {
     let min_width = clamp_positive_finite(min_width);
     let height = clamp_positive_finite(height);
 
-    self.find_fit_using_range_cache(
-      min_width,
-      height,
-      min_y,
-      containing_left,
-      containing_right,
-    )
+    self.find_fit_using_range_cache(min_width, height, min_y, containing_left, containing_right)
   }
 
   /// Compute the clearance needed for an element with the given clear value
@@ -3137,13 +3149,7 @@ impl FloatContext {
     let min_width = clamp_positive_finite(min_width);
     let height = clamp_positive_finite(height);
 
-    self.find_fit_using_range_cache(
-      min_width,
-      height,
-      min_y,
-      0.0,
-      self.containing_block_width,
-    )
+    self.find_fit_using_range_cache(min_width, height, min_y, 0.0, self.containing_block_width)
   }
 
   /// Clear all floats from the context
@@ -3292,9 +3298,15 @@ mod tests {
   fn float_context_debug_dump_toggle_does_not_panic() {
     let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
       ("FASTR_LOG_FLOAT_CONTEXT".to_string(), "1".to_string()),
-      ("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(), "3".to_string()),
+      (
+        "FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(),
+        "3".to_string(),
+      ),
       // Trigger range-scan dumps from `edges_in_range_min_width_with_state`.
-      ("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER".to_string(), "1".to_string()),
+      (
+        "FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER".to_string(),
+        "1".to_string(),
+      ),
     ])));
 
     runtime::with_runtime_toggles(toggles, || {
@@ -3317,7 +3329,10 @@ mod tests {
     let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
       ("FASTR_LOG_FLOAT_CONTEXT".to_string(), "1".to_string()),
       // Suppress segment spam; we only care that the dump machinery does not panic.
-      ("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(), "0".to_string()),
+      (
+        "FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(),
+        "0".to_string(),
+      ),
     ])));
 
     runtime::with_runtime_toggles(toggles, || {
