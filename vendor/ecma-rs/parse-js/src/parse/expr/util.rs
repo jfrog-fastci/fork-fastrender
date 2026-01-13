@@ -31,6 +31,19 @@ pub fn lit_to_pat(node: Node<Expr>) -> SyntaxResult<Node<Pat>> {
 pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> SyntaxResult<Node<Pat>> {
   let loc = node.loc;
 
+  // In strict ECMAScript mode, parenthesized expressions are never valid assignment targets.
+  //
+  // Examples that must be SyntaxErrors:
+  // - `(a) = 1`
+  // - `for ((a) of b) {}`
+  // - `(obj.prop) = 1`
+  //
+  // We accept these in recovery mode so TypeScript-style parse errors can be surfaced by later
+  // semantic validation.
+  if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
+    return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+  }
+
   // TypeScript: Accept member expressions for error recovery, even with optional chaining.
   // Check for member expressions first (without moving the value).
   let is_member = match node.stx.as_ref() {

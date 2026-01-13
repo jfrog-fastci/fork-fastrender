@@ -2785,34 +2785,26 @@ fn validate_regex_pattern(
       // `\c` AsciiLetter / Annex B class-control escape / Annex B extended atom.
       if esc == 'c' {
         let after_c = i + esc_len;
-        let Some(control) = pattern[after_c..].chars().next() else {
-          // In UnicodeMode, `\c` must be followed by an ASCII letter.
-          //
-          // In non-UnicodeMode, Annex B treats an incomplete control escape as literal pattern
-          // characters (`\c`), so accept it.
+        let control = pattern[after_c..].chars().next();
+        if let Some(control) = control {
+          if control.is_ascii_alphabetic() {
+            i = after_c + control.len_utf8();
+            prev_can_be_quantified = true;
+            quantifier_allows_lazy = false;
+            continue;
+          }
           if unicode_mode {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + escape_start,
-              len: after_c.saturating_sub(escape_start),
+              len: after_c + control.len_utf8() - escape_start,
             });
           }
-          i += esc_len;
-          prev_can_be_quantified = true;
-          quantifier_allows_lazy = false;
-          continue;
-        };
-        if control.is_ascii_alphabetic() {
-          i = after_c + control.len_utf8();
-          prev_can_be_quantified = true;
-          quantifier_allows_lazy = false;
-          continue;
-        }
-        if unicode_mode {
+        } else if unicode_mode {
           return Err(RegexError {
             kind: RegexErrorKind::InvalidPattern,
             offset: base_offset + escape_start,
-            len: after_c + control.len_utf8() - escape_start,
+            len: after_c.saturating_sub(escape_start),
           });
         }
         // Annex B (non-UnicodeMode): treat invalid `\c` escapes as literal pattern characters.
