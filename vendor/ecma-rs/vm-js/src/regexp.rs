@@ -2766,6 +2766,20 @@ fn utf16_decode_surrogate_pair(high: u16, low: u16) -> u32 {
   0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
 }
 
+#[inline]
+fn utf16_encode_code_point(cp: u32, out: &mut [u16; 2]) -> usize {
+  debug_assert!(cp <= 0x10FFFF);
+  if cp <= 0xFFFF {
+    out[0] = cp as u16;
+    1
+  } else {
+    let cp = cp - 0x10000;
+    out[0] = 0xD800 + ((cp >> 10) as u16);
+    out[1] = 0xDC00 + ((cp & 0x3FF) as u16);
+    2
+  }
+}
+
 fn is_ascii_letter(u: u16) -> bool {
   (b'a' as u16..=b'z' as u16).contains(&u) || (b'A' as u16..=b'Z' as u16).contains(&u)
 }
@@ -3911,6 +3925,16 @@ impl<'a> Parser<'a> {
     if self.peek() == Some(b'-' as u16) && self.units.get(self.idx + 1).copied() != Some(b'-' as u16) {
       self.next(); // consume '-'
       let end = self.parse_class_set_character(ctx)?;
+      // Ranges involving non-BMP code points are not supported yet; reject them so we don't try to
+      // approximate them by UTF-16 code unit ranges.
+      if start > 0xFFFF || end > 0xFFFF {
+        return Err(RegExpSyntaxError {
+          message: "Invalid regular expression",
+        }
+        .into());
+      }
+      let start = start as u16;
+      let end = end as u16;
       if start > end {
         return Err(RegExpSyntaxError {
           message: "Invalid regular expression",
@@ -3923,7 +3947,9 @@ impl<'a> Parser<'a> {
     }
 
     let mut set = UnicodeSet::new();
-    set.insert_char(start);
+    let mut buf = [0u16; 2];
+    let len = utf16_encode_code_point(start, &mut buf);
+    set.insert_string(ctx, &buf[..len])?;
     Ok(set)
   }
 
@@ -3941,13 +3967,17 @@ impl<'a> Parser<'a> {
         }
         let ch = self.parse_class_set_character(ctx)?;
         let mut set = UnicodeSet::new();
-        set.insert_char(ch);
+        let mut buf = [0u16; 2];
+        let len = utf16_encode_code_point(ch, &mut buf);
+        set.insert_string(ctx, &buf[..len])?;
         Ok(set)
       }
       Some(_) => {
         let ch = self.parse_class_set_character(ctx)?;
         let mut set = UnicodeSet::new();
-        set.insert_char(ch);
+        let mut buf = [0u16; 2];
+        let len = utf16_encode_code_point(ch, &mut buf);
+        set.insert_string(ctx, &buf[..len])?;
         Ok(set)
       }
       None => Err(RegExpSyntaxError {
@@ -4093,13 +4123,17 @@ impl<'a> Parser<'a> {
       }
       i = i.wrapping_add(1);
       let ch = self.parse_class_set_character(ctx)?;
-      ctx.vec_try_push(&mut cur, ch)?;
+      let mut buf = [0u16; 2];
+      let len = utf16_encode_code_point(ch, &mut buf);
+      for u in buf.into_iter().take(len) {
+        ctx.vec_try_push(&mut cur, u)?;
+      }
     }
 
     Ok(out)
   }
 
-  fn parse_class_set_character(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u16, RegExpCompileError> {
+  fn parse_class_set_character(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u32, RegExpCompileError> {
     let Some(u) = self.next() else {
       return Err(RegExpSyntaxError {
         message: "Invalid regular expression",
@@ -4130,7 +4164,7 @@ impl<'a> Parser<'a> {
               .into());
             }
             self.next();
-            Ok(((next as u8) & 0x1F) as u16)
+            Ok(((next as u8) & 0x1F) as u32)
           }
           x if x == (b'n' as u16) => Ok(0x000A),
           x if x == (b'r' as u16) => Ok(0x000D),
@@ -4157,24 +4191,15 @@ impl<'a> Parser<'a> {
           .into()),
           x if x == (b'x' as u16) => {
             let v = self.parse_hex_escape_2(ctx)?;
-            Ok(u16::try_from(v).map_err(|_| {
-              RegExpCompileError::Syntax(RegExpSyntaxError {
-                message: "Invalid escape",
-              })
-            })?)
+            Ok(v)
           }
           x if x == (b'u' as u16) => {
-            let v = self.parse_unicode_escape(ctx)?;
-            Ok(u16::try_from(v).map_err(|_| {
-              RegExpCompileError::Syntax(RegExpSyntaxError {
-                message: "Invalid escape",
-              })
-            })?)
+            self.parse_unicode_escape(ctx)
           }
           // ClassSetReservedPunctuator (treat as identity escapes).
-          x if is_class_set_reserved_punctuator(x) => Ok(x),
+          x if is_class_set_reserved_punctuator(x) => Ok(x as u32),
           // Identity escape (approximation).
-          other => Ok(other),
+          other => Ok(other as u32),
         }
       }
       // Syntax characters must be escaped in UnicodeSetsMode.
@@ -4195,7 +4220,16 @@ impl<'a> Parser<'a> {
           }
           .into());
         }
-        Ok(other)
+        // In UnicodeMode (`u`/`v`), pattern source text is interpreted as Unicode code points, so
+        // UTF-16 surrogate pairs in the pattern represent a single character.
+        if self.flags.has_either_unicode_flag()
+          && is_utf16_high_surrogate(other)
+          && self.peek().is_some_and(is_utf16_low_surrogate)
+        {
+          let low = self.next().unwrap();
+          return Ok(utf16_decode_surrogate_pair(other, low));
+        }
+        Ok(other as u32)
       }
     }
   }
