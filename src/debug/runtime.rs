@@ -497,6 +497,14 @@ impl DebugConfig {
         .and_then(|v| v.parse().ok()),
     );
     config.insert_bool(
+      "FASTR_LAYOUT_CACHE_OVERRIDE_PROFILE",
+      truthy(raw.get("FASTR_LAYOUT_CACHE_OVERRIDE_PROFILE"), false),
+    );
+    config.insert_bool(
+      "FASTR_LAYOUT_CACHE_SHARE_OVERRIDES",
+      truthy(raw.get("FASTR_LAYOUT_CACHE_SHARE_OVERRIDES"), false),
+    );
+    config.insert_bool(
       "FASTR_FLEX_PROFILE",
       truthy(raw.get("FASTR_FLEX_PROFILE"), false),
     );

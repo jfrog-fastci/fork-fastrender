@@ -462,6 +462,81 @@ static LAYOUT_CACHE_GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(1);
 static LAYOUT_CACHE_GLOBAL_FRAGMENTATION: AtomicU64 = AtomicU64::new(0);
 /// Stores the per-thread entry cap for `LAYOUT_RESULT_CACHE` (0 means "no cap / caching disabled").
 static LAYOUT_CACHE_GLOBAL_ENTRY_LIMIT: AtomicUsize = AtomicUsize::new(0);
+/// Whether `layout::style_override` cache entries should be stored in (and queried from) the shared
+/// cross-thread cache.
+static LAYOUT_CACHE_GLOBAL_SHARE_OVERRIDES: AtomicBool = AtomicBool::new(false);
+
+// --- Profiling: style override layout cache reuse ----------------------------------------------
+//
+// Style overrides (`layout::style_override`) can cause the same subtree to be laid out many times
+// during grid/flex measurement, and rayon fan-out can amplify this work if each worker recomputes
+// the same override layouts independently. These counters make it easy to quantify how often
+// override-aware caching is exercised, and (when enabled) whether cross-thread reuse is effective.
+
+static OVERRIDE_LAYOUT_CACHE_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+static OVERRIDE_LAYOUT_CACHE_TLS_HITS: AtomicU64 = AtomicU64::new(0);
+static OVERRIDE_LAYOUT_CACHE_SHARED_HITS: AtomicU64 = AtomicU64::new(0);
+static OVERRIDE_LAYOUT_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_LAYOUT_CACHE_INSERTS: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn layout_cache_override_profile_enabled() -> bool {
+  let toggles = runtime::runtime_toggles();
+  toggles.truthy("FASTR_LAYOUT_PROFILE") || toggles.truthy("FASTR_LAYOUT_CACHE_OVERRIDE_PROFILE")
+}
+
+#[inline]
+fn record_override_layout_cache_lookup() {
+  if layout_cache_override_profile_enabled() {
+    OVERRIDE_LAYOUT_CACHE_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+  }
+}
+
+#[inline]
+fn record_override_layout_cache_tls_hit() {
+  if layout_cache_override_profile_enabled() {
+    OVERRIDE_LAYOUT_CACHE_TLS_HITS.fetch_add(1, Ordering::Relaxed);
+  }
+}
+
+#[inline]
+fn record_override_layout_cache_shared_hit() {
+  if layout_cache_override_profile_enabled() {
+    OVERRIDE_LAYOUT_CACHE_SHARED_HITS.fetch_add(1, Ordering::Relaxed);
+  }
+}
+
+#[inline]
+fn record_override_layout_cache_miss() {
+  if layout_cache_override_profile_enabled() {
+    OVERRIDE_LAYOUT_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
+  }
+}
+
+#[inline]
+fn record_global_layout_cache_insert() {
+  if layout_cache_override_profile_enabled() {
+    GLOBAL_LAYOUT_CACHE_INSERTS.fetch_add(1, Ordering::Relaxed);
+  }
+}
+
+pub(crate) fn layout_override_cache_counters() -> (u64, u64, u64, u64, u64) {
+  (
+    OVERRIDE_LAYOUT_CACHE_LOOKUPS.load(Ordering::Relaxed),
+    OVERRIDE_LAYOUT_CACHE_TLS_HITS.load(Ordering::Relaxed),
+    OVERRIDE_LAYOUT_CACHE_SHARED_HITS.load(Ordering::Relaxed),
+    OVERRIDE_LAYOUT_CACHE_MISSES.load(Ordering::Relaxed),
+    GLOBAL_LAYOUT_CACHE_INSERTS.load(Ordering::Relaxed),
+  )
+}
+
+pub(crate) fn reset_layout_override_cache_counters() {
+  OVERRIDE_LAYOUT_CACHE_LOOKUPS.store(0, Ordering::Relaxed);
+  OVERRIDE_LAYOUT_CACHE_TLS_HITS.store(0, Ordering::Relaxed);
+  OVERRIDE_LAYOUT_CACHE_SHARED_HITS.store(0, Ordering::Relaxed);
+  OVERRIDE_LAYOUT_CACHE_MISSES.store(0, Ordering::Relaxed);
+  GLOBAL_LAYOUT_CACHE_INSERTS.store(0, Ordering::Relaxed);
+}
 
 #[cfg(test)]
 static INTRINSIC_CACHE_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
@@ -959,6 +1034,18 @@ struct LayoutCacheEntry {
 /// fast-path (no locking), but a shared cache allows different rayon workers to reuse expensive
 /// subtree layouts when they happen to touch the same nodes under identical constraints.
 const GLOBAL_LAYOUT_CACHE_SHARDS: usize = 64;
+/// Total entry cap (across all shards) for the shared layout result cache.
+///
+/// Shared layout cache entries retain `Arc<FragmentNode>` subtrees and can be large. The per-thread
+/// cache is already bounded via `FASTR_LAYOUT_CACHE_MAX_ENTRIES`; keep the cross-thread cache
+/// bounded per-epoch as well to avoid runaway memory usage during parallel layout fan-out.
+const GLOBAL_LAYOUT_CACHE_MAX_ENTRIES: usize = 32_768;
+/// Eviction batch size for the shared layout cache (total across shards).
+const GLOBAL_LAYOUT_CACHE_EVICTION_BATCH: usize = 2_048;
+const GLOBAL_LAYOUT_CACHE_MAX_ENTRIES_PER_SHARD: usize =
+  GLOBAL_LAYOUT_CACHE_MAX_ENTRIES / GLOBAL_LAYOUT_CACHE_SHARDS;
+const GLOBAL_LAYOUT_CACHE_EVICTION_BATCH_PER_SHARD: usize =
+  GLOBAL_LAYOUT_CACHE_EVICTION_BATCH / GLOBAL_LAYOUT_CACHE_SHARDS;
 
 struct ShardedLayoutResultCache {
   shards: [RwLock<FxHashMap<LayoutCacheKey, LayoutCacheEntry>>; GLOBAL_LAYOUT_CACHE_SHARDS],
@@ -1012,7 +1099,32 @@ impl ShardedLayoutResultCache {
   #[inline]
   fn insert(&self, key: LayoutCacheKey, entry: LayoutCacheEntry) {
     let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
-    shard.write().insert(key, entry);
+    let mut map = shard.write();
+
+    let max_entries = GLOBAL_LAYOUT_CACHE_MAX_ENTRIES_PER_SHARD;
+    if max_entries == 0 {
+      map.clear();
+      return;
+    }
+
+    if map.len() >= max_entries && !map.contains_key(&key) {
+      let eviction_batch = GLOBAL_LAYOUT_CACHE_EVICTION_BATCH_PER_SHARD
+        .max(1)
+        .min(max_entries)
+        .min(map.len());
+      if eviction_batch > 0 {
+        let keys: Vec<_> = map.keys().take(eviction_batch).cloned().collect();
+        let removed = keys.len();
+        for key in keys {
+          map.remove(&key);
+        }
+        if removed > 0 {
+          LAYOUT_CACHE_EVICTIONS.add(removed);
+        }
+      }
+    }
+
+    map.insert(key, entry);
   }
 
   fn clear(&self) {
@@ -1058,6 +1170,7 @@ thread_local! {
   static LAYOUT_CACHE_EPOCH: Cell<usize> = const { Cell::new(1) };
   static LAYOUT_CACHE_FRAGMENTATION: Cell<u64> = const { Cell::new(0) };
   static LAYOUT_CACHE_ENTRY_LIMIT: Cell<Option<usize>> = const { Cell::new(None) };
+  static LAYOUT_CACHE_SHARE_OVERRIDES: Cell<bool> = const { Cell::new(false) };
 }
 
 fn pack_viewport_size(size: Size) -> u64 {
@@ -1363,18 +1476,27 @@ fn layout_cache_sync_thread_state() {
     0 => None,
     v => Some(v),
   };
+  let share_overrides = LAYOUT_CACHE_GLOBAL_SHARE_OVERRIDES.load(Ordering::Relaxed);
 
   let local_epoch = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
   let local_enabled = LAYOUT_CACHE_ENABLED.with(|cell| cell.get());
   let local_fragmentation = LAYOUT_CACHE_FRAGMENTATION.with(|cell| cell.get());
   let local_entry_limit = LAYOUT_CACHE_ENTRY_LIMIT.with(|cell| cell.get());
+  let local_share_overrides = LAYOUT_CACHE_SHARE_OVERRIDES.with(|cell| cell.get());
 
   let epoch_changed = local_epoch != epoch;
   let enabled_changed = local_enabled != enabled;
   let fragmentation_changed = local_fragmentation != fragmentation;
   let entry_limit_changed = local_entry_limit != entry_limit;
+  let share_overrides_changed = local_share_overrides != share_overrides;
 
-  if !(epoch_changed || enabled_changed || fragmentation_changed || entry_limit_changed) {
+  if !(
+    epoch_changed
+      || enabled_changed
+      || fragmentation_changed
+      || entry_limit_changed
+      || share_overrides_changed
+  ) {
     return;
   }
 
@@ -1394,6 +1516,7 @@ fn layout_cache_sync_thread_state() {
   LAYOUT_CACHE_ENABLED.with(|cell| cell.set(enabled));
   LAYOUT_CACHE_FRAGMENTATION.with(|cell| cell.set(fragmentation));
   LAYOUT_CACHE_ENTRY_LIMIT.with(|cell| cell.set(entry_limit));
+  LAYOUT_CACHE_SHARE_OVERRIDES.with(|cell| cell.set(share_overrides));
 }
 
 fn is_layout_cacheable(box_node: &BoxNode, fc_type: FormattingContextType) -> bool {
@@ -1647,6 +1770,7 @@ pub(crate) fn layout_cache_reset_counters() {
   positioned_descendant_cache_use_epoch(epoch, true);
   float_descendant_cache_use_epoch(epoch, true);
   LAYOUT_CACHE_CLONE_RETURNS.store(0);
+  reset_layout_override_cache_counters();
 }
 
 /// Configures the layout cache epoch and run-scoped parameters.
@@ -1667,6 +1791,8 @@ pub(crate) fn layout_cache_use_epoch(
   } else {
     None
   };
+  let share_overrides =
+    enabled && runtime::runtime_toggles().truthy("FASTR_LAYOUT_CACHE_SHARE_OVERRIDES");
 
   let previous = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
 
@@ -1682,6 +1808,7 @@ pub(crate) fn layout_cache_use_epoch(
   LAYOUT_CACHE_GLOBAL_ENABLED.store(enabled, Ordering::Relaxed);
   LAYOUT_CACHE_GLOBAL_FRAGMENTATION.store(fragmentation_hash, Ordering::Relaxed);
   LAYOUT_CACHE_GLOBAL_ENTRY_LIMIT.store(entry_limit.unwrap_or(0), Ordering::Relaxed);
+  LAYOUT_CACHE_GLOBAL_SHARE_OVERRIDES.store(share_overrides, Ordering::Relaxed);
 
   // Sync the calling thread immediately so subsequent cache lookups don't need to pay the sync
   // cost repeatedly.
@@ -1726,6 +1853,10 @@ pub(crate) fn layout_cache_lookup(
     return None;
   }
   LAYOUT_CACHE_LOOKUPS.inc();
+  let is_override = key.key.style_variant != 0;
+  if is_override {
+    record_override_layout_cache_lookup();
+  }
 
   let result = LAYOUT_RESULT_CACHE.with(|cache| {
     let mut map = cache.borrow_mut();
@@ -1743,6 +1874,9 @@ pub(crate) fn layout_cache_lookup(
   });
 
   if let Some(fragment) = result {
+    if is_override {
+      record_override_layout_cache_tls_hit();
+    }
     LAYOUT_CACHE_HITS.inc();
     LAYOUT_CACHE_CLONE_RETURNS.inc();
     fragment_clone_profile::record_fragment_clone_from_fragment(
@@ -1752,15 +1886,18 @@ pub(crate) fn layout_cache_lookup(
     return Some((*fragment).clone());
   }
 
-  // Style overrides are primarily used within a single formatting-context measurement pass, so the
-  // cross-thread cache is unlikely to be beneficial and can add lock contention on misses. Keep
-  // override-aware entries thread-local-only unless proven otherwise.
-  if key.key.style_variant != 0 {
+  if is_override && !LAYOUT_CACHE_SHARE_OVERRIDES.with(|cell| cell.get()) {
+    // Default behavior: keep override entries thread-local-only. This avoids lock contention for
+    // common short-lived measurement probes.
+    record_override_layout_cache_miss();
     return None;
   }
 
   // Second-level cache: cross-thread shared layout results.
   if let Some(fragment) = GLOBAL_LAYOUT_RESULT_CACHE.get(&key.key, epoch, key.style_hash) {
+    if is_override {
+      record_override_layout_cache_shared_hit();
+    }
     // Populate the thread-local cache so repeated lookups on this worker don't pay the global lock.
     LAYOUT_RESULT_CACHE.with(|cache| {
       let mut map = cache.borrow_mut();
@@ -1780,6 +1917,9 @@ pub(crate) fn layout_cache_lookup(
       fragment.as_ref(),
     );
     return Some((*fragment).clone());
+  }
+  if is_override {
+    record_override_layout_cache_miss();
   }
   None
 }
@@ -1822,9 +1962,15 @@ pub(crate) fn layout_cache_store(
     style_hash: key.style_hash,
   };
 
-  if key.key.style_variant == 0 {
-    // Base-style entries: store in both the thread-local cache and the shared cache so rayon worker
-    // threads can reuse expensive subtree layouts.
+  let store_in_global = if key.key.style_variant == 0 {
+    true
+  } else {
+    LAYOUT_CACHE_SHARE_OVERRIDES.with(|cell| cell.get())
+  };
+
+  if store_in_global {
+    // Base-style entries always participate in the shared cache. Override entries do so only when
+    // `FASTR_LAYOUT_CACHE_SHARE_OVERRIDES=1` is enabled.
     LAYOUT_RESULT_CACHE.with(|cache| {
       let mut map = cache.borrow_mut();
       if let Some(previous) = map.insert(key.key, entry.clone()) {
@@ -1834,9 +1980,10 @@ pub(crate) fn layout_cache_store(
       }
       enforce_layout_cache_entry_limit(&mut map, &key.key);
     });
+    record_global_layout_cache_insert();
     GLOBAL_LAYOUT_RESULT_CACHE.insert(key.key, entry);
   } else {
-    // Style overrides are thread-local-only (see `layout_cache_lookup`).
+    // Default behavior: keep override entries thread-local-only.
     LAYOUT_RESULT_CACHE.with(|cache| {
       let mut map = cache.borrow_mut();
       if let Some(previous) = map.insert(key.key, entry) {
@@ -2316,12 +2463,13 @@ impl std::fmt::Display for LayoutError {
 
 impl std::error::Error for LayoutError {}
 
-#[cfg(test)]
-mod tests {
+  #[cfg(test)]
+  mod tests {
   use super::*;
-  use crate::geometry::{Rect, Size};
+  use crate::geometry::{Point, Rect, Size};
   use crate::layout::contexts::block::BlockFormattingContext;
   use crate::layout::contexts::factory::FormattingContextFactory;
+  use crate::layout::contexts::positioned::ContainingBlock;
   use crate::layout::engine::LayoutParallelism;
   use crate::style::display::{Display, FormattingContextType};
   use crate::style::float::Float;
@@ -2331,6 +2479,8 @@ mod tests {
   use crate::text::font_loader::FontContext;
   use crate::tree::fragment_tree::FragmentContent;
   use rayon::ThreadPoolBuilder;
+  use std::collections::HashMap;
+  use std::sync::mpsc;
   use std::sync::atomic::Ordering;
   use std::sync::Arc;
   use std::time::Duration;
@@ -2680,10 +2830,172 @@ mod tests {
     intrinsic_cache_use_epoch(1, true);
   }
 
-  fn find_fragment_by_box_id<'a>(
-    fragment: &'a FragmentNode,
-    box_id: usize,
-  ) -> Option<&'a FragmentNode> {
+  #[test]
+  fn layout_cache_can_share_style_override_entries_across_threads_when_enabled() {
+    // Serialize with other layout-cache tests/renders so global counters + cache state remain
+    // deterministic.
+    let _cache_lock = layout_cache_test_lock();
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      (
+        "FASTR_LAYOUT_CACHE_OVERRIDE_PROFILE".to_string(),
+        "1".to_string(),
+      ),
+      (
+        "FASTR_LAYOUT_CACHE_SHARE_OVERRIDES".to_string(),
+        "1".to_string(),
+      ),
+    ])));
+
+    runtime::with_runtime_toggles(toggles, || {
+      // Ensure we start from a fresh global cache epoch so we don't accidentally hit entries
+      // produced by other tests.
+      let epoch = GLOBAL_LAYOUT_CACHE_EPOCH
+        .load(Ordering::Relaxed)
+        .saturating_add(1)
+        .max(1);
+      layout_cache_use_epoch(epoch, true, true, None, None);
+      reset_layout_override_cache_counters();
+
+      let mut base_style = ComputedStyle::default();
+      base_style.display = Display::Flex;
+      let mut node = BoxNode::new_block(
+        Arc::new(base_style.clone()),
+        FormattingContextType::Flex,
+        vec![],
+      );
+      node.id = 1;
+
+      let mut override_style = base_style;
+      override_style.width = Some(Length::px(100.0));
+      override_style.width_keyword = None;
+      let override_style = Arc::new(override_style);
+
+      let constraints = LayoutConstraints::definite(320.0, 240.0);
+      let viewport = Size::new(320.0, 240.0);
+      let viewport_scroll = Point::ZERO;
+      let cb = ContainingBlock::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
+
+      let fragment =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 123.0, 45.0), node.id, vec![]);
+
+      let node = Arc::new(node);
+      let pool = ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .expect("thread pool should build");
+
+      let (lookup_ready_tx, lookup_ready_rx) = mpsc::channel::<usize>();
+      let (store_done_tx, store_done_rx) = mpsc::channel::<usize>();
+      let (store_thread_tx, store_thread_rx) = mpsc::channel::<usize>();
+      let (lookup_result_tx, lookup_result_rx) = mpsc::channel::<(usize, FragmentNode)>();
+
+      // Spawn the lookup task first so it can block, forcing the store task onto a different rayon
+      // worker thread.
+      {
+        let node = node.clone();
+        let override_style = override_style.clone();
+        let lookup_ready_tx = lookup_ready_tx;
+        let store_done_rx = store_done_rx;
+        let lookup_result_tx = lookup_result_tx;
+        pool.spawn(move || {
+          let lookup_thread =
+            rayon::current_thread_index().expect("lookup should run on rayon worker");
+          lookup_ready_tx
+            .send(lookup_thread)
+            .expect("lookup ready signal should send");
+
+          store_done_rx
+            .recv()
+            .expect("store completion signal should arrive");
+
+          let hit = crate::layout::style_override::with_style_override(
+            node.id(),
+            override_style,
+            || {
+              layout_cache_lookup(
+                &node,
+                FormattingContextType::Flex,
+                &constraints,
+                viewport_scroll,
+                viewport,
+                cb,
+                cb,
+              )
+            },
+          )
+          .expect("expected lookup to hit shared cache");
+
+          lookup_result_tx
+            .send((lookup_thread, hit))
+            .expect("lookup result should send");
+        });
+      }
+
+      let lookup_thread = lookup_ready_rx
+        .recv()
+        .expect("lookup task should signal readiness");
+
+      {
+        let node = node.clone();
+        let override_style = override_style.clone();
+        let fragment = fragment.clone();
+        let store_thread_tx = store_thread_tx;
+        let store_done_tx = store_done_tx;
+        pool.spawn(move || {
+          let store_thread =
+            rayon::current_thread_index().expect("store should run on rayon worker");
+          crate::layout::style_override::with_style_override(node.id(), override_style, || {
+            layout_cache_store(
+              &node,
+              FormattingContextType::Flex,
+              &constraints,
+              &fragment,
+              viewport_scroll,
+              viewport,
+              cb,
+              cb,
+            );
+          });
+          store_thread_tx
+            .send(store_thread)
+            .expect("store thread id should send");
+          store_done_tx
+            .send(store_thread)
+            .expect("store completion signal should send");
+        });
+      }
+
+      let store_thread = store_thread_rx
+        .recv()
+        .expect("store task should report thread id");
+      let (lookup_thread_after, hit_fragment) = lookup_result_rx
+        .recv()
+        .expect("lookup task should report hit fragment");
+
+      assert_eq!(lookup_thread, lookup_thread_after);
+      assert_ne!(
+        store_thread, lookup_thread_after,
+        "expected store and lookup to run on different rayon worker threads"
+      );
+      assert_eq!(
+        hit_fragment.bounds, fragment.bounds,
+        "cached override fragment should match stored fragment bounds"
+      );
+
+      let (lookups, tls_hits, shared_hits, misses, _global_inserts) =
+        layout_override_cache_counters();
+      assert_eq!(lookups, 1, "expected exactly one override cache lookup");
+      assert_eq!(tls_hits, 0, "expected override lookup to miss TLS cache");
+      assert_eq!(shared_hits, 1, "expected override lookup to hit shared cache");
+      assert_eq!(misses, 0, "expected no override cache misses");
+
+      // Restore a safe default for other tests that call into layout code directly.
+      layout_cache_use_epoch(epoch.saturating_add(1), false, true, None, None);
+    });
+  }
+
+  fn find_fragment_by_box_id<'a>(fragment: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
     let mut stack = vec![fragment];
     while let Some(node) = stack.pop() {
       let matches_id = match &node.content {
