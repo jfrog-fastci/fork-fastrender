@@ -20,6 +20,18 @@ Related:
 - Renderer sandboxing overview (platform notes, seccomp/AppContainer/etc): [`sandboxing.md`](sandboxing.md)
 - Linux renderer seccomp allowlist workflow: [`seccomp_allowlist.md`](seccomp_allowlist.md)
 
+If you add/modify IPC code, treat this as a *non-optional* checklist:
+
+- Preserve/introduce **hard caps** (frame bytes, decode bytes, per-field bytes, SHM bytes).
+  - If you add a new cap constant, add it to the “Current hard caps” / “Additional size limits”
+    tables below.
+- Define **FD arity** per message (`expected_fds()`), and enforce it at receive sites.
+  - Payload bytes + attached FDs must be sent/received atomically (single `sendmsg`/`recvmsg`).
+- For stream transports, enforce the frame cap **before allocating** and reject zero-length frames.
+- Decode must be **bounded** and must **consume the entire frame** (reject trailing bytes).
+- For JSON IPC, prefer `#[serde(deny_unknown_fields)]` on protocol types so unknown fields fail closed.
+- For shared memory, validate FD type/size/seals before `mmap` (see `src/ipc/validate.rs`).
+
 ---
 
 ## Process model
