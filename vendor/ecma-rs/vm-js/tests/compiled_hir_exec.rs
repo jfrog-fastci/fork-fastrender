@@ -899,6 +899,57 @@ fn compiled_with_honors_symbol_unscopables() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_assignment_honors_symbol_unscopables() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 0;
+      function getX() { return x; }
+      let o = {x: 1};
+      o[Symbol.unscopables] = {x: true};
+      with (o) { x = 2; }
+      getX() + o.x
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `Symbol.unscopables` should block `x` from being resolved through `o`'s `with` environment,
+  // so assignment must update the outer lexical binding (x=2) and leave o.x unchanged (1).
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_with_restores_outer_env_on_labeled_break() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 0;
+      let o = {x: 1};
+      label: {
+        with (o) { break label; }
+      }
+      x
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The `with` env must be restored even when control exits via a labeled break.
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(0.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_with_falls_back_to_outer_binding_when_property_missing() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
@@ -951,13 +1002,14 @@ fn compiled_with_restores_outer_env_on_throw() -> Result<(), VmError> {
     "test.js",
     r#"
       let x = 1;
+      function getX() { return x; }
       let o = {x: 2};
       try {
         with (o) { throw 0; }
       } catch (e) {
         x = 3;
       }
-      x
+      getX()
     "#,
   )?;
 
