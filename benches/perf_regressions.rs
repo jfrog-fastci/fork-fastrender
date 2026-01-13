@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{black_box, BatchSize, Criterion};
 use fastrender::geometry::Rect;
 use fastrender::layout::fragmentation::{fragment_tree, FragmentationOptions};
 use fastrender::layout::table::{TableFormattingContext, TableStructure};
@@ -898,31 +898,49 @@ fn bench_end_to_end_realistic(c: &mut Criterion) {
   group.finish();
 }
 
-criterion_group!(
-  name = benches;
-  config = perf_criterion();
-  targets =
-    bench_parse_dom,
-    bench_css_parse,
-    bench_media_query_parse_list,
-    bench_color_parse,
-    bench_cascade,
-    bench_box_generation,
-    bench_box_tree_anonymous_fixup,
-    bench_layout_block,
-    bench_layout_flex,
-    bench_layout_flex_cached_text,
-    bench_layout_grid,
-    bench_layout_grid_cached_text,
-    bench_taffy_measure_call_counts,
-    bench_layout_table,
-    bench_layout_table_stress,
-    bench_table_intrinsic,
-    bench_fragmentation_many_pages,
-    bench_paint_display_list_build,
-    bench_paint_optimize,
-    bench_paint_rasterize,
-    bench_end_to_end_small,
-    bench_end_to_end_realistic
-);
-criterion_main!(benches);
+fn main() {
+  // Some developers habitually run Criterion benches with the `-- --nocapture` tail that is used
+  // for libtest. Criterion doesn't support that flag, so strip it (and the extra `--` separator)
+  // by re-execing the benchmark binary without them.
+  //
+  // This keeps `scripts/cargo_agent.sh bench ... -- --nocapture` working for scoped runs.
+  let args: Vec<String> = std::env::args().collect();
+  if args.iter().any(|arg| arg == "--nocapture") {
+    let exe = std::env::current_exe().expect("benchmark binary path");
+    let filtered: Vec<String> = args
+      .into_iter()
+      .skip(1)
+      .filter(|arg| arg != "--nocapture" && arg != "--")
+      .collect();
+    let status = std::process::Command::new(exe)
+      .args(filtered)
+      .status()
+      .expect("re-exec perf_regressions bench");
+    std::process::exit(status.code().unwrap_or(1));
+  }
+
+  let mut c = perf_criterion();
+  bench_parse_dom(&mut c);
+  bench_css_parse(&mut c);
+  bench_media_query_parse_list(&mut c);
+  bench_color_parse(&mut c);
+  bench_cascade(&mut c);
+  bench_box_generation(&mut c);
+  bench_box_tree_anonymous_fixup(&mut c);
+  bench_layout_block(&mut c);
+  bench_layout_flex(&mut c);
+  bench_layout_flex_cached_text(&mut c);
+  bench_layout_grid(&mut c);
+  bench_layout_grid_cached_text(&mut c);
+  bench_taffy_measure_call_counts(&mut c);
+  bench_layout_table(&mut c);
+  bench_layout_table_stress(&mut c);
+  bench_table_intrinsic(&mut c);
+  bench_fragmentation_many_pages(&mut c);
+  bench_paint_display_list_build(&mut c);
+  bench_paint_optimize(&mut c);
+  bench_paint_rasterize(&mut c);
+  bench_end_to_end_small(&mut c);
+  bench_end_to_end_realistic(&mut c);
+  c.final_summary();
+}
