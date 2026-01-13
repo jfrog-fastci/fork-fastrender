@@ -1466,6 +1466,7 @@ pub(super) fn tab_strip_ui(
   let mut active_tab_rect: Option<Rect> = None;
   let mut active_tab_is_pinned = false;
   let mut pinned_scroll_offset_x: f32 = 0.0;
+  let mut pinned_max_scroll_x: f32 = 0.0;
   let mut scroll_offset_x: f32 = 0.0;
   let mut unpinned_max_scroll_x: f32 = 0.0;
 
@@ -1564,6 +1565,8 @@ pub(super) fn tab_strip_ui(
         });
       let mut scroll_state = scroll_output.state;
       pinned_scroll_offset_x = scroll_state.offset.x;
+      pinned_max_scroll_x =
+        (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
       if let Some(scroll_delta) = restore_scroll_delta {
         pinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
@@ -1571,7 +1574,6 @@ pub(super) fn tab_strip_ui(
       }
 
       // Auto-scroll pinned strip while drag-reordering a pinned tab.
-      let pinned_max_scroll_x = (pinned_content_width - pinned_viewport_rect.width()).max(0.0);
       if pinned_max_scroll_x > 0.5 {
         if let (Some(dragging_tab_id), Some(pointer_pos)) = (
           app.chrome.dragging_tab_id,
@@ -1810,6 +1812,8 @@ pub(super) fn tab_strip_ui(
         });
       let mut scroll_state = scroll_output.state;
       scroll_offset_x = scroll_state.offset.x;
+      unpinned_max_scroll_x =
+        (scroll_output.content_size.x - scroll_output.inner_rect.width()).max(0.0);
       if let Some(scroll_delta) = restore_scroll_delta {
         unpinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
@@ -1822,7 +1826,6 @@ pub(super) fn tab_strip_ui(
 
       // While dragging an unpinned tab, auto-scroll the overflowing scroll area when the pointer is
       // near the left/right edge of the unpinned viewport (standard browser UX).
-      unpinned_max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
       if unpinned_max_scroll_x > 0.5 {
         if let (Some(dragging_tab_id), Some(pointer_pos)) = (
           app.chrome.dragging_tab_id,
@@ -1870,7 +1873,6 @@ pub(super) fn tab_strip_ui(
 
   // Edge fades: scrollbars are hidden, so use subtle fades as the overflow affordance.
   if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
-    let pinned_max_scroll_x = (pinned_content_width - pinned_viewport_rect.width()).max(0.0);
     paint_scroll_edge_fades(
       ui,
       pinned_viewport_rect,
