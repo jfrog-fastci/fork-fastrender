@@ -1,4 +1,4 @@
-use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -26,6 +26,44 @@ fn assert_value_is_number(value: Value, expected: f64) {
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<delete_super_reference>", source)?;
   rt.exec_compiled_script(script)
+}
+
+fn is_unimplemented_compiled_async_function_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+  const MSG: &str = "async functions (hir-js compiled path)";
+
+  match err {
+    VmError::Unimplemented(msg) if msg.contains(MSG) => return Ok(true),
+    _ => {}
+  }
+
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
+  };
+  let Value::Object(err_obj) = thrown else {
+    return Ok(false);
+  };
+
+  // Host-facing execution boundaries coerce `VmError::Unimplemented` into a regular
+  // `Error("unimplemented: ...")` throw completion; treat both representations as "not supported"
+  // so this test can land before compiled async functions are implemented.
+  let intr = rt.realm().intrinsics();
+  let proto = rt.heap().object_prototype(err_obj)?;
+  if proto != Some(intr.error_prototype()) && proto != Some(intr.syntax_error_prototype()) {
+    return Ok(false);
+  }
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let Some(Value::String(message_s)) = scope
+    .heap()
+    .object_get_own_data_property_value(err_obj, &message_key)?
+  else {
+    return Ok(false);
+  };
+
+  Ok(scope.heap().get_string(message_s)?.to_utf8_lossy().contains(MSG))
 }
 
 #[test]
@@ -329,7 +367,7 @@ fn delete_super_property_computed_member_with_await_in_key_throws_reference_erro
     "#,
   ) {
     Ok(v) => v,
-    Err(VmError::Unimplemented("async functions (hir-js compiled path)")) => return Ok(()),
+    Err(err) if is_unimplemented_compiled_async_function_error(&mut rt, &err)? => return Ok(()),
     Err(err) => return Err(err),
   };
 
