@@ -1007,7 +1007,66 @@ impl<'vm> HirEvaluator<'vm> {
         let handle = scope.alloc_bigint(b)?;
         Ok(Value::BigInt(handle))
       }
-      hir_js::Literal::Regex(_) => Err(VmError::Unimplemented("regex literal (hir-js compiled path)")),
+      hir_js::Literal::Regex(literal) => {
+        let intr = self
+          .vm
+          .intrinsics()
+          .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+        let literal = literal.as_str();
+        // `hir-js` stores regexp literals verbatim including the leading `/` and any flags (matching
+        // the parse-js AST representation).
+        if !literal.starts_with('/') {
+          return Err(VmError::Unimplemented("invalid RegExp literal"));
+        }
+
+        let mut in_class = false;
+        let mut escaped = false;
+        let mut end_pat: Option<usize> = None;
+        // Budget scanning for the closing `/` so enormous regexp literals can't monopolize CPU.
+        const TICK_EVERY: usize = 1024;
+        let mut steps = 0usize;
+        for (i, ch) in literal.char_indices().skip(1) {
+          if steps % TICK_EVERY == 0 {
+            self.vm.tick()?;
+          }
+          steps += 1;
+          if escaped {
+            escaped = false;
+            continue;
+          }
+          match ch {
+            '\\' => escaped = true,
+            '[' => in_class = true,
+            ']' => in_class = false,
+            '/' if !in_class => {
+              end_pat = Some(i);
+              break;
+            }
+            _ => {}
+          }
+        }
+        let Some(end_pat) = end_pat else {
+          return Err(VmError::Unimplemented("unterminated RegExp literal"));
+        };
+        let pattern = &literal[1..end_pat];
+        let flags = &literal[end_pat + 1..];
+
+        let pattern_s = scope.alloc_string(pattern)?;
+        scope.push_root(Value::String(pattern_s))?;
+        let flags_s = scope.alloc_string(flags)?;
+        scope.push_root(Value::String(flags_s))?;
+
+        let ctor = Value::Object(intr.regexp_constructor());
+        self.vm.construct_with_host_and_hooks(
+          &mut *self.host,
+          scope,
+          &mut *self.hooks,
+          ctor,
+          &[Value::String(pattern_s), Value::String(flags_s)],
+          ctor,
+        )
+      }
     }
   }
 
