@@ -276,10 +276,12 @@ fn spawn_windows(
   inherit_handles: Vec<RawHandle>,
   env: Vec<(OsString, OsString)>,
 ) -> Result<ChildProcess> {
-  use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT};
+  use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, ERROR_ACCESS_DENIED};
+  use windows_sys::Win32::System::JobObjects::IsProcessInJob;
   use windows_sys::Win32::System::Threading::{
-    CreateProcessW, ResumeThread, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    CreateProcessW, GetCurrentProcess, ResumeThread, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     STARTUPINFOEXW, STARTUPINFOW,
   };
@@ -347,6 +349,13 @@ fn spawn_windows(
     sandbox.mitigation_policy
   };
 
+  let parent_in_job = {
+    let mut in_job: i32 = 0;
+    // SAFETY: `in_job` is a valid out param; null job handle queries "any job".
+    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut in_job) };
+    ok != 0 && in_job != 0
+  };
+
   fn should_fallback_without_mitigations(err: &WinSandboxError) -> bool {
     const ERROR_INVALID_PARAMETER: u32 = 87;
     const ERROR_NOT_SUPPORTED: u32 = windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
@@ -382,22 +391,40 @@ fn spawn_windows(
       let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
       si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
 
-      let ok = unsafe {
-        CreateProcessW(
-          app_w.as_ptr(),
-          cmd_w.as_mut_ptr(),
-          std::ptr::null(),
-          std::ptr::null(),
-          0,
-          CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-          env_block.as_ptr().cast(),
-          cwd_ptr,
-          &mut si,
-          &mut pi,
-        )
+      let mut create_process_inner = |flags: u32| -> Result<()> {
+        let ok = unsafe {
+          CreateProcessW(
+            app_w.as_ptr(),
+            cmd_w.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            flags,
+            env_block.as_ptr().cast(),
+            cwd_ptr,
+            &mut si,
+            &mut pi,
+          )
+        };
+        if ok == 0 {
+          return Err(WinSandboxError::last("CreateProcessW"));
+        }
+        Ok(())
       };
-      if ok == 0 {
-        return Err(WinSandboxError::last("CreateProcessW"));
+
+      let flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+      if parent_in_job {
+        match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
+          Ok(()) => {}
+          Err(err)
+            if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
+          {
+            create_process_inner(flags)?;
+          }
+          Err(err) => return Err(err),
+        }
+      } else {
+        create_process_inner(flags)?;
       }
       return Ok(pi);
     }
@@ -444,26 +471,40 @@ fn spawn_windows(
     si.lpAttributeList = attrs.ptr;
 
     let inherit: i32 = if handles.is_empty() { 0 } else { 1 };
-    let flags =
-      EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
-
-    let ok = unsafe {
-      CreateProcessW(
-        app_w.as_ptr(),
-        cmd_w.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        inherit,
-        flags,
-        env_block.as_ptr().cast(),
-        cwd_ptr,
-        &mut si.StartupInfo,
-        &mut pi,
-      )
+    let mut create_process_inner = |flags: u32| -> Result<()> {
+      let ok = unsafe {
+        CreateProcessW(
+          app_w.as_ptr(),
+          cmd_w.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          inherit,
+          flags,
+          env_block.as_ptr().cast(),
+          cwd_ptr,
+          &mut si.StartupInfo,
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(WinSandboxError::last("CreateProcessW"));
+      }
+      Ok(())
     };
 
-    if ok == 0 {
-      return Err(WinSandboxError::last("CreateProcessW"));
+    let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+    if parent_in_job {
+      match create_process_inner(flags | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(()) => {}
+        Err(err)
+          if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
+        {
+          create_process_inner(flags)?;
+        }
+        Err(err) => return Err(err),
+      }
+    } else {
+      create_process_inner(flags)?;
     }
     Ok(pi)
   };
