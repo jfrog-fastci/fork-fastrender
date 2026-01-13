@@ -5511,6 +5511,14 @@ impl App {
     out
   }
 
+  fn select_dropdown_option_a11y_widget_type(disabled: bool) -> egui::WidgetType {
+    if disabled {
+      egui::WidgetType::Label
+    } else {
+      egui::WidgetType::Button
+    }
+  }
+
   fn select_dropdown_optgroup_a11y_label(label: &str, disabled: bool) -> String {
     let label = label.trim();
     let mut out = if label.is_empty() {
@@ -5794,14 +5802,8 @@ impl App {
 
                   response.widget_info({
                     let label = Self::select_dropdown_option_a11y_label(base, *selected, *disabled);
-                    let selected = *selected;
-                    move || {
-                      egui::WidgetInfo::selected(
-                        egui::WidgetType::SelectableLabel,
-                        selected,
-                        label.clone(),
-                      )
-                    }
+                    let widget_type = Self::select_dropdown_option_a11y_widget_type(*disabled);
+                    move || egui::WidgetInfo::labeled(widget_type, label.clone())
                   });
 
                   if response.clicked() && !*disabled {
@@ -9800,6 +9802,7 @@ mod select_dropdown_a11y_tests {
 
     let mut optgroup_labels = Vec::new();
     let mut option_labels = Vec::new();
+    let mut option_widget_types = Vec::new();
     for item in control.items.iter() {
       match item {
         SelectItem::OptGroupLabel { label, disabled } => {
@@ -9814,6 +9817,7 @@ mod select_dropdown_a11y_tests {
         } => {
           let base = if label.trim().is_empty() { value } else { label };
           option_labels.push(App::select_dropdown_option_a11y_label(base, *selected, *disabled));
+          option_widget_types.push(App::select_dropdown_option_a11y_widget_type(*disabled));
         }
       }
     }
@@ -9828,6 +9832,14 @@ mod select_dropdown_a11y_tests {
       ]
     );
     assert!(option_labels.iter().all(|label| !label.trim().is_empty()));
+    assert_eq!(
+      option_widget_types,
+      vec![
+        egui::WidgetType::Button,
+        egui::WidgetType::Label,
+        egui::WidgetType::Button
+      ]
+    );
   }
 
   #[test]
