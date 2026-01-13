@@ -53,7 +53,7 @@ FastRender **owns ecma-rs** (vendored at `vendor/ecma-rs/`). This workstream dri
 Key directories:
 - `vendor/ecma-rs/vm-js/` — The JavaScript runtime
 - `vendor/ecma-rs/parse-js/` — JavaScript parser
-- `vendor/ecma-rs/semantics-js/` — Semantic analysis
+- `vendor/ecma-rs/semantic-js/` — Semantic analysis
 
 ## What counts
 
