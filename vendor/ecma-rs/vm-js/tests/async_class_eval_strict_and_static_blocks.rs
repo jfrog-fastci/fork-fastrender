@@ -313,3 +313,61 @@ fn async_class_heritage_requires_object_or_null_super_prototype() -> Result<(), 
   );
   Ok(())
 }
+
+#[test]
+fn async_class_can_extend_non_awaited_expression_when_other_parts_suspend() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class B {}
+        class D extends B {
+          // Force async class evaluation via an awaited computed key.
+          [(await Promise.resolve("m"))]() {}
+        }
+        out += (Object.getPrototypeOf(D) === B ? "S" : "s");
+        out += (Object.getPrototypeOf(D.prototype) === B.prototype ? "I" : "i");
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "SI");
+  Ok(())
+}
+
+#[test]
+fn async_class_heritage_self_reference_is_tdz_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        try {
+          // Force async class evaluation via an awaited computed key.
+          class C extends C { [(await Promise.resolve("m"))]() {} }
+          return "no";
+        } catch (e) {
+          return e.name;
+        }
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ReferenceError");
+  Ok(())
+}
