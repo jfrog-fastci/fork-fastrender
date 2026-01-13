@@ -6,7 +6,7 @@
 //! capture user intent. Side effects (actually clearing history, persistence) are performed by the
 //! caller (typically `src/bin/browser.rs`).
 
-use super::{danger_button, icon_button, icon_tinted, BrowserIcon, ClearBrowsingDataRange};
+use super::{danger_button, panel_header, BrowserIcon, ClearBrowsingDataRange};
 
 #[derive(Debug, Default)]
 pub struct ClearBrowsingDataDialogOutput {
@@ -77,17 +77,8 @@ pub fn clear_browsing_data_dialog_ui(
       ui.set_min_width(420.0);
 
       // Header (custom title bar)
-      ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        icon_tinted(ui, BrowserIcon::History, 20.0, ui.visuals().warn_fg_color);
-        ui.heading("Clear browsing data");
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          let close_resp = icon_button(ui, BrowserIcon::Close, "Close (Esc)", true);
-          if close_resp.clicked() {
-            close_dialog = true;
-          }
-        });
+      panel_header(ui, BrowserIcon::History, "Clear browsing data", || {
+        close_dialog = true;
       });
       ui.add_space(8.0);
       ui.label(

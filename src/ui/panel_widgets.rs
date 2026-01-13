@@ -29,6 +29,19 @@ pub fn panel_header(
   title: &str,
   on_close: impl FnOnce(),
 ) -> PanelHeaderOutput {
+  panel_header_with_actions(ui, icon_glyph, title, |_| {}, on_close)
+}
+
+/// Standard side-panel header: leading icon + title, with trailing actions and a close button.
+///
+/// `trailing_actions` are placed to the left of the close button (Chrome-like).
+pub fn panel_header_with_actions(
+  ui: &mut egui::Ui,
+  icon_glyph: BrowserIcon,
+  title: &str,
+  trailing_actions: impl FnOnce(&mut egui::Ui),
+  on_close: impl FnOnce(),
+) -> PanelHeaderOutput {
   let mut close_response: Option<egui::Response> = None;
   ui.horizontal(|ui| {
     let icon_side = ui.spacing().icon_width;
@@ -45,6 +58,7 @@ pub fn panel_header(
         on_close();
       }
       close_response = Some(resp);
+      trailing_actions(ui);
     });
   });
 

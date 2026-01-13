@@ -9,10 +9,8 @@
 use std::path::PathBuf;
 
 use super::{
-  a11y_labels, downloads, icon, icon_button, icon_tinted,
-  motion::UiMotion,
-  theme::BrowserTheme,
-  BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
+  a11y_labels, downloads, motion::UiMotion, panel_empty_state, panel_header_with_actions,
+  theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
 
 fn format_bytes(bytes: u64) -> String {
@@ -106,22 +104,11 @@ pub fn downloads_panel_ui(
     .resizable(true)
     .default_width(360.0)
     .show(ctx, |ui| {
-      ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        icon(ui, BrowserIcon::Download, ui.spacing().icon_width);
-        ui.heading("Downloads");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          let close_resp = icon_button(ui, BrowserIcon::Close, "Close (Esc)", true);
-          close_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
-          });
-          if request_initial_focus {
-            close_resp.request_focus();
-          }
-          if close_resp.clicked() {
-            out.close_requested = true;
-          }
-
+      let header_out = panel_header_with_actions(
+        ui,
+        BrowserIcon::Download,
+        "Downloads",
+        |ui| {
           let show_folder = ui.small_button("Show downloads folder");
           show_folder.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads folder")
@@ -129,19 +116,21 @@ pub fn downloads_panel_ui(
           if show_folder.clicked() {
             out.open_requests.push(downloads::default_download_dir());
           }
-        });
+        },
+        || {
+          out.close_requested = true;
+        },
+      );
+      header_out.close_response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
       });
+      if request_initial_focus {
+        header_out.close_response.request_focus();
+      }
       ui.separator();
 
       if downloads.is_empty() {
-        ui.centered_and_justified(|ui| {
-          ui.vertical_centered(|ui| {
-            let tint = ui.visuals().weak_text_color();
-            icon_tinted(ui, BrowserIcon::Download, 28.0, tint);
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("No downloads yet").strong());
-          });
-        });
+        panel_empty_state(ui, BrowserIcon::Download, "No downloads yet", None, None);
         return;
       }
 
