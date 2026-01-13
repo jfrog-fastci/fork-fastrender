@@ -153,6 +153,48 @@ fn test262_breaking_change_files_are_parse_errors() {
 }
 
 #[test]
+fn parses_test262_regexp_prototype_unicode_sets_tests() {
+  // Ensure the rest of the `RegExp.prototype.unicodeSets` test corpus parses (so it can reach
+  // runtime), while keeping the known negative fixtures as early errors.
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+    "../test262-semantic/data/test/built-ins/RegExp/prototype/unicodeSets",
+  );
+  if !root.is_dir() {
+    return;
+  }
+
+  let opts = ecma_script_opts();
+  for entry in std::fs::read_dir(&root).expect("read unicodeSets fixture dir") {
+    let entry = entry.expect("read_dir entry");
+    let path = entry.path();
+    if path.extension().and_then(|s| s.to_str()) != Some("js") {
+      continue;
+    }
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+      continue;
+    };
+    let src = std::fs::read_to_string(&path).expect("read test262 file");
+
+    let is_breaking_change = name.starts_with("breaking-change-from-u-to-v-");
+    let is_uv_flags = name == "uv-flags.js";
+    if is_breaking_change || is_uv_flags {
+      let err = parse_with_options(&src, opts).expect_err("expected parse error");
+      let expected = if is_uv_flags {
+        SyntaxErrorType::ExpectedSyntax("valid regex flags")
+      } else {
+        SyntaxErrorType::ExpectedSyntax("valid regular expression")
+      };
+      assert_eq!(err.typ, expected, "unexpected error type for {name}");
+    } else {
+      assert!(
+        parse_with_options(&src, opts).is_ok(),
+        "expected {name} to parse",
+      );
+    }
+  }
+}
+
+#[test]
 fn accepts_unicode_sets_examples() {
   let opts = ecma_script_opts();
   assert!(parse_with_options("let r = /^[[0-9]_]+$/v;", opts).is_ok());
