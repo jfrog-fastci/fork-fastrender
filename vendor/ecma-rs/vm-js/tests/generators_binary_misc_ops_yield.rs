@@ -546,3 +546,26 @@ fn bigint_unsigned_right_shift_throws_type_error_under_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn bigint_unsigned_right_shift_throws_type_error_with_yield_in_both_operands() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        function* g(){
+          try { return (yield 1n) >>> (yield 0n); }
+          catch (e) { return e && e.name === 'TypeError'; }
+        }
+        var it = g();
+        var r1 = it.next();
+        var r2 = it.next(1n);
+        var r3 = it.next(0n);
+        r1.value === 1n && r1.done === false &&
+        r2.value === 0n && r2.done === false &&
+        r3.done === true && r3.value === true
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
