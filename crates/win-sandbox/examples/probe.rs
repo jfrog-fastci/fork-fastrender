@@ -52,8 +52,9 @@ mod windows {
     TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
-    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-    NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+    ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
+    EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+    TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
   };
   use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
   use windows_sys::Win32::System::Console::{
@@ -109,9 +110,6 @@ mod windows {
   //   ProcThreadAttributeValue(Number, Thread, Input, Additive)
   const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
   const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
-
-  // `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
-  const NO_INHERITANCE: u32 = 0;
 
   #[derive(Debug, Clone, Copy, PartialEq, Eq)]
   enum SandboxMode {
