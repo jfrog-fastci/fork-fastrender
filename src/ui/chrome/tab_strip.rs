@@ -561,7 +561,6 @@ fn compute_tab_strip_sizing_with_extras(
       total_content_width: 0.0,
     };
   }
-
   let available_width = if available_width.is_finite() {
     available_width.max(0.0)
   } else {
@@ -656,8 +655,8 @@ fn group_chip_ui(
     return;
   };
 
-  let collapsed = group.collapsed;
   let color = group.color;
+  let collapsed = group.collapsed;
   let title = if group.title.trim().is_empty() {
     "Group".to_string()
   } else {
@@ -2265,6 +2264,45 @@ mod tests {
     let sizing = compute_tab_strip_sizing(required, tabs);
     assert!(!sizing.overflow);
     assert!((sizing.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn sizing_with_zero_extras_matches_tabs_only() {
+    let tabs: usize = 5;
+    let available = 777.0;
+    let sizing_tabs = compute_tab_strip_sizing(available, tabs);
+    let sizing_extras = compute_tab_strip_sizing_with_extras(available, tabs, 0.0, 0);
+    assert!((sizing_tabs.tab_width - sizing_extras.tab_width).abs() < f32::EPSILON);
+    assert_eq!(sizing_tabs.overflow, sizing_extras.overflow);
+    assert!((sizing_tabs.total_content_width - sizing_extras.total_content_width).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn sizing_accounts_for_extra_item_width() {
+    let available = 600.0;
+    let tabs: usize = 3;
+    let chip_width = 120.0;
+
+    let sizing_no_chips = compute_tab_strip_sizing(available, tabs);
+    assert!((sizing_no_chips.tab_width - 196.0).abs() < 0.01);
+
+    let sizing_with_chip = compute_tab_strip_sizing_with_extras(available, tabs, chip_width, 1);
+    assert!((sizing_with_chip.tab_width - 154.0).abs() < 0.01);
+    assert!(!sizing_with_chip.overflow);
+  }
+
+  #[test]
+  fn sizing_overflow_flips_when_extras_added() {
+    let tabs: usize = 4;
+    let available = (tabs as f32) * TAB_MIN_WIDTH + (tabs.saturating_sub(1) as f32) * TAB_GAP;
+    let sizing_no_chips = compute_tab_strip_sizing(available, tabs);
+    assert!(!sizing_no_chips.overflow);
+
+    // One extra fixed-width chip (plus the extra gap it introduces) should force overflow even
+    // though the same viewport fits tabs at `TAB_MIN_WIDTH` without it.
+    let sizing_with_chip = compute_tab_strip_sizing_with_extras(available, tabs, 100.0, 1);
+    assert!(sizing_with_chip.overflow);
+    assert!((sizing_with_chip.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
 
   #[test]
