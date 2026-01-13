@@ -19827,6 +19827,20 @@ const DISPLAY_LIST_BUILD_BUDGET_CAP: Duration = Duration::from_secs(10);
 /// Optimization is optional; when the budget is exceeded we rasterize the unoptimized list.
 const DISPLAY_LIST_OPTIMIZE_BUDGET_CAP: Duration = Duration::from_millis(200);
 
+/// Runtime toggle for overriding [`DISPLAY_LIST_OPTIMIZE_BUDGET_CAP`] in milliseconds.
+///
+/// This is primarily intended for tests that need deterministic optimizer budget timeouts without
+/// using extremely tight overall paint deadlines.
+const ENV_DISPLAY_LIST_OPTIMIZE_BUDGET_CAP_MS: &str = "FASTR_DISPLAY_LIST_OPTIMIZE_BUDGET_CAP_MS";
+
+#[inline]
+fn display_list_optimize_budget_cap() -> Duration {
+  crate::debug::runtime::runtime_toggles()
+    .u64(ENV_DISPLAY_LIST_OPTIMIZE_BUDGET_CAP_MS)
+    .map(Duration::from_millis)
+    .unwrap_or(DISPLAY_LIST_OPTIMIZE_BUDGET_CAP)
+}
+
 #[inline]
 fn display_list_build_budget_from_remaining(remaining: Duration) -> Duration {
   (remaining / 2).min(DISPLAY_LIST_BUILD_BUDGET_CAP)
@@ -19834,7 +19848,7 @@ fn display_list_build_budget_from_remaining(remaining: Duration) -> Duration {
 
 #[inline]
 fn display_list_optimize_budget_from_remaining(remaining: Duration) -> Duration {
-  (remaining / 4).min(DISPLAY_LIST_OPTIMIZE_BUDGET_CAP)
+  (remaining / 4).min(display_list_optimize_budget_cap())
 }
 
 pub(crate) fn paint_backend_from_env() -> PaintBackend {
@@ -20068,12 +20082,32 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
   paint_parallelism: PaintParallelism,
   trace: &TraceHandle,
 ) -> Result<Pixmap> {
-  let diagnostics_enabled = paint_diagnostics_enabled();
+  Ok(
+    paint_display_list_with_resources_scaled_with_trace_report(
+      display_list,
+      width,
+      height,
+      background,
+      font_ctx,
+      scale,
+      paint_parallelism,
+      trace,
+    )?
+    .pixmap,
+  )
+}
 
-  let _optimize_span = trace.span("display_list_optimize", "paint");
+pub(crate) struct DisplayListPaintReport {
+  pub pixmap: Pixmap,
+  pub used_optimized_list: bool,
+}
+
+fn optimize_display_list_for_paint(
+  display_list: &crate::paint::display_list::DisplayList,
+  viewport_rect: Rect,
+) -> Result<(Option<crate::paint::display_list::DisplayList>, crate::paint::optimize::OptimizationStats)>
+{
   let optimizer = DisplayListOptimizer::new();
-  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
-  let optimize_start = diagnostics_enabled.then(Instant::now);
   let optimize_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())
     .map(display_list_optimize_budget_from_remaining);
@@ -20089,8 +20123,8 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
     None => optimizer.optimize_checked(display_list, viewport_rect),
   };
 
-  let (optimized, stats) = match optimize_result {
-    Ok((optimized, stats)) => (Some(optimized), stats),
+  match optimize_result {
+    Ok((optimized, stats)) => Ok((Some(optimized), stats)),
     Err(err) => {
       // Optimization is optional; if we hit the optimization budget, rasterize the original display
       // list (still benefiting from display-list renderer caching + tiling).
@@ -20098,19 +20132,40 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
         if let Err(err) = check_active(RenderStage::Paint) {
           return Err(Error::Render(err));
         }
-        (
+        Ok((
           None,
           crate::paint::optimize::OptimizationStats {
             original_count: original_items,
             final_count: original_items,
             ..Default::default()
           },
-        )
+        ))
       } else {
-        return Err(err);
+        Err(err)
       }
     }
-  };
+  }
+}
+
+/// Like [`paint_display_list_with_resources_scaled_with_trace`], but also reports which display
+/// list variant was rasterized (optimized vs original).
+pub(crate) fn paint_display_list_with_resources_scaled_with_trace_report(
+  display_list: &crate::paint::display_list::DisplayList,
+  width: u32,
+  height: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  scale: f32,
+  paint_parallelism: PaintParallelism,
+  trace: &TraceHandle,
+) -> Result<DisplayListPaintReport> {
+  let diagnostics_enabled = paint_diagnostics_enabled();
+
+  let _optimize_span = trace.span("display_list_optimize", "paint");
+  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+  let optimize_start = diagnostics_enabled.then(Instant::now);
+  let (optimized, stats) = optimize_display_list_for_paint(display_list, viewport_rect)?;
+  let used_optimized_list = optimized.is_some();
 
   let list_to_render = optimized.as_ref().unwrap_or(display_list);
 
@@ -20172,7 +20227,138 @@ pub(crate) fn paint_display_list_with_resources_scaled_with_trace(
     });
   }
 
-  Ok(report.pixmap)
+  Ok(DisplayListPaintReport {
+    pixmap: report.pixmap,
+    used_optimized_list,
+  })
+}
+
+/// Display-list input variants accepted by partial repaint helpers.
+pub(crate) enum PartialRepaintDisplayList<'a> {
+  /// A single list reference, with an explicit marker describing whether it has already been
+  /// optimized.
+  Single {
+    display_list: &'a crate::paint::display_list::DisplayList,
+    already_optimized: bool,
+  },
+  /// Both the original list and an optional optimized list produced by the standard pipeline.
+  ///
+  /// When `optimized` is `None`, the caller indicates that optimization was skipped (e.g. due to
+  /// deadline budgeting) and the original list must be used for rasterization.
+  OriginalAndOptimized {
+    original: &'a crate::paint::display_list::DisplayList,
+    optimized: Option<&'a crate::paint::display_list::DisplayList>,
+  },
+}
+
+pub(crate) struct PartialRepaintReport {
+  pub used_optimized_list: bool,
+}
+
+/// Repaints a sub-rectangle of an existing pixmap using a display list slice derived from the same
+/// optimize-stage semantics as full paint.
+///
+/// This is a low-level helper for incremental rendering. It overwrites only the pixels covered by
+/// `dirty_rect_css` (in CSS coordinates), leaving the rest of `pixmap` untouched.
+pub(crate) fn repaint_display_list_region_with_resources_scaled_with_trace(
+  lists: PartialRepaintDisplayList<'_>,
+  pixmap: &mut Pixmap,
+  dirty_rect_css: Rect,
+  width: u32,
+  height: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  scale: f32,
+  trace: &TraceHandle,
+) -> Result<PartialRepaintReport> {
+  let viewport_rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+
+  let mut optimized_owned: Option<crate::paint::display_list::DisplayList> = None;
+  let (list_to_render, used_optimized_list) = match lists {
+    PartialRepaintDisplayList::Single {
+      display_list,
+      already_optimized,
+    } => {
+      if already_optimized {
+        (display_list, true)
+      } else {
+        let (optimized, _stats) = optimize_display_list_for_paint(display_list, viewport_rect)?;
+        optimized_owned = optimized;
+        let list = optimized_owned.as_ref().unwrap_or(display_list);
+        (list, optimized_owned.is_some())
+      }
+    }
+    PartialRepaintDisplayList::OriginalAndOptimized { original, optimized } => {
+      (optimized.unwrap_or(original), optimized.is_some())
+    }
+  };
+
+  // Convert the dirty rectangle to device pixel bounds and clamp to the destination pixmap.
+  let device_w = pixmap.width() as i64;
+  let device_h = pixmap.height() as i64;
+  if device_w <= 0 || device_h <= 0 {
+    return Ok(PartialRepaintReport { used_optimized_list });
+  }
+  if dirty_rect_css.width() <= 0.0 || dirty_rect_css.height() <= 0.0 {
+    return Ok(PartialRepaintReport { used_optimized_list });
+  }
+  let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+
+  let x0 = (dirty_rect_css.min_x() * scale).floor() as i64;
+  let y0 = (dirty_rect_css.min_y() * scale).floor() as i64;
+  let x1 = (dirty_rect_css.max_x() * scale).ceil() as i64;
+  let y1 = (dirty_rect_css.max_y() * scale).ceil() as i64;
+
+  let clamp_i64 = |v: i64, min: i64, max: i64| v.max(min).min(max);
+  let x0 = clamp_i64(x0, 0, device_w);
+  let y0 = clamp_i64(y0, 0, device_h);
+  let x1 = clamp_i64(x1, 0, device_w);
+  let y1 = clamp_i64(y1, 0, device_h);
+  let region_w = (x1 - x0).max(0) as u32;
+  let region_h = (y1 - y0).max(0) as u32;
+  if region_w == 0 || region_h == 0 {
+    return Ok(PartialRepaintReport { used_optimized_list });
+  }
+
+  // Render a tile covering the dirty region. We currently use a zero halo; callers that need
+  // filter/AA padding should inflate `dirty_rect_css` before calling this helper.
+  let render_x = x0 as u32;
+  let render_y = y0 as u32;
+  let render_w = region_w;
+  let render_h = region_h;
+
+  let _partial_span = trace.span("display_list_partial_repaint", "paint");
+  let tile = crate::paint::display_list_renderer::render_display_list_tile(
+    list_to_render,
+    render_x,
+    render_y,
+    render_w,
+    render_h,
+    background,
+    font_ctx,
+    scale,
+  )?;
+
+  // Blit the rendered region back into the destination pixmap.
+  let dest_stride = pixmap.width() as usize * 4;
+  let src_stride = tile.width() as usize * 4;
+  let copy_bytes = region_w as usize * 4;
+  const PARTIAL_REPAINT_DEADLINE_STRIDE: usize = 256;
+  let mut deadline_counter = 0usize;
+  for row in 0..region_h as usize {
+    check_active_periodic(
+      &mut deadline_counter,
+      PARTIAL_REPAINT_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )
+      .map_err(Error::Render)?;
+    let dest_offset = (render_y as usize + row) * dest_stride + render_x as usize * 4;
+    let src_offset = row * src_stride;
+    pixmap.data_mut()[dest_offset..dest_offset + copy_bytes]
+      .copy_from_slice(&tile.data()[src_offset..src_offset + copy_bytes]);
+  }
+
+  Ok(PartialRepaintReport { used_optimized_list })
 }
 
 /// Paints a fragment tree via the display-list pipeline using explicit resources.

@@ -21593,6 +21593,62 @@ fn div_255(value: u16) -> u16 {
   (value + 1 + (value >> 8)) >> 8
 }
 
+/// Render a device-pixel tile of a display list.
+///
+/// This is used by incremental repaint paths that want to re-rasterize a sub-rectangle without
+/// rebuilding the full `DisplayListRenderer` pipeline.
+///
+/// `render_x/render_y/render_w/render_h` are in *device pixels* (after scaling).
+pub(crate) fn render_display_list_tile(
+  list: &DisplayList,
+  render_x: u32,
+  render_y: u32,
+  render_w: u32,
+  render_h: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  scale: f32,
+) -> Result<Pixmap> {
+  // Match `DisplayListRenderer::render_with_report` preserve-3d fallback handling so partial repaints
+  // remain byte-identical to full paints when the scene renderer is disabled.
+  let composed = runtime_flag("FASTR_PRESERVE3D_DISABLE_SCENE")
+    .then(|| crate::paint::preserve_3d::composite_preserve_3d(list));
+  let list = composed.as_ref().unwrap_or(list);
+
+  let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+  let render_css_rect = Rect::from_xywh(
+    render_x as f32 / scale,
+    render_y as f32 / scale,
+    render_w as f32 / scale,
+    render_h as f32 / scale,
+  );
+  let optimizer = DisplayListOptimizer::new();
+  let slice = optimizer
+    .intersect_view(list.items(), render_css_rect)
+    .map_err(Error::Render)?;
+
+  let mut renderer = DisplayListRenderer::new_with_text_state(
+    render_w,
+    render_h,
+    background,
+    font_ctx,
+    scale,
+    shared_color_renderer(),
+    shared_color_cache(),
+    shared_glyph_cache(),
+  )?;
+  renderer.paint_parallelism = PaintParallelism::disabled();
+  if render_x > 0 || render_y > 0 {
+    renderer
+      .canvas
+      .translate(-(render_x as f32), -(render_y as f32));
+  }
+  renderer.render_slice(&slice)?;
+  // Ensure we catch deadlines that expire during the final item.
+  check_active(RenderStage::Paint).map_err(Error::Render)?;
+  Ok(renderer.canvas.into_pixmap())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

@@ -124,6 +124,7 @@ mod opacity_layer_rounding_test;
 mod legacy_border_radius_does_not_clip_opacity_group;
 mod optimize_test;
 mod optimizer_pixel_equivalence_test;
+mod partial_repaint_optimize_budget_timeout;
 mod overflow_clip_margin_test;
 mod overflow_clip_root_decoration_disambiguation;
 mod overflow_clip_test;
