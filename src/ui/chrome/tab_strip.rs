@@ -3592,6 +3592,7 @@ pub(super) fn load_test_layout(ctx: &egui::Context) -> Option<(Rect, Vec<Rect>)>
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::a11y_test_util;
 
   #[test]
   fn tab_a11y_label_formats_active_pinned_loading_error_warning_states() {
@@ -4115,6 +4116,40 @@ mod tests {
     assert_eq!(
       compute_tab_insertion_index(f32::INFINITY, &rects, dragged),
       2
+    );
+  }
+
+  #[test]
+  fn tab_strip_emits_accesskit_name_for_new_tab_button() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      let motion = UiMotion::from_ctx(ui.ctx());
+      let focus_ring = super::super::chrome_focus_ring_style(ui.ctx(), &app);
+      let mut favicon = |_tab_id: TabId| None;
+      let _actions = tab_strip_ui(ui, &mut app, &mut favicon, motion, focus_ring);
+    });
+
+    let output = ctx.end_frame();
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    assert!(
+      names.iter().any(|n| n == BrowserIcon::NewTab.a11y_label()),
+      "expected New tab button name in AccessKit output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
     );
   }
 }
