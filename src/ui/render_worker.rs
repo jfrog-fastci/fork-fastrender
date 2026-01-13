@@ -2932,20 +2932,20 @@ impl BrowserRuntime {
                 Ok(scrolled) => {
                   wheel_handled = true;
                   if scrolled {
-                    let next = doc.scroll_state();
-                    let mut effective = if let Some(prepared) = doc.prepared() {
-                      emit_scroll_state_updated = true;
-                      Self::compute_effective_scroll_state_from_prepared(prepared, &next)
-                     } else {
-                       next
-                     };
-                    effective.update_deltas_from(&current_scroll);
-                    doc.set_scroll_state(effective.clone());
-                    tab.scroll_state = effective;
-                    if let Some(js_tab) = tab.js_tab.as_mut() {
-                      js_tab.set_scroll_state(tab.scroll_state.clone());
-                    }
+                    // Do not apply scroll snap during wheel scrolling: small smooth-scroll deltas
+                    // (trackpads) should accumulate across multiple wheel events. Scroll snap is
+                    // applied later by the paint pipeline (or an explicit "scroll end" step).
+                    //
+                    // `wheel_scroll_at_viewport_point` already clamps to scroll bounds and
+                    // sanitizes scroll offsets; keep the raw offsets here so subsequent wheel
+                    // events build on them.
+                    let mut next = doc.scroll_state();
+                    next.update_deltas_from(&current_scroll);
+                    doc.set_scroll_state(next.clone());
+                    tab.scroll_state = next;
+                    tab.sync_js_scroll_state();
                     scroll_changed = true;
+                    emit_scroll_state_updated = doc.prepared().is_some();
                     changed = true;
                   }
                 }
