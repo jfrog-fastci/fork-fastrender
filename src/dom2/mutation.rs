@@ -917,6 +917,7 @@ impl Document {
     self.node_checked(node_id)?;
 
     let has_live_subscribers = self.live_mutation.has_subscribers();
+    let has_live_ranges = !self.ranges.is_empty();
     #[derive(Clone, Copy)]
     enum ReplaceTarget {
       Text,
@@ -941,7 +942,9 @@ impl Document {
     }
     let end = offset.saturating_add(count).min(units.len());
     let removed_len = end.saturating_sub(offset);
-    let inserted_len = has_live_subscribers.then(|| utf16_len(data)).unwrap_or(0);
+    let inserted_len = (has_live_subscribers || has_live_ranges)
+      .then(|| utf16_len(data))
+      .unwrap_or(0);
 
     // `Vec::splice` applies its mutation when the returned iterator is dropped; we discard it.
     let _ = units.splice(offset..end, data.encode_utf16());
@@ -954,6 +957,9 @@ impl Document {
       self
         .live_mutation
         .replace_data(node_id, offset, removed_len, inserted_len);
+    }
+    if has_live_ranges {
+      self.live_range_replace_data_steps(node_id, offset, removed_len, inserted_len);
     }
 
     {
@@ -1006,13 +1012,20 @@ impl Document {
       _ => return Err(DomError::InvalidNodeType),
     };
 
-    if self.live_mutation.has_subscribers() {
-      self.live_mutation.replace_data(
-        node_id,
-        /* offset */ 0,
-        /* removed_len */ utf16_len(&old_value),
-        /* inserted_len */ utf16_len(data),
-      );
+    let has_live_subscribers = self.live_mutation.has_subscribers();
+    let has_live_ranges = !self.ranges.is_empty();
+    if has_live_subscribers || has_live_ranges {
+      let removed_len = utf16_len(&old_value);
+      let inserted_len = utf16_len(data);
+
+      if has_live_subscribers {
+        self
+          .live_mutation
+          .replace_data(node_id, /* offset */ 0, removed_len, inserted_len);
+      }
+      if has_live_ranges {
+        self.live_range_replace_data_steps(node_id, /* offset */ 0, removed_len, inserted_len);
+      }
     }
 
     {
@@ -1043,13 +1056,20 @@ impl Document {
       _ => return Err(DomError::InvalidNodeType),
     };
 
-    if self.live_mutation.has_subscribers() {
-      self.live_mutation.replace_data(
-        node_id,
-        /* offset */ 0,
-        /* removed_len */ utf16_len(&old_value),
-        /* inserted_len */ utf16_len(data),
-      );
+    let has_live_subscribers = self.live_mutation.has_subscribers();
+    let has_live_ranges = !self.ranges.is_empty();
+    if has_live_subscribers || has_live_ranges {
+      let removed_len = utf16_len(&old_value);
+      let inserted_len = utf16_len(data);
+
+      if has_live_subscribers {
+        self
+          .live_mutation
+          .replace_data(node_id, /* offset */ 0, removed_len, inserted_len);
+      }
+      if has_live_ranges {
+        self.live_range_replace_data_steps(node_id, /* offset */ 0, removed_len, inserted_len);
+      }
     }
 
     {
@@ -1085,13 +1105,20 @@ impl Document {
       _ => return Err(DomError::InvalidNodeType),
     };
 
-    if self.live_mutation.has_subscribers() {
-      self.live_mutation.replace_data(
-        node_id,
-        /* offset */ 0,
-        /* removed_len */ utf16_len(&old_value),
-        /* inserted_len */ utf16_len(data),
-      );
+    let has_live_subscribers = self.live_mutation.has_subscribers();
+    let has_live_ranges = !self.ranges.is_empty();
+    if has_live_subscribers || has_live_ranges {
+      let removed_len = utf16_len(&old_value);
+      let inserted_len = utf16_len(data);
+
+      if has_live_subscribers {
+        self
+          .live_mutation
+          .replace_data(node_id, /* offset */ 0, removed_len, inserted_len);
+      }
+      if has_live_ranges {
+        self.live_range_replace_data_steps(node_id, /* offset */ 0, removed_len, inserted_len);
+      }
     }
 
     {

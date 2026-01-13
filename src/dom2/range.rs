@@ -438,4 +438,70 @@ impl Document {
       }
     }
   }
+
+  /// Live range "replace data" steps.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-cd-replace
+  pub(super) fn live_range_replace_data_steps(
+    &mut self,
+    node: NodeId,
+    offset: usize,
+    removed_len: usize,
+    inserted_len: usize,
+  ) {
+    if self.ranges.is_empty() {
+      return;
+    }
+    if removed_len == 0 && inserted_len == 0 {
+      return;
+    }
+
+    let end = offset.saturating_add(removed_len);
+
+    // 8. For each live range whose start node is node and start offset is greater than offset but
+    // less than or equal to offset + count: set its start offset to offset.
+    for range in self.ranges.iter_mut() {
+      if range.start.node == node && range.start.offset > offset && range.start.offset <= end {
+        range.start.offset = offset;
+      }
+    }
+
+    // 9. For each live range whose end node is node and end offset is greater than offset but less
+    // than or equal to offset + count: set its end offset to offset.
+    for range in self.ranges.iter_mut() {
+      if range.end.node == node && range.end.offset > offset && range.end.offset <= end {
+        range.end.offset = offset;
+      }
+    }
+
+    // 10/11. For each live range whose start/end offset is greater than offset + count: increase
+    // by data's length and decrease by count.
+    if inserted_len >= removed_len {
+      let delta = inserted_len - removed_len;
+      if delta != 0 {
+        for range in self.ranges.iter_mut() {
+          if range.start.node == node && range.start.offset > end {
+            range.start.offset = range.start.offset.saturating_add(delta);
+          }
+        }
+        for range in self.ranges.iter_mut() {
+          if range.end.node == node && range.end.offset > end {
+            range.end.offset = range.end.offset.saturating_add(delta);
+          }
+        }
+      }
+    } else {
+      let delta = removed_len - inserted_len;
+      for range in self.ranges.iter_mut() {
+        if range.start.node == node && range.start.offset > end {
+          range.start.offset = range.start.offset.saturating_sub(delta);
+        }
+      }
+      for range in self.ranges.iter_mut() {
+        if range.end.node == node && range.end.offset > end {
+          range.end.offset = range.end.offset.saturating_sub(delta);
+        }
+      }
+    }
+  }
 }

@@ -59,3 +59,56 @@ fn range_tree_root_stops_at_shadow_root_and_pre_remove_does_not_cross_shadow_bou
   assert_eq!(doc.range_start_container(range).unwrap(), inside);
   assert_eq!(doc.range_end_container(range).unwrap(), inside);
 }
+
+fn assert_range_collapsed(doc: &Document, range: super::RangeId, node: super::NodeId, offset: usize) {
+  assert_eq!(doc.range_start_container(range).unwrap(), node);
+  assert_eq!(doc.range_end_container(range).unwrap(), node);
+  assert_eq!(doc.range_start_offset(range).unwrap(), offset);
+  assert_eq!(doc.range_end_offset(range).unwrap(), offset);
+}
+
+#[test]
+fn range_endpoints_update_after_replace_data_deletion_text() {
+  // This matches the early-return CharacterData-only path in Range.deleteContents() /
+  // Range.extractContents(): it performs a CharacterData replaceData/deleteData operation and
+  // relies on the live-range "replace data" steps to collapse the range.
+  let mut doc: Document = parse_html("<!doctype html><html></html>").unwrap();
+
+  let text = doc.create_text("hello");
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 4).unwrap();
+
+  // Delete the contents between the boundary points.
+  doc.replace_data(text, 1, 3, "").unwrap();
+
+  assert_range_collapsed(&doc, range, text, 1);
+}
+
+#[test]
+fn range_endpoints_update_after_replace_data_deletion_comment() {
+  let mut doc: Document = parse_html("<!doctype html><html></html>").unwrap();
+
+  let comment = doc.create_comment("hello");
+  let range = doc.create_range();
+  doc.range_set_start(range, comment, 1).unwrap();
+  doc.range_set_end(range, comment, 4).unwrap();
+
+  doc.replace_data(comment, 1, 3, "").unwrap();
+
+  assert_range_collapsed(&doc, range, comment, 1);
+}
+
+#[test]
+fn range_endpoints_update_after_replace_data_deletion_processing_instruction() {
+  let mut doc: Document = parse_html("<!doctype html><html></html>").unwrap();
+
+  let pi = doc.create_processing_instruction("x", "hello");
+  let range = doc.create_range();
+  doc.range_set_start(range, pi, 1).unwrap();
+  doc.range_set_end(range, pi, 4).unwrap();
+
+  doc.replace_data(pi, 1, 3, "").unwrap();
+
+  assert_range_collapsed(&doc, range, pi, 1);
+}
