@@ -8724,7 +8724,19 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       _ => {}
     }
 
-    self.renderer_backend.send(msg)
+    match self.renderer_backend.send(msg) {
+      Ok(()) => Ok(()),
+      Err(err) => {
+        if let Some(tab_id) = tab_id {
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+            tab.mark_crashed("Renderer backend disconnected");
+          }
+          // Ensure the crash overlay becomes visible immediately.
+          self.window.request_redraw();
+        }
+        Err(err)
+      }
+    }
   }
 
   fn ensure_trusted_about_renderer(&mut self) -> Option<&mut fastrender::FastRender> {
@@ -16014,6 +16026,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             tab.loading = true;
             tab.unresponsive = false;
             tab.last_worker_msg_at = std::time::SystemTime::now();
+            tab.renderer_crashed = false;
+            tab.renderer_protocol_violation = None;
             tab.error = None;
             tab.stage = None;
             tab.title = None;
@@ -16166,6 +16180,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             tab.loading = true;
             tab.unresponsive = false;
             tab.last_worker_msg_at = std::time::SystemTime::now();
+            tab.renderer_crashed = false;
+            tab.renderer_protocol_violation = None;
             tab.error = None;
             tab.stage = None;
             tab.title = None;
@@ -16252,6 +16268,10 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           if !tab.can_go_back {
             continue;
           }
+          tab.crashed = false;
+          tab.crash_reason = None;
+          tab.renderer_crashed = false;
+          tab.renderer_protocol_violation = None;
           tab.loading = true;
           tab.unresponsive = false;
           tab.last_worker_msg_at = std::time::SystemTime::now();
@@ -16272,6 +16292,10 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           if !tab.can_go_forward {
             continue;
           }
+          tab.crashed = false;
+          tab.crash_reason = None;
+          tab.renderer_crashed = false;
+          tab.renderer_protocol_violation = None;
           tab.loading = true;
           tab.unresponsive = false;
           tab.last_worker_msg_at = std::time::SystemTime::now();

@@ -708,6 +708,8 @@ impl BrowserTabState {
 
     self.crashed = false;
     self.crash_reason = None;
+    self.renderer_crashed = false;
+    self.renderer_protocol_violation = None;
     self.current_url = Some(normalized.clone());
     self.loading = true;
     self.unresponsive = false;
@@ -2211,6 +2213,8 @@ impl BrowserAppState {
     if let Some(tab) = self.tab_mut(tab_id) {
       tab.crashed = false;
       tab.crash_reason = None;
+      tab.renderer_crashed = false;
+      tab.renderer_protocol_violation = None;
       tabs_changed = tab.current_url.as_deref() != Some(normalized.as_str());
       tab.current_url = Some(normalized.clone());
       tab.loading = true;
@@ -2319,10 +2323,7 @@ impl BrowserAppState {
           if let Some(tab) = self.tab_mut(tab_id) {
             tab.renderer_crashed = true;
             tab.renderer_protocol_violation = Some(violation.clone());
-            tab.loading = false;
-            tab.error = Some(format!("Renderer protocol violation: {violation}"));
-            tab.stage = None;
-            tab.clear_load_progress();
+            tab.mark_crashed(format!("Renderer protocol violation: {violation}"));
           }
           // Request a redraw so any crash/error indicator is visible immediately.
           update.request_redraw = true;
@@ -2481,7 +2482,7 @@ impl BrowserAppState {
       }
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
-          if tab.crashed {
+          if tab.crashed && !tab.renderer_crashed {
             tab.crashed = false;
             tab.crash_reason = None;
             tab.error = None;
@@ -2502,6 +2503,10 @@ impl BrowserAppState {
             .map(|url| SiteKey::from_url(&url))
         };
         if let Some(tab) = self.tab_mut(tab_id) {
+          if tab.renderer_crashed {
+            update.request_redraw = true;
+            return update;
+          }
           tab.crashed = false;
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
@@ -2581,6 +2586,10 @@ impl BrowserAppState {
           self.visited.record_visit(normalized_about, safe_title.clone());
         }
         if let Some(tab) = self.tab_mut(tab_id) {
+          if tab.renderer_crashed {
+            update.request_redraw = true;
+            return update;
+          }
           tab.crashed = false;
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
@@ -2633,6 +2642,10 @@ impl BrowserAppState {
         };
         // Do not record failed navigations in global omnibox history.
         if let Some(tab) = self.tab_mut(tab_id) {
+          if tab.renderer_crashed {
+            update.request_redraw = true;
+            return update;
+          }
           tab.crashed = false;
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
@@ -4179,6 +4192,14 @@ mod renderer_ipc_violation_tests {
 
     let tab = app.tab(tab_id).expect("tab state");
     assert!(tab.renderer_crashed, "expected tab to be marked crashed");
+    assert!(tab.crashed, "expected tab crash flag to be set");
+    assert!(
+      tab.crash_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("Renderer protocol violation")),
+      "expected crash reason to mention protocol violation, got {:?}",
+      tab.crash_reason
+    );
     assert!(
       matches!(
         tab.renderer_protocol_violation,
@@ -4214,6 +4235,14 @@ mod renderer_ipc_violation_tests {
       assert!(update.frame_ready.is_none(), "expected frame to be dropped");
       let tab = app.tab(tab_id).expect("tab state");
       assert!(tab.renderer_crashed, "expected tab to be marked crashed");
+      assert!(tab.crashed, "expected tab crash flag to be set");
+      assert!(
+        tab.crash_reason
+          .as_deref()
+          .is_some_and(|reason| reason.contains("Renderer protocol violation")),
+        "expected crash reason to mention protocol violation, got {:?}",
+        tab.crash_reason
+      );
       assert!(
         matches!(
           tab.renderer_protocol_violation,
