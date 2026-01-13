@@ -203,7 +203,22 @@ with open(path, "r", encoding="utf-8", errors="replace") as f:
             sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
 PY
   else
-    cat "${stdout_tmp}" >>"${out_path}"
+    # Best-effort filter without Python: keep only lines that look like JSON objects and contain an
+    # `"event": ...` field. This avoids corrupting the JSONL stream if stdout includes plain-text
+    # output.
+    if command -v awk >/dev/null 2>&1; then
+      awk 'BEGIN { OFS="" }
+        {
+          line=$0
+          sub(/^[[:space:]]+/, "", line)
+          sub(/[[:space:]]+$/, "", line)
+          if (line ~ /^\{/ && line ~ /"event"[[:space:]]*:/) {
+            print line
+          }
+        }' "${stdout_tmp}" >>"${out_path}"
+    else
+      cat "${stdout_tmp}" >>"${out_path}"
+    fi
   fi
 fi
 rm -f "${stdout_tmp}" 2>/dev/null || true
