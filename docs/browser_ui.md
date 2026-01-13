@@ -263,6 +263,10 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
   - Non-URL queries (e.g. `cats`) are treated as searches using the default search engine.
 - While typing, the omnibox shows a suggestions dropdown (from history and open tabs).
   - Use ArrowUp/ArrowDown to select a suggestion, Enter to accept, Escape to close the dropdown.
+- Right-clicking in the rendered page opens a basic context menu (for example: open link in new tab,
+  copy link address, download link, reload).
+- Click the downloads icon in the toolbar to open the downloads side panel (shows progress and lets
+  you cancel/retry/open/reveal completed downloads).
 
 ## Keyboard / mouse shortcuts
 
