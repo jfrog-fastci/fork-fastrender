@@ -65,6 +65,23 @@ fn run_f0(source: &str) -> Result<Value, VmError> {
   compile_and_call0(source, "f")
 }
 
+fn assert_thrown_is_reference_error(rt: &JsRuntime, err: VmError) -> Result<(), VmError> {
+  let thrown = err
+    .thrown_value()
+    .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown value to be an object, got {thrown:?}");
+  };
+
+  let intr = rt
+    .vm
+    .intrinsics()
+    .expect("intrinsics should be initialized for JsRuntime");
+  let thrown_proto = rt.heap().object_prototype(thrown_obj)?;
+  assert_eq!(thrown_proto, Some(intr.reference_error_prototype()));
+  Ok(())
+}
+
 #[test]
 fn compiled_closure_capture_semantics() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -6088,6 +6105,66 @@ fn compiled_class_decl_tdz_shadows_outer_binding() -> Result<(), VmError> {
 
   let result = rt.exec_compiled_script(script)?;
   assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_function_block_let_tdz_throws_reference_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ { x; let x = 1; } }
+      f()
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  assert_thrown_is_reference_error(&rt, err)?;
+  Ok(())
+}
+
+#[test]
+fn compiled_function_block_let_shadowing_does_not_affect_outer() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ let x = 1; { let x = 2; } return x; }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_function_block_let_shadowing_before_init_throws_reference_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ let x = 1; { let y = x; let x = 2; return y; } }
+      f()
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  assert_thrown_is_reference_error(&rt, err)?;
   Ok(())
 }
 

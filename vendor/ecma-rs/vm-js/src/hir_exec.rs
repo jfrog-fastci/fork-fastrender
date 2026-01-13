@@ -1933,6 +1933,13 @@ impl<'vm> HirEvaluator<'vm> {
                 let env = iter_scope.env_create(Some(outer_lex))?;
                 self.env.set_lexical_env(iter_scope.heap_mut(), env);
                 iter_env = Some(env);
+                // Per spec, `for..in/of` with lexical declarations creates a fresh binding per
+                // iteration. Create the binding in TDZ, then initialize it during binding
+                // initialization.
+                if let Err(err) = self.instantiate_lexical_decl(&mut iter_scope, body, var_decl, env) {
+                  self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                  return Err(err);
+                }
               } else if !matches!(var_decl.kind, hir_js::VarDeclKind::Var) {
                 return Err(VmError::Unimplemented(
                   "for-of loop variable declaration kind (hir-js compiled path)",
@@ -2088,6 +2095,13 @@ impl<'vm> HirEvaluator<'vm> {
                 let env = iter_scope.env_create(Some(outer_lex))?;
                 self.env.set_lexical_env(iter_scope.heap_mut(), env);
                 iter_env = Some(env);
+                // Per spec, `for..in` with lexical declarations creates a fresh binding per
+                // iteration. Create the binding in TDZ, then initialize it during binding
+                // initialization.
+                if let Err(err) = self.instantiate_lexical_decl(&mut iter_scope, body, var_decl, env) {
+                  self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                  return Err(err);
+                }
               } else if !matches!(var_decl.kind, hir_js::VarDeclKind::Var) {
                 return Err(VmError::Unimplemented(
                   "for-in loop variable declaration kind (hir-js compiled path)",
@@ -2369,6 +2383,21 @@ impl<'vm> HirEvaluator<'vm> {
 
             let catch_result = (|| -> Result<Flow, VmError> {
               if let Some(param_pat_id) = catch_clause.param {
+                // Catch parameter bindings have TDZ semantics like other lexical bindings:
+                // - bindings are instantiated uninitialized,
+                // - then binding initialization runs (which can evaluate destructuring defaults).
+                //
+                // Pre-create all identifier bindings before evaluating any default initializers so
+                // self-references (e.g. `catch ({ x = x }) {}`) throw a ReferenceError.
+                let mut names: Vec<hir_js::NameId> = Vec::new();
+                self.collect_pat_idents(body, param_pat_id, &mut names)?;
+                for name_id in names {
+                  let name = self.resolve_name(name_id)?;
+                  if !catch_scope.heap().env_has_binding(catch_env, name.as_str())? {
+                    catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
+                  }
+                }
+
                 // Catch bindings accept any binding pattern (identifier, object/array destructuring,
                 // rest, etc). Bind into the catch environment we just installed as the current
                 // lexical environment.
@@ -2683,8 +2712,9 @@ impl<'vm> HirEvaluator<'vm> {
       PatBindingKind::Let => {
         let env_rec = self.env.lexical_env();
         if !scope.heap().env_has_binding(env_rec, name.as_str())? {
-          // Non-block statement contexts may not have performed lexical hoisting yet.
-          scope.env_create_mutable_binding(env_rec, name.as_str())?;
+          return Err(VmError::InvariantViolation(
+            "`let` binding must be instantiated before initialization",
+          ));
         }
         scope
           .heap_mut()
@@ -2693,8 +2723,9 @@ impl<'vm> HirEvaluator<'vm> {
       PatBindingKind::Const => {
         let env_rec = self.env.lexical_env();
         if !scope.heap().env_has_binding(env_rec, name.as_str())? {
-          // Non-block statement contexts may not have performed lexical hoisting yet.
-          scope.env_create_immutable_binding(env_rec, name.as_str())?;
+          return Err(VmError::InvariantViolation(
+            "`const` binding must be instantiated before initialization",
+          ));
         }
         scope
           .heap_mut()
