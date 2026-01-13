@@ -66,13 +66,16 @@ pub fn is_nested_job_supported() -> bool {
 #[cfg(windows)]
 unsafe fn is_appcontainer_supported_impl() -> bool {
   use windows_sys::Win32::Foundation::HMODULE;
-  use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+  use windows_sys::Win32::System::LibraryLoader::{
+    GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+  };
 
   // `userenv.dll` provides the AppContainer profile APIs on Windows 8+.
   let userenv: Vec<u16> = "userenv.dll\0".encode_utf16().collect();
   let mut module: HMODULE = GetModuleHandleW(userenv.as_ptr());
   if module.is_null() {
-    module = LoadLibraryW(userenv.as_ptr());
+    // Load from `System32` explicitly to avoid DLL search order hijacking.
+    module = LoadLibraryExW(userenv.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
   }
   if module.is_null() {
     return false;
