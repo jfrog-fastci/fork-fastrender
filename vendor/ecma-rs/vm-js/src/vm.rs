@@ -3474,15 +3474,37 @@ impl Vm {
     // User functions may be allocated without a realm in unit tests / low-level embeddings. To
     // preserve sloppy-mode `this` semantics and allow identifier resolution to fall back to a global
     // object, synthesize a minimal global object if needed.
+    //
+    // If intrinsics have been initialized (i.e. a `Realm::new` has run), prefer the realm's global
+    // object instead of creating a fresh empty object: that ensures standard globals like `Symbol`
+    // exist even when a function object was allocated without explicit `[[Realm]]` metadata.
     let global_object = match realm {
       Some(obj) => obj,
       None => {
-        let mut init_scope = scope.reborrow();
-        init_scope.push_root(Value::Object(callee))?;
-        let global_object = init_scope.alloc_object()?;
-        init_scope.push_root(Value::Object(global_object))?;
-        init_scope.heap_mut().set_function_realm(callee, global_object)?;
-        global_object
+        let mut inferred_global: Option<GcObject> = None;
+        if let Some(intr) = self.intrinsics() {
+          // Recover the realm global object from the intrinsic `%Object%` constructor's `[[Realm]]`
+          // metadata.
+          inferred_global = scope
+            .heap()
+            .get_function(intr.object_constructor())
+            .ok()
+            .and_then(|f| f.realm);
+        }
+
+        if let Some(global_object) = inferred_global {
+          scope
+            .heap_mut()
+            .set_function_realm(callee, global_object)?;
+          global_object
+        } else {
+          let mut init_scope = scope.reborrow();
+          init_scope.push_root(Value::Object(callee))?;
+          let global_object = init_scope.alloc_object()?;
+          init_scope.push_root(Value::Object(global_object))?;
+          init_scope.heap_mut().set_function_realm(callee, global_object)?;
+          global_object
+        }
       }
     };
 
