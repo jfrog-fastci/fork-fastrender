@@ -1470,6 +1470,45 @@ fn compiled_numeric_ops_call_toprimitive_on_objects() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_numeric_ops_root_lhs_across_rhs_eval_under_gc_stress() -> Result<(), VmError> {
+  // Force a GC on every allocation so binary operator evaluation must keep the LHS alive while
+  // evaluating the RHS.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return ({ valueOf() { return 2; } }) * ({ valueOf() { return 3; } });
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  // `ToPrimitive` (used by `ToNumber` on objects) requires initialized intrinsics for @@toPrimitive.
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+  {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("f")?;
+    let f = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name,
+      0,
+    )?;
+
+    let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+    assert_eq!(result, Value::Number(6.0));
+  }
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn compiled_var_is_hoisted_in_function_body() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

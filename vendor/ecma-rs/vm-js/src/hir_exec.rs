@@ -3076,7 +3076,17 @@ impl<'vm> HirEvaluator<'vm> {
     }
 
     let l = self.eval_expr(scope, body, left)?;
-    let r = self.eval_expr(scope, body, right)?;
+
+    // Root the LHS across RHS evaluation: evaluating the RHS can allocate and trigger GC, and most
+    // binary operators need the LHS value afterwards (including when later coercions invoke user
+    // code).
+    let mut scope = scope.reborrow();
+    scope.push_root(l)?;
+
+    let r = self.eval_expr(&mut scope, body, right)?;
+    scope.push_root(r)?;
+
+    let scope = &mut scope;
 
     match op {
       hir_js::BinaryOp::Add => {
