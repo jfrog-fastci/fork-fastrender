@@ -1610,6 +1610,144 @@ pub fn object_from_entries(
   }
 }
 
+/// `Object.groupBy(items, callbackfn)` (ECMA-262 Stage 4 "array-grouping").
+///
+/// Spec: <https://tc39.es/ecma262/#sec-object.groupby>
+pub fn object_group_by(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let items = args.get(0).copied().unwrap_or(Value::Undefined);
+  let callbackfn = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  // 2. If IsCallable(callbackfn) is false, throw a TypeError exception.
+  if !scope.heap().is_callable(callbackfn)? {
+    return Err(VmError::NotCallable);
+  }
+
+  // Root callbackfn across iteration and callback invocations.
+  scope.push_root(callbackfn)?;
+
+  // 2. Let obj be OrdinaryObjectCreate(null).
+  //
+  // `alloc_object` creates an ordinary object with `[[Prototype]] = null` by default.
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+
+  // 4. Let iteratorRecord be ? GetIterator(items).
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, items)?;
+  // Root iterator record values for the duration of iteration.
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  struct GroupEntry {
+    key: PropertyKey,
+    array: GcObject,
+    next_index: u32,
+  }
+
+  let mut groups: Vec<GroupEntry> = Vec::new();
+
+  // `k` is a mathematical integer; callback receives `𝔽(k)` (a Number).
+  let mut k: u64 = 0;
+
+  loop {
+    if k % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    // 6.b. Let next be ? IteratorStep(iteratorRecord).
+    // 6.c. If next is false, return groups.
+    let next_value =
+      match crate::iterator::iterator_step_value(vm, host, hooks, &mut scope, &mut iterator_record) {
+        Ok(Some(v)) => v,
+        Ok(None) => break,
+        Err(err) => return Err(err),
+      };
+
+    let iter_result: Result<(), VmError> = (|| {
+      // Use a nested scope so per-element roots do not accumulate.
+      let mut step_scope = scope.reborrow();
+      step_scope.push_root(next_value)?;
+
+      // 6.e. Let key be Completion(Call(callbackfn, undefined, « value, 𝔽(k) »)).
+      let index_value = Value::Number(k as f64);
+      let key_value = vm.call_with_host_and_hooks(
+        host,
+        &mut step_scope,
+        hooks,
+        callbackfn,
+        Value::Undefined,
+        &[next_value, index_value],
+      )?;
+      step_scope.push_root(key_value)?;
+
+      // 6.g.i. Set key to Completion(ToPropertyKey(key)).
+      let key = step_scope.to_property_key(vm, host, hooks, key_value)?;
+      root_property_key(&mut step_scope, key)?;
+
+      // Find an existing group by `PropertyKey` value (string keys compare by UTF-16 code units).
+      let mut group_idx: Option<usize> = None;
+      for i in 0..groups.len() {
+        if step_scope.heap().property_key_eq(&groups[i].key, &key) {
+          group_idx = Some(i);
+          break;
+        }
+      }
+
+      let idx = if let Some(i) = group_idx {
+        i
+      } else {
+        // New group: create a fresh array and install it on the result object.
+        let array = create_array_object(vm, &mut step_scope, 0)?;
+        step_scope.push_root(Value::Object(array))?;
+        step_scope.create_data_property_or_throw(out, key, Value::Object(array))?;
+
+        groups.push(GroupEntry {
+          key,
+          array,
+          next_index: 0,
+        });
+        groups.len() - 1
+      };
+
+      // Append `next_value` to the group's array.
+      let group = &mut groups[idx];
+      let idx_s = step_scope.alloc_u32_index_string(group.next_index)?;
+      step_scope.push_root(Value::String(idx_s))?;
+      let idx_key = PropertyKey::from_string(idx_s);
+      step_scope.create_data_property_or_throw(group.array, idx_key, next_value)?;
+      group.next_index = group.next_index.wrapping_add(1);
+      Ok(())
+    })();
+
+    if let Err(err) = iter_result {
+      // `IfAbruptCloseIterator` applies to callback invocation and `ToPropertyKey`.
+      if err.is_throw_completion() && !iterator_record.done {
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+      return Err(err);
+    }
+
+    k = k.wrapping_add(1);
+  }
+
+  Ok(Value::Object(out))
+}
+
 
 pub fn object_assign(
   vm: &mut Vm,

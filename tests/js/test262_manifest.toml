@@ -1833,6 +1833,10 @@ status = "xfail"
 reason = "vm-js: String.prototype.split does not yet implement @@split hooks on separator objects."
 
 [[expectations]]
+glob = "built-ins/Object/groupBy/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Object/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."

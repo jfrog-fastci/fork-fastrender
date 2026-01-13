@@ -527,6 +527,16 @@ fn install_object_static_methods(
     roots,
     function_prototype,
     object_constructor,
+    "groupBy",
+    2,
+    builtins::object_group_by,
+  )?;
+  install_object_static_method(
+    vm,
+    scope,
+    roots,
+    function_prototype,
+    object_constructor,
     "assign",
     2,
     builtins::object_assign,

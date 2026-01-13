@@ -13,6 +13,7 @@ include = [
   "built-ins/Object/values/**/*.js",
   "built-ins/Object/entries/**/*.js",
   "built-ins/Object/fromEntries/**/*.js",
+  "built-ins/Object/groupBy/**/*.js",
   # Property descriptor plumbing is core to a lot of test262 harness + language semantics.
   "built-ins/Object/getOwnPropertyDescriptor/**/*.js",
   "built-ins/Object/getOwnPropertyDescriptors/**/*.js",
