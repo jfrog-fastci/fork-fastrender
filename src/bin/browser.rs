@@ -625,6 +625,7 @@ fn truncate_utf8_string_in_place(value: &mut String, max_bytes: usize) {
   }
   if max_bytes == 0 {
     value.clear();
+    value.shrink_to_fit();
     return;
   }
   let mut end = max_bytes.min(value.len());
@@ -632,6 +633,9 @@ fn truncate_utf8_string_in_place(value: &mut String, max_bytes: usize) {
     end -= 1;
   }
   value.truncate(end);
+  // Drop attacker-controlled excess capacity eagerly so the browser UI doesn't retain a large
+  // allocation after truncating untrusted payloads (e.g. picker values).
+  value.shrink_to_fit();
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -668,7 +672,19 @@ fn sanitize_select_control_for_windowed_ui(
 
   // Ensure `selected` cannot contain out-of-range indices (which can cause overflow in keyboard
   // selection code).
+  let selected_before = control.selected.len();
   control.selected.retain(|idx| *idx < items_len);
+  if control.selected.len() != selected_before {
+    // Drop attacker-controlled excess capacity eagerly so the UI doesn't retain the full pre-filter
+    // allocation.
+    control.selected.shrink_to_fit();
+  }
+  if control.selected.len() > items_len {
+    // Defensively clamp attacker-controlled selection vectors so the UI doesn't retain an enormous
+    // `Vec<usize>` if a compromised renderer sends pathological data.
+    control.selected.truncate(items_len);
+    control.selected.shrink_to_fit();
+  }
 
   let needs_truncation = control.items.iter().any(|item| match item {
     SelectItem::OptGroupLabel { label, .. } => label.len() > MAX_SELECT_LABEL_BYTES,
@@ -833,14 +849,206 @@ fn sanitize_worker_to_ui_for_windowed_browser(
 
 #[cfg(any(test, feature = "browser_ui"))]
 struct WorkerMsgQueue {
-  inner: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<fastrender::ui::WorkerToUi>>>,
+  inner: std::sync::Arc<parking_lot::Mutex<std::collections::VecDeque<QueuedMsg>>>,
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
 #[derive(Clone)]
 struct WorkerMsgQueuePusher {
-  inner:
-    std::sync::Weak<parking_lot::Mutex<std::collections::VecDeque<fastrender::ui::WorkerToUi>>>,
+  inner: std::sync::Weak<parking_lot::Mutex<std::collections::VecDeque<QueuedMsg>>>,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+enum QueuedMsg {
+  Worker(fastrender::ui::WorkerToUi),
+  Clipboard(fastrender::ui::protocol_limits::ClipboardTextLimitResult),
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug)]
+enum BridgeSanitizedMsgs {
+  Drop,
+  One(QueuedMsg),
+  Two(QueuedMsg, QueuedMsg),
+}
+
+/// Sanitize untrusted `WorkerToUi` payloads in the worker→UI bridge thread before enqueueing.
+///
+/// This protects the UI thread from retaining attacker-controlled allocations (huge strings/vectors)
+/// while the winit event loop is stalled/busy.
+///
+/// IMPORTANT: This must not clone/copy `FrameReady` pixmaps.
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_worker_to_ui_for_bridge_queue(
+  msg: fastrender::ui::WorkerToUi,
+) -> BridgeSanitizedMsgs {
+  use fastrender::ui::WorkerToUi;
+
+  // Clipboard messages carry potentially large text that must be handled out-of-band (the shared
+  // reducer does not store clipboard contents). Enforce size limits *before* enqueueing so the queue
+  // never retains the full attacker-controlled string.
+  let (msg, clipboard_update) =
+    fastrender::ui::protocol_limits::sanitize_worker_to_ui_clipboard_message(msg);
+
+  // Windowed-browser specific sanitization for picker/dropdown payloads (may drop messages).
+  let msg = sanitize_worker_to_ui_for_windowed_browser(msg);
+
+  // Generic string/vec limits for other untrusted worker payloads.
+  let msg = msg.and_then(sanitize_worker_to_ui_untrusted_payloads);
+
+  match (clipboard_update, msg) {
+    (Some(clipboard), Some(msg)) => BridgeSanitizedMsgs::Two(
+      QueuedMsg::Clipboard(clipboard),
+      QueuedMsg::Worker(msg),
+    ),
+    (Some(clipboard), None) => {
+      // Clipboard updates must still be processed even if the associated WorkerToUi message was
+      // dropped by other sanitizers (should not normally happen, but keep behaviour robust).
+      let tab_id = clipboard.tab_id;
+      BridgeSanitizedMsgs::Two(
+        QueuedMsg::Clipboard(clipboard),
+        QueuedMsg::Worker(WorkerToUi::SetClipboardText {
+          tab_id,
+          text: String::new(),
+        }),
+      )
+    }
+    (None, Some(msg)) => BridgeSanitizedMsgs::One(QueuedMsg::Worker(msg)),
+    (None, None) => BridgeSanitizedMsgs::Drop,
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_worker_to_ui_untrusted_payloads(
+  msg: fastrender::ui::WorkerToUi,
+) -> Option<fastrender::ui::WorkerToUi> {
+  use fastrender::ui::protocol_limits::{
+    MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
+    MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
+  };
+  use fastrender::ui::untrusted::{sanitize_untrusted_text, validate_untrusted_favicon_rgba};
+  use fastrender::ui::{DownloadOutcome, WorkerToUi};
+
+  match msg {
+    WorkerToUi::Favicon {
+      tab_id,
+      rgba,
+      width,
+      height,
+    } => {
+      if !validate_untrusted_favicon_rgba(rgba.len(), width, height) {
+        return None;
+      }
+      Some(WorkerToUi::Favicon {
+        tab_id,
+        rgba,
+        width,
+        height,
+      })
+    }
+    WorkerToUi::DebugLog { tab_id, line } => Some(WorkerToUi::DebugLog {
+      tab_id,
+      line: sanitize_untrusted_text(&line, MAX_DEBUG_LOG_BYTES),
+    }),
+    WorkerToUi::Warning { tab_id, text } => Some(WorkerToUi::Warning {
+      tab_id,
+      text: sanitize_untrusted_text(&text, MAX_WARNING_BYTES),
+    }),
+    WorkerToUi::NavigationStarted { tab_id, url } => Some(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
+    }),
+    WorkerToUi::NavigationCommitted {
+      tab_id,
+      url,
+      title,
+      can_go_back,
+      can_go_forward,
+    } => Some(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
+      title: title
+        .as_deref()
+        .map(|t| sanitize_untrusted_text(t, MAX_TITLE_BYTES))
+        .filter(|t| !t.is_empty()),
+      can_go_back,
+      can_go_forward,
+    }),
+    WorkerToUi::NavigationFailed {
+      tab_id,
+      url,
+      error,
+      can_go_back,
+      can_go_forward,
+    } => Some(WorkerToUi::NavigationFailed {
+      tab_id,
+      url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
+      error: sanitize_untrusted_text(&error, MAX_ERROR_BYTES),
+      can_go_back,
+      can_go_forward,
+    }),
+    WorkerToUi::RequestOpenInNewTab { tab_id, url } => Some(WorkerToUi::RequestOpenInNewTab {
+      tab_id,
+      url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
+    }),
+    WorkerToUi::HoverChanged {
+      tab_id,
+      hovered_url,
+      cursor,
+    } => Some(WorkerToUi::HoverChanged {
+      tab_id,
+      hovered_url: hovered_url
+        .as_deref()
+        .map(|url| sanitize_untrusted_text(url, MAX_URL_BYTES))
+        .filter(|url| !url.is_empty()),
+      cursor,
+    }),
+    WorkerToUi::FindResult {
+      tab_id,
+      query,
+      case_sensitive,
+      match_count,
+      active_match_index,
+    } => Some(WorkerToUi::FindResult {
+      tab_id,
+      query: sanitize_untrusted_text(&query, MAX_FIND_QUERY_BYTES),
+      case_sensitive,
+      match_count,
+      active_match_index,
+    }),
+    WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id,
+      url,
+      file_name,
+      path,
+      total_bytes,
+    } => Some(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id,
+      url: sanitize_untrusted_text(&url, MAX_URL_BYTES),
+      file_name: sanitize_untrusted_text(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES),
+      path,
+      total_bytes,
+    }),
+    WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id,
+      outcome,
+    } => Some(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id,
+      outcome: match outcome {
+        DownloadOutcome::Completed => DownloadOutcome::Completed,
+        DownloadOutcome::Cancelled => DownloadOutcome::Cancelled,
+        DownloadOutcome::Failed { error } => DownloadOutcome::Failed {
+          error: sanitize_untrusted_text(&error, MAX_ERROR_BYTES),
+        },
+      },
+    }),
+    other => Some(other),
+  }
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -857,7 +1065,7 @@ impl WorkerMsgQueue {
     }
   }
 
-  fn drain(&self) -> std::collections::VecDeque<fastrender::ui::WorkerToUi> {
+  fn drain(&self) -> std::collections::VecDeque<QueuedMsg> {
     let mut guard = self.inner.lock();
     std::mem::take(&mut *guard)
   }
@@ -865,7 +1073,7 @@ impl WorkerMsgQueue {
 
 #[cfg(any(test, feature = "browser_ui"))]
 impl WorkerMsgQueuePusher {
-  fn push(&self, msg: fastrender::ui::WorkerToUi) -> Result<(), fastrender::ui::WorkerToUi> {
+  fn push(&self, msg: QueuedMsg) -> Result<(), QueuedMsg> {
     let Some(inner) = self.inner.upgrade() else {
       return Err(msg);
     };
@@ -884,10 +1092,10 @@ mod worker_msg_queue_tests {
     let pusher = queue.pusher();
 
     pusher
-      .push(fastrender::ui::WorkerToUi::DebugLog {
+      .push(QueuedMsg::Worker(fastrender::ui::WorkerToUi::DebugLog {
         tab_id: fastrender::ui::TabId(1),
         line: "one".to_string(),
-      })
+      }))
       .expect("queue should accept message");
 
     let drained = queue.drain();
@@ -907,16 +1115,20 @@ mod worker_msg_queue_tests {
 
     for idx in 0..10 {
       pusher
-        .push(fastrender::ui::WorkerToUi::DebugLog {
+        .push(QueuedMsg::Worker(fastrender::ui::WorkerToUi::DebugLog {
           tab_id: fastrender::ui::TabId(1),
           line: format!("msg-{idx}"),
-        })
+        }))
         .expect("queue should accept message");
     }
 
     let drained = queue.drain();
     let mut lines: Vec<String> = Vec::new();
-    for msg in drained {
+    for item in drained {
+      let msg = match item {
+        QueuedMsg::Worker(msg) => msg,
+        other => panic!("unexpected queued item: {other:?}"),
+      };
       match msg {
         fastrender::ui::WorkerToUi::DebugLog { line, .. } => lines.push(line),
         other => panic!("unexpected message variant: {other:?}"),
@@ -1075,6 +1287,152 @@ impl ScrollCoalescer {
       delta_css,
       pointer_css,
     })
+  }
+}
+
+#[cfg(test)]
+mod bridge_worker_to_ui_sanitization_tests {
+  use super::{sanitize_worker_to_ui_for_bridge_queue, BridgeSanitizedMsgs, QueuedMsg};
+  use fastrender::geometry::Rect;
+  use fastrender::ui::messages::DateTimeInputKind;
+  use fastrender::ui::protocol_limits::{
+    MAX_ACCEPT_ATTR_BYTES, MAX_CLIPBOARD_TEXT_BYTES, MAX_DEBUG_LOG_BYTES, MAX_FAVICON_BYTES,
+  };
+  use fastrender::ui::{TabId, WorkerToUi};
+
+  #[test]
+  fn clipboard_text_is_truncated_and_capacity_shrunk_before_enqueue() {
+    let tab_id = TabId(1);
+    let original = "a".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1024);
+    let msg = WorkerToUi::SetClipboardText {
+      tab_id,
+      text: original,
+    };
+
+    let BridgeSanitizedMsgs::Two(first, second) = sanitize_worker_to_ui_for_bridge_queue(msg) else {
+      panic!("expected clipboard message to split into two queued items");
+    };
+
+    let QueuedMsg::Clipboard(result) = first else {
+      panic!("expected clipboard item first");
+    };
+    assert!(result.truncated);
+    assert_eq!(result.original_bytes, MAX_CLIPBOARD_TEXT_BYTES + 1024);
+    assert!(result.text.len() <= MAX_CLIPBOARD_TEXT_BYTES);
+    assert!(
+      result.text.capacity() <= MAX_CLIPBOARD_TEXT_BYTES,
+      "expected clipboard text capacity to shrink (cap={}, len={})",
+      result.text.capacity(),
+      result.text.len()
+    );
+
+    let QueuedMsg::Worker(worker_msg) = second else {
+      panic!("expected worker marker second");
+    };
+    match worker_msg {
+      WorkerToUi::SetClipboardText { tab_id: got, text } => {
+        assert_eq!(got, tab_id);
+        assert!(text.is_empty(), "worker marker should not carry clipboard text");
+      }
+      other => panic!("unexpected worker message: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn debug_log_is_sanitized_and_does_not_retain_huge_capacity() {
+    let tab_id = TabId(1);
+    let huge = "a".repeat(1_000_000);
+    let msg = WorkerToUi::DebugLog {
+      tab_id,
+      line: huge,
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected DebugLog to be enqueued as a single Worker message");
+    };
+
+    let WorkerToUi::DebugLog { line, .. } = worker_msg else {
+      panic!("expected DebugLog after sanitization");
+    };
+    assert!(line.len() <= MAX_DEBUG_LOG_BYTES);
+    assert!(
+      line.capacity() <= MAX_DEBUG_LOG_BYTES * 2,
+      "expected sanitized debug log to avoid huge capacity (cap={}, len={})",
+      line.capacity(),
+      line.len()
+    );
+  }
+
+  #[test]
+  fn oversized_favicon_payload_is_dropped_before_enqueue() {
+    let tab_id = TabId(1);
+    // 33x33 RGBA8 is 4356 bytes, larger than MAX_FAVICON_BYTES (32x32x4).
+    let width = 33u32;
+    let height = 33u32;
+    let rgba_len = (width as usize) * (height as usize) * 4;
+    assert!(rgba_len > MAX_FAVICON_BYTES);
+    let msg = WorkerToUi::Favicon {
+      tab_id,
+      rgba: vec![0u8; rgba_len],
+      width,
+      height,
+    };
+
+    assert!(
+      matches!(sanitize_worker_to_ui_for_bridge_queue(msg), BridgeSanitizedMsgs::Drop),
+      "expected oversized favicon payload to be dropped"
+    );
+  }
+
+  #[test]
+  fn picker_payloads_are_truncated_before_enqueue() {
+    // File picker accept attribute should be truncated + anchor rect sanitized.
+    let accept = Some("€".repeat((MAX_ACCEPT_ATTR_BYTES / 3) + 32)); // "€" is 3 bytes.
+    let msg = WorkerToUi::FilePickerOpened {
+      tab_id: TabId(1),
+      input_node_id: 5,
+      multiple: true,
+      accept,
+      anchor_css: Rect::from_xywh(f32::NAN, f32::INFINITY, -f32::INFINITY, f32::NAN),
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected FilePickerOpened to be enqueued");
+    };
+
+    let WorkerToUi::FilePickerOpened { accept, anchor_css, .. } = worker_msg else {
+      panic!("expected FilePickerOpened after sanitization");
+    };
+
+    let accept = accept.expect("accept should remain Some");
+    assert!(accept.len() <= MAX_ACCEPT_ATTR_BYTES);
+    assert!(anchor_css.origin.x.is_finite());
+    assert!(anchor_css.origin.y.is_finite());
+    assert!(anchor_css.size.width.is_finite());
+    assert!(anchor_css.size.height.is_finite());
+
+    // Also sanity-check DateTimePickerOpened truncation path doesn't get regressed.
+    let value = "€".repeat((fastrender::ui::protocol_limits::MAX_INPUT_VALUE_BYTES / 3) + 64);
+    let msg = WorkerToUi::DateTimePickerOpened {
+      tab_id: TabId(1),
+      input_node_id: 99,
+      kind: DateTimeInputKind::DateTimeLocal,
+      value,
+      anchor_css: Rect::from_xywh(1.0, 2.0, 3.0, 4.0),
+    };
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected DateTimePickerOpened to be enqueued");
+    };
+    let WorkerToUi::DateTimePickerOpened { value, .. } = worker_msg else {
+      panic!("expected DateTimePickerOpened after sanitization");
+    };
+    assert!(value.len() <= fastrender::ui::protocol_limits::MAX_INPUT_VALUE_BYTES);
   }
 }
 
@@ -3633,7 +3991,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   struct BrowserWindow {
     app: App,
     worker_msgs: WorkerMsgQueue,
-    worker_msg_backlog: VecDeque<fastrender::ui::WorkerToUi>,
+    worker_msg_backlog: VecDeque<QueuedMsg>,
     worker_wake_pending: Arc<AtomicBool>,
     worker_perf_log: Option<WorkerWakePerfLogger>,
     bridge_join: Option<std::thread::JoinHandle<()>>,
@@ -3693,8 +4051,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let worker_wake_counters = worker_wake_counters.clone();
         move || {
           while let Ok(msg) = renderer_backend.recv() {
-            if worker_msgs_pusher.push(msg).is_err() {
-              break;
+            let enqueued = match sanitize_worker_to_ui_for_bridge_queue(msg) {
+              BridgeSanitizedMsgs::Drop => Ok(false),
+              BridgeSanitizedMsgs::One(item) => worker_msgs_pusher.push(item).map(|_| true),
+              BridgeSanitizedMsgs::Two(a, b) => worker_msgs_pusher
+                .push(a)
+                .and_then(|_| worker_msgs_pusher.push(b))
+                .map(|_| true),
+            };
+            match enqueued {
+              Ok(false) => continue,
+              Ok(true) => {}
+              Err(_) => break,
             }
             // Coalesce wakes:
             // - the per-window `worker_wake_pending` flag ensures we only request a wake once per
@@ -4352,18 +4720,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let start = std::time::Instant::now();
             let mut drained_count = 0usize;
             while drained_count < budget.max_messages && start.elapsed() < budget.max_duration {
-              let Some(msg) = win.worker_msg_backlog.pop_front() else {
+              let Some(item) = win.worker_msg_backlog.pop_front() else {
                 break;
               };
               drained_count = drained_count.saturating_add(1);
-              session_dirty |= matches!(
-                &msg,
-                fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-                  | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-                  | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
-              );
+              if let QueuedMsg::Worker(msg) = &item {
+                session_dirty |= matches!(
+                  msg,
+                  fastrender::ui::WorkerToUi::NavigationCommitted { .. }
+                    | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+                    | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
+                );
+              }
 
-              let result = win.app.handle_worker_message(msg);
+              let result = match item {
+                QueuedMsg::Worker(msg) => win.app.handle_worker_message(msg),
+                QueuedMsg::Clipboard(update) => win.app.handle_worker_clipboard_update(update),
+              };
               request_redraw |= result.request_redraw;
               history_changed |= result.history_changed;
             }
@@ -10297,6 +10670,75 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     true
   }
 
+  fn handle_worker_clipboard_update(
+    &mut self,
+    clipboard_update: fastrender::ui::protocol_limits::ClipboardTextLimitResult,
+  ) -> WorkerMessageResult {
+    let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
+    if clipboard_update.truncated {
+      use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+
+      // Only show a toast when the originating tab is active to avoid surprising the user when a
+      // background tab triggers copy/cut.
+      if self.browser_state.active_tab_id() == Some(clipboard_update.tab_id) {
+        let toast_text = format!(
+          "Clipboard text too large; ignoring (max {} KiB)",
+          (limit / 1024).max(1)
+        );
+        self.chrome_toast.show(
+          ToastKind::Warning,
+          toast_text,
+          std::time::Instant::now(),
+          TOAST_DEFAULT_TTL,
+        );
+      }
+
+      let debug_line = format!(
+        "[clipboard] dropped oversized clipboard payload from tab {} ({} bytes > {} bytes)",
+        clipboard_update.tab_id.0, clipboard_update.original_bytes, limit
+      );
+      // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
+      {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr(), "{debug_line}");
+      }
+      if self.debug_log_ui_enabled {
+        if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+          self.debug_log.pop_front();
+        }
+        self.debug_log.push_back(debug_line);
+      }
+    }
+
+    // Best-effort write to the OS clipboard (bounded). Oversized payloads are dropped entirely.
+    let wrote_clipboard = write_clipboard_update_if_within_limit(&clipboard_update, |text| {
+      os_clipboard::write_text(text);
+    });
+    if !wrote_clipboard && !clipboard_update.truncated {
+      // This should be unreachable (the protocol sanitizer should guarantee the limit), but keep a
+      // defense-in-depth guard so we never pass an oversized string into OS clipboard APIs.
+      let debug_line = format!(
+        "[clipboard] dropped clipboard payload from tab {} ({} bytes > {} bytes)",
+        clipboard_update.tab_id.0,
+        clipboard_update.text.len(),
+        limit
+      );
+      use std::io::Write;
+      let _ = writeln!(std::io::stderr(), "{debug_line}");
+      if self.debug_log_ui_enabled {
+        if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+          self.debug_log.pop_front();
+        }
+        self.debug_log.push_back(debug_line);
+      }
+    }
+
+    WorkerMessageResult {
+      request_redraw: true,
+      history_changed: false,
+    }
+  }
+
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> WorkerMessageResult {
     // Worker-initiated tab creation/navigation.
     let msg = match msg {
@@ -10330,9 +10772,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       }
       msg => msg,
     };
-
-    let (msg, clipboard_update) =
-      fastrender::ui::protocol_limits::sanitize_worker_to_ui_clipboard_message(msg);
 
     // The render worker can send large/hostile payloads for picker/dropdown overlays. Sanitize them
     // before any UI code (including our own pre-reducer side effects) clones/uses the data.
@@ -10472,68 +10911,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           request_redraw = true;
         }
       }
-    }
-
-    if let Some(clipboard_update) = clipboard_update {
-      let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
-      if clipboard_update.truncated {
-        use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
-
-        // Only show a toast when the originating tab is active to avoid surprising the user when a
-        // background tab triggers copy/cut.
-        if self.browser_state.active_tab_id() == Some(clipboard_update.tab_id) {
-          let toast_text = format!(
-            "Clipboard text too large; ignoring (max {} KiB)",
-            (limit / 1024).max(1)
-          );
-          self.chrome_toast.show(
-            ToastKind::Warning,
-            toast_text,
-            std::time::Instant::now(),
-            TOAST_DEFAULT_TTL,
-          );
-        }
-
-        let debug_line = format!(
-          "[clipboard] dropped oversized clipboard payload from tab {} ({} bytes > {} bytes)",
-          clipboard_update.tab_id.0, clipboard_update.original_bytes, limit
-        );
-        // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
-        {
-          use std::io::Write;
-          let _ = writeln!(std::io::stderr(), "{debug_line}");
-        }
-        if self.debug_log_ui_enabled {
-          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
-            self.debug_log.pop_front();
-          }
-          self.debug_log.push_back(debug_line);
-        }
-      }
-
-      // Best-effort write to the OS clipboard (bounded). Oversized payloads are dropped entirely.
-      let wrote_clipboard = write_clipboard_update_if_within_limit(&clipboard_update, |text| {
-        os_clipboard::write_text(text);
-      });
-      if !wrote_clipboard && !clipboard_update.truncated {
-        // This should be unreachable (the protocol sanitizer should guarantee the limit), but keep a
-        // defense-in-depth guard so we never pass an oversized string into OS clipboard APIs.
-        let debug_line = format!(
-          "[clipboard] dropped clipboard payload from tab {} ({} bytes > {} bytes)",
-          clipboard_update.tab_id.0,
-          clipboard_update.text.len(),
-          limit
-        );
-        use std::io::Write;
-        let _ = writeln!(std::io::stderr(), "{debug_line}");
-        if self.debug_log_ui_enabled {
-          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
-            self.debug_log.pop_front();
-          }
-          self.debug_log.push_back(debug_line);
-        }
-      }
-      request_redraw = true;
     }
 
     if let fastrender::ui::WorkerToUi::ContextMenu {
