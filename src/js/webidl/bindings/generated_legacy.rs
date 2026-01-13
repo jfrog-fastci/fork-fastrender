@@ -138,6 +138,16 @@ pub mod window {
         ],
       });
       ctx.add_dictionary(DictionarySchema {
+        name: "CustomEventInit".to_string(),
+        inherits: Some("EventInit".to_string()),
+        members: vec![DictionaryMemberSchema {
+          name: "detail".to_string(),
+          required: false,
+          ty: IdlType::Any,
+          default: Some(DefaultValue::Null),
+        }],
+      });
+      ctx.add_dictionary(DictionarySchema {
         name: "ElementCreationOptions".to_string(),
         inherits: None,
         members: vec![
@@ -155,6 +165,30 @@ pub mod window {
             required: false,
             ty: IdlType::String(StringType::DomString),
             default: None,
+          },
+        ],
+      });
+      ctx.add_dictionary(DictionarySchema {
+        name: "EventInit".to_string(),
+        inherits: None,
+        members: vec![
+          DictionaryMemberSchema {
+            name: "bubbles".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: Some(DefaultValue::Boolean(false)),
+          },
+          DictionaryMemberSchema {
+            name: "cancelable".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: Some(DefaultValue::Boolean(false)),
+          },
+          DictionaryMemberSchema {
+            name: "composed".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: Some(DefaultValue::Boolean(false)),
           },
         ],
       });
@@ -311,6 +345,66 @@ pub mod window {
         }
       }
     })
+  }
+
+  #[allow(dead_code)]
+  fn custom_event_constructor<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "type",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "eventInitDict",
+          ty: IdlType::Named(NamedType {
+            name: "CustomEventInit".to_string(),
+            kind: NamedTypeKind::Dictionary,
+          }),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::EmptyDictionary),
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      None,
+      "CustomEvent",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -2781,6 +2875,70 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_attribute_inner_h_t_m_l<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "innerHTML")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_inner_h_t_m_l<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+      vec![ArgumentSchema {
+        name: "value",
+        ty: IdlType::Union(vec![
+          IdlType::Named(NamedType {
+            name: "TrustedHTML".to_string(),
+            kind: NamedTypeKind::Unresolved,
+          }),
+          IdlType::String(StringType::DomString),
+        ]),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]
+    });
+    let ctx = type_context();
+    let converted = convert_arguments(rt, args, schemas, ctx)?;
+    let value = converted
+      .into_iter()
+      .next()
+      .unwrap_or(ConvertedValue::Undefined);
+    let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
+    host.set_attribute(rt, Some(this), "Element", "innerHTML", converted)?;
+    Ok(rt_js_undefined::<Host, R>(rt))
+  }
+
+  #[allow(dead_code)]
   fn element_get_attribute_last_element_child<Host, R>(
     rt: &mut R,
     host: &mut Host,
@@ -2886,6 +3044,70 @@ pub mod window {
     }
     let result = host.get_attribute(rt, Some(this), "Element", "offsetWidth")?;
     binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_outer_h_t_m_l<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: R::JsValue,
+    _args: &[R::JsValue],
+  ) -> Result<R::JsValue, R::Error>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    let result = host.get_attribute(rt, Some(this), "Element", "outerHTML")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn element_set_attribute_outer_h_t_m_l<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    if !rt_is_object::<Host, R>(rt, this) {
+      return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
+    }
+    static SCHEMAS: OnceLock<Vec<ArgumentSchema>> = OnceLock::new();
+    let schemas = SCHEMAS.get_or_init(|| {
+      vec![ArgumentSchema {
+        name: "value",
+        ty: IdlType::Union(vec![
+          IdlType::Named(NamedType {
+            name: "TrustedHTML".to_string(),
+            kind: NamedTypeKind::Unresolved,
+          }),
+          IdlType::String(StringType::DomString),
+        ]),
+        optional: false,
+        variadic: false,
+        default: None,
+      }]
+    });
+    let ctx = type_context();
+    let converted = convert_arguments(rt, args, schemas, ctx)?;
+    let value = converted
+      .into_iter()
+      .next()
+      .unwrap_or(ConvertedValue::Undefined);
+    let converted = converted_value_to_binding_value::<Host, R>(rt, ctx, &schemas[0].ty, value)?;
+    host.set_attribute(rt, Some(this), "Element", "outerHTML", converted)?;
+    Ok(rt_js_undefined::<Host, R>(rt))
   }
 
   #[allow(dead_code)]
@@ -3091,6 +3313,66 @@ pub mod window {
       return Err(rt_throw_type_error::<Host, R>(rt, "Illegal invocation"));
     }
     let result = host.get_attribute(rt, Some(this), "Element", "tagName")?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn event_constructor<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "type",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "eventInitDict",
+          ty: IdlType::Named(NamedType {
+            name: "EventInit".to_string(),
+            kind: NamedTypeKind::Dictionary,
+          }),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::EmptyDictionary),
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      None,
+      "Event",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
     binding_value_to_js::<Host, R>(rt, result)
   }
 
@@ -5579,10 +5861,12 @@ pub mod window {
   {
     let global = rt.global_object()?;
     let proto_character_data = rt.create_object()?;
+    let proto_custom_event = rt.create_object()?;
     let proto_d_o_m_token_list = rt.create_object()?;
     let proto_document = rt.create_object()?;
     let proto_document_fragment = rt.create_object()?;
     let proto_element = rt.create_object()?;
+    let proto_event = rt.create_object()?;
     let proto_event_target = rt.create_object()?;
     let proto_h_t_m_l_collection = rt.create_object()?;
     let proto_node = rt.create_object()?;
@@ -5591,11 +5875,19 @@ pub mod window {
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
     rt.set_prototype(proto_character_data, Some(proto_node))?;
+    rt.set_prototype(proto_custom_event, Some(proto_event))?;
     rt.set_prototype(proto_document, Some(proto_node))?;
     rt.set_prototype(proto_document_fragment, Some(proto_node))?;
     rt.set_prototype(proto_element, Some(proto_node))?;
     rt.set_prototype(proto_node, Some(proto_event_target))?;
     rt.set_prototype(proto_text, Some(proto_character_data))?;
+    let ctor_custom_event = rt.create_constructor(
+      "CustomEvent",
+      1,
+      illegal_constructor::<Host, R>,
+      custom_event_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "CustomEvent", ctor_custom_event, proto_custom_event)?;
     let func = rt.create_function("add", 0, d_o_m_token_list_add::<Host, R>)?;
     rt.define_method(proto_d_o_m_token_list, "add", func)?;
     let func = rt.create_function("contains", 1, d_o_m_token_list_contains::<Host, R>)?;
@@ -5818,6 +6110,17 @@ pub mod window {
     let set = rt.create_function("set id", 1, element_set_attribute_id::<Host, R>)?;
     rt.define_attribute_accessor(proto_element, "id", get, set)?;
     let get = rt.create_function(
+      "get innerHTML",
+      0,
+      element_get_attribute_inner_h_t_m_l::<Host, R>,
+    )?;
+    let set = rt.create_function(
+      "set innerHTML",
+      1,
+      element_set_attribute_inner_h_t_m_l::<Host, R>,
+    )?;
+    rt.define_attribute_accessor(proto_element, "innerHTML", get, set)?;
+    let get = rt.create_function(
       "get lastElementChild",
       0,
       element_get_attribute_last_element_child::<Host, R>,
@@ -5859,6 +6162,17 @@ pub mod window {
     )?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_element, "offsetWidth", get, set)?;
+    let get = rt.create_function(
+      "get outerHTML",
+      0,
+      element_get_attribute_outer_h_t_m_l::<Host, R>,
+    )?;
+    let set = rt.create_function(
+      "set outerHTML",
+      1,
+      element_set_attribute_outer_h_t_m_l::<Host, R>,
+    )?;
+    rt.define_attribute_accessor(proto_element, "outerHTML", get, set)?;
     let get = rt.create_function(
       "get previousElementSibling",
       0,
@@ -5908,6 +6222,37 @@ pub mod window {
     let get = rt.create_function("get tagName", 0, element_get_attribute_tag_name::<Host, R>)?;
     let set = rt_js_undefined::<Host, R>(rt);
     rt.define_attribute_accessor(proto_element, "tagName", get, set)?;
+    let ctor_event = rt.create_constructor(
+      "Event",
+      1,
+      illegal_constructor::<Host, R>,
+      event_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "Event", ctor_event, proto_event)?;
+    rt.define_constant(ctor_event, "AT_TARGET", rt_js_number::<Host, R>(rt, 2.0))?;
+    rt.define_constant(proto_event, "AT_TARGET", rt_js_number::<Host, R>(rt, 2.0))?;
+    rt.define_constant(
+      ctor_event,
+      "BUBBLING_PHASE",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(
+      proto_event,
+      "BUBBLING_PHASE",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(
+      ctor_event,
+      "CAPTURING_PHASE",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      proto_event,
+      "CAPTURING_PHASE",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(ctor_event, "NONE", rt_js_number::<Host, R>(rt, 0.0))?;
+    rt.define_constant(proto_event, "NONE", rt_js_number::<Host, R>(rt, 0.0))?;
     let func = rt.create_function(
       "addEventListener",
       2,
@@ -6393,6 +6738,40 @@ pub mod worker {
         ],
       });
       ctx.add_dictionary(DictionarySchema {
+        name: "CustomEventInit".to_string(),
+        inherits: Some("EventInit".to_string()),
+        members: vec![DictionaryMemberSchema {
+          name: "detail".to_string(),
+          required: false,
+          ty: IdlType::Any,
+          default: Some(DefaultValue::Null),
+        }],
+      });
+      ctx.add_dictionary(DictionarySchema {
+        name: "EventInit".to_string(),
+        inherits: None,
+        members: vec![
+          DictionaryMemberSchema {
+            name: "bubbles".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: Some(DefaultValue::Boolean(false)),
+          },
+          DictionaryMemberSchema {
+            name: "cancelable".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: Some(DefaultValue::Boolean(false)),
+          },
+          DictionaryMemberSchema {
+            name: "composed".to_string(),
+            required: false,
+            ty: IdlType::Boolean,
+            default: Some(DefaultValue::Boolean(false)),
+          },
+        ],
+      });
+      ctx.add_dictionary(DictionarySchema {
         name: "EventListenerOptions".to_string(),
         inherits: None,
         members: vec![DictionaryMemberSchema {
@@ -6545,6 +6924,126 @@ pub mod worker {
         }
       }
     })
+  }
+
+  #[allow(dead_code)]
+  fn custom_event_constructor<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "type",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "eventInitDict",
+          ty: IdlType::Named(NamedType {
+            name: "CustomEventInit".to_string(),
+            kind: NamedTypeKind::Dictionary,
+          }),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::EmptyDictionary),
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      None,
+      "CustomEvent",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
+  }
+
+  #[allow(dead_code)]
+  fn event_constructor<Host, R>(
+    rt: &mut R,
+    host: &mut Host,
+    _this: RtJsValue<Host, R>,
+    args: &[RtJsValue<Host, R>],
+  ) -> Result<RtJsValue<Host, R>, RtError<Host, R>>
+  where
+    R: crate::js::webidl::WebIdlBindingsRuntime<Host>
+      + WebIdlJsRuntime<
+        JsValue = RtJsValue<Host, R>,
+        PropertyKey = RtPropertyKey<Host, R>,
+        Error = RtError<Host, R>,
+      >,
+    Host: WebHostBindings<R>,
+  {
+    static ARG_SCHEMAS: OnceLock<Vec<Vec<ArgumentSchema>>> = OnceLock::new();
+    let arg_schemas = ARG_SCHEMAS.get_or_init(|| {
+      vec![vec![
+        ArgumentSchema {
+          name: "type",
+          ty: IdlType::String(StringType::DomString),
+          optional: false,
+          variadic: false,
+          default: None,
+        },
+        ArgumentSchema {
+          name: "eventInitDict",
+          ty: IdlType::Named(NamedType {
+            name: "EventInit".to_string(),
+            kind: NamedTypeKind::Dictionary,
+          }),
+          optional: true,
+          variadic: false,
+          default: Some(DefaultValue::EmptyDictionary),
+        },
+      ]]
+    });
+    let overload_index: usize = { 0 };
+    let params = &arg_schemas[overload_index];
+    let ctx = type_context();
+    let converted_args = convert_arguments(rt, args, params, ctx)?;
+    let mut converted_binding_args: Vec<BindingValue<RtJsValue<Host, R>>> =
+      Vec::with_capacity(converted_args.len());
+    for (schema, value) in params.iter().zip(converted_args.into_iter()) {
+      converted_binding_args.push(converted_value_to_binding_value::<Host, R>(
+        rt, ctx, &schema.ty, value,
+      )?);
+    }
+    let result = host.call_operation(
+      rt,
+      None,
+      "Event",
+      "constructor",
+      overload_index,
+      converted_binding_args,
+    )?;
+    binding_value_to_js::<Host, R>(rt, result)
   }
 
   #[allow(dead_code)]
@@ -7766,9 +8265,50 @@ pub mod worker {
     Host: WebHostBindings<R>,
   {
     let global = rt.global_object()?;
+    let proto_custom_event = rt.create_object()?;
+    let proto_event = rt.create_object()?;
     let proto_event_target = rt.create_object()?;
     let proto_u_r_l = rt.create_object()?;
     let proto_u_r_l_search_params = rt.create_object()?;
+    rt.set_prototype(proto_custom_event, Some(proto_event))?;
+    let ctor_custom_event = rt.create_constructor(
+      "CustomEvent",
+      1,
+      illegal_constructor::<Host, R>,
+      custom_event_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "CustomEvent", ctor_custom_event, proto_custom_event)?;
+    let ctor_event = rt.create_constructor(
+      "Event",
+      1,
+      illegal_constructor::<Host, R>,
+      event_constructor::<Host, R>,
+    )?;
+    rt.define_constructor(global, "Event", ctor_event, proto_event)?;
+    rt.define_constant(ctor_event, "AT_TARGET", rt_js_number::<Host, R>(rt, 2.0))?;
+    rt.define_constant(proto_event, "AT_TARGET", rt_js_number::<Host, R>(rt, 2.0))?;
+    rt.define_constant(
+      ctor_event,
+      "BUBBLING_PHASE",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(
+      proto_event,
+      "BUBBLING_PHASE",
+      rt_js_number::<Host, R>(rt, 3.0),
+    )?;
+    rt.define_constant(
+      ctor_event,
+      "CAPTURING_PHASE",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(
+      proto_event,
+      "CAPTURING_PHASE",
+      rt_js_number::<Host, R>(rt, 1.0),
+    )?;
+    rt.define_constant(ctor_event, "NONE", rt_js_number::<Host, R>(rt, 0.0))?;
+    rt.define_constant(proto_event, "NONE", rt_js_number::<Host, R>(rt, 0.0))?;
     let func = rt.create_function(
       "addEventListener",
       2,

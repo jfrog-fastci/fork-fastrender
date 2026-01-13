@@ -6060,25 +6060,6 @@ pub mod window {
       }
     };
 
-    // `Object.prototype.toString.call(domTokenList)` should produce `[object DOMTokenList]`.
-    {
-      let key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().to_string_tag);
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_d_o_m_token_list, &key)?
-        .is_none()
-      {
-        let tag = rt.intern_string("DOMTokenList")?;
-        rt.define_data_property(
-          proto_d_o_m_token_list,
-          key,
-          Value::String(tag),
-          DataPropertyAttributes::new(false, false, true),
-        )?;
-      }
-    }
-
     {
       let key = rt.property_key("add")?;
       if rt
@@ -8210,25 +8191,6 @@ pub mod window {
       }
     };
 
-    // `Object.prototype.toString.call(htmlCollection)` should produce `[object HTMLCollection]`.
-    {
-      let key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().to_string_tag);
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_h_t_m_l_collection, &key)?
-        .is_none()
-      {
-        let tag = rt.intern_string("HTMLCollection")?;
-        rt.define_data_property(
-          proto_h_t_m_l_collection,
-          key,
-          Value::String(tag),
-          DataPropertyAttributes::new(false, false, true),
-        )?;
-      }
-    }
-
     {
       let key = rt.property_key("item")?;
       if rt
@@ -9290,25 +9252,6 @@ pub mod window {
         (ctor_obj, proto_obj)
       }
     };
-
-    // `Object.prototype.toString.call(nodeList)` should produce `[object NodeList]`.
-    {
-      let key = vm_js::PropertyKey::from_symbol(realm.well_known_symbols().to_string_tag);
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_node_list, &key)?
-        .is_none()
-      {
-        let tag = rt.intern_string("NodeList")?;
-        rt.define_data_property(
-          proto_node_list,
-          key,
-          Value::String(tag),
-          DataPropertyAttributes::new(false, false, true),
-        )?;
-      }
-    }
 
     {
       let key = rt.property_key("entries")?;

@@ -205,7 +205,7 @@ CARGO_LOG=cargo::core::compiler::job_queue=debug bash scripts/cargo_agent.sh bui
 bash scripts/cargo_agent.sh build --bin fetch_and_render --timings
 
 # Rust self-profiling (nightly only)
-RUSTFLAGS="-Zself-profile" cargo +nightly build --bin fetch_and_render
+RUSTFLAGS="-Zself-profile" bash scripts/cargo_agent.sh +nightly build --bin fetch_and_render
 ```
 
 ## Future Work: Crate Splitting

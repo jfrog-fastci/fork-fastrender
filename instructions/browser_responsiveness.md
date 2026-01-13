@@ -64,10 +64,12 @@ A change counts if it lands at least one of:
 
 ```bash
 # Enable performance logging
-FASTR_PERF_LOG=1 cargo run --release --features browser_ui --bin browser
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  env FASTR_PERF_LOG=1 bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
 # Profile with samply (Linux)
-samply record cargo run --release --features browser_ui --bin browser
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  samply record bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
 # Use egui's built-in profiler
 # (Enable in debug builds, check for frame time breakdown)
