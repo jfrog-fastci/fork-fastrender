@@ -21,6 +21,9 @@ All types below are exported as `fastrender::api::*` and also re-exported at the
   `render_frame()`.
 - **Interactive/live rendering loop:** `api::BrowserTab` driven via repeated `tick_frame()` calls
   (see [`docs/live_rendering_loop.md`](live_rendering_loop.md) for how rAF/timers fit in).
+- **Desktop browser UI embedding:** the windowed `browser` app’s worker currently renders via
+  `api::BrowserDocument` but also maintains a JS-capable `api::BrowserTab` and best-effort syncs its
+  `dom2` snapshot into the renderer DOM before painting (see [`docs/browser_ui.md`](browser_ui.md)).
 - **Legacy JS host harness (manual script execution, no HTML script scheduler):**
   `api::BrowserDocumentJs`.
 
