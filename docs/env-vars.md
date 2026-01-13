@@ -120,6 +120,19 @@ also disable in-process Seatbelt sandboxing, overriding `FASTR_RENDERER_SANDBOX`
 Recommended: leave unset in production builds so macOS renderers default to `strict`. Use `relaxed`
 when you need system fonts, and use `off` only when debugging sandbox behaviour.
 
+## Renderer sandbox layers (Linux)
+
+These environment variables control individual **Linux** renderer sandbox layers (and are also
+consumed by the `sandbox_probe` utility).
+
+They are primarily intended for developer ergonomics and debugging. When sandboxing is disabled via
+`FASTR_DISABLE_RENDERER_SANDBOX=1` (or other platform-specific disable knobs), these layer toggles
+are ignored.
+
+- `FASTR_RENDERER_SECCOMP=0|1` – enable/disable the Linux seccomp-bpf syscall filter layer.
+- `FASTR_RENDERER_LANDLOCK=0|1` – enable/disable the Linux Landlock filesystem sandbox layer.
+- `FASTR_RENDERER_CLOSE_FDS=0|1` – enable/disable closing non-stdio file descriptors at renderer startup.
+
 ## Browser UI (`browser` binary)
 
 These are consumed by the experimental desktop browser UI (`browser` binary; see [browser_ui.md](browser_ui.md); run with `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser`).

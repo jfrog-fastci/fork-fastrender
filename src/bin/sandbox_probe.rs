@@ -2,6 +2,10 @@
 //!
 //! This binary is intended for iterating on the renderer sandbox policy (seccomp/landlock) without
 //! needing to run the full multi-process browser stack.
+//!
+//! The probe also honours the renderer sandbox environment variables documented in
+//! `docs/env-vars.md` (notably `FASTR_DISABLE_RENDERER_SANDBOX` and the `FASTR_RENDERER_*` layer
+//! toggles) so developers can quickly disable specific layers when diagnosing issues.
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
@@ -23,6 +27,7 @@ mod enabled {
   use std::process::Command;
 
   use fastrender::sandbox;
+  use fastrender::system::renderer_sandbox::RendererSandboxConfig as EnvSandboxConfig;
 
   #[derive(Parser)]
   #[command(about = "Probe FastRender's Linux renderer sandbox (seccomp/landlock) behavior")]
@@ -111,19 +116,97 @@ mod enabled {
     }
   }
 
+  #[derive(Debug, Clone)]
+  enum LayerOutcome {
+    Applied,
+    Skipped(&'static str),
+    Unsupported(&'static str),
+  }
+
+  impl LayerOutcome {
+    fn as_str(&self) -> &'static str {
+      match self {
+        Self::Applied => "applied",
+        Self::Skipped(_) => "skipped",
+        Self::Unsupported(_) => "unsupported",
+      }
+    }
+
+    fn reason(&self) -> Option<&str> {
+      match self {
+        Self::Skipped(reason) | Self::Unsupported(reason) => Some(*reason),
+        Self::Applied => None,
+      }
+    }
+  }
+
+  #[derive(Debug, Clone)]
+  struct LayerReport {
+    close_fds: LayerOutcome,
+    seccomp: LayerOutcome,
+    landlock: LayerOutcome,
+  }
+
   pub(crate) fn run() -> i32 {
     let args = Args::parse();
     println!("mode: {:?}", args.mode);
     println!("probe: {:?}", args.probe);
 
-    if let Err(err) = apply_sandbox_layers(args.mode) {
-      eprintln!("sandbox: failed to apply: {err}");
-      // Distinct from probe failures so scripts can detect "sandbox didn't load".
-      return 2;
+    // Treat `--mode` as the baseline configuration. Sandbox env vars can opt out of layers, but
+    // cannot opt into a stricter mode than requested by `--mode`.
+    let mode_defaults = defaults_for_mode(args.mode);
+    let env_cfg = match EnvSandboxConfig::from_env_with_defaults(mode_defaults) {
+      Ok(cfg) => cfg,
+      Err(err) => {
+        eprintln!("sandbox_probe: invalid sandbox env var: {err}");
+        return 2;
+      }
+    };
+
+    // Apply disable-only semantics for the layers controlled by `--mode`.
+    let mut cfg = EnvSandboxConfig {
+      enabled: mode_defaults.enabled && env_cfg.enabled,
+      seccomp: mode_defaults.seccomp && env_cfg.seccomp,
+      landlock: mode_defaults.landlock && env_cfg.landlock,
+      close_fds: env_cfg.close_fds,
+    };
+
+    if !cfg.enabled {
+      cfg.seccomp = false;
+      cfg.landlock = false;
+      cfg.close_fds = false;
     }
-    if !matches!(args.mode, SandboxMode::None) {
-      println!("sandbox: applied");
-    }
+
+    println!(
+      "config: enabled={} seccomp={} landlock={} close_fds={}",
+      cfg.enabled, cfg.seccomp, cfg.landlock, cfg.close_fds
+    );
+
+    let report = match apply_sandbox_layers(args.mode, cfg) {
+      Ok(report) => report,
+      Err(err) => {
+        eprintln!("sandbox: failed to apply: {err}");
+        // Distinct from probe failures so scripts can detect "sandbox didn't load".
+        return 2;
+      }
+    };
+
+    println!("layers:");
+    println!(
+      "  close_fds: {}{}",
+      report.close_fds.as_str(),
+      format_reason(report.close_fds.reason())
+    );
+    println!(
+      "  landlock:  {}{}",
+      report.landlock.as_str(),
+      format_reason(report.landlock.reason())
+    );
+    println!(
+      "  seccomp:   {}{}",
+      report.seccomp.as_str(),
+      format_reason(report.seccomp.reason())
+    );
 
     let expectations = expectations_for(args.mode);
     let mut unexpected = false;
@@ -152,33 +235,101 @@ mod enabled {
     exit_code
   }
 
-  fn apply_sandbox_layers(mode: SandboxMode) -> Result<(), String> {
+  fn format_reason(reason: Option<&str>) -> String {
+    match reason {
+      Some(reason) => format!(" ({reason})"),
+      None => String::new(),
+    }
+  }
+
+  fn defaults_for_mode(mode: SandboxMode) -> EnvSandboxConfig {
     match mode {
-      SandboxMode::None => Ok(()),
-      SandboxMode::Seccomp => apply_seccomp_only(),
-      SandboxMode::Landlock => apply_landlock_only(),
-      SandboxMode::Full => {
-        // Landlock is best-effort: older kernels may not support it. We still apply seccomp so the
-        // probe remains useful for validating syscall filtering.
-        apply_landlock_best_effort()?;
-        apply_seccomp_only()
+      SandboxMode::None => EnvSandboxConfig {
+        enabled: false,
+        seccomp: false,
+        landlock: false,
+        close_fds: false,
+      },
+      SandboxMode::Seccomp => EnvSandboxConfig {
+        enabled: true,
+        seccomp: true,
+        landlock: false,
+        close_fds: false,
+      },
+      SandboxMode::Landlock => EnvSandboxConfig {
+        enabled: true,
+        seccomp: false,
+        landlock: true,
+        close_fds: false,
+      },
+      SandboxMode::Full => EnvSandboxConfig {
+        enabled: true,
+        seccomp: true,
+        landlock: true,
+        close_fds: false,
+      },
+    }
+  }
+
+  fn apply_sandbox_layers(mode: SandboxMode, cfg: EnvSandboxConfig) -> Result<LayerReport, String> {
+    if !cfg.enabled {
+      return Ok(LayerReport {
+        close_fds: LayerOutcome::Skipped("sandbox disabled"),
+        seccomp: LayerOutcome::Skipped("sandbox disabled"),
+        landlock: LayerOutcome::Skipped("sandbox disabled"),
+      });
+    }
+
+    let close_fds = if cfg.close_fds {
+      match sandbox::close_fds_except(&[0, 1, 2]) {
+        Ok(()) => LayerOutcome::Applied,
+        Err(err) if err.kind() == io::ErrorKind::Unsupported => {
+          LayerOutcome::Unsupported("unsupported platform")
+        }
+        Err(err) => return Err(err.to_string()),
       }
-    }
+    } else {
+      LayerOutcome::Skipped("disabled by config")
+    };
+
+    let landlock = if cfg.landlock {
+      match mode {
+        SandboxMode::Full => apply_landlock_best_effort()?,
+        SandboxMode::Landlock => apply_landlock_only()?,
+        // Other modes don't request Landlock by default.
+        SandboxMode::None | SandboxMode::Seccomp => LayerOutcome::Skipped("not requested by mode"),
+      }
+    } else {
+      LayerOutcome::Skipped("disabled by config")
+    };
+
+    let seccomp = if cfg.seccomp {
+      match sandbox::apply_renderer_seccomp_denylist() {
+        Ok(sandbox::SandboxStatus::Applied) => LayerOutcome::Applied,
+        Ok(sandbox::SandboxStatus::Unsupported) => {
+          return Err("seccomp sandbox unsupported".to_string());
+        }
+        Ok(sandbox::SandboxStatus::Disabled) => {
+          return Err("seccomp sandbox reported disabled".to_string());
+        }
+        Err(err) => return Err(err.to_string()),
+      }
+    } else {
+      LayerOutcome::Skipped("disabled by config")
+    };
+
+    Ok(LayerReport {
+      close_fds,
+      landlock,
+      seccomp,
+    })
   }
 
-  fn apply_seccomp_only() -> Result<(), String> {
-    match sandbox::apply_renderer_seccomp_denylist() {
-      Ok(sandbox::SandboxStatus::Applied) => Ok(()),
-      Ok(sandbox::SandboxStatus::Unsupported) => Err("seccomp sandbox unsupported".to_string()),
-      Err(err) => Err(err.to_string()),
-    }
-  }
-
-  fn apply_landlock_only() -> Result<(), String> {
+  fn apply_landlock_only() -> Result<LayerOutcome, String> {
     match sandbox::linux_landlock::apply(&sandbox::linux_landlock::LandlockConfig::default()) {
       Ok(sandbox::linux_landlock::LandlockStatus::Applied { abi }) => {
         println!("landlock: applied (abi {abi})");
-        Ok(())
+        Ok(LayerOutcome::Applied)
       }
       Ok(sandbox::linux_landlock::LandlockStatus::Unsupported { reason }) => {
         Err(format!("landlock unsupported ({reason:?})"))
@@ -187,15 +338,15 @@ mod enabled {
     }
   }
 
-  fn apply_landlock_best_effort() -> Result<(), String> {
+  fn apply_landlock_best_effort() -> Result<LayerOutcome, String> {
     match sandbox::linux_landlock::apply(&sandbox::linux_landlock::LandlockConfig::default()) {
       Ok(sandbox::linux_landlock::LandlockStatus::Applied { abi }) => {
         println!("landlock: applied (abi {abi})");
-        Ok(())
+        Ok(LayerOutcome::Applied)
       }
       Ok(sandbox::linux_landlock::LandlockStatus::Unsupported { reason }) => {
         println!("landlock: unsupported ({reason:?})");
-        Ok(())
+        Ok(LayerOutcome::Unsupported("unsupported"))
       }
       Err(err) => Err(err.to_string()),
     }
