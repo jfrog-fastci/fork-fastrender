@@ -16,9 +16,9 @@ Code map (repo reality):
 - High-level renderer spawn sandboxing:
   - `src/sandbox/windows.rs` (`fastrender::sandbox::windows::spawn_sandboxed(...)`)
   - `src/sandbox/windows/appcontainer.rs` (dynamic loader for AppContainer APIs in `userenv.dll`)
-    - We resolve AppContainer APIs at runtime (via `LoadLibraryW`/`GetProcAddress`) so the binary can
-      still load on Windows versions that lack these exports; missing symbols are treated as “no
-      AppContainer support” → fallback mode.
+    - We resolve AppContainer APIs at runtime (via `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`
+      + `GetProcAddress`) so the binary can still load on Windows versions that lack these exports;
+      missing symbols are treated as “no AppContainer support” → fallback mode.
 - Reusable Win32 wrappers + tests (not yet fully wired into the renderer spawner):
   - `crates/win-sandbox/`
     - `Job` (job object wrapper + limits)
