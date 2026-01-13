@@ -57,6 +57,8 @@ use super::{
 const MODULE_GRAPH_FETCH_UNSUPPORTED_MESSAGE: &str =
   "module graph fetching is not supported by this BrowserTabJsExecutor";
 
+const RAF_TICK_CADENCE: Duration = Duration::from_millis(16);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleScriptExecutionStatus {
   /// The module completed evaluation within the current call.
@@ -7540,9 +7542,9 @@ impl BrowserTab {
   ///
   /// This method is purely a query: it must **not** run any tasks.
   pub fn next_tick_due_in(&mut self) -> Option<Duration> {
-    // If there is runnable work immediately (tasks/microtasks/external tasks/idle callbacks),
-    // request an immediate tick.
-    if !self.event_loop.is_idle() {
+    // If there is runnable work immediately (tasks/microtasks/external tasks/idle callbacks), or if
+    // rendering is needed, request an immediate tick.
+    if self.host.document.is_dirty() || !self.event_loop.is_idle() {
       return Some(Duration::ZERO);
     }
 
@@ -7552,7 +7554,7 @@ impl BrowserTab {
     // document is visible. rAF callbacks are throttled/suppressed in hidden documents.
     let raf_due = (self.event_loop.has_pending_animation_frame_callbacks()
       && self.host.document.visibility_state() == DocumentVisibilityState::Visible)
-      .then(|| self.host.js_execution_options.animation_frame_interval);
+      .then_some(RAF_TICK_CADENCE);
 
     match (timer_due, raf_due) {
       (Some(a), Some(b)) => Some(a.min(b)),
@@ -19046,12 +19048,16 @@ document.body.appendChild(second);"#,
       event_loop,
     )?;
     tab.event_loop.clear_all_pending_work();
+    // Rendering clears the dirty bit so timer scheduling becomes the only wake reason.
+    let _ = tab.render_if_needed()?;
 
     tab
       .event_loop
       .set_timeout(Duration::from_millis(100), |_host, _event_loop| Ok(()))?;
 
     assert_eq!(tab.next_tick_due_in(), Some(Duration::from_millis(100)));
+    clock.advance(Duration::from_millis(20));
+    assert_eq!(tab.next_tick_due_in(), Some(Duration::from_millis(80)));
     Ok(())
   }
 
@@ -19100,7 +19106,7 @@ document.body.appendChild(second);"#,
   }
 
   #[test]
-  fn next_tick_due_in_reports_animation_frame_interval() -> Result<()> {
+  fn next_tick_due_in_returns_none_when_idle() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock.clone());
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -19111,15 +19117,69 @@ document.body.appendChild(second);"#,
       event_loop,
     )?;
     tab.event_loop.clear_all_pending_work();
+    let _ = tab.render_if_needed()?;
+
+    assert!(!tab.host.document.is_dirty());
+    assert!(tab.event_loop.is_idle());
+    assert!(!tab.event_loop.has_pending_timers());
+    assert!(!tab.event_loop.has_pending_animation_frame_callbacks());
+
+    assert_eq!(tab.next_tick_due_in(), None);
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_returns_zero_when_document_dirty() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock.clone());
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut tab = BrowserTab::from_html_with_event_loop(
+      "",
+      RenderOptions::default(),
+      TestExecutor { log },
+      event_loop,
+    )?;
+    tab.event_loop.clear_all_pending_work();
+    let _ = tab.render_if_needed()?;
+
+    let html = {
+      let dom = tab.dom();
+      dom
+        .get_elements_by_tag_name_from(dom.root(), "html")
+        .first()
+        .copied()
+        .expect("expected HTML element to exist")
+    };
+    tab
+      .dom_mut()
+      .set_attribute(html, "data-test-dirty", "1")
+      .expect("set attribute");
+    assert!(tab.host.document.is_dirty());
+
+    assert_eq!(tab.next_tick_due_in(), Some(Duration::ZERO));
+    Ok(())
+  }
+
+  #[test]
+  fn next_tick_due_in_reports_animation_frame_cadence_when_visible() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock.clone());
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let mut tab = BrowserTab::from_html_with_event_loop(
+      "",
+      RenderOptions::default(),
+      TestExecutor { log },
+      event_loop,
+    )?;
+    tab.event_loop.clear_all_pending_work();
+    let _ = tab.render_if_needed()?;
 
     tab
       .event_loop
       .request_animation_frame(|_host, _event_loop, _timestamp| Ok(()))?;
 
-    assert_eq!(
-      tab.next_tick_due_in(),
-      Some(tab.js_execution_options().animation_frame_interval)
-    );
+    assert_eq!(tab.host.document.visibility_state(), DocumentVisibilityState::Visible);
+    assert_eq!(tab.next_tick_due_in(), Some(RAF_TICK_CADENCE));
     Ok(())
   }
 
@@ -19135,6 +19195,7 @@ document.body.appendChild(second);"#,
       event_loop,
     )?;
     tab.event_loop.clear_all_pending_work();
+    let _ = tab.render_if_needed()?;
 
     tab
       .event_loop
