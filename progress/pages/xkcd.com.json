@@ -14,15 +14,15 @@
     "layout": 46.350585924273574,
     "paint": 31.204706241016957
   },
-  "notes": "Visually good. Centered page scaffold (780px body) with left nav, background boxes, and comic panel placement match Chrome. Comic image selects the 1x `src` (fixture `srcset` only provides a 2x candidate) at dpr=1 and sizes to 740×327. Remaining ~9.5% pixel diffs vs Chrome are dominated by text rasterization/antialiasing differences plus minor per-pixel rounding noise.",
+  "notes": "Visually good (baseline viewport 1200×800). Centered page scaffold (780px body) with left nav, background boxes, and comic panel placement match Chrome. Comic image selects the 1x `src` (fixture `srcset` only provides a 2x candidate) at dpr=1 and sizes to 740×327. Remaining ~5.3% pixel diffs vs Chrome are dominated by text rasterization/antialiasing differences plus minor per-pixel rounding noise.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 122506,
-    "diff_percent": 9.4995,
-    "perceptual": 0.1029,
+    "diff_pixels": 50837,
+    "diff_percent": 5.2955,
+    "perceptual": 0.0515,
     "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 137,
+      "x": 217,
       "y": 8,
       "baseline_rgba": [
         223,
@@ -39,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "95c9b4b4d20baade7f1d429acb5315a7d666173d"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "box_tree",
   "failure_stage": null,
