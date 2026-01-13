@@ -4297,10 +4297,10 @@ impl App {
               let title_resp = ui
                 .push_id(toast_id.with("toggle_details"), |ui| {
                   ui.add(
-                    egui::Label::new(
+                    egui::Button::new(
                       egui::RichText::new(&title_text).strong().color(title_color),
                     )
-                    .sense(egui::Sense::click()),
+                    .frame(false),
                   )
                 })
                 .inner
@@ -4334,7 +4334,11 @@ impl App {
 
               // Expose the title as an expand/collapse control to assistive tech (AccessKit) so
               // screen readers can announce the expanded/collapsed state.
-              let title_a11y_label = format!("Warning: {title_text}");
+              let title_a11y_label = if expanded {
+                format!("{title_text}: hide details")
+              } else {
+                format!("{title_text}: show details")
+              };
               title_resp.widget_info({
                 let label = title_a11y_label.clone();
                 move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
@@ -9396,5 +9400,107 @@ mod page_focus_tests {
     assert!(!ok);
     assert!(!page_has_focus);
     assert!(!cursor_in_page);
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod warning_toast_a11y_tests {
+  fn key_press_release(key: egui::Key) -> Vec<egui::Event> {
+    let modifiers = egui::Modifiers::default();
+    vec![
+      egui::Event::Key {
+        key,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      },
+      egui::Event::Key {
+        key,
+        pressed: false,
+        repeat: false,
+        modifiers,
+      },
+    ]
+  }
+
+  fn warning_toast_toggle_ui(ui: &mut egui::Ui, expanded: &mut bool) {
+    let title_resp = ui.add(
+      egui::Button::new(egui::RichText::new("Viewport clamped").strong()).frame(false),
+    );
+
+    let mut toggle_requested = title_resp.clicked();
+    if title_resp.has_focus() {
+      toggle_requested |= ui.input_mut(|i| {
+        i.consume_key(Default::default(), egui::Key::Enter)
+          || i.consume_key(Default::default(), egui::Key::Space)
+      });
+    }
+
+    if toggle_requested {
+      *expanded = !*expanded;
+      title_resp.request_focus();
+    }
+
+    let a11y_label = if *expanded {
+      "Viewport clamped: hide details"
+    } else {
+      "Viewport clamped: show details"
+    };
+    title_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
+  }
+
+  fn run_toast_frame(
+    ctx: &egui::Context,
+    expanded: &mut bool,
+    events: Vec<egui::Event>,
+  ) {
+    let mut raw = egui::RawInput::default();
+    raw.focused = true;
+    raw.pixels_per_point = Some(1.0);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::pos2(0.0, 0.0),
+      egui::vec2(600.0, 240.0),
+    ));
+    raw.events = events;
+
+    ctx.begin_frame(raw);
+    egui::CentralPanel::default().show(ctx, |ui| {
+      warning_toast_toggle_ui(ui, expanded);
+    });
+    let _ = ctx.end_frame();
+  }
+
+  #[test]
+  fn viewport_clamped_warning_toast_toggle_works_with_space() {
+    let ctx = egui::Context::default();
+    let mut expanded = false;
+
+    run_toast_frame(&ctx, &mut expanded, Vec::new());
+    run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Space));
+    assert!(
+      !expanded,
+      "expected Space to do nothing when the toggle is not focused"
+    );
+
+    run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Tab));
+    run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Space));
+    assert!(expanded, "expected Space to toggle expanded when focused via Tab");
+  }
+
+  #[test]
+  fn viewport_clamped_warning_toast_toggle_works_with_enter() {
+    let ctx = egui::Context::default();
+    let mut expanded = false;
+
+    run_toast_frame(&ctx, &mut expanded, Vec::new());
+    run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Enter));
+    assert!(
+      !expanded,
+      "expected Enter to do nothing when the toggle is not focused"
+    );
+
+    run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Tab));
+    run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Enter));
+    assert!(expanded, "expected Enter to toggle expanded when focused via Tab");
   }
 }
