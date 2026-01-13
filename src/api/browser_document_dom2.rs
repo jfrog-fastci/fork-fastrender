@@ -1774,6 +1774,7 @@ impl BrowserDocumentDom2 {
   /// - `x`/`y` are viewport-relative CSS px coordinates (before applying scroll offsets).
   /// - The returned [`Dom2HitTestResult::node`] is stable across renderer snapshots (unlike renderer
   ///   preorder ids) and corresponds to [`Dom2HitTestResult::hit::dom_node_id`].
+  /// - The returned node is guaranteed to be an element (walking up the ancestor chain if needed).
   ///
   /// This ensures style/layout are up to date but does **not** require a paint.
   pub fn hit_test_viewport_point(&mut self, x: f32, y: f32) -> Result<Option<Dom2HitTestResult>> {
@@ -1806,10 +1807,22 @@ impl BrowserDocumentDom2 {
       return Ok(None);
     };
  
-    let Some(node) = self.dom2_node_for_hit_test(&hit) else {
+    let Some(mut node) = self.dom2_node_for_hit_test(&hit) else {
       return Ok(None);
     };
- 
+
+    // The hit-test layer should already resolve semantic targets to elements, but keep this
+    // defensive so callers (UI) never accidentally receive Text/comment nodes.
+    loop {
+      match &self.dom().node(node).kind {
+        crate::dom2::NodeKind::Element { .. } => break,
+        _ => match self.dom().parent_node(node) {
+          Some(parent) => node = parent,
+          None => return Ok(None),
+        },
+      }
+    }
+
     Ok(Some(Dom2HitTestResult { node, hit }))
   }
 
@@ -1846,10 +1859,23 @@ impl BrowserDocumentDom2 {
 
     let mut out: Vec<Dom2HitTestResult> = Vec::new();
     for hit in hits {
-      let Some(node) = self.dom2_node_for_hit_test(&hit) else {
+      let Some(mut node) = self.dom2_node_for_hit_test(&hit) else {
         continue;
       };
-      out.push(Dom2HitTestResult { node, hit });
+
+      loop {
+        match &self.dom().node(node).kind {
+          crate::dom2::NodeKind::Element { .. } => break,
+          _ => match self.dom().parent_node(node) {
+            Some(parent) => node = parent,
+            None => break,
+          },
+        }
+      }
+
+      if matches!(&self.dom().node(node).kind, crate::dom2::NodeKind::Element { .. }) {
+        out.push(Dom2HitTestResult { node, hit });
+      }
     }
 
     Ok(out)
