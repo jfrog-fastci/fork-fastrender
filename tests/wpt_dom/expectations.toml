@@ -158,11 +158,6 @@ status = "xfail"
 reason = "Document/Element.getElementsByTagNameNS is not implemented yet (including live HTMLCollection semantics and template inert-subtree behavior)."
 
 [[expectations]]
-id = "dom/document_createElementNS_namespace_constraints.window.js"
-status = "xfail"
-reason = "Document.createElementNS namespace/prefix validation (and DOMException types) not implemented yet."
-
-[[expectations]]
 id = "dom/queryselector_invalid_selector_domexception.window.js"
 status = "xfail"
 reason = "querySelector currently throws a non-DOMException error; should be a DOMException SyntaxError once DOMException is implemented."
