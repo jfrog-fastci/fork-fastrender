@@ -521,13 +521,15 @@ fn apply_global_appearance(
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
-fn sanitize_home_url(raw: &str) -> String {
-  let trimmed = raw.trim().to_string();
-  if trimmed.is_empty() || fastrender::ui::validate_user_navigation_url_scheme(&trimmed).is_err() {
-    fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()
-  } else {
-    trimmed
+fn normalize_home_url(raw: &str) -> Option<String> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
   }
+  if fastrender::ui::validate_user_navigation_url_scheme(trimmed).is_err() {
+    return None;
+  }
+  Some(trimmed.to_string())
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -536,9 +538,15 @@ fn apply_global_home_url(
   proposed_global: Option<String>,
   windows: &[String],
 ) -> (String, Vec<bool>) {
-  let global = sanitize_home_url(global);
-  let proposed_global = proposed_global.map(|url| sanitize_home_url(&url));
-  apply_global_value(&global, proposed_global, windows)
+  let default_home_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+  let global_norm = normalize_home_url(global).unwrap_or_else(|| default_home_url.clone());
+  // Only accept a proposed change if it's valid. Invalid proposals are ignored and the proposing
+  // window will be corrected back to the global value.
+  let proposed_norm = proposed_global.and_then(|url| normalize_home_url(&url));
+
+  let new_global = proposed_norm.unwrap_or_else(|| global_norm.clone());
+  let updates = windows.iter().map(|value| value != &new_global).collect();
+  (new_global, updates)
 }
 
 #[cfg(test)]
@@ -640,15 +648,15 @@ mod global_session_settings_tests {
   }
 
   #[test]
-  fn invalid_home_url_defaults_to_newtab() {
+  fn invalid_home_url_does_not_overwrite_valid_global() {
     let global = "https://example.com".to_string();
     let proposed = "javascript:alert(1)".to_string();
 
     let windows = vec![global.clone(), proposed.clone()];
     let (new_global, updates) = apply_global_home_url(&global, Some(proposed), &windows);
 
-    assert_eq!(new_global, fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
-    assert_eq!(updates, vec![true, true]);
+    assert_eq!(new_global, global);
+    assert_eq!(updates, vec![false, true]);
   }
 }
 
