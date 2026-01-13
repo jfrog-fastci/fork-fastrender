@@ -35,7 +35,6 @@ Target selection:
 
 Common flags:
 
-- `--disable-debug-libs` (avoid building `libvpx_g.a`, etc)
 - `--disable-examples --disable-tools --disable-unit-tests --disable-docs`
 - Decoder-only build:
   - `--enable-vp8-decoder --enable-vp9-decoder`
