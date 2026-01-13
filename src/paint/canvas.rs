@@ -358,6 +358,19 @@ impl Canvas {
     }
   }
 
+  /// Wraps an existing pixmap in a Canvas using an explicit text rasterizer (shared caches, etc.)
+  /// without clearing the pixmap.
+  pub fn from_pixmap_with_text_rasterizer(pixmap: Pixmap, text_rasterizer: TextRasterizer) -> Self {
+    Self {
+      pixmap,
+      state_stack: Vec::new(),
+      layer_stack: Vec::new(),
+      source_alpha_recording_depth: 0,
+      current_state: CanvasState::new(),
+      text_rasterizer,
+    }
+  }
+
   /// Returns the canvas width in pixels
   #[inline]
   pub fn width(&self) -> u32 {
@@ -2785,8 +2798,7 @@ impl Canvas {
         let ty_round = transform.ty.round();
         if (transform.tx - tx_round).abs() <= 1e-3 && (transform.ty - ty_round).abs() <= 1e-3 {
           // First try the seam-avoidance snap that rounds near-integer rect edges in device space.
-          if let Some(snapped) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform)
-          {
+          if let Some(snapped) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform) {
             if let Some(skia_rect) = self.to_skia_rect(snapped) {
               let path = PathBuilder::from_rect(skia_rect);
               let mut paint = self.current_state.create_paint(color);
@@ -3227,8 +3239,7 @@ impl Canvas {
       && (transform.sx - 1.0).abs() <= 1e-6
       && (transform.sy - 1.0).abs() <= 1e-6
     {
-      if let Some(snapped) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform)
-      {
+      if let Some(snapped) = self.snapped_device_rect_for_axis_aligned_fill(rect, transform) {
         (snapped, Transform::identity())
       } else {
         (rect, transform)

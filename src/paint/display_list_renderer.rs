@@ -3659,6 +3659,33 @@ pub struct RenderReport {
   pub serial_duration: Duration,
 }
 
+/// Report for an incremental/partial repaint operation.
+///
+/// Partial repaint renders a subset of tiles into an existing pixmap and blits the result back.
+/// The operation may fall back to a full repaint for correctness (e.g. preserve-3d scenes).
+pub struct PartialRepaintReport {
+  /// The rendered pixmap (either updated in-place or freshly repainted).
+  pub pixmap: Pixmap,
+  /// Whether the repaint used the partial repaint path.
+  pub used_partial: bool,
+  /// Number of tiles that were repainted (0 when falling back to full repaint).
+  pub repainted_tiles: usize,
+  /// Optional reason partial repaint was not used.
+  pub fallback_reason: Option<String>,
+}
+
+/// Report for a scroll-blit + exposed-strip repaint operation.
+pub struct ScrollBlitReport {
+  /// The rendered pixmap.
+  pub pixmap: Pixmap,
+  /// Whether the scroll blit fast-path was used.
+  pub scroll_blit_used: bool,
+  /// Whether partial repaint was used to repaint the exposed strip.
+  pub partial_repaint_used: bool,
+  /// Optional reason the optimization was not used.
+  pub fallback_reason: Option<String>,
+}
+
 #[derive(Default)]
 struct ImagePixmapDiagnostics {
   hits: AtomicU64,
@@ -5547,6 +5574,43 @@ impl DisplayListRenderer {
     )
   }
 
+  /// Wraps an existing pixmap (already in device pixels) in a renderer without clearing it.
+  pub fn new_from_existing_pixmap(
+    pixmap: Pixmap,
+    background: Rgba,
+    font_ctx: FontContext,
+  ) -> Result<Self> {
+    Self::new_scaled_from_existing_pixmap(pixmap, background, font_ctx, 1.0)
+  }
+
+  /// Wraps an existing pixmap (already in device pixels) in a renderer without clearing it.
+  ///
+  /// The provided `scale` must match the scale that was used to produce the pixmap.
+  pub fn new_scaled_from_existing_pixmap(
+    pixmap: Pixmap,
+    background: Rgba,
+    font_ctx: FontContext,
+    scale: f32,
+  ) -> Result<Self> {
+    let scale = if scale.is_finite() && scale > 0.0 {
+      scale
+    } else {
+      1.0
+    };
+    let color_renderer = shared_color_renderer();
+    let color_cache = shared_color_cache();
+    let glyph_cache = shared_glyph_cache();
+    Self::new_with_text_state_from_existing_pixmap(
+      pixmap,
+      background,
+      font_ctx,
+      scale,
+      color_renderer,
+      color_cache,
+      glyph_cache,
+    )
+  }
+
   /// Configure parallel painting.
   pub fn with_parallelism(mut self, parallelism: PaintParallelism) -> Self {
     self.paint_parallelism = parallelism;
@@ -5595,6 +5659,95 @@ impl DisplayListRenderer {
         background,
         text_rasterizer,
       )?,
+      font_ctx,
+      color_cache,
+      color_renderer,
+      glyph_cache,
+      stacking_layers: Vec::new(),
+      blend_stack: Vec::new(),
+      opacity_stack: Vec::new(),
+      scale,
+      transform_stack: vec![Transform3D::identity()],
+      perspective_stack: vec![Transform3D::identity()],
+      culled_depth: 0,
+      preserve_3d_disabled: runtime_flag("FASTR_PRESERVE3D_DISABLE_SCENE"),
+      preserve_3d_scene_depth: 0,
+      projective_warp_enabled: projective_warp_enabled(),
+      projective_warp_depth: 0,
+      preserve_3d_debug: runtime_flag("FASTR_PRESERVE3D_DEBUG"),
+      background,
+      paint_parallelism: PaintParallelism::default(),
+      image_cache: ImagePixmapCache::new(image_cache_items, image_cache_bytes),
+      cropped_image_cache: LruCache::new(
+        NonZeroUsize::new(CROPPED_IMAGE_CACHE_CAPACITY)
+          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
+      ),
+      scaled_image_cache: LruCache::new(
+        NonZeroUsize::new(SCALED_IMAGE_CACHE_CAPACITY)
+          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
+      ),
+      shared_image_pixmaps: None,
+      #[cfg(test)]
+      image_cache_misses: Arc::new(AtomicUsize::new(0)),
+      image_pixmap_diagnostics: diagnostics_enabled
+        .then(|| Arc::new(ImagePixmapDiagnostics::default())),
+      background_paint_diagnostics: diagnostics_enabled
+        .then(|| Arc::new(BackgroundPaintDiagnostics::default())),
+      clip_mask_diagnostics: diagnostics_enabled.then(|| Arc::new(ClipMaskDiagnostics::default())),
+      layer_alloc_diagnostics: diagnostics_enabled
+        .then(|| Arc::new(LayerAllocationDiagnostics::default())),
+      backdrop_composite_diagnostics: diagnostics_enabled
+        .then(|| Arc::new(BackdropCompositeDiagnostics::default())),
+      warp_cache: WarpCache::new(WARP_CACHE_CAPACITY),
+      blur_cache: BlurCache::default(),
+      shared_blur_cache: None,
+      backdrop_filter_cache: BackdropFilterCache::default(),
+      shared_backdrop_filter_cache: None,
+      gradient_cache: GradientLutCache::default(),
+      gradient_pixmap_cache: GradientPixmapCache::default(),
+      gradient_stats: GradientStats::default(),
+      diagnostics_enabled,
+      trace_backdrop_stack: runtime_flag("FASTR_TRACE_BACKDROP_STACK"),
+      backdrop_composite_cache: LruCache::new(
+        NonZeroUsize::new(BACKDROP_COMPOSITE_CACHE_CAPACITY)
+          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
+      ),
+      backdrop_composite_cache_enabled: true,
+      canvas_mutations: vec![0],
+    })
+  }
+
+  fn new_with_text_state_from_existing_pixmap(
+    pixmap: Pixmap,
+    background: Rgba,
+    font_ctx: FontContext,
+    scale: f32,
+    color_renderer: ColorFontRenderer,
+    color_cache: Arc<Mutex<ColorGlyphCache>>,
+    glyph_cache: Arc<Mutex<GlyphCache>>,
+  ) -> Result<Self> {
+    let scale = if scale.is_finite() && scale > 0.0 {
+      scale
+    } else {
+      1.0
+    };
+    let toggles = crate::debug::runtime::runtime_toggles();
+    let image_cache_items = toggles.usize_with_default(
+      ENV_IMAGE_PIXMAP_CACHE_ITEMS,
+      DEFAULT_IMAGE_PIXMAP_CACHE_ITEMS,
+    );
+    let image_cache_bytes = toggles.usize_with_default(
+      ENV_IMAGE_PIXMAP_CACHE_BYTES,
+      DEFAULT_IMAGE_PIXMAP_CACHE_BYTES,
+    );
+    let text_rasterizer = TextRasterizer::with_caches(
+      glyph_cache.clone(),
+      color_renderer.clone(),
+      color_cache.clone(),
+    );
+    let diagnostics_enabled = paint_diagnostics_enabled();
+    Ok(Self {
+      canvas: Canvas::from_pixmap_with_text_rasterizer(pixmap, text_rasterizer),
       font_ctx,
       color_cache,
       color_renderer,
@@ -6635,9 +6788,15 @@ impl DisplayListRenderer {
     let dest_x = visible_rect.x().floor() as i32;
     let dest_y = visible_rect.y().floor() as i32;
     let dither_phase = (((dest_y & 7) as u8) << 3) | ((dest_x & 7) as u8);
-    let Some(key) =
-      GradientPixmapCacheKey::radial(width, height, center, radii, spread, &stops_rgba, dither_phase)
-    else {
+    let Some(key) = GradientPixmapCacheKey::radial(
+      width,
+      height,
+      center,
+      radii,
+      spread,
+      &stops_rgba,
+      dither_phase,
+    ) else {
       return Ok(());
     };
 
@@ -6929,9 +7088,15 @@ impl DisplayListRenderer {
     let origin_x = origin.x.floor() as i32;
     let origin_y = origin.y.floor() as i32;
     let dither_phase = (((origin_y & 7) as u8) << 3) | ((origin_x & 7) as u8);
-    let Some(key) =
-      GradientPixmapCacheKey::radial(width, height, center_key, radii_key, spread, &stops_rgba, dither_phase)
-    else {
+    let Some(key) = GradientPixmapCacheKey::radial(
+      width,
+      height,
+      center_key,
+      radii_key,
+      spread,
+      &stops_rgba,
+      dither_phase,
+    ) else {
       self.record_background_paint(background_timer);
       return Ok(());
     };
@@ -10556,6 +10721,334 @@ impl DisplayListRenderer {
     })
   }
 
+  /// Repaints only the region covered by `damage_rect` by rendering the display list in
+  /// halo-expanded tiles and blitting the updated tiles into the existing pixmap.
+  ///
+  /// The renderer must have been constructed via [`Self::new_from_existing_pixmap`] /
+  /// [`Self::new_scaled_from_existing_pixmap`] so the canvas contains the previously rendered
+  /// pixels. When tile isolation is not supported for the display list, this falls back to a full
+  /// repaint and reports the reason.
+  pub fn render_damage_with_report(
+    mut self,
+    list: &DisplayList,
+    damage_rect: Rect,
+  ) -> Result<PartialRepaintReport> {
+    let original_list = list;
+    let composed = self
+      .preserve_3d_disabled
+      .then(|| crate::paint::preserve_3d::composite_preserve_3d(list));
+    let list = composed.as_ref().unwrap_or(list);
+
+    let (tile_ok, reason) = self.tile_isolation_supported(list)?;
+    if !tile_ok {
+      // Full repaint fallback: render into a fresh surface so we do not depend on the existing
+      // pixmap contents.
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(PartialRepaintReport {
+        pixmap,
+        used_partial: false,
+        repainted_tiles: 0,
+        fallback_reason: reason,
+      });
+    }
+
+    // Treat non-finite damage rectangles as a request for a full repaint to avoid leaving stale
+    // pixels in place.
+    if !damage_rect.x().is_finite()
+      || !damage_rect.y().is_finite()
+      || !damage_rect.width().is_finite()
+      || !damage_rect.height().is_finite()
+    {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(PartialRepaintReport {
+        pixmap,
+        used_partial: false,
+        repainted_tiles: 0,
+        fallback_reason: Some("damage rect is non-finite; full repaint".to_string()),
+      });
+    }
+
+    let halo_px = self.tile_halo_px(list)?;
+    let repainted_tiles = self.repaint_tiles_for_damage(list, halo_px, damage_rect)?;
+    Ok(PartialRepaintReport {
+      pixmap: self.canvas.into_pixmap(),
+      used_partial: true,
+      repainted_tiles,
+      fallback_reason: None,
+    })
+  }
+
+  /// Applies a scroll-blit optimization (copying pixels from the previous frame) and repaints the
+  /// newly exposed strip.
+  ///
+  /// This is intended for scroll-driven repaints where the scroll delta is a translation in
+  /// device pixels. When the delta is unsupported (non-integer after scaling, too large, or
+  /// diagonal), or when the display list is not safe to evaluate in isolation, the method falls
+  /// back to a full repaint.
+  pub fn render_scroll_blit_with_report(
+    mut self,
+    list: &DisplayList,
+    scroll_delta_css: Point,
+  ) -> Result<ScrollBlitReport> {
+    let original_list = list;
+    let composed = self
+      .preserve_3d_disabled
+      .then(|| crate::paint::preserve_3d::composite_preserve_3d(list));
+    let list = composed.as_ref().unwrap_or(list);
+
+    let (tile_ok, reason) = self.tile_isolation_supported(list)?;
+    if !tile_ok {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: reason,
+      });
+    }
+
+    if !(scroll_delta_css.x.is_finite() && scroll_delta_css.y.is_finite()) {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some("scroll delta is non-finite; full repaint".to_string()),
+      });
+    }
+
+    let dx_f = scroll_delta_css.x * self.scale;
+    let dy_f = scroll_delta_css.y * self.scale;
+    let to_i32 = |v: f32| -> Option<i32> {
+      if !v.is_finite() {
+        return None;
+      }
+      if v < i32::MIN as f32 || v > i32::MAX as f32 {
+        return None;
+      }
+      Some(v as i32)
+    };
+    let dx = Self::snap_near_integer(dx_f, 1e-3).and_then(to_i32);
+    let dy = Self::snap_near_integer(dy_f, 1e-3).and_then(to_i32);
+
+    // Support single-axis scroll blits only for now.
+    let Some(dx) = dx else {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some(
+          "scroll delta X is not an integer in device pixels; full repaint".to_string(),
+        ),
+      });
+    };
+    let Some(dy) = dy else {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some(
+          "scroll delta Y is not an integer in device pixels; full repaint".to_string(),
+        ),
+      });
+    };
+
+    if (dx != 0 && dy != 0) || (dx == 0 && dy == 0) {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some("scroll delta unsupported; full repaint".to_string()),
+      });
+    }
+
+    let width = self.canvas.width() as i32;
+    let height = self.canvas.height() as i32;
+    if width <= 0 || height <= 0 {
+      return Ok(ScrollBlitReport {
+        pixmap: self.canvas.into_pixmap(),
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some("empty surface".to_string()),
+      });
+    }
+    if dx.saturating_abs() >= width || dy.saturating_abs() >= height {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some("scroll delta exceeds viewport; full repaint".to_string()),
+      });
+    }
+
+    // Apply the blit: new(x,y) = old(x+dx, y+dy) (dx/dy in device pixels).
+    let bg = tiny_skia::Color::from_rgba8(
+      self.background.r,
+      self.background.g,
+      self.background.b,
+      self.background.alpha_u8(),
+    );
+    self.canvas.with_mirrored_pixmap_mut_result(|dest| {
+      let mut scratch = new_pixmap_with_context(dest.width(), dest.height(), "scroll_blit")?;
+      scratch.fill(bg);
+
+      let dst_w = dest.width() as i32;
+      let dst_h = dest.height() as i32;
+      if dst_w <= 0 || dst_h <= 0 {
+        dest.data_mut().copy_from_slice(scratch.data());
+        return Ok(());
+      }
+
+      let src_w = dest.width() as i32;
+      let src_h = dest.height() as i32;
+      let x0 = dx.max(0);
+      let y0 = dy.max(0);
+      let x1 = (dx + dst_w).min(src_w);
+      let y1 = (dy + dst_h).min(src_h);
+      if x0 < x1 && y0 < y1 {
+        let dst_off_x = (x0 - dx) as usize;
+        let dst_off_y = (y0 - dy) as usize;
+        let copy_w = (x1 - x0) as usize;
+        let copy_h = (y1 - y0) as usize;
+        let dst_stride = scratch.width() as usize * 4;
+        let src_stride = dest.width() as usize * 4;
+        let row_bytes = copy_w * 4;
+        let src_data = dest.data();
+        let dst_data = scratch.data_mut();
+        for row in 0..copy_h {
+          let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
+          let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
+          dst_data[dst_idx..dst_idx + row_bytes]
+            .copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
+        }
+      }
+
+      dest.data_mut().copy_from_slice(scratch.data());
+      Ok(())
+    })?;
+    self.mark_current_pixmap_mutated();
+
+    // Compute the exposed strip and repaint it.
+    let exposed_device = if dy != 0 {
+      if dy > 0 {
+        Rect::from_xywh(0.0, (height - dy) as f32, width as f32, dy as f32)
+      } else {
+        Rect::from_xywh(0.0, 0.0, width as f32, (-dy) as f32)
+      }
+    } else if dx > 0 {
+      Rect::from_xywh((width - dx) as f32, 0.0, dx as f32, height as f32)
+    } else {
+      Rect::from_xywh(0.0, 0.0, (-dx) as f32, height as f32)
+    };
+    let exposed_css = Rect::from_xywh(
+      exposed_device.x() / self.scale,
+      exposed_device.y() / self.scale,
+      exposed_device.width() / self.scale,
+      exposed_device.height() / self.scale,
+    );
+    let halo_px = self.tile_halo_px(list)?;
+    let repainted_tiles = self.repaint_tiles_for_damage(list, halo_px, exposed_css)?;
+
+    Ok(ScrollBlitReport {
+      pixmap: self.canvas.into_pixmap(),
+      scroll_blit_used: true,
+      partial_repaint_used: repainted_tiles > 0,
+      fallback_reason: None,
+    })
+  }
+
   fn backdrop_composite_cache_key(
     layer_stack: &[LayerRecord],
     root_depth: usize,
@@ -10977,6 +11470,21 @@ impl DisplayListRenderer {
     Ok(())
   }
 
+  /// Returns whether `list` can be evaluated in isolation for a sub-region.
+  ///
+  /// This is the same safety requirement as the tile-parallel renderer: any optimization that
+  /// renders a halo-expanded region in isolation (then crops/blits it into a larger surface) must
+  /// ensure the display list does not depend on pixels or ordering outside that region.
+  ///
+  /// The returned `reason` is intended for diagnostics/counters when the list is not safe.
+  pub fn tile_isolation_supported(&self, list: &DisplayList) -> Result<(bool, Option<String>)> {
+    let mut reason = None;
+    let incompatible = self
+      .has_parallel_incompatible_effects(list.items(), &mut reason)
+      .map_err(Error::Render)?;
+    Ok((!incompatible, reason))
+  }
+
   /// Returns `true` if the display list contains effects that are not currently supported by the
   /// tile-parallel renderer.
   ///
@@ -11160,10 +11668,9 @@ impl DisplayListRenderer {
       return Ok(false);
     }
 
-    if self
-      .has_parallel_incompatible_effects(list.items(), fallback_reason)
-      .map_err(Error::Render)?
-    {
+    let (supported, reason) = self.tile_isolation_supported(list)?;
+    if !supported {
+      *fallback_reason = reason;
       return Ok(false);
     }
 
@@ -11628,7 +12135,10 @@ impl DisplayListRenderer {
           max_pad = max_pad.max(scaled_pad(stroke.width * 0.5, current_scale));
         }
         DisplayItem::Outline(outline) => {
-          max_pad = max_pad.max(scaled_pad(outline.width.abs() + outline.offset.abs(), current_scale));
+          max_pad = max_pad.max(scaled_pad(
+            outline.width.abs() + outline.offset.abs(),
+            current_scale,
+          ));
         }
         DisplayItem::Border(border) => {
           let max_w = border
@@ -11796,6 +12306,74 @@ impl DisplayListRenderer {
     Ok(tiles)
   }
 
+  fn build_tiles_for_device_rect<'a>(
+    &self,
+    list: &'a DisplayList,
+    halo_px: u32,
+    device_rect: Rect,
+  ) -> Result<Vec<TileWork<'a>>> {
+    let tile_size = self.paint_parallelism.tile_size.max(1);
+    let width = self.canvas.width();
+    let height = self.canvas.height();
+    let halo2 = halo_px.saturating_mul(2);
+    let optimizer = DisplayListOptimizer::new();
+    let mut tiles = Vec::new();
+    let mut deadline_counter = 0usize;
+
+    let device_rect = device_rect
+      .intersection(Rect::from_xywh(0.0, 0.0, width as f32, height as f32))
+      .unwrap_or(Rect::from_xywh(0.0, 0.0, 0.0, 0.0));
+
+    if device_rect.width() <= 0.0 || device_rect.height() <= 0.0 {
+      return Ok(tiles);
+    }
+
+    for y in (0..height).step_by(tile_size as usize) {
+      let tile_h = height.saturating_sub(y).min(tile_size);
+      for x in (0..width).step_by(tile_size as usize) {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+          .map_err(Error::Render)?;
+        let tile_w = width.saturating_sub(x).min(tile_size);
+
+        let tile_rect = Rect::from_xywh(x as f32, y as f32, tile_w as f32, tile_h as f32);
+        if !tile_rect.intersects(device_rect) {
+          continue;
+        }
+
+        let render_x = x.saturating_sub(halo_px);
+        let render_y = y.saturating_sub(halo_px);
+        let max_w = width.saturating_sub(render_x);
+        let max_h = height.saturating_sub(render_y);
+        let render_w = tile_w.saturating_add(halo2).min(max_w).max(tile_w);
+        let render_h = tile_h.saturating_add(halo2).min(max_h).max(tile_h);
+
+        let render_css_rect = Rect::from_xywh(
+          render_x as f32 / self.scale,
+          render_y as f32 / self.scale,
+          render_w as f32 / self.scale,
+          render_h as f32 / self.scale,
+        );
+        let slice = optimizer
+          .intersect_view(list.items(), render_css_rect)
+          .map_err(Error::Render)?;
+
+        tiles.push(TileWork {
+          tile_x: x,
+          tile_y: y,
+          tile_w,
+          tile_h,
+          render_x,
+          render_y,
+          render_w,
+          render_h,
+          list: slice,
+        });
+      }
+    }
+
+    Ok(tiles)
+  }
+
   fn blit_tile(&mut self, work: &TileWork, pixmap: &Pixmap) -> Result<()> {
     self.canvas.with_mirrored_pixmap_mut_result(|dest| {
       let dest_bpr = dest.width() as usize * 4;
@@ -11816,6 +12394,99 @@ impl DisplayListRenderer {
 
       Ok(())
     })
+  }
+
+  fn repaint_tiles_for_damage(
+    &mut self,
+    list: &DisplayList,
+    halo_px: u32,
+    damage_rect: Rect,
+  ) -> Result<usize> {
+    if damage_rect.width() <= 0.0
+      || damage_rect.height() <= 0.0
+      || !damage_rect.x().is_finite()
+      || !damage_rect.y().is_finite()
+      || !damage_rect.width().is_finite()
+      || !damage_rect.height().is_finite()
+    {
+      return Ok(0);
+    }
+
+    let device_damage = self.ds_rect(damage_rect);
+    let tiles = self.build_tiles_for_device_rect(list, halo_px, device_damage)?;
+    if tiles.is_empty() {
+      return Ok(0);
+    }
+
+    let font_ctx = self.font_ctx.clone();
+    let scale = self.scale;
+    let background = self.background;
+    let preserve_3d_disabled = self.preserve_3d_disabled;
+    let preserve_3d_scene_depth = self.preserve_3d_scene_depth;
+    let projective_warp_enabled = self.projective_warp_enabled;
+    let projective_warp_depth = self.projective_warp_depth;
+    let preserve_3d_debug = self.preserve_3d_debug;
+    let color_renderer = self.color_renderer.clone();
+    let color_cache = self.color_cache.clone();
+    let glyph_cache = self.glyph_cache.clone();
+    let gradient_cache = self.gradient_cache.clone();
+    let gradient_pixmap_cache = self.gradient_pixmap_cache.clone();
+    let diagnostics_enabled = self.diagnostics_enabled;
+    let image_pixmap_diagnostics = self.image_pixmap_diagnostics.clone();
+    let background_paint_diagnostics = self.background_paint_diagnostics.clone();
+    let clip_mask_diagnostics = self.clip_mask_diagnostics.clone();
+    let layer_alloc_diagnostics = self.layer_alloc_diagnostics.clone();
+    let backdrop_composite_diagnostics = self.backdrop_composite_diagnostics.clone();
+    let shared_image_pixmaps = self.shared_image_pixmaps.clone();
+    let shared_backdrop_filter_cache = self.shared_backdrop_filter_cache.clone();
+
+    let mut repainted = 0usize;
+    let mut tile_stats = GradientStats::default();
+    for work in tiles {
+      check_active(RenderStage::Paint).map_err(Error::Render)?;
+      let mut renderer = DisplayListRenderer::new_with_text_state(
+        work.render_w,
+        work.render_h,
+        background,
+        font_ctx.clone(),
+        scale,
+        color_renderer.clone(),
+        color_cache.clone(),
+        glyph_cache.clone(),
+      )?;
+      renderer.preserve_3d_disabled = preserve_3d_disabled;
+      renderer.preserve_3d_scene_depth = preserve_3d_scene_depth;
+      renderer.projective_warp_enabled = projective_warp_enabled;
+      renderer.projective_warp_depth = projective_warp_depth;
+      renderer.preserve_3d_debug = preserve_3d_debug;
+      renderer.paint_parallelism = PaintParallelism::disabled();
+      renderer.gradient_cache = gradient_cache.clone();
+      renderer.gradient_pixmap_cache = gradient_pixmap_cache.clone();
+      renderer.shared_backdrop_filter_cache = shared_backdrop_filter_cache.clone();
+      renderer.diagnostics_enabled = diagnostics_enabled;
+      renderer.image_pixmap_diagnostics = image_pixmap_diagnostics.clone();
+      renderer.background_paint_diagnostics = background_paint_diagnostics.clone();
+      renderer.clip_mask_diagnostics = clip_mask_diagnostics.clone();
+      renderer.layer_alloc_diagnostics = layer_alloc_diagnostics.clone();
+      renderer.backdrop_composite_diagnostics = backdrop_composite_diagnostics.clone();
+      renderer.shared_image_pixmaps = shared_image_pixmaps.clone();
+
+      if work.render_x > 0 || work.render_y > 0 {
+        renderer
+          .canvas
+          .translate(-(work.render_x as f32), -(work.render_y as f32));
+      }
+      renderer.render_slice(&work.list)?;
+      tile_stats.merge(&renderer.gradient_stats);
+      self.blit_tile(&work, renderer.canvas.pixmap())?;
+      repainted = repainted.saturating_add(1);
+    }
+
+    self.gradient_stats.merge(&tile_stats);
+    if repainted > 0 {
+      self.mark_current_pixmap_mutated();
+    }
+    Ok(repainted)
   }
 
   fn render_parallel(
@@ -14834,7 +15505,8 @@ impl DisplayListRenderer {
         //
         // This matters for WPT reftests like `transforms/perspective-preserve-3d-001` which assert
         // those representations are equivalent.
-        let mut warp_candidate = parent_perspective.multiply_perspective_optimized(&local_transform);
+        let mut warp_candidate =
+          parent_perspective.multiply_perspective_optimized(&local_transform);
         if self.projective_warp_depth > 0 {
           let parent_global = self
             .stacking_layers
@@ -17167,7 +17839,8 @@ impl DisplayListRenderer {
                 src_h,
                 out_w,
                 out_h,
-              ) || should_phase_rasterize {
+              ) || should_phase_rasterize
+              {
                 let diag = self.image_pixmap_diagnostics.as_ref();
                 if let Some(diag) = diag {
                   diag.record_miss();
@@ -18696,7 +19369,10 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       t: f32,
     }
 
-    let build_axis = |out_len: u32, out_origin: f32, dest_origin: f32, src_len: u32|
+    let build_axis = |out_len: u32,
+                      out_origin: f32,
+                      dest_origin: f32,
+                      src_len: u32|
      -> Option<Vec<AxisSampleF32>> {
       if out_len == 0 || src_len == 0 {
         return None;
@@ -18735,20 +19411,10 @@ fn image_data_to_scaled_pixmap_with_phase_inner(
       Some(samples)
     };
 
-    let Some(xs) = build_axis(
-      out_width,
-      out_origin_x_device,
-      dest_device.x(),
-      src_w,
-    ) else {
+    let Some(xs) = build_axis(out_width, out_origin_x_device, dest_device.x(), src_w) else {
       return Ok(None);
     };
-    let Some(ys) = build_axis(
-      out_height,
-      out_origin_y_device,
-      dest_device.y(),
-      src_h,
-    ) else {
+    let Some(ys) = build_axis(out_height, out_origin_y_device, dest_device.y(), src_h) else {
       return Ok(None);
     };
 
@@ -26597,7 +27263,10 @@ mod tests {
     .unwrap()
     .unwrap();
 
-    assert_eq!((rendered.width(), rendered.height()), (expected.width(), expected.height()));
+    assert_eq!(
+      (rendered.width(), rendered.height()),
+      (expected.width(), expected.height())
+    );
     assert_eq!(rendered.data(), expected.data());
   }
 
