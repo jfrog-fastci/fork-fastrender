@@ -701,7 +701,9 @@ fn spawn_appcontainer(
     relocated.display()
   ));
 
-  match create_process_with_job_strategy(&relocated, Some(temp_dir.path())) {
+  // Keep the sandboxed process's working directory inside the AppContainer profile folder, even if
+  // we had to relocate the executable to a host temp dir to grant read/execute ACLs.
+  match create_process_with_job_strategy(&relocated, None) {
     Ok((pi, used_breakaway)) => finish_spawn(
       job,
       pi,
