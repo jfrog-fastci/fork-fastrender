@@ -46,6 +46,7 @@ fn merge_conflict_marker_script_reports_offenders() {
     "<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>> branch\n",
   )
   .expect("write bad.txt fixture");
+  fs::write(dir.path().join("good.txt"), "hello world\n").expect("write good.txt fixture");
 
   let dirty = Command::new("bash")
     .arg(&script)
@@ -75,5 +76,16 @@ fn merge_conflict_marker_script_reports_offenders() {
     stderr.contains("bad.txt:5:"),
     "expected stderr to include >>>>>>> marker line, got:\n{stderr}"
   );
+  assert!(
+    !stderr.contains("good.txt:"),
+    "did not expect stderr to include good.txt (no conflict markers), got:\n{stderr}"
+  );
+  assert!(
+    !stderr.contains(":left"),
+    "did not expect stderr to include non-marker lines, got:\n{stderr}"
+  );
+  assert!(
+    !stderr.contains(":right"),
+    "did not expect stderr to include non-marker lines, got:\n{stderr}"
+  );
 }
-

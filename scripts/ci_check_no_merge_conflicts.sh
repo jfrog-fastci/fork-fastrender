@@ -25,6 +25,7 @@ Usage: bash scripts/ci_check_no_merge_conflicts.sh [--path <dir>]
 
 Scans for unresolved git merge-conflict markers:
   ^<<<<<<<␠
+  ^|||||||␠  (diff3-style "common ancestors" marker)
   ^=======  (exact line; optional trailing whitespace)
   ^>>>>>>>␠
 
