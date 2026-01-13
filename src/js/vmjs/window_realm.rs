@@ -34784,11 +34784,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(to_string_func))?;
-  scope.define_property(
-    location_obj,
-    to_string_key,
-    data_desc(Value::Object(to_string_func)),
-  )?;
 
   let to_json_key = alloc_key(&mut scope, "toJSON")?;
   let to_json_name = scope.alloc_string("toJSON")?;
@@ -34799,11 +34794,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(to_json_func))?;
-  scope.define_property(
-    location_obj,
-    to_json_key,
-    data_desc(Value::Object(to_json_func)),
-  )?;
 
   let value_of_key = alloc_key(&mut scope, "valueOf")?;
   let value_of_name = scope.alloc_string("valueOf")?;
@@ -34815,11 +34805,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(value_of_func))?;
-  scope.define_property(
-    location_obj,
-    value_of_key,
-    data_desc(Value::Object(value_of_func)),
-  )?;
 
   let location_to_primitive_call_id = vm.register_native_call(location_to_primitive_native)?;
   let to_primitive_key = PropertyKey::from_symbol(realm.well_known_symbols().to_primitive);
@@ -34832,11 +34817,6 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(to_primitive_func))?;
-  scope.define_property(
-    location_obj,
-    to_primitive_key,
-    data_desc(Value::Object(to_primitive_func)),
-  )?;
 
   let href_get_call_id = vm.register_native_call(location_href_get_native)?;
   let href_get_name = scope.alloc_string("get href")?;
@@ -34877,11 +34857,6 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(assign_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(assign_func))?;
-  scope.define_property(
-    location_obj,
-    assign_key,
-    data_desc(Value::Object(assign_func)),
-  )?;
 
   let replace_call_id = vm.register_native_call(location_replace_native)?;
   let replace_name = scope.alloc_string("replace")?;
@@ -34891,11 +34866,6 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(replace_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(replace_func))?;
-  scope.define_property(
-    location_obj,
-    replace_key,
-    data_desc(Value::Object(replace_func)),
-  )?;
 
   let reload_call_id = vm.register_native_call(location_reload_native)?;
   let reload_name = scope.alloc_string("reload")?;
@@ -34905,7 +34875,6 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(reload_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(reload_func))?;
-  scope.define_property(location_obj, reload_key, data_desc(Value::Object(reload_func)))?;
 
   let protocol_get_call_id = vm.register_native_call(location_protocol_get_native)?;
   let protocol_get_name = scope.alloc_string("get protocol")?;
@@ -42610,6 +42579,47 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(location_obj, Some(location_proto))?;
 
+  // Install Location methods on `Location.prototype` for browser-like feature detection.
+  //
+  // Real-world code often inspects or patches `Location.prototype.assign` / `replace` / `reload`.
+  scope.define_property(
+    location_proto,
+    assign_key,
+    data_desc(Value::Object(assign_func)),
+  )?;
+  scope.define_property(
+    location_proto,
+    replace_key,
+    data_desc(Value::Object(replace_func)),
+  )?;
+  scope.define_property(
+    location_proto,
+    reload_key,
+    data_desc(Value::Object(reload_func)),
+  )?;
+
+  // Location stringification helpers (`String(location)`, `location + ''`).
+  scope.define_property(
+    location_proto,
+    to_string_key,
+    data_desc(Value::Object(to_string_func)),
+  )?;
+  scope.define_property(
+    location_proto,
+    to_json_key,
+    data_desc(Value::Object(to_json_func)),
+  )?;
+  scope.define_property(
+    location_proto,
+    value_of_key,
+    data_desc(Value::Object(value_of_func)),
+  )?;
+  scope.define_property(
+    location_proto,
+    to_primitive_key,
+    data_desc(Value::Object(to_primitive_func)),
+  )?;
+
   // Initialize the per-realm session history with the initial document entry.
   if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
     if user_data.session_history.entries.is_empty() {
@@ -42649,7 +42659,7 @@ fn init_window_globals(
   )?;
   scope.push_root(Value::Object(push_state_func))?;
   scope.define_property(
-    history_obj,
+    history_proto,
     push_state_key,
     data_desc(Value::Object(push_state_func)),
   )?;
@@ -42676,7 +42686,7 @@ fn init_window_globals(
   )?;
   scope.push_root(Value::Object(replace_state_func))?;
   scope.define_property(
-    history_obj,
+    history_proto,
     replace_state_key,
     data_desc(Value::Object(replace_state_func)),
   )?;
@@ -42701,7 +42711,7 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(back_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(back_func))?;
-  scope.define_property(history_obj, back_key, data_desc(Value::Object(back_func)))?;
+  scope.define_property(history_proto, back_key, data_desc(Value::Object(back_func)))?;
 
   let forward_key = alloc_key(&mut scope, "forward")?;
   let forward_name = scope.alloc_string("forward")?;
@@ -42718,7 +42728,7 @@ fn init_window_globals(
     .object_set_prototype(forward_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(forward_func))?;
   scope.define_property(
-    history_obj,
+    history_proto,
     forward_key,
     data_desc(Value::Object(forward_func)),
   )?;
@@ -42737,7 +42747,7 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(go_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(go_func))?;
-  scope.define_property(history_obj, go_key, data_desc(Value::Object(go_func)))?;
+  scope.define_property(history_proto, go_key, data_desc(Value::Object(go_func)))?;
 
   scope.define_property(
     global,

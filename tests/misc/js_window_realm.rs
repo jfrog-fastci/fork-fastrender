@@ -978,9 +978,27 @@ fn history_and_location_constructors_exist() -> Result<()> {
   let ok = realm
     .exec_script(
       "typeof History === 'function' &&\n\
+       typeof History.prototype.pushState === 'function' &&\n\
+       typeof History.prototype.replaceState === 'function' &&\n\
+       typeof History.prototype.back === 'function' &&\n\
+       typeof History.prototype.forward === 'function' &&\n\
+       typeof History.prototype.go === 'function' &&\n\
+       history.pushState === History.prototype.pushState &&\n\
+       history.replaceState === History.prototype.replaceState &&\n\
+       history.back === History.prototype.back &&\n\
+       history.forward === History.prototype.forward &&\n\
+       history.go === History.prototype.go &&\n\
        history instanceof History &&\n\
        history.constructor === History &&\n\
        typeof Location === 'function' &&\n\
+       typeof Location.prototype.assign === 'function' &&\n\
+       typeof Location.prototype.replace === 'function' &&\n\
+       typeof Location.prototype.reload === 'function' &&\n\
+       typeof Location.prototype.toString === 'function' &&\n\
+       location.assign === Location.prototype.assign &&\n\
+       location.replace === Location.prototype.replace &&\n\
+       location.reload === Location.prototype.reload &&\n\
+       location.toString === Location.prototype.toString &&\n\
        location instanceof Location &&\n\
        location.constructor === Location",
     )
