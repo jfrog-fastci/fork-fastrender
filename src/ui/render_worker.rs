@@ -1525,6 +1525,8 @@ struct BrowserRuntime {
   /// Messages deferred during scroll coalescing that should be handled before blocking for the next
   /// message.
   deferred_msgs: VecDeque<UiToWorker>,
+  #[cfg(test)]
+  viewport_changed_handled_for_test: usize,
 }
 
 
@@ -1620,6 +1622,8 @@ impl BrowserRuntime {
       tabs: HashMap::new(),
       active_tab: None,
       deferred_msgs: VecDeque::new(),
+      #[cfg(test)]
+      viewport_changed_handled_for_test: 0,
     }
   }
 
@@ -1729,6 +1733,44 @@ impl BrowserRuntime {
   }
 
   fn drain_messages(&mut self) {
+    fn flush_pending(
+      runtime: &mut BrowserRuntime,
+      pending_viewport: &mut HashMap<TabId, ((u32, u32), f32)>,
+      pending_pointer_moves: &mut HashMap<
+        TabId,
+        ((f32, f32), PointerButton, crate::ui::PointerModifiers),
+      >,
+      pending_find_queries: &mut HashMap<TabId, (String, bool)>,
+    ) {
+      for (tab_id, (viewport_css, dpr)) in pending_viewport.drain() {
+        runtime.handle_message(UiToWorker::ViewportChanged {
+          tab_id,
+          viewport_css,
+          dpr,
+        });
+      }
+      for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
+        runtime.handle_message(UiToWorker::PointerMove {
+          tab_id,
+          pos_css,
+          button,
+          modifiers,
+        });
+      }
+      for (tab_id, (query, case_sensitive)) in pending_find_queries.drain() {
+        runtime.handle_message(UiToWorker::FindQuery {
+          tab_id,
+          query,
+          case_sensitive,
+        });
+      }
+    }
+
+    // Coalesce viewport updates so we only apply the latest viewport/dpr per tab before the next
+    // paint. UI-side throttling exists, but if the worker is busy (layout/paint), multiple viewport
+    // updates can still queue up.
+    let mut pending_viewport: HashMap<TabId, ((u32, u32), f32)> = HashMap::new();
+
     // Coalesce pointer-move bursts so we only do one hit-test per tab before the next paint job.
     //
     // Pointer-move can arrive at a very high frequency (especially with high polling-rate mice).
@@ -1744,112 +1786,48 @@ impl BrowserRuntime {
     // tab.
     let mut pending_find_queries: HashMap<TabId, (String, bool)> = HashMap::new();
 
-    // Coalesce back-to-back `ViewportChanged` messages so resize/zoom bursts only apply the latest
-    // viewport state per tab.
-    //
-    // Unlike pointer-move, viewport updates can be expensive even when no repaint happens (clamping,
-    // warning generation, cancellation bumps). Coalescing here provides a safety net for frontends
-    // that don't already throttle resize events.
-    let mut pending_viewport_changes: HashMap<TabId, ((u32, u32), f32)> = HashMap::new();
-
-    let mut flush_viewport_changes = |this: &mut Self,
-                                      pending: &mut HashMap<TabId, ((u32, u32), f32)>| {
-      for (tab_id, (viewport_css, dpr)) in pending.drain() {
-        this.handle_message(UiToWorker::ViewportChanged {
+    while let Some(msg) = self.try_recv_message() {
+      match msg {
+        UiToWorker::ViewportChanged {
           tab_id,
           viewport_css,
           dpr,
-        });
-      }
-    };
-
-    let mut flush_pointer_moves = |this: &mut Self,
-                                   pending: &mut HashMap<
-      TabId,
-      ((f32, f32), PointerButton, crate::ui::PointerModifiers),
-    >| {
-      for (tab_id, (pos_css, button, modifiers)) in pending.drain() {
-        this.handle_message(UiToWorker::PointerMove {
-          tab_id,
-          pos_css,
-          button,
-          modifiers,
-        });
-      }
-    };
-
-    let mut flush_find_queries =
-      |this: &mut Self, pending: &mut HashMap<TabId, (String, bool)>| {
-        for (tab_id, (query, case_sensitive)) in pending.drain() {
-          this.handle_message(UiToWorker::FindQuery {
-            tab_id,
-            query,
-            case_sensitive,
-          });
+        } => {
+          pending_viewport.insert(tab_id, (viewport_css, dpr));
         }
-      };
-
-    while let Some(msg) = self.try_recv_message() {
-      match msg {
         UiToWorker::PointerMove {
           tab_id,
           pos_css,
           button,
           modifiers,
         } => {
-          // Pointer-move hit-testing depends on the current viewport; apply any queued viewport
-          // updates first so hover state is computed against the correct size/dpr.
-          flush_viewport_changes(self, &mut pending_viewport_changes);
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
-        }
-        UiToWorker::ViewportChanged {
-          tab_id,
-          viewport_css,
-          dpr,
-        } => {
-          // Preserve message ordering semantics: any queued pointer-moves should be applied before a
-          // following viewport change (pointer events preceding a resize should hit-test against the
-          // old viewport).
-          flush_pointer_moves(self, &mut pending_pointer_moves);
-          flush_find_queries(self, &mut pending_find_queries);
-          pending_viewport_changes.insert(tab_id, (viewport_css, dpr));
         }
         UiToWorker::FindQuery {
           tab_id,
           query,
           case_sensitive,
         } => {
-          // Find-in-page scroll-to-match depends on the viewport size; apply any queued viewport
-          // changes so the query runs against the latest viewport in the same input burst.
-          flush_viewport_changes(self, &mut pending_viewport_changes);
-          // Preserve ordering semantics: pointer-moves preceding this find update should still
-          // hit-test against the pre-find state.
-          flush_pointer_moves(self, &mut pending_pointer_moves);
           pending_find_queries.insert(tab_id, (query, case_sensitive));
         }
-        UiToWorker::FindNext { .. } | UiToWorker::FindPrev { .. } | UiToWorker::FindStop { .. } => {
-          // Find navigation/stop messages are barriers: ensure any queued find query updates are
-          // applied first so next/prev/stop operate on the latest query state.
-          flush_viewport_changes(self, &mut pending_viewport_changes);
-          flush_pointer_moves(self, &mut pending_pointer_moves);
-          flush_find_queries(self, &mut pending_find_queries);
-          self.handle_message(msg);
-        }
         other => {
-          // Non-viewport messages are barriers: flush any queued viewport changes before handling
-          // messages that might depend on the viewport (navigation, scroll, pointer events, paint
-          // scheduling, etc).
-          flush_viewport_changes(self, &mut pending_viewport_changes);
-          flush_pointer_moves(self, &mut pending_pointer_moves);
-          flush_find_queries(self, &mut pending_find_queries);
+          flush_pending(
+            self,
+            &mut pending_viewport,
+            &mut pending_pointer_moves,
+            &mut pending_find_queries,
+          );
           self.handle_message(other);
         }
       }
     }
 
-    flush_viewport_changes(self, &mut pending_viewport_changes);
-    flush_pointer_moves(self, &mut pending_pointer_moves);
-    flush_find_queries(self, &mut pending_find_queries);
+    flush_pending(
+      self,
+      &mut pending_viewport,
+      &mut pending_pointer_moves,
+      &mut pending_find_queries,
+    );
   }
 
   fn drain_scroll_burst(&mut self) {
@@ -1863,10 +1841,36 @@ impl BrowserRuntime {
 
     // Reuse the existing pointer-move coalescing logic during scroll bursts so we don't do
     // redundant hit-testing work while the user is scrolling.
+    let mut pending_viewport: HashMap<TabId, ((u32, u32), f32)> = HashMap::new();
     let mut pending_pointer_moves: HashMap<
       TabId,
       ((f32, f32), PointerButton, crate::ui::PointerModifiers),
     > = HashMap::new();
+
+    fn flush_pending(
+      runtime: &mut BrowserRuntime,
+      pending_viewport: &mut HashMap<TabId, ((u32, u32), f32)>,
+      pending_pointer_moves: &mut HashMap<
+        TabId,
+        ((f32, f32), PointerButton, crate::ui::PointerModifiers),
+      >,
+    ) {
+      for (tab_id, (viewport_css, dpr)) in pending_viewport.drain() {
+        runtime.handle_message(UiToWorker::ViewportChanged {
+          tab_id,
+          viewport_css,
+          dpr,
+        });
+      }
+      for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
+        runtime.handle_message(UiToWorker::PointerMove {
+          tab_id,
+          pos_css,
+          button,
+          modifiers,
+        });
+      }
+    }
 
     loop {
       let msg = match self.try_recv_message() {
@@ -1890,6 +1894,13 @@ impl BrowserRuntime {
       };
 
       match msg {
+        UiToWorker::ViewportChanged {
+          tab_id,
+          viewport_css,
+          dpr,
+        } => {
+          pending_viewport.insert(tab_id, (viewport_css, dpr));
+        }
         UiToWorker::PointerMove {
           tab_id,
           pos_css,
@@ -1899,25 +1910,11 @@ impl BrowserRuntime {
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
         UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. } => {
-          for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
-            self.handle_message(UiToWorker::PointerMove {
-              tab_id,
-              pos_css,
-              button,
-              modifiers,
-            });
-          }
+          flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
           self.handle_message(msg);
         }
         other => {
-          for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
-            self.handle_message(UiToWorker::PointerMove {
-              tab_id,
-              pos_css,
-              button,
-              modifiers,
-            });
-          }
+          flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
           // Defer non-coalescible messages (clicks, navigations, etc) until after we render the
           // coalesced scroll frame.
           self.deferred_msgs.push_front(other);
@@ -1926,14 +1923,7 @@ impl BrowserRuntime {
       }
     }
 
-    for (tab_id, (pos_css, button, modifiers)) in pending_pointer_moves.drain() {
-      self.handle_message(UiToWorker::PointerMove {
-        tab_id,
-        pos_css,
-        button,
-        modifiers,
-      });
-    }
+    flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
   }
 
   fn flush_pending_hover_syncs(&mut self) {
@@ -2200,6 +2190,11 @@ impl BrowserRuntime {
         viewport_css,
         dpr,
       } => {
+        #[cfg(test)]
+        {
+          self.viewport_changed_handled_for_test = self.viewport_changed_handled_for_test.saturating_add(1);
+        }
+
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
@@ -8081,8 +8076,7 @@ mod base_url_tests {
     // (We scan the source rather than counting allocations because these paths already perform
     // unrelated allocations during hit-testing and interaction bookkeeping.)
     let src = include_str!("render_worker.rs");
-    let re = regex::Regex::new(r"(?s)base_url_for_links\(.*?\)\s*\.\s*to_string\(")
-      .expect("regex");
+    let re = regex::Regex::new(r"(?s)base_url_for_links\(.*?\)\s*\.\s*to_string\(").expect("regex");
     assert!(
       !re.is_match(src),
       "render_worker.rs should not call `.to_string()` on base_url_for_links(...)"
@@ -8093,5 +8087,74 @@ mod base_url_tests {
       !re.is_match(src),
       "render_worker.rs should not call `.to_owned()` on base_url_for_links(...)"
     );
+  }
+}
+
+#[cfg(test)]
+mod drain_messages_viewport_coalescing_tests {
+  use super::*;
+
+  #[test]
+  fn drain_messages_coalesces_viewport_changed_per_tab() -> crate::Result<()> {
+    let (ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, _worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+
+    let factory = default_ui_worker_factory()?;
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    ui_tx
+      .send(UiToWorker::CreateTab {
+        tab_id,
+        initial_url: None,
+        cancel: CancelGens::new(),
+      })
+      .unwrap();
+
+    ui_tx
+      .send(UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css: (100, 80),
+        dpr: 1.0,
+      })
+      .unwrap();
+    ui_tx
+      .send(UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css: (200, 160),
+        dpr: 1.5,
+      })
+      .unwrap();
+    ui_tx
+      .send(UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css: (300, 240),
+        dpr: 2.0,
+      })
+      .unwrap();
+
+    // A non-coalescable message should force pending viewport updates to be applied before it is
+    // handled.
+    ui_tx
+      .send(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: crate::ui::messages::RepaintReason::Explicit,
+      })
+      .unwrap();
+
+    runtime.drain_messages();
+
+    assert_eq!(
+      runtime.viewport_changed_handled_for_test, 1,
+      "expected ViewportChanged messages to be coalesced per tab"
+    );
+
+    let tab = runtime.tabs.get(&tab_id).expect("tab state");
+    assert_eq!(tab.viewport_css, (300, 240));
+    assert!((tab.dpr - 2.0).abs() < 1e-6);
+
+    Ok(())
   }
 }
