@@ -2623,7 +2623,7 @@ impl JsRuntime {
       // evaluation forces strict mode; class static blocks override `this` / `new.target`) and may
       // suspend. This state must be preserved in the async continuation so resumed execution uses
       // the correct semantics.
-      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
+      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value, Value), VmError> = (|| {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -2641,7 +2641,11 @@ impl JsRuntime {
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
         let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
-        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
+        let home_object = evaluator
+          .home_object
+          .map(Value::Object)
+          .unwrap_or(Value::Undefined);
+        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target, home_object))
       })();
 
       match body_eval {
@@ -2650,6 +2654,7 @@ impl JsRuntime {
           _strict_at_suspend,
           _this_at_suspend,
           _new_target_at_suspend,
+          _home_object_at_suspend,
         )) => {
           let promise_result = match completion {
             Completion::Normal(v) => {
@@ -2705,6 +2710,7 @@ impl JsRuntime {
           strict_at_suspend,
           this_at_suspend,
           new_target_at_suspend,
+          home_object_at_suspend,
         )) => {
           if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
             env.teardown(scope.heap_mut());
@@ -2725,6 +2731,7 @@ impl JsRuntime {
             cap.reject,
             this_at_suspend,
             new_target_at_suspend,
+            home_object_at_suspend,
             await_value,
           ]) {
             env.teardown(root_scope.heap_mut());
@@ -2792,11 +2799,13 @@ impl JsRuntime {
           }
 
           // Create persistent roots for the async continuation.
-          // Async classic scripts have no `[[HomeObject]]` context.
+          //
+          // Async classic scripts normally have no `[[HomeObject]]` context, but nested constructs
+          // (e.g. class static blocks) can temporarily override it and may suspend.
           let values = [
             this_at_suspend,
             new_target_at_suspend,
-            Value::Undefined,
+            home_object_at_suspend,
             promise,
             cap.resolve,
             cap.reject,
@@ -3139,7 +3148,7 @@ impl JsRuntime {
       // evaluation forces strict mode; class static blocks override `this` / `new.target`) and may
       // suspend. This state must be preserved in the async continuation so resumed execution uses
       // the correct semantics.
-      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
+      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value, Value), VmError> = (|| {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -3157,7 +3166,11 @@ impl JsRuntime {
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
         let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
-        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
+        let home_object = evaluator
+          .home_object
+          .map(Value::Object)
+          .unwrap_or(Value::Undefined);
+        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target, home_object))
       })();
 
       match body_eval {
@@ -3166,6 +3179,7 @@ impl JsRuntime {
           _strict_at_suspend,
           _this_at_suspend,
           _new_target_at_suspend,
+          _home_object_at_suspend,
         )) => {
           let promise_result = match completion {
             Completion::Normal(v) => {
@@ -3221,6 +3235,7 @@ impl JsRuntime {
           strict_at_suspend,
           this_at_suspend,
           new_target_at_suspend,
+          home_object_at_suspend,
         )) => {
           if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
             env.teardown(scope.heap_mut());
@@ -3241,6 +3256,7 @@ impl JsRuntime {
             cap.reject,
             this_at_suspend,
             new_target_at_suspend,
+            home_object_at_suspend,
             await_value,
           ]) {
             env.teardown(root_scope.heap_mut());
@@ -3308,11 +3324,13 @@ impl JsRuntime {
           }
 
           // Create persistent roots for the async continuation.
-          // Async classic scripts have no `[[HomeObject]]` context.
+          //
+          // Async classic scripts normally have no `[[HomeObject]]` context, but nested constructs
+          // (e.g. class static blocks) can temporarily override it and may suspend.
           let values = [
             this_at_suspend,
             new_target_at_suspend,
-            Value::Undefined,
+            home_object_at_suspend,
             promise,
             cap.resolve,
             cap.reject,
@@ -39065,13 +39083,19 @@ pub(crate) fn start_module_tla_evaluation(
       // correct execution context.
       let this_at_suspend = evaluator.this;
       let new_target_at_suspend = evaluator.new_target;
+      let home_object_at_suspend = evaluator
+        .home_object
+        .map(Value::Object)
+        .unwrap_or(Value::Undefined);
       let mut root_scope = scope.reborrow();
       // Create persistent roots for dummy async continuation fields plus the awaited promise.
-      // Module TLA evaluation has no `[[HomeObject]]` context.
+      //
+      // Module evaluation does not usually have a `[[HomeObject]]` context, but nested constructs
+      // (e.g. class static blocks) can temporarily override it and may suspend.
       let values = [
         this_at_suspend,
         new_target_at_suspend,
-        Value::Undefined,
+        home_object_at_suspend,
         Value::Undefined,
         Value::Undefined,
         Value::Undefined,
