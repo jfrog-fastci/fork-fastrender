@@ -2326,12 +2326,17 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // Note: this is independent of strict mode.
         //
         // V8/Node reports: "Private fields can not be deleted".
-        if let Expr::Member(member) = &*expr.argument.stx {
-          if member.stx.right.starts_with('#') {
-            self.push_error(expr.argument.loc, "Private fields can not be deleted")?;
-            // Still traverse the base expression for nested early errors.
-            self.visit_expr(ctx, &member.stx.left)?;
-            return Ok(());
+        //
+        // When not inside any class body, we instead defer to `AllPrivateNamesValid` checks, which
+        // report invalid private-name usage (e.g. `({}).#x`) rather than a delete-specific error.
+        if ctx.private_names.last().is_some() {
+          if let Expr::Member(member) = &*expr.argument.stx {
+            if member.stx.right.starts_with('#') {
+              self.push_error(expr.argument.loc, "Private fields can not be deleted")?;
+              // Still traverse the base expression for nested early errors.
+              self.visit_expr(ctx, &member.stx.left)?;
+              return Ok(());
+            }
           }
         }
 

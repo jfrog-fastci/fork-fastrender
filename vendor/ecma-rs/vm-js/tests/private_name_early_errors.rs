@@ -161,6 +161,18 @@ fn delete_private_member_is_syntax_error() {
 }
 
 #[test]
+fn delete_private_member_outside_class_is_invalid_private_name() {
+  let mut rt = new_runtime();
+  let diags = assert_syntax_error(rt.exec_script("delete ({}).#x;").unwrap_err());
+  assert!(
+    diags
+      .iter()
+      .any(|d| d.code.as_str() == "VMJS0004" && d.message == "invalid private name"),
+    "expected VMJS0004 invalid private name, got {diags:?}"
+  );
+}
+
+#[test]
 fn private_member_access_is_syntax_error_when_undeclared() {
   let mut rt = new_runtime();
   let diags = assert_syntax_error(rt.exec_script("class C { m(){ return this.#x; } }").unwrap_err());
