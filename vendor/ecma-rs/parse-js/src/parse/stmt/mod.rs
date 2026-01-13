@@ -128,12 +128,16 @@ impl<'a> Parser<'a> {
       )),
       TT::KeywordLet
         if t1.preceded_by_line_terminator
-          && (t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules)) =>
+          && (t1.typ == TT::BraceOpen
+            || is_valid_pattern_identifier(t1.typ, ctx.rules)
+            || matches!(t1.typ, TT::KeywordAwait | TT::KeywordYield)) =>
       {
         Ok(self.expr_stmt(ctx)?.into_wrapped())
       }
       TT::KeywordLet
-        if t1.typ == TT::BraceOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+        if t1.typ == TT::BraceOpen
+          || is_valid_pattern_identifier(t1.typ, ctx.rules)
+          || matches!(t1.typ, TT::KeywordAwait | TT::KeywordYield) =>
       {
         Err(t0.error(SyntaxErrorType::ExpectedSyntax(
           "statement (not a declaration)",
@@ -197,7 +201,7 @@ impl<'a> Parser<'a> {
       TT::KeywordConst | TT::KeywordVar => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
       // `let` is a contextual keyword - only treat it as a declaration if followed by a pattern start
       // TypeScript: `let identifier :` is a variable declaration with type annotation, not a labeled statement
-      TT::KeywordLet if t1.typ == TT::BraceOpen || t1.typ == TT::BracketOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
+      TT::KeywordLet if t1.typ == TT::BraceOpen || t1.typ == TT::BracketOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) || matches!(t1.typ, TT::KeywordAwait | TT::KeywordYield) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
       // `using` is a contextual keyword for resource management
       TT::KeywordUsing if t1.typ == TT::BraceOpen || t1.typ == TT::BracketOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
       // `await using` for async resource management
