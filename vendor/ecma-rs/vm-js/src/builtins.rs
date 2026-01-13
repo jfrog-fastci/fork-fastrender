@@ -17245,6 +17245,83 @@ pub fn string_prototype_last_index_of(
   Ok(Value::Number(-1.0))
 }
 
+/// `String.prototype.localeCompare` (ECMA-262) (minimal, non-Intl).
+pub fn string_prototype_locale_compare(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.localecompare
+  let mut scope = scope.reborrow();
+  let o = crate::spec_ops::require_object_coercible(this)?;
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
+
+  let that_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let that = scope.to_string(vm, host, hooks, that_val)?;
+  scope.push_root(Value::String(that))?;
+
+  // Minimal implementation: lexicographic UTF-16 code unit ordering. Ignore `locales` and `options`.
+  let (a_units, b_units) = {
+    let a = scope.heap().get_string(s)?;
+    let b = scope.heap().get_string(that)?;
+    (a.as_code_units(), b.as_code_units())
+  };
+
+  let min_len = a_units.len().min(b_units.len());
+  for i in 0..min_len {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    let a = a_units[i];
+    let b = b_units[i];
+    if a != b {
+      return Ok(Value::Number(if a < b { -1.0 } else { 1.0 }));
+    }
+  }
+
+  Ok(Value::Number(match a_units.len().cmp(&b_units.len()) {
+    std::cmp::Ordering::Less => -1.0,
+    std::cmp::Ordering::Equal => 0.0,
+    std::cmp::Ordering::Greater => 1.0,
+  }))
+}
+
+/// `String.prototype.toLocaleLowerCase` (ECMA-262) (minimal).
+pub fn string_prototype_to_locale_lower_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase
+  crate::spec_ops::require_object_coercible(this)?;
+  string_prototype_to_lower_case(vm, scope, host, hooks, callee, this, &[])
+}
+
+/// `String.prototype.toLocaleUpperCase` (ECMA-262) (minimal).
+pub fn string_prototype_to_locale_upper_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolocaleuppercase
+  crate::spec_ops::require_object_coercible(this)?;
+  string_prototype_to_upper_case(vm, scope, host, hooks, callee, this, &[])
+}
+
 /// `String.prototype.includes` (ECMA-262) (minimal).
 pub fn string_prototype_includes(
   vm: &mut Vm,
