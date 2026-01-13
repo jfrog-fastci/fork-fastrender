@@ -101,6 +101,65 @@ fn regexp_unicode_sets_family_zwj_matches_first_code_point() {
 }
 
 #[test]
+fn regexp_unicode_property_escape_basic_matching() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = new RegExp("^\\p{ASCII}+$", "u");
+        [r.test("abc"), r.test("é")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
+fn regexp_unicode_property_escape_strict_matching_rejects_spaces() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\P{General_Category = Uppercase_Letter}", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_unicode_property_escape_rejects_binary_property_with_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\p{ASCII=N}", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_unicode_property_escape_cannot_be_class_range_endpoint_in_unicode_mode() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("[\\p{ASCII}-\\u007F]", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_unicode_property_escape_ignore_case_unicode_matches_case_equivalents() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"new RegExp("^\\p{Lu}+$", "iu").test("abc")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_unicode_property_escape_is_enabled_for_v_flag() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"new RegExp("^\\p{ASCII}+$", "v").test("abc")"#)
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn regexp_invalid_character_class_range_throws_syntax_error() {
   let mut rt = new_runtime();
   let value = rt

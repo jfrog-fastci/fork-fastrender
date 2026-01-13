@@ -8,17 +8,20 @@
 //!   groups, alternation, quantifiers, `^`/`$`, `.`/dotAll, `\\b`/`\\B`, and basic lookahead.
 //!
 //! This module intentionally does **not** attempt to be a full spec implementation yet.
-//! Unicode-heavy features in particular are still evolving (Unicode property escapes, complete
-//! `/v` UnicodeSets syntax, etc).
+//! Unicode-heavy features in particular are still evolving (Unicode property escapes of strings,
+//! complete `/v` UnicodeSets syntax, etc).
 //! Call sites must treat compilation failures as `SyntaxError`.
 
 use crate::tick::{tick_every, DEFAULT_TICK_EVERY};
 use crate::fallible_alloc::box_try_new_vm;
 use crate::{Heap, HeapLimits, VmError};
+use crate::regexp_unicode_resolver::{resolve_unicode_property_value_expression, ResolvedUnicodeProperty};
+use crate::regexp_unicode_tables::ResolvedCodePointProperty;
 use core::alloc::Layout;
 use core::cell::Cell;
 use core::mem;
 use core::ptr;
+use icu_casemap::{CaseMapperBorrowed, ClosureSink};
 use std::alloc::alloc;
 
 mod case_folding;
@@ -1352,15 +1355,21 @@ impl RegExpProgram {
             break;
           }
           Inst::UnicodeProperty(prop) => {
-            let Some((cp, len)) =
+            let Some((cp, len)) = (if dir.is_forward() {
               decode_code_point(input, state.pos, flags.has_either_unicode_flag())
-            else {
+            } else {
+              decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+            }) else {
               break;
             };
-            if !prop.matches_code_point(cp) {
+            if !prop.matches(cp, flags) {
               break;
             }
-            state.pos = state.pos.saturating_add(len);
+            if dir.is_forward() {
+              state.pos = state.pos.saturating_add(len);
+            } else {
+              state.pos = state.pos.saturating_sub(len);
+            }
             state.pc += 1;
           }
           Inst::AssertStart => {
@@ -2236,14 +2245,8 @@ enum Inst {
 
 #[derive(Debug, Clone, Copy)]
 struct UnicodeProperty {
-  kind: UnicodePropertyKind,
+  prop: ResolvedCodePointProperty,
   negated: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum UnicodePropertyKind {
-  Ascii,
-  ScriptHan,
 }
 
 #[derive(Debug, Clone)]
@@ -2514,6 +2517,7 @@ enum CharClassItem {
   Digit { negated: bool },
   Word { negated: bool },
   Space { negated: bool },
+  UnicodeProperty(UnicodeProperty),
 }
 
 impl CharClassItem {
@@ -2550,6 +2554,7 @@ impl CharClassItem {
         let is_space = u <= 0xFFFF && crate::ops::is_ecma_whitespace_unit(u as u16);
         if negated { !is_space } else { is_space }
       }
+      CharClassItem::UnicodeProperty(prop) => prop.matches(u, flags),
     }
   }
 }
@@ -2833,58 +2838,85 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
 }
 
 impl UnicodeProperty {
-  fn matches_code_point(self, cp: u32) -> bool {
-    let is_match = match self.kind {
-      UnicodePropertyKind::Ascii => cp <= 0x7F,
-      UnicodePropertyKind::ScriptHan => range_table_contains(SCRIPT_HAN_RANGES, cp),
-    };
-    if self.negated { !is_match } else { is_match }
+  #[inline]
+  fn matches(self, cp: u32, flags: RegExpFlags) -> bool {
+    let mut ok = unicode_property_matches(self.prop, cp, flags);
+    if self.negated {
+      ok = !ok;
+    }
+    ok
   }
 }
 
-/// Inclusive ranges for the Unicode `Script=Han` property (Unicode v17.0.0).
-///
-/// Sourced from test262:
-/// `built-ins/RegExp/property-escapes/generated/Script_-_Han.js`.
-const SCRIPT_HAN_RANGES: &[(u32, u32)] = &[
-  (0x002E80, 0x002E99),
-  (0x002E9B, 0x002EF3),
-  (0x002F00, 0x002FD5),
-  (0x003005, 0x003005),
-  (0x003007, 0x003007),
-  (0x003021, 0x003029),
-  (0x003038, 0x00303B),
-  (0x003400, 0x004DBF),
-  (0x004E00, 0x009FFF),
-  (0x00F900, 0x00FA6D),
-  (0x00FA70, 0x00FAD9),
-  (0x016FE2, 0x016FE3),
-  (0x016FF0, 0x016FF6),
-  (0x020000, 0x02A6DF),
-  (0x02A700, 0x02B81D),
-  (0x02B820, 0x02CEAD),
-  (0x02CEB0, 0x02EBE0),
-  (0x02EBF0, 0x02EE5D),
-  (0x02F800, 0x02FA1D),
-  (0x030000, 0x03134A),
-  (0x031350, 0x033479),
-];
+#[inline]
+fn unicode_property_contains(prop: ResolvedCodePointProperty, cp: u32) -> bool {
+  crate::regexp_unicode_tables::contains_code_point(prop, cp)
+}
 
-fn range_table_contains(ranges: &[(u32, u32)], cp: u32) -> bool {
-  // Binary search over sorted, non-overlapping ranges.
-  let mut lo: usize = 0;
-  let mut hi: usize = ranges.len();
-  while lo < hi {
-    let mid = lo + (hi - lo) / 2;
-    let (start, end) = ranges[mid];
-    if cp < start {
-      hi = mid;
-    } else if cp > end {
-      lo = mid + 1;
-    } else {
+fn unicode_property_matches(prop: ResolvedCodePointProperty, cp: u32, flags: RegExpFlags) -> bool {
+  if unicode_property_contains(prop, cp) {
+    return true;
+  }
+  if !flags.ignore_case || !flags.has_either_unicode_flag() {
+    return false;
+  }
+
+  let canonical = canonicalize(flags, cp);
+  if unicode_property_contains(prop, canonical) {
+    return true;
+  }
+
+  let Some(canonical_ch) = char::from_u32(canonical) else {
+    // Surrogates and out-of-range code points have no case mappings.
+    return false;
+  };
+
+  struct CharSink {
+    buf: [char; 64],
+    len: usize,
+  }
+
+  impl CharSink {
+    fn new() -> Self {
+      Self {
+        buf: ['\0'; 64],
+        len: 0,
+      }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = char> + '_ {
+      self.buf[..self.len].iter().copied()
+    }
+  }
+
+  impl ClosureSink for CharSink {
+    #[inline]
+    fn add_char(&mut self, c: char) {
+      if self.len < self.buf.len() {
+        self.buf[self.len] = c;
+        self.len += 1;
+      }
+    }
+
+    #[inline]
+    fn add_string(&mut self, _string: &str) {
+      // Ignore multi-code-point expansions; the RegExp VM matches one code point at a time.
+    }
+  }
+
+  let cm = CaseMapperBorrowed::new();
+  let mut sink = CharSink::new();
+  cm.add_case_closure_to(canonical_ch, &mut sink);
+  for other in sink.iter() {
+    let other_cp = other as u32;
+    if canonicalize(flags, other_cp) != canonical {
+      continue;
+    }
+    if unicode_property_contains(prop, other_cp) {
       return true;
     }
   }
+
   false
 }
 
@@ -4283,6 +4315,16 @@ impl<'a> Parser<'a> {
           }
           x if x == (b'x' as u16) => Ok(CharClassItem::Char(self.parse_hex_escape_2(ctx)?)),
           x if x == (b'u' as u16) => Ok(CharClassItem::Char(self.parse_unicode_escape(ctx)?)),
+          x if (x == (b'p' as u16) || x == (b'P' as u16))
+            && self.flags.has_either_unicode_flag()
+            && self.peek() == Some(b'{' as u16) =>
+          {
+            // Consume `{`.
+            self.next();
+            let negated = x == (b'P' as u16);
+            let prop = self.parse_unicode_property_escape(ctx, negated)?;
+            Ok(CharClassItem::UnicodeProperty(prop))
+          }
           other => {
             if self.flags.has_either_unicode_flag() {
               if is_syntax_character(other) || other == (b'/' as u16) {
@@ -4509,11 +4551,10 @@ impl<'a> Parser<'a> {
     negated: bool,
   ) -> Result<UnicodeProperty, RegExpCompileError> {
     // `{` has already been consumed.
-    let start = self.idx;
-    let mut eq_idx: Option<usize> = None;
-    let mut scan_i: usize = 0;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut i: usize = 0;
     loop {
-      let Some(u) = self.peek() else {
+      let Some(u) = self.next() else {
         return Err(RegExpSyntaxError {
           message: "Invalid regular expression",
         }
@@ -4522,61 +4563,43 @@ impl<'a> Parser<'a> {
       if u == (b'}' as u16) {
         break;
       }
-      if scan_i != 0 {
-        ctx.tick_every(scan_i)?;
-      }
-      scan_i = scan_i.wrapping_add(1);
-      if u == (b'=' as u16) {
-        // Multiple `=` signs are not supported by this minimal parser.
-        if eq_idx.is_some() {
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into());
+      if u > 0x7F {
+        return Err(RegExpSyntaxError {
+          message: "Invalid regular expression",
         }
-        eq_idx = Some(self.idx);
+        .into());
       }
-      self.next();
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      i = i.wrapping_add(1);
+      ctx.vec_try_push(&mut bytes, u as u8)?;
     }
 
-    let end = self.idx;
-    // Consume `}`.
-    self.next();
+    if bytes.is_empty() {
+      return Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into());
+    }
 
-    let body = &self.units[start..end];
-    let kind = match eq_idx {
-      None => {
-        if eq_ascii_ignore_case(body, b"ASCII") {
-          UnicodePropertyKind::Ascii
-        } else {
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into());
-        }
+    let Ok(expr) = core::str::from_utf8(&bytes) else {
+      return Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
       }
-      Some(eq_abs) => {
-        let eq_rel = eq_abs.saturating_sub(start);
-        if eq_rel == 0 || eq_rel + 1 >= body.len() {
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into());
-        }
-        let key = &body[..eq_rel];
-        let value = &body[eq_rel + 1..];
-        if eq_ascii_ignore_case(key, b"Script") && eq_ascii_ignore_case(value, b"Han") {
-          UnicodePropertyKind::ScriptHan
-        } else {
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into());
-        }
-      }
+      .into());
     };
 
-    Ok(UnicodeProperty { kind, negated })
+    let resolved = resolve_unicode_property_value_expression(expr, self.flags.unicode_sets)
+      .map_err(RegExpCompileError::Syntax)?;
+
+    match resolved {
+      ResolvedUnicodeProperty::CodePoint(prop) => Ok(UnicodeProperty { prop, negated }),
+      ResolvedUnicodeProperty::String(_prop) => Err(RegExpSyntaxError {
+        message: "Invalid regular expression",
+      }
+      .into()),
+    }
   }
 
   fn parse_hex_escape_2(&mut self, _ctx: &mut CompileCtx<'_>) -> Result<u32, RegExpCompileError> {
