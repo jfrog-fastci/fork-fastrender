@@ -2357,11 +2357,19 @@ impl BrowserDocumentDom2 {
     }
 
     let mut render_affecting = false;
+    let mut saw_form_state_change = false;
     // Treat changes in disconnected/inert subtrees as non-render-affecting.
     for node in mutations.attribute_changed {
       if self.dom.is_connected_for_scripting(node) {
         render_affecting = true;
         self.dirty_style_nodes.insert(node);
+      }
+    }
+
+    for node in mutations.form_state_changed {
+      if self.dom.is_connected_for_scripting(node) {
+        render_affecting = true;
+        saw_form_state_change = true;
       }
     }
 
@@ -2415,6 +2423,11 @@ impl BrowserDocumentDom2 {
     }
 
     if !self.dirty_text_nodes.is_empty() {
+      self.layout_dirty = true;
+      self.paint_dirty = true;
+    }
+
+    if saw_form_state_change {
       self.layout_dirty = true;
       self.paint_dirty = true;
     }
@@ -4338,6 +4351,31 @@ mod tests {
     assert_eq!(after_insert.full_restyles, after_attr.full_restyles + 1);
     assert_eq!(after_insert.incremental_restyles, after_attr.incremental_restyles);
 
+    Ok(())
+  }
+
+  #[test]
+  fn form_state_mutation_invalidates_layout_without_full_restyle() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><input id=i value=foo></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+
+    let input = doc.dom().get_element_by_id("i").expect("input element");
+    let changed = doc.mutate_dom(|dom| {
+      dom.set_input_value(input, "bar").expect("set input value");
+      true
+    });
+    assert!(changed);
+
+    // Form state changes should invalidate at least layout+paint so the next render can rebuild
+    // form control models, but must not force a full restyle (no stylesheet-affecting mutation).
+    assert!(!doc.style_dirty);
+    assert!(doc.layout_dirty);
+    assert!(doc.paint_dirty);
     Ok(())
   }
 
