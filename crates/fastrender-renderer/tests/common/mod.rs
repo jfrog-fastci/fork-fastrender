@@ -2,8 +2,8 @@
 
 use bincode::Options;
 use fastrender_ipc::{
-  BrowserToRenderer, DocumentOrigin, FrameBuffer, FrameId, RendererToBrowser, SiteKey, SubframeInfo,
-  MAX_IPC_MESSAGE_BYTES,
+  BrowserToRenderer, CursorKind, DocumentOrigin, FrameBuffer, FrameId, RendererToBrowser, SiteKey,
+  SubframeInfo, MAX_IPC_MESSAGE_BYTES,
 };
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -436,6 +436,7 @@ impl RendererProc {
         RendererToBrowser::Error { message, .. } => last_error = Some(message),
         RendererToBrowser::SubframesDiscovered { .. }
         | RendererToBrowser::NavigationFailed { .. }
+        | RendererToBrowser::HoverChanged { .. }
         | RendererToBrowser::InputAck { .. } => {}
       }
     }
@@ -468,6 +469,29 @@ impl RendererProc {
       } = msg
       {
         return Some((frame_id, url, error));
+      }
+    }
+    None
+  }
+
+  pub fn recv_hover_changed(
+    &self,
+    timeout: Duration,
+  ) -> Option<(FrameId, Option<String>, CursorKind)> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+      let msg = match self.rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(msg) => msg,
+        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+      };
+      if let RendererToBrowser::HoverChanged {
+        frame_id,
+        hovered_url,
+        cursor,
+      } = msg
+      {
+        return Some((frame_id, hovered_url, cursor));
       }
     }
     None

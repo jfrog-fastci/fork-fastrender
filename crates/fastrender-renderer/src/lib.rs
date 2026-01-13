@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
 
 use fastrender_ipc::{
-  AffineTransform, BrowserToRenderer, ClipItem, FrameBuffer, FrameId, IpcTransport,
-  NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags, SiteLock, SubframeInfo,
+  AffineTransform, BrowserToRenderer, ClipItem, CursorKind, FrameBuffer, FrameId, HoverState,
+  IpcTransport, NavigationContext, ReferrerPolicy, RendererToBrowser, SandboxFlags, SiteLock,
+  SubframeInfo,
 };
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
@@ -28,6 +29,8 @@ pub struct FrameState {
   pub navigation_context: NavigationContext,
   pub viewport_css: (u32, u32),
   pub dpr: f32,
+  hover_hint: HoverState,
+  last_hover_sent: Option<HoverState>,
 }
 
 impl FrameState {
@@ -37,6 +40,8 @@ impl FrameState {
       navigation_context: NavigationContext::default(),
       viewport_css: DEFAULT_VIEWPORT,
       dpr: DEFAULT_DPR,
+      hover_hint: HoverState::default(),
+      last_hover_sent: None,
     }
   }
 
@@ -86,6 +91,40 @@ impl FrameState {
       rgba8,
     })
   }
+}
+
+fn hover_hint_from_html(base: &Url, html: &str) -> HoverState {
+  // Very small heuristic hover/cursor inference for the placeholder renderer:
+  // - Any <input> / <textarea> => text cursor
+  // - Else first <a href> => pointer cursor + hovered_url
+  //
+  // In a real renderer this should use DOM/layout hit testing for the current pointer position.
+  if !find_start_tags(html, "input").is_empty() || !find_start_tags(html, "textarea").is_empty() {
+    return HoverState {
+      hovered_url: None,
+      cursor: CursorKind::Text,
+    };
+  }
+
+  for tag in find_start_tags(html, "a") {
+    let attrs = parse_tag_attributes(tag);
+    let Some(href) = attrs.get("href") else {
+      continue;
+    };
+    let href = trim_ascii_whitespace(href);
+    if href.is_empty() {
+      continue;
+    }
+    let resolved = Url::parse(href).ok().or_else(|| base.join(href).ok());
+    if let Some(url) = resolved {
+      return HoverState {
+        hovered_url: Some(url.to_string()),
+        cursor: CursorKind::Pointer,
+      };
+    }
+  }
+
+  HoverState::default()
 }
 
 fn should_fetch_url(url: &Url) -> bool {
@@ -750,6 +789,8 @@ impl<T: IpcTransport> RendererMainLoop<T> {
 
           frame.url = Some(url);
           frame.navigation_context = context;
+          frame.hover_hint = HoverState::default();
+          frame.last_hover_sent = None;
         }
         BrowserToRenderer::Resize {
           frame_id,
@@ -792,6 +833,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
                     frame.url = Some(committed_url.clone());
 
                     let html = String::from_utf8_lossy(&response.body);
+                    frame.hover_hint = hover_hint_from_html(&response.final_url, html.as_ref());
                     subframes = subframes_from_html(frame_id, html.as_ref());
 
                     let mut csp_values = csp_values_from_http_headers(&response.headers);
@@ -842,6 +884,48 @@ impl<T: IpcTransport> RendererMainLoop<T> {
                 message,
               });
             }
+          }
+        }
+        BrowserToRenderer::PointerMove {
+          frame_id,
+          x_css,
+          y_css,
+          seq,
+        } => {
+          let Some(frame) = self.frames.get_mut(&frame_id) else {
+            let _ = self.transport.send(RendererToBrowser::Error {
+              frame_id: Some(frame_id),
+              message: "PointerMove for unknown frame".to_string(),
+            });
+            continue;
+          };
+
+          // Ack input delivery. In the real renderer this would likely happen after event dispatch.
+          let _ = self
+            .transport
+            .send(RendererToBrowser::InputAck { frame_id, seq });
+
+          let (w, h) = frame.viewport_css;
+          let inside = x_css.is_finite()
+            && y_css.is_finite()
+            && x_css >= 0.0
+            && y_css >= 0.0
+            && x_css < (w as f32)
+            && y_css < (h as f32);
+
+          let state = if inside {
+            frame.hover_hint.clone()
+          } else {
+            HoverState::default()
+          };
+
+          if frame.last_hover_sent.as_ref() != Some(&state) {
+            frame.last_hover_sent = Some(state.clone());
+            let _ = self.transport.send(RendererToBrowser::HoverChanged {
+              frame_id,
+              hovered_url: state.hovered_url.clone(),
+              cursor: state.cursor,
+            });
           }
         }
         BrowserToRenderer::Shutdown => break,

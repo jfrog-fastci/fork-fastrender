@@ -8,6 +8,7 @@ pub enum RendererToBrowserKind {
   SubframesDiscovered,
   NavigationCommitted,
   NavigationFailed,
+  HoverChanged,
   InputAck,
   Error,
 }
@@ -185,6 +186,9 @@ impl BrowserIpcSecurityState {
       }
       RendererToBrowser::NavigationFailed { frame_id, .. } => {
         let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationFailed);
+      }
+      RendererToBrowser::HoverChanged { frame_id, .. } => {
+        let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::HoverChanged);
       }
       RendererToBrowser::InputAck { frame_id, .. } => {
         let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::InputAck);

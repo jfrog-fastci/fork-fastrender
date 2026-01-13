@@ -981,6 +981,38 @@ pub struct FramePaintPlan {
   pub slots: Vec<SubframeInfo>,
 }
 
+/// Cursor kinds reported by the renderer to the browser.
+///
+/// This is intentionally kept as a small, IPC-friendly enum so the browser can update the OS cursor
+/// based on renderer-side hit testing / hover state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CursorKind {
+  Default,
+  Hidden,
+  Pointer,
+  Text,
+  Crosshair,
+  NotAllowed,
+  Grab,
+  Grabbing,
+}
+
+/// Hover state for a single frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoverState {
+  pub hovered_url: Option<String>,
+  pub cursor: CursorKind,
+}
+
+impl Default for HoverState {
+  fn default() -> Self {
+    Self {
+      hovered_url: None,
+      cursor: CursorKind::Default,
+    }
+  }
+}
+
 /// Messages sent from the browser process to a renderer process.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BrowserToRenderer {
@@ -1013,6 +1045,16 @@ pub enum BrowserToRenderer {
   },
   /// Request a repaint of the given frame.
   RequestRepaint { frame_id: FrameId },
+  /// Pointer moved in the given frame's coordinate space (CSS pixels).
+  ///
+  /// The browser is responsible for hit testing and mapping pointer coordinates into the target
+  /// frame's local space before forwarding them here.
+  PointerMove {
+    frame_id: FrameId,
+    x_css: f32,
+    y_css: f32,
+    seq: u64,
+  },
   /// Terminate the renderer process.
   Shutdown,
 }
@@ -1051,6 +1093,15 @@ pub enum RendererToBrowser {
     frame_id: FrameId,
     url: String,
     error: String,
+  },
+  /// The hovered link URL and cursor state changed for `frame_id`.
+  ///
+  /// The browser must treat `hovered_url` as untrusted display-only data. It may be surfaced in a
+  /// status bar UI, but must never update address bar, history, or other security-sensitive state.
+  HoverChanged {
+    frame_id: FrameId,
+    hovered_url: Option<String>,
+    cursor: CursorKind,
   },
   /// Acknowledgement for an input event dispatched to `frame_id`.
   InputAck { frame_id: FrameId, seq: u64 },
@@ -1368,6 +1419,17 @@ pub struct FrameHitTester {
   nodes: HashMap<FrameId, FrameHitNode>,
 }
 
+/// Result of hit testing a point against a [`FrameHitTester`].
+///
+/// - `frame_id` is the deepest hit-testable frame under the pointer.
+/// - `x`/`y` are the pointer coordinates in that frame's local coordinate space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HitTestResult {
+  pub frame_id: FrameId,
+  pub x: f32,
+  pub y: f32,
+}
+
 impl FrameHitTester {
   pub fn new(root: FrameId) -> Self {
     let mut nodes = HashMap::new();
@@ -1406,6 +1468,12 @@ impl FrameHitTester {
     self.hit_test_in_frame(self.root, x, y, MAX_FRAME_HIT_TEST_DEPTH)
   }
 
+  /// Hit test a point in the root frame's coordinate space, returning the deepest frame and the
+  /// pointer coordinates mapped into that frame's local coordinate space.
+  pub fn hit_test_with_coords(&self, x: f32, y: f32) -> HitTestResult {
+    self.hit_test_in_frame_with_coords(self.root, x, y, MAX_FRAME_HIT_TEST_DEPTH)
+  }
+
   fn hit_test_in_frame(&self, frame_id: FrameId, x: f32, y: f32, depth_left: usize) -> FrameId {
     if depth_left == 0 || !x.is_finite() || !y.is_finite() {
       return frame_id;
@@ -1433,6 +1501,41 @@ impl FrameHitTester {
     }
 
     frame_id
+  }
+
+  fn hit_test_in_frame_with_coords(
+    &self,
+    frame_id: FrameId,
+    x: f32,
+    y: f32,
+    depth_left: usize,
+  ) -> HitTestResult {
+    if depth_left == 0 || !x.is_finite() || !y.is_finite() {
+      return HitTestResult { frame_id, x, y };
+    }
+    let Some(node) = self.nodes.get(&frame_id) else {
+      return HitTestResult { frame_id, x, y };
+    };
+
+    for info in node.subframes.iter().rev() {
+      if !info.hit_testable {
+        continue;
+      }
+      let Some(child_node) = self.nodes.get(&info.child) else {
+        continue;
+      };
+      let Some((child_w, child_h)) = child_node.size else {
+        continue;
+      };
+
+      let Some((child_x, child_y)) = hit_test_subframe_point(info, child_w, child_h, x, y) else {
+        continue;
+      };
+
+      return self.hit_test_in_frame_with_coords(info.child, child_x, child_y, depth_left - 1);
+    }
+
+    HitTestResult { frame_id, x, y }
   }
 }
 
@@ -1479,6 +1582,116 @@ fn hit_test_subframe_point(
     Some((sx, sy))
   } else {
     None
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Hover routing (browser-side cursor/status-bar updates)
+// -----------------------------------------------------------------------------
+
+/// Browser-side hover router that selects the effective hover/cursor state based on the deepest
+/// frame under the pointer.
+///
+/// The renderer reports hover state per-frame via [`RendererToBrowser::HoverChanged`]. The browser
+/// is responsible for:
+/// - hit testing the pointer to find the deepest frame under it, and
+/// - emitting a single UI-level hover update based on that frame's state.
+#[derive(Debug)]
+pub struct HoverRouter {
+  root: FrameId,
+  pointer_root: Option<(f32, f32)>,
+  hit_frame: FrameId,
+  hover_by_frame: HashMap<FrameId, HoverState>,
+  last_effective: HoverState,
+}
+
+impl HoverRouter {
+  pub fn new(root: FrameId) -> Self {
+    Self {
+      root,
+      pointer_root: None,
+      hit_frame: root,
+      hover_by_frame: HashMap::new(),
+      last_effective: HoverState::default(),
+    }
+  }
+
+  pub fn root(&self) -> FrameId {
+    self.root
+  }
+
+  pub fn pointer_root(&self) -> Option<(f32, f32)> {
+    self.pointer_root
+  }
+
+  /// Current deepest hit-tested frame under the pointer.
+  pub fn hit_frame(&self) -> FrameId {
+    self.hit_frame
+  }
+
+  /// Update the router with a pointer move in the root coordinate space.
+  ///
+  /// Returns:
+  /// - a list of `(frame_id, x_css, y_css)` targets that should receive the pointer move (root +
+  ///   deepest hit-tested frame), and
+  /// - an optional effective [`HoverState`] to emit to the UI (when the chosen state changed).
+  pub fn on_pointer_move(
+    &mut self,
+    hit_tester: &FrameHitTester,
+    x: f32,
+    y: f32,
+  ) -> (Vec<(FrameId, f32, f32)>, Option<HoverState>) {
+    self.pointer_root = Some((x, y));
+
+    let hit = hit_tester.hit_test_with_coords(x, y);
+    self.hit_frame = hit.frame_id;
+
+    let mut targets = vec![(self.root, x, y)];
+    if hit.frame_id != self.root {
+      targets.push((hit.frame_id, hit.x, hit.y));
+    }
+
+    let effective = self.effective_hover();
+    let emit = if effective != self.last_effective {
+      self.last_effective = effective.clone();
+      Some(effective)
+    } else {
+      None
+    };
+
+    (targets, emit)
+  }
+
+  /// Update the router with a hover change reported by a renderer for `frame_id`.
+  ///
+  /// Returns the new effective hover state (to be emitted to UI) when it changed.
+  pub fn on_hover_changed(
+    &mut self,
+    frame_id: FrameId,
+    hovered_url: Option<String>,
+    cursor: CursorKind,
+  ) -> Option<HoverState> {
+    let state = HoverState { hovered_url, cursor };
+    self.hover_by_frame.insert(frame_id, state.clone());
+
+    if frame_id != self.hit_frame {
+      return None;
+    }
+
+    if state != self.last_effective {
+      self.last_effective = state.clone();
+      Some(state)
+    } else {
+      None
+    }
+  }
+
+  fn effective_hover(&self) -> HoverState {
+    self
+      .hover_by_frame
+      .get(&self.hit_frame)
+      .cloned()
+      .unwrap_or_default()
   }
 }
 
