@@ -1,7 +1,10 @@
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
 use crate::ui::html_escape::escape_html;
-use crate::ui::{OmniboxAction, OmniboxSearchSource, OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
+use crate::ui::{
+  ChromeActionUrl, OmniboxAction, OmniboxSearchSource, OmniboxSuggestion, OmniboxSuggestionSource,
+  OmniboxUrlSource,
+};
 use std::fmt::Write;
 
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
@@ -28,18 +31,24 @@ fn omnibox_suggestion_source_class(suggestion: &OmniboxSuggestion) -> &'static s
 
 fn omnibox_suggestion_href(suggestion: &OmniboxSuggestion) -> Option<String> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => {
-      let destination_encoded = urlencoding::encode(url);
-      Some(format!("chrome-action:navigate?url={destination_encoded}"))
-    }
+    OmniboxAction::NavigateToUrl(url) => Some(
+      ChromeActionUrl::Navigate {
+        url: url.clone(),
+      }
+      .to_url_string(),
+    ),
     // `chrome-action:navigate` is handled like a typed navigation; passing the raw query preserves
     // the same behaviour as pressing Enter in the address bar (search-vs-url resolution happens in
     // the action handler).
-    OmniboxAction::Search(query) => {
-      let destination_encoded = urlencoding::encode(query);
-      Some(format!("chrome-action:navigate?url={destination_encoded}"))
-    }
-    OmniboxAction::ActivateTab(tab_id) => Some(format!("chrome-action:activate-tab?tab={}", tab_id.0)),
+    OmniboxAction::Search(query) => Some(
+      ChromeActionUrl::Navigate {
+        url: query.clone(),
+      }
+      .to_url_string(),
+    ),
+    OmniboxAction::ActivateTab(tab_id) => Some(
+      ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string(),
+    ),
   }
 }
 
@@ -327,6 +336,12 @@ mod tests {
         url: Some("https://tab.example/".to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
       },
+      OmniboxSuggestion {
+        action: OmniboxAction::Search("cats & dogs".to_string()),
+        title: Some("cats & dogs".to_string()),
+        url: None,
+        source: OmniboxSuggestionSource::Search(crate::ui::OmniboxSearchSource::RemoteSuggest),
+      },
     ];
 
     let html = chrome_frame_html_from_state(&app);
@@ -336,8 +351,11 @@ mod tests {
     );
 
     let expected_href_0 = format!(
-      r#"href="chrome-action:navigate?url={}""#,
-      urlencoding::encode("https://example.com/")
+      r#"href="{}""#,
+      crate::ui::ChromeActionUrl::Navigate {
+        url: "https://example.com/".to_string()
+      }
+      .to_url_string()
     );
     assert!(
       html.contains(&expected_href_0),
@@ -345,8 +363,11 @@ mod tests {
     );
 
     let expected_href_1 = format!(
-      r#"href="chrome-action:navigate?url={}""#,
-      urlencoding::encode("https://rust-lang.org/?a=1&b=2")
+      r#"href="{}""#,
+      crate::ui::ChromeActionUrl::Navigate {
+        url: "https://rust-lang.org/?a=1&b=2".to_string()
+      }
+      .to_url_string()
     );
     assert!(
       html.contains(&expected_href_1),
@@ -356,6 +377,18 @@ mod tests {
     assert!(
       html.contains(r#"href="chrome-action:activate-tab?tab=42""#),
       "expected activate-tab href for open-tab suggestion, got html: {html}"
+    );
+
+    let expected_search_href = format!(
+      r#"href="{}""#,
+      crate::ui::ChromeActionUrl::Navigate {
+        url: "cats & dogs".to_string()
+      }
+      .to_url_string()
+    );
+    assert!(
+      html.contains(&expected_search_href),
+      "expected search suggestion href, got html: {html}"
     );
 
     // Ensure the HTML remains parseable by BrowserDocument.
