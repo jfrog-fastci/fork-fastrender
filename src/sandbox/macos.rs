@@ -1484,8 +1484,14 @@ mod tests {
         .map(std::path::PathBuf::from)
         .expect("child missing RELAXED_TMP_FILE_ENV");
 
-      apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
+      let status = apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
         .expect("apply relaxed (renderer system fonts) sandbox profile");
+      if matches!(status, MacosSandboxStatus::AlreadySandboxed) {
+        eprintln!(
+          "skipping relaxed sandbox assertions: process was already sandboxed (status={status:?})"
+        );
+        return;
+      }
 
       let cwd_err = std::fs::read(&cwd_path)
         .expect_err("expected sandbox to deny reading canary file in current working directory");

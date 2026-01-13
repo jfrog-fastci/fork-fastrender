@@ -137,6 +137,12 @@ pub enum BrowserToRenderer {
     buffers: Vec<FrameBufferDesc>,
   },
 
+  /// Acknowledge that the browser has finished consuming a frame.
+  ///
+  /// In shared-memory / pooled-buffer transports, the renderer must not reuse or overwrite the
+  /// corresponding buffer until it receives this ack.
+  FrameAck { frame_seq: u64 },
+
   ReleaseFrameBuffer {
     generation: u64,
     buffer_index: u32,

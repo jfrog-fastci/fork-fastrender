@@ -6,7 +6,7 @@
 #![cfg(target_os = "macos")]
 
 use fastrender::sandbox::macos::{
-  MacosSandboxMode, ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX,
+  MacosSandboxMode, MacosSandboxStatus, ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,9 +14,9 @@ use std::process::Command;
 
 const ENV_HOME_FILE: &str = "FASTR_TEST_SANDBOX_HOME_FILE";
 
-fn apply_relaxed_sandbox_profile() {
+fn apply_relaxed_sandbox_profile() -> MacosSandboxStatus {
   fastrender::sandbox::macos::apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
-    .expect("apply macOS relaxed renderer sandbox");
+    .expect("apply macOS relaxed renderer sandbox")
 }
 
 fn assert_permission_denied(err: &io::Error, path: &Path) {
@@ -41,7 +41,13 @@ fn relaxed_sandbox_profile_denies_home_file_read() {
   if let Some(path) = std::env::var_os(ENV_HOME_FILE) {
     // Child process: apply sandbox then attempt to read the home-owned file.
     let path = PathBuf::from(path);
-    apply_relaxed_sandbox_profile();
+    let status = apply_relaxed_sandbox_profile();
+    if matches!(status, MacosSandboxStatus::AlreadySandboxed) {
+      eprintln!(
+        "skipping relaxed-sandbox home guard: process was already sandboxed (status={status:?})"
+      );
+      return;
+    }
     let err = std::fs::read_to_string(&path).unwrap_err();
     assert_permission_denied(&err, &path);
     return;

@@ -1,6 +1,8 @@
 use std::process::Command;
 
-use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
+use fastrender::sandbox::macos::{
+  apply_renderer_sandbox, MacosSandboxMode, MacosSandboxStatus,
+};
 
 #[test]
 fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
@@ -11,8 +13,14 @@ fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
-    apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
+    let status = apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
       .expect("apply relaxed macOS renderer sandbox profile");
+    if matches!(status, MacosSandboxStatus::AlreadySandboxed) {
+      eprintln!(
+        "skipping fontdb sandbox test: process was already sandboxed (status={status:?})"
+      );
+      return;
+    }
 
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
