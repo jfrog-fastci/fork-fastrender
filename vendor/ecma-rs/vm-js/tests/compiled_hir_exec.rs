@@ -277,6 +277,30 @@ fn compiled_execution_is_gc_safe_under_stress() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_stmt_list_update_empty_roots_last_value_across_gc() -> Result<(), VmError> {
+  // Force a GC on every allocation.
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      ({});
+      { let x = 1; }
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::Object(obj) = result else {
+    panic!("expected object, got {result:?}");
+  };
+  assert!(rt.heap().is_valid_object(obj));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_inherits_from_object_prototype() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());

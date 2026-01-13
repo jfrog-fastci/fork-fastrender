@@ -786,19 +786,32 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     stmts: &[hir_js::StmtId],
   ) -> Result<Flow, VmError> {
+    // Root the running completion value so `UpdateEmpty` last-value semantics are GC-safe:
+    // a later statement in the list may allocate/GC while completing empty.
+    //
+    // This matches the interpreter (`exec.rs::eval_stmt_list`) which keeps `last_value` in a
+    // heap-root across statement execution.
+    let last_root = scope.heap_mut().add_root(Value::Undefined)?;
     let mut last: Option<Value> = None;
-    for stmt_id in stmts {
-      let flow = self.eval_stmt(scope, body, *stmt_id)?;
-      match flow {
-        Flow::Normal(v) => {
-          if v.is_some() {
-            last = v;
+
+    let res = (|| {
+      for stmt_id in stmts {
+        let flow = self.eval_stmt(scope, body, *stmt_id)?;
+        match flow {
+          Flow::Normal(v) => {
+            if let Some(v) = v {
+              last = Some(v);
+              scope.heap_mut().set_root(last_root, v);
+            }
           }
+          abrupt => return Ok(abrupt.update_empty(last)),
         }
-        abrupt => return Ok(abrupt.update_empty(last)),
       }
-    }
-    Ok(Flow::Normal(last))
+      Ok(Flow::Normal(last))
+    })();
+
+    scope.heap_mut().remove_root(last_root);
+    res
   }
 
   fn eval_stmt(
