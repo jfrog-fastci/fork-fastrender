@@ -7723,6 +7723,10 @@ impl App {
     let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) else {
       return;
     };
+    if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+      tab.hovered_url = None;
+      tab.cursor = fastrender::ui::CursorKind::Default;
+    }
     self.pending_pointer_move = Some(fastrender::ui::UiToWorker::PointerMove {
       tab_id,
       pos_css: (-1.0, -1.0),
