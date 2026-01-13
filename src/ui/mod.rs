@@ -85,6 +85,9 @@ pub mod icons;
 // WCAG-style contrast helpers used by chrome theme tests.
 #[cfg(feature = "browser_ui")]
 pub mod contrast;
+// Shared egui widgets used by multiple side panels / dialogs (history/downloads/bookmarks/etc).
+#[cfg(feature = "browser_ui")]
+pub mod panel_widgets;
 
 #[cfg(feature = "browser_ui")]
 pub mod theme;
@@ -189,6 +192,11 @@ pub use session::{
 pub use session_autosave::SessionAutosave;
 #[cfg(feature = "browser_ui")]
 pub use icons::{icon, icon_button, icon_tinted, paint_icon_in_rect, spinner, BrowserIcon};
+#[cfg(feature = "browser_ui")]
+pub use panel_widgets::{
+  danger_button, panel_empty_state, panel_header, panel_list_row, panel_search_field,
+  PanelEmptyStateOutput, PanelHeaderOutput, PanelListRowResponse, SearchFieldOutput,
+};
 pub use profile_autosave::{AutosaveMsg, ProfileAutosaveHandle};
 pub use profile_persistence::{
   bookmarks_path, history_path, load_bookmarks, load_history, parse_bookmarks_json,

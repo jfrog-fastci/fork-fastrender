@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::{icon_button, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
+use super::{panel_header, panel_search_field, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
 
 #[derive(Debug, Clone)]
 pub enum BookmarksManagerAction {
@@ -83,17 +83,8 @@ pub fn bookmarks_manager_side_panel(
     .resizable(true)
     .default_width(360.0)
     .show(ctx, |ui| {
-      ui.horizontal(|ui| {
-        ui.heading("Bookmarks");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          let close_resp = icon_button(ui, BrowserIcon::Close, "Close", true);
-          close_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks manager")
-          });
-          if close_resp.clicked() {
-            out.close_requested = true;
-          }
-        });
+      panel_header(ui, BrowserIcon::BookmarkFilled, "Bookmarks", || {
+        out.close_requested = true;
       });
       ui.separator();
 
@@ -111,27 +102,7 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       // Search + toolbar
       // -----------------------------------------------------------------------
-      ui.horizontal(|ui| {
-        ui.label("Search:");
-        let search_id = ui.make_persistent_id("bookmarks_manager_search");
-        let resp = ui.add(
-          egui::TextEdit::singleline(&mut state.search)
-            .id(search_id)
-            .hint_text("Filter by title or URL…")
-            .desired_width(f32::INFINITY),
-        );
-        resp.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search bookmarks")
-        });
-        if state.request_focus_search {
-          resp.request_focus();
-          state.request_focus_search = false;
-          out.unfocus_page = true;
-        }
-        if resp.has_focus() || resp.clicked() {
-          out.unfocus_page = true;
-        }
-
+      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let new_folder_resp = ui.button("New folder");
         new_folder_resp
           .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Create new folder"));
@@ -142,6 +113,27 @@ pub fn bookmarks_manager_side_panel(
             error: None,
             request_focus_title: true,
           });
+        }
+
+        ui.add_space(6.0);
+
+        let search_out = panel_search_field(
+          ui,
+          "bookmarks_manager_search",
+          &mut state.search,
+          "Filter by title or URL…",
+          &mut state.request_focus_search,
+          "Search bookmarks",
+        );
+        if search_out.focus_requested
+          || search_out.response.has_focus()
+          || search_out.response.clicked()
+          || search_out
+            .clear_response
+            .as_ref()
+            .is_some_and(|resp| resp.clicked())
+        {
+          out.unfocus_page = true;
         }
       });
 

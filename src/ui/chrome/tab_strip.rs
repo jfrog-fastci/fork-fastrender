@@ -1892,16 +1892,12 @@ pub(super) fn tab_strip_ui(
         current_offset_x = 0.0;
       }
 
-      let mut desired_scroll_offset_x = unpinned_ui
-        .ctx()
-        .data(|d| d.get_temp::<f32>(desired_scroll_id))
-        .unwrap_or(current_offset_x);
-      if !desired_scroll_offset_x.is_finite() {
-        desired_scroll_offset_x = current_offset_x;
-      }
+      let mut desired_scroll_offset_x = current_offset_x;
+      let mut clamping_scroll = false;
 
       // Detect out-of-range offset after sizing is recomputed.
-      if desired_scroll_offset_x > unpinned_max_scroll_x + 0.5 {
+      if current_offset_x > unpinned_max_scroll_x + 0.5 {
+        clamping_scroll = true;
         if motion.enabled {
           let mut anim = unpinned_ui
             .ctx()
@@ -1911,7 +1907,7 @@ pub(super) fn tab_strip_ui(
           if !anim.active || (anim.target_offset_x - unpinned_max_scroll_x).abs() > 0.5 {
             anim = TabStripScrollClampAnim {
               active: true,
-              start_offset_x: desired_scroll_offset_x,
+              start_offset_x: current_offset_x,
               target_offset_x: unpinned_max_scroll_x,
               start_time: now,
               duration: TAB_STRIP_SCROLL_CLAMP_DURATION,
@@ -2182,14 +2178,20 @@ pub(super) fn tab_strip_ui(
 
       // Keep our "desired scroll" state in sync with egui's actual scroll offset so we don't fight
       // user scrolling (we only override when clamping due to content shrink).
-      unpinned_ui
-        .ctx()
-        .data_mut(|d| d.insert_temp(desired_scroll_id, scroll_offset_x));
+      if clamping_scroll {
+        scroll_state.offset.x = desired_scroll_offset_x;
+        scroll_state.store(ui.ctx(), scroll_output.id);
+        unpinned_ui
+          .ctx()
+          .data_mut(|d| d.insert_temp(desired_scroll_id, desired_scroll_offset_x));
+      } else {
+        unpinned_ui
+          .ctx()
+          .data_mut(|d| d.insert_temp(desired_scroll_id, scroll_offset_x));
+      }
 
       // Use the scroll area's actual widget id for programmatic state updates, rather than
       // assuming how `id_source` is transformed internally by egui.
-      // Store it so we can update the scroll offset *before* the next frame's `ScrollArea::show`
-      // when animating the clamp.
       unpinned_ui
         .ctx()
         .data_mut(|d| d.insert_temp(scroll_state_id_key, scroll_output.id));

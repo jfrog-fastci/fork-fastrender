@@ -4,12 +4,13 @@ use crate::wpt_report::{WptReport, WptSubtest};
 use crate::wpt_resource_fetcher::WptResourceFetcher;
 use crate::RunError;
 use fastrender::debug::inspect::{inspect, InspectQuery};
+use fastrender::js::DomHost;
 use fastrender::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard, install_window_timers_bindings,
   install_window_xhr_bindings_with_guard, EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome,
-  DomHost, RunLimits, RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowFetchBindings, WindowFetchEnv,
+  RunLimits, RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowFetchBindings, WindowFetchEnv,
   WindowRealm, WindowRealmConfig, WindowRealmHost, WindowXhrBindings, WindowXhrEnv,
 };
 use fastrender::js::window_realm::DomBindingsBackend;
