@@ -878,6 +878,45 @@ pub enum WorkerToUi {
   },
 }
 
+impl WorkerToUi {
+  /// Extract the tab id for this message.
+  ///
+  /// Today all `WorkerToUi` variants are per-tab. This helper keeps UI-side bookkeeping (e.g.
+  /// watchdog timers) simple and centralised.
+  pub fn tab_id(&self) -> TabId {
+    match self {
+      WorkerToUi::Stage { tab_id, .. }
+      | WorkerToUi::Favicon { tab_id, .. }
+      | WorkerToUi::FrameReady { tab_id, .. }
+      | WorkerToUi::OpenSelectDropdown { tab_id, .. }
+      | WorkerToUi::NavigationStarted { tab_id, .. }
+      | WorkerToUi::NavigationCommitted { tab_id, .. }
+      | WorkerToUi::NavigationFailed { tab_id, .. }
+      | WorkerToUi::RequestOpenInNewTab { tab_id, .. }
+      | WorkerToUi::RequestOpenInNewTabRequest { tab_id, .. }
+      | WorkerToUi::ScrollStateUpdated { tab_id, .. }
+      | WorkerToUi::LoadingState { tab_id, .. }
+      | WorkerToUi::Warning { tab_id, .. }
+      | WorkerToUi::DebugLog { tab_id, .. }
+      | WorkerToUi::SelectDropdownOpened { tab_id, .. }
+      | WorkerToUi::SelectDropdownClosed { tab_id }
+      | WorkerToUi::DateTimePickerOpened { tab_id, .. }
+      | WorkerToUi::DateTimePickerClosed { tab_id }
+      | WorkerToUi::ColorPickerOpened { tab_id, .. }
+      | WorkerToUi::ColorPickerClosed { tab_id }
+      | WorkerToUi::FilePickerOpened { tab_id, .. }
+      | WorkerToUi::FilePickerClosed { tab_id }
+      | WorkerToUi::ContextMenu { tab_id, .. }
+      | WorkerToUi::HoverChanged { tab_id, .. }
+      | WorkerToUi::FindResult { tab_id, .. }
+      | WorkerToUi::SetClipboardText { tab_id, .. }
+      | WorkerToUi::DownloadStarted { tab_id, .. }
+      | WorkerToUi::DownloadProgress { tab_id, .. }
+      | WorkerToUi::DownloadFinished { tab_id, .. } => *tab_id,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadOutcome {
   Completed,

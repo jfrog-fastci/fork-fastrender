@@ -324,6 +324,8 @@ fn open_url_in_new_tab_state(
   let new_tab_id = TabId::new();
   let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
   tab_state.loading = true;
+  tab_state.unresponsive = false;
+  tab_state.last_worker_msg_at = std::time::SystemTime::now();
   let cancel = tab_state.cancel.clone();
   tab_cancel.insert(new_tab_id, cancel.clone());
   browser_state.push_tab(tab_state, true);
@@ -607,6 +609,13 @@ const DEFAULT_BROWSER_RENDERER_WATCHDOG_TIMEOUT_MS: u64 = 60_000;
 
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_RESIZE_DPR_SCALE: &str = "FASTR_BROWSER_RESIZE_DPR_SCALE";
+
+#[cfg(feature = "browser_ui")]
+const RENDERER_UNRESPONSIVE_TIMEOUT: std::time::Duration = if cfg!(debug_assertions) {
+  std::time::Duration::from_secs(5)
+} else {
+  std::time::Duration::from_secs(15)
+};
 
 fn parse_browser_hud_env(raw: Option<&str>) -> Result<bool, String> {
   let Some(raw) = raw else {
@@ -4778,6 +4787,8 @@ struct App {
   /// We block pointer interactions while a tab is loading a navigation but still showing the last
   /// rendered frame to avoid interacting with stale content.
   page_loading_overlay_blocks_input: bool,
+  /// Screen-space rect for the active tab's "page unresponsive" overlay, if visible.
+  page_unresponsive_overlay_rect: Option<egui::Rect>,
   overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars,
   overlay_scrollbar_visibility: fastrender::ui::scrollbars::OverlayScrollbarVisibilityState,
   scrollbar_drag: Option<ScrollbarDrag>,
@@ -5126,6 +5137,9 @@ impl App {
         .error_infobar_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
+        .page_unresponsive_overlay_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
         .chrome_toast_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self.debug_log_overlay_pointer_capture
@@ -5412,6 +5426,7 @@ impl App {
       page_input_tab: None,
       page_input_mapping: None,
       page_loading_overlay_blocks_input: false,
+      page_unresponsive_overlay_rect: None,
       overlay_scrollbars: fastrender::ui::scrollbars::OverlayScrollbars::default(),
       overlay_scrollbar_visibility:
         fastrender::ui::scrollbars::OverlayScrollbarVisibilityState::default(),
@@ -5545,6 +5560,8 @@ impl App {
         tab_state.zoom = zoom;
       }
       tab_state.loading = true;
+      tab_state.unresponsive = false;
+      tab_state.last_worker_msg_at = std::time::SystemTime::now();
       tab_state.pinned = tab.pinned;
       tab_state.group = if tab.pinned {
         None
@@ -6671,6 +6688,8 @@ impl App {
     let new_tab_id = TabId::new();
     let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
     tab_state.loading = true;
+    tab_state.unresponsive = false;
+    tab_state.last_worker_msg_at = std::time::SystemTime::now();
     let cancel: CancelGens = tab_state.cancel.clone();
     self.tab_cancel.insert(new_tab_id, cancel.clone());
     self.browser_state.push_tab(tab_state, true);
@@ -6707,14 +6726,22 @@ impl App {
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) -> WorkerMessageResult {
     // Worker-initiated tab creation/navigation.
     let msg = match msg {
-      fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id: _, url } => {
+      fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id, url } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.unresponsive = false;
+        }
         self.open_url_in_new_tab(url);
         return WorkerMessageResult {
           request_redraw: true,
           history_changed: false,
         };
       }
-      fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { tab_id: _, request } => {
+      fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { tab_id, request } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.unresponsive = false;
+        }
         self.open_request_in_new_tab(request);
         return WorkerMessageResult {
           request_redraw: true,
@@ -11644,6 +11671,8 @@ impl App {
           tab_state.committed_title = closed.title;
           tab_state.pinned = closed.pinned;
           tab_state.loading = true;
+          tab_state.unresponsive = false;
+          tab_state.last_worker_msg_at = std::time::SystemTime::now();
 
           let cancel = tab_state.cancel.clone();
           self.tab_cancel.insert(tab_id, cancel.clone());
@@ -11692,6 +11721,8 @@ impl App {
             let mut tab_state =
               fastrender::ui::BrowserTabState::new(replacement_id, initial_url.clone());
             tab_state.loading = true;
+            tab_state.unresponsive = false;
+            tab_state.last_worker_msg_at = std::time::SystemTime::now();
             let cancel = tab_state.cancel.clone();
             self.tab_cancel.insert(replacement_id, cancel.clone());
             self.browser_state.push_tab(tab_state, true);
@@ -12058,6 +12089,8 @@ impl App {
           }
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
+            tab.unresponsive = false;
+            tab.last_worker_msg_at = std::time::SystemTime::now();
             tab.error = None;
             tab.stage = None;
             tab.title = None;
@@ -12081,6 +12114,8 @@ impl App {
           tab_state.title = source.title.clone();
           tab_state.committed_title = source.committed_title.clone();
           tab_state.loading = true;
+          tab_state.unresponsive = false;
+          tab_state.last_worker_msg_at = std::time::SystemTime::now();
 
           let cancel = tab_state.cancel.clone();
           self.tab_cancel.insert(tab_id, cancel.clone());
@@ -12192,6 +12227,8 @@ impl App {
           };
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
+            tab.unresponsive = false;
+            tab.last_worker_msg_at = std::time::SystemTime::now();
             tab.error = None;
             tab.stage = None;
             tab.title = None;
@@ -12205,6 +12242,7 @@ impl App {
           };
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = false;
+            tab.unresponsive = false;
             tab.stage = None;
             // Restore optimistic URL/title back to the last committed state.
             if let Some(committed_url) = tab.committed_url.clone() {
@@ -12269,6 +12307,8 @@ impl App {
             continue;
           }
           tab.loading = true;
+          tab.unresponsive = false;
+          tab.last_worker_msg_at = std::time::SystemTime::now();
           tab.error = None;
           tab.stage = None;
           tab.title = None;
@@ -12286,6 +12326,8 @@ impl App {
             continue;
           }
           tab.loading = true;
+          tab.unresponsive = false;
+          tab.last_worker_msg_at = std::time::SystemTime::now();
           tab.error = None;
           tab.stage = None;
           tab.title = None;
@@ -12827,6 +12869,30 @@ impl App {
       self.render_downloads_panel(&ctx);
     }
 
+    // -----------------------------------------------------------------------------
+    // Renderer unresponsive watchdog
+    // -----------------------------------------------------------------------------
+    //
+    // Mark tabs as unresponsive when they are loading but we haven't observed *any* worker→UI
+    // messages for a while. This runs purely on the browser/UI side so we can surface hangs before
+    // implementing thread/process killing.
+    let watchdog_now = std::time::SystemTime::now();
+    if self
+      .browser_state
+      .update_unresponsive_tabs(watchdog_now, RENDERER_UNRESPONSIVE_TIMEOUT)
+    {
+      // Ensure the overlay appears/disappears immediately even if no other UI state changed.
+      ctx.request_repaint();
+    }
+    if let Some(next_check) = self
+      .browser_state
+      .next_unresponsive_check_in(watchdog_now, RENDERER_UNRESPONSIVE_TIMEOUT)
+    {
+      // Keep the event loop waking up to run the watchdog even when reduced motion disables
+      // animated spinners (which would otherwise trigger continuous repaints during loading).
+      ctx.request_repaint_after(next_check);
+    }
+
     let central_response = egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
 
@@ -12856,6 +12922,7 @@ impl App {
       self.page_input_mapping = None;
       let prev_loading_overlay_blocks_input = self.page_loading_overlay_blocks_input;
       self.page_loading_overlay_blocks_input = false;
+      self.page_unresponsive_overlay_rect = None;
       self.overlay_scrollbars = fastrender::ui::scrollbars::OverlayScrollbars::default();
 
       let Some(active_tab) = self.browser_state.active_tab_id() else {
@@ -12901,11 +12968,11 @@ impl App {
         }
       }
 
-      let (tab_loading, tab_stage, tab_progress) = self
+      let (tab_loading, tab_stage, tab_progress, tab_unresponsive) = self
         .browser_state
         .tab(active_tab)
-        .map(|t| (t.loading, t.load_stage, t.chrome_loading_progress()))
-        .unwrap_or((false, None, None));
+        .map(|t| (t.loading, t.load_stage, t.chrome_loading_progress(), t.unresponsive))
+        .unwrap_or((false, None, None, false));
 
       if let Some(tex) = self.tab_textures.get_mut(&active_tab) {
         let loading_ui =
@@ -13337,6 +13404,59 @@ impl App {
           }
         }
 
+        // "Page unresponsive" watchdog overlay.
+        if tab_unresponsive {
+          let overlay_id = egui::Id::new(("fastr_page_unresponsive_overlay", active_tab.0));
+          let center = response.rect.center();
+          let width = response.rect.width().min(360.0).max(220.0);
+          let pos = egui::pos2(center.x - width * 0.5, center.y - 70.0);
+          let overlay = egui::Area::new(overlay_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(&ctx, |ui| {
+              let fill = ui.visuals().window_fill;
+              let fill = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 240);
+              egui::Frame::none()
+                .fill(fill)
+                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+                .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                .show(ui, |ui| {
+                  ui.set_min_width(width);
+                  ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.label(egui::RichText::new("Page unresponsive").strong().size(16.0));
+                    ui.horizontal(|ui| {
+                      let wait = ui.button("Wait");
+                      let reload = ui.button("Reload");
+                      if wait.clicked() {
+                        let _ = self
+                          .browser_state
+                          .dismiss_tab_unresponsive(active_tab, std::time::SystemTime::now());
+                        ctx.request_repaint();
+                      }
+                      if reload.clicked() {
+                        let now = std::time::SystemTime::now();
+                        let _ = self.browser_state.dismiss_tab_unresponsive(active_tab, now);
+                        if let Some(tab) = self.browser_state.tab_mut(active_tab) {
+                          tab.loading = true;
+                          tab.error = None;
+                          tab.stage = None;
+                          tab.title = None;
+                          tab.last_worker_msg_at = now;
+                          tab.unresponsive = false;
+                        }
+                        self.force_send_viewport_now();
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Reload { tab_id: active_tab });
+                        ctx.request_repaint();
+                      }
+                    });
+                  });
+                });
+            });
+          self.page_unresponsive_overlay_rect = Some(overlay.response.rect);
+        }
+
         // Note: page scrolling from wheel/trackpad input is forwarded from the winit event stream
         // inside `handle_winit_input_event(WindowEvent::MouseWheel { .. })` so both the egui and
         // compositor backends share the same behaviour.
@@ -13408,6 +13528,60 @@ impl App {
             },
           );
         });
+
+        // "Page unresponsive" watchdog overlay (shown even when no frame exists yet).
+        if tab_unresponsive {
+          let overlay_id = egui::Id::new(("fastr_page_unresponsive_overlay", active_tab.0));
+          let center = rect.center();
+          let width = rect.width().min(360.0).max(220.0);
+          let pos = egui::pos2(center.x - width * 0.5, center.y - 70.0);
+          let overlay = egui::Area::new(overlay_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(&ctx, |ui| {
+              let fill = ui.visuals().window_fill;
+              let fill = egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 240);
+              egui::Frame::none()
+                .fill(fill)
+                .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+                .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                .show(ui, |ui| {
+                  ui.set_min_width(width);
+                  ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.label(egui::RichText::new("Page unresponsive").strong().size(16.0));
+                    ui.horizontal(|ui| {
+                      let wait = ui.button("Wait");
+                      let reload = ui.button("Reload");
+                      if wait.clicked() {
+                        let _ = self
+                          .browser_state
+                          .dismiss_tab_unresponsive(active_tab, std::time::SystemTime::now());
+                        ctx.request_repaint();
+                      }
+                      if reload.clicked() {
+                        let now = std::time::SystemTime::now();
+                        let _ =
+                          self.browser_state.dismiss_tab_unresponsive(active_tab, now);
+                        if let Some(tab) = self.browser_state.tab_mut(active_tab) {
+                          tab.loading = true;
+                          tab.error = None;
+                          tab.stage = None;
+                          tab.title = None;
+                          tab.last_worker_msg_at = now;
+                          tab.unresponsive = false;
+                        }
+                        self.force_send_viewport_now();
+                        self.send_worker_msg(fastrender::ui::UiToWorker::Reload { tab_id: active_tab });
+                        ctx.request_repaint();
+                      }
+                    });
+                  });
+                });
+            });
+          self.page_unresponsive_overlay_rect = Some(overlay.response.rect);
+        }
       }
     });
 
