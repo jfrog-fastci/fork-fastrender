@@ -1593,7 +1593,7 @@ fn validate_regex_pattern(
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum PrevToken {
       None,
-      Operand { rangeable: bool },
+      Operand { range_value: Option<u32> },
       Operator,
     }
 
@@ -1628,7 +1628,7 @@ fn validate_regex_pattern(
       unicode_mode: bool,
       unicode_sets_mode: bool,
       in_negated_class: bool,
-    ) -> Result<(usize, bool), RegexError> {
+    ) -> Result<(usize, Option<u32>), RegexError> {
       let ch = pattern[i..].chars().next().unwrap();
       if ch == '\\' {
         let escape_start = i;
@@ -1651,7 +1651,7 @@ fn validate_regex_pattern(
             unicode_sets_mode,
             in_negated_class,
           )?;
-          return Ok((end, false));
+          return Ok((end, None));
         }
         if unicode_sets_mode && esc == 'q' {
           let end = validate_class_string_disjunction_escape(
@@ -1661,7 +1661,7 @@ fn validate_regex_pattern(
             i,
             in_negated_class,
           )?;
-          return Ok((end, false));
+          return Ok((end, None));
         }
         if esc == 'u' {
           let after_u = i + esc_len;
@@ -1734,10 +1734,11 @@ fn validate_regex_pattern(
                 len: j.saturating_sub(escape_start),
               });
             }
-            return Ok((j + 1, true));
+            return Ok((j + 1, Some(value)));
           }
           // `\uXXXX`
           let mut j = after_u;
+          let mut value: u32 = 0;
           for _ in 0..4 {
             if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
               return Err(RegexError {
@@ -1746,14 +1747,16 @@ fn validate_regex_pattern(
                 len: j.saturating_sub(escape_start),
               });
             }
+            value = (value << 4) + regex_hex_value(bytes[j]).unwrap();
             j += 1;
           }
-          return Ok((j, true));
+          return Ok((j, Some(value)));
         }
         if esc == 'x' {
           let after_x = i + esc_len;
           let bytes = pattern.as_bytes();
           let mut j = after_x;
+          let mut value: u32 = 0;
           for _ in 0..2 {
             if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
               return Err(RegexError {
@@ -1762,9 +1765,10 @@ fn validate_regex_pattern(
                 len: j.saturating_sub(escape_start),
               });
             }
+            value = (value << 4) + regex_hex_value(bytes[j]).unwrap();
             j += 1;
           }
-          return Ok((j, true));
+          return Ok((j, Some(value)));
         }
         if unicode_mode {
           // UnicodeMode (`/v`) uses the strict escape grammar.
@@ -1785,7 +1789,7 @@ fn validate_regex_pattern(
                   len: 2 + esc_len,
                 });
               }
-              return Ok((i + esc_len, true));
+              return Ok((i + esc_len, Some(0)));
             }
             // Decimal escapes/backreferences are not valid inside character classes.
             return Err(RegexError {
@@ -1797,7 +1801,15 @@ fn validate_regex_pattern(
 
           // ControlEscape
           if matches!(esc, 'f' | 'n' | 'r' | 't' | 'v') {
-            return Ok((i + esc_len, true));
+            let value = match esc {
+              'f' => 0x0C,
+              'n' => 0x0A,
+              'r' => 0x0D,
+              't' => 0x09,
+              'v' => 0x0B,
+              _ => unreachable!(),
+            };
+            return Ok((i + esc_len, Some(value)));
           }
 
           // `\c` AsciiLetter
@@ -1818,12 +1830,13 @@ fn validate_regex_pattern(
                 len: after_c + ctrl.len_utf8() - escape_start,
               });
             }
-            return Ok((after_c + ctrl.len_utf8(), true));
+            let value = (ctrl.to_ascii_uppercase() as u8 & 0x1F) as u32;
+            return Ok((after_c + ctrl.len_utf8(), Some(value)));
           }
 
           // `\b` is backspace inside character classes.
           if esc == 'b' {
-            return Ok((i + esc_len, true));
+            return Ok((i + esc_len, Some(0x08)));
           }
 
           // `\B` and `\k<name>` are not valid inside character classes.
@@ -1837,12 +1850,12 @@ fn validate_regex_pattern(
 
           // `\-` is a ClassEscape in UnicodeMode.
           if esc == '-' {
-            return Ok((i + esc_len, true));
+            return Ok((i + esc_len, Some('-' as u32)));
           }
 
           // CharacterClassEscape (not valid as range endpoint).
           if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
-            return Ok((i + esc_len, false));
+            return Ok((i + esc_len, None));
           }
 
           // IdentityEscape[+UnicodeMode] is limited to SyntaxCharacter or `/`.
@@ -1853,12 +1866,14 @@ fn validate_regex_pattern(
               len: 1 + esc_len,
             });
           }
-          return Ok((i + esc_len, true));
+          return Ok((i + esc_len, Some(esc as u32)));
         }
 
         // Non-UnicodeMode: Escapes that represent character classes are not valid range endpoints.
-        let rangeable = !matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W');
-        Ok((i + esc_len, rangeable))
+        if matches!(esc, 'd' | 'D' | 's' | 'S' | 'w' | 'W') {
+          return Ok((i + esc_len, None));
+        }
+        Ok((i + esc_len, Some(esc as u32)))
       } else if ch == '[' {
         let end = validate_unicode_sets_class(
           pattern,
@@ -1868,7 +1883,7 @@ fn validate_regex_pattern(
           unicode_sets_mode,
           in_negated_class,
         )?;
-        Ok((end, false))
+        Ok((end, None))
       } else {
         // Disallowed syntax characters in UnicodeSets mode when unescaped.
         match ch {
@@ -1889,7 +1904,7 @@ fn validate_regex_pattern(
           }
           _ => {}
         }
-        Ok((i + ch.len_utf8(), true))
+        Ok((i + ch.len_utf8(), Some(ch as u32)))
       }
     }
 
@@ -1963,23 +1978,26 @@ fn validate_regex_pattern(
 
         if ch == '-' {
           // Single `-` can only appear as a range marker.
-          let PrevToken::Operand { rangeable } = prev else {
+          let PrevToken::Operand {
+            range_value: Some(lhs_value),
+          } = prev
+          else {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + i,
               len: 1,
             });
           };
-          if !rangeable {
+          let (end, rhs_value) =
+            parse_operand(pattern, base_offset, i + 1, unicode_mode, unicode_sets_mode, in_negated_class)?;
+          let Some(rhs_value) = rhs_value else {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + i,
               len: 1,
             });
-          }
-          let (end, rhs_rangeable) =
-            parse_operand(pattern, base_offset, i + 1, unicode_mode, unicode_sets_mode, in_negated_class)?;
-          if !rhs_rangeable {
+          };
+          if lhs_value > rhs_value {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + i,
@@ -1987,16 +2005,16 @@ fn validate_regex_pattern(
             });
           }
           i = end;
-          prev = PrevToken::Operand { rangeable: false };
+          prev = PrevToken::Operand { range_value: None };
           saw_operand = true;
           continue;
         }
 
         // Parse an operand.
-        let (end, rangeable) =
+        let (end, range_value) =
           parse_operand(pattern, base_offset, i, unicode_mode, unicode_sets_mode, in_negated_class)?;
         i = end;
-        prev = PrevToken::Operand { rangeable };
+        prev = PrevToken::Operand { range_value };
         saw_operand = true;
       }
 

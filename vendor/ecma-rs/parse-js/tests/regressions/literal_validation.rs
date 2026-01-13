@@ -30,6 +30,10 @@ fn unicode_mode_rejects_character_class_escape_ranges() {
     r"/[a-\d]/u",
     r"/[\w-\w]/u",
     r"/[\s-\uFFFF]/u",
+    r"/[\d-a]/v",
+    r"/[a-\d]/v",
+    r"/[\w-\w]/v",
+    r"/[\s-\uFFFF]/v",
   ] {
     let err = parse(src).unwrap_err();
     assert_eq!(
@@ -51,6 +55,18 @@ fn regex_literal_rejects_out_of_order_character_class_ranges() {
     err.typ,
     SyntaxErrorType::ExpectedSyntax("valid regular expression")
   );
+}
+
+#[test]
+fn unicode_sets_mode_rejects_out_of_order_character_class_ranges() {
+  let err = parse(r"/[d-G]/v").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+
+  // Still accepts ranges where the endpoints are in ascending order.
+  parse(r"/[G-d]/v").unwrap();
 }
 
 #[test]
