@@ -14044,13 +14044,14 @@ impl App {
       // Rough sizing (in egui points) for the traffic-light region: 3 × 12px buttons + padding.
       // This doesn't need to be pixel-perfect; it just needs to ensure we never place tab widgets
       // directly under the buttons.
-      const TRAFFIC_LIGHTS_LEFT_INSET_POINTS: f32 = 72.0;
+      let traffic_lights_left_inset_points =
+        fastrender::ui::titlebar_insets::traffic_lights_left_inset_points();
       let mut style = original_style.clone();
       style.spacing.window_margin.left = style
         .spacing
         .window_margin
         .left
-        .max(TRAFFIC_LIGHTS_LEFT_INSET_POINTS);
+        .max(traffic_lights_left_inset_points);
       ctx.set_style(style);
     }
     let zoom_before = self.browser_state.active_tab().map(|t| t.zoom);
