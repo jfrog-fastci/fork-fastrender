@@ -1,5 +1,3 @@
-#![cfg(windows)]
-
 use std::ffi::OsString;
 use std::io;
 use std::os::windows::io::AsRawHandle;
@@ -9,8 +7,6 @@ use std::process::Command;
 use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
-
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn wait_process(handle: HANDLE) -> io::Result<std::process::ExitStatus> {
   // SAFETY: caller owns the process handle and we wait indefinitely for it to signal.
@@ -42,6 +38,11 @@ fn disable_renderer_sandbox_logs_warning() {
   const CHILD_ENV: &str = "FASTR_TEST_DISABLE_RENDERER_SANDBOX_LOG_CHILD";
   const DISABLE_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
   const LEGACY_ENV: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::disable_renderer_sandbox_logs_warning"
+  );
+  const SMOKE_TEST_NAME: &str = concat!(module_path!(), "::appcontainer_child_smoke");
 
   if std::env::var_os(CHILD_ENV).is_some() {
     // This runs in the child process; the parent captures stderr to ensure the warning is printed.
@@ -49,11 +50,10 @@ fn disable_renderer_sandbox_logs_warning() {
       std::env::var_os(DISABLE_ENV).is_some() || std::env::var_os(LEGACY_ENV).is_some(),
       "child process missing sandbox disable env var; test harness bug"
     );
-
     let exe = std::env::current_exe().expect("current test exe path");
     let args = vec![
       OsString::from("--exact"),
-      OsString::from("appcontainer_child_smoke"),
+      OsString::from(SMOKE_TEST_NAME),
       OsString::from("--nocapture"),
     ];
     let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
@@ -65,23 +65,28 @@ fn disable_renderer_sandbox_logs_warning() {
   }
 
   let exe = std::env::current_exe().expect("current test exe path");
-  let test_name = "disable_renderer_sandbox_logs_warning";
-  let run_child = |env: (&str, &str)| {
-    Command::new(&exe)
-      .env(CHILD_ENV, "1")
-      .env(env.0, env.1)
-      .env("RUST_TEST_THREADS", "1")
+  for mode in ["disable", "legacy"] {
+    let mut cmd = Command::new(&exe);
+    cmd.env(CHILD_ENV, "1").env("RUST_TEST_THREADS", "1");
+    match mode {
+      "disable" => {
+        cmd.env(DISABLE_ENV, "1").env_remove(LEGACY_ENV);
+      }
+      "legacy" => {
+        cmd.env_remove(DISABLE_ENV).env(LEGACY_ENV, "off");
+      }
+      _ => unreachable!(),
+    }
+    let output = cmd
       .arg("--exact")
-      .arg(test_name)
+      .arg(TEST_NAME)
       .arg("--nocapture")
       .output()
-      .expect("spawn child test process")
-  };
+      .expect("spawn child test process");
 
-  for output in [run_child((DISABLE_ENV, "1")), run_child((LEGACY_ENV, "off"))] {
     assert!(
       output.status.success(),
-      "child process should exit successfully (stdout={}, stderr={})",
+      "child process ({mode}) should exit successfully (stdout={}, stderr={})",
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
     );
@@ -96,51 +101,71 @@ fn disable_renderer_sandbox_logs_warning() {
 
 #[test]
 fn disable_renderer_sandbox_env_forces_unsandboxed_spawn() {
-  let _guard = ENV_LOCK.lock().unwrap();
-
+  const CHILD_ENV: &str = "FASTR_TEST_DISABLE_RENDERER_SANDBOX_ENV_CHILD";
+  const MODE_ENV: &str = "FASTR_TEST_DISABLE_RENDERER_SANDBOX_ENV_MODE";
   const DISABLE_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
   const LEGACY_ENV: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::disable_renderer_sandbox_env_forces_unsandboxed_spawn"
+  );
+  const SMOKE_TEST_NAME: &str = concat!(module_path!(), "::appcontainer_child_smoke");
 
-  let prev_disable = std::env::var_os(DISABLE_ENV);
-  let prev_legacy = std::env::var_os(LEGACY_ENV);
+  let is_child = std::env::var_os(CHILD_ENV).is_some();
+  if is_child {
+    let mode = std::env::var(MODE_ENV).expect("child mode env");
 
-  let exe = std::env::current_exe().expect("current test exe path");
-  let args = vec![
-    OsString::from("--exact"),
-    OsString::from("appcontainer_child_smoke"),
-    OsString::from("--nocapture"),
-  ];
+    let exe = std::env::current_exe().expect("current test exe path");
+    let args = vec![
+      OsString::from("--exact"),
+      OsString::from(SMOKE_TEST_NAME),
+      OsString::from("--nocapture"),
+    ];
 
-  let spawn_and_wait = || {
+    match mode.as_str() {
+      "disable" => {}
+      "legacy" => {}
+      other => panic!("unknown mode {other}"),
+    }
+
     let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
     assert_eq!(
       child.level,
       WindowsSandboxLevel::None,
       "expected sandbox opt-out to force unsandboxed spawn"
     );
-
     let handle = child.process.as_raw_handle() as HANDLE;
     let status = wait_process(handle).expect("wait for child");
     assert!(status.success(), "child should exit successfully");
-  };
-
-  // Primary opt-out env var.
-  std::env::set_var(DISABLE_ENV, "1");
-  std::env::remove_var(LEGACY_ENV);
-  spawn_and_wait();
-
-  // Legacy spelling.
-  std::env::remove_var(DISABLE_ENV);
-  std::env::set_var(LEGACY_ENV, "off");
-  spawn_and_wait();
-
-  match prev_disable {
-    Some(value) => std::env::set_var(DISABLE_ENV, value),
-    None => std::env::remove_var(DISABLE_ENV),
+    return;
   }
-  match prev_legacy {
-    Some(value) => std::env::set_var(LEGACY_ENV, value),
-    None => std::env::remove_var(LEGACY_ENV),
+
+  for mode in ["disable", "legacy"] {
+    let exe = std::env::current_exe().expect("current test exe path");
+    let mut cmd = Command::new(&exe);
+    cmd.env(CHILD_ENV, "1").env(MODE_ENV, mode);
+    match mode {
+      "disable" => {
+        cmd.env(DISABLE_ENV, "1").env_remove(LEGACY_ENV);
+      }
+      "legacy" => {
+        cmd.env_remove(DISABLE_ENV).env(LEGACY_ENV, "off");
+      }
+      _ => unreachable!(),
+    }
+    let output = cmd
+      // Run just this test in the child process.
+      .arg("--exact")
+      .arg(TEST_NAME)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn env opt-out test child process");
+    assert!(
+      output.status.success(),
+      "child process ({mode}) should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
   }
 }
 
@@ -159,9 +184,10 @@ fn appcontainer_spawn_can_execute_from_temp_dir() {
     .join(exe.file_name().expect("test exe should have a file name"));
   std::fs::copy(&exe, &copied).expect("copy test exe to temp dir");
 
+  const SMOKE_TEST_NAME: &str = concat!(module_path!(), "::appcontainer_child_smoke");
   let args = vec![
     OsString::from("--exact"),
-    OsString::from("appcontainer_child_smoke"),
+    OsString::from(SMOKE_TEST_NAME),
     OsString::from("--nocapture"),
   ];
 

@@ -4,13 +4,14 @@ use std::ffi::OsString;
 use std::net::{TcpListener, TcpStream};
 use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::ExitStatusExt;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess, WaitForSingleObject};
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+const FILE_NETWORK_TEST_NAME: &str = concat!(module_path!(), "::appcontainer_denies_filesystem_and_network");
+const JOB_KILL_TEST_NAME: &str =
+  concat!(module_path!(), "::job_object_kill_on_close_terminates_child");
 
 fn process_handle(process: &std::os::windows::io::OwnedHandle) -> HANDLE {
   process.as_raw_handle() as HANDLE
@@ -107,8 +108,6 @@ fn appcontainer_denies_filesystem_and_network() {
     return;
   }
 
-  let _env_guard = ENV_LOCK.lock().unwrap();
-
   let temp_dir = tempfile::tempdir().expect("create temp dir");
   let file_path = temp_dir.path().join("fastrender_windows_sandbox_probe.txt");
   std::fs::write(&file_path, "fastrender sandbox probe").expect("write probe file");
@@ -120,34 +119,18 @@ fn appcontainer_denies_filesystem_and_network() {
   let port = listener.local_addr().expect("listener addr").port();
 
   let exe = std::env::current_exe().expect("current test executable path");
-  let test_name = "appcontainer_denies_filesystem_and_network";
   let args = vec![
     OsString::from("--exact"),
-    OsString::from(test_name),
+    OsString::from(FILE_NETWORK_TEST_NAME),
     OsString::from("--nocapture"),
   ];
-  let prev_child = std::env::var_os(CHILD_ENV);
-  let prev_file = std::env::var_os(FILE_ENV);
-  let prev_port = std::env::var_os(PORT_ENV);
-  std::env::set_var(CHILD_ENV, "1");
-  std::env::set_var(FILE_ENV, file_path.as_os_str());
-  std::env::set_var(PORT_ENV, port.to_string());
-
-  let child =
-    fastrender::sandbox::windows::spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child process");
-
-  match prev_child {
-    Some(value) => std::env::set_var(CHILD_ENV, value),
-    None => std::env::remove_var(CHILD_ENV),
-  }
-  match prev_file {
-    Some(value) => std::env::set_var(FILE_ENV, value),
-    None => std::env::remove_var(FILE_ENV),
-  }
-  match prev_port {
-    Some(value) => std::env::set_var(PORT_ENV, value),
-    None => std::env::remove_var(PORT_ENV),
-  }
+  let child = {
+    let _child_env = crate::common::EnvVarGuard::set(CHILD_ENV, "1");
+    let _file_env = crate::common::EnvVarGuard::set(FILE_ENV, file_path.as_os_str());
+    let _port_env = crate::common::EnvVarGuard::set(PORT_ENV, port.to_string());
+    fastrender::sandbox::windows::spawn_sandboxed(&exe, &args, &[])
+      .expect("spawn sandboxed child process")
+  };
 
   // Keep the listener alive for the duration of the child probe so `ECONNREFUSED` isn't a false
   // positive.
@@ -174,27 +157,17 @@ fn job_object_kill_on_close_terminates_child() {
     }
   }
 
-  let _env_guard = ENV_LOCK.lock().unwrap();
-
   let exe = std::env::current_exe().expect("current test executable path");
-  let test_name = "job_object_kill_on_close_terminates_child";
   let args = vec![
     OsString::from("--exact"),
-    OsString::from(test_name),
+    OsString::from(JOB_KILL_TEST_NAME),
     OsString::from("--nocapture"),
   ];
-  let prev_child = std::env::var_os(CHILD_ENV);
-  std::env::set_var(CHILD_ENV, "1");
-  let fastrender::sandbox::windows::SandboxedChild {
-    process,
-    job,
-    ..
-  } = fastrender::sandbox::windows::spawn_sandboxed(&exe, &args, &[])
-    .expect("spawn sandboxed child process");
-  match prev_child {
-    Some(value) => std::env::set_var(CHILD_ENV, value),
-    None => std::env::remove_var(CHILD_ENV),
-  }
+  let fastrender::sandbox::windows::SandboxedChild { process, job, .. } = {
+    let _child_env = crate::common::EnvVarGuard::set(CHILD_ENV, "1");
+    fastrender::sandbox::windows::spawn_sandboxed(&exe, &args, &[])
+      .expect("spawn sandboxed child process")
+  };
 
   // Ensure the child is actually running (otherwise a crash could make this test pass trivially).
   std::thread::sleep(Duration::from_millis(200));

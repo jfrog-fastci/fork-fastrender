@@ -1,5 +1,6 @@
 //! Render tests consolidated from tests/render_*.rs
-
+ 
+mod animated_gif_animation_time;
 mod container_query_prepass_test;
 mod diagnostics_test;
 mod img_decoding_async;

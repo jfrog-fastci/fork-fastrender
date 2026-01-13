@@ -1,3 +1,5 @@
+//! OOPIF crash isolation integration test.
+
 use fastrender::debug::runtime::{set_runtime_toggles, RuntimeToggles};
 use fastrender::FastRender;
 use std::collections::HashMap;

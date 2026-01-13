@@ -1,5 +1,3 @@
-#![cfg(target_os = "linux")]
-
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::process::{Command, Stdio};
@@ -9,6 +7,7 @@ use fastrender::sandbox::linux_landlock;
 #[test]
 fn landlock_deny_all_blocks_etc_passwd() {
   const CHILD_ENV: &str = "FASTR_TEST_LANDLOCK_CHILD";
+  const TEST_NAME: &str = concat!(module_path!(), "::landlock_deny_all_blocks_etc_passwd");
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     if !std::path::Path::new("/etc/passwd").exists() {
@@ -130,11 +129,10 @@ fn landlock_deny_all_blocks_etc_passwd() {
   }
 
   let exe = std::env::current_exe().expect("current test exe path");
-  let test_name = "landlock_deny_all_blocks_etc_passwd";
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
     .arg("--exact")
-    .arg(test_name)
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .output()
     .expect("spawn child test process");
@@ -151,6 +149,10 @@ fn landlock_deny_all_allows_memfd_and_inherited_pipe() {
   const CHILD_ENV: &str = "FASTR_TEST_LANDLOCK_IPC_CHILD";
   const PIPE_READ_ENV: &str = "FASTR_TEST_LANDLOCK_PIPE_READ_FD";
   const PIPE_WRITE_ENV: &str = "FASTR_TEST_LANDLOCK_PIPE_WRITE_FD";
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::landlock_deny_all_allows_memfd_and_inherited_pipe"
+  );
 
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
@@ -267,7 +269,6 @@ fn landlock_deny_all_allows_memfd_and_inherited_pipe() {
   }
 
   let exe = std::env::current_exe().expect("current test exe path");
-  let test_name = "landlock_deny_all_allows_memfd_and_inherited_pipe";
   let mut child = Command::new(exe)
     .env(CHILD_ENV, "1")
     .env(PIPE_READ_ENV, read_fd.to_string())
@@ -276,7 +277,7 @@ fn landlock_deny_all_allows_memfd_and_inherited_pipe() {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped())
     .arg("--exact")
-    .arg(test_name)
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .spawn()
     .expect("spawn child test process");

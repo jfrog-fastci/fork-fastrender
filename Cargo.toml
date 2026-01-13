@@ -355,10 +355,6 @@ name = "browser"
 path = "src/bin/browser.rs"
 test = false
 
-[[test]]
-name = "animated_gif_animation_time"
-path = "tests/render/animated_gif_animation_time.rs"
-
 [[bench]]
 name = "selector_bloom_bench"
 harness = false

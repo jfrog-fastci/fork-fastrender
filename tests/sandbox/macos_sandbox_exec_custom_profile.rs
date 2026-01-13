@@ -8,6 +8,10 @@ use std::process::Stdio;
 const ENV_CHILD: &str = "FASTR_SANDBOX_EXEC_CUSTOM_PROFILE_CHILD";
 const ENV_SECRET_PATH: &str = "FASTR_SANDBOX_EXEC_SECRET_PATH";
 const ENV_PORT: &str = "FASTR_SANDBOX_EXEC_PORT";
+const TEST_NAME: &str = concat!(
+  module_path!(),
+  "::sandbox_exec_custom_profile_denies_file_and_network"
+);
 
 fn seatbelt_escape_string(value: &str) -> String {
   value.replace('\\', "\\\\").replace('"', "\\\"")
@@ -71,11 +75,10 @@ fn sandbox_exec_custom_profile_denies_file_and_network() {
   );
 
   let exe = std::env::current_exe().expect("current test exe");
-  let test_name = "sandbox_exec_custom_profile_denies_file_and_network";
   let mut cmd = SandboxExecCommand::new(
     SandboxExecProfile::Custom(profile),
     &exe,
-    ["--exact", test_name, "--nocapture"],
+    ["--exact", TEST_NAME, "--nocapture"],
   )
   .expect("build sandbox-exec command");
   cmd

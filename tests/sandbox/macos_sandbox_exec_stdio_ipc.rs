@@ -1,6 +1,6 @@
 //! macOS-only integration test asserting the `sandbox-exec` spawn path preserves stdio IPC.
 //!
-//! This is intentionally separate from the filesystem/network denial checks (see `tests/macos_sandbox_exec.rs`).
+//! This is intentionally separate from the filesystem/network denial checks (see `macos_sandbox_exec.rs`).
 
 #![cfg(target_os = "macos")]
 

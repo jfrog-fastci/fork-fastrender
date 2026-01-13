@@ -1,5 +1,3 @@
-#![cfg(target_os = "linux")]
-
 use std::process::Command;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -82,6 +80,10 @@ fn maybe_assert_syscall_fails_with_eperm(
 #[test]
 fn linux_seccomp_blocks_ptrace_and_unshare() {
   const CHILD_ENV: &str = "FASTR_TEST_LINUX_SECCOMP_HARDENING_CHILD";
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::linux_seccomp_blocks_ptrace_and_unshare"
+  );
 
   if std::env::var_os(CHILD_ENV).is_some() {
     let status = fastrender::sandbox::apply_renderer_sandbox(
@@ -206,7 +208,7 @@ fn linux_seccomp_blocks_ptrace_and_unshare() {
     // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
-    .arg("linux_seccomp_blocks_ptrace_and_unshare")
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .output()
     .expect("spawn child test process");

@@ -55,8 +55,9 @@ fn is_child(env_key: &str) -> bool {
 
 #[test]
 fn sandbox_sets_rlimit_core_to_zero() {
+  const TEST_NAME: &str = concat!(module_path!(), "::sandbox_sets_rlimit_core_to_zero_child");
   run_child(
-    "sandbox_sets_rlimit_core_to_zero_child",
+    TEST_NAME,
     "FASTR_SANDBOX_RLIMIT_CORE_CHILD",
   );
 }

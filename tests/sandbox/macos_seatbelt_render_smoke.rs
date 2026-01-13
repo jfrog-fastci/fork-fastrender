@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use fastrender::api::{FastRender, FastRenderConfig};
 use fastrender::resource::{FetchedResource, ResourceFetcher};
 use fastrender::sandbox;
@@ -26,11 +24,6 @@ fn sandboxed_render_smoke_seatbelt_profile() {
   const TEST_NAME: &str = stringify!(sandboxed_render_smoke_seatbelt_profile);
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
-    // Keep this smoke test lightweight: don't load large bundled emoji fonts and avoid spawning a
-    // large Rayon pool.
-    std::env::set_var("FASTR_BUNDLE_EMOJI_FONT", "0");
-    std::env::set_var("RAYON_NUM_THREADS", "1");
-
     // Apply the strictest built-in profile (`pure-computation`) so this smoke test fails if the
     // renderer starts depending on filesystem/network access inside the sandbox.
     sandbox::apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");

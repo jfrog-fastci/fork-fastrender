@@ -318,7 +318,7 @@ FastRender also has an integration test that asserts the **relaxed renderer sand
 system font discovery via `fontdb` (important for early bring-up when bundled fonts are not used):
 
 ```bash
-timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_sandbox_fontdb -- --nocapture
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_sandbox_fontdb -- --nocapture
 ```
 
 FastRender additionally ships macOS-only integration tests that exercise the renderer sandbox
@@ -326,13 +326,13 @@ profiles and spawn paths directly:
 
 ```bash
 # Strict/relaxed Seatbelt profile enforcement (`sandbox_init`).
-timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_renderer_sandbox -- --nocapture
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_renderer_sandbox -- --nocapture
 
 # `sandbox-exec` wrapper enforcement (sandbox applied before libtest starts).
-timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_sandbox_exec -- --nocapture
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_sandbox_exec -- --nocapture
 
 # Render smoke test: strict Seatbelt sandbox + bundled-only fonts + offline fetcher.
-timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 If your macOS environment does not have `timeout`, either install coreutils (`brew install

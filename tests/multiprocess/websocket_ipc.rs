@@ -1,3 +1,5 @@
+//! WebSocket IPC integration test.
+
 use fastrender::dom2;
 use fastrender::js::{
   install_window_websocket_ipc_bindings_with_guard, RunLimits, WebSocketIpcCommand, WebSocketIpcEvent,

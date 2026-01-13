@@ -8,6 +8,8 @@ const ROLE_ENV: &str = "FASTR_TEST_PDEATHSIG_ROLE";
 const ROLE_PARENT: &str = "parent";
 const ROLE_CHILD: &str = "child";
 
+const TEST_NAME: &str = concat!(module_path!(), "::sandbox_linux_pdeathsig_kills_orphaned_child");
+
 const CHILD_PID_PREFIX: &str = "FASTR_TEST_PDEATHSIG_CHILD_PID=";
 const READY_MARKER: &str = "FASTR_TEST_PDEATHSIG_READY";
 
@@ -244,11 +246,10 @@ fn child_main() {
 
 #[test]
 fn sandbox_linux_pdeathsig_kills_orphaned_child() {
-  let test_name = "sandbox_linux_pdeathsig_kills_orphaned_child";
   match std::env::var(ROLE_ENV).ok().as_deref() {
-    Some(ROLE_PARENT) => parent_main(test_name),
+    Some(ROLE_PARENT) => parent_main(TEST_NAME),
     Some(ROLE_CHILD) => child_main(),
     Some(other) => panic!("unknown {ROLE_ENV} value {other:?}"),
-    None => controller_main(test_name),
+    None => controller_main(TEST_NAME),
   }
 }

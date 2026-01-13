@@ -4,8 +4,6 @@
 //! launches a child test process wrapped in `/usr/bin/sandbox-exec` so the sandbox is applied
 //! *before* the Rust test harness starts.
 
-#![cfg(target_os = "macos")]
-
 use std::io;
 use std::net::TcpListener;
 use std::net::TcpStream;

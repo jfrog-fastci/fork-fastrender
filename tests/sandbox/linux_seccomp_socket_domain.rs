@@ -1,10 +1,12 @@
-#![cfg(target_os = "linux")]
-
 use std::process::Command;
 
 #[test]
 fn socket_domain_filter_allows_unix_denies_inet() {
   const CHILD_ENV: &str = "FASTR_TEST_SECCOMP_SOCKET_DOMAIN_CHILD";
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::socket_domain_filter_allows_unix_denies_inet"
+  );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     let status = fastrender::sandbox::apply_renderer_sandbox(
@@ -53,7 +55,7 @@ fn socket_domain_filter_allows_unix_denies_inet() {
     // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
-    .arg("socket_domain_filter_allows_unix_denies_inet")
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .output()
     .expect("spawn seccomp test child process");

@@ -575,16 +575,8 @@ jobs:
         run: |
           set -euo pipefail
           # Keep this job lightweight: do not enable browser_ui / GUI features.
-          # AppContainer spawn smoke: spawn a sandboxed child using the production launcher and
-          # exercise sandbox opt-out toggles.
-          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_sandbox_appcontainer_spawn -- --nocapture
-
-          # Security regression: ensure a sandboxed child cannot access the filesystem or make
-          # network connections (AppContainer), and that the JobObject kill-on-close limit works.
-          bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test windows_renderer_sandbox_test -- --nocapture
-
-          # Security regression: ensure a sandboxed child cannot OpenProcess() the parent with
-          # high-privilege access rights (PROCESS_VM_READ / PROCESS_DUP_HANDLE).
+          # AppContainer smoke + Windows sandbox security regressions live under the unified
+          # integration test harness (`tests/integration.rs::sandbox`).
           bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --test integration sandbox:: -- --nocapture
 
           # Job object regression tests: kill-on-close + active-process limit enforcement.
@@ -671,7 +663,7 @@ jobs:
           #
           # Keep this job lightweight: the sandbox checks do not require default features (AVIF,
           # preserve3d_warp, etc).
-          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib --test macos_renderer_sandbox --test macos_sandbox_exec --test macos_sandbox_exec_stdio_ipc --test macos_sandbox_fontdb --test macos_seatbelt_render_smoke sandbox
+          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib --test integration sandbox::
 
   # ===========================================================================
   # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)

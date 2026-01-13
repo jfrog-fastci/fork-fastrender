@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use std::process::Command;
 
 use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
@@ -7,7 +5,10 @@ use fastrender::sandbox::macos::{apply_renderer_sandbox, MacosSandboxMode};
 #[test]
 fn relaxed_sandbox_allows_fontdb_system_font_discovery() {
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_RELAXED_SANDBOX_FONTDB_CHILD";
-  const TEST_NAME: &str = stringify!(relaxed_sandbox_allows_fontdb_system_font_discovery);
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::relaxed_sandbox_allows_fontdb_system_font_discovery"
+  );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)

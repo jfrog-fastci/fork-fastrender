@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,6 +11,10 @@ const HOME_FILE_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_HOME_FILE_PATH";
 
 #[test]
 fn renderer_sandbox_profiles_enforce_policy() {
+  const TEST_NAME: &str = concat!(
+    module_path!(),
+    "::renderer_sandbox_profiles_enforce_policy"
+  );
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     run_child();
@@ -25,16 +27,13 @@ fn renderer_sandbox_profiles_enforce_policy() {
 
   for mode in ["pure", "relaxed"] {
     let exe = std::env::current_exe().expect("test exe path");
-    // Note: libtest `--exact` matches against the *function* name (integration test crate names are
-    // not included in the reported test names), so pass just the function identifier here.
-    let test_name = stringify!(renderer_sandbox_profiles_enforce_policy);
 
     let output = Command::new(&exe)
       .env(CHILD_ENV, "1")
       .env(MODE_ENV, mode)
       .env(HOME_FILE_ENV, &home_file_path)
       .arg("--exact")
-      .arg(test_name)
+      .arg(TEST_NAME)
       .arg("--nocapture")
       .output()
       .unwrap_or_else(|err| panic!("spawn child process: {err}"));

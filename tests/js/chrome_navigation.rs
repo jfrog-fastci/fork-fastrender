@@ -47,4 +47,3 @@ fn chrome_navigation_navigate_rejects_overlong_url_and_does_not_dispatch() {
     "overlong URL should not dispatch navigation"
   );
 }
-

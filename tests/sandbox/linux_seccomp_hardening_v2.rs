@@ -1,5 +1,3 @@
-#![cfg(target_os = "linux")]
-
 use std::process::Command;
 
 fn assert_syscall_fails_with_errno(name: &str, rc: libc::c_long, expected_errno: i32) {
@@ -25,6 +23,7 @@ fn is_seccomp_unsupported_error(err: &fastrender::sandbox::SandboxError) -> bool
 #[test]
 fn blocks_high_risk_syscalls() {
   const CHILD_ENV: &str = "FASTR_TEST_SECCOMP_HARDENING_V2_CHILD";
+  const TEST_NAME: &str = concat!(module_path!(), "::blocks_high_risk_syscalls");
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {
@@ -68,7 +67,7 @@ fn blocks_high_risk_syscalls() {
     // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
-    .arg("blocks_high_risk_syscalls")
+    .arg(TEST_NAME)
     .arg("--nocapture")
     .output()
     .expect("spawn child test process");

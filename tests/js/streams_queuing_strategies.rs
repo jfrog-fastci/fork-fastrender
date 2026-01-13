@@ -1,3 +1,5 @@
+//! Web Streams queuing strategy integration tests.
+
 use fastrender::js::{WindowRealm, WindowRealmConfig};
 use vm_js::{Value, VmError};
 
@@ -62,4 +64,3 @@ try {
 
   Ok(())
 }
-

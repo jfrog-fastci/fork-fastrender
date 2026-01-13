@@ -1,3 +1,5 @@
+//! Web Streams `tee()` integration tests.
+
 use fastrender::js::{WindowRealm, WindowRealmConfig};
 use vm_js::{Value, VmError};
 
@@ -63,4 +65,3 @@ globalThis.__result1 = null;
 
   Ok(())
 }
-
