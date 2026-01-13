@@ -3253,6 +3253,23 @@ impl Intrinsics {
         )?;
       }
 
+      // String.prototype.localeCompare
+      {
+        let locale_compare_s = scope.alloc_string("localeCompare")?;
+        scope.push_root(Value::String(locale_compare_s))?;
+        let key = PropertyKey::from_string(locale_compare_s);
+        let func = scope.alloc_native_function(string_prototype_locale_compare, None, locale_compare_s, 1)?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
       // String.prototype.toLowerCase
       {
         let to_lower_s = scope.alloc_string("toLowerCase")?;
