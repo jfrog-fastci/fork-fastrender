@@ -167,10 +167,17 @@ pub fn spawn_child_with_ipc(
 
 #[cfg(unix)]
 fn set_cloexec(fd: RawFd, cloexec: bool) -> io::Result<()> {
-  let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-  if flags == -1 {
-    return Err(io::Error::last_os_error());
-  }
+  let flags = loop {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags != -1 {
+      break flags;
+    }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(err);
+  };
 
   let mut new_flags = flags;
   if cloexec {
@@ -180,9 +187,16 @@ fn set_cloexec(fd: RawFd, cloexec: bool) -> io::Result<()> {
   }
 
   if new_flags != flags {
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, new_flags) };
-    if rc == -1 {
-      return Err(io::Error::last_os_error());
+    loop {
+      let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, new_flags) };
+      if rc != -1 {
+        break;
+      }
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
     }
   }
 

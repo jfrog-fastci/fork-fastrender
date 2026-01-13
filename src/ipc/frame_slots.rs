@@ -391,19 +391,32 @@ impl SharedMemory {
     // Apply required size-stability seals first; treat `F_SEAL_SEAL` as optional so a kernel that
     // can't lock the seal set still gets the SIGBUS protection.
     let required_seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
-    let rc = unsafe { libc::fcntl(shm.fd.as_raw_fd(), libc::F_ADD_SEALS, required_seals) };
-    if rc != 0 {
+    let required_ok = loop {
+      let rc = unsafe { libc::fcntl(shm.fd.as_raw_fd(), libc::F_ADD_SEALS, required_seals) };
+      if rc == 0 {
+        break true;
+      }
       let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
       match err.raw_os_error() {
-        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => break false,
         _ => return Err(Error::Io(err)),
       }
-    } else {
-      let rc = unsafe { libc::fcntl(shm.fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
-      if rc != 0 {
+    };
+    if required_ok {
+      loop {
+        let rc = unsafe { libc::fcntl(shm.fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+        if rc == 0 {
+          break;
+        }
         let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
         match err.raw_os_error() {
-          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => break,
           _ => return Err(Error::Io(err)),
         }
       }

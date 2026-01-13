@@ -132,15 +132,21 @@ pub fn validate_shm_fd(
 
 #[cfg(target_os = "linux")]
 fn get_and_validate_seals_linux(fd: BorrowedFd<'_>) -> Result<i32, ShmValidateError> {
-  // SAFETY: `fcntl` is called with a valid fd and command.
-  let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
-  if seals == -1 {
+  let seals = loop {
+    // SAFETY: `fcntl` is called with a valid fd and command.
+    let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals != -1 {
+      break seals;
+    }
     let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
     if err.raw_os_error() == Some(libc::EINVAL) {
       return Err(ShmValidateError::NotSealable);
     }
     return Err(ShmValidateError::GetSealsFailed { source: err });
-  }
+  };
 
   // Harden against post-validation truncation/extension (SIGBUS / logic bugs).
   let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;

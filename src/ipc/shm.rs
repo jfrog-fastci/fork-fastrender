@@ -505,9 +505,15 @@ mod linux {
       // Apply the required immutability seals first so they still take effect even if locking the
       // seal set (`F_SEAL_SEAL`) is unsupported/blocked by sandbox policy.
       let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
-      let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, required) };
-      if rc != 0 {
+      loop {
+        let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, required) };
+        if rc == 0 {
+          break;
+        }
         let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
         return match err.raw_os_error() {
           // Kernel doesn't support sealing or the file isn't sealable (older kernels / seccomp).
           Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => Ok(SealStatus::Unsupported),
@@ -516,11 +522,17 @@ mod linux {
       }
 
       // Best-effort defense-in-depth: lock the seal set.
-      let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
-      if rc != 0 {
+      loop {
+        let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+        if rc == 0 {
+          break;
+        }
         let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
         match err.raw_os_error() {
-          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => break,
           _ => return Err(ShmError::SealFailed { source: err }),
         }
       }
