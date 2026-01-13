@@ -1128,6 +1128,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   }
 
   fn visit_for_in(&mut self, ctx: &mut ControlContext, stmt: &ForInStmt) -> Result<(), VmError> {
+    self.for_in_of_decl_header_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
     self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
     self.visit_expr(ctx, &stmt.rhs)?;
     self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
@@ -1151,6 +1152,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         "for-await-of is only valid in async functions and modules",
       )?;
     }
+    self.for_in_of_decl_header_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
     self.visit_for_in_of_lhs(ctx, &stmt.lhs)?;
     self.visit_expr(ctx, &stmt.rhs)?;
     self.check_for_in_of_decl_head_early_errors(ctx, &stmt.lhs, &stmt.body.stx)?;
@@ -1177,6 +1179,94 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
         // Binding patterns: walk for nested patterns/defaults (if any).
         self.visit_pat(ctx, &pat.stx.pat, PatRole::Binding)
       }
+    }
+  }
+
+  fn for_in_of_decl_header_early_errors(
+    &mut self,
+    ctx: &ControlContext,
+    lhs: &ForInOfLhs,
+    body: &ForBody,
+  ) -> Result<(), VmError> {
+    let ForInOfLhs::Decl((mode, pat_decl)) = lhs else {
+      return Ok(());
+    };
+    if !matches!(
+      *mode,
+      VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
+    ) {
+      return Ok(());
+    }
+
+    // `BoundNames` of the ForDeclaration.
+    let mut bound_names: Vec<(String, Loc)> = Vec::new();
+    self.collect_bound_names_from_pat_budgeted(&pat_decl.stx.pat, &mut bound_names)?;
+
+    // Duplicate bound name early error (ECMA-262 `IsSimpleParameterList`-style validation).
+    let mut seen = HashSet::<String>::new();
+    for (name, loc) in &bound_names {
+      if !seen.insert(name.clone()) {
+        self.push_error(*loc, "Identifier has already been declared")?;
+      }
+    }
+
+    // In non-strict mode, the binding name "let" is disallowed in ForDeclarations.
+    if !ctx.strict {
+      for (name, loc) in &bound_names {
+        if name == "let" {
+          self.push_error(*loc, "Invalid binding identifier 'let'")?;
+        }
+      }
+    }
+
+    // VarDeclaredNames(Statement) collision early error: the loop body may not `var`-declare any
+    // name bound by the head ForDeclaration.
+    let mut var_names: HashSet<String> = HashSet::new();
+    for stmt in &body.body {
+      self.collect_var_declared_names_in_stmt(stmt, &mut var_names)?;
+    }
+    for (name, loc) in &bound_names {
+      if var_names.contains(name) {
+        self.push_error(*loc, "Identifier has already been declared")?;
+      }
+    }
+
+    Ok(())
+  }
+
+  fn collect_bound_names_from_pat_budgeted(
+    &mut self,
+    pat: &Node<Pat>,
+    out: &mut Vec<(String, Loc)>,
+  ) -> Result<(), VmError> {
+    // Budget `BoundNames` collection: patterns can be deeply nested and/or large, and early errors
+    // must not bypass fuel/interrupt checks by performing unbudgeted recursive traversals.
+    self.step()?;
+    match &*pat.stx {
+      Pat::Id(id) => {
+        out.push((id.stx.name.clone(), pat.loc));
+        Ok(())
+      }
+      Pat::Obj(obj) => {
+        for prop in &obj.stx.properties {
+          self.collect_bound_names_from_pat_budgeted(&prop.stx.target, out)?;
+        }
+        if let Some(rest) = &obj.stx.rest {
+          self.collect_bound_names_from_pat_budgeted(rest, out)?;
+        }
+        Ok(())
+      }
+      Pat::Arr(arr) => {
+        for elem in &arr.stx.elements {
+          let Some(elem) = elem else { continue };
+          self.collect_bound_names_from_pat_budgeted(&elem.target, out)?;
+        }
+        if let Some(rest) = &arr.stx.rest {
+          self.collect_bound_names_from_pat_budgeted(rest, out)?;
+        }
+        Ok(())
+      }
+      Pat::AssignTarget(_) => Ok(()),
     }
   }
 
