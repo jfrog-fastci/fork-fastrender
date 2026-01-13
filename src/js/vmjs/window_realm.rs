@@ -58768,6 +58768,127 @@ mod tests {
   }
 
   #[test]
+  fn tree_walker_navigation_methods_follow_dom_spec() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        function clear_children(node) {\n\
+          while (node.childNodes.length !== 0) {\n\
+            node.removeChild(node.childNodes[0]);\n\
+          }\n\
+        }\n\
+        clear_children(document.body);\n\
+\n\
+        const root = document.createElement('div');\n\
+        root.id = 'root';\n\
+        const a = document.createElement('span');\n\
+        a.id = 'a';\n\
+        const a1 = document.createElement('b');\n\
+        a1.id = 'a1';\n\
+        a.appendChild(a1);\n\
+        const b = document.createElement('span');\n\
+        b.id = 'b';\n\
+        const b1 = document.createElement('i');\n\
+        b1.id = 'b1';\n\
+        b.appendChild(b1);\n\
+        const c = document.createElement('span');\n\
+        c.id = 'c';\n\
+        const c1 = document.createElement('u');\n\
+        c1.id = 'c1';\n\
+        c.appendChild(c1);\n\
+        const c2 = document.createElement('u');\n\
+        c2.id = 'c2';\n\
+        c.appendChild(c2);\n\
+        root.appendChild(a);\n\
+        root.appendChild(b);\n\
+        root.appendChild(c);\n\
+        document.body.appendChild(root);\n\
+\n\
+        const filter = (node) => {\n\
+          if (node === a) return NodeFilter.FILTER_SKIP;\n\
+          if (node === b) return NodeFilter.FILTER_REJECT;\n\
+          if (node === c) return NodeFilter.FILTER_SKIP;\n\
+          if (node === c1) return NodeFilter.FILTER_REJECT;\n\
+          return NodeFilter.FILTER_ACCEPT;\n\
+        };\n\
+        const tw = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, filter);\n\
+\n\
+        const fc = tw.firstChild();\n\
+        if (fc !== a1) return 'firstChild';\n\
+        if (tw.currentNode !== a1) return 'current_after_firstChild';\n\
+\n\
+        const ns = tw.nextSibling();\n\
+        if (ns !== c2) return 'nextSibling:' + (ns && ns.id);\n\
+        if (tw.currentNode !== c2) return 'current_after_nextSibling';\n\
+\n\
+        const ps = tw.previousSibling();\n\
+        if (ps !== a1) return 'previousSibling:' + (ps && ps.id);\n\
+        if (tw.currentNode !== a1) return 'current_after_previousSibling';\n\
+\n\
+        const pn = tw.parentNode();\n\
+        if (pn !== root) return 'parentNode:' + (pn && pn.id);\n\
+        if (tw.currentNode !== root) return 'current_after_parentNode';\n\
+\n\
+        const lc = tw.lastChild();\n\
+        if (lc !== c2) return 'lastChild:' + (lc && lc.id);\n\
+        if (tw.currentNode !== c2) return 'current_after_lastChild';\n\
+\n\
+        const pv1 = tw.previousNode();\n\
+        if (pv1 !== a1) return 'previousNode1:' + (pv1 && pv1.id);\n\
+        const pv2 = tw.previousNode();\n\
+        if (pv2 !== root) return 'previousNode2:' + (pv2 && pv2.id);\n\
+        const pv3 = tw.previousNode();\n\
+        if (pv3 !== null) return 'previousNode3';\n\
+\n\
+        tw.currentNode = root;\n\
+        const nn1 = tw.nextNode();\n\
+        if (nn1 !== a1) return 'nextNode1:' + (nn1 && nn1.id);\n\
+        const nn2 = tw.nextNode();\n\
+        if (nn2 !== c2) return 'nextNode2:' + (nn2 && nn2.id);\n\
+        const nn3 = tw.nextNode();\n\
+        if (nn3 !== null) return 'nextNode3';\n\
+\n\
+        // Re-entrancy guard (InvalidStateError).\n\
+        const root2 = document.createElement('div');\n\
+        const x = document.createElement('span');\n\
+        root2.appendChild(x);\n\
+        document.body.appendChild(root2);\n\
+\n\
+        let did_reenter = false;\n\
+        let nested_threw = false;\n\
+        let nested_name = '';\n\
+        let tw2 = null;\n\
+        const filter2 = () => {\n\
+          if (!did_reenter) {\n\
+            did_reenter = true;\n\
+            try {\n\
+              tw2.nextNode();\n\
+            } catch (e) {\n\
+              nested_threw = true;\n\
+              nested_name = e.name;\n\
+            }\n\
+          }\n\
+          return NodeFilter.FILTER_ACCEPT;\n\
+        };\n\
+        tw2 = document.createTreeWalker(root2, NodeFilter.SHOW_ELEMENT, filter2);\n\
+        const n = tw2.nextNode();\n\
+        if (n !== x) return 'reenter_result';\n\
+        if (!did_reenter) return 'reenter_not_called';\n\
+        if (!nested_threw || nested_name !== 'InvalidStateError') return 'reenter_error:' + nested_name;\n\
+\n\
+        return 'ok';\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn node_iterator_instances_are_instanceof_node_iterator() -> Result<(), VmError> {
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
     let result = realm.exec_script(
