@@ -5659,8 +5659,9 @@ impl App {
           } else {
             format!("Open debug log ({} lines)", self.debug_log.len())
           };
-          resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+          resp.widget_info({
+            let label = a11y_label;
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
           });
           if resp.clicked() {
             self.debug_log_ui_open = true;
