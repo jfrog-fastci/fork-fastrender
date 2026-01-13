@@ -1053,6 +1053,8 @@ impl Intrinsics {
       vm.register_native_call(builtins::string_prototype_to_upper_case)?;
     let string_prototype_slice = vm.register_native_call(builtins::string_prototype_slice)?;
     let string_prototype_index_of = vm.register_native_call(builtins::string_prototype_index_of)?;
+    let string_prototype_last_index_of =
+      vm.register_native_call(builtins::string_prototype_last_index_of)?;
     let string_prototype_includes = vm.register_native_call(builtins::string_prototype_includes)?;
     let string_prototype_starts_with = vm.register_native_call(builtins::string_prototype_starts_with)?;
     let string_prototype_ends_with = vm.register_native_call(builtins::string_prototype_ends_with)?;
@@ -3003,12 +3005,12 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        string_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
       // String.prototype.indexOf
       {
@@ -3021,12 +3023,34 @@ impl Intrinsics {
         scope
           .heap_mut()
           .object_set_prototype(func, Some(function_prototype))?;
-      scope.define_property(
-        string_prototype,
-        key,
-        data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
+
+      // String.prototype.lastIndexOf
+      {
+        let last_index_of_s = scope.alloc_string("lastIndexOf")?;
+        scope.push_root(Value::String(last_index_of_s))?;
+        let key = PropertyKey::from_string(last_index_of_s);
+        let func = scope.alloc_native_function(
+          string_prototype_last_index_of,
+          None,
+          last_index_of_s,
+          1,
+        )?;
+        scope.push_root(Value::Object(func))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(func, Some(function_prototype))?;
+        scope.define_property(
+          string_prototype,
+          key,
+          data_desc(Value::Object(func), true, false, true),
+        )?;
+      }
 
       // String.prototype.includes
       {

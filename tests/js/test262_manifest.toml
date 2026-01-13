@@ -1615,33 +1615,27 @@ reason = "vm-js: RegExp semantics are still incomplete (e.g. v/d flags, unicode 
 # Remaining known failures under the above globs.
 [[expectations]]
 id = "built-ins/String/prototype/match/S15.5.4.10_A2_T10.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/S15.5.4.10_A2_T11.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/S15.5.4.10_A2_T15.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/S15.5.4.10_A2_T16.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/S15.5.4.10_A2_T8.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/S15.5.4.10_A2_T9.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-groups-properties.js"

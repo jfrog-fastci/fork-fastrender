@@ -15472,6 +15472,62 @@ pub fn string_prototype_index_of(
   Ok(Value::Number(-1.0))
 }
 
+/// `String.prototype.lastIndexOf` (ECMA-262) (minimal).
+pub fn string_prototype_last_index_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let s = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(s))?;
+
+  let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let search = scope.to_string(vm, host, hooks, search_value)?;
+  scope.push_root(Value::String(search))?;
+
+  let len = scope.heap().get_string(s)?.len_code_units();
+
+  // `position` is clamped to [0, len] (negative -> 0).
+  let position = args.get(1).copied().unwrap_or(Value::Undefined);
+  let pos = string_position_from_value(vm, &mut scope, host, hooks, position, len, len)?;
+
+  // Borrow code unit slices for the search. Avoid allocating intermediate vectors: these inputs
+  // can be attacker-controlled.
+  let (haystack, needle) = {
+    let haystack = scope.heap().get_string(s)?;
+    let needle = scope.heap().get_string(search)?;
+    (haystack.as_code_units(), needle.as_code_units())
+  };
+
+  // Empty needle: return the (clamped) position.
+  if needle.is_empty() {
+    return Ok(Value::Number(pos as f64));
+  }
+
+  if needle.len() > haystack.len() {
+    return Ok(Value::Number(-1.0));
+  }
+
+  // Search right-to-left, but do not start beyond the last position where the needle can fit.
+  let start = pos.min(haystack.len().saturating_sub(needle.len()));
+  for i in (0..=start).rev() {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    if &haystack[i..i + needle.len()] == needle {
+      return Ok(Value::Number(i as f64));
+    }
+  }
+
+  Ok(Value::Number(-1.0))
+}
+
 /// `String.prototype.includes` (ECMA-262) (minimal).
 pub fn string_prototype_includes(
   vm: &mut Vm,

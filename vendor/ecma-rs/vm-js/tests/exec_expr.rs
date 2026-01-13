@@ -736,6 +736,28 @@ fn string_prototype_index_of_is_generic_and_coerces_position() {
 }
 
 #[test]
+fn string_prototype_last_index_of_works() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#""abcd".lastIndexOf("bc")===1 && "abcd".lastIndexOf("x")===-1 && "abcd".lastIndexOf("", 2)===2 && "ab".lastIndexOf("a", -1)===0 && "ababa".lastIndexOf("aba")===2 && "ababa".lastIndexOf("aba", 1)===0"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn string_prototype_last_index_of_is_generic_and_coerces_position() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"var o={toString:function(){return "ab";}}; var pos={valueOf:function(){return 1;}}; String.prototype.lastIndexOf.call(o,"b",pos)===1 && String.prototype.lastIndexOf.call(123,"2")===1"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_prototype_includes_works_and_is_generic() {
   let mut rt = new_runtime();
   let value = rt
