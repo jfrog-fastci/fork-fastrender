@@ -926,14 +926,14 @@ fn bench_grid_spanning_distribution_hotspot(c: &mut Criterion) {
   // This hotspot is a bit heavier than the other microbenches. Bump the measurement window so
   // Criterion doesn't warn about not fitting 10 samples, while still keeping the overall suite
   // quick to run.
-  group.measurement_time(Duration::from_millis(1_200));
+  group.measurement_time(Duration::from_millis(1_500));
   group.sampling_mode(SamplingMode::Flat);
   group.bench_function("grid_spanning_distribution_hotspot", |b| {
     b.iter(|| {
       let _taffy_perf_guard = TaffyPerfCountersGuard::new();
       let fragments = engine
-       .layout_tree(black_box(&box_tree))
-       .expect("grid layout should succeed");
+        .layout_tree(black_box(&box_tree))
+        .expect("grid layout should succeed");
       let perf = taffy_perf_counters();
       black_box((fragments, perf.grid_measure_calls, perf.grid_compute_ns));
     })
