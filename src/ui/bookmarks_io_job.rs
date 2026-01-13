@@ -22,6 +22,12 @@ pub enum BookmarksIoJob {
     path: String,
     rx: mpsc::Receiver<BookmarksIoJobUpdate>,
   },
+  ExportingJson {
+    rx: mpsc::Receiver<BookmarksIoJobUpdate>,
+  },
+  ImportingJson {
+    rx: mpsc::Receiver<BookmarksIoJobUpdate>,
+  },
   Done,
   Error {
     error: String,
@@ -41,8 +47,16 @@ pub enum BookmarksIoJobUpdate {
     /// `Err` is the full UI-facing error string (`state.error`).
     result: Result<(), String>,
   },
+  ExportJsonFinished {
+    /// `Err` is the full UI-facing error string (`state.error`).
+    result: Result<String, String>,
+  },
   ImportFinished {
     path: String,
+    /// `Err` is the full UI-facing error string (`state.error`).
+    result: Result<(BookmarkStore, BookmarkStoreMigration), String>,
+  },
+  ImportJsonFinished {
     /// `Err` is the full UI-facing error string (`state.error`).
     result: Result<(BookmarkStore, BookmarkStoreMigration), String>,
   },
@@ -50,7 +64,13 @@ pub enum BookmarksIoJobUpdate {
 
 impl BookmarksIoJob {
   pub fn is_busy(&self) -> bool {
-    matches!(self, Self::Exporting { .. } | Self::Importing { .. })
+    matches!(
+      self,
+      Self::Exporting { .. }
+        | Self::Importing { .. }
+        | Self::ExportingJson { .. }
+        | Self::ImportingJson { .. }
+    )
   }
 
   pub fn is_exporting(&self) -> bool {
@@ -59,6 +79,14 @@ impl BookmarksIoJob {
 
   pub fn is_importing(&self) -> bool {
     matches!(self, Self::Importing { .. })
+  }
+
+  pub fn is_exporting_json(&self) -> bool {
+    matches!(self, Self::ExportingJson { .. })
+  }
+
+  pub fn is_importing_json(&self) -> bool {
+    matches!(self, Self::ImportingJson { .. })
   }
 
   pub fn start_export(&mut self, path: String, store: BookmarkStore) -> Result<(), String> {
@@ -84,6 +112,30 @@ impl BookmarksIoJob {
       })?;
 
     *self = Self::Exporting { path, rx };
+    Ok(())
+  }
+
+  pub fn start_export_json(&mut self, store: BookmarkStore) -> Result<(), String> {
+    if self.is_busy() {
+      return Err("bookmarks IO job already running".to_string());
+    }
+
+    let (tx, rx) = mpsc::channel::<BookmarksIoJobUpdate>();
+
+    std::thread::Builder::new()
+      .name("fastr_bookmarks_export_json".to_string())
+      .spawn(move || {
+        let result = serde_json::to_string_pretty(&store)
+          .map_err(|err| format!("Failed to export bookmarks: {err}"));
+        let _ = tx.send(BookmarksIoJobUpdate::ExportJsonFinished { result });
+      })
+      .map_err(|err| {
+        format!(
+          "Failed to export bookmarks: failed to spawn worker thread: {err}"
+        )
+      })?;
+
+    *self = Self::ExportingJson { rx };
     Ok(())
   }
 
@@ -115,6 +167,32 @@ impl BookmarksIoJob {
       })?;
 
     *self = Self::Importing { path, rx };
+    Ok(())
+  }
+
+  pub fn start_import_json(&mut self, json: String) -> Result<(), String> {
+    if self.is_busy() {
+      return Err("bookmarks IO job already running".to_string());
+    }
+
+    let (tx, rx) = mpsc::channel::<BookmarksIoJobUpdate>();
+
+    std::thread::Builder::new()
+      .name("fastr_bookmarks_import_json".to_string())
+      .spawn(move || {
+        let result = match BookmarkStore::from_json_str_migrating(&json) {
+          Ok((imported, migration)) => Ok((imported, migration)),
+          Err(err) => Err(format!("Failed to import bookmarks: {err:?}")),
+        };
+        let _ = tx.send(BookmarksIoJobUpdate::ImportJsonFinished { result });
+      })
+      .map_err(|err| {
+        format!(
+          "Failed to import bookmarks: failed to spawn worker thread: {err}"
+        )
+      })?;
+
+    *self = Self::ImportingJson { rx };
     Ok(())
   }
 
@@ -164,6 +242,48 @@ impl BookmarksIoJob {
           *self = Self::Error { error: err.clone() };
           Some(BookmarksIoJobUpdate::ImportFinished {
             path,
+            result: Err(err),
+          })
+        }
+      },
+      Self::ExportingJson { rx } => match rx.try_recv() {
+        Ok(update) => {
+          if let BookmarksIoJobUpdate::ExportJsonFinished { result: Err(err) } = &update {
+            *self = Self::Error { error: err.clone() };
+          } else {
+            *self = Self::Done;
+          }
+          Some(update)
+        }
+        Err(mpsc::TryRecvError::Empty) => {
+          *self = Self::ExportingJson { rx };
+          None
+        }
+        Err(mpsc::TryRecvError::Disconnected) => {
+          let err = "Bookmarks JSON export job disconnected.".to_string();
+          *self = Self::Error { error: err.clone() };
+          Some(BookmarksIoJobUpdate::ExportJsonFinished {
+            result: Err(err),
+          })
+        }
+      },
+      Self::ImportingJson { rx } => match rx.try_recv() {
+        Ok(update) => {
+          if let BookmarksIoJobUpdate::ImportJsonFinished { result: Err(err) } = &update {
+            *self = Self::Error { error: err.clone() };
+          } else {
+            *self = Self::Done;
+          }
+          Some(update)
+        }
+        Err(mpsc::TryRecvError::Empty) => {
+          *self = Self::ImportingJson { rx };
+          None
+        }
+        Err(mpsc::TryRecvError::Disconnected) => {
+          let err = "Bookmarks JSON import job disconnected.".to_string();
+          *self = Self::Error { error: err.clone() };
+          Some(BookmarksIoJobUpdate::ImportJsonFinished {
             result: Err(err),
           })
         }
@@ -293,6 +413,63 @@ mod tests {
         assert!(err.contains("Failed to import bookmarks"));
       }
       other => panic!("expected import error, got {other:?}"),
+    }
+    assert!(matches!(job, BookmarksIoJob::Error { .. }));
+  }
+
+  #[test]
+  fn export_json_job_serializes_store_and_reports_success() {
+    let mut store = BookmarkStore::default();
+    assert!(store.toggle("https://example.com/", Some("Example")));
+
+    let mut job = BookmarksIoJob::default();
+    job.start_export_json(store.clone()).unwrap();
+
+    let update = wait_for_update(&mut job);
+    let json = match update {
+      BookmarksIoJobUpdate::ExportJsonFinished { result: Ok(json) } => json,
+      other => panic!("expected export json completion, got {other:?}"),
+    };
+    assert!(matches!(job, BookmarksIoJob::Done));
+
+    let (decoded, migration) = BookmarkStore::from_json_str_migrating(&json).unwrap();
+    assert_eq!(migration, BookmarkStoreMigration::None);
+    assert_eq!(decoded, store);
+  }
+
+  #[test]
+  fn import_json_job_parses_json_and_reports_success() {
+    let mut expected = BookmarkStore::default();
+    assert!(expected.toggle("https://a.example/", Some("A")));
+    assert!(expected.toggle("https://b.example/", Some("B")));
+    let json = serde_json::to_string_pretty(&expected).unwrap();
+
+    let mut job = BookmarksIoJob::default();
+    job.start_import_json(json).unwrap();
+
+    let update = wait_for_update(&mut job);
+    let (imported, migration) = match update {
+      BookmarksIoJobUpdate::ImportJsonFinished {
+        result: Ok((store, migration)),
+      } => (store, migration),
+      other => panic!("expected import json completion, got {other:?}"),
+    };
+    assert_eq!(migration, BookmarkStoreMigration::None);
+    assert_eq!(imported, expected);
+    assert!(matches!(job, BookmarksIoJob::Done));
+  }
+
+  #[test]
+  fn import_json_job_reports_failure() {
+    let mut job = BookmarksIoJob::default();
+    job.start_import_json("not valid json".to_string()).unwrap();
+
+    let update = wait_for_update(&mut job);
+    match update {
+      BookmarksIoJobUpdate::ImportJsonFinished { result: Err(err) } => {
+        assert!(err.contains("Failed to import bookmarks"));
+      }
+      other => panic!("expected import json error, got {other:?}"),
     }
     assert!(matches!(job, BookmarksIoJob::Error { .. }));
   }

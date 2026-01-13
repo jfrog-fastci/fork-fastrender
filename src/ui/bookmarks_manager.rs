@@ -98,7 +98,12 @@ impl BookmarksManagerState {
     self.editing_bookmark = None;
   }
 
-  fn poll_io_job(&mut self, store: &mut BookmarkStore, out: &mut BookmarksManagerOutput) {
+  fn poll_io_job(
+    &mut self,
+    ctx: &egui::Context,
+    store: &mut BookmarkStore,
+    out: &mut BookmarksManagerOutput,
+  ) {
     let Some(update) = self.io_job.poll() else {
       return;
     };
@@ -108,6 +113,17 @@ impl BookmarksManagerState {
         Ok(()) => {
           self.error = None;
           self.message = Some(format!("Exported bookmarks to {}.", path));
+        }
+        Err(err) => {
+          self.error = Some(err);
+        }
+      },
+      BookmarksIoJobUpdate::ExportJsonFinished { result } => match result {
+        Ok(json) => {
+          self.export_json = Some(json.clone());
+          ctx.output_mut(|o| o.copied_text = json);
+          self.error = None;
+          self.message = Some("Exported bookmarks JSON copied to clipboard.".to_string());
         }
         Err(err) => {
           self.error = Some(err);
@@ -123,6 +139,28 @@ impl BookmarksManagerState {
               out.request_flush = true;
               self.error = None;
               self.message = Some(format!("Imported bookmarks from file ({migration:?})."));
+              self.import_json.clear();
+              self.clear_transient();
+            }
+            Err(err) => {
+              self.error = Some(format!("Failed to import bookmarks: {err:?}"));
+            }
+          }
+        }
+        Err(err) => {
+          self.error = Some(err);
+        }
+      },
+      BookmarksIoJobUpdate::ImportJsonFinished { result } => match result {
+        Ok((imported, migration)) => {
+          let delta = BookmarkDelta::ReplaceAll(imported);
+          match store.apply_delta(&delta) {
+            Ok(()) => {
+              out.bookmark_deltas.push(delta);
+              out.changed = true;
+              out.request_flush = true;
+              self.error = None;
+              self.message = Some(format!("Imported bookmarks from JSON ({migration:?})."));
               self.import_json.clear();
               self.clear_transient();
             }
@@ -255,7 +293,7 @@ pub fn bookmarks_manager_side_panel(
   folder_cache.ensure_up_to_date(store);
 
   // Poll import/export background jobs before building UI.
-  state.poll_io_job(store, &mut out);
+  state.poll_io_job(ctx, store, &mut out);
 
   // While an IO job is active, keep the UI repainting so the "Working…" indicator animates and we
   // can pick up completion without requiring additional user input.
@@ -353,18 +391,21 @@ pub fn bookmarks_manager_side_panel(
 
         section_card(ui, "Export", |ui| {
           ui.horizontal_wrapped(|ui| {
-            if ui.button("Copy JSON to clipboard").clicked() {
-              match serde_json::to_string_pretty(store) {
-                Ok(json) => {
-                  state.export_json = Some(json.clone());
-                  ctx.output_mut(|o| o.copied_text = json);
-                  state.error = None;
-                  state.message = Some("Exported bookmarks JSON copied to clipboard.".to_string());
-                }
-                Err(err) => {
-                  state.error = Some(format!("Failed to export bookmarks: {err}"));
-                }
+            let export_json_btn = ui.add_enabled(
+              !state.io_job.is_busy(),
+              egui::Button::new("Copy JSON to clipboard"),
+            );
+            if export_json_btn.clicked() {
+              if let Err(err) = state.io_job.start_export_json(store.clone()) {
+                state.error = Some(err);
               }
+            }
+            if state.io_job.is_exporting_json() {
+              ui.label(
+                egui::RichText::new("Working…")
+                  .small()
+                  .color(ui.visuals().weak_text_color()),
+              );
             }
             if let Some(json) = state.export_json.as_ref() {
               if ui.button("Copy last export").clicked() {
@@ -530,29 +571,22 @@ pub fn bookmarks_manager_side_panel(
           }
 
           ui.horizontal_wrapped(|ui| {
-            if ui.button("Import").clicked() {
-              match BookmarkStore::from_json_str_migrating(&state.import_json) {
-                Ok((imported, migration)) => {
-                  let delta = BookmarkDelta::ReplaceAll(imported);
-                  match store.apply_delta(&delta) {
-                    Ok(()) => {
-                      out.bookmark_deltas.push(delta);
-                      out.changed = true;
-                      out.request_flush = true;
-                      state.error = None;
-                      state.message = Some(format!("Imported bookmarks ({migration:?})."));
-                      state.import_json.clear();
-                      state.clear_transient();
-                    }
-                    Err(err) => {
-                      state.error = Some(format!("Failed to import bookmarks: {err:?}"));
-                    }
-                  }
-                }
-                Err(err) => {
-                  state.error = Some(format!("Failed to import bookmarks: {err:?}"));
-                }
+            let import_btn = ui.add_enabled(!state.io_job.is_busy(), egui::Button::new("Import"));
+            if import_btn.clicked() {
+              if state.import_json.trim().is_empty() {
+                state.error = Some("Import JSON is empty.".to_string());
+              } else if let Err(err) =
+                state.io_job.start_import_json(state.import_json.clone())
+              {
+                state.error = Some(err);
               }
+            }
+            if state.io_job.is_importing_json() {
+              ui.label(
+                egui::RichText::new("Working…")
+                  .small()
+                  .color(ui.visuals().weak_text_color()),
+              );
             }
             if ui.button("Clear").clicked() {
               state.import_json.clear();
