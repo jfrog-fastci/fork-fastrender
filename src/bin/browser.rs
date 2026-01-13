@@ -123,7 +123,6 @@ fn maybe_play_startup_test_tone() {
     drop(backend);
   });
 }
-
 #[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PageExportKind {
@@ -173,7 +172,6 @@ fn native_save_dialog_outcome(
     Err(_) => NativeSaveDialogOutcome::FallbackToInApp,
   }
 }
-
 // Structured JSONL performance logging used by the windowed browser UI.
 //
 // Kept outside the `browser_ui` feature gate so unit tests can validate schema emission without
@@ -6608,6 +6606,91 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   #[cfg(feature = "audio_cpal")]
   maybe_play_startup_test_tone();
 
+  let hud_enabled = browser_hud_enabled_from_cli_or_env(
+    cli.hud,
+    cli.no_hud,
+    std::env::var(ENV_BROWSER_HUD).ok().as_deref(),
+  );
+
+  let perf_log_config = perf_log_config_from_cli_or_env(
+    cli.perf_log,
+    cli.perf_log_out.as_ref(),
+    std::env::var(ENV_PERF_LOG).ok().as_deref(),
+    std::env::var(ENV_PERF_LOG_OUT).ok().as_deref(),
+  );
+  let perf_log_out = perf_log_config
+    .out_path
+    .as_ref()
+    .map(|path| path.display().to_string());
+  let perf_log_writer = if perf_log_config.enabled {
+    let sink: Box<dyn std::io::Write> = if let Some(path) = perf_log_config.out_path.clone() {
+      let open = (|| -> std::io::Result<std::fs::File> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+          std::fs::create_dir_all(parent)?;
+        }
+        std::fs::File::create(&path)
+      })();
+      match open {
+        Ok(file) => Box::new(file),
+        Err(err) => {
+          eprintln!(
+            "warning: failed to open perf log output {} ({err}); falling back to stdout",
+            path.display()
+          );
+          Box::new(std::io::stdout())
+        }
+      }
+    } else {
+      Box::new(std::io::stdout())
+    };
+
+    Some(std::rc::Rc::new(std::cell::RefCell::new(
+      perf_log::JsonlPerfWriter::new(perf_log_start, std::io::BufWriter::new(sink)),
+    )))
+  } else {
+    None
+  };
+  let perf_log_enabled = perf_log_writer.is_some();
+  let perf_log_cpu_start_ms = perf_log_enabled.then(perf_log::process_cpu_time_ms).flatten();
+
+  if let Some(writer) = perf_log_writer.as_ref() {
+    let trace_out = std::env::var_os(ENV_BROWSER_TRACE_OUT)
+      .or_else(|| std::env::var_os(ENV_PERF_TRACE_OUT))
+      .and_then(|raw| {
+        if raw.to_string_lossy().trim().is_empty() {
+          None
+        } else {
+          Some(raw.to_string_lossy().to_string())
+        }
+      });
+    let rayon_threads = std::env::var_os("RAYON_NUM_THREADS")
+      .and_then(|raw| raw.to_string_lossy().trim().parse::<u32>().ok());
+
+    let event = perf_log::PerfEvent::RunStart {
+      schema_version: perf_log::SCHEMA_VERSION,
+      t_ms: 0,
+      pid: std::process::id(),
+      start_unix_ms: perf_log::unix_ms_now(),
+      build: perf_log::BuildInfo::current(),
+      config: perf_log::RunConfig {
+        hud_enabled,
+        perf_log_enabled: true,
+        trace_enabled: trace_out.is_some(),
+        trace_out,
+        rayon_threads,
+        resource_policy: Some(perf_log::ResourcePolicySnapshot::from_policy(
+          &fastrender::ResourcePolicy::default(),
+        )),
+        perf_log_out: perf_log_out.clone(),
+      },
+    };
+
+    if let Ok(mut writer) = writer.try_borrow_mut() {
+      writer.emit(&event);
+      writer.flush();
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Crash/unresponsive testing knobs (CLI/env)
   // ---------------------------------------------------------------------------
@@ -6818,48 +6901,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       perf_log_writer.clone(),
     );
   }
-
-  let hud_enabled = browser_hud_enabled_from_cli_or_env(
-    cli.hud,
-    cli.no_hud,
-    std::env::var(ENV_BROWSER_HUD).ok().as_deref(),
-  );
-
-  let perf_log_config = perf_log_config_from_cli_or_env(
-    cli.perf_log,
-    cli.perf_log_out.as_ref(),
-    std::env::var(ENV_PERF_LOG).ok().as_deref(),
-    std::env::var(ENV_PERF_LOG_OUT).ok().as_deref(),
-  );
-  let perf_log_writer = if perf_log_config.enabled {
-    let sink: Box<dyn std::io::Write> = if let Some(path) = perf_log_config.out_path {
-      let open = (|| -> std::io::Result<std::fs::File> {
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-          std::fs::create_dir_all(parent)?;
-        }
-        std::fs::File::create(&path)
-      })();
-      match open {
-        Ok(file) => Box::new(file),
-        Err(err) => {
-          eprintln!(
-            "warning: failed to open perf log output {} ({err}); falling back to stdout",
-            path.display()
-          );
-          Box::new(std::io::stdout())
-        }
-      }
-    } else {
-      Box::new(std::io::stdout())
-    };
-
-    Some(std::rc::Rc::new(std::cell::RefCell::new(
-      perf_log::JsonlPerfWriter::new(perf_log_start, std::io::BufWriter::new(sink)),
-    )))
-  } else {
-    None
-  };
-  let perf_log_enabled = perf_log_writer.is_some();
 
   if cli.js_enabled {
     eprintln!(
@@ -7733,6 +7774,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut profile_autosave_flush_tracker =
     ProfileAutosaveFlushTracker::new(PROFILE_AUTOSAVE_FLUSH_TIMEOUT);
 
+  let mut perf_log_closed_frames_presented: u64 = 0;
+  let mut perf_log_closed_input_events: u64 = 0;
+  let mut perf_log_closed_idle_frames: u64 = 0;
+  let mut perf_log_closed_dropped_frames: u64 = 0;
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
     let _ = &session_lock;
@@ -7766,6 +7811,62 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
     if matches!(event, Event::LoopDestroyed) {
+      if let Some(writer) = perf_log_writer.as_ref() {
+        let now = std::time::Instant::now();
+        let t_ms = now
+          .saturating_duration_since(perf_log_start)
+          .as_millis()
+          .min(u128::from(u64::MAX)) as u64;
+
+        let frames_presented = perf_log_closed_frames_presented.saturating_add(
+          windows
+            .values()
+            .filter_map(|win| win.app.perf_log.as_ref().map(|p| p.frames_presented_total))
+            .sum::<u64>(),
+        );
+        let input_events = perf_log_closed_input_events.saturating_add(
+          windows
+            .values()
+            .filter_map(|win| win.app.perf_log.as_ref().map(|p| p.input_events_total))
+            .sum::<u64>(),
+        );
+        let idle_frames = perf_log_closed_idle_frames.saturating_add(
+          windows
+            .values()
+            .filter_map(|win| win.app.idle_repaint_monitor.as_ref().map(|m| m.idle_frames_total))
+            .sum::<u64>(),
+        );
+        let dropped_frames = perf_log_closed_dropped_frames.saturating_add(
+          windows
+            .values()
+            .map(|win| win.app.pending_frame_uploads.dropped_frames())
+            .sum::<u64>(),
+        );
+
+        let cpu_time_ms = match (perf_log_cpu_start_ms, perf_log::process_cpu_time_ms()) {
+          (Some(start), Some(end)) => Some(end.saturating_sub(start)),
+          _ => None,
+        };
+        let rss_bytes = fastrender::memory::current_rss_bytes();
+
+        let event = perf_log::PerfEvent::RunEnd {
+          schema_version: perf_log::SCHEMA_VERSION,
+          t_ms,
+          frames_presented,
+          idle_frames,
+          input_events,
+          dropped_frames: Some(dropped_frames),
+          elapsed_ms: t_ms,
+          cpu_time_ms,
+          rss_bytes,
+        };
+
+        if let Ok(mut writer) = writer.try_borrow_mut() {
+          writer.emit(&event);
+          writer.flush();
+        }
+      }
+
       let active_window_index = active_window_id
         .and_then(|id| window_order.iter().position(|other| *other == id))
         .unwrap_or(0)
@@ -7960,6 +8061,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           if windows.len() <= 1 {
             *control_flow = ControlFlow::Exit;
           } else if let Some(win) = windows.remove(&window_id) {
+            if let Some(perf) = win.app.perf_log.as_ref() {
+              perf_log_closed_frames_presented = perf_log_closed_frames_presented
+                .saturating_add(perf.frames_presented_total);
+              perf_log_closed_input_events = perf_log_closed_input_events
+                .saturating_add(perf.input_events_total);
+            }
+            if let Some(monitor) = win.app.idle_repaint_monitor.as_ref() {
+              perf_log_closed_idle_frames =
+                perf_log_closed_idle_frames.saturating_add(monitor.idle_frames_total);
+            }
+            perf_log_closed_dropped_frames = perf_log_closed_dropped_frames
+              .saturating_add(win.app.pending_frame_uploads.dropped_frames());
+
             window_order.retain(|id| *id != window_id);
             if active_window_id == Some(window_id) {
               active_window_id = window_order.last().copied();
@@ -10238,14 +10352,14 @@ fn run_headless_smoke_mode(
     let event = perf_log::PerfEvent::Frame {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms,
-      window_id: "headless",
+      window_id: "headless".into(),
       active_tab_id: None,
       ui_frame_ms: 0.0,
       fps: None,
       window_focused: false,
       window_occluded: false,
       window_minimized: false,
-      breakdown: UiFrameBreakdownMs::default(),
+      breakdown: perf_log::UiFrameBreakdownMs::default(),
     };
     writer.borrow_mut().emit(&event);
   }
@@ -12089,14 +12203,12 @@ impl IdleRepaintMonitor {
         self.last_perf_log = Some(now);
         let mut writer = writer.borrow_mut();
         let t_ms = writer.ms_since_start(now);
-        let rolling_window_ms = Self::IDLE_WINDOW
-          .as_millis()
-          .min(u128::from(u64::MAX)) as u64;
+        let rolling_window_ms = Self::IDLE_WINDOW.as_millis().min(u128::from(u64::MAX)) as u64;
         let idle_frames_window = u64::try_from(self.idle_frame_times.len()).unwrap_or(u64::MAX);
         writer.emit(&perf_log::PerfEvent::IdleSample {
           schema_version: perf_log::SCHEMA_VERSION,
           t_ms,
-          window_id: self.window_id.as_str(),
+          window_id: self.window_id.as_str().into(),
           rolling_window_ms,
           idle_fps: self.idle_frames_per_sec,
           idle_frames_total: self.idle_frames_total,
@@ -12247,7 +12359,7 @@ impl ProcessCpuSampler {
       let event = perf_log::PerfEvent::CpuSummary {
         schema_version: perf_log::SCHEMA_VERSION,
         ts_ms: writer.ms_since_start(now),
-        window_id: "process",
+        window_id: "process".into(),
         cpu_time_ms_total: total_ms,
         cpu_percent_recent: percent,
       };
@@ -12290,8 +12402,8 @@ impl UiFrameBreakdown {
     duration_to_ms(self.sum_known())
   }
 
-  fn as_ms(&self) -> UiFrameBreakdownMs {
-    UiFrameBreakdownMs {
+  fn as_ms(&self) -> perf_log::UiFrameBreakdownMs {
+    perf_log::UiFrameBreakdownMs {
       worker_msgs_ms: duration_to_ms(self.worker_msgs),
       upload_ms: duration_to_ms(self.upload),
       egui_ms: duration_to_ms(self.egui),
@@ -12302,9 +12414,6 @@ impl UiFrameBreakdown {
     }
   }
 }
-
-#[cfg(any(test, feature = "browser_ui"))]
-type UiFrameBreakdownMs = perf_log::UiFrameBreakdownMs;
 
 #[cfg(any(test, feature = "browser_ui"))]
 fn duration_to_ms(duration: std::time::Duration) -> f64 {
@@ -12398,7 +12507,7 @@ impl ProcessRssSampler {
       let event = perf_log::PerfEvent::MemorySummary {
         schema_version: perf_log::SCHEMA_VERSION,
         ts_ms: writer.ms_since_start(now),
-        window_id: "process",
+        window_id: "process".into(),
         rss_bytes,
         rss_mb,
       };
@@ -12673,6 +12782,8 @@ struct PerfWindowLog {
   pending_resize: Option<PendingPerfResize>,
   nav_seqno: std::collections::HashMap<fastrender::ui::TabId, u64>,
   pending_nav: std::collections::HashMap<fastrender::ui::TabId, PendingPerfNavigation>,
+  frames_presented_total: u64,
+  input_events_total: u64,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -12696,6 +12807,8 @@ impl PerfWindowLog {
       pending_resize: None,
       nav_seqno: std::collections::HashMap::new(),
       pending_nav: std::collections::HashMap::new(),
+      frames_presented_total: 0,
+      input_events_total: 0,
     }
   }
 
@@ -12708,6 +12821,7 @@ impl PerfWindowLog {
   }
 
   fn record_input(&mut self, kind: perf_log::InputKind, at: std::time::Instant) {
+    self.input_events_total = self.input_events_total.saturating_add(1);
     match kind {
       perf_log::InputKind::Keyboard => self.pending_keyboard.record(at),
       perf_log::InputKind::MouseWheel => self.pending_mouse_wheel.record(at),
@@ -12731,7 +12845,7 @@ impl PerfWindowLog {
     let event = perf_log::PerfEvent::TabSwitch {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms: self.ts_ms(at),
-      window_id: &self.window_id,
+      window_id: self.window_id.as_str().into(),
       from_tab_id: from_tab_id.0,
       to_tab_id: to_tab_id.0,
       cached,
@@ -12766,10 +12880,10 @@ impl PerfWindowLog {
     let event = perf_log::PerfEvent::Navigation {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms: self.ts_ms(at),
-      window_id: &self.window_id,
+      window_id: self.window_id.as_str().into(),
       tab_id: tab_id.0,
       navigation_seqno: seqno,
-      url,
+      url: url.into(),
     };
     self.emit(&event);
   }
@@ -12783,10 +12897,10 @@ impl PerfWindowLog {
     let event = perf_log::PerfEvent::Stage {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms: self.ts_ms(at),
-      window_id: &self.window_id,
+      window_id: self.window_id.as_str().into(),
       tab_id: tab_id.0,
-      stage: stage.as_str(),
-      hotspot: stage.hotspot(),
+      stage: stage.as_str().into(),
+      hotspot: stage.hotspot().into(),
     };
     self.emit(&event);
   }
@@ -12814,9 +12928,10 @@ impl PerfWindowLog {
     window_focused: bool,
     window_occluded: bool,
     window_minimized: bool,
-    frame_breakdown: UiFrameBreakdownMs,
+    frame_breakdown: perf_log::UiFrameBreakdownMs,
   ) {
     let t_ms = self.ts_ms(present_at);
+    self.frames_presented_total = self.frames_presented_total.saturating_add(1);
     let fps = self.last_present.and_then(|prev| {
       let dt = present_at.saturating_duration_since(prev).as_secs_f64();
       if dt > 0.0 && dt.is_finite() {
@@ -12830,7 +12945,7 @@ impl PerfWindowLog {
     let frame_event = perf_log::PerfEvent::Frame {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms,
-      window_id: &self.window_id,
+      window_id: self.window_id.as_str().into(),
       active_tab_id: active_tab_id.map(|t| t.0),
       ui_frame_ms,
       fps,
@@ -12850,7 +12965,7 @@ impl PerfWindowLog {
       let event = perf_log::PerfEvent::Input {
         schema_version: perf_log::SCHEMA_VERSION,
         t_ms,
-        window_id: &self.window_id,
+        window_id: self.window_id.as_str().into(),
         active_tab_id: active_tab_id.map(|t| t.0),
         input_kind: kind,
         input_ts_ms,
@@ -12880,7 +12995,7 @@ impl PerfWindowLog {
       let event = perf_log::PerfEvent::Resize {
         schema_version: perf_log::SCHEMA_VERSION,
         t_ms,
-        window_id: &self.window_id,
+        window_id: self.window_id.as_str().into(),
         resize_ts_ms,
         resize_to_present_ms: latency,
         new_width_px: resize.size_px.0,
@@ -12903,7 +13018,7 @@ impl PerfWindowLog {
           let event = perf_log::PerfEvent::Ttfp {
             schema_version: perf_log::SCHEMA_VERSION,
             t_ms,
-            window_id: &self.window_id,
+            window_id: self.window_id.as_str().into(),
             tab_id: tab_id.0,
             navigation_seqno: pending.seqno,
             ttfp_ms,
@@ -13428,7 +13543,7 @@ impl App {
     &mut self,
     present_at: std::time::Instant,
     ui_frame_ms: f64,
-    frame_breakdown: UiFrameBreakdownMs,
+    frame_breakdown: perf_log::UiFrameBreakdownMs,
   ) {
     let Some(perf) = self.perf_log.as_mut() else {
       return;
@@ -18079,7 +18194,7 @@ impl App {
           let event = perf_log::PerfEvent::FrameUpload {
             schema_version: perf_log::SCHEMA_VERSION,
             t_ms: perf.ts_ms(at),
-            window_id: &perf.window_id,
+            window_id: perf.window_id.as_str().into(),
             active_tab_id,
             uploaded_tab_id: sample.uploaded_tab_id.map(|id| id.0),
             uploads: sample.uploads,
@@ -27825,7 +27940,7 @@ impl App {
       let breakdown_ms = if breakdown_enabled {
         breakdown.as_ms()
       } else {
-        UiFrameBreakdownMs::default()
+        perf_log::UiFrameBreakdownMs::default()
       };
       self.perf_on_present(present_at, ui_frame_ms, breakdown_ms);
     }
@@ -28515,14 +28630,14 @@ mod perf_log_tests {
     let event = perf_log::PerfEvent::Frame {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms: 42,
-      window_id: "WindowId(1)",
+      window_id: "WindowId(1)".into(),
       active_tab_id: Some(123),
       ui_frame_ms: 9.5,
       fps: Some(60.0),
       window_focused: true,
       window_occluded: false,
       window_minimized: false,
-      breakdown: super::UiFrameBreakdownMs::default(),
+      breakdown: perf_log::UiFrameBreakdownMs::default(),
     };
     writer.emit(&event);
     drop(writer);
@@ -28547,7 +28662,7 @@ mod perf_log_tests {
     let event = perf_log::PerfEvent::IdleSample {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms: 100,
-      window_id: "WindowId(9)",
+      window_id: "WindowId(9)".into(),
       rolling_window_ms: 2000,
       idle_fps: 12.5,
       idle_frames_total: 99,
@@ -28572,7 +28687,7 @@ mod perf_log_tests {
     let event = perf_log::PerfEvent::MemorySummary {
       schema_version: perf_log::SCHEMA_VERSION,
       ts_ms: 100,
-      window_id: "process",
+      window_id: "process".into(),
       rss_bytes: None,
       rss_mb: None,
     };
@@ -28602,10 +28717,10 @@ mod perf_log_stage_event_tests {
     let event = perf_log::PerfEvent::Stage {
       schema_version: perf_log::SCHEMA_VERSION,
       t_ms: 123,
-      window_id: "WindowId(1)",
+      window_id: "WindowId(1)".into(),
       tab_id: 7,
-      stage: stage.as_str(),
-      hotspot: stage.hotspot(),
+      stage: stage.as_str().into(),
+      hotspot: stage.hotspot().into(),
     };
     writer.emit(&event);
     drop(writer);

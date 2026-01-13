@@ -40,6 +40,9 @@ pub struct FrameUploadCoalescer {
   overwritten_frames: u64,
   drained_frames: u64,
   max_pending_tabs: usize,
+
+  /// Total number of frames dropped due to coalescing/eviction (cumulative across the run).
+  dropped_frames_total: u64,
 }
 
 impl Default for FrameUploadCoalescer {
@@ -60,6 +63,7 @@ impl FrameUploadCoalescer {
       overwritten_frames: 0,
       drained_frames: 0,
       max_pending_tabs: 0,
+      dropped_frames_total: 0,
     }
   }
 
@@ -131,6 +135,7 @@ impl FrameUploadCoalescer {
     if let Some(prev) = self.latest_by_tab.put(frame.tab_id, frame) {
       self.dropped_total = self.dropped_total.saturating_add(1);
       self.overwritten_frames = self.overwritten_frames.saturating_add(1);
+      self.dropped_frames_total = self.dropped_frames_total.saturating_add(1);
       self.total_estimated_bytes = self
         .total_estimated_bytes
         .saturating_sub(Self::estimated_bytes_for(&prev));
@@ -177,6 +182,7 @@ impl FrameUploadCoalescer {
         .total_estimated_bytes
         .saturating_sub(Self::estimated_bytes_for(&frame));
       evicted += 1;
+      self.dropped_frames_total = self.dropped_frames_total.saturating_add(1);
     }
 
     if let Some((tab_id, frame)) = preserved {
@@ -239,6 +245,11 @@ impl FrameUploadCoalescer {
     self.max_pending_tabs = pending_tabs;
 
     stats
+  }
+
+  /// Total number of frames dropped due to coalescing and eviction since this coalescer was created.
+  pub fn dropped_frames(&self) -> u64 {
+    self.dropped_frames_total
   }
 }
 

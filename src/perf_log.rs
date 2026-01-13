@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::io::Write;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Current `FASTR_PERF_LOG` schema version emitted by the windowed browser.
 pub const PERF_LOG_SCHEMA_VERSION: u32 = 2;
@@ -41,6 +41,66 @@ fn default_count_one() -> u32 {
 
 fn default_empty_str() -> &'static str {
   ""
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BuildInfo {
+  /// Crate version (`CARGO_PKG_VERSION`).
+  pub crate_version: String,
+  /// True when built with `debug_assertions`.
+  pub debug: bool,
+  /// Best-effort target identifier.
+  pub target: Option<String>,
+}
+
+impl BuildInfo {
+  #[must_use]
+  pub fn current() -> Self {
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+    let target = Some(format!("{arch}-{os}"));
+
+    Self {
+      crate_version: env!("CARGO_PKG_VERSION").to_string(),
+      debug: cfg!(debug_assertions),
+      target,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ResourcePolicySnapshot {
+  pub allow_http: bool,
+  pub allow_https: bool,
+  pub allow_file: bool,
+  pub allow_data: bool,
+}
+
+impl ResourcePolicySnapshot {
+  #[must_use]
+  pub fn from_policy(policy: &crate::ResourcePolicy) -> Self {
+    Self {
+      allow_http: policy.allowed_schemes.http,
+      allow_https: policy.allowed_schemes.https,
+      allow_file: policy.allowed_schemes.file,
+      allow_data: policy.allowed_schemes.data,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RunConfig {
+  pub hud_enabled: bool,
+  pub perf_log_enabled: bool,
+  pub trace_enabled: bool,
+  pub trace_out: Option<String>,
+  pub rayon_threads: Option<u32>,
+  pub resource_policy: Option<ResourcePolicySnapshot>,
+  /// Optional output path (when the capture is written to a file).
+  pub perf_log_out: Option<String>,
 }
 
 /// Coarse input-kind classification.
@@ -100,6 +160,42 @@ pub struct UiFrameBreakdownMs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum PerfEvent<'a> {
+  /// Emitted once at startup so a perf log is self-describing.
+  RunStart {
+    #[serde(deserialize_with = "deserialize_schema_version")]
+    schema_version: u32,
+    #[serde(alias = "ts_ms")]
+    t_ms: u64,
+    #[serde(default)]
+    pid: u32,
+    #[serde(default)]
+    start_unix_ms: Option<u64>,
+    #[serde(default)]
+    build: BuildInfo,
+    #[serde(default)]
+    config: RunConfig,
+  },
+  /// Emitted once on graceful shutdown (best-effort).
+  RunEnd {
+    #[serde(deserialize_with = "deserialize_schema_version")]
+    schema_version: u32,
+    #[serde(alias = "ts_ms")]
+    t_ms: u64,
+    #[serde(default)]
+    frames_presented: u64,
+    #[serde(default)]
+    idle_frames: u64,
+    #[serde(default)]
+    input_events: u64,
+    #[serde(default)]
+    dropped_frames: Option<u64>,
+    #[serde(default)]
+    elapsed_ms: u64,
+    #[serde(default)]
+    cpu_time_ms: Option<u64>,
+    #[serde(default)]
+    rss_bytes: Option<u64>,
+  },
   Frame {
     #[serde(deserialize_with = "deserialize_schema_version")]
     schema_version: u32,
@@ -300,7 +396,9 @@ impl PerfEvent<'_> {
   #[must_use]
   pub fn schema_version(&self) -> Option<u32> {
     match self {
-      Self::Frame { schema_version, .. }
+      Self::RunStart { schema_version, .. }
+      | Self::RunEnd { schema_version, .. }
+      | Self::Frame { schema_version, .. }
       | Self::Input { schema_version, .. }
       | Self::TabSwitch { schema_version, .. }
       | Self::Resize { schema_version, .. }
@@ -318,7 +416,9 @@ impl PerfEvent<'_> {
   #[must_use]
   pub fn timestamp_ms(&self) -> Option<u64> {
     match self {
-      Self::Frame { t_ms, .. }
+      Self::RunStart { t_ms, .. }
+      | Self::RunEnd { t_ms, .. }
+      | Self::Frame { t_ms, .. }
       | Self::Input { t_ms, .. }
       | Self::TabSwitch { t_ms, .. }
       | Self::Resize { t_ms, .. }
@@ -387,6 +487,49 @@ impl<W: Write> JsonlPerfWriter<W> {
   pub fn emit(&mut self, event: &PerfEvent<'_>) {
     self.emit_value(event);
   }
+
+  pub fn flush(&mut self) {
+    if self.disabled {
+      return;
+    }
+    if self.writer.flush().is_err() {
+      self.disabled = true;
+    }
+  }
+}
+
+#[must_use]
+pub fn unix_ms_now() -> Option<u64> {
+  let dur = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+  u64::try_from(dur.as_millis()).ok()
+}
+
+#[must_use]
+pub fn process_cpu_time_ms() -> Option<u64> {
+  #[cfg(unix)]
+  unsafe {
+    let mut usage: libc::rusage = std::mem::zeroed();
+    if libc::getrusage(libc::RUSAGE_SELF, &mut usage as *mut _) != 0 {
+      return None;
+    }
+    let user_ms = (usage.ru_utime.tv_sec as i128)
+      .saturating_mul(1000)
+      .saturating_add((usage.ru_utime.tv_usec as i128) / 1000);
+    let sys_ms = (usage.ru_stime.tv_sec as i128)
+      .saturating_mul(1000)
+      .saturating_add((usage.ru_stime.tv_usec as i128) / 1000);
+    let total = user_ms.saturating_add(sys_ms);
+    if total < 0 {
+      None
+    } else {
+      u64::try_from(total).ok()
+    }
+  }
+
+  #[cfg(not(unix))]
+  {
+    None
+  }
 }
 
 #[cfg(test)]
@@ -416,14 +559,64 @@ mod tests {
   }
 
   #[test]
-  fn schema_version_mismatch_is_a_parse_error() {
-    let bad = r#"{"schema_version":999,"event":"frame","t_ms":0,"ui_frame_ms":1.0}"#;
-    assert!(parse_jsonl_line(bad).is_err());
+  fn run_start_roundtrip() {
+    let event = PerfEvent::RunStart {
+      schema_version: SCHEMA_VERSION,
+      t_ms: 0,
+      pid: 123,
+      start_unix_ms: Some(1_700_000_000_000),
+      build: BuildInfo {
+        crate_version: "0.1.0".to_string(),
+        debug: true,
+        target: Some("x86_64-linux".to_string()),
+      },
+      config: RunConfig {
+        hud_enabled: true,
+        perf_log_enabled: true,
+        trace_enabled: false,
+        trace_out: None,
+        rayon_threads: Some(4),
+        resource_policy: Some(ResourcePolicySnapshot {
+          allow_http: true,
+          allow_https: true,
+          allow_file: false,
+          allow_data: true,
+        }),
+        perf_log_out: Some("target/perf.jsonl".to_string()),
+      },
+    };
+
+    let mut buf = Vec::new();
+    write_event_jsonl(&mut buf, &event).expect("write_event_jsonl");
+    let text = String::from_utf8(buf).expect("utf8");
+    let parsed = parse_jsonl_line(text.lines().next().expect("line")).expect("parse_jsonl_line");
+    assert_eq!(parsed, event);
   }
 
   #[test]
-  fn missing_schema_version_is_a_parse_error() {
-    let bad = r#"{"event":"frame","t_ms":0,"ui_frame_ms":1.0}"#;
+  fn run_end_roundtrip() {
+    let event = PerfEvent::RunEnd {
+      schema_version: SCHEMA_VERSION,
+      t_ms: 1234,
+      frames_presented: 10,
+      idle_frames: 3,
+      input_events: 5,
+      dropped_frames: Some(2),
+      elapsed_ms: 1234,
+      cpu_time_ms: Some(900),
+      rss_bytes: Some(42),
+    };
+
+    let mut buf = Vec::new();
+    write_event_jsonl(&mut buf, &event).expect("write_event_jsonl");
+    let text = String::from_utf8(buf).expect("utf8");
+    let parsed = parse_jsonl_line(text.lines().next().expect("line")).expect("parse_jsonl_line");
+    assert_eq!(parsed, event);
+  }
+
+  #[test]
+  fn schema_version_mismatch_is_a_parse_error() {
+    let bad = r#"{"schema_version":999,"event":"frame","t_ms":0,"ui_frame_ms":1.0}"#;
     assert!(parse_jsonl_line(bad).is_err());
   }
 }

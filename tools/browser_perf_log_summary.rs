@@ -1,6 +1,7 @@
 use clap::Parser;
 use fastrender::perf_log;
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
@@ -35,13 +36,9 @@ impl OnlyEvent {
 
   fn matches(self, event: &str) -> bool {
     match self {
-      OnlyEvent::Frame => event == "frame",
-      OnlyEvent::Input => event == "input",
-      OnlyEvent::Resize => event == "resize",
-      OnlyEvent::Ttfp => event == "ttfp",
       // Backward compatibility: older logs emitted `idle_summary`.
       OnlyEvent::IdleSample => event == "idle_sample" || event == "idle_summary",
-      OnlyEvent::CpuSummary => event == "cpu_summary",
+      other => event == other.as_str(),
     }
   }
 }
@@ -139,6 +136,10 @@ fn percentile_nearest_rank_sorted(sorted: &[f64], pct: f64) -> f64 {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 struct Summary {
   source_schema_version: u32,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  run_start: Option<Value>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  run_end: Option<Value>,
   filters: Filters,
   frames: Option<FrameSummary>,
   input: Option<InputSummary>,
@@ -227,11 +228,13 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
   let mut input_overall = Series::default();
   let mut input_by_kind: BTreeMap<String, Series> = BTreeMap::new();
   let mut resize_ms = Series::default();
-  let mut ttfp_ms = Series::default();
+  let mut ttfp_ms_series = Series::default();
   let mut idle_frames = Series::default();
-  let mut cpu_percent_recent = Series::default();
-  let mut cpu_time_ms_total = Series::default();
+  let mut cpu_percent_recent_series = Series::default();
+  let mut cpu_time_ms_total_series = Series::default();
 
+  let mut run_start: Option<Value> = None;
+  let mut run_end: Option<Value> = None;
   let mut schema_version_seen: Option<u32> = None;
 
   for (idx, line) in reader.lines().enumerate() {
@@ -257,6 +260,19 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
         }
         _ => {}
       }
+    }
+
+    match &event {
+      perf_log::PerfEvent::RunStart { .. } => {
+        if run_start.is_none() {
+          run_start = serde_json::to_value(&event).ok();
+        }
+      }
+      perf_log::PerfEvent::RunEnd { .. } => {
+        // Keep the most recent run_end in case multiple are present.
+        run_end = serde_json::to_value(&event).ok();
+      }
+      _ => {}
     }
 
     let Some(t_ms) = event.timestamp_ms().map(|t| t as f64) else {
@@ -303,7 +319,7 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
         resize_ms.push(resize_to_present_ms);
       }
       perf_log::PerfEvent::Ttfp { ttfp_ms, .. } => {
-        ttfp_ms.push(ttfp_ms);
+        ttfp_ms_series.push(ttfp_ms);
       }
       perf_log::PerfEvent::IdleSample {
         idle_fps,
@@ -318,12 +334,12 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
         idle_frames.push(value);
       }
       perf_log::PerfEvent::CpuSummary {
-        cpu_percent_recent,
-        cpu_time_ms_total,
+        cpu_percent_recent: cpu_percent_recent_value,
+        cpu_time_ms_total: cpu_time_ms_total_value,
         ..
       } => {
-        cpu_percent_recent.push(cpu_percent_recent);
-        cpu_time_ms_total.push(cpu_time_ms_total as f64);
+        cpu_percent_recent_series.push(cpu_percent_recent_value);
+        cpu_time_ms_total_series.push(cpu_time_ms_total_value as f64);
       }
       _ => {
         // Unknown events are ignored so the tool stays forward-compatible with extra event types.
@@ -360,14 +376,14 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
     resize_to_present_ms,
   });
 
-  let ttfp = ttfp_ms.stats().map(|ttfp_ms| TtfpSummary { ttfp_ms });
+  let ttfp = ttfp_ms_series.stats().map(|ttfp_ms| TtfpSummary { ttfp_ms });
 
   let idle_summary = idle_frames
     .stats()
     .map(|idle_frames| IdleSummary { idle_frames });
 
-  let cpu_summary = cpu_percent_recent.stats().map(|cpu_percent_recent| {
-    let cpu_time_ms_total = cpu_time_ms_total.stats();
+  let cpu_summary = cpu_percent_recent_series.stats().map(|cpu_percent_recent| {
+    let cpu_time_ms_total = cpu_time_ms_total_series.stats();
     CpuSummary {
       cpu_percent_recent,
       cpu_time_ms_total,
@@ -376,6 +392,8 @@ fn summarize_reader<R: BufRead>(reader: R, filter: WindowFilter) -> Result<Summa
 
   Ok(Summary {
     source_schema_version: schema_version_seen,
+    run_start,
+    run_end,
     filters: Filters {
       from_ms: filter.from_ms,
       to_ms: filter.to_ms,
@@ -451,6 +469,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let stdin = io::stdin();
     summarize_reader(stdin.lock(), filter).map_err(|err| format!("stdin: {err}"))?
   };
+
+  if let Some(run_start) = summary.run_start.as_ref().and_then(Value::as_object) {
+    let pid = run_start.get("pid").and_then(Value::as_u64);
+    let schema_version = run_start.get("schema_version").and_then(Value::as_u64);
+    let build = run_start.get("build").and_then(Value::as_object);
+    let version = build.and_then(|b| b.get("crate_version")).and_then(Value::as_str);
+    let debug = build.and_then(|b| b.get("debug")).and_then(Value::as_bool);
+    let target = build
+      .and_then(|b| b.get("target"))
+      .and_then(Value::as_str)
+      .unwrap_or("unknown");
+    eprintln!(
+      "run_start: schema_version={} pid={} version={} debug={} target={}",
+      schema_version
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+      pid.map(|v| v.to_string()).unwrap_or_else(|| "?".to_string()),
+      version.unwrap_or("?"),
+      debug
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+      target
+    );
+  }
+  if let Some(run_end) = summary.run_end.as_ref().and_then(Value::as_object) {
+    let frames_presented = run_end.get("frames_presented").and_then(Value::as_u64);
+    let idle_frames = run_end.get("idle_frames").and_then(Value::as_u64);
+    let input_events = run_end.get("input_events").and_then(Value::as_u64);
+    let dropped_frames = run_end.get("dropped_frames").and_then(Value::as_u64);
+    let elapsed_ms = run_end.get("elapsed_ms").and_then(Value::as_u64);
+    eprintln!(
+      "run_end: frames_presented={} idle_frames={} input_events={} dropped_frames={} elapsed_ms={}",
+      frames_presented
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+      idle_frames
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+      input_events
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+      dropped_frames
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+      elapsed_ms
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string()),
+    );
+  }
 
   // Human-readable summary to stderr.
   if let Some(frames) = summary.frames.as_ref() {
