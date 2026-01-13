@@ -3,7 +3,7 @@ use crate::error::{Error, RenderStage, Result};
 use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use smallvec::SmallVec;
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +31,25 @@ pub enum TaskSource {
   Timer,
   MediaQueryList,
   IdleCallback,
+}
+
+const TASK_SOURCE_COUNT: usize = 7;
+
+impl TaskSource {
+  #[inline]
+  const fn as_usize(self) -> usize {
+    // Keep indices aligned with the enum's declared variant order so that any
+    // tie-breaking behavior (e.g. if `seq` wraps) stays deterministic.
+    match self {
+      TaskSource::Script => 0,
+      TaskSource::Microtask => 1,
+      TaskSource::Networking => 2,
+      TaskSource::DOMManipulation => 3,
+      TaskSource::Timer => 4,
+      TaskSource::MediaQueryList => 5,
+      TaskSource::IdleCallback => 6,
+    }
+  }
 }
 
 fn task_source_name(source: TaskSource) -> &'static str {
@@ -348,7 +367,8 @@ pub struct EventLoop<Host: 'static> {
   external_task_queue: ExternalTaskQueueHandle<Host>,
   microtask_checkpoint_hooks: MicrotaskCheckpointHooks<Host>,
   pub(crate) promise_rejection_tracker: PromiseRejectionTrackerState,
-  task_queues: BTreeMap<TaskSource, VecDeque<Task<Host>>>,
+  task_queues: [VecDeque<Task<Host>>; TASK_SOURCE_COUNT],
+  pending_tasks: usize,
   microtask_queue: VecDeque<Task<Host>>,
   next_task_seq: u64,
   timers: HashMap<TimerId, TimerState<Host>>,
@@ -378,7 +398,8 @@ impl<Host: 'static> Default for EventLoop<Host> {
       external_task_queue: ExternalTaskQueueHandle::new(queue_limits.max_pending_tasks),
       microtask_checkpoint_hooks: SmallVec::new(),
       promise_rejection_tracker: PromiseRejectionTrackerState::default(),
-      task_queues: BTreeMap::new(),
+      task_queues: std::array::from_fn(|_| VecDeque::new()),
+      pending_tasks: 0,
       microtask_queue: VecDeque::new(),
       next_task_seq: 0,
       timers: HashMap::new(),
@@ -561,7 +582,7 @@ impl<Host: 'static> EventLoop<Host> {
   ///
   /// This does *not* consider future timers that are not yet due.
   pub fn is_idle(&self) -> bool {
-    self.task_queues.is_empty()
+    self.pending_tasks == 0
       && self.microtask_queue.is_empty()
       && self.external_task_queue.is_empty()
       && self.idle_callback_queue.is_empty()
@@ -587,7 +608,10 @@ impl<Host: 'static> EventLoop<Host> {
   /// when committing a `window.location` navigation). This should be called when no task is
   /// currently running.
   pub fn clear_all_pending_work(&mut self) {
-    self.task_queues.clear();
+    for queue in self.task_queues.iter_mut() {
+      queue.clear();
+    }
+    self.pending_tasks = 0;
     self.microtask_queue.clear();
     self.timers.clear();
     self.timer_queue.clear();
@@ -682,11 +706,12 @@ impl<Host: 'static> EventLoop<Host> {
     }
     let seq = self.next_task_seq;
     self.next_task_seq = self.next_task_seq.wrapping_add(1);
-    let queue = self.task_queues.entry(source).or_default();
+    let queue = &mut self.task_queues[source.as_usize()];
     queue
       .try_reserve(1)
       .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
     queue.push_back(Task::new_with_seq(source, seq, runnable));
+    self.pending_tasks += 1;
     Ok(())
   }
 
@@ -1242,7 +1267,7 @@ impl<Host: 'static> EventLoop<Host> {
       run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
-      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+      if self.microtask_queue.is_empty() && self.pending_tasks == 0 {
         if self
           .queue_next_idle_callback_if_idle()
           .map_err(RunStepError::Error)?
@@ -1275,7 +1300,7 @@ impl<Host: 'static> EventLoop<Host> {
       run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
-      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+      if self.microtask_queue.is_empty() && self.pending_tasks == 0 {
         if self
           .queue_next_idle_callback_if_idle()
           .map_err(RunStepError::Error)?
@@ -1313,7 +1338,7 @@ impl<Host: 'static> EventLoop<Host> {
       run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
-      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+      if self.microtask_queue.is_empty() && self.pending_tasks == 0 {
         if self
           .queue_next_idle_callback_if_idle()
           .map_err(RunStepError::Error)?
@@ -1352,7 +1377,7 @@ impl<Host: 'static> EventLoop<Host> {
       run_state.check_deadline()?;
       self.queue_due_timers().map_err(RunStepError::Error)?;
       run_state.check_deadline()?;
-      if self.microtask_queue.is_empty() && self.task_queues.is_empty() {
+      if self.microtask_queue.is_empty() && self.pending_tasks == 0 {
         if self
           .queue_next_idle_callback_if_idle()
           .map_err(RunStepError::Error)?
@@ -1390,7 +1415,7 @@ impl<Host: 'static> EventLoop<Host> {
     // `run_until_idle` is used for bounded execution. If we pop first and then hit `MaxTasks`,
     // we'd effectively drop the task from the queue, which is incorrect (and can break
     // determinism/correctness for embeddings that resume the event loop later).
-    if self.task_queues.is_empty()
+    if self.pending_tasks == 0
       && !self
         .queue_next_idle_callback_if_idle()
         .map_err(RunStepError::Error)?
@@ -1453,7 +1478,7 @@ impl<Host: 'static> EventLoop<Host> {
     self.queue_due_timers().map_err(RunStepError::Error)?;
 
     // Same reasoning as `run_next_task_limited`: don't drop tasks when we hit `MaxTasks`.
-    if self.task_queues.is_empty()
+    if self.pending_tasks == 0
       && !self
         .queue_next_idle_callback_if_idle()
         .map_err(RunStepError::Error)?
@@ -1750,7 +1775,7 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub(crate) fn pending_task_count(&self) -> usize {
-    self.task_queues.values().map(VecDeque::len).sum()
+    self.pending_tasks
   }
 
   fn maybe_compact_timer_queue(&mut self) {
@@ -1804,30 +1829,25 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   fn pop_next_task(&mut self) -> Option<Task<Host>> {
-    let mut chosen_source: Option<TaskSource> = None;
+    if self.pending_tasks == 0 {
+      return None;
+    }
+
+    let mut chosen_idx: Option<usize> = None;
     let mut chosen_seq: u64 = u64::MAX;
-    for (source, queue) in &self.task_queues {
+    for (idx, queue) in self.task_queues.iter().enumerate() {
       if let Some(task) = queue.front() {
         if task.seq < chosen_seq {
           chosen_seq = task.seq;
-          chosen_source = Some(*source);
+          chosen_idx = Some(idx);
         }
       }
     }
-    let source = chosen_source?;
-    let (task, empty) = match self.task_queues.get_mut(&source) {
-      Some(queue) => {
-        let task = queue.pop_front();
-        let empty = queue.is_empty();
-        (task, empty)
-      }
-      None => {
-        debug_assert!(false, "task queue missing for selected source");
-        return None;
-      }
-    };
-    if empty {
-      self.task_queues.remove(&source);
+    let idx = chosen_idx?;
+    let task = self.task_queues[idx].pop_front();
+    if task.is_some() {
+      debug_assert!(self.pending_tasks > 0);
+      self.pending_tasks -= 1;
     }
     task
   }
@@ -1996,7 +2016,7 @@ impl<Host: 'static> EventLoop<Host> {
     }
     // Only run non-timed-out idle callbacks when the event loop is otherwise idle: no pending
     // tasks or microtasks.
-    if !self.task_queues.is_empty() || !self.microtask_queue.is_empty() {
+    if self.pending_tasks != 0 || !self.microtask_queue.is_empty() {
       return Ok(false);
     }
 

@@ -20570,7 +20570,6 @@ mod tests {
   use crate::style::types::MaskMode;
   use crate::style::types::MaskOrigin;
   use crate::style::types::MixBlendMode;
-  use crate::text::caret::CaretAffinity;
   use crate::style::types::OutlineColor;
   use crate::style::types::OutlineStyle;
   use crate::style::types::Overflow;
