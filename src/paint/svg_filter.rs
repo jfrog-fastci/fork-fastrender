@@ -861,10 +861,17 @@ impl SvgLength {
     if raw.is_empty() {
       return default;
     }
+    if raw.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+      return default;
+    }
     if let Some(stripped) = raw.strip_suffix('%') {
-      if let Ok(v) = trim_ascii_whitespace(stripped).parse::<f32>() {
-        return SvgLength::Percent(v / 100.0);
+      let stripped = trim_ascii_whitespace(stripped);
+      if stripped.len() <= MAX_SVG_NUMBER_TOKEN_BYTES {
+        if let Ok(v) = stripped.parse::<f32>() {
+          return SvgLength::Percent(v / 100.0);
+        }
       }
+      return default;
     }
     raw.parse::<f32>().map(SvgLength::Number).unwrap_or(default)
   }
@@ -874,8 +881,15 @@ impl SvgLength {
     if raw.is_empty() {
       return None;
     }
+    if raw.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+      return None;
+    }
     if let Some(stripped) = raw.strip_suffix('%') {
-      let value = trim_ascii_whitespace(stripped).parse::<f32>().ok()?;
+      let stripped = trim_ascii_whitespace(stripped);
+      if stripped.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+        return None;
+      }
+      let value = stripped.parse::<f32>().ok()?;
       return Some(SvgLength::Percent(value / 100.0));
     }
     Some(SvgLength::Number(raw.parse::<f32>().ok()?))
@@ -2546,7 +2560,7 @@ fn attribute_ci<'a>(node: &'a roxmltree::Node, name: &str) -> Option<&'a str> {
     .map(|attr| attr.value())
 }
 
-fn parse_number(value: Option<&str>) -> f32 {
+fn parse_number_optional(value: Option<&str>) -> Option<f32> {
   let value = truncate_str_to_utf8_boundary(value.unwrap_or(""), MAX_SVG_FILTER_NUMBER_LIST_BYTES);
   split_ascii_whitespace(value)
     .next()
@@ -2557,7 +2571,23 @@ fn parse_number(value: Option<&str>) -> f32 {
         v.parse::<f32>().ok()
       }
     })
-    .unwrap_or(0.0)
+}
+
+fn parse_i32_optional(value: Option<&str>) -> Option<i32> {
+  let value = truncate_str_to_utf8_boundary(value.unwrap_or(""), MAX_SVG_FILTER_NUMBER_LIST_BYTES);
+  split_ascii_whitespace(value)
+    .next()
+    .and_then(|v| {
+      if v.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
+        None
+      } else {
+        v.parse::<i32>().ok()
+      }
+    })
+}
+
+fn parse_number(value: Option<&str>) -> f32 {
+  parse_number_optional(value).unwrap_or(0.0)
 }
 
 fn parse_number_iter<'a>(value: Option<&'a str>) -> impl Iterator<Item = f32> + 'a {
@@ -2634,9 +2664,8 @@ fn parse_channel_selector(value: Option<&str>) -> ChannelSelector {
 
 fn parse_fe_flood(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let color = parse_color(node.attribute("flood-color")).unwrap_or(Rgba::BLACK);
-  let opacity = node
-    .attribute("flood-opacity")
-    .and_then(|v| v.parse::<f32>().ok())
+  let opacity = parse_number_optional(node.attribute("flood-opacity"))
+    .filter(|v| v.is_finite())
     .unwrap_or(1.0)
     .clamp(0.0, 1.0);
   Some(FilterPrimitive::Flood { color, opacity })
@@ -2664,11 +2693,10 @@ fn parse_light_source(node: &roxmltree::Node) -> Option<LightSource> {
         SvgLength::parse(attribute_ci(&child, "pointsAtY"), SvgLength::Number(0.0));
       let points_at_z =
         SvgLength::parse(attribute_ci(&child, "pointsAtZ"), SvgLength::Number(0.0));
-      let specular_exponent = attribute_ci(&child, "specularExponent")
-        .and_then(|v| v.parse::<f32>().ok())
+      let specular_exponent = parse_number_optional(attribute_ci(&child, "specularExponent"))
+        .filter(|v| v.is_finite())
         .unwrap_or(1.0);
-      let limiting_cone_angle = attribute_ci(&child, "limitingConeAngle")
-        .and_then(|v| v.parse::<f32>().ok())
+      let limiting_cone_angle = parse_number_optional(attribute_ci(&child, "limitingConeAngle"))
         .filter(|v| v.is_finite() && *v >= 0.0);
       return Some(LightSource::Spot {
         x,
@@ -2685,14 +2713,10 @@ fn parse_light_source(node: &roxmltree::Node) -> Option<LightSource> {
 
 fn parse_fe_diffuse_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
-  let surface_scale = attribute_ci(node, "surfaceScale")
-    .and_then(|v| split_ascii_whitespace(v).next())
-    .and_then(|v| v.parse::<f32>().ok())
+  let surface_scale = parse_number_optional(attribute_ci(node, "surfaceScale"))
     .filter(|v| v.is_finite())
     .unwrap_or(1.0);
-  let diffuse_constant = attribute_ci(node, "diffuseConstant")
-    .and_then(|v| split_ascii_whitespace(v).next())
-    .and_then(|v| v.parse::<f32>().ok())
+  let diffuse_constant = parse_number_optional(attribute_ci(node, "diffuseConstant"))
     .filter(|v| v.is_finite())
     .unwrap_or(1.0)
     .max(0.0);
@@ -2786,19 +2810,15 @@ fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_fe_specular_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
-  let surface_scale = attribute_ci(node, "surfaceScale")
-    .and_then(|v| split_ascii_whitespace(v).next())
-    .and_then(|v| v.parse::<f32>().ok())
+  let surface_scale = parse_number_optional(attribute_ci(node, "surfaceScale"))
     .filter(|v| v.is_finite())
     .unwrap_or(1.0);
-  let specular_constant = attribute_ci(node, "specularConstant")
-    .and_then(|v| split_ascii_whitespace(v).next())
-    .and_then(|v| v.parse::<f32>().ok())
+  let specular_constant = parse_number_optional(attribute_ci(node, "specularConstant"))
     .filter(|v| v.is_finite())
     .unwrap_or(1.0)
     .max(0.0);
-  let specular_exponent = attribute_ci(node, "specularExponent")
-    .and_then(|v| v.parse::<f32>().ok())
+  let specular_exponent = parse_number_optional(attribute_ci(node, "specularExponent"))
+    .filter(|v| v.is_finite())
     .unwrap_or(1.0);
   let kernel_unit_length = attribute_ci(node, "kernelUnitLength")
     .map(|v| parse_number_pair(Some(v)))
@@ -3030,9 +3050,8 @@ fn parse_fe_drop_shadow(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let (sx, sy) = parse_number_pair(attribute_ci(node, "stdDeviation"));
   let std_dev = (sx.max(0.0), sy.max(0.0));
   let color = parse_color(node.attribute("flood-color")).unwrap_or(Rgba::BLACK);
-  let opacity = node
-    .attribute("flood-opacity")
-    .and_then(|v| v.parse::<f32>().ok())
+  let opacity = parse_number_optional(node.attribute("flood-opacity"))
+    .filter(|v| v.is_finite())
     .unwrap_or(1.0)
     .clamp(0.0, 1.0);
   Some(FilterPrimitive::DropShadow {
@@ -3104,18 +3123,13 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   // SVG: seed is a number; implementations coerce it to an integer.
   //
   // resvg truncates fractional values toward zero while preserving the sign.
-  let seed_raw = node
-    .attribute("seed")
-    .and_then(|v| v.parse::<f32>().ok())
-    .unwrap_or(0.0);
+  let seed_raw = parse_number_optional(node.attribute("seed")).unwrap_or(0.0);
   let seed = if seed_raw.is_finite() {
     seed_raw as i32
   } else {
     0
   };
-  let octaves = attribute_ci(node, "numOctaves")
-    .and_then(|v| v.parse::<i32>().ok())
-    .unwrap_or(1)
+  let octaves = parse_i32_optional(attribute_ci(node, "numOctaves")).unwrap_or(1)
     .clamp(0, MAX_TURBULENCE_OCTAVES as i32) as u32;
   let stitch_tiles = attribute_ci(node, "stitchTiles")
     .map(|v| {
@@ -3232,13 +3246,9 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     }
     (x.max(0.0), y.max(0.0))
   });
-  let target_x = attribute_ci(node, "targetX")
-    .and_then(|v| v.parse::<i32>().ok())
-    .unwrap_or((order_x / 2) as i32)
+  let target_x = parse_i32_optional(attribute_ci(node, "targetX")).unwrap_or((order_x / 2) as i32)
     .clamp(0, order_x.saturating_sub(1) as i32);
-  let target_y = attribute_ci(node, "targetY")
-    .and_then(|v| v.parse::<i32>().ok())
-    .unwrap_or((order_y / 2) as i32)
+  let target_y = parse_i32_optional(attribute_ci(node, "targetY")).unwrap_or((order_y / 2) as i32)
     .clamp(0, order_y.saturating_sub(1) as i32);
   let edge_mode_raw = trim_ascii_whitespace(attribute_ci(node, "edgeMode").unwrap_or("duplicate"));
   let edge_mode_raw = if edge_mode_raw.len() > 32 {
