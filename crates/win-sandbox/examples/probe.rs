@@ -935,7 +935,8 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     // Keep any listener alive until after the child returns from its connect probe.
     let _listener = listener;
 
-    let exit_code = match wait_process(child.process.as_raw(), args.timeout_ms) {
+    let handle = child.process.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let exit_code = match wait_process(handle, args.timeout_ms) {
       Ok(code) => code,
       Err(err) => {
         eprintln!("error: failed waiting for child: {err}");
