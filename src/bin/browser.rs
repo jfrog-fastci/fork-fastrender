@@ -9555,7 +9555,11 @@ impl App {
         pos_css,
         anchor_points: pos_points,
       });
-      self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css });
+      self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
+        tab_id,
+        pos_css,
+        modifiers: map_modifiers(self.modifiers),
+      });
       self.window.request_redraw();
     }
   }
@@ -15508,6 +15512,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                 self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
                   tab_id,
                   pos_css,
+                  modifiers: map_modifiers(self.modifiers),
                 });
                 self.window.request_redraw();
               }

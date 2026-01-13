@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, PointerModifiers, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
@@ -89,7 +89,11 @@ fn context_menu_request_resolves_link_url_and_image_url_for_nested_link_image() 
   let pos_css = (10.0, 10.0);
   worker
     .ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .unwrap();
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
