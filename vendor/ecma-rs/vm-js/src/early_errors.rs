@@ -538,14 +538,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
           ) =>
         {
-          // Explicit Resource Management: `using` declarations are not yet supported at script /
-          // module top-level (only inside blocks).
-          if kind == StmtListKind::VarScope
-            && !ctx.return_allowed
-            && matches!(var.stx.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing)
-          {
-            self.push_error(stmt.loc, "using declarations are not allowed at top level")?;
-          }
           for declarator in &var.stx.declarators {
             self.step()?;
             self.collect_lexical_decl_names_from_pat(
@@ -632,11 +624,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
               VarDeclMode::Let | VarDeclMode::Const | VarDeclMode::Using | VarDeclMode::AwaitUsing
             ) =>
           {
-            // Explicit Resource Management: `using` declarations are not supported directly in
-            // switch clause bodies (wrap them in a block if needed).
-            if matches!(var.stx.mode, VarDeclMode::Using | VarDeclMode::AwaitUsing) {
-              self.push_error(stmt.loc, "using declarations are not allowed in switch clauses")?;
-            }
             for declarator in &var.stx.declarators {
               self.step()?;
               self.collect_lexical_decl_names_from_pat(
@@ -1970,6 +1957,14 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       }
     }
     for declarator in &decl.declarators {
+      // Explicit Resource Management early error:
+      // `using` / `await using` declarations require a BindingIdentifier (no destructuring).
+      if using_mode && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
+        self.push_error(
+          declarator.pattern.loc,
+          "using declarations may not use destructuring patterns",
+        )?;
+      }
       if lexical_mode {
         let mut names: Vec<(String, Loc)> = Vec::new();
         Self::collect_bound_names_from_pat(&declarator.pattern.stx.pat, &mut names)?;
@@ -1978,14 +1973,6 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             self.push_error(loc, "lexical declarations may not declare a binding named 'let'")?;
           }
         }
-      }
-      // Explicit Resource Management: `using` / `await using` only permit BindingIdentifier in each
-      // declarator (no destructuring patterns).
-      if using_mode && !matches!(&*declarator.pattern.stx.pat.stx, Pat::Id(_)) {
-        self.push_error(
-          declarator.pattern.loc,
-          "using declarations may not use destructuring patterns",
-        )?;
       }
       if declarator.initializer.is_none() {
         if decl.mode == VarDeclMode::Const {
