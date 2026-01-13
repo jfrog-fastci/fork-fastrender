@@ -4678,6 +4678,32 @@ mod tests {
   }
 
   #[test]
+  fn user_interaction_external_tasks_are_drained_and_run() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let handle = event_loop.external_task_queue_handle();
+
+    handle.queue_task(TaskSource::UserInteraction, |host, _event_loop| {
+      host.log.push("ui");
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["ui"]);
+    Ok(())
+  }
+
+  #[test]
   fn animation_frame_callbacks_are_ordered_and_snapshotted() -> Result<()> {
     #[derive(Default)]
     struct Host {
