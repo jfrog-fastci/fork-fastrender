@@ -3392,6 +3392,7 @@ const ELEMENT_HAS_ATTRIBUTE_KEY: &str = "__fastrender_element_has_attribute";
 const ELEMENT_TOGGLE_ATTRIBUTE_KEY: &str = "__fastrender_element_toggle_attribute";
 const ELEMENT_GET_ATTRIBUTE_NAMES_KEY: &str = "__fastrender_element_get_attribute_names";
 const ELEMENT_GET_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_get_attribute_ns";
+const ELEMENT_GET_ATTRIBUTE_NODE_NS_KEY: &str = "__fastrender_element_get_attribute_node_ns";
 const ELEMENT_SET_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_set_attribute_ns";
 const ELEMENT_REMOVE_ATTRIBUTE_NS_KEY: &str = "__fastrender_element_remove_attribute_ns";
 const ELEMENT_ATTRIBUTES_MAP_KEY: &str = "__fastrender_element_attributes";
@@ -3459,6 +3460,7 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   ELEMENT_TOGGLE_ATTRIBUTE_KEY,
   ELEMENT_GET_ATTRIBUTE_NAMES_KEY,
   ELEMENT_GET_ATTRIBUTE_NS_KEY,
+  ELEMENT_GET_ATTRIBUTE_NODE_NS_KEY,
   ELEMENT_SET_ATTRIBUTE_NS_KEY,
   ELEMENT_REMOVE_ATTRIBUTE_NS_KEY,
   // Selector APIs.
@@ -9924,6 +9926,10 @@ fn initialize_node_wrapper_shims(
     let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_NODE_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
   };
+  let get_attribute_node_ns = {
+    let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_NODE_NS_KEY)?;
+    object_get_data_property_value(scope.heap(), document_obj, &key)?
+  };
   let set_attribute = {
     let key = alloc_key(scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
     object_get_data_property_value(scope.heap(), document_obj, &key)?
@@ -11428,6 +11434,13 @@ fn initialize_node_wrapper_shims(
 
   if let Some(Value::Object(func)) = get_attribute_node {
     let key = alloc_key(scope, "getAttributeNode")?;
+    if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
+      scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+    }
+  }
+
+  if let Some(Value::Object(func)) = get_attribute_node_ns {
+    let key = alloc_key(scope, "getAttributeNodeNS")?;
     if !proto_chain_has_own_property(scope.heap(), wrapper, &key)? {
       scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
     }
@@ -43911,6 +43924,43 @@ fn element_get_attribute_node_native(
   Ok(Value::Object(attr_obj))
 }
 
+fn element_get_attribute_node_ns_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.getAttributeNodeNS must be called on an element object",
+    ));
+  };
+
+  // Brand check: must be a DOM element wrapper.
+  let _handle = element_handle_from_wrapper_obj(
+    vm,
+    scope,
+    wrapper_obj,
+    "Element.getAttributeNodeNS must be called on an element object",
+  )?;
+
+  // `dom2` does not currently track attribute namespaces separately; mirror `Element.getAttributeNS`
+  // (and `NamedNodeMap.getNamedItemNS`) by performing a normal name lookup using `localName`.
+  let map = element_attributes_get_native(
+    vm,
+    scope,
+    host,
+    hooks,
+    callee,
+    Value::Object(wrapper_obj),
+    &[],
+  )?;
+  named_node_map_get_named_item_ns_native(vm, scope, host, hooks, callee, map, args)
+}
+
 fn element_has_attribute_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -56204,7 +56254,7 @@ fn init_window_globals(
     data_desc(Value::Object(element_append_func)),
   )?;
 
-  // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.
+  // Store shared Element attribute methods on `document` so wrappers can reuse them.
   let get_attribute_call_id = vm.register_native_call(element_get_attribute_native)?;
   let get_attribute_name = scope.alloc_string("getAttribute")?;
   scope.push_root(Value::String(get_attribute_name))?;
@@ -56241,6 +56291,23 @@ fn init_window_globals(
     document_obj,
     get_attribute_node_key,
     data_desc(Value::Object(get_attribute_node_func)),
+  )?;
+
+  let get_attribute_node_ns_call_id = vm.register_native_call(element_get_attribute_node_ns_native)?;
+  let get_attribute_node_ns_name = scope.alloc_string("getAttributeNodeNS")?;
+  scope.push_root(Value::String(get_attribute_node_ns_name))?;
+  let get_attribute_node_ns_func =
+    scope.alloc_native_function(get_attribute_node_ns_call_id, None, get_attribute_node_ns_name, 2)?;
+  scope.heap_mut().object_set_prototype(
+    get_attribute_node_ns_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(get_attribute_node_ns_func))?;
+  let get_attribute_node_ns_key = alloc_key(&mut scope, ELEMENT_GET_ATTRIBUTE_NODE_NS_KEY)?;
+  scope.define_property(
+    document_obj,
+    get_attribute_node_ns_key,
+    data_desc(Value::Object(get_attribute_node_ns_func)),
   )?;
 
   let set_attribute_call_id = vm.register_native_call(element_set_attribute_native)?;
@@ -56323,6 +56390,7 @@ fn init_window_globals(
     define_method_if_missing("getBoundingClientRect", element_get_bounding_client_rect_func)?;
     define_method_if_missing("getAttribute", get_attribute_func)?;
     define_method_if_missing("getAttributeNode", get_attribute_node_func)?;
+    define_method_if_missing("getAttributeNodeNS", get_attribute_node_ns_func)?;
     define_method_if_missing("setAttribute", set_attribute_func)?;
     define_method_if_missing("removeAttribute", remove_attribute_func)?;
 
