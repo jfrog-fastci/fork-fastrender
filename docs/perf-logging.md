@@ -180,6 +180,18 @@ Filtering options:
 - `--from-ms <ms>` / `--to-ms <ms>`: limit to a timestamp window.
 - `--only-event frame|input|resize|ttfp|idle_summary`: summarize one event type.
 
+## Interactive profiling (windowed browser UI)
+
+To capture a CPU profile while interacting with the windowed `browser` UI (resize/scroll, etc.), use
+the samply helper:
+
+```bash
+bash scripts/profile_browser_samply.sh [--url <url>] [-- <browser args...>]
+```
+
+Close the browser window to finish recording; the script writes a terminal-friendly profile artifact
+under `target/browser/profiles/` and prints a `samply load ...` command to view it later.
+
 ## Perf smoke (deterministic offline fixtures)
 
 Run a quick offline perf pass against the curated pages fixtures with bundled fonts and
