@@ -48,7 +48,7 @@ fn dropping_runtime_after_termination_discards_pending_promise_jobs() -> Result<
   // Terminate after enqueuing at least one Promise job.
   runtime.vm.set_budget(Budget {
     // Needs to be large enough to run `Promise.resolve().then(..)` before we hit the infinite loop.
-    fuel: Some(50),
+    fuel: Some(500),
     deadline: None,
     check_time_every: 1,
   });
