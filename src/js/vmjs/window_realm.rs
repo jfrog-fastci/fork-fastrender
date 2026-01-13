@@ -8175,15 +8175,13 @@ fn history_state_change_native(
     // Enforce same-origin URL updates so callers can't desync `location.origin` (currently a fixed
     // data property computed at realm init).
     //
-    // For opaque origins (serialized as "null") we also require the scheme to remain stable since
-    // multiple schemes share the same serialized origin.
-    let current = Url::parse(&current_document_url)
-      .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
-    let current_origin = serialized_origin_for_document_url(&current_document_url);
-    let new_origin = serialized_origin_for_document_url(parsed.as_str());
-    if current_origin != new_origin
-      || (current_origin == "null" && current.scheme() != parsed.scheme())
-    {
+    // Use FastRender's document origin model (scheme + host + port) so non-HTTP schemes with hosts
+    // (notably `chrome://...`) cannot mutate the effective origin via History API updates.
+    let current_origin = origin_from_url(&current_document_url)
+      .ok_or_else(|| throw_type_error(vm, scope, host, hooks, "Invalid document URL"))?;
+    let new_origin = origin_from_url(parsed.as_str())
+      .ok_or_else(|| throw_type_error(vm, scope, host, hooks, "Invalid URL"))?;
+    if !current_origin.same_origin(&new_origin) {
       return Err(VmError::Throw(make_dom_exception(vm, scope,
         "SecurityError",
         "history state updates may not change origin",
@@ -71453,6 +71451,94 @@ mod tests {
 
     host.run_until_idle(crate::js::RunLimits::unbounded())?;
     assert_eq!(host.exec_script("__events")?, Value::Number(0.0));
+    Ok(())
+  }
+
+  #[test]
+  fn history_push_state_allows_chrome_urls() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://newtab/"))?;
+
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+    realm.exec_script("history.pushState(1, '', '#a');")?;
+
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), "chrome://newtab/#a");
+    let doc_url_v = realm.exec_script("document.URL")?;
+    assert_eq!(get_string(realm.heap(), doc_url_v), "chrome://newtab/#a");
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(2.0));
+
+    Ok(())
+  }
+
+  #[test]
+  fn history_replace_state_allows_chrome_urls_without_pushing() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://newtab/"))?;
+
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+    realm.exec_script("history.replaceState(1, '', '#b');")?;
+
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), "chrome://newtab/#b");
+    let doc_url_v = realm.exec_script("document.URL")?;
+    assert_eq!(get_string(realm.heap(), doc_url_v), "chrome://newtab/#b");
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+
+    Ok(())
+  }
+
+  #[test]
+  fn history_state_change_rejects_origin_changes_for_chrome_urls() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://newtab/"))?;
+
+    let initial_href_v = realm.exec_script("location.href")?;
+    let initial_href = get_string(realm.heap(), initial_href_v);
+    assert_eq!(initial_href.as_str(), "chrome://newtab/");
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+
+    let err_v = realm.exec_script(
+      "(() => {\n\
+         try { history.pushState(1, '', 'https://example.com/'); return 'ok'; }\n\
+         catch (e) { return e.name; }\n\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_v), "SecurityError");
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), initial_href.as_str());
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+
+    let err_v = realm.exec_script(
+      "(() => {\n\
+         try { history.replaceState(1, '', 'https://example.com/'); return 'ok'; }\n\
+         catch (e) { return e.name; }\n\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_v), "SecurityError");
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), initial_href.as_str());
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+
+    let err_v = realm.exec_script(
+      "(() => {\n\
+         try { history.pushState(1, '', 'chrome://settings/'); return 'ok'; }\n\
+         catch (e) { return e.name; }\n\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_v), "SecurityError");
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), initial_href.as_str());
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+
+    let err_v = realm.exec_script(
+      "(() => {\n\
+         try { history.replaceState(1, '', 'chrome://settings/'); return 'ok'; }\n\
+         catch (e) { return e.name; }\n\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_v), "SecurityError");
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), initial_href.as_str());
+    assert_eq!(realm.exec_script("history.length")?, Value::Number(1.0));
+
     Ok(())
   }
 
