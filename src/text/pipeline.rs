@@ -6320,7 +6320,7 @@ impl ShapingCache {
     let mut shards = Vec::with_capacity(shard_count);
     for idx in 0..shard_count {
       let shard_cap = base + usize::from(idx < rem);
-      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();
+      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap_or(NonZeroUsize::MIN);
       shards.push(parking_lot::Mutex::new(LruCache::with_hasher(
         cap,
         ShapingCacheHasher::default(),

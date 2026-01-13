@@ -540,7 +540,7 @@ impl GlyphCoverageCache {
     let mut shards = Vec::with_capacity(shard_count);
     for idx in 0..shard_count {
       let shard_cap = base + usize::from(idx < rem);
-      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();
+      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap_or(NonZeroUsize::MIN);
       shards.push(Mutex::new(LruCache::with_hasher(
         cap,
         GlyphCoverageCacheHasher::default(),
@@ -1965,8 +1965,22 @@ impl FontDatabase {
 
   /// Creates a LoadedFont from cached data
   fn create_loaded_font(&self, id: ID, data: Arc<Vec<u8>>) -> LoadedFont {
-    let face_info = self.db.face(id).expect("Font should exist");
-    self.create_loaded_font_with_info(id, data, &face_info)
+    match self.db.face(id) {
+      Some(face_info) => self.create_loaded_font_with_info(id, data, &face_info),
+      None => LoadedFont {
+        id: Some(FontId::new(id)),
+        data,
+        // Without a valid `FaceInfo`, we don't know the TTC face index. Use index 0 as a safe
+        // default; downstream parsing surfaces errors via Result/Option rather than panicking.
+        index: 0,
+        face_metrics_overrides: FontFaceMetricsOverrides::default(),
+        face_settings: FontFaceShapingDescriptors::default(),
+        family: "Unknown".to_string(),
+        weight: FontWeight::NORMAL,
+        style: FontStyle::Normal,
+        stretch: FontStretch::Normal,
+      },
+    }
   }
 
   /// Creates a LoadedFont from face info
@@ -2937,6 +2951,32 @@ mod tests {
     assert_eq!(FontStretch::from_percentage(100.0), FontStretch::Normal);
     assert_eq!(FontStretch::from_percentage(75.0), FontStretch::Condensed);
     assert_eq!(FontStretch::from_percentage(125.0), FontStretch::Expanded);
+  }
+
+  #[test]
+  fn create_loaded_font_does_not_panic_if_face_info_is_missing() {
+    let mut db_with_face = FontDatabase::empty();
+    db_with_face
+      .load_font_data(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec())
+      .expect("load DejaVu Sans");
+    let id = db_with_face
+      .db
+      .faces()
+      .next()
+      .expect("face present after loading font data")
+      .id;
+
+    let db = FontDatabase::empty();
+    let data = Arc::new(Vec::new());
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      db.create_loaded_font(id, Arc::clone(&data))
+    }));
+    assert!(result.is_ok(), "create_loaded_font should not panic");
+    let font = result.unwrap();
+    assert_eq!(font.family, "Unknown");
+    assert_eq!(font.index, 0);
+    assert!(font.metrics().is_err());
   }
 
   #[test]

@@ -768,7 +768,7 @@ impl FontContext {
       web_families: Arc::new(RwLock::new(std::collections::HashSet::new())),
       feature_support: Arc::new(RwLock::new(std::collections::HashMap::new())),
       scaled_metrics_cache: Arc::new(ParkingMutex::new(LruCache::with_hasher(
-        NonZeroUsize::new(SCALED_METRICS_CACHE_SIZE).unwrap(),
+        NonZeroUsize::new(SCALED_METRICS_CACHE_SIZE).unwrap_or(NonZeroUsize::MIN),
         ScaledMetricsCacheHasher::default(),
       ))),
       root_font_metrics: Arc::new(ParkingRwLock::new(None)),

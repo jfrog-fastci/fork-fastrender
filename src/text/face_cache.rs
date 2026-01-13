@@ -139,7 +139,7 @@ impl FaceCache {
     let mut shards = Vec::with_capacity(shard_count);
     for idx in 0..shard_count {
       let shard_cap = base + usize::from(idx < rem);
-      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();
+      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap_or(NonZeroUsize::MIN);
       shards.push(Mutex::new(LruCache::with_hasher(
         cap,
         FaceCacheHasher::default(),
@@ -214,7 +214,7 @@ impl RustybuzzFaceCache {
     let mut shards = Vec::with_capacity(shard_count);
     for idx in 0..shard_count {
       let shard_cap = base + usize::from(idx < rem);
-      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();
+      let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap_or(NonZeroUsize::MIN);
       shards.push(Mutex::new(LruCache::with_hasher(
         cap,
         FaceCacheHasher::default(),

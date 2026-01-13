@@ -785,8 +785,17 @@ fn rewrite_style_attribute(style: &str, inject_color: Option<&str>) -> Option<St
 }
 
 fn replace_context_paint(value: &str) -> Option<String> {
-  static CONTEXT_RE: OnceLock<Regex> = OnceLock::new();
-  let re = CONTEXT_RE.get_or_init(|| Regex::new("(?i)context-(fill|stroke)").unwrap());
+  static CONTEXT_RE: OnceLock<Option<Regex>> = OnceLock::new();
+  replace_context_paint_with_cached_re(&CONTEXT_RE, "(?i)context-(fill|stroke)", value)
+}
+
+fn replace_context_paint_with_cached_re(
+  cache: &OnceLock<Option<Regex>>,
+  pattern: &str,
+  value: &str,
+) -> Option<String> {
+  let re = cache.get_or_init(|| Regex::new(pattern).ok());
+  let re = re.as_ref()?;
   if re.is_match(value) {
     Some(re.replace_all(value, "currentColor").into_owned())
   } else {
@@ -914,5 +923,11 @@ mod tests {
 
     let fragment = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#glyph"/></svg>"##;
     assert!(sanitize_svg_glyph_for_tests(fragment.as_bytes()).is_some());
+  }
+
+  #[test]
+  fn svg_context_paint_regex_compile_failure_is_treated_as_no_match() {
+    let cache: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+    assert!(super::replace_context_paint_with_cached_re(&cache, "(", "context-fill").is_none());
   }
 }

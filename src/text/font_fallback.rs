@@ -129,7 +129,7 @@ where
     let mut shards = Vec::with_capacity(shard_count);
     for idx in 0..shard_count {
       let shard_capacity = base_capacity + usize::from(idx < remainder);
-      let shard_capacity = NonZeroUsize::new(shard_capacity.max(1)).unwrap();
+      let shard_capacity = NonZeroUsize::new(shard_capacity.max(1)).unwrap_or(NonZeroUsize::MIN);
       shards.push(Mutex::new(LruCache::with_hasher(
         shard_capacity,
         FallbackCacheHasher::default(),

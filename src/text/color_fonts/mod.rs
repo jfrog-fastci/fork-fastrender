@@ -239,7 +239,7 @@ impl ColorFontCaches {
   }
 
   fn cap(size: usize) -> NonZeroUsize {
-    NonZeroUsize::new(size.max(1)).unwrap()
+    NonZeroUsize::new(size.max(1)).unwrap_or(NonZeroUsize::MIN)
   }
 
   fn palette(
