@@ -1450,8 +1450,7 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-tostring-regexp.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet fully implement the RegExp searchValue path."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/this-is-null-throws.js"
