@@ -809,6 +809,7 @@ impl PcmF32QueueProducer {
     Ok(())
   }
 }
+
 #[cfg(all(test, feature = "audio_cpal"))]
 mod audio_cpal_compile_tests {
   use super::CpalAudioBackend;
