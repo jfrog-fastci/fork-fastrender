@@ -2792,6 +2792,11 @@ impl BrowserDocumentDom2 {
         fragment_tree.svg_id_defs = preserved_svg_id_defs;
         fragment_tree.svg_id_defs_raw = preserved_svg_id_defs_raw;
 
+        // Full pipeline runs reattach starting-style snapshots after layout (fragmentation can clear
+        // them while translating column/fragmentainer coordinates). Mirror that behavior so
+        // transition sampling continues to see starting-style values after incremental relayout.
+        fragment_tree.attach_starting_styles_from_boxes(&prepared.box_tree);
+
         // Preserve (and refresh) transition state across incremental relayouts.
         match now_ms {
           None => {
@@ -3420,6 +3425,11 @@ impl BrowserDocumentDom2 {
         fragment_tree.svg_filter_defs = preserved_svg_filter_defs;
         fragment_tree.svg_id_defs = preserved_svg_id_defs;
         fragment_tree.svg_id_defs_raw = preserved_svg_id_defs_raw;
+
+        // Full pipeline runs reattach starting-style snapshots after layout (fragmentation can clear
+        // them while translating column/fragmentainer coordinates). Mirror that behavior so
+        // transition sampling continues to see starting-style values after incremental relayout.
+        fragment_tree.attach_starting_styles_from_boxes(&prepared.box_tree);
 
         // Preserve (and refresh) transition state across incremental relayouts.
         match now_ms {
@@ -5012,6 +5022,81 @@ mod tests {
     assert!(
       raw.contains_key("icon"),
       "incremental relayout should preserve fragment-tree svg_id_defs_raw metadata"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn incremental_relayout_preserves_starting_style_snapshots() -> Result<()> {
+    let renderer = renderer_for_tests();
+    // Multi-column layout uses translation helpers that clear `FragmentNode.starting_style` on the
+    // translated fragment roots. Full pipeline runs reattach the snapshots afterward; incremental
+    // relayout must do the same.
+    let html = r#"
+      <style>
+        #columns { column-count: 2; column-gap: 0; width: 20px; }
+        #box { width: 10px; height: 10px; background: black; opacity: 1; transition: opacity 1000ms linear; }
+        @starting-style { #box { opacity: 0; } }
+      </style>
+      <div id="columns"><div id="box"></div></div>
+      <p id="text">Hello</p>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
+    doc.render_frame()?;
+
+    fn principal_box_id_for_styled_node_id(root: &BoxNode, styled_node_id: usize) -> Option<usize> {
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+          return Some(node.id);
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      None
+    }
+
+    let box_node = doc.dom().get_element_by_id("box").expect("#box element");
+    let box_preorder = doc
+      .last_dom_mapping()
+      .and_then(|mapping| mapping.preorder_for_node_id(box_node))
+      .expect("#box preorder id");
+
+    let prepared = doc.prepared().expect("prepared");
+    let box_id = principal_box_id_for_styled_node_id(&prepared.box_tree().root, box_preorder)
+      .expect("principal box id");
+    let fragment = prepared
+      .fragment_tree
+      .iter_fragments()
+      .find(|frag| frag.box_id() == Some(box_id))
+      .expect("box fragment");
+    assert!(
+      fragment.starting_style.is_some(),
+      "expected #box fragment to have a starting-style snapshot after initial layout"
+    );
+
+    let before = doc.invalidation_counters();
+    let text_parent = doc.dom().get_element_by_id("text").expect("p#text element");
+    let text_node = first_text_child(doc.dom(), text_parent).expect("text child node");
+    assert!(doc.mutate_dom(|dom| dom.set_text_data(text_node, "Updated").expect("set text")));
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    let fragment = prepared
+      .fragment_tree
+      .iter_fragments()
+      .find(|frag| frag.box_id() == Some(box_id))
+      .expect("box fragment");
+    assert!(
+      fragment.starting_style.is_some(),
+      "incremental relayout should preserve starting-style snapshots for transition sampling"
     );
     Ok(())
   }
