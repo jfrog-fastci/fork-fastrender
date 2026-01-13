@@ -2100,30 +2100,31 @@ fn distribute_space_up_to_limits(
     //
     // This avoids multiple full scans over `tracks` per distribution iteration, which is a hot
     // path for large grids and spanning item processing.
-    let mut track_distribution_proportion_sum = 0.0;
-    let mut min_increase_limit: Option<f32> = None;
+    let mut track_distribution_proportion_sum: f32 = 0.0;
+    let mut min_increase_limit: f32 = f32::INFINITY;
     for track in tracks.iter() {
       // Preserve the original evaluation order:
       // 1) check whether the track is still below its limit (cheap arithmetic)
       // 2) only then check whether the track is affected (potentially more expensive closure)
-      let used_space = track_affected_property(track) + track.item_incurred_increase;
+      let current = track_affected_property(track) + track.item_incurred_increase;
       let limit = track_limit(track);
-      if used_space < limit && track_is_affected(track) {
+      if current < limit && track_is_affected(track) {
         let proportion = track_distribution_proportion(track);
         track_distribution_proportion_sum += proportion;
 
-        let remaining = limit - used_space;
-        let increase_limit = remaining / proportion;
-        min_increase_limit = Some(match min_increase_limit {
-          Some(current) => {
-            if increase_limit.total_cmp(&current) == Ordering::Less {
-              increase_limit
-            } else {
-              current
-            }
+        // Guard against division by zero or negative proportions. Treating these as having an
+        // infinite cap ensures they never become the limiting track for this iteration.
+        if proportion > 0.0 {
+          // When distributing space in multiple iterations we must take into account the amount of
+          // space already allocated to a track in prior iterations. Failing to do so can cause
+          // tracks to grow past their limit (and steal space from other tracks), which then
+          // cascades into incorrect grid layouts (e.g. wrapped tracks when there is enough space
+          // for max-content).
+          let increase_limit = (limit - current) / proportion;
+          if increase_limit.total_cmp(&min_increase_limit) == Ordering::Less {
+            min_increase_limit = increase_limit;
           }
-          None => increase_limit,
-        });
+        }
       }
     }
 
@@ -2132,7 +2133,6 @@ fn distribute_space_up_to_limits(
     }
 
     // Compute item-incurred increase for this iteration
-    let min_increase_limit = min_increase_limit.unwrap(); // Safe: `track_distribution_proportion_sum != 0.0`
     let iteration_item_incurred_increase = f32_min(
       min_increase_limit,
       space_to_distribute / track_distribution_proportion_sum,
@@ -2144,12 +2144,13 @@ fn distribute_space_up_to_limits(
       }
 
       let increase = iteration_item_incurred_increase * track_distribution_proportion(track);
-      if increase > 0.0
-        && track_affected_property(track) + track.item_incurred_increase + increase
-          <= track_limit(track) + THRESHOLD
-      {
-        track.item_incurred_increase += increase;
-        space_to_distribute -= increase;
+      if increase > 0.0 {
+        let new_value =
+          track_affected_property(track) + track.item_incurred_increase + increase;
+        if new_value <= track_limit(track) + THRESHOLD {
+          track.item_incurred_increase += increase;
+          space_to_distribute -= increase;
+        }
       }
     }
   }
@@ -2166,6 +2167,75 @@ mod tests {
   use crate::geometry::AbstractAxis;
   use crate::style::{MaxTrackSizingFunction, MinTrackSizingFunction};
   use super::super::types::OriginZeroLine;
+
+  /// Reference implementation of `distribute_space_up_to_limits` (pre-optimisation).
+  ///
+  /// This is kept in the test module so behaviour changes in the space distribution hot-path can
+  /// be validated without carrying two production implementations.
+  fn reference_distribute_space_up_to_limits(
+    space_to_distribute: f32,
+    tracks: &mut [super::GridTrack],
+    track_is_affected: impl Fn(&super::GridTrack) -> bool,
+    track_distribution_proportion: impl Fn(&super::GridTrack) -> f32,
+    track_affected_property: impl Fn(&super::GridTrack) -> f32,
+    track_limit: impl Fn(&super::GridTrack) -> f32,
+  ) -> f32 {
+    /// Define a small constant to avoid infinite loops due to rounding errors. Rather than stopping distributing
+    /// extra space when it gets to exactly zero, we will stop when it falls below this amount
+    const THRESHOLD: f32 = 0.01;
+
+    let mut space_to_distribute = space_to_distribute;
+    while space_to_distribute > THRESHOLD {
+      super::check_layout_abort();
+      let track_distribution_proportion_sum: f32 = tracks
+        .iter()
+        .filter(|track| {
+          track_affected_property(track) + track.item_incurred_increase < track_limit(track)
+        })
+        .filter(|track| track_is_affected(track))
+        .map(&track_distribution_proportion)
+        .sum();
+
+      if track_distribution_proportion_sum == 0.0 {
+        break;
+      }
+
+      // Compute item-incurred increase for this iteration
+      let min_increase_limit = tracks
+        .iter()
+        .filter(|track| {
+          track_affected_property(track) + track.item_incurred_increase < track_limit(track)
+        })
+        .filter(|track| track_is_affected(track))
+        .map(|track| {
+          // When distributing space in multiple iterations we must take into account the amount of
+          // space already allocated to a track in prior iterations. Failing to do so can cause tracks
+          // to grow past their limit (and steal space from other tracks), which then cascades into
+          // incorrect grid layouts (e.g. wrapped tracks when there is enough space for max-content).
+          (track_limit(track) - (track_affected_property(track) + track.item_incurred_increase))
+            / track_distribution_proportion(track)
+        })
+        .min_by(|a, b| a.total_cmp(b))
+        .unwrap(); // We will never pass an empty track list to this function
+      let iteration_item_incurred_increase = super::f32_min(
+        min_increase_limit,
+        space_to_distribute / track_distribution_proportion_sum,
+      );
+
+      for track in tracks.iter_mut().filter(|track| track_is_affected(track)) {
+        let increase = iteration_item_incurred_increase * track_distribution_proportion(track);
+        if increase > 0.0
+          && track_affected_property(track) + track.item_incurred_increase + increase
+            <= track_limit(track) + THRESHOLD
+        {
+          track.item_incurred_increase += increase;
+          space_to_distribute -= increase;
+        }
+      }
+    }
+
+    space_to_distribute
+  }
 
   fn build_grid_baseline_tree() -> (TaffyTree<()>, NodeId, [NodeId; 2]) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2839,6 +2909,7 @@ mod tests {
       .unwrap();
 
     assert_eq!(max_content_probe_count, 0);
+
   }
 
   #[test]
@@ -3172,5 +3243,92 @@ mod tests {
       .map(|track| track.base_size)
       .sum();
     assert!((fr_track_sum - 100.0).abs() < 0.01);
+
   }
-}
+
+  #[test]
+  fn distribute_space_up_to_limits_matches_reference_algorithm() {
+    // Multi-iteration distribution scenario with:
+    // - differing per-track limits
+    // - non-uniform distribution proportions
+    // - a track with a zero proportion (should never receive space)
+    let mut tracks = vec![
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+    ];
+
+    // Base sizes are 0, but growth limits differ.
+    tracks[0].growth_limit = 5.0;
+    tracks[1].growth_limit = 8.0;
+    tracks[2].growth_limit = 100.0;
+    tracks[3].growth_limit = 30.0;
+    tracks[4].growth_limit = 1000.0;
+
+    let mut tracks_reference = tracks.clone();
+    let mut tracks_optimized = tracks;
+
+    fn is_affected(_: &super::GridTrack) -> bool {
+      true
+    }
+
+    fn distribution_proportion(track: &super::GridTrack) -> f32 {
+      if track.growth_limit == 8.0 {
+        2.0
+      } else if track.growth_limit == 30.0 {
+        4.0
+      } else if track.growth_limit == 100.0 {
+        0.0
+      } else {
+        1.0
+      }
+    }
+
+    fn affected_property(track: &super::GridTrack) -> f32 {
+      track.base_size
+    }
+
+    fn limit(track: &super::GridTrack) -> f32 {
+      track.growth_limit
+    }
+
+    let space = 200.0;
+
+    let remaining_reference = reference_distribute_space_up_to_limits(
+      space,
+      &mut tracks_reference,
+      is_affected,
+      distribution_proportion,
+      affected_property,
+      limit,
+    );
+    let remaining_optimized = super::distribute_space_up_to_limits(
+      space,
+      &mut tracks_optimized,
+      is_affected,
+      distribution_proportion,
+      affected_property,
+      limit,
+    );
+
+    assert!(
+      (remaining_reference - remaining_optimized).abs() < 1e-5,
+      "remaining space differs between reference and optimized implementations"
+    );
+    assert!(
+      remaining_optimized.abs() < 0.01,
+      "expected all distributable space to be allocated"
+    );
+
+    for (reference, optimized) in tracks_reference.iter().zip(tracks_optimized.iter()) {
+      assert!(
+        (reference.item_incurred_increase - optimized.item_incurred_increase).abs() < 1e-5,
+        "per-track increases differ (reference: {}, optimized: {})",
+        reference.item_incurred_increase,
+        optimized.item_incurred_increase
+      );
+    }
+  }
+} 
