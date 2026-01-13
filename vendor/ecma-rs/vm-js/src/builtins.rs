@@ -16256,6 +16256,13 @@ fn get_substitution_regexp(
           }
         }
 
+        // Two-digit fallback (ECMA-262 GetSubstitution note): if `$nn` is out of range, fall back to
+        // `$n` and leave the second digit as a literal.
+        if consumed == 3 && n > captures.len() {
+          n = d1;
+          consumed = 2;
+        }
+
         if n == 0 || n > captures.len() {
           // Not a valid capture reference: emit `$` literally.
           vec_try_push(&mut out, b'$' as u16)?;

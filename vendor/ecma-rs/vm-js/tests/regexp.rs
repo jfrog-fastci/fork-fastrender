@@ -353,6 +353,38 @@ fn regexp_unicode_sets_family_zwj_matches_first_code_point() {
 }
 
 #[test]
+fn regexp_v_flag_negated_character_class_matches_complement() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = /[^a]/v;
+        [r.test("b"), r.test("a")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
+fn regexp_v_flag_negated_class_string_disjunction_rejects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("[^\\q{ab}]", "v"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
+fn regexp_v_flag_negated_class_property_of_strings_rejects() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"try { new RegExp("[^\\p{RGI_Emoji}]", "v"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+}
+
+#[test]
 fn regexp_unicode_property_escape_basic_matching() {
   let mut rt = new_runtime();
   let value = rt
