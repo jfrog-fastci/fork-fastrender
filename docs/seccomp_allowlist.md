@@ -8,6 +8,7 @@ evolves.
 
 Related:
 - Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
+- IPC transport invariants (framing + caps + shared memory safety): [`docs/ipc.md`](ipc.md)
 
 ## Trace syscalls locally
 
@@ -57,6 +58,9 @@ If the renderer uses UNIX-domain sockets with FD passing (`SCM_RIGHTS`), expect 
 
 See [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md) for the IPC-side checklist and
 footguns.
+
+For the higher-level framing/FD/shm invariants the sandboxed transport must preserve, also see
+[`docs/ipc.md`](ipc.md).
 
 Workflow:
 1. Run the trace script to get a syscall set.
