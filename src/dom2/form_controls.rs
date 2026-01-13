@@ -46,6 +46,21 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn input_default_value(type_attr: Option<&str>, value_attr: Option<&str>) -> String {
+  if let Some(value) = value_attr {
+    return value.to_string();
+  }
+  // HTML: checkbox/radio inputs default to value "on" when the `value` content attribute is
+  // missing.
+  //
+  // This matches browser-observable `HTMLInputElement.value` defaults and ensures form submission
+  // uses the correct value when no explicit `value` attribute is present.
+  if is_input_checkable(type_attr) {
+    return "on".to_string();
+  }
+  String::new()
+}
+
 impl Document {
   pub(crate) fn init_form_control_state_for_node_kind(
     &self,
@@ -65,8 +80,9 @@ impl Document {
     }
 
     if tag_name.eq_ignore_ascii_case("input") {
-      let value = attrs_get_ci(attributes, "value").unwrap_or("").to_string();
       let type_attr = attrs_get_ci(attributes, "type");
+      let value_attr = attrs_get_ci(attributes, "value");
+      let value = input_default_value(type_attr, value_attr);
       let checkable = is_input_checkable(type_attr);
       let checkedness = checkable && attrs_has_ci(attributes, "checked");
       return (
@@ -173,8 +189,10 @@ impl Document {
     // attribute update the current value. Once dirty, the attribute only affects the default value
     // and the current value is preserved until form reset.
     if let Some((dirty_value, dirty_checkedness)) = input_dirty {
-      if name.eq_ignore_ascii_case("value") && !dirty_value {
-        let new_value = self.get_attribute(node, "value")?.unwrap_or("").to_string();
+      if (name.eq_ignore_ascii_case("value") || name.eq_ignore_ascii_case("type")) && !dirty_value {
+        let type_attr = self.get_attribute(node, "type")?;
+        let value_attr = self.get_attribute(node, "value")?;
+        let new_value = input_default_value(type_attr, value_attr);
         if let Some(state) = self
           .input_states
           .get_mut(node.index())
@@ -384,8 +402,10 @@ impl Document {
 
   pub fn reset_input(&mut self, input: NodeId) -> Result<(), DomError> {
     let _ = self.node_checked(input)?;
-    let default_value = self.get_attribute(input, "value")?.unwrap_or("").to_string();
-    let checkable = is_input_checkable(self.get_attribute(input, "type")?);
+    let type_attr = self.get_attribute(input, "type")?;
+    let value_attr = self.get_attribute(input, "value")?;
+    let default_value = input_default_value(type_attr, value_attr);
+    let checkable = is_input_checkable(type_attr);
     let checked_attr = self.has_attribute(input, "checked")?;
     let default_checkedness = checkable && checked_attr;
     let state = self.input_state_mut(input)?;
@@ -467,8 +487,10 @@ impl Document {
         .and_then(|s| s.as_ref())
         .is_some()
       {
-        let default_value = self.get_attribute(node_id, "value")?.unwrap_or("").to_string();
-        let checkable = is_input_checkable(self.get_attribute(node_id, "type")?);
+        let type_attr = self.get_attribute(node_id, "type")?;
+        let value_attr = self.get_attribute(node_id, "value")?;
+        let default_value = input_default_value(type_attr, value_attr);
+        let checkable = is_input_checkable(type_attr);
         let checked_attr = self.has_attribute(node_id, "checked")?;
         let default_checkedness = checkable && checked_attr;
         if let Some(state) = self

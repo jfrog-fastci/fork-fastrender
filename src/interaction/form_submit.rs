@@ -1311,6 +1311,11 @@ fn collect_select_options_dom2(dom: &dom2::Document, select: dom2::NodeId) -> Ve
     if !is_option_dom2(dom, option) {
       continue;
     }
+    // Skip inert `<template>` contents (and other inert subtrees) inside the select, matching the
+    // renderer DOM's template-contents semantics.
+    if is_effectively_inert_dom2(dom, option) {
+      continue;
+    }
     out.push(SelectOptionDom2 {
       value: option_value_dom2(dom, option),
       selected: dom.option_selected(option).ok().unwrap_or(false),
@@ -1438,16 +1443,10 @@ fn collect_form_entries_dom2(
           continue;
         }
 
-        // Checkbox/radio: default "on" when `value` attribute is missing.
-        let value_attr_present = get_attr_dom2(dom, node_id, "value").is_some();
-        let state_value = dom.input_value(node_id).ok().unwrap_or("");
-        let value = if value_attr_present {
-          state_value
-        } else if state_value.is_empty() {
-          "on"
-        } else {
-          state_value
-        };
+        // Checkbox/radio value is sourced from the live form control state. The `dom2` input state
+        // initializes checkable controls to the HTML default value "on" when no `value` content
+        // attribute is present.
+        let value = dom.input_value(node_id).ok().unwrap_or("");
 
         out.push(FormDataEntry::Text {
           name: name.to_string(),
@@ -1754,6 +1753,7 @@ mod dom2_tests {
       "    <input id=\"b\" name=\"b\" value=\"2\">",
       "  </fieldset>",
       "  <input id=\"c\" type=\"checkbox\" name=\"c\" value=\"yes\">",
+      "  <input id=\"c2\" type=\"checkbox\" name=\"d\">",
       "  <input id=\"r1\" type=\"radio\" name=\"r\" value=\"1\">",
       "  <input id=\"r2\" type=\"radio\" name=\"r\" value=\"2\">",
       "  <textarea id=\"t\" name=\"t\">default</textarea>",
@@ -1764,11 +1764,13 @@ mod dom2_tests {
     let mut doc = crate::dom2::parse_html(html).expect("parse dom2");
     let form = doc.get_element_by_id("f").expect("form");
     let checkbox = doc.get_element_by_id("c").expect("checkbox");
+    let checkbox_default = doc.get_element_by_id("c2").expect("checkbox");
     let radio2 = doc.get_element_by_id("r2").expect("radio");
     let textarea = doc.get_element_by_id("t").expect("textarea");
 
     // Simulate user interaction: checkedness/value are stored in dom2 internal state.
     doc.set_input_checked(checkbox, true).unwrap();
+    doc.set_input_checked(checkbox_default, true).unwrap();
     doc.set_input_checked(radio2, true).unwrap();
     doc.set_textarea_value(textarea, "edited").unwrap();
 
@@ -1783,7 +1785,7 @@ mod dom2_tests {
 
     assert_eq!(
       submission.url,
-      "https://example.com/submit?a=1&c=yes&r=2&t=edited",
+      "https://example.com/submit?a=1&c=yes&d=on&r=2&t=edited",
       "expected: (1) first-legend input included and fieldset-disabled input excluded, (2) checkbox/radio use dom2 checkedness state, (3) textarea uses dom2 current value"
     );
   }

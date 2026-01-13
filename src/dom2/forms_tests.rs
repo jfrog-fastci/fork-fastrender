@@ -62,6 +62,24 @@ fn input_value_and_checked_use_internal_state_with_dirty_flags() {
 }
 
 #[test]
+fn checkbox_value_defaults_to_on_when_value_attribute_missing() {
+  let html = "<!doctype html><html><body><input id=i type=checkbox checked></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+  let input = doc.get_element_by_id("i").expect("input element");
+  assert_eq!(doc.get_attribute(input, "value").unwrap(), None);
+  assert_eq!(doc.input_value(input).unwrap(), "on");
+
+  // Dirty value can override to the empty string without adding a `value` attribute.
+  doc.set_input_value(input, "").unwrap();
+  assert_eq!(doc.get_attribute(input, "value").unwrap(), None);
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // Reset restores the default value derived from the content attribute state.
+  doc.reset_input(input).unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "on");
+}
+
+#[test]
 fn textarea_value_uses_text_content_until_dirty() {
   let html = "<!doctype html><html><body><textarea id=t>hello</textarea></body></html>";
   let mut doc = crate::dom2::parse_html(html).unwrap();
