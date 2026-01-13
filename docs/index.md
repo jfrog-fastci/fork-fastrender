@@ -18,6 +18,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Pageset page loop (fix pages one-by-one): [`instructions/pageset_page_loop.md`](../instructions/pageset_page_loop.md)
 - **Live rendering (dynamic browser, not static)**: [`instructions/live_rendering.md`](../instructions/live_rendering.md) ⭐
 - Video support: [`instructions/video_support.md`](../instructions/video_support.md)
+- Media clocking & A/V sync model (audio master clock): [media_clocking.md](media_clocking.md)
 - Page-loop tooling playbook: [page_loop_tooling.md](page_loop_tooling.md)
 
 ## Browser application workstreams
