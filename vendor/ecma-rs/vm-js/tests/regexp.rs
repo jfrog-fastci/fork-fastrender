@@ -1616,15 +1616,19 @@ fn regexp_lookbehind_sliced_strings_do_not_read_before_start() {
     .exec_script(
       r#"
         var oob_subject = "abcdefghijklmnabcdefghijklmn".slice(14);
+        var oob_subject_sub = "abcdefghijklmnabcdefghijklmn".substring(14);
         [
           oob_subject.match(/(?=(abcdefghijklmn))(?<=\1)a/i) === null,
           oob_subject.match(/(?=(abcdefghijklmn))(?<=\1)a/) === null,
+          oob_subject_sub.match(/(?=(abcdefghijklmn))(?<=\1)a/i) === null,
+          oob_subject_sub.match(/(?=(abcdefghijklmn))(?<=\1)a/) === null,
           "abcdefgabcdefg".slice(1).match(/(?=(abcdefg))(?<=\1)/) === null,
+          "abcdefgabcdefg".substring(1).match(/(?=(abcdefg))(?<=\1)/) === null,
         ].join(",")
       "#,
     )
     .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true");
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,true,true,true");
 }
 
 #[test]
