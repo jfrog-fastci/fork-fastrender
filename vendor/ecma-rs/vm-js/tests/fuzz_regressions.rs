@@ -1,4 +1,7 @@
-use vm_js::{Agent, Budget, CompiledScript, HeapLimits, TerminationReason, VmError, VmOptions};
+use vm_js::{
+  Agent, Budget, CompiledScript, HeapLimits, HostHooks, TerminationReason, Value, VmError,
+  VmOptions,
+};
 
 #[test]
 fn regression_infinite_loop_is_bounded_in_agent_run_script() {
@@ -61,4 +64,62 @@ fn regression_infinite_loop_is_bounded_in_agent_run_compiled_script() {
     VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
     other => panic!("expected termination, got {other:?}"),
   }
+}
+
+#[test]
+fn run_compiled_script_invokes_microtask_checkpoint_hook() {
+  let mut agent = Agent::with_options(
+    VmOptions::default(),
+    HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024),
+  )
+  .unwrap();
+
+  struct Hooks {
+    checkpoints: u32,
+  }
+
+  impl HostHooks for Hooks {
+    fn microtask_checkpoint(&mut self, agent: &mut Agent) -> Result<(), VmError> {
+      self.checkpoints += 1;
+      agent.perform_microtask_checkpoint()
+    }
+  }
+
+  // Enqueue a Promise job that sets a global property. The host hook runs a microtask checkpoint,
+  // so the job should execute before `run_compiled_script` returns.
+  let src = "Promise.resolve(1).then(() => { globalThis.__x = 123; });";
+  let script = CompiledScript::compile_script(agent.heap_mut(), "<regression>", src).unwrap();
+
+  let mut hooks = Hooks { checkpoints: 0 };
+  agent
+    .run_compiled_script(
+      script,
+      Budget {
+        fuel: Some(10_000),
+        deadline: None,
+        check_time_every: 1,
+      },
+      Some(&mut hooks),
+    )
+    .unwrap();
+
+  assert_eq!(
+    hooks.checkpoints, 1,
+    "expected microtask checkpoint hook to run"
+  );
+
+  let v = agent
+    .run_script(
+      "<check>",
+      "globalThis.__x",
+      Budget {
+        fuel: Some(10_000),
+        deadline: None,
+        check_time_every: 1,
+      },
+      None,
+    )
+    .unwrap();
+
+  assert_eq!(v, Value::Number(123.0));
 }
