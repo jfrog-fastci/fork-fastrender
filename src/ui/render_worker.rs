@@ -8221,12 +8221,38 @@ impl BrowserRuntime {
       }
       // Snapshot the post-pump DOM so we can compare against the renderer DOM without holding a
       // borrow into `tab.js_tab` across the subsequent `tab.document` mutation.
+      //
+      // Convert with mapping so we can project dom2's live form control state (values/checkedness/
+      // selectedness) into the renderer DOM snapshot; otherwise out-of-band state changes like
+      // `input.value = "x"` would be invisible to the DOM diff.
       let dom2 = js_tab.dom();
       let generation = dom2.mutation_generation();
-      let snapshot = dom2.to_renderer_dom_with_mapping();
-      let mut dom_snapshot = snapshot.dom;
-      let mapping = snapshot.mapping;
-      dom2.project_form_control_state_into_renderer_dom_snapshot(&mut dom_snapshot, &mapping);
+
+      let (dom_snapshot, mapping) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut snapshot = dom2.to_renderer_dom_with_mapping();
+        dom2.project_form_control_state_into_renderer_dom_snapshot(&mut snapshot.dom, &snapshot.mapping);
+        (snapshot.dom, snapshot.mapping)
+      })) {
+        Ok(snapshot) => snapshot,
+        Err(payload) => {
+          let msg = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+          msgs.push(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("panic while snapshotting JS DOM into renderer DOM: {msg}"),
+          });
+          tab.js_dom_dirty = false;
+          tab.js_dom_mutation_generation = generation;
+          tab.js_dom_mapping_generation = 0;
+          tab.js_dom_mapping = None;
+          tab.js_dom_mapping_miss_log_last.clear();
+          return false;
+        }
+      };
+
       (dom_snapshot, mapping, generation)
     };
     // Keep our cached generation in sync with whatever ran during the pump so subsequent ticks

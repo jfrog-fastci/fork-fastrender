@@ -99,6 +99,55 @@ fn pointer_move_sets_hover_and_repaints() {
 }
 
 #[test]
+fn post_navigation_js_pump_syncs_script_mutated_input_value() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+  let path = dir.path().join("input_value_pump.html");
+  std::fs::write(
+    &path,
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            input { display: none; }
+            #marker { width:64px; height:64px; background: rgb(255, 0, 0); }
+            input[value="pumped"] + #marker { background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>
+          <input id="i">
+          <div id="marker"></div>
+          <script>
+            // Mutate `input.value` (internal form-control state) without touching the `value=`
+            // attribute. The UI worker's post-navigation JS pump should project this state into the
+            // renderer DOM so attribute selectors reflect the change on first render.
+            document.getElementById('i').value = 'pumped';
+          </script>
+        </body>
+      </html>
+    "#,
+  )
+  .unwrap();
+  let url = file_url(&path);
+
+  let h = WorkerHarness::spawn();
+  let tab_id = create_tab(&h, (128, 128));
+
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
+  );
+  let _ = drain_after_frame(&h, events);
+
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 10, 10),
+    [0, 255, 0, 255],
+    "expected marker to reflect JS-updated input value"
+  );
+}
+
+#[test]
 fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
