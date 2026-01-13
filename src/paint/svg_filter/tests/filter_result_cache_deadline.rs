@@ -1,5 +1,6 @@
 use super::super::{
   apply_svg_filter, resolve_filter_regions, filter_region_for_pixmap, filter_result_cache,
+  svg_filter_test_guard,
   ColorInterpolationFilters, FilterPrimitive, FilterStep, SvgFilter, SvgFilterCacheKey,
   SvgFilterRegion, SvgFilterUnits, SvgLength,
 };
@@ -13,6 +14,7 @@ use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 #[test]
 fn svg_filter_result_cache_key_respects_deadline() {
+  let _guard = svg_filter_test_guard();
   let mut source = Pixmap::new(512, 512).expect("pixmap");
   source
     .pixels_mut()
@@ -117,4 +119,3 @@ fn svg_filter_result_cache_key_respects_deadline() {
     }
   }
 }
-
