@@ -4682,6 +4682,195 @@ fn find_element_by_id_attr_in_tree(
   None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DatalistOption {
+  pub value: String,
+  pub label: String,
+  pub disabled: bool,
+}
+
+fn is_html_datalist(node: &DomNode) -> bool {
+  if !node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("datalist"))
+  {
+    return false;
+  }
+  matches!(
+    node.namespace(),
+    Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+  )
+}
+
+fn resolve_associated_datalist_in_index(index: &DomIndexMut, input_node_id: usize) -> Option<usize> {
+  let input = index.node(input_node_id)?;
+  if !is_input(input) {
+    return None;
+  }
+
+  let list_attr = input
+    .get_attribute_ref("list")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())?;
+
+  // Spec-ish: `list` matches element IDs in the same tree (tree-root boundary, i.e. the document
+  // or current shadow root).
+  let tree_root = tree_root_boundary_id(index, input_node_id)?;
+  let referenced = find_element_by_id_attr_in_tree(index, tree_root, list_attr)?;
+  index.node(referenced).is_some_and(is_html_datalist).then_some(referenced)
+}
+
+/// Resolve the `<datalist>` element associated with an `<input list="...">`.
+///
+/// This matches `list` by ID within the same tree-root boundary (document or shadow root) and
+/// ignores `id` values inside inert `<template>` contents.
+pub(crate) fn resolve_associated_datalist(dom: &mut DomNode, input_node_id: usize) -> Option<usize> {
+  let index = DomIndexMut::new(dom);
+  resolve_associated_datalist_in_index(&index, input_node_id)
+}
+
+fn collect_descendant_text_content_excluding_script_and_shadow_roots(node: &DomNode) -> String {
+  let mut text = String::new();
+  let mut stack: Vec<&DomNode> = vec![node];
+  while let Some(node) = stack.pop() {
+    match &node.node_type {
+      DomNodeType::Text { content } => text.push_str(content),
+      DomNodeType::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        if tag_name.eq_ignore_ascii_case("script")
+          && (namespace.is_empty()
+            || namespace == crate::dom::HTML_NAMESPACE
+            || namespace == crate::dom::SVG_NAMESPACE)
+        {
+          continue;
+        }
+      }
+      _ => {}
+    }
+    for child in node.children.iter().rev() {
+      // Mirror select option text extraction: ignore shadow root subtrees.
+      if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
+      stack.push(child);
+    }
+  }
+  text
+}
+
+fn datalist_option_text(node: &DomNode) -> String {
+  crate::dom::strip_and_collapse_ascii_whitespace(
+    &collect_descendant_text_content_excluding_script_and_shadow_roots(node),
+  )
+}
+
+fn collect_datalist_options_in_index(index: &DomIndexMut, datalist_node_id: usize) -> Vec<DatalistOption> {
+  let Some(datalist) = index.node(datalist_node_id) else {
+    return Vec::new();
+  };
+  if !is_html_datalist(datalist) {
+    return Vec::new();
+  }
+  if node_or_ancestor_is_template(index, datalist_node_id) {
+    return Vec::new();
+  }
+
+  let Some(datalist_tree_root) = tree_root_boundary_id(index, datalist_node_id) else {
+    return Vec::new();
+  };
+
+  // Pre-order traversal ids form contiguous ranges, so the datalist subtree is `[datalist_id, end]`.
+  let mut end = datalist_node_id;
+  for id in (datalist_node_id + 1)..index.id_to_node.len() {
+    if is_ancestor_or_self(index, datalist_node_id, id) {
+      end = id;
+    } else {
+      break;
+    }
+  }
+
+  let mut options: Vec<DatalistOption> = Vec::new();
+  for id in (datalist_node_id + 1)..=end {
+    let Some(node) = index.node(id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+
+    // Skip any nodes that live in a nested shadow root subtree.
+    if tree_root_boundary_id(index, id) != Some(datalist_tree_root) {
+      continue;
+    }
+
+    if node_or_ancestor_is_template(index, id) {
+      continue;
+    }
+
+    let Some(tag) = node.tag_name() else {
+      continue;
+    };
+    if !tag.eq_ignore_ascii_case("option") {
+      continue;
+    }
+
+    let text = datalist_option_text(node);
+    let value = if let Some(value) = node.get_attribute_ref("value") {
+      value.to_string()
+    } else {
+      text.clone()
+    };
+    let label = if let Some(label) = node
+      .get_attribute_ref("label")
+      .filter(|label| !label.is_empty())
+    {
+      label.to_string()
+    } else {
+      text
+    };
+    let disabled = node.get_attribute_ref("disabled").is_some();
+
+    options.push(DatalistOption {
+      value,
+      label,
+      disabled,
+    });
+  }
+
+  options
+}
+
+/// Collect all `<option>` descendants of a `<datalist>` in DOM (pre-order) order.
+///
+/// Options inside inert `<template>` contents are ignored. Descendant text used for value/label
+/// fallback ignores `<script>` and does not cross shadow-root boundaries.
+pub(crate) fn collect_datalist_options(dom: &mut DomNode, datalist_node_id: usize) -> Vec<DatalistOption> {
+  let index = DomIndexMut::new(dom);
+  collect_datalist_options_in_index(&index, datalist_node_id)
+}
+
+fn ascii_case_insensitive_starts_with(haystack: &str, prefix: &str) -> bool {
+  if prefix.is_empty() {
+    return true;
+  }
+  haystack
+    .as_bytes()
+    .get(..prefix.len())
+    .is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+}
+
+/// Filter function used to match `<datalist>` options for an `<input>` value.
+///
+/// Matching datalist suggestions is UA-defined; we use a simple prefix match on `value` or `label`,
+/// ASCII case-insensitively.
+pub(crate) fn datalist_option_matches_input_value(option: &DatalistOption, input_value: &str) -> bool {
+  ascii_case_insensitive_starts_with(&option.value, input_value)
+    || ascii_case_insensitive_starts_with(&option.label, input_value)
+}
+
 fn resolve_form_owner(index: &DomIndexMut, control_node_id: usize) -> Option<usize> {
   let control = index.node(control_node_id)?;
 
@@ -11083,6 +11272,9 @@ impl InteractionEngine {
 
 #[cfg(test)]
 mod pointer_tests;
+
+#[cfg(test)]
+mod datalist_tests;
 
 #[cfg(test)]
 mod fuzz_tests;
