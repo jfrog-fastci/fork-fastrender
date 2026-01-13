@@ -43,7 +43,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryFrom;
-use std::io::{self, Cursor, Read, Write as _};
+use std::io::{self, Cursor, Read, Seek, Write as _};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -3654,6 +3654,255 @@ pub trait ResourceFetcher: Send + Sync {
     }
 
     self.fetch_partial_with_context(kind, req.url, max_bytes)
+  }
+
+  /// Fetch a byte range of a resource body using a contextual request (destination + referrer).
+  ///
+  /// This is primarily intended for media pipelines that need to seek within large assets without
+  /// downloading the entire response body.
+  ///
+  /// Semantics:
+  /// - The returned `bytes` are always capped to `max_bytes` (even if the requested range is
+  ///   larger, or the origin ignores the `Range` header).
+  /// - For HTTP(S) URLs, this issues a `GET` with a `Range: bytes=start-end` header via
+  ///   [`ResourceFetcher::fetch_http_request`] so implementations can keep their existing header
+  ///   construction, caching, and CORS logic.
+  /// - For `file://` URLs and relative filesystem paths, this reads only the requested slice.
+  /// - For `data:` URLs, this decodes then slices.
+  ///
+  /// When the server ignores the range request and returns a `200 OK` response, this method will
+  /// slice the returned body when possible. If the range start is beyond the returned body length,
+  /// it returns an [`Error::Resource`] instead of panicking.
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return Err(Error::Resource(ResourceError::new(
+        req.url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    // Clamp the requested end so we never return more than `max_bytes`.
+    let capped_end = if max_bytes == 0 {
+      // Avoid underflow in `start + max_bytes - 1`. We still form a syntactically valid range and
+      // then clear the body at the end.
+      start
+    } else {
+      let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+      end.min(cap_end)
+    };
+
+    match classify_scheme(req.url) {
+      ResourceScheme::Http | ResourceScheme::Https => {
+        let mut headers = Vec::with_capacity(1);
+        headers.push((
+          "Range".to_string(),
+          format!("bytes={start}-{capped_end}"),
+        ));
+
+        let request = HttpRequest {
+          fetch: req,
+          method: "GET",
+          redirect: web_fetch::RequestRedirect::Follow,
+          headers: &headers,
+          body: None,
+        };
+
+        let mut res = self.fetch_http_request(request)?;
+        ensure_http_success(&res, req.url)?;
+
+        if max_bytes == 0 {
+          res.bytes.clear();
+          return Ok(res);
+        }
+
+        // If the server ignored the range and returned a full 200 response, slice when possible.
+        if res.status == Some(200) {
+          let start_idx = usize::try_from(start).map_err(|_| {
+            Error::Resource(ResourceError::new(
+              req.url,
+              format!("byte range start {start} is too large to slice in memory"),
+            ))
+          })?;
+          if start_idx >= res.bytes.len() {
+            return Err(Error::Resource(ResourceError::new(
+              req.url,
+              format!(
+                "byte range start {start} is beyond end of response body (len={})",
+                res.bytes.len()
+              ),
+            )));
+          }
+          let end_idx = usize::try_from(capped_end).map_err(|_| {
+            Error::Resource(ResourceError::new(
+              req.url,
+              format!("byte range end {capped_end} is too large to slice in memory"),
+            ))
+          })?;
+          let available_end = res.bytes.len().saturating_sub(1);
+          let end_idx = end_idx.min(available_end);
+          res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+          return Ok(res);
+        }
+
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        Ok(res)
+      }
+      ResourceScheme::File | ResourceScheme::Relative => {
+        let url_owned;
+        let url = match classify_scheme(req.url) {
+          ResourceScheme::Relative => {
+            url_owned = format!("file://{}", req.url);
+            url_owned.as_str()
+          }
+          _ => req.url,
+        };
+
+        let path_candidates = file_url_path_candidates(url);
+        let mut file = None;
+        let mut chosen_path: Option<std::path::PathBuf> = None;
+        let mut last_err = None;
+        for candidate in &path_candidates {
+          match std::fs::File::open(candidate) {
+            Ok(handle) => {
+              file = Some(handle);
+              chosen_path = Some(candidate.clone());
+              break;
+            }
+            Err(err) => last_err = Some(err),
+          }
+        }
+
+        let mut file = file.ok_or_else(|| {
+          let err = last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"));
+          Error::Resource(
+            ResourceError::new(url.to_string(), err.to_string())
+              .with_final_url(url.to_string())
+              .with_source(err),
+          )
+        })?;
+
+        if max_bytes == 0 {
+          let chosen_path = chosen_path.unwrap_or_else(|| std::path::PathBuf::from(url));
+          let content_type = guess_content_type_from_path(chosen_path.to_string_lossy().as_ref());
+          return Ok(FetchedResource::with_final_url(
+            Vec::new(),
+            content_type,
+            Some(url.to_string()),
+          ));
+        }
+
+        // Seek to the requested offset and read at most `max_bytes`.
+        let meta = file.metadata().ok();
+        if let Some(meta) = &meta {
+          let len = meta.len();
+          if len == 0 {
+            if start == 0 {
+              let chosen_path = chosen_path.unwrap_or_else(|| std::path::PathBuf::from(url));
+              let content_type =
+                guess_content_type_from_path(chosen_path.to_string_lossy().as_ref());
+              return Ok(FetchedResource::with_final_url(
+                Vec::new(),
+                content_type,
+                Some(url.to_string()),
+              ));
+            }
+            return Err(Error::Resource(ResourceError::new(
+              url,
+              "byte range start is beyond end of empty file".to_string(),
+            )));
+          }
+          if start >= len {
+            return Err(Error::Resource(ResourceError::new(
+              url,
+              format!("byte range start {start} is beyond end of file (len={len})"),
+            )));
+          }
+        }
+
+        file
+          .seek(std::io::SeekFrom::Start(start))
+          .map_err(|err| {
+            Error::Resource(
+              ResourceError::new(url.to_string(), err.to_string())
+                .with_final_url(url.to_string())
+                .with_source(err),
+            )
+          })?;
+
+        let max_len_u64 = capped_end.saturating_sub(start).saturating_add(1);
+        let read_limit = usize::try_from(max_len_u64).unwrap_or(max_bytes);
+        let read_limit = read_limit.min(max_bytes);
+        let bytes = read_response_prefix(&mut file, read_limit).map_err(|err| {
+          Error::Resource(
+            ResourceError::new(url.to_string(), err.to_string())
+              .with_final_url(url.to_string())
+              .with_source(err),
+          )
+        })?;
+
+        let chosen_path = chosen_path.unwrap_or_else(|| std::path::PathBuf::from(url));
+        let content_type = guess_content_type_from_path(chosen_path.to_string_lossy().as_ref());
+        Ok(FetchedResource::with_final_url(
+          bytes,
+          content_type,
+          Some(url.to_string()),
+        ))
+      }
+      ResourceScheme::Data => {
+        if max_bytes == 0 {
+          return Ok(FetchedResource::new(Vec::new(), None));
+        }
+
+        let decode_len = capped_end
+          .saturating_add(1)
+          .try_into()
+          .map_err(|_| {
+            Error::Resource(ResourceError::new(
+              req.url,
+              format!("byte range end {capped_end} is too large to decode"),
+            ))
+          })?;
+        let mut res = data_url::decode_data_url_prefix(req.url, decode_len)?;
+        let start_idx = usize::try_from(start).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            req.url,
+            format!("byte range start {start} is too large to slice in memory"),
+          ))
+        })?;
+        if start_idx >= res.bytes.len() {
+          return Err(Error::Resource(ResourceError::new(
+            req.url,
+            format!(
+              "byte range start {start} is beyond end of decoded data URL (len={})",
+              res.bytes.len()
+            ),
+          )));
+        }
+        let end_idx = usize::try_from(capped_end).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            req.url,
+            format!("byte range end {capped_end} is too large to slice in memory"),
+          ))
+        })?;
+        let available_end = res.bytes.len().saturating_sub(1);
+        let end_idx = end_idx.min(available_end);
+        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        Ok(res)
+      }
+      ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
+    }
   }
 
   /// Fetch a resource with optional cache validators for HTTP requests.
@@ -9027,6 +9276,15 @@ impl ResourceFetcher for HttpFetcher {
         let deadline = render_control::root_deadline();
         let started = Instant::now();
         render_control::with_deadline(deadline.as_ref(), || {
+          let mut system_headers: Vec<(String, String)> = Vec::new();
+          // When a `Range` header is present we want `Accept-Encoding: identity` so the byte range
+          // applies directly to the encoded representation. Compressed range responses are
+          // ambiguous (the range can apply to the compressed stream, and prefixes are often not
+          // independently decodable), so force identity encoding whenever callers request a range.
+          if req.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("range")) {
+            system_headers.push(("Accept-Encoding".to_string(), "identity".to_string()));
+          }
+
           self.perform_cors_preflight_if_needed(
             kind,
             req.fetch.destination,
@@ -9049,7 +9307,7 @@ impl ResourceFetcher for HttpFetcher {
             req.method,
             req.redirect,
             req.headers,
-            &[],
+            &system_headers,
             req.body,
             req.fetch.client_origin,
             req.fetch.referrer_url,
@@ -20170,6 +20428,108 @@ mod tests {
     assert!(
       req.contains("referer: http://a.test/"),
       "expected Referer header derived from referrer for partial image, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_fetch_range_with_request_sends_range_and_identity_encoding() {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_fetch_range_with_request_sends_range_and_identity_encoding")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"rng";
+      let headers = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nContent-Range: bytes 5-7/10\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.bin", addr);
+    let res = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
+      .expect("fetch range");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"rng");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("range: bytes=5-7"),
+      "expected Range header for range fetch, got: {req}"
+    );
+    assert!(
+      req.contains("accept-encoding: identity"),
+      "expected Accept-Encoding identity for range fetch, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_fetch_range_with_request_enforces_max_bytes_cap() {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_fetch_range_with_request_enforces_max_bytes_cap")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      // Intentionally return 200 OK (ignore Range) with a larger body; the fetcher should still
+      // return a bounded slice.
+      let body = b"0123456789";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.bin", addr);
+    let res = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 0..=9, 2)
+      .expect("fetch range with cap");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"01");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("range: bytes=0-1"),
+      "expected capped Range header, got: {req}"
+    );
+    assert!(
+      req.contains("accept-encoding: identity"),
+      "expected Accept-Encoding identity for capped range fetch, got: {req}"
     );
   }
 
