@@ -40,6 +40,7 @@ pub mod mixer;
 pub mod queue;
 #[cfg(test)]
 pub mod preroll;
+pub mod resample;
 pub mod test_signal;
 pub mod timed_queue;
 pub mod types;
@@ -362,6 +363,71 @@ pub trait AudioSink: Send + Sync {
   /// Samples must be at the sink/backend output sample rate and channel count.
   /// Returns the number of samples accepted (the remainder, if any, was dropped).
   fn push_interleaved_f32(&self, samples: &[f32]) -> usize;
+
+  /// Queue interleaved f32 PCM samples for playback, resampling as needed.
+  ///
+  /// This is a convenience helper for callers that are producing decoded audio at a sample rate
+  /// different from the output device (or applying an `HTMLMediaElement.playbackRate`-style speed
+  /// change).
+  ///
+  /// Notes:
+  /// - The input must be interleaved with the sink's channel count (no channel remixing is
+  ///   performed).
+  /// - `playback_rate` is implemented by scaling the effective input sample rate (i.e. naive
+  ///   resampling/pitch shift).
+  /// - Returns the number of *output* samples accepted by the sink (at the sink's sample rate).
+  fn push_interleaved_f32_resampled(
+    &self,
+    samples: &[f32],
+    input_sample_rate_hz: u32,
+    playback_rate: f64,
+  ) -> usize {
+    let cfg = self.config();
+    let channels = usize::from(cfg.channels.max(1));
+    let usable_len = samples.len() - (samples.len() % channels);
+    let samples = &samples[..usable_len];
+    if samples.is_empty() {
+      return 0;
+    }
+
+    if input_sample_rate_hz == cfg.sample_rate_hz && playback_rate == 1.0 {
+      return self.push_interleaved_f32(samples);
+    }
+
+    let input_frames = samples.len() / channels;
+    if input_frames == 0 {
+      return 0;
+    }
+
+    let effective_in_rate = (input_sample_rate_hz as f64) * playback_rate;
+    if !(effective_in_rate.is_finite()) || effective_in_rate <= 0.0 {
+      return 0;
+    }
+
+    // Preserve duration: frames_out / output_rate == frames_in / (input_rate * playback_rate)
+    let out_frames_f =
+      (input_frames as f64) * (cfg.sample_rate_hz as f64) / (input_sample_rate_hz as f64) / playback_rate;
+    let out_frames = if out_frames_f.is_finite() && out_frames_f > 0.0 {
+      // Prefer truncation to avoid overshooting the provided input range.
+      out_frames_f.floor() as usize
+    } else {
+      0
+    };
+
+    if out_frames == 0 {
+      return 0;
+    }
+
+    let resampled = resample::resample_interleaved_f32_linear_with_playback_rate(
+      samples,
+      channels,
+      input_sample_rate_hz,
+      cfg.sample_rate_hz,
+      playback_rate,
+      out_frames,
+    );
+    self.push_interleaved_f32(&resampled)
+  }
 
   /// Sets the playback volume (gain) for this sink.
   ///
