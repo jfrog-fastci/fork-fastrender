@@ -3098,6 +3098,13 @@ mod tests {
     );
   }
 
+  #[cfg(feature = "browser_ui")]
+  #[test]
+  fn pending_page_subtree_accesskit_update_is_send() {
+    fn assert_send<T: Send>() {}
+    assert_send::<PendingPageSubtreeAccessKitUpdate>();
+  }
+
   #[test]
   fn worker_wake_notify_coalesces() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8291,6 +8298,16 @@ impl PerfWindowLog {
 struct PendingPageSubtreeAccessKitUpdate {
   nodes: Vec<(accesskit::NodeId, accesskit::Node)>,
   focus: Option<accesskit::NodeId>,
+}
+
+// The windowed browser UI can receive a page-accessibility subtree from the worker and merge it
+// into egui's AccessKit update (`PlatformOutput.accesskit_update`). That subtree must be `Send`
+// because worker→UI messages travel over `std::sync::mpsc`.
+#[cfg(feature = "browser_ui")]
+#[allow(dead_code)]
+fn _assert_send_page_subtree_accesskit_update() {
+  fn assert_send<T: Send>() {}
+  assert_send::<PendingPageSubtreeAccessKitUpdate>();
 }
 
 #[cfg(feature = "browser_ui")]
