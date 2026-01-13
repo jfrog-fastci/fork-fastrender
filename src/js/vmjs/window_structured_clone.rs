@@ -2599,21 +2599,26 @@ mod tests {
          u8[0] = 1; u8[1] = 2; u8[2] = 3; u8[3] = 4;\
          const origByteOffset = u8.byteOffset;\
          const origLength = u8.length;\
+         const origByteLength = u8.byteLength;\
          Object.defineProperty(u8, 'buffer', { get() { throw 1; } });\
          Object.defineProperty(u8, 'byteOffset', { get() { throw 2; } });\
          Object.defineProperty(u8, 'length', { get() { throw 3; } });\
+         Object.defineProperty(u8, 'byteLength', { get() { throw 4; } });\
          let threwBuffer = false;\
          let threwByteOffset = false;\
          let threwLength = false;\
+         let threwByteLength = false;\
          try { u8.buffer; } catch (e) { threwBuffer = e === 1; }\
          try { u8.byteOffset; } catch (e) { threwByteOffset = e === 2; }\
          try { u8.length; } catch (e) { threwLength = e === 3; }\
-         if (!threwBuffer || !threwByteOffset || !threwLength) return false;\
+         try { u8.byteLength; } catch (e) { threwByteLength = e === 4; }\
+         if (!threwBuffer || !threwByteOffset || !threwLength || !threwByteLength) return false;\
          const c = structuredClone(u8);\
          if (!(c instanceof Uint8Array)) return false;\
          if (Object.getPrototypeOf(c) !== Uint8Array.prototype) return false;\
          if (c.length !== origLength) return false;\
          if (c.byteOffset !== origByteOffset) return false;\
+         if (c.byteLength !== origByteLength) return false;\
          if (c[0] !== 1 || c[1] !== 2 || c[2] !== 3 || c[3] !== 4) return false;\
          if (c.buffer === ab) return false;\
          return true;\
