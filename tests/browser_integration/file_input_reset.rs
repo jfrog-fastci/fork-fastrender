@@ -20,30 +20,28 @@ fn find_element_by_id<'a>(dom: &'a DomNode, element_id: &str) -> &'a DomNode {
   panic!("expected element with id={element_id:?}");
 }
 
-fn find_file_control_value(
-  node: &fastrender::tree::box_tree::BoxNode,
-) -> Option<Option<String>> {
+fn collect_file_control_values(node: &fastrender::tree::box_tree::BoxNode, out: &mut Vec<Option<String>>) {
+  if let Some(control) = node.form_control.as_deref() {
+    if let FormControlKind::File { value } = &control.control {
+      out.push(value.clone());
+    }
+  }
+
   if let BoxType::Replaced(replaced) = &node.box_type {
     if let ReplacedType::FormControl(control) = &replaced.replaced_type {
       if let FormControlKind::File { value } = &control.control {
-        return Some(value.clone());
+        out.push(value.clone());
       }
     }
   }
 
   if let Some(body) = node.footnote_body.as_deref() {
-    if let Some(value) = find_file_control_value(body) {
-      return Some(value);
-    }
+    collect_file_control_values(body, out);
   }
 
   for child in &node.children {
-    if let Some(value) = find_file_control_value(child) {
-      return Some(value);
-    }
+    collect_file_control_values(child, out);
   }
-
-  None
 }
 
 #[test]
@@ -54,24 +52,26 @@ fn form_reset_clears_file_input_selection() -> Result<()> {
 
   let html = r#"<!doctype html>
 <html>
-  <head>
-    <meta charset="utf-8">
-    <style>
-      html, body { margin: 0; padding: 0; }
-      #f { position: absolute; left: 0; top: 0; width: 240px; height: 40px; }
-      #reset { position: absolute; left: 0; top: 60px; width: 120px; height: 40px; }
-    </style>
-  </head>
-  <body>
-    <form id="form">
-      <input id="f" type="file" name="up">
-      <input id="reset" type="reset" value="Reset">
-    </form>
-  </body>
-</html>
-"#;
+   <head>
+     <meta charset="utf-8">
+     <style>
+       html, body { margin: 0; padding: 0; }
+       #in { position: absolute; left: 0; top: 0; width: 240px; height: 40px; }
+       #out { position: absolute; left: 0; top: 45px; width: 240px; height: 40px; }
+       #reset { position: absolute; left: 0; top: 100px; width: 120px; height: 40px; }
+     </style>
+   </head>
+   <body>
+     <form id="form">
+       <input id="in" type="file" name="up_in">
+       <input id="reset" type="reset" value="Reset">
+     </form>
+     <input id="out" type="file" name="up_out" form="form">
+   </body>
+ </html>
+ "#;
 
-  let options = RenderOptions::new().with_viewport(320, 140);
+  let options = RenderOptions::new().with_viewport(320, 160);
   let mut doc = BrowserDocument::new(support::deterministic_renderer(), html, options)?;
   let mut engine = InteractionEngine::new();
 
@@ -79,45 +79,70 @@ fn form_reset_clears_file_input_selection() -> Result<()> {
 
   // Create a deterministic temp file so we can drop it onto the input.
   let dir = tempdir().expect("temp dir");
-  let file_path = dir.path().join("a.txt");
-  std::fs::write(&file_path, b"hello-a").expect("write a.txt");
+  let file_a = dir.path().join("a.txt");
+  let file_b = dir.path().join("b.txt");
+  std::fs::write(&file_a, b"hello-a").expect("write a.txt");
+  std::fs::write(&file_b, b"hello-b").expect("write b.txt");
 
   let scroll_state = doc.scroll_state();
-  let drop_point = Point::new(10.0, 10.0);
+  let drop_in_point = Point::new(10.0, 10.0);
+  let drop_out_point = Point::new(10.0, 55.0);
   let _drop_changed = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let changed = engine.drop_files_with_scroll(
+    let changed_in = engine.drop_files_with_scroll(
       dom,
       box_tree,
       fragment_tree,
       &scroll_state,
-      drop_point,
-      &[file_path.clone()],
+      drop_in_point,
+      &[file_a.clone()],
     );
+    let changed_out = engine.drop_files_with_scroll(
+      dom,
+      box_tree,
+      fragment_tree,
+      &scroll_state,
+      drop_out_point,
+      &[file_b.clone()],
+    );
+    let changed = changed_in || changed_out;
     (changed, changed)
   })?;
 
   // File selection should be reflected in internal state and the synthetic value attribute.
-  assert_eq!(engine.interaction_state().form_state.file_inputs.len(), 1);
-  let file_node = find_element_by_id(doc.dom(), "f");
-  assert!(
-    file_node.get_attribute_ref("data-fastr-file-value").is_some(),
-    "expected file input to have a synthetic data-fastr-file-value after drop"
-  );
+  assert_eq!(engine.interaction_state().form_state.file_inputs.len(), 2);
+  for (id, expected_name) in [("in", "a.txt"), ("out", "b.txt")] {
+    let file_node = find_element_by_id(doc.dom(), id);
+    let stored = file_node
+      .get_attribute_ref("data-fastr-file-value")
+      .expect("expected file input to have a synthetic data-fastr-file-value after drop");
+    assert!(
+      stored.contains(expected_name),
+      "expected file input {id} to contain {expected_name}, got {stored:?}"
+    );
+  }
 
   doc.render_frame_with_scroll_state_and_interaction_state(Some(engine.interaction_state()))?;
   let prepared = doc
     .prepared()
     .expect("expected BrowserDocument to have cached layout after render");
-  let file_value = find_file_control_value(&prepared.box_tree().root).expect("file input control");
+  let mut values = Vec::new();
+  collect_file_control_values(&prepared.box_tree().root, &mut values);
+  assert_eq!(values.len(), 2, "expected two file input controls");
   assert!(
-    file_value
-      .as_deref()
-      .is_some_and(|value| value.contains("a.txt")),
-    "expected file input to report selected file path after drop, got {file_value:?}"
+    values
+      .iter()
+      .any(|value| value.as_deref().is_some_and(|value| value.contains("a.txt"))),
+    "expected one file input to report selected file a.txt, got {values:?}"
+  );
+  assert!(
+    values
+      .iter()
+      .any(|value| value.as_deref().is_some_and(|value| value.contains("b.txt"))),
+    "expected one file input to report selected file b.txt, got {values:?}"
   );
 
   // Click the reset control.
-  let reset_point = Point::new(10.0, 70.0);
+  let reset_point = Point::new(10.0, 110.0);
   let _action = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
     let down_changed = engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, reset_point);
     let (up_changed, action) = engine.pointer_up_with_scroll(
@@ -139,22 +164,26 @@ fn form_reset_clears_file_input_selection() -> Result<()> {
     engine.interaction_state().form_state.file_inputs.is_empty(),
     "expected reset to clear form_state.file_inputs"
   );
-  let file_node = find_element_by_id(doc.dom(), "f");
-  assert_eq!(
-    file_node.get_attribute_ref("data-fastr-file-value"),
-    None,
-    "expected reset to clear data-fastr-file-value"
-  );
+  for id in ["in", "out"] {
+    let file_node = find_element_by_id(doc.dom(), id);
+    assert_eq!(
+      file_node.get_attribute_ref("data-fastr-file-value"),
+      None,
+      "expected reset to clear data-fastr-file-value for {id}"
+    );
+  }
 
   // Re-render and ensure the file control no longer reports a selected value for painting.
   doc.render_frame_with_scroll_state_and_interaction_state(Some(engine.interaction_state()))?;
   let prepared = doc
     .prepared()
     .expect("expected BrowserDocument to have cached layout after reset render");
-  let file_value = find_file_control_value(&prepared.box_tree().root).expect("file input control");
+  let mut values = Vec::new();
+  collect_file_control_values(&prepared.box_tree().root, &mut values);
+  assert_eq!(values.len(), 2, "expected two file input controls after reset");
   assert!(
-    file_value.is_none(),
-    "expected file input to have no selected value after reset, got {file_value:?}"
+    values.iter().all(|value| value.is_none()),
+    "expected all file inputs to have no selected value after reset, got {values:?}"
   );
 
   Ok(())
