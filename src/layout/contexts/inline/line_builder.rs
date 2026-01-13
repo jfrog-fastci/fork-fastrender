@@ -2404,8 +2404,9 @@ impl ReshapeCache {
     font_context: &FontContext,
   ) -> Option<Vec<ShapedRun>> {
     let text_slice = item.text.get(range.clone())?;
+    let style_hash = shaping_style_hash(item.style.as_ref());
     let key = ReshapeCacheKey {
-      style_hash: shaping_style_hash(item.style.as_ref()),
+      style_hash,
       font_generation: font_context.font_generation(),
       text_id: item.source_id,
       range_start: item.source_range.start + range.start,
@@ -2437,12 +2438,13 @@ impl ReshapeCache {
     }
 
     let mut runs = shaper
-      .shape_with_context(
+      .shape_with_context_hashed(
         text_slice,
         &item.style,
         font_context,
         pipeline_dir_from_style(item.base_direction),
         item.explicit_bidi,
+        style_hash,
       )
       .ok()?;
     TextItem::apply_spacing_to_runs(
@@ -3378,8 +3380,9 @@ impl<'a> LineBuilder<'a> {
       inserted.hash(&mut hasher);
       hasher.finish()
     };
+    let style_hash = shaping_style_hash(style);
     let key = HyphenAdvanceCacheKey {
-      style_hash: shaping_style_hash(style),
+      style_hash,
       font_generation: self.font_context.font_generation(),
       hyphen_hash,
       base_direction_rtl: matches!(base_direction, Direction::Rtl),
@@ -3392,12 +3395,13 @@ impl<'a> LineBuilder<'a> {
       return *cached;
     }
 
-    let advance = match self.shaper.shape_with_context(
+    let advance = match self.shaper.shape_with_context_hashed(
       inserted,
       style,
       &self.font_context,
       pipeline_dir_from_style(base_direction),
       explicit_bidi,
+      style_hash,
     ) {
       Ok(mut runs) => {
         TextItem::apply_spacing_to_runs(
@@ -6837,6 +6841,42 @@ mod tests {
       .shape(&item_neg, 0..text.len(), &shaper, &font_context)
       .expect("expected reshape cache to reuse entry");
     assert_eq!(reshape_cache.runs.len(), 1);
+  }
+
+  #[test]
+  fn reshape_cache_uses_prehashed_pipeline_entrypoint() {
+    let font_context = FontContext::new();
+    let shaper = ShapingPipeline::new();
+    let text = "Hello";
+
+    let style = Arc::new(ComputedStyle::default());
+    let runs = shaper
+      .shape(text, &style, &font_context)
+      .expect("shape succeeds");
+    let metrics =
+      TextItem::metrics_from_runs(&font_context, &runs, style.font_size, style.font_size);
+    let breaks = find_break_opportunities(text);
+
+    let item = TextItem::new(
+      runs,
+      text.to_string(),
+      metrics,
+      breaks,
+      Vec::new(),
+      Arc::clone(&style),
+      Direction::Ltr,
+    );
+
+    let mut reshape_cache = ReshapeCache::default();
+    crate::text::pipeline::debug_reset_style_hash_calls();
+    reshape_cache
+      .shape(&item, 0..text.len(), &shaper, &font_context)
+      .expect("expected reshape cache miss to shape");
+    assert_eq!(
+      crate::text::pipeline::debug_style_hash_calls(),
+      1,
+      "expected reshape cache to compute shaping_style_hash once (for its own key), not once again inside the shaping pipeline"
+    );
   }
 
   #[test]

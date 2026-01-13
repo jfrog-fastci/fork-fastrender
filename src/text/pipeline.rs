@@ -137,6 +137,11 @@ thread_local! {
   static SHAPING_PIPELINE_NEW_CALLS: Cell<usize> = Cell::new(0);
 }
 
+#[cfg(test)]
+thread_local! {
+  static SHAPING_STYLE_HASH_CALLS: Cell<usize> = Cell::new(0);
+}
+
 type ShapingCacheHasher = BuildHasherDefault<FxHasher>;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -6070,6 +6075,9 @@ fn f32_to_canonical_bits(value: f32) -> u32 {
 }
 
 pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
+  #[cfg(test)]
+  SHAPING_STYLE_HASH_CALLS.with(|calls| calls.set(calls.get() + 1));
+
   use std::hash::Hash;
   use std::hash::Hasher;
   let mut hasher = FxHasher::default();
@@ -6205,6 +6213,18 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   }
 
   hasher.finish()
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn debug_reset_style_hash_calls() {
+  SHAPING_STYLE_HASH_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+#[doc(hidden)]
+pub(crate) fn debug_style_hash_calls() -> usize {
+  SHAPING_STYLE_HASH_CALLS.with(|calls| calls.get())
 }
 
 fn shaping_text_hash(text: &str) -> u64 {
@@ -6535,6 +6555,44 @@ impl ShapingPipeline {
     base_direction: Option<Direction>,
     explicit_bidi: Option<ExplicitBidiContext>,
   ) -> Result<Vec<ShapedRun>> {
+    self.shape_core_impl(
+      text,
+      style,
+      font_context,
+      base_direction,
+      explicit_bidi,
+      None,
+    )
+  }
+
+  fn shape_core_with_style_hash(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    base_direction: Option<Direction>,
+    explicit_bidi: Option<ExplicitBidiContext>,
+    style_hash: u64,
+  ) -> Result<Vec<ShapedRun>> {
+    self.shape_core_impl(
+      text,
+      style,
+      font_context,
+      base_direction,
+      explicit_bidi,
+      Some(style_hash),
+    )
+  }
+
+  fn shape_core_impl(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    base_direction: Option<Direction>,
+    explicit_bidi: Option<ExplicitBidiContext>,
+    style_hash: Option<u64>,
+  ) -> Result<Vec<ShapedRun>> {
     // Handle empty text
     if text.is_empty() {
       return Ok(Vec::new());
@@ -6553,7 +6611,7 @@ impl ShapingPipeline {
       }
     }
 
-    let style_hash = shaping_style_hash(style);
+    let style_hash = style_hash.unwrap_or_else(|| shaping_style_hash(style));
     let font_generation = font_context.font_generation();
     let text_hash = shaping_text_hash(text);
 
@@ -6707,6 +6765,43 @@ impl ShapingPipeline {
       Some(base_direction),
       bidi_context,
     )
+  }
+
+  /// Shapes text with an explicit bidi context (embedding level/override), using a precomputed
+  /// style hash.
+  ///
+  /// This is equivalent to [`Self::shape_with_context`], but avoids recomputing
+  /// [`shaping_style_hash`] when callers already needed the hash for their own cache keys.
+  pub fn shape_with_context_hashed(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    base_direction: Direction,
+    bidi_context: Option<ExplicitBidiContext>,
+    style_hash: u64,
+  ) -> Result<Vec<ShapedRun>> {
+    self.shape_core_with_style_hash(
+      text,
+      style,
+      font_context,
+      Some(base_direction),
+      bidi_context,
+      style_hash,
+    )
+  }
+
+  /// Shapes text using a precomputed style hash.
+  ///
+  /// Equivalent to [`Self::shape`], but avoids recomputing [`shaping_style_hash`].
+  pub fn shape_hashed(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    style_hash: u64,
+  ) -> Result<Vec<ShapedRun>> {
+    self.shape_core_with_style_hash(text, style, font_context, None, None, style_hash)
   }
 
   /// Measures the total advance width of shaped text.
