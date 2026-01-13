@@ -21,7 +21,7 @@ You can sanity-check that the entitlement files are valid XML plists (and that t
 entitlements remain deny-by-default) with:
 
 ```bash
-python tools/macos/entitlements/validate_entitlements.py
+python3 tools/macos/entitlements/validate_entitlements.py
 ```
 
 ## Editing notes
