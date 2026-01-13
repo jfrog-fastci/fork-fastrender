@@ -13929,6 +13929,17 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             self.window.request_redraw();
           }
         }
+        if self.open_media_controls.is_some() {
+          if self
+            .open_media_controls_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            wheel_blocked_by_popup = true;
+          } else {
+            self.close_media_controls();
+            self.window.request_redraw();
+          }
+        }
         if wheel_blocked_by_popup {
           return;
         }
@@ -14088,12 +14099,15 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             }
 
             if self.open_media_controls.is_some() {
+              // Touches inside the overlay are handled by egui.
               if self
                 .open_media_controls_rect
                 .is_some_and(|rect| rect.contains(pos_points))
               {
                 return;
               }
+              // Match mouse click-away semantics: touching the underlying media element should close
+              // the overlay without immediately reopening it by forwarding the tap to the page.
               let clicked_media_element = self.open_media_controls.as_ref().is_some_and(|controls| {
                 self
                   .page_input_mapping
@@ -17279,6 +17293,16 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               wheel_blocked_by_popup = true;
             } else {
               self.cancel_file_picker();
+            }
+          }
+          if self.open_media_controls.is_some() {
+            if self
+              .open_media_controls_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            {
+              wheel_blocked_by_popup = true;
+            } else {
+              self.close_media_controls();
             }
           }
         }
