@@ -4272,17 +4272,6 @@ impl App {
                 .inner
                 .on_hover_text(&toast_text);
 
-              // Communicate the current expanded/collapsed state via the accessible label.
-              let title_a11y_label = if expanded {
-                format!("Hide warning details: {title_text}")
-              } else {
-                format!("Show warning details: {title_text}")
-              };
-              title_resp.widget_info({
-                let label = title_a11y_label.clone();
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-              });
-
               let mut toggle_requested = title_resp.clicked();
               if title_resp.has_focus() {
                 toggle_requested |= ui.input_mut(|i| {
@@ -4294,6 +4283,17 @@ impl App {
                 expanded = !expanded;
                 title_resp.request_focus();
               }
+
+              // Communicate the current expanded/collapsed state via the accessible label.
+              let title_a11y_label = if expanded {
+                format!("Hide warning details: {title_text}")
+              } else {
+                format!("Show warning details: {title_text}")
+              };
+              title_resp.widget_info({
+                let label = title_a11y_label.clone();
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+              });
 
               if title_resp.has_focus() {
                 let focus_stroke = ui.visuals().selection.stroke;
@@ -4324,12 +4324,12 @@ impl App {
               });
             });
 
-              if let Some(summary) = summary_text.as_deref().filter(|s| !s.trim().is_empty()) {
-                ui.add_space(2.0);
-                ui.add(
-                  egui::Label::new(egui::RichText::new(summary).color(summary_color)).wrap(true),
-                );
-              }
+            if let Some(summary) = summary_text.as_deref().filter(|s| !s.trim().is_empty()) {
+              ui.add_space(2.0);
+              ui.add(
+                egui::Label::new(egui::RichText::new(summary).color(summary_color)).wrap(true),
+              );
+            }
 
             if expanded {
               ui.add_space(6.0);
