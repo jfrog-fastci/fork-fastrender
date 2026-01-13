@@ -243,105 +243,109 @@ pub fn panel_list_row(
   leading_icon: Option<BrowserIcon>,
   trailing_actions: impl FnOnce(&mut egui::Ui),
 ) -> PanelListRowResponse {
-  let id = ui.make_persistent_id(id_source);
-  let motion = UiMotion::from_ctx(ui.ctx());
-  let visuals = ui.visuals().clone();
+  ui
+    .push_id(id_source, |ui| {
+      let id = ui.make_persistent_id("panel_list_row");
+      let motion = UiMotion::from_ctx(ui.ctx());
+      let visuals = ui.visuals().clone();
 
-  let padding = ui.spacing().button_padding;
-  let text_h = ui.text_style_height(&egui::TextStyle::Body);
-  let small_h = ui.text_style_height(&egui::TextStyle::Small);
-  let mut content_h = text_h;
-  if secondary.is_some() {
-    content_h += small_h;
-  }
-  if tertiary.is_some() {
-    content_h += small_h;
-  }
-  let row_h = (content_h + padding.y * 2.0).max(ui.spacing().interact_size.y.max(30.0));
+      let padding = ui.spacing().button_padding;
+      let text_h = ui.text_style_height(&egui::TextStyle::Body);
+      let small_h = ui.text_style_height(&egui::TextStyle::Small);
+      let mut content_h = text_h;
+      if secondary.is_some() {
+        content_h += small_h;
+      }
+      if tertiary.is_some() {
+        content_h += small_h;
+      }
+      let row_h = (content_h + padding.y * 2.0).max(ui.spacing().interact_size.y.max(30.0));
 
-  let (_row_id, rect) = ui.allocate_space(egui::vec2(ui.available_width(), row_h));
-  let response = ui.interact(rect, id.with("row"), egui::Sense::click());
+      let (_row_id, rect) = ui.allocate_space(egui::vec2(ui.available_width(), row_h));
+      let response = ui.interact(rect, id.with("row"), egui::Sense::click());
 
-  let hover_t = motion.animate_bool(
-    ui.ctx(),
-    id.with("hover"),
-    ui.is_enabled() && (response.hovered() || response.has_focus()),
-    motion.durations.hover_fade,
-  );
+      let hover_t = motion.animate_bool(
+        ui.ctx(),
+        id.with("hover"),
+        ui.is_enabled() && (response.hovered() || response.has_focus()),
+        motion.durations.hover_fade,
+      );
 
-  // Hover highlight (fade in/out, but stays static when reduced motion is enabled).
-  if ui.is_rect_visible(rect) {
-    let hovered = visuals.widgets.hovered;
-    let mut fill = hovered.bg_fill;
-    let alpha = (fill.a() as f32 * hover_t).round().clamp(0.0, 255.0) as u8;
-    fill = with_alpha(fill, alpha);
+      // Hover highlight (fade in/out, but stays static when reduced motion is enabled).
+      if ui.is_rect_visible(rect) {
+        let hovered = visuals.widgets.hovered;
+        let mut fill = hovered.bg_fill;
+        let alpha = (fill.a() as f32 * hover_t).round().clamp(0.0, 255.0) as u8;
+        fill = with_alpha(fill, alpha);
 
-    let rounding = visuals.widgets.inactive.rounding;
-    ui.painter().rect(rect, rounding, fill, egui::Stroke::NONE);
+        let rounding = visuals.widgets.inactive.rounding;
+        ui.painter().rect(rect, rounding, fill, egui::Stroke::NONE);
 
-    if response.has_focus() {
-      let focus_stroke = visuals.selection.stroke;
-      let expand = 1.0 + focus_stroke.width * 0.5;
-      let focus_rect = rect.expand(expand);
-      let focus_rounding = egui::Rounding::same(rounding.nw + expand);
-      ui
-        .painter()
-        .rect_stroke(focus_rect, focus_rounding, focus_stroke);
-    }
-  }
-
-  // Layout: reserve a small trailing area for action buttons so the primary text can truncate in
-  // narrow panels without colliding with trailing controls.
-  let mut inner_rect = rect.shrink2(padding);
-  if inner_rect.width() < 1.0 || inner_rect.height() < 1.0 {
-    return PanelListRowResponse { response };
-  }
-
-  let action_button_side = ui.spacing().interact_size.y;
-  let reserved_actions_w = (action_button_side * 2.5).min(inner_rect.width());
-  let actions_rect = egui::Rect::from_min_max(
-    egui::pos2(inner_rect.max.x - reserved_actions_w, inner_rect.min.y),
-    inner_rect.max,
-  );
-  inner_rect.max.x = actions_rect.min.x;
-
-  ui.allocate_ui_at_rect(actions_rect, |ui| {
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing_actions);
-  });
-
-  ui.allocate_ui_at_rect(inner_rect, |ui| {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-      if let Some(icon) = leading_icon {
-        let side = ui.spacing().icon_width;
-        icon_tinted(ui, icon, side, ui.visuals().text_color());
-        ui.add_space(6.0);
+        if response.has_focus() {
+          let focus_stroke = visuals.selection.stroke;
+          let expand = 1.0 + focus_stroke.width * 0.5;
+          let focus_rect = rect.expand(expand);
+          let focus_rounding = egui::Rounding::same(rounding.nw + expand);
+          ui
+            .painter()
+            .rect_stroke(focus_rect, focus_rounding, focus_stroke);
+        }
       }
 
-      ui.vertical(|ui| {
-        ui.set_width(ui.available_width());
-        let primary = primary.into();
-        ui.add(egui::Label::new(primary).truncate(true));
+      // Layout: reserve a small trailing area for action buttons so the primary text can truncate in
+      // narrow panels without colliding with trailing controls.
+      let mut inner_rect = rect.shrink2(padding);
+      if inner_rect.width() < 1.0 || inner_rect.height() < 1.0 {
+        return PanelListRowResponse { response };
+      }
 
-        let weak = ui.visuals().weak_text_color();
-        if let Some(secondary) = secondary {
-          ui.scope(|ui| {
-            ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
-            ui.visuals_mut().override_text_color = Some(weak);
-            ui.add(egui::Label::new(secondary).truncate(true));
-          });
-        }
-        if let Some(tertiary) = tertiary {
-          ui.scope(|ui| {
-            ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
-            ui.visuals_mut().override_text_color = Some(weak);
-            ui.add(egui::Label::new(tertiary).truncate(true));
-          });
-        }
+      let action_button_side = ui.spacing().interact_size.y;
+      let reserved_actions_w = (action_button_side * 2.5).min(inner_rect.width());
+      let actions_rect = egui::Rect::from_min_max(
+        egui::pos2(inner_rect.max.x - reserved_actions_w, inner_rect.min.y),
+        inner_rect.max,
+      );
+      inner_rect.max.x = actions_rect.min.x;
+
+      ui.allocate_ui_at_rect(actions_rect, |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), trailing_actions);
       });
-    });
-  });
 
-  PanelListRowResponse { response }
+      ui.allocate_ui_at_rect(inner_rect, |ui| {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+          if let Some(icon) = leading_icon {
+            let side = ui.spacing().icon_width;
+            icon_tinted(ui, icon, side, ui.visuals().text_color());
+            ui.add_space(6.0);
+          }
+
+          ui.vertical(|ui| {
+            ui.set_width(ui.available_width());
+            let primary = primary.into();
+            ui.add(egui::Label::new(primary).truncate(true));
+
+            let weak = ui.visuals().weak_text_color();
+            if let Some(secondary) = secondary {
+              ui.scope(|ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
+                ui.visuals_mut().override_text_color = Some(weak);
+                ui.add(egui::Label::new(secondary).truncate(true));
+              });
+            }
+            if let Some(tertiary) = tertiary {
+              ui.scope(|ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
+                ui.visuals_mut().override_text_color = Some(weak);
+                ui.add(egui::Label::new(tertiary).truncate(true));
+              });
+            }
+          });
+        });
+      });
+
+      PanelListRowResponse { response }
+    })
+    .inner
 }
 
 /// Output for [`panel_empty_state`].

@@ -184,7 +184,7 @@ pub fn history_panel_ui(
             let mut action_clicked = false;
             let row_resp = panel_list_row(
               ui,
-              ("history_row", idx),
+              ("history_row", url.as_str()),
               egui::RichText::new(title).strong(),
               Some(url.as_str().into()),
               Some(ts_text),
@@ -292,4 +292,91 @@ fn format_history_timestamp_ms_cached(ctx: &egui::Context, visited_at_ms: u64) -
   let arc: Arc<str> = Arc::from(formatted);
   insert_cached_timestamp(ctx, minute_key, arc.clone());
   Some(arc)
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod tests {
+  use super::history_panel_ui;
+  use crate::ui::{a11y_labels, a11y_test_util, GlobalHistoryStore};
+
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
+  fn accesskit_button_id_by_name(output: &egui::FullOutput, name: &str) -> String {
+    let snapshot = a11y_test_util::accesskit_snapshot_from_full_output(output);
+    let json = a11y_test_util::accesskit_pretty_json_from_full_output(output);
+    let matches: Vec<_> = snapshot
+      .nodes
+      .iter()
+      .filter(|node| node.role == "Button" && node.name == name)
+      .collect();
+
+    assert!(
+      matches.len() == 1,
+      "expected exactly one AccessKit Button named {name:?}; found {}.\n\nsnapshot:\n{json}",
+      matches.len()
+    );
+
+    matches[0].id.clone()
+  }
+
+  #[test]
+  fn history_panel_accesskit_node_ids_stable_across_reorder() {
+    let mut history = GlobalHistoryStore::with_capacity(10);
+    let url_a = "https://example.com/a".to_string();
+    let url_b = "https://example.com/b".to_string();
+    history.record(url_a.clone(), None);
+    history.record(url_b.clone(), None);
+
+    // The History panel uses the URL as the context string when the title is missing.
+    let stored_url_b = history
+      .entries
+      .last()
+      .expect("history must contain at least two entries")
+      .url
+      .clone();
+    let delete_label = a11y_labels::history_delete_label(Some(&stored_url_b), &stored_url_b);
+
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+
+    let mut search_text = String::new();
+    let mut request_focus_search = false;
+
+    begin_frame(&ctx);
+    let _out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let output1 = ctx.end_frame();
+    let id1 = accesskit_button_id_by_name(&output1, &delete_label);
+
+    // Reorder the history store by recording another visit to a different URL. This will move the
+    // corresponding entry to the most-recent position and shift backing-store indices.
+    history.record(url_a, None);
+
+    begin_frame(&ctx);
+    let _out = history_panel_ui(&ctx, &history, &mut search_text, &mut request_focus_search);
+    let output2 = ctx.end_frame();
+    let id2 = accesskit_button_id_by_name(&output2, &delete_label);
+
+    let snapshot1 = a11y_test_util::accesskit_pretty_json_from_full_output(&output1);
+    let snapshot2 = a11y_test_util::accesskit_pretty_json_from_full_output(&output2);
+    assert_eq!(
+      id1, id2,
+      "expected AccessKit node id for {delete_label:?} to remain stable across history reorder.\n\nbefore:\n{snapshot1}\n\nafter:\n{snapshot2}"
+    );
+  }
 }
