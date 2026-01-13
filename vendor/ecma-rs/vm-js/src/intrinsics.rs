@@ -53,6 +53,7 @@ pub struct Intrinsics {
   async_generator_prototype: GcObject,
   array_iterator_prototype: GcObject,
   array_prototype: GcObject,
+  array_prototype_values: GcObject,
   string_iterator_prototype: GcObject,
   array_iterator_next: GcObject,
   map_iterator_prototype: GcObject,
@@ -664,6 +665,8 @@ impl Intrinsics {
     let well_known_symbols = WellKnownSymbols::init(scope, roots)?;
     let optional_chain_sentinel =
       alloc_rooted_symbol(scope, roots, "vm-js optional chain sentinel")?;
+
+    let array_prototype_values_fn: GcObject;
 
     // --- Base prototypes ---
     let object_prototype = alloc_rooted_object(scope, roots)?;
@@ -2789,7 +2792,8 @@ impl Intrinsics {
         let values_s = scope.alloc_string("values")?;
         scope.push_root(Value::String(values_s))?;
         let values_key = PropertyKey::from_string(values_s);
-        let values_fn = scope.alloc_native_function(array_prototype_values, None, values_s, 0)?;
+        let values_fn =
+          alloc_rooted_native_function(scope, roots, array_prototype_values, None, values_s, 0)?;
         scope.push_root(Value::Object(values_fn))?;
         scope
           .heap_mut()
@@ -2833,6 +2837,8 @@ impl Intrinsics {
           PropertyKey::Symbol(well_known_symbols.iterator),
           data_desc(Value::Object(values_fn), true, false, true),
         )?;
+
+        array_prototype_values_fn = values_fn;
     }
 
     // `%String%`
@@ -7767,6 +7773,7 @@ impl Intrinsics {
       async_generator_prototype,
       array_iterator_prototype,
       array_prototype,
+      array_prototype_values: array_prototype_values_fn,
       string_iterator_prototype,
       array_iterator_next,
       map_iterator_prototype,
@@ -7936,6 +7943,10 @@ impl Intrinsics {
 
   pub fn array_prototype(&self) -> GcObject {
     self.array_prototype
+  }
+
+  pub(crate) fn array_prototype_values(&self) -> GcObject {
+    self.array_prototype_values
   }
 
   pub(crate) fn string_iterator_prototype(&self) -> GcObject {

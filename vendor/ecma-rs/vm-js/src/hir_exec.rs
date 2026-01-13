@@ -1081,6 +1081,22 @@ impl<'vm> HirEvaluator<'vm> {
         },
       )?;
 
+      // `arguments[@@iterator]` is `%Array.prototype.values%` (ECMA-262).
+      if let Some(intr) = intr {
+        scope.define_property(
+          args_obj,
+          PropertyKey::Symbol(intr.well_known_symbols().iterator),
+          PropertyDescriptor {
+            enumerable: false,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: Value::Object(intr.array_prototype_values()),
+              writable: true,
+            },
+          },
+        )?;
+      }
+
       for (i, v) in args.iter().copied().enumerate() {
         if i % PROLOGUE_TICK_EVERY == 0 {
           self.vm.tick()?;
