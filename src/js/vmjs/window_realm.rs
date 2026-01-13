@@ -14627,6 +14627,18 @@ fn document_create_processing_instruction_native(
     ));
   };
 
+  let document_id = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createProcessingInstruction must be called on a document object",
+    ))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| {
+      VmError::TypeError(
+        "document.createProcessingInstruction must be called on a document object",
+      )
+    })?
+    .document_id;
+
   let target_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let target_value = scope.heap_mut().to_string(target_value)?;
   let target = scope
@@ -14643,10 +14655,10 @@ fn document_create_processing_instruction_native(
     .map(|s| s.to_utf8_lossy())
     .unwrap_or_default();
 
-  let document_id = gc_object_id(document_obj);
-  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
-    "document.createProcessingInstruction requires a DOM-backed document",
-  ))?;
+  let mut dom_ptr =
+    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+      "document.createProcessingInstruction requires a DOM-backed document",
+    ))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let node_id = unsafe { dom_ptr.as_mut() }.create_processing_instruction(&target, &data);
   let dom = unsafe { dom_ptr.as_ref() };
@@ -57419,6 +57431,32 @@ mod tests {
     )?;
 
     assert_eq!(get_string(realm.heap(), result), "true|1|a");
+    Ok(())
+  }
+
+  #[test]
+  fn document_constructor_supports_create_cdata_section_and_cross_document_insertion() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const d = new Document();\n\
+        const c = d.createCDATASection('abc');\n\
+        if (!c) throw new Error('expected createCDATASection to return a node');\n\
+        if (typeof c.data !== 'string') throw new Error('expected CDATASection-like node to expose .data');\n\
+        const el = document.createElement('div');\n\
+        el.appendChild(c);\n\
+        document.body.appendChild(el);\n\
+        if (el.textContent !== 'abc') throw new Error(`expected inserted text, got ${el.textContent}`);\n\
+        if (c.ownerDocument !== document) throw new Error('expected ownerDocument to update after adoption');\n\
+        return true;\n\
+      })()",
+    )?;
+
+    assert_eq!(result, Value::Bool(true));
     Ok(())
   }
 
