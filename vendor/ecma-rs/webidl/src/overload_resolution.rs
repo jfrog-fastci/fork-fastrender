@@ -1084,8 +1084,8 @@ fn convert_record<R: WebIdlJsRuntime>(
   key_ty: &IdlType,
   value_ty: &IdlType,
 ) -> Result<WebIdlValue<R::JsValue>, R::Error> {
-  // WebIDL "js-to-record" begins by rejecting non-Object values. Unlike `sequence<>` conversion,
-  // record conversion does *not* apply `ToObject` to accept primitives.
+  // WebIDL "js-to-record" begins by rejecting non-Object values. Record conversion does *not*
+  // apply `ToObject` to accept primitives.
   if !rt.is_object(value) {
     return Err(rt.throw_type_error(conversions_shared::VALUE_IS_NOT_OBJECT));
   }
