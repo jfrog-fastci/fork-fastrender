@@ -1785,7 +1785,7 @@ use fastrender::ui::os_clipboard;
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone)]
 enum UserEvent {
-  WorkerWake(winit::window::WindowId),
+  WorkerWake,
   SearchSuggestWake(winit::window::WindowId),
   RequestNewWindow(winit::window::WindowId),
   RequestNewWindowWithSession {
@@ -3066,6 +3066,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     window_id: WindowId,
     renderer_backend: fastrender::ui::ThreadRendererBackend,
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+    worker_wake_coalescer: Arc<WorkerWakeCoalescer>,
     worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
   ) -> std::io::Result<(
     WorkerMsgQueue,
@@ -3079,6 +3080,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .name(format!("browser_worker_bridge_{window_id:?}"))
       .spawn({
         let renderer_backend = renderer_backend.clone();
+        let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
         let worker_wake_pending = Arc::clone(&worker_wake_pending);
         let worker_wake_counters = worker_wake_counters.clone();
         move || {
@@ -3086,11 +3088,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if worker_msgs_pusher.push(msg).is_err() {
               break;
             }
-            // Coalesce wakes: the UI thread drains messages in batches so we only need one pending
-            // wake event per window.
-            let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
+            // Coalesce wakes:
+            // - the per-window `worker_wake_pending` flag ensures we only request a wake once per
+            //   burst for this window
+            // - the global `worker_wake_coalescer` ensures only one `WorkerWake` user event is ever
+            //   queued at a time across all windows
+            let window_first = !worker_wake_pending.swap(true, Ordering::AcqRel);
+            let sent_global = window_first
+              && worker_wake_coalescer.notify(|| {
+                // Ignore failures during shutdown (event loop already dropped).
+                let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
+              });
             if let Some(counters) = worker_wake_counters.as_ref() {
-              if send_wake {
+              if sent_global {
                 counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
               } else {
                 counters
@@ -3098,10 +3108,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                   .fetch_add(1, Ordering::Relaxed);
               }
             }
-            if send_wake {
-              // Ignore failures during shutdown (event loop already dropped).
-              let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
-            }
+            // `notify` already enqueues the wake event (if this is the first request).
           }
         }
       })?;
@@ -3127,6 +3134,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
+  let worker_wake_coalescer = Arc::new(WorkerWakeCoalescer::default());
 
   let browser_trace_out = match std::env::var(ENV_BROWSER_TRACE_OUT) {
     Ok(raw) => {
@@ -3369,6 +3377,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       window_id,
       renderer_backend.clone(),
       event_loop_proxy.clone(),
+      Arc::clone(&worker_wake_coalescer),
       worker_wake_counters,
     )?;
 
@@ -3594,108 +3603,132 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
       }
-      Event::UserEvent(UserEvent::WorkerWake(window_id)) => {
-        // Drain pending worker messages. This is time/message-budgeted so that under pathological
-        // message floods (e.g. debug-log spam) we don't monopolize the UI thread and starve input /
-        // resize / OS events.
-        let mut request_redraw = false;
-        let mut history_changed = false;
+      Event::UserEvent(UserEvent::WorkerWake) => {
+        // Allow bridge threads to enqueue another wake while we're draining worker messages.
+        worker_wake_coalescer.begin_drain();
+
+        // Drain pending worker messages across *all* windows. This is time/message-budgeted so that
+        // under pathological message floods (e.g. debug-log spam) we don't monopolize the UI thread
+        // and starve input/resize/OS events.
         let mut session_dirty = false;
-        let mut needs_follow_up_wake = false;
-        if let Some(win) = windows.get_mut(&window_id) {
-          let mut span = win.app.trace.span("worker_drain", "ui.worker");
-          let hud_enabled = win.app.hud.is_some();
-          // Clear the pending wake flag up-front so any messages that arrive while we're draining
-          // can schedule another wake (avoids getting stuck with messages in the queue but no wake
-          // event queued).
-          win.worker_wake_pending.store(false, Ordering::Release);
+        let mut needs_follow_up_wake_any = false;
 
-          // Pull any newly-arrived worker messages into the local backlog with a single lock so we
-          // can process them without holding the mutex.
-          if win.worker_msg_backlog.is_empty() {
-            win.worker_msg_backlog = win.worker_msgs.drain();
-          } else {
-            let mut drained = win.worker_msgs.drain();
-            win.worker_msg_backlog.append(&mut drained);
-          }
+        for window_id in window_order.iter().copied() {
+          let mut request_redraw = false;
+          let mut history_changed = false;
+          let mut history_snapshot = None;
+          let mut needs_follow_up_wake = false;
 
-          let budget = DrainBudget {
-            max_messages: 512,
-            max_duration: std::time::Duration::from_millis(2),
-          };
-          let start = std::time::Instant::now();
-          let mut drained_count = 0usize;
-          while drained_count < budget.max_messages && start.elapsed() < budget.max_duration {
-            let Some(msg) = win.worker_msg_backlog.pop_front() else {
-              break;
-            };
-            drained_count = drained_count.saturating_add(1);
-            session_dirty |= matches!(
-              &msg,
-              fastrender::ui::WorkerToUi::NavigationCommitted { .. }
-                | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
-                | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
-            );
-
-            let result = win.app.handle_worker_message(msg);
-            request_redraw |= result.request_redraw;
-            history_changed |= result.history_changed;
-          }
-          let outcome = DrainOutcome {
-            drained: drained_count,
-            stop_reason: if win.worker_msg_backlog.is_empty() {
-              DrainStopReason::Empty
-            } else {
-              DrainStopReason::Budget
-            },
-          };
-          needs_follow_up_wake = outcome.stop_reason == DrainStopReason::Budget;
-
-          if hud_enabled {
-            if let Some(hud) = win.app.hud.as_mut() {
-              hud.record_worker_wake(outcome.drained as u64);
+          if let Some(win) = windows.get_mut(&window_id) {
+            // Skip windows with no pending worker work; the bridge thread sets this flag before
+            // requesting the global wake.
+            if !win.worker_wake_pending.swap(false, Ordering::AcqRel) {
+              continue;
             }
-          }
-          span.arg_u64("messages", outcome.drained as u64);
 
-          if request_redraw {
-            win.app.schedule_worker_redraw(std::time::Instant::now());
-          }
+            let mut span = win.app.trace.span("worker_drain", "ui.worker");
+            let hud_enabled = win.app.hud.is_some();
 
-          if needs_follow_up_wake {
-            // We ran out of budget; queue another wake event so the remaining messages are drained
-            // soon, but only after returning control to the event loop.
-            if !win.worker_wake_pending.swap(true, Ordering::AcqRel) {
-              if hud_enabled {
-                if let Some(hud) = win.app.hud.as_mut() {
-                  hud.record_worker_followup_wake();
+            // Pull any newly-arrived worker messages into the local backlog with a single lock so we
+            // can process them without holding the mutex.
+            if win.worker_msg_backlog.is_empty() {
+              win.worker_msg_backlog = win.worker_msgs.drain();
+            } else {
+              let mut drained = win.worker_msgs.drain();
+              win.worker_msg_backlog.append(&mut drained);
+            }
+
+            let budget = DrainBudget {
+              max_messages: 512,
+              max_duration: std::time::Duration::from_millis(2),
+            };
+            let start = std::time::Instant::now();
+            let mut drained_count = 0usize;
+            while drained_count < budget.max_messages && start.elapsed() < budget.max_duration {
+              let Some(msg) = win.worker_msg_backlog.pop_front() else {
+                break;
+              };
+              drained_count = drained_count.saturating_add(1);
+              session_dirty |= matches!(
+                &msg,
+                fastrender::ui::WorkerToUi::NavigationCommitted { .. }
+                  | fastrender::ui::WorkerToUi::RequestOpenInNewTab { .. }
+                  | fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { .. }
+              );
+
+              let result = win.app.handle_worker_message(msg);
+              request_redraw |= result.request_redraw;
+              history_changed |= result.history_changed;
+            }
+
+            let outcome = DrainOutcome {
+              drained: drained_count,
+              stop_reason: if win.worker_msg_backlog.is_empty() {
+                DrainStopReason::Empty
+              } else {
+                DrainStopReason::Budget
+              },
+            };
+            needs_follow_up_wake = outcome.stop_reason == DrainStopReason::Budget;
+
+            if hud_enabled {
+              if let Some(hud) = win.app.hud.as_mut() {
+                hud.record_worker_wake(outcome.drained as u64);
+              }
+            }
+            span.arg_u64("messages", outcome.drained as u64);
+
+            if request_redraw {
+              win.app.schedule_worker_redraw(std::time::Instant::now());
+            }
+
+            if history_changed {
+              history_snapshot = Some(win.app.browser_state.history.clone());
+            }
+
+            if needs_follow_up_wake {
+              // We ran out of budget for this window; mark it as pending again and request another
+              // global wake after returning control to the event loop.
+              if !win.worker_wake_pending.swap(true, Ordering::AcqRel) {
+                needs_follow_up_wake_any = true;
+                if hud_enabled {
+                  if let Some(hud) = win.app.hud.as_mut() {
+                    hud.record_worker_followup_wake();
+                  }
                 }
               }
-              let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
+            }
+          }
+
+          // Propagate history updates immediately so subsequent windows process their worker
+          // messages against the latest global store (avoids lost history entries when multiple
+          // windows commit navigations in a single wake batch).
+          if let Some(new_history) = history_snapshot {
+            global_history = new_history;
+            fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
+              &global_history,
+            );
+            if let Some(tx) = profile_autosave_tx.as_ref() {
+              let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
+                global_history.clone(),
+              ));
+            }
+            for win in windows.values_mut() {
+              win.app.browser_state.history = global_history.clone();
+              win.app.browser_state.visited.clear();
+              win.app.browser_state.seed_visited_from_history();
+              win.app.browser_state.chrome.omnibox.reset();
+              win.app.window.request_redraw();
             }
           }
         }
 
-        if history_changed {
-          if let Some(source) = windows.get(&window_id) {
-            global_history = source.app.browser_state.history.clone();
-          }
-          fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
-            &global_history,
-          );
-          if let Some(tx) = profile_autosave_tx.as_ref() {
-            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(
-              global_history.clone(),
-            ));
-          }
-          for win in windows.values_mut() {
-            win.app.browser_state.history = global_history.clone();
-            win.app.browser_state.visited.clear();
-            win.app.browser_state.seed_visited_from_history();
-            win.app.browser_state.chrome.omnibox.reset();
-            win.app.window.request_redraw();
-          }
+        if needs_follow_up_wake_any {
+          worker_wake_coalescer.notify(|| {
+            let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
+          });
         }
+
         if session_dirty {
           session_save_scheduler.mark_dirty(std::time::Instant::now());
         }
@@ -3816,6 +3849,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window_id,
           renderer_backend.clone(),
           event_loop_proxy.clone(),
+          Arc::clone(&worker_wake_coalescer),
           worker_wake_counters,
         ) {
           Ok(v) => v,
@@ -3932,6 +3966,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           window_id,
           renderer_backend.clone(),
           event_loop_proxy.clone(),
+          Arc::clone(&worker_wake_coalescer),
           worker_wake_counters,
         ) {
           Ok(v) => v,
