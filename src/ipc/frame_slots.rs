@@ -368,6 +368,8 @@ impl SharedMemory {
       return Err(Error::Io(io::Error::last_os_error()));
     }
 
+    let shm = Self { fd: owned, size: size_usize };
+
     // Best-effort: prevent the renderer from shrinking/growing the slot (SIGBUS footgun), and then
     // lock the seal set so the renderer cannot persistently add `F_SEAL_WRITE` (breaking future
     // reuse of pooled slots). See `docs/ipc_linux_fd_passing.md` (seals checklist).
@@ -375,25 +377,31 @@ impl SharedMemory {
     // Apply required size-stability seals first; treat `F_SEAL_SEAL` as optional so a kernel that
     // can't lock the seal set still gets the SIGBUS protection.
     let required_seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
-    let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, required_seals) };
-    if rc != 0 {
-      let err = io::Error::last_os_error();
-      match err.raw_os_error() {
-        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => return Ok(Self { fd: owned, size: size_usize }),
-        _ => return Err(Error::Io(err)),
-      }
-    }
-
-    let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+    let rc = unsafe { libc::fcntl(shm.fd.as_raw_fd(), libc::F_ADD_SEALS, required_seals) };
     if rc != 0 {
       let err = io::Error::last_os_error();
       match err.raw_os_error() {
         Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
         _ => return Err(Error::Io(err)),
       }
+    } else {
+      let rc = unsafe { libc::fcntl(shm.fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+      if rc != 0 {
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+          _ => return Err(Error::Io(err)),
+        }
+      }
     }
 
-    Ok(Self { fd: owned, size: size_usize })
+    // Security: make it explicit that fresh shared-memory slots start zeroed before any untrusted
+    // renderer maps them. Even if the kernel typically provides zeroed pages, an explicit clear
+    // avoids leaking stale bytes if an fd were ever reused accidentally.
+    let mut mapping = shm.map_mut()?;
+    mapping.as_slice_mut().fill(0);
+
+    Ok(shm)
   }
 
   fn from_fd(fd: OwnedFd, size: u64) -> Result<Self, Error> {
@@ -764,6 +772,17 @@ mod tests {
       .send_with_fds(&[], &[shm.as_raw_fd()])
       .expect_err("expected fd-only send to be rejected");
     assert!(matches!(err, Error::Other(_)), "unexpected error: {err:?}");
+    Ok(())
+  }
+
+  #[test]
+  fn shared_memory_new_zero_initializes() -> Result<(), Error> {
+    let shm = SharedMemory::new(256)?;
+    let map = shm.map_mut()?;
+    assert!(
+      map.as_slice().iter().all(|b| *b == 0),
+      "newly created shared-memory slots should be zero-initialized"
+    );
     Ok(())
   }
 
