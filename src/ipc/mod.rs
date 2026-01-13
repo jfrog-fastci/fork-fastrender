@@ -13,25 +13,26 @@ pub mod ancillary;
 pub mod cancel;
 pub mod connection;
 pub mod error;
-#[cfg(unix)]
-pub mod fd_passing;
 pub mod framing;
 pub mod frame_pool;
 pub mod network;
+pub mod pixels;
 pub mod protocol;
 pub mod received_frame;
 pub mod shm;
 pub mod sync;
 pub mod types;
-#[cfg(target_os = "linux")]
-pub mod unix_seqpacket;
 pub mod websocket;
 
 #[cfg(unix)]
 pub mod bootstrap;
+#[cfg(unix)]
+pub mod fd_passing;
 
 #[cfg(target_os = "linux")]
 pub mod frame_slots;
+#[cfg(target_os = "linux")]
+pub mod unix_seqpacket;
 
 pub use connection::IpcConnection;
 pub use error::IpcError;
@@ -42,3 +43,4 @@ pub use framing::{
 pub use network::{NetworkToRenderer, RendererToNetwork};
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};
 pub use types::{PointF32, RectF32, ScrollMetricsIpc, ScrollStateIpc};
+
