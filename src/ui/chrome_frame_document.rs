@@ -3,14 +3,25 @@
 //! This is intentionally egui/winit-agnostic so it can be exercised in headless tests.
 
 use crate::dom::DomNode;
+use crate::geometry::{Point, Rect};
 use crate::interaction::dom_index::DomIndex;
-use crate::interaction::{InteractionAction, InteractionEngine, InteractionState};
+use crate::interaction::{
+  absolute_bounds_by_styled_node_id, InteractionAction, InteractionEngine, InteractionState,
+};
+use crate::ui::chrome_action::ChromeAction;
+use crate::ui::messages::TabId;
 use crate::{BrowserDocument, Error, FastRender, RenderOptions, Result};
 
+/// Stable `id=` attribute for the tab strip container element.
+pub const CHROME_TAB_STRIP_ID: &str = "tab-strip";
 /// Stable `id=` attribute for the address bar `<input>`.
 pub const CHROME_ADDRESS_BAR_ID: &str = "address-bar";
 /// Stable `id=` attribute for the address bar `<form>`.
 pub const CHROME_ADDRESS_FORM_ID: &str = "address-form";
+
+/// Minimum vertical distance (in CSS px) the pointer must be outside the tab strip bounds before a
+/// tab drag-drop is treated as a "detach into new window" gesture.
+const TAB_DETACH_VERTICAL_THRESHOLD_CSS_PX: f32 = 20.0;
 
 const CHROME_FRAME_HTML: &str = r#"<!doctype html>
 <html>
@@ -19,6 +30,10 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
     <style>
       html, body { margin: 0; padding: 0; }
       body { font: 14px sans-serif; }
+      #tab-strip {
+        height: 40px;
+        background: #eee;
+      }
       #address-form { padding: 6px; }
       #address-bar {
         width: 100%;
@@ -30,6 +45,7 @@ const CHROME_FRAME_HTML: &str = r#"<!doctype html>
     </style>
   </head>
   <body>
+    <div id="tab-strip"></div>
     <form id="address-form">
       <input id="address-bar" type="text" value="">
     </form>
@@ -92,6 +108,8 @@ pub struct ChromeFrameDocument {
   last_address_bar_value: String,
   /// Cached address bar focus state for change detection.
   last_address_bar_focused: bool,
+  /// Transient tab-strip drag state (dragging tab id, if any).
+  dragging_tab_id: Option<TabId>,
 }
 
 impl ChromeFrameDocument {
@@ -100,7 +118,11 @@ impl ChromeFrameDocument {
     Self::new_with_renderer(renderer, viewport_css, dpr)
   }
 
-  pub fn new_with_renderer(renderer: FastRender, viewport_css: (u32, u32), dpr: f32) -> Result<Self> {
+  pub fn new_with_renderer(
+    renderer: FastRender,
+    viewport_css: (u32, u32),
+    dpr: f32,
+  ) -> Result<Self> {
     let options = RenderOptions::new()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
@@ -128,6 +150,7 @@ impl ChromeFrameDocument {
       address_bar_node_id,
       last_address_bar_value: String::new(),
       last_address_bar_focused: false,
+      dragging_tab_id: None,
     };
     // Seed the cached value from the initial DOM so the first user edit is detected correctly.
     this.last_address_bar_value = this.address_bar_value();
@@ -340,6 +363,72 @@ impl ChromeFrameDocument {
       _ => Vec::new(),
     }
   }
+
+  /// Set (or clear) the currently dragged tab id.
+  pub fn set_dragging_tab(&mut self, tab_id: Option<TabId>) {
+    self.dragging_tab_id = tab_id;
+  }
+
+  fn tab_strip_bounds(&mut self) -> Option<Rect> {
+    let tab_strip_node_id = {
+      let mut id: Option<usize> = None;
+      self.document.mutate_dom(|dom| {
+        let index = DomIndex::build(dom);
+        id = index.id_by_element_id.get(CHROME_TAB_STRIP_ID).copied();
+        false
+      });
+      id?
+    };
+
+    let prepared = self.document.prepared()?;
+    let scroll = self.document.scroll_state();
+    let tree = prepared.fragment_tree_for_geometry(&scroll);
+    let bounds_map = absolute_bounds_by_styled_node_id(prepared.box_tree(), &tree);
+    let bounds_page = bounds_map.get(&tab_strip_node_id).copied()?;
+
+    let dx = if scroll.viewport.x.is_finite() {
+      -scroll.viewport.x
+    } else {
+      0.0
+    };
+    let dy = if scroll.viewport.y.is_finite() {
+      -scroll.viewport.y
+    } else {
+      0.0
+    };
+    Some(bounds_page.translate(Point::new(dx, dy)))
+  }
+
+  fn should_detach_tab_from_drop(strip_bounds: Rect, pointer_pos: Point) -> bool {
+    let y = pointer_pos.y;
+    if !y.is_finite() {
+      return false;
+    }
+    y < strip_bounds.min_y() - TAB_DETACH_VERTICAL_THRESHOLD_CSS_PX
+      || y > strip_bounds.max_y() + TAB_DETACH_VERTICAL_THRESHOLD_CSS_PX
+  }
+
+  /// Handle a pointer-up event in chrome-viewport coordinates.
+  ///
+  /// When a tab drag is active and the drop ends sufficiently outside the tab strip, this emits a
+  /// [`ChromeAction::DetachTab`]. Otherwise it behaves like a normal drag drop (tab reorder, if any,
+  /// is expected to have been applied during the drag).
+  pub fn pointer_up(&mut self, pointer_pos: Point) -> Vec<ChromeAction> {
+    let Some(tab_id) = self.dragging_tab_id.take() else {
+      return Vec::new();
+    };
+
+    let Some(strip_bounds) = self.tab_strip_bounds() else {
+      // Treat geometry failures as a normal drop.
+      return Vec::new();
+    };
+
+    if Self::should_detach_tab_from_drop(strip_bounds, pointer_pos) {
+      vec![ChromeAction::DetachTab(tab_id)]
+    } else {
+      Vec::new()
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -494,5 +583,22 @@ mod tests {
     sync_browser_state_to_chrome_frame(&mut app, &mut chrome);
     assert!(!chrome.address_bar_has_focus());
     assert_eq!(chrome.address_bar_value(), "example.com");
+  }
+
+  #[test]
+  fn drag_drop_outside_strip_emits_detach() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let mut doc =
+      ChromeFrameDocument::new_with_renderer(renderer, (800, 200), 1.0).expect("create chrome frame");
+
+    // Populate layout cache so `tab_strip_bounds` can query fragment geometry.
+    let _ = doc.render_frame().expect("render chrome frame");
+
+    doc.set_dragging_tab(Some(TabId(1)));
+    let actions = doc.pointer_up(Point::new(10.0, -50.0));
+    assert_eq!(actions, vec![ChromeAction::DetachTab(TabId(1))]);
   }
 }

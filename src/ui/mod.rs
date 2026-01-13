@@ -15,6 +15,7 @@ pub mod browser_tab_controller;
 pub mod chrome_action;
 pub mod chrome_action_url;
 pub mod chrome_compositor_layout;
+pub mod chrome_frame_document;
 pub mod chrome_loading_progress;
 pub mod process_assignment_config;
 pub mod theme_parsing;
@@ -78,7 +79,6 @@ pub mod notifications;
 pub mod async_scroll;
 pub mod chrome_dynamic_asset_fetcher;
 pub mod renderer_chrome_html;
-pub mod chrome_frame_document;
 pub mod multiprocess;
 
 #[cfg(any(test, feature = "browser_ui"))]
