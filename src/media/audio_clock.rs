@@ -183,6 +183,14 @@ impl MediaClock for InterpolatedAudioClock {
   fn now(&self) -> Duration {
     InterpolatedAudioClock::now(self)
   }
+
+  fn is_started(&self) -> bool {
+    // Treat the clock as started once we've observed at least one audio callback.
+    self
+      .last_callback_end_nanos_plus_one
+      .load(Ordering::Relaxed)
+      != 0
+  }
 }
 
 fn frames_to_nanos(frames: u64, sample_rate_hz: u32) -> u64 {

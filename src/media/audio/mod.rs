@@ -181,42 +181,38 @@ impl MediaClock for AudioClock {
   fn now(&self) -> Duration {
     self.time()
   }
+
+  fn is_started(&self) -> bool {
+    match self {
+      Self::OutputFrames { clock } => clock.is_started(),
+      Self::Instant { .. } => true,
+    }
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::AudioClock;
-  use std::sync::atomic::{AtomicU64, Ordering};
+  use crate::media::audio_clock::InterpolatedAudioClock;
+  use crate::media::clock::MediaClock;
   use std::sync::Arc;
-  use std::time::Duration;
+  use std::time::Instant;
 
   #[test]
-  fn audio_clock_output_frames_time_48k() {
-    let frames_played = Arc::new(AtomicU64::new(48_000));
-    let clock = AudioClock::OutputFrames {
-      frames_played: frames_played.clone(),
-      sample_rate_hz: 48_000,
-    };
+  fn audio_clock_output_frames_tracks_frames_and_started_state() {
+    let inner = Arc::new(InterpolatedAudioClock::new(48_000));
+    let clock = AudioClock::OutputFrames { clock: inner.clone() };
 
-    assert_eq!(clock.time(), Duration::from_secs(1));
+    assert!(!clock.is_started());
+    assert_eq!(clock.frames(), 0);
+    assert_eq!(clock.sample_rate_hz(), 48_000);
 
-    frames_played.store(24_000, Ordering::Relaxed);
-    assert_eq!(clock.time(), Duration::from_millis(500));
+    // Simulate a callback that produced 480 frames (10ms at 48kHz).
+    let callback_end = Instant::now();
+    inner.on_callback_end_at(callback_end, 480, None);
 
-    frames_played.store(1, Ordering::Relaxed);
-    assert_eq!(clock.time(), Duration::from_nanos(20_833));
-  }
-
-  #[test]
-  fn audio_clock_output_frames_large_values_do_not_panic() {
-    let frames_played = Arc::new(AtomicU64::new(u64::MAX));
-    let clock = AudioClock::OutputFrames {
-      frames_played,
-      sample_rate_hz: 48_000,
-    };
-
-    // This should not panic in debug builds due to intermediate overflow.
-    let _ = clock.time();
+    assert!(clock.is_started());
+    assert_eq!(clock.frames(), 480);
   }
 }
 

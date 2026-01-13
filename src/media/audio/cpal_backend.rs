@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -421,6 +421,7 @@ where
 
   let channels = mixer.channels_usize();
   let mut mix_buf: Vec<f32> = Vec::new();
+  let mut playback_origin = None;
   let sample_rate_hz = mixer.config.sample_rate_hz;
 
   let err_cb = |err| {
@@ -432,6 +433,8 @@ where
       config,
       move |output: &mut [T], info| {
         super::thread_priority::promote_current_thread_for_audio();
+        let ts = info.timestamp();
+        let latency = ts.playback.duration_since(&ts.callback);
         if mix_buf.len() < output.len() {
           mix_buf.resize(output.len(), 0.0);
         }
@@ -448,13 +451,32 @@ where
           let frames = (output.len() / channels) as u64;
           let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
           last_callback_frames.store(frames_u32, Ordering::Relaxed);
-          clock.on_callback_end(frames_u32);
+          let callback_end = Instant::now();
+
+          // Prefer CPAL's device timestamps (when monotonic) as the base time, falling back to a
+          // pure frame counter when unavailable.
+          let device_time_at_end = {
+            let playback = ts.playback;
+            let buffer_duration = frames_to_duration(sample_rate_hz, frames);
+
+            match playback_origin.as_ref() {
+              Some(origin) => playback
+                .duration_since(origin)
+                .map(|since_origin| since_origin.saturating_add(buffer_duration)),
+              None => {
+                playback_origin = Some(playback);
+                Some(buffer_duration)
+              }
+            }
+          };
+
+          clock.on_callback_end_at(callback_end, frames_u32, device_time_at_end);
         }
 
         // Best-effort latency estimate:
         // - prefer CPAL timestamps when available (callback vs playback instant),
         // - otherwise fall back to observed callback buffer size (only when buffer size isn't fixed).
-        if let Some(latency) = latency_from_cpal_info(info) {
+        if let Some(latency) = latency {
           estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
         } else if fixed_callback_frames.is_none() && channels != 0 {
           let frames = (output.len() / channels) as u64;
@@ -468,11 +490,6 @@ where
     .map_err(|err| AudioError::StreamBuildFailed(err.to_string()))?;
 
   Ok(stream)
-}
-
-fn latency_from_cpal_info(info: &cpal::OutputCallbackInfo) -> Option<Duration> {
-  let ts = info.timestamp();
-  ts.playback.duration_since(&ts.callback)
 }
 
 fn duration_to_nanos_u64(duration: Duration) -> u64 {
