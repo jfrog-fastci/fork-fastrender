@@ -144,6 +144,8 @@ pub mod window_websocket;
 pub mod window_worker;
 #[path = "vmjs/window_xhr.rs"]
 pub mod window_xhr;
+#[path = "vmjs/window_indexeddb.rs"]
+pub mod window_indexeddb;
 
 #[path = "vmjs/window_structured_clone.rs"]
 pub mod window_structured_clone;
