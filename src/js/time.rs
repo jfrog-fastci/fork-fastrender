@@ -57,10 +57,10 @@ impl WebTime {
   }
 }
 
-#[derive(Clone)]
 struct TimeContext {
   web_time: WebTime,
   clock: Arc<dyn Clock>,
+  performance_entries: Vec<PerformanceEntry>,
 }
 
 static TIME_CONTEXTS: OnceLock<Mutex<HashMap<usize, TimeContext>>> = OnceLock::new();
@@ -123,6 +123,37 @@ const PERFORMANCE_HOST_TAG: u64 = 0x5045_5246_4F52_4D5F; // "PERFORM_"
 const PERFORMANCE_TIMING_HOST_TAG: u64 = 0x5045_5246_5449_4D5F; // "PERFTIM_"
 const PERFORMANCE_NAVIGATION_HOST_TAG: u64 = 0x5045_5246_4E41_565F; // "PERFNAV_"
 
+// Minimal Performance Timeline / User Timing store.
+//
+// We intentionally keep this implementation small: many real-world scripts only need
+// `performance.mark`, `performance.measure`, and `performance.getEntriesByType`.
+const MAX_PERFORMANCE_ENTRIES: usize = 1024;
+/// Upper bound for `PerformanceEntry.name`, measured in UTF-16 code units.
+const MAX_PERFORMANCE_ENTRY_NAME_CODE_UNITS: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PerformanceEntryType {
+  Mark,
+  Measure,
+}
+
+impl PerformanceEntryType {
+  fn as_str(self) -> &'static str {
+    match self {
+      PerformanceEntryType::Mark => "mark",
+      PerformanceEntryType::Measure => "measure",
+    }
+  }
+}
+
+#[derive(Debug)]
+struct PerformanceEntry {
+  name: Box<[u16]>,
+  entry_type: PerformanceEntryType,
+  start_time: f64,
+  duration: f64,
+}
+
 /// Installs `Date.now()` and `performance.now()` into a `vm-js` realm.
 ///
 /// ## Determinism
@@ -145,7 +176,14 @@ pub fn install_time_bindings(
         "install_time_bindings called more than once for the same heap",
       ));
     }
-    map.insert(heap_key, TimeContext { web_time, clock });
+    map.insert(
+      heap_key,
+      TimeContext {
+        web_time,
+        clock,
+        performance_entries: Vec::new(),
+      },
+    );
     Ok(())
   };
 
@@ -327,6 +365,161 @@ pub fn install_time_bindings(
       },
     )?;
 
+    // --- performance.mark / measure / getEntries* (User Timing / Performance Timeline) ---
+    //
+    // Many analytics libraries call these APIs unguarded. Provide a minimal deterministic store
+    // to prevent runtime TypeErrors on real-world pages.
+    let perf_mark_id = vm.register_native_call(performance_mark_native)?;
+    let perf_mark_name = scope.alloc_string("mark")?;
+    let perf_mark = scope.alloc_native_function(perf_mark_id, None, perf_mark_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(perf_mark, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(perf_mark))?;
+    let perf_mark_key_s = scope.alloc_string("mark")?;
+    scope.push_root(Value::String(perf_mark_key_s))?;
+    let perf_mark_key = PropertyKey::from_string(perf_mark_key_s);
+    scope.define_property(
+      performance,
+      perf_mark_key,
+      global_data_desc(Value::Object(perf_mark)),
+    )?;
+
+    let perf_measure_id = vm.register_native_call(performance_measure_native)?;
+    let perf_measure_name = scope.alloc_string("measure")?;
+    let perf_measure = scope.alloc_native_function(perf_measure_id, None, perf_measure_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(perf_measure, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(perf_measure))?;
+    let perf_measure_key_s = scope.alloc_string("measure")?;
+    scope.push_root(Value::String(perf_measure_key_s))?;
+    let perf_measure_key = PropertyKey::from_string(perf_measure_key_s);
+    scope.define_property(
+      performance,
+      perf_measure_key,
+      global_data_desc(Value::Object(perf_measure)),
+    )?;
+
+    let perf_get_entries_id = vm.register_native_call(performance_get_entries_native)?;
+    let perf_get_entries_name = scope.alloc_string("getEntries")?;
+    let perf_get_entries =
+      scope.alloc_native_function(perf_get_entries_id, None, perf_get_entries_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(perf_get_entries, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(perf_get_entries))?;
+    let perf_get_entries_key_s = scope.alloc_string("getEntries")?;
+    scope.push_root(Value::String(perf_get_entries_key_s))?;
+    let perf_get_entries_key = PropertyKey::from_string(perf_get_entries_key_s);
+    scope.define_property(
+      performance,
+      perf_get_entries_key,
+      global_data_desc(Value::Object(perf_get_entries)),
+    )?;
+
+    let perf_get_entries_by_type_id = vm.register_native_call(performance_get_entries_by_type_native)?;
+    let perf_get_entries_by_type_name = scope.alloc_string("getEntriesByType")?;
+    let perf_get_entries_by_type = scope.alloc_native_function(
+      perf_get_entries_by_type_id,
+      None,
+      perf_get_entries_by_type_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      perf_get_entries_by_type,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(perf_get_entries_by_type))?;
+    let perf_get_entries_by_type_key_s = scope.alloc_string("getEntriesByType")?;
+    scope.push_root(Value::String(perf_get_entries_by_type_key_s))?;
+    let perf_get_entries_by_type_key = PropertyKey::from_string(perf_get_entries_by_type_key_s);
+    scope.define_property(
+      performance,
+      perf_get_entries_by_type_key,
+      global_data_desc(Value::Object(perf_get_entries_by_type)),
+    )?;
+
+    let perf_get_entries_by_name_id = vm.register_native_call(performance_get_entries_by_name_native)?;
+    let perf_get_entries_by_name_name = scope.alloc_string("getEntriesByName")?;
+    let perf_get_entries_by_name = scope.alloc_native_function(
+      perf_get_entries_by_name_id,
+      None,
+      perf_get_entries_by_name_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      perf_get_entries_by_name,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(perf_get_entries_by_name))?;
+    let perf_get_entries_by_name_key_s = scope.alloc_string("getEntriesByName")?;
+    scope.push_root(Value::String(perf_get_entries_by_name_key_s))?;
+    let perf_get_entries_by_name_key = PropertyKey::from_string(perf_get_entries_by_name_key_s);
+    scope.define_property(
+      performance,
+      perf_get_entries_by_name_key,
+      global_data_desc(Value::Object(perf_get_entries_by_name)),
+    )?;
+
+    let perf_clear_marks_id = vm.register_native_call(performance_clear_marks_native)?;
+    let perf_clear_marks_name = scope.alloc_string("clearMarks")?;
+    let perf_clear_marks =
+      scope.alloc_native_function(perf_clear_marks_id, None, perf_clear_marks_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(perf_clear_marks, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(perf_clear_marks))?;
+    let perf_clear_marks_key_s = scope.alloc_string("clearMarks")?;
+    scope.push_root(Value::String(perf_clear_marks_key_s))?;
+    let perf_clear_marks_key = PropertyKey::from_string(perf_clear_marks_key_s);
+    scope.define_property(
+      performance,
+      perf_clear_marks_key,
+      global_data_desc(Value::Object(perf_clear_marks)),
+    )?;
+
+    let perf_clear_measures_id = vm.register_native_call(performance_clear_measures_native)?;
+    let perf_clear_measures_name = scope.alloc_string("clearMeasures")?;
+    let perf_clear_measures =
+      scope.alloc_native_function(perf_clear_measures_id, None, perf_clear_measures_name, 1)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(perf_clear_measures, Some(realm.intrinsics().function_prototype()))?;
+    scope.push_root(Value::Object(perf_clear_measures))?;
+    let perf_clear_measures_key_s = scope.alloc_string("clearMeasures")?;
+    scope.push_root(Value::String(perf_clear_measures_key_s))?;
+    let perf_clear_measures_key = PropertyKey::from_string(perf_clear_measures_key_s);
+    scope.define_property(
+      performance,
+      perf_clear_measures_key,
+      global_data_desc(Value::Object(perf_clear_measures)),
+    )?;
+
+    let perf_clear_resource_timings_id =
+      vm.register_native_call(performance_clear_resource_timings_native)?;
+    let perf_clear_resource_timings_name = scope.alloc_string("clearResourceTimings")?;
+    let perf_clear_resource_timings = scope.alloc_native_function(
+      perf_clear_resource_timings_id,
+      None,
+      perf_clear_resource_timings_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      perf_clear_resource_timings,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(perf_clear_resource_timings))?;
+    let perf_clear_resource_timings_key_s = scope.alloc_string("clearResourceTimings")?;
+    scope.push_root(Value::String(perf_clear_resource_timings_key_s))?;
+    let perf_clear_resource_timings_key =
+      PropertyKey::from_string(perf_clear_resource_timings_key_s);
+    scope.define_property(
+      performance,
+      perf_clear_resource_timings_key,
+      global_data_desc(Value::Object(perf_clear_resource_timings)),
+    )?;
+
     // --- performance.timing (legacy Navigation Timing Level 1) ---
     //
     // Many analytics libraries still probe `performance.timing.navigationStart` even though the
@@ -486,6 +679,20 @@ fn with_time_context<T>(
   Ok(f(ctx))
 }
 
+fn with_time_context_mut<T>(
+  scope: &Scope<'_>,
+  f: impl FnOnce(&mut TimeContext) -> Result<T, VmError>,
+) -> Result<T, VmError> {
+  let heap_key = scope.heap() as *const Heap as usize;
+  let mut map = time_contexts()
+    .lock()
+    .map_err(|_| VmError::Unimplemented("time context lock poisoned"))?;
+  let ctx = map.get_mut(&heap_key).ok_or(VmError::Unimplemented(
+    "time bindings not installed for this heap",
+  ))?;
+  f(ctx)
+}
+
 /// Returns the monotonic clock timestamp for the given `vm-js` heap/scope.
 ///
 /// This is the same underlying clock used by `performance.now()` and `Date.now()` via the time
@@ -575,6 +782,490 @@ fn performance_now_native(
 ) -> Result<Value, VmError> {
   let clock = with_time_context(scope, |ctx| ctx.clock.clone())?;
   Ok(Value::Number(duration_to_ms_f64(clock.now())))
+}
+
+fn performance_entry_type_from_units(units: &[u16]) -> Option<PerformanceEntryType> {
+  // `mark` / `measure` ASCII in UTF-16.
+  const MARK: &[u16] = &[0x006D, 0x0061, 0x0072, 0x006B];
+  const MEASURE: &[u16] = &[
+    0x006D, 0x0065, 0x0061, 0x0073, 0x0075, 0x0072, 0x0065,
+  ];
+  if units == MARK {
+    Some(PerformanceEntryType::Mark)
+  } else if units == MEASURE {
+    Some(PerformanceEntryType::Measure)
+  } else {
+    None
+  }
+}
+
+fn alloc_bounded_string_units(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+  what: &'static str,
+) -> Result<Box<[u16]>, VmError> {
+  let s = scope.to_string(vm, host, hooks, value)?;
+  scope.push_root(Value::String(s))?;
+  let units = scope.heap().get_string(s)?.as_code_units();
+  if units.len() > MAX_PERFORMANCE_ENTRY_NAME_CODE_UNITS {
+    return Err(VmError::TypeError(what));
+  }
+  let mut buf: Vec<u16> = Vec::new();
+  buf
+    .try_reserve_exact(units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  buf.extend_from_slice(units);
+  Ok(buf.into_boxed_slice())
+}
+
+fn perf_entry_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn alloc_performance_entries_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  entries: &[PerformanceEntry],
+  name_filter: Option<&[u16]>,
+  type_filter: Option<PerformanceEntryType>,
+) -> Result<Value, VmError> {
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let match_count = entries
+    .iter()
+    .filter(|e| {
+      let name_ok = match name_filter {
+        Some(name) => e.name.as_ref() == name,
+        None => true,
+      };
+      let type_ok = match type_filter {
+        Some(ty) => e.entry_type == ty,
+        None => true,
+      };
+      name_ok && type_ok
+    })
+    .count();
+
+  let arr = scope.alloc_array(match_count)?;
+  scope.push_root(Value::Object(arr))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(arr, Some(intrinsics.array_prototype()))?;
+
+  // Entry object keys (shared by all entries in the returned array).
+  let key_name_s = scope.alloc_string("name")?;
+  scope.push_root(Value::String(key_name_s))?;
+  let key_name = PropertyKey::from_string(key_name_s);
+
+  let key_entry_type_s = scope.alloc_string("entryType")?;
+  scope.push_root(Value::String(key_entry_type_s))?;
+  let key_entry_type = PropertyKey::from_string(key_entry_type_s);
+
+  let key_start_time_s = scope.alloc_string("startTime")?;
+  scope.push_root(Value::String(key_start_time_s))?;
+  let key_start_time = PropertyKey::from_string(key_start_time_s);
+
+  let key_duration_s = scope.alloc_string("duration")?;
+  scope.push_root(Value::String(key_duration_s))?;
+  let key_duration = PropertyKey::from_string(key_duration_s);
+
+  // EntryType values.
+  let mark_type_s = scope.alloc_string(PerformanceEntryType::Mark.as_str())?;
+  scope.push_root(Value::String(mark_type_s))?;
+  let measure_type_s = scope.alloc_string(PerformanceEntryType::Measure.as_str())?;
+  scope.push_root(Value::String(measure_type_s))?;
+
+  let mut out_index: u32 = 0;
+  for entry in entries.iter() {
+    if let Some(name) = name_filter {
+      if entry.name.as_ref() != name {
+        continue;
+      }
+    }
+    if let Some(ty) = type_filter {
+      if entry.entry_type != ty {
+        continue;
+      }
+    }
+
+    let mut scope2 = scope.reborrow();
+
+    let entry_obj = scope2.alloc_object()?;
+    scope2.push_root(Value::Object(entry_obj))?;
+
+    let name_s = scope2.alloc_string_from_code_units(entry.name.as_ref())?;
+    scope2.push_root(Value::String(name_s))?;
+    let entry_type_value = match entry.entry_type {
+      PerformanceEntryType::Mark => Value::String(mark_type_s),
+      PerformanceEntryType::Measure => Value::String(measure_type_s),
+    };
+
+    scope2.define_property(entry_obj, key_name, perf_entry_desc(Value::String(name_s)))?;
+    scope2.define_property(entry_obj, key_entry_type, perf_entry_desc(entry_type_value))?;
+    scope2.define_property(
+      entry_obj,
+      key_start_time,
+      perf_entry_desc(Value::Number(entry.start_time)),
+    )?;
+    scope2.define_property(
+      entry_obj,
+      key_duration,
+      perf_entry_desc(Value::Number(entry.duration)),
+    )?;
+
+    let idx_s = scope2.alloc_u32_index_string(out_index)?;
+    scope2.push_root(Value::String(idx_s))?;
+    let idx_key = PropertyKey::from_string(idx_s);
+    scope2.define_property(arr, idx_key, perf_entry_desc(Value::Object(entry_obj)))?;
+
+    out_index += 1;
+  }
+
+  Ok(Value::Object(arr))
+}
+
+fn performance_mark_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(name_value) = args.first().copied() else {
+    return Err(VmError::TypeError("performance.mark requires a name"));
+  };
+
+  let name_units = alloc_bounded_string_units(
+    vm,
+    scope,
+    host,
+    hooks,
+    name_value,
+    "performance.mark name too long",
+  )?;
+
+  let clock = with_time_context(scope, |ctx| ctx.clock.clone())?;
+  let start_time = duration_to_ms_f64(clock.now());
+
+  with_time_context_mut(scope, |ctx| {
+    if ctx.performance_entries.len() >= MAX_PERFORMANCE_ENTRIES {
+      // Evict the oldest entry to enforce a hard memory bound.
+      ctx.performance_entries.remove(0);
+    }
+    ctx
+      .performance_entries
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    ctx.performance_entries.push(PerformanceEntry {
+      name: name_units,
+      entry_type: PerformanceEntryType::Mark,
+      start_time,
+      duration: 0.0,
+    });
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
+fn performance_measure_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(name_value) = args.first().copied() else {
+    return Err(VmError::TypeError("performance.measure requires a name"));
+  };
+
+  let name_units = alloc_bounded_string_units(
+    vm,
+    scope,
+    host,
+    hooks,
+    name_value,
+    "performance.measure name too long",
+  )?;
+
+  // Minimal argument handling:
+  // - measure(name)
+  // - measure(name, startMark)
+  // - measure(name, startMark, endMark)
+  let start_mark_units = if args.len() >= 2 {
+    // In browsers, `startOrOptions` can be an object; we only support ToString coercion here.
+    Some(alloc_bounded_string_units(
+      vm,
+      scope,
+      host,
+      hooks,
+      args[1],
+      "performance.measure startMark too long",
+    )?)
+  } else {
+    None
+  };
+
+  let end_mark_units = if args.len() >= 3 {
+    Some(alloc_bounded_string_units(
+      vm,
+      scope,
+      host,
+      hooks,
+      args[2],
+      "performance.measure endMark too long",
+    )?)
+  } else {
+    None
+  };
+
+  let clock = with_time_context(scope, |ctx| ctx.clock.clone())?;
+  let now = duration_to_ms_f64(clock.now());
+
+  let (start_time, end_time) = with_time_context(scope, |ctx| {
+    let lookup_mark = |name: &[u16]| {
+      ctx
+        .performance_entries
+        .iter()
+        .rev()
+        .find(|e| e.entry_type == PerformanceEntryType::Mark && e.name.as_ref() == name)
+        .map(|e| e.start_time)
+    };
+
+    let start_time = start_mark_units
+      .as_deref()
+      .and_then(lookup_mark)
+      .unwrap_or(0.0);
+    let end_time = end_mark_units
+      .as_deref()
+      .and_then(lookup_mark)
+      .unwrap_or(now);
+    (start_time, end_time)
+  })?;
+
+  let duration = (end_time - start_time).max(0.0);
+
+  with_time_context_mut(scope, |ctx| {
+    if ctx.performance_entries.len() >= MAX_PERFORMANCE_ENTRIES {
+      ctx.performance_entries.remove(0);
+    }
+    ctx
+      .performance_entries
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    ctx.performance_entries.push(PerformanceEntry {
+      name: name_units,
+      entry_type: PerformanceEntryType::Measure,
+      start_time,
+      duration,
+    });
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
+fn performance_get_entries_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let heap_key = scope.heap() as *const Heap as usize;
+  let map = time_contexts()
+    .lock()
+    .map_err(|_| VmError::Unimplemented("time context lock poisoned"))?;
+  let ctx = map.get(&heap_key).ok_or(VmError::Unimplemented(
+    "time bindings not installed for this heap",
+  ))?;
+  alloc_performance_entries_array(vm, scope, &ctx.performance_entries, None, None)
+}
+
+fn performance_get_entries_by_type_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let type_value = args.first().copied().unwrap_or(Value::Undefined);
+  let type_s = scope.to_string(vm, host, hooks, type_value)?;
+  scope.push_root(Value::String(type_s))?;
+  let units = scope.heap().get_string(type_s)?.as_code_units();
+  let Some(type_filter) = performance_entry_type_from_units(units) else {
+    // Unknown entry types should return an empty array (not throw).
+    return alloc_performance_entries_array(vm, scope, &[], None, None);
+  };
+  let heap_key = scope.heap() as *const Heap as usize;
+  let map = time_contexts()
+    .lock()
+    .map_err(|_| VmError::Unimplemented("time context lock poisoned"))?;
+  let ctx = map.get(&heap_key).ok_or(VmError::Unimplemented(
+    "time bindings not installed for this heap",
+  ))?;
+  alloc_performance_entries_array(vm, scope, &ctx.performance_entries, None, Some(type_filter))
+}
+
+fn performance_get_entries_by_name_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(name_value) = args.first().copied() else {
+    return Err(VmError::TypeError("performance.getEntriesByName requires a name"));
+  };
+  let name_units = alloc_bounded_string_units(
+    vm,
+    scope,
+    host,
+    hooks,
+    name_value,
+    "performance.getEntriesByName name too long",
+  )?;
+
+  let type_filter = if args.len() >= 2 {
+    let type_s = scope.to_string(vm, host, hooks, args[1])?;
+    scope.push_root(Value::String(type_s))?;
+    let units = scope.heap().get_string(type_s)?.as_code_units();
+    match performance_entry_type_from_units(units) {
+      Some(t) => Some(t),
+      None => {
+        // Unknown types yield no matches.
+        return alloc_performance_entries_array(vm, scope, &[], None, None);
+      }
+    }
+  } else {
+    None
+  };
+
+  let heap_key = scope.heap() as *const Heap as usize;
+  let map = time_contexts()
+    .lock()
+    .map_err(|_| VmError::Unimplemented("time context lock poisoned"))?;
+  let ctx = map.get(&heap_key).ok_or(VmError::Unimplemented(
+    "time bindings not installed for this heap",
+  ))?;
+  alloc_performance_entries_array(
+    vm,
+    scope,
+    &ctx.performance_entries,
+    Some(name_units.as_ref()),
+    type_filter,
+  )
+}
+
+fn performance_clear_marks_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let name_units = if let Some(name_value) = args.first().copied() {
+    Some(alloc_bounded_string_units(
+      vm,
+      scope,
+      host,
+      hooks,
+      name_value,
+      "performance.clearMarks name too long",
+    )?)
+  } else {
+    None
+  };
+
+  with_time_context_mut(scope, |ctx| {
+    if let Some(name_units) = &name_units {
+      ctx.performance_entries.retain(|e| {
+        !(e.entry_type == PerformanceEntryType::Mark && e.name.as_ref() == name_units.as_ref())
+      });
+    } else {
+      ctx
+        .performance_entries
+        .retain(|e| e.entry_type != PerformanceEntryType::Mark);
+    }
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
+fn performance_clear_measures_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let name_units = if let Some(name_value) = args.first().copied() {
+    Some(alloc_bounded_string_units(
+      vm,
+      scope,
+      host,
+      hooks,
+      name_value,
+      "performance.clearMeasures name too long",
+    )?)
+  } else {
+    None
+  };
+
+  with_time_context_mut(scope, |ctx| {
+    if let Some(name_units) = &name_units {
+      ctx.performance_entries.retain(|e| {
+        !(e.entry_type == PerformanceEntryType::Measure && e.name.as_ref() == name_units.as_ref())
+      });
+    } else {
+      ctx
+        .performance_entries
+        .retain(|e| e.entry_type != PerformanceEntryType::Measure);
+    }
+    Ok(())
+  })?;
+
+  Ok(Value::Undefined)
+}
+
+fn performance_clear_resource_timings_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // We do not currently store resource timing entries. Provide a no-op stub for compatibility.
+  Ok(Value::Undefined)
 }
 
 fn date_get_time_native(
@@ -685,6 +1376,77 @@ mod tests {
       .expect("call should succeed")
   }
 
+  fn call(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value, args: &[Value]) -> Value {
+    #[derive(Default)]
+    struct NoopHostHooks;
+    impl vm_js::VmHostHooks for NoopHostHooks {
+      fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+        panic!("unexpected Promise job enqueued during time bindings test");
+      }
+    }
+
+    let mut host_hooks = NoopHostHooks::default();
+    let mut scope = heap.scope();
+    scope.push_root(callee).unwrap();
+    scope.push_root(this).unwrap();
+    for &arg in args {
+      scope.push_root(arg).unwrap();
+    }
+
+    let Value::Object(func) = callee else {
+      panic!("expected function object");
+    };
+    let call_key_s = scope.alloc_string("call").expect("alloc key string");
+    scope.push_root(Value::String(call_key_s)).unwrap();
+    let call_key = PropertyKey::from_string(call_key_s);
+    let call_prop = vm.get(&mut scope, func, call_key).expect("get call");
+    scope.push_root(call_prop).unwrap();
+
+    let mut argv: Vec<Value> = Vec::new();
+    argv.push(this);
+    argv.extend_from_slice(args);
+    vm.call_with_host(&mut scope, &mut host_hooks, call_prop, callee, &argv)
+      .expect("call should succeed")
+  }
+
+  fn get_array_len(heap: &mut Heap, arr: vm_js::GcObject) -> usize {
+    let mut scope = heap.scope();
+    let key_s = scope.alloc_string("length").expect("alloc key string");
+    scope.push_root(Value::String(key_s)).unwrap();
+    let key = PropertyKey::from_string(key_s);
+    let v = scope
+      .heap()
+      .object_get_own_data_property_value(arr, &key)
+      .expect("get length")
+      .expect("length should exist");
+    let Value::Number(n) = v else {
+      panic!("length should be a number");
+    };
+    n as usize
+  }
+
+  fn get_array_elem(heap: &mut Heap, arr: vm_js::GcObject, idx: u32) -> Value {
+    let mut scope = heap.scope();
+    let idx_s = scope.alloc_u32_index_string(idx).expect("alloc index string");
+    scope.push_root(Value::String(idx_s)).unwrap();
+    let key = PropertyKey::from_string(idx_s);
+    scope
+      .heap()
+      .object_get_own_data_property_value(arr, &key)
+      .expect("get array element")
+      .unwrap_or(Value::Undefined)
+  }
+
+  fn string_value_to_utf8_lossy(heap: &Heap, v: Value) -> String {
+    let Value::String(s) = v else {
+      panic!("expected string");
+    };
+    heap
+      .get_string(s)
+      .expect("get string")
+      .to_utf8_lossy()
+  }
+
   #[test]
   fn date_now_and_performance_now_follow_virtual_clock() {
     let clock = Arc::new(VirtualClock::new());
@@ -769,6 +1531,110 @@ mod tests {
     assert!((n - web_time.performance_now(&event_loop)).abs() < 1e-9);
 
     // `vm-js` realms own persistent GC roots that must be explicitly removed.
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_mark_and_entries_are_available() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, WebTime::default())
+      .expect("install time bindings");
+
+    clock.set_now(Duration::from_millis(10));
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    let mark = get_object_property(&mut heap, performance_obj, "mark");
+    let get_entries_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+    let clear_marks = get_object_property(&mut heap, performance_obj, "clearMarks");
+
+    // mark('foo') should not throw.
+    {
+      let mut scope = heap.scope();
+      let foo = Value::String(scope.alloc_string("foo").expect("alloc foo"));
+      drop(scope);
+      let _ = call(&mut vm, &mut heap, mark, Value::Object(performance_obj), &[foo]);
+    }
+
+    // getEntriesByType('mark') should return an Array containing the mark.
+    let marks = {
+      let mut scope = heap.scope();
+      let mark_str = Value::String(scope.alloc_string("mark").expect("alloc mark"));
+      drop(scope);
+      call(
+        &mut vm,
+        &mut heap,
+        get_entries_by_type,
+        Value::Object(performance_obj),
+        &[mark_str],
+      )
+    };
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert!(
+      heap.object_is_array(marks_arr).expect("object_is_array"),
+      "expected getEntriesByType to return an array"
+    );
+    assert_eq!(get_array_len(&mut heap, marks_arr), 1);
+    let entry0 = get_array_elem(&mut heap, marks_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let entry_type = get_object_property(&mut heap, entry0_obj, "entryType");
+    assert_eq!(string_value_to_utf8_lossy(&heap, entry_type), "mark");
+
+    // clearMarks() should remove it.
+    let _ = call(&mut vm, &mut heap, clear_marks, Value::Object(performance_obj), &[]);
+
+    let marks2 = {
+      let mut scope = heap.scope();
+      let mark_str = Value::String(scope.alloc_string("mark").expect("alloc mark"));
+      drop(scope);
+      call(
+        &mut vm,
+        &mut heap,
+        get_entries_by_type,
+        Value::Object(performance_obj),
+        &[mark_str],
+      )
+    };
+    let Value::Object(marks2_arr) = marks2 else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks2_arr), 0);
+
+    // getEntriesByType('navigation') should return an array (possibly empty) without throwing.
+    let nav_entries = {
+      let mut scope = heap.scope();
+      let nav_str = Value::String(scope.alloc_string("navigation").expect("alloc navigation"));
+      drop(scope);
+      call(
+        &mut vm,
+        &mut heap,
+        get_entries_by_type,
+        Value::Object(performance_obj),
+        &[nav_str],
+      )
+    };
+    let Value::Object(nav_arr) = nav_entries else {
+      panic!("expected array");
+    };
+    assert!(
+      heap.object_is_array(nav_arr).expect("object_is_array"),
+      "expected navigation entries to be an array"
+    );
+
     realm.teardown(&mut heap);
   }
 

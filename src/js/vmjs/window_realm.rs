@@ -42253,10 +42253,11 @@ mod tests {
         // Register a unique document id so wrapper caching is document-aware. Document IDs are
         // derived from the JS Document wrapper identity.
         let doc2_id = gc_object_id(doc2_obj);
+        let doc2_key = WeakGcObject::from(doc2_obj);
         platform.register_wrapper(
           scope.heap(),
           doc2_obj,
-          WeakGcObject::from(doc2_obj),
+          doc2_key,
           NodeId::from_index(0),
           DomInterface::Document,
         );
