@@ -267,9 +267,8 @@ pub struct Heap {
   /// Per ECMA-262, well-known symbols are **agent-wide**, meaning every realm created within an
   /// agent observes the same symbol identity (`realmA.Symbol.species === realmB.Symbol.species`).
   ///
-  /// Keeping these symbols on the heap (rather than per-realm intrinsics) ensures:
-  /// - stable identity across realms
-  /// - liveness across realm teardown (they are traced during GC)
+  /// Keeping these symbols on the heap (rather than per-realm intrinsics) ensures stable identity
+  /// across realms and keeps them alive independently of realm teardown (they are traced during GC).
   well_known_symbols: Option<WellKnownSymbols>,
 
   // Commonly-used property key strings (interned for memory efficiency).
@@ -5512,6 +5511,8 @@ impl Heap {
     // are traced by GC and stable across realms (even if all realms are torn down).
     let mut scope = self.scope();
 
+    // Root each newly-created symbol while we allocate the rest of the set, in case allocations
+    // trigger GC.
     let async_iterator = scope.alloc_symbol(Some("Symbol.asyncIterator"))?;
     scope.push_root(Value::Symbol(async_iterator))?;
     let async_dispose = scope.alloc_symbol(Some("Symbol.asyncDispose"))?;
@@ -5544,8 +5545,8 @@ impl Heap {
     scope.push_root(Value::Symbol(unscopables))?;
 
     let wks = WellKnownSymbols {
-      async_iterator,
       async_dispose,
+      async_iterator,
       dispose,
       has_instance,
       is_concat_spreadable,

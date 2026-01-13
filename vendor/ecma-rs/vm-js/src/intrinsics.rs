@@ -625,7 +625,7 @@ impl Intrinsics {
     scope: &mut Scope<'_>,
     roots: &mut Vec<RootId>,
   ) -> Result<Self, VmError> {
-    let well_known_symbols = WellKnownSymbols::init(scope, roots)?;
+    let well_known_symbols = scope.heap_mut().ensure_well_known_symbols()?;
     let optional_chain_sentinel =
       alloc_rooted_symbol(scope, roots, "vm-js optional chain sentinel")?;
 
@@ -7249,9 +7249,4 @@ impl Intrinsics {
   }
 }
 
-impl WellKnownSymbols {
-  fn init(scope: &mut Scope<'_>, roots: &mut Vec<RootId>) -> Result<Self, VmError> {
-    let _ = roots;
-    scope.heap_mut().ensure_well_known_symbols()
-  }
-}
+// Note: well-known symbols are now heap-global (see `Heap::ensure_well_known_symbols`).
