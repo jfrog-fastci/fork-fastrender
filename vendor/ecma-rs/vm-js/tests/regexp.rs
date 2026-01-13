@@ -188,6 +188,19 @@ fn regexp_legacy_octal_escape_without_captures() {
 }
 
 #[test]
+fn regexp_legacy_octal_escape_disambiguation_ignores_parens_in_char_class() {
+  // `[]()]` is a character class whose first element is a literal `]` (per the grammar's special
+  // case for the first class atom). The `(` and `)` inside the class are literals and must not
+  // affect capture group counting used to disambiguate `\1` as a backreference vs legacy octal
+  // escape in non-unicode mode.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"new RegExp("[]()]\\1").exec("]\u0001")[0]"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "]\u{1}");
+}
+
+#[test]
 fn regexp_decimal_escape_backreference_takes_precedence() {
   let mut rt = new_runtime();
   let value = rt.exec_script(r#"new RegExp("(.)\\1").exec("aa")[0]"#).unwrap();

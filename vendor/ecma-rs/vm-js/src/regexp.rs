@@ -1862,6 +1862,14 @@ impl RegExpProgram {
           Inst::RepeatEnd { start } => {
             state.pc = *start;
           }
+          Inst::RepeatReset { id } => {
+            let Some(rep) = state.repeats.get_mut(*id) else {
+              break;
+            };
+            rep.count = 0;
+            rep.last_pos = UNSET;
+            state.pc += 1;
+          }
           Inst::LookAhead { program, negative } => {
             // Run the nested program anchored at the current position.
             let sub = program.exec_at(
@@ -1981,6 +1989,7 @@ impl RegExpProgram {
         Inst::NamedBackRef(name_id) => Inst::NamedBackRef(*name_id),
         Inst::Split(a, b) => Inst::Split(*a, *b),
         Inst::Jump(target) => Inst::Jump(*target),
+        Inst::RepeatReset { id } => Inst::RepeatReset { id: *id },
         Inst::RepeatStart {
           id,
           min,
@@ -2193,6 +2202,15 @@ enum Inst {
   NamedBackRef(u32),
   Split(usize, usize),
   Jump(usize),
+  /// Resets a quantifier's runtime state (`count`/`last_pos`) for a fresh entry into the quantified
+  /// expression.
+  ///
+  /// Quantifier repetition counts are stored in the executing [`ExecState`]. When the same
+  /// quantifier is re-entered (e.g. due to an enclosing quantified group), those counters must be
+  /// cleared so the quantifier can match again from scratch. The `RepeatEnd` loop backedge jumps
+  /// directly to [`Inst::RepeatStart`] and intentionally bypasses this instruction so individual
+  /// iterations do not reset the counter.
+  RepeatReset { id: usize },
   RepeatStart {
     id: usize,
     min: u32,
@@ -3020,8 +3038,16 @@ fn count_total_capturing_groups(
 ) -> Result<u32, RegExpCompileError> {
   let mut i: usize = 0;
   let mut scan_i: usize = 0;
-  let mut charset_depth: usize = 0;
   let mut count: u32 = 0;
+  #[derive(Clone, Copy)]
+  struct ClassScanState {
+    /// True immediately after `[` (before any class atom), so `^` may still be a negation marker.
+    negation_possible: bool,
+    /// True before consuming the first class atom (after optional `^`), so an unescaped `]` is a
+    /// literal character, not the end of the class.
+    first_atom: bool,
+  }
+  let mut class_stack: Vec<ClassScanState> = Vec::new();
   while i < units.len() {
     // Budget large patterns explicitly: this is an `O(N)` scan over attacker-controlled input.
     if scan_i != 0 {
@@ -3030,24 +3056,86 @@ fn count_total_capturing_groups(
     scan_i = scan_i.wrapping_add(1);
 
     let u = units[i];
+    if !class_stack.is_empty() {
+      // Inside a character class: ignore `(`/`)` entirely, but track `[`/`]` balancing (nested only
+      // in `/v` UnicodeSets mode) and the special-case "first `]` is literal" rule.
+      let top = class_stack
+        .last_mut()
+        .expect("class_stack is non-empty");
+
+      if u == (b'\\' as u16) {
+        // Escapes inside classes consume one ClassAtom.
+        top.negation_possible = false;
+        if top.first_atom {
+          top.first_atom = false;
+        }
+        i = i.saturating_add(2);
+        continue;
+      }
+
+      if top.negation_possible && u == (b'^' as u16) {
+        // `^` as the first code unit after `[` is the negation marker; it does not count as an
+        // atom, so `]` may still be literal immediately after it.
+        top.negation_possible = false;
+        i = i.saturating_add(1);
+        continue;
+      }
+
+      if flags.unicode_sets && u == (b'[' as u16) {
+        // Nested character classes are only allowed in `/v` mode. Opening a nested class consumes
+        // the first atom in the parent class, if any.
+        top.negation_possible = false;
+        if top.first_atom {
+          top.first_atom = false;
+        }
+        class_stack
+          .try_reserve(1)
+          .map_err(|_| RegExpCompileError::OutOfMemory)?;
+        class_stack.push(ClassScanState {
+          negation_possible: true,
+          first_atom: true,
+        });
+        i = i.saturating_add(1);
+        continue;
+      }
+
+      if u == (b']' as u16) {
+        if top.first_atom {
+          // Unescaped `]` as the first atom is a literal `]`, not the end of the class.
+          top.negation_possible = false;
+          top.first_atom = false;
+          i = i.saturating_add(1);
+          continue;
+        }
+        // End of this class nesting level.
+        class_stack.pop();
+        i = i.saturating_add(1);
+        continue;
+      }
+
+      // Any other code unit inside the class consumes the first atom if we haven't yet.
+      top.negation_possible = false;
+      if top.first_atom {
+        top.first_atom = false;
+      }
+      i = i.saturating_add(1);
+      continue;
+    }
+
     if u == (b'\\' as u16) {
       // Skip the escaped code unit.
       i = i.saturating_add(2);
       continue;
     }
 
-    if charset_depth > 0 {
-      if flags.unicode_sets && u == (b'[' as u16) {
-        charset_depth = charset_depth.saturating_add(1);
-      } else if u == (b']' as u16) {
-        charset_depth = charset_depth.saturating_sub(1);
-      }
-      i = i.saturating_add(1);
-      continue;
-    }
-
     if u == (b'[' as u16) {
-      charset_depth = 1;
+      class_stack
+        .try_reserve(1)
+        .map_err(|_| RegExpCompileError::OutOfMemory)?;
+      class_stack.push(ClassScanState {
+        negation_possible: true,
+        first_atom: true,
+      });
       i = i.saturating_add(1);
       continue;
     }
@@ -5010,6 +5098,11 @@ impl ProgramBuilder {
 
     let id = self.repeat_count;
     self.repeat_count = self.repeat_count.saturating_add(1);
+
+    // Quantifier runtime counters live in `ExecState.repeats` and must be reset each time this
+    // quantifier is re-entered (e.g. when an enclosing quantified group repeats its body). The loop
+    // backedge (`RepeatEnd`) jumps directly to `RepeatStart` and intentionally bypasses this reset.
+    self.emit(ctx, Inst::RepeatReset { id })?;
 
     let start_pc = self.emit(ctx, Inst::RepeatStart {
       id,
