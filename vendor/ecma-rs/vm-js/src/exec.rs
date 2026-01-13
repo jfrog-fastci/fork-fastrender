@@ -1745,6 +1745,72 @@ impl JsRuntime {
     result
   }
 
+  /// Execute a pre-compiled classic script (HIR) produced by [`crate::CompiledScript`], using an
+  /// explicit embedder host context and host hook implementation.
+  ///
+  /// This is analogous to [`JsRuntime::exec_script_source_with_host_and_hooks`], but runs the
+  /// pre-lowered HIR instead of parsing source text at runtime.
+  pub fn exec_compiled_script_with_hooks(
+    &mut self,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    script: Arc<crate::CompiledScript>,
+  ) -> Result<Value, VmError> {
+    let source = Arc::new(script.source.clone());
+
+    let (line, col) = source.line_col(0);
+    let frame = StackFrame {
+      function: None,
+      source: source.name.clone(),
+      line,
+      col,
+    };
+
+    let exec_ctx = crate::ExecutionContext {
+      realm: self.realm.id(),
+      script_or_module: None,
+    };
+    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx);
+    let prev_hooks = vm_ctx.push_active_host_hooks(hooks);
+
+    let result: Result<Value, VmError> = (|| {
+      let mut vm_frame = vm_ctx.enter_frame(frame)?;
+
+      // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+      // interrupt budgets.
+      vm_frame.tick()?;
+
+      let mut scope = self.heap.scope();
+      let res = crate::hir_exec::run_compiled_script(
+        &mut *vm_frame,
+        &mut scope,
+        host,
+        hooks,
+        &mut self.env,
+        script,
+      );
+
+      match res {
+        Err(VmError::Throw(value)) => Err(VmError::ThrowWithStack {
+          value,
+          stack: vm_frame.capture_stack(),
+        }),
+        other => other,
+      }
+    })();
+
+    vm_ctx.pop_active_host_hooks(prev_hooks);
+    drop(vm_ctx);
+
+    // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
+    // into the embedding's host hook implementation.
+    while let Some((realm, job)) = self.vm.microtask_queue_mut().pop_front() {
+      hooks.host_enqueue_promise_job(job, realm);
+    }
+
+    result
+  }
+
   /// Parse and execute a classic script (ECMAScript dialect, `SourceType::Script`) using an explicit
   /// embedder host context and host hook implementation.
   ///

@@ -4,10 +4,11 @@ use crate::exec::{ResolvedBinding, RuntimeEnv};
 use crate::function::ThisMode;
 use crate::for_in::ForInEnumerator;
 use crate::iterator;
+use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
-use crate::{EnvBinding, GcEnv, GcObject, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{EnvBinding, GcEnv, GcObject, Scope, ScriptOrModule, Value, Vm, VmError, VmHost, VmHostHooks};
 use std::collections::HashSet;
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -1603,6 +1604,53 @@ impl<'vm> HirEvaluator<'vm> {
       }
       hir_js::ExprKind::Array(arr) => self.eval_array_literal(scope, body, arr),
       hir_js::ExprKind::Object(obj) => self.eval_object_literal(scope, body, obj),
+      hir_js::ExprKind::ImportMeta => {
+        let Some(ScriptOrModule::Module(module)) = self.vm.get_active_script_or_module() else {
+          return Err(VmError::Unimplemented("import.meta outside of modules"));
+        };
+        let obj = self
+          .vm
+          .get_or_create_import_meta_object(scope, &mut *self.hooks, module)?;
+        Ok(Value::Object(obj))
+      }
+      hir_js::ExprKind::ImportCall { argument, attributes } => {
+        // Dynamic `import()` expression.
+        //
+        // This delegates to the spec-shaped implementation in `module_loading::start_dynamic_import`.
+        // Evaluate the specifier expression, then the optional `options` argument.
+        //
+        // Root the intermediate values while evaluating the second argument and while entering the
+        // module loading algorithm, which may allocate and trigger GC.
+        let mut import_scope = scope.reborrow();
+        let specifier = self.eval_expr(&mut import_scope, body, *argument)?;
+        import_scope.push_root(specifier)?;
+
+        let options = match attributes {
+          Some(options_expr) => self.eval_expr(&mut import_scope, body, *options_expr)?,
+          None => Value::Undefined,
+        };
+        import_scope.push_root(options)?;
+
+        let modules_ptr = self
+          .vm
+          .module_graph_ptr()
+          .ok_or(VmError::Unimplemented("dynamic import requires a module graph"))?;
+        // Safety: `Vm::module_graph_ptr` is only set by embeddings that ensure the graph outlives the
+        // VM (see `Vm::set_module_graph` docs). `JsRuntime` stores the graph in a `Box`, so the pointer
+        // remains stable even if the runtime is moved.
+        let modules = unsafe { &mut *modules_ptr };
+
+        module_loading::start_dynamic_import_with_host_and_hooks(
+          self.vm,
+          &mut import_scope,
+          modules,
+          &mut *self.host,
+          &mut *self.hooks,
+          self.env.global_object(),
+          specifier,
+          options,
+        )
+      }
       hir_js::ExprKind::FunctionExpr {
         body: func_body,
         name,
@@ -1624,9 +1672,6 @@ impl<'vm> HirEvaluator<'vm> {
         hir_js::ExprKind::TaggedTemplate { .. } => VmError::Unimplemented("template literal (hir-js compiled path)"),
         hir_js::ExprKind::Await { .. } => VmError::Unimplemented("await (hir-js compiled path)"),
         hir_js::ExprKind::Yield { .. } => VmError::Unimplemented("yield (hir-js compiled path)"),
-        hir_js::ExprKind::ImportCall { .. } | hir_js::ExprKind::ImportMeta => {
-          VmError::Unimplemented("import() / import.meta (hir-js compiled path)")
-        }
         hir_js::ExprKind::Super => VmError::Unimplemented("super (hir-js compiled path)"),
         hir_js::ExprKind::Jsx(_) => VmError::Unimplemented("jsx (hir-js compiled path)"),
         hir_js::ExprKind::TypeAssertion { .. }
