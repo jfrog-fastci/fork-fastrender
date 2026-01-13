@@ -25,6 +25,7 @@ include = [
   # --- Core RegExp surface ---
   "built-ins/RegExp/prototype/test/**/*.js",
   "built-ins/RegExp/prototype/exec/**/*.js",
+  "built-ins/RegExp/prototype/source/**/*.js",
   "built-ins/RegExp/unicode_restricted_octal_escape.js",
 
   # --- Named capture groups (`(?<name>...)`, match result `.groups`) ---
