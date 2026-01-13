@@ -116,6 +116,12 @@ Why `SOCK_SEQPACKET`:
 
 `SOCK_DGRAM` also preserves boundaries, but `SOCK_SEQPACKET` is connection-oriented and often a better fit for structured protocols that want ordered reliable delivery with simpler lifecycle semantics.
 
+Repo reality:
+- Hardened Linux `SOCK_SEQPACKET` + `SCM_RIGHTS` reference implementation:
+  [`src/ipc/unix_seqpacket.rs`](../src/ipc/unix_seqpacket.rs)
+- Slot-based seqpacket prototype with strict lengths + truncation handling:
+  [`src/ipc/frame_slots.rs`](../src/ipc/frame_slots.rs)
+
 ### Sandbox friendliness: prefer inherited `socketpair()` endpoints
 
 Avoid filesystem-backed UNIX sockets (paths under `/tmp`, etc.) inside the renderer:
