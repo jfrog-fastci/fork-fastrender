@@ -311,7 +311,7 @@ fn array_get_and_own_property_keys_are_sufficient_for_webidl_sequences() -> Resu
     }
 
     // OwnPropertyKeys: indices in ascending order, then "length".
-    let keys = scope.heap().own_property_keys(arr)?;
+    let keys = scope.ordinary_own_property_keys(arr)?;
     let keys_as_utf8: Vec<String> = keys
       .iter()
       .map(|k| match k {

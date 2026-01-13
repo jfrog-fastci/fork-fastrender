@@ -71,7 +71,7 @@ fn own_property_keys_orders_array_indices_first() -> Result<(), VmError> {
   let k0 = PropertyKey::from_string(scope.alloc_string("0")?);
   scope.define_property(a, k0, data_desc(Value::Null))?;
 
-  let keys = scope.heap().own_property_keys(a)?;
+  let keys = scope.ordinary_own_property_keys(a)?;
   let mut names = Vec::new();
   for k in keys {
     match k {
