@@ -4110,6 +4110,40 @@ mod tests {
   }
 
   #[test]
+  fn appearance_popup_emits_accesskit_names_for_accent_controls() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.chrome.appearance_popup_open = true;
+
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let names = a11y_test_util::accesskit_names_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_pretty_json_from_full_output(&output);
+
+    for expected in [
+      "Set accent color: Blue",
+      "Set accent color: Green",
+      "Set accent color: Purple",
+      "Set accent color: Orange",
+      "Set accent color: Red",
+      "Set accent color: Gray",
+      "Custom accent color",
+    ] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in appearance popup output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
+      );
+    }
+  }
+
+  #[test]
   fn chrome_accesskit_roles_for_core_navigation_controls_are_buttons() {
     let mut app = BrowserAppState::new();
     app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
