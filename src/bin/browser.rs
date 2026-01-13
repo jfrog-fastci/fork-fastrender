@@ -3848,6 +3848,74 @@ mod clipboard_limit_tests {
 }
 
 #[cfg(test)]
+mod clipboard_write_gate_integration_tests {
+  use super::write_clipboard_update_if_within_limit;
+  use fastrender::ui::clipboard_gate::{ClipboardWriteGate, ClipboardWriteGateDecision};
+  use fastrender::ui::protocol_limits::sanitize_worker_to_ui_clipboard_message;
+  use fastrender::ui::{TabId, WorkerToUi};
+
+  #[test]
+  fn unsolicited_clipboard_write_is_not_forwarded_to_os_clipboard() {
+    let tab_id = TabId(1);
+    let msg = WorkerToUi::SetClipboardText {
+      tab_id,
+      text: "ok".to_string(),
+    };
+    let (_msg, update) = sanitize_worker_to_ui_clipboard_message(msg);
+    let update = update.expect("expected clipboard update");
+
+    let mut gate = ClipboardWriteGate::new();
+    let mut called = false;
+    let mut wrote = false;
+
+    match gate.on_worker_set_clipboard_text(update.tab_id) {
+      ClipboardWriteGateDecision::Allowed => {
+        wrote = write_clipboard_update_if_within_limit(&update, |_text| called = true);
+      }
+      ClipboardWriteGateDecision::Rejected { .. } => {}
+    }
+
+    assert!(!wrote, "unexpected clipboard write should not be forwarded");
+    assert!(
+      !called,
+      "unsolicited SetClipboardText must not attempt to write to the OS clipboard"
+    );
+  }
+
+  #[test]
+  fn clipboard_write_after_copy_is_forwarded_once() {
+    let tab_id = TabId(7);
+    let msg = WorkerToUi::SetClipboardText {
+      tab_id,
+      text: "hello".to_string(),
+    };
+    let (_msg, update) = sanitize_worker_to_ui_clipboard_message(msg);
+    let update = update.expect("expected clipboard update");
+
+    let mut gate = ClipboardWriteGate::new();
+    gate.register_copy(tab_id);
+
+    let mut called = false;
+    match gate.on_worker_set_clipboard_text(update.tab_id) {
+      ClipboardWriteGateDecision::Allowed => {
+        assert!(write_clipboard_update_if_within_limit(&update, |text| {
+          assert_eq!(text, "hello");
+          called = true;
+        }));
+      }
+      ClipboardWriteGateDecision::Rejected { .. } => panic!("expected clipboard write to be allowed"),
+    }
+    assert!(called);
+
+    // Arm is one-shot: further writes should be rejected.
+    assert!(matches!(
+      gate.on_worker_set_clipboard_text(update.tab_id),
+      ClipboardWriteGateDecision::Rejected { .. }
+    ));
+  }
+}
+
+#[cfg(test)]
 mod wheel_delta_shift_mapping_tests {
   use super::remap_wheel_delta_for_shift;
 
@@ -13669,6 +13737,9 @@ impl App {
     match &msg {
       UiToWorker::Copy { tab_id } => self.clipboard_write_gate.register_copy(*tab_id),
       UiToWorker::Cut { tab_id } => self.clipboard_write_gate.register_cut(*tab_id),
+      // Clear any pending arm on tab switches so a stale Copy/Cut cannot be reused after the user
+      // moves to another tab.
+      UiToWorker::SetActiveTab { .. } => self.clipboard_write_gate.clear_all(),
       UiToWorker::CloseTab { tab_id } => self.clipboard_write_gate.clear_tab(*tab_id),
       _ => {}
     }
