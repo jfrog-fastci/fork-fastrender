@@ -23717,7 +23717,9 @@ fn async_eval_assignment_expr(
     OperatorName::AssignmentSubtraction
     | OperatorName::AssignmentMultiplication
     | OperatorName::AssignmentDivision
-    | OperatorName::AssignmentRemainder => async_eval_assignment_arithmetic_compound(evaluator, scope, expr),
+    | OperatorName::AssignmentRemainder => {
+      async_eval_assignment_arithmetic_compound(evaluator, scope, expr)
+    }
     OperatorName::AssignmentBitwiseAnd
     | OperatorName::AssignmentBitwiseOr
     | OperatorName::AssignmentBitwiseXor => async_eval_assignment_bitwise(evaluator, scope, expr),
@@ -24546,9 +24548,16 @@ fn async_eval_assignment_apply_reference(
         return Ok(AsyncEval::Complete(left));
       }
 
+      // Root `left` across evaluation of the RHS in case it allocates and triggers GC.
+      op_scope.push_root(left)?;
+
       match async_eval_expr(evaluator, &mut op_scope, &expr.right)? {
         AsyncEval::Complete(value) => {
+          // Root `value` across anonymous function name inference + `PutValue`.
           op_scope.push_root(value)?;
+          evaluator
+            .maybe_set_anonymous_function_name_for_assignment(&mut op_scope, &reference, value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
           evaluator
             .put_value_to_reference(&mut op_scope, &reference, value)
             .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut op_scope, err))?;
@@ -29684,6 +29693,9 @@ fn async_resume_from_frames(
 
                 let mut put_scope = scope.reborrow();
                 put_scope.push_root(value)?;
+                evaluator
+                  .maybe_set_anonymous_function_name_for_assignment(&mut put_scope, &reference, value)
+                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))?;
                 evaluator
                   .put_value_to_reference(&mut put_scope, &reference, value)
                   .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut put_scope, err))
@@ -40697,6 +40709,72 @@ mod tests {
           constructor(x) { super(x + 1); }
         }
         return new D(1).x === 2;
+      }
+      f().then(function (v) { out = v; });
+      out
+    "#,
+    )?;
+    assert_eq!(value, Value::Undefined);
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn logical_assignment_with_await_short_circuiting() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // The async evaluator can allocate more than a simple sync script; use a larger heap to avoid
+    // spurious OOMs when running microtasks.
+    let heap = Heap::new(HeapLimits::new(2 * 1024 * 1024, 2 * 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      var out;
+      async function f() {
+        const log = [];
+        let stored = 1;
+        const obj = {
+          get a() { log.push("get"); return stored; },
+          set a(v) { log.push("set:" + v); stored = v; },
+        };
+        function key() { log.push("key"); return "a"; }
+        async function rhs() { log.push("rhs"); return 2; }
+
+        // `&&=` short-circuits when the LHS is falsy.
+        let res = (obj[key()] &&= await rhs());
+        if (res !== 2 || stored !== 2 || log.join(",") !== "key,get,rhs,set:2") return false;
+
+        log.length = 0;
+        stored = 0;
+        res = (obj[key()] &&= await rhs());
+        if (res !== 0 || stored !== 0 || log.join(",") !== "key,get") return false;
+
+        // `||=` short-circuits when the LHS is truthy.
+        log.length = 0;
+        stored = 0;
+        res = (obj[key()] ||= await rhs());
+        if (res !== 2 || stored !== 2 || log.join(",") !== "key,get,rhs,set:2") return false;
+
+        log.length = 0;
+        stored = 5;
+        res = (obj[key()] ||= await rhs());
+        if (res !== 5 || stored !== 5 || log.join(",") !== "key,get") return false;
+
+        // `??=` short-circuits only on non-nullish values, even when falsy.
+        log.length = 0;
+        stored = 0;
+        res = (obj[key()] ??= await rhs());
+        if (res !== 0 || stored !== 0 || log.join(",") !== "key,get") return false;
+
+        log.length = 0;
+        stored = undefined;
+        res = (obj[key()] ??= await rhs());
+        if (res !== 2 || stored !== 2 || log.join(",") !== "key,get,rhs,set:2") return false;
+
+        return true;
       }
       f().then(function (v) { out = v; });
       out
