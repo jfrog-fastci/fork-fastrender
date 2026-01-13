@@ -233,6 +233,57 @@ fn pausable_parser_pauses_at_script_and_dom_is_partial() {
 }
 
 #[test]
+fn pausable_parser_updates_live_ranges_on_parser_insertion_after_script_pause() {
+  // Scripts can create live ranges while parsing is paused at `</script>`. When parsing resumes,
+  // parser-driven insertions must update those ranges per DOM's "insert" algorithm.
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  // Text inside <table> is foster-parented into <body> before the <table>.
+  let mut parser = PausableHtml5everParser::new_document(Dom2TreeSink::new(None), opts);
+  parser.push_str("<!doctype html><table><script>1</script>foo</table>");
+  parser.set_eof();
+
+  let _script_id = match parser.pump().unwrap() {
+    Html5everPump::Script(id) => id,
+    _ => panic!("expected Script boundary"),
+  };
+
+  // While paused, create a range collapsed at the end of <body> (after the <table>).
+  let (range, body, original_offset) = {
+    let sink = parser
+      .sink()
+      .expect("expected parser sink to be available while parsing");
+    let mut doc = sink.document_mut();
+    let body = doc.body().expect("expected <body> to exist");
+    let original_offset = doc.node(body).children.len();
+
+    let range = doc.create_range();
+    doc.range_set_start(range, body, original_offset)
+      .expect("setStart should succeed");
+    doc.range_set_end(range, body, original_offset)
+      .expect("setEnd should succeed");
+    (range, body, original_offset)
+  };
+
+  let doc = match parser.pump().unwrap() {
+    Html5everPump::Finished(doc) => doc,
+    Html5everPump::NeedMoreInput => panic!("unexpected NeedMoreInput with EOF signalled"),
+    Html5everPump::Script(_) => panic!("unexpected additional script pause"),
+  };
+
+  assert_eq!(doc.range_start_container(range).unwrap(), body);
+  assert_eq!(doc.range_end_container(range).unwrap(), body);
+  assert_eq!(doc.range_start_offset(range).unwrap(), original_offset + 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), original_offset + 1);
+}
+
+#[test]
 fn pausable_parser_yields_multiple_scripts_in_order() {
   let opts = ParseOpts {
     tree_builder: TreeBuilderOpts {
