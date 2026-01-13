@@ -13,11 +13,11 @@ use crate::bindings_runtime::{BindingsRuntime, DataPropertyAttributes};
 
 /// Returns `true` if `obj` should be treated as iterable for union discrimination purposes.
 ///
-/// This mirrors the generator's previous inline logic:
-/// - Arrays are always treated as iterable (fast-path).
-/// - Otherwise we check `@@iterator` on the object:
-///   - `undefined`/`null` => not iterable
-///   - non-callable => throw a TypeError
+/// This matches WebIDL union discrimination behaviour: `GetMethod(obj, @@iterator)` is used with no
+/// special casing for Arrays.
+///
+/// - `undefined`/`null` => not iterable (`false`)
+/// - non-callable => throw a TypeError
 pub fn object_has_iterator<'a>(
   rt: &mut BindingsRuntime<'a>,
   host: &mut dyn VmHost,
@@ -26,10 +26,6 @@ pub fn object_has_iterator<'a>(
 ) -> Result<bool, VmError> {
   // Root `obj` for the duration of any property lookups (which may invoke user code and allocate).
   rt.scope.push_root(Value::Object(obj))?;
-
-  if rt.scope.heap().object_is_array(obj)? {
-    return Ok(true);
-  }
 
   let intr = rt
     .vm
