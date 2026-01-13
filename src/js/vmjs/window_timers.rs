@@ -1055,6 +1055,9 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
     let (module_loader, module_loading_enabled) = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+        // If the realm is missing its module loader state, we cannot complete the request normally.
+        // Avoid leaking any persistent roots held by `payload`.
+        payload.teardown_roots(scope.heap_mut());
         return Err(VmError::InvariantViolation(
           "window realm missing user data",
         ));
@@ -1131,10 +1134,10 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
       ModuleLoadOutcome::InFlight => {}
       ModuleLoadOutcome::StartFetch(key) => {
         let mut complete_fetch_synchronously = |hooks: &mut VmJsEventLoopHooks<Host>,
-                                                vm: &mut Vm,
-                                                scope: &mut Scope<'_>,
-                                                modules: &mut ModuleGraph,
-                                                key: crate::js::realm_module_loader::ModuleKey|
+                                                 vm: &mut Vm,
+                                                 scope: &mut Scope<'_>,
+                                                 modules: &mut ModuleGraph,
+                                                 key: crate::js::realm_module_loader::ModuleKey|
          -> Result<(), VmError> {
            let (waiters, result) = module_loader
               .borrow_mut()
@@ -1198,7 +1201,18 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         };
 
         if should_load_synchronously {
-          complete_fetch_synchronously(self, vm, scope, modules, key)?;
+          let result =
+            complete_fetch_synchronously(self, vm, scope, modules, key.clone());
+          if let Err(err) = result {
+            // If synchronous fetch failed before completing waiters, tear down any in-flight payload
+            // roots so dropping the module loader does not trip leaked-root assertions.
+            let waiters = module_loader.borrow_mut().take_inflight(&key).unwrap_or_default();
+            for waiter in waiters {
+              waiter.payload.teardown_roots(scope.heap_mut());
+            }
+            payload.teardown_roots(scope.heap_mut());
+            return Err(err);
+          }
           return Ok(());
         }
 
@@ -1206,7 +1220,16 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
         // module-loading continuation later.
         let Some(event_loop) = self.any.event_loop_mut::<EventLoop<Host>>() else {
           // Not executing inside a FastRender `EventLoop`; fall back to synchronous loading.
-          complete_fetch_synchronously(self, vm, scope, modules, key)?;
+          let result =
+            complete_fetch_synchronously(self, vm, scope, modules, key.clone());
+          if let Err(err) = result {
+            let waiters = module_loader.borrow_mut().take_inflight(&key).unwrap_or_default();
+            for waiter in waiters {
+              waiter.payload.teardown_roots(scope.heap_mut());
+            }
+            payload.teardown_roots(scope.heap_mut());
+            return Err(err);
+          }
           return Ok(());
         };
 
@@ -1237,7 +1260,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
                let (waiters, result) = module_loader_for_task
                   .borrow_mut()
-                  .fetch_and_register(heap, modules, key_for_task)
+                  .fetch_and_register(heap, modules, key_for_task.clone())
                   .ok_or(VmError::InvariantViolation(
                     "module loader missing inflight continuation",
                   ))?;
@@ -1279,6 +1302,19 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
               Ok(())
             });
 
+            if result.is_err() {
+              // We failed before the in-flight waiter list was completed. Tear down any payload
+              // roots so abandoning this fetch task cannot leak persistent roots (and panic in
+              // debug builds).
+              let waiters = module_loader_for_task
+                .borrow_mut()
+                .take_inflight(&key_for_task)
+                .unwrap_or_default();
+              for waiter in waiters {
+                waiter.payload.teardown_roots(heap);
+              }
+            }
+
             if let Some(err) = hooks.finish(heap) {
               return Err(err);
             }
@@ -1299,6 +1335,26 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
               Ok(value) => (Err(VmError::Throw(value)), None),
               Err(err) => (Err(err.clone()), Some(err)),
             };
+
+          if waiters.is_empty() {
+            // Invariant violation: no inflight waiter list was recorded. Finish the original payload
+            // to avoid dropping it with live persistent roots.
+            let finish_result = vm.finish_loading_imported_module(
+              scope,
+              modules,
+              self,
+              referrer,
+              module_request,
+              payload,
+              completion,
+            );
+            if let Some(err) = conversion_err {
+              let _ = finish_result;
+              return Err(err);
+            }
+            finish_result?;
+            return Ok(());
+          }
 
           let mut first_finish_err: Option<VmError> = None;
           for waiter in waiters {
