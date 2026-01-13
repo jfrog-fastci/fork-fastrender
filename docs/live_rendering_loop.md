@@ -124,6 +124,32 @@ The host loop is responsible for:
 - sleeping until the next timer/frame deadline,
 - waking on external events (user input, network, etc).
 
+### Waking on external events (`ExternalTaskQueueHandle`)
+
+Some Web APIs (WebSocket, Storage events across windows, etc) can originate callbacks from
+background threads. These callbacks are delivered by queueing work into the tab's event loop via an
+[`ExternalTaskQueueHandle`](../src/js/event_loop.rs).
+
+If your embedding sleeps when the tab is idle (for example, when `next_wake_time()` returns `None`),
+you **must** install a wake callback so background threads can wake the host when they enqueue
+external tasks:
+
+```rust,ignore
+use std::sync::Arc;
+use std::sync::mpsc;
+
+let (wake_tx, wake_rx) = mpsc::channel::<()>();
+
+// Install once per tab (the callback is preserved across navigations).
+tab.set_external_wake_callback(Some(Arc::new(move || {
+    let _ = wake_tx.send(());
+})));
+
+// Background threads can now wake the host by calling `queue_task(...)` on the handle they hold.
+```
+
+The embedding is free to coalesce wakeups (e.g. with an `AtomicBool` pending flag) if desired.
+
 Intended shape (pseudo-code):
 
 ```rust,ignore

@@ -6973,6 +6973,24 @@ impl BrowserTab {
     self.event_loop.external_task_queue_handle()
   }
 
+  /// Install (or clear) the wake callback invoked when external tasks are queued onto this tab's
+  /// event loop from other threads.
+  ///
+  /// This is a convenience wrapper around [`crate::js::EventLoop::set_external_wake_callback`].
+  ///
+  /// Embeddings that drive [`BrowserTab::tick_frame`] opportunistically (sleeping when
+  /// [`BrowserTab::next_wake_time`] returns `None`) should install a wake callback so background
+  /// threads (WebSocket, message channels, etc) can wake the host when new work is queued via
+  /// [`BrowserTab::external_task_queue_handle`].
+  pub fn set_external_wake_callback(&self, cb: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.event_loop.set_external_wake_callback(cb);
+  }
+
+  /// Compatibility alias for [`Self::set_external_wake_callback`].
+  pub fn set_external_task_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.set_external_wake_callback(waker);
+  }
+
   /// Returns the clock used by this tab's event loop.
   ///
   /// This can be useful for deterministic embeddings (e.g. virtual-clock driven testing) that need
