@@ -127,8 +127,9 @@ restore.
 
 ## Appearance
 
-The windowed browser UI exposes a small set of appearance/accessibility knobs (theme, UI scale,
-high-contrast, reduced motion) via an in-app **Appearance** popup (gear icon in the toolbar).
+The windowed browser UI exposes a small set of appearance/accessibility knobs (theme, accent color,
+UI scale, high-contrast, reduced motion) via an in-app **Appearance** popup (gear icon in the
+toolbar).
 
 These settings are persisted in the browser session file so they survive restarts.
 
@@ -147,6 +148,15 @@ Interaction with rendered pages:
 - The windowed browser UI propagates its resolved theme to rendered pages by default via
   `prefers-color-scheme`.
 - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` take precedence.
+
+### Accent color
+
+The browser chrome uses an accent color for links, focus rings, and selection.
+
+- The in-app Appearance popup includes a few accent presets and a custom color picker; the selected
+  accent is persisted in the session file.
+- `FASTR_BROWSER_ACCENT=#RRGGBB[AA]` overrides the accent color (useful for scripting/CI; takes
+  precedence over the persisted setting). See [env-vars.md](env-vars.md) for accepted formats.
 
 ### High contrast / reduced motion
 
