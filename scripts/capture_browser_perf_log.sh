@@ -162,10 +162,49 @@ if [[ ${#extra_browser_args[@]} -gt 0 ]]; then
   browser_cmd+=("${extra_browser_args[@]}")
 fi
 
+# Some auxiliary browser perf logs (e.g. `idle_summary`, `worker_wake_summary`) are still emitted on
+# stdout even when FASTR_PERF_LOG_OUT is set (the main structured events go to FASTR_PERF_LOG_OUT).
+# Capture stdout to a temp file and append any JSON lines back into the output so the user gets a
+# complete JSONL stream in one file.
+stdout_tmp=""
+if command -v mktemp >/dev/null 2>&1; then
+  stdout_tmp="$(mktemp "${out_path}.stdout.XXXXXX" 2>/dev/null || true)"
+fi
+if [[ -z "${stdout_tmp}" ]]; then
+  stdout_tmp="${out_path}.stdout.$$"
+  : > "${stdout_tmp}"
+fi
+
 set +e
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT="${out_path}" "${browser_cmd[@]}"
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT="${out_path}" "${browser_cmd[@]}" >"${stdout_tmp}"
 browser_status=$?
 set -e
+
+if [[ -s "${stdout_tmp}" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    # Filter to valid JSON object lines so accidental non-JSON stdout output doesn't corrupt the
+    # captured JSONL file.
+    python3 - "${stdout_tmp}" >>"${out_path}" <<'PY'
+import json, sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8", errors="replace") as f:
+    for raw in f:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
+PY
+  else
+    cat "${stdout_tmp}" >>"${out_path}"
+  fi
+fi
+rm -f "${stdout_tmp}" 2>/dev/null || true
 
 if [[ "${browser_status}" -ne 0 ]]; then
   echo "capture_browser_perf_log: browser exited with status ${browser_status} (continuing)" >&2
