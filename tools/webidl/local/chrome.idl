@@ -12,9 +12,10 @@ interface FastRenderChrome {
 [Exposed=Window]
 interface FastRenderNavigation {
   undefined navigate(DOMString url);
-  undefined back();
-  undefined forward();
+  undefined goBack();
+  undefined goForward();
   undefined reload();
+  undefined stop();
 };
 
 [Exposed=Window]
@@ -22,7 +23,7 @@ interface FastRenderTabs {
   unsigned long long newTab(optional DOMString url);
   undefined closeTab(unsigned long long id);
   undefined activateTab(unsigned long long id);
-  sequence<FastRenderTabInfo> list();
+  sequence<FastRenderTabInfo> getAll();
 };
 
 dictionary FastRenderTabInfo {

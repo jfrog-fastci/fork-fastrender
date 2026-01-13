@@ -13214,7 +13214,6 @@ impl BrowserRuntime {
     let scroll_metrics =
       compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state);
     let next_tick = tab.desired_next_tick();
-
     let mut msgs = Vec::new();
     msgs.push(WorkerToUi::NavigationFailed {
       tab_id,
@@ -13536,7 +13535,6 @@ impl BrowserRuntime {
           });
         }
       }
-
       // If a datalist popup is open, re-anchor it to the freshly painted layout. This matters in
       // particular for `ViewportChanged` (resize) repaints where element geometry can change due to
       // reflow: the popup should stay attached to the input, or close if the input scrolls fully

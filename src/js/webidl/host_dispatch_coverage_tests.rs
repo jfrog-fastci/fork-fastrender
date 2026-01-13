@@ -240,13 +240,14 @@ fn allowlisted_missing_sites() -> BTreeSet<CallOperationSite> {
     // supported by the default vm-js host dispatch.
     CallOperationSite::new("FastRenderChrome", "navigation", 0),
     CallOperationSite::new("FastRenderChrome", "tabs", 0),
-    CallOperationSite::new("FastRenderNavigation", "back", 0),
-    CallOperationSite::new("FastRenderNavigation", "forward", 0),
+    CallOperationSite::new("FastRenderNavigation", "goBack", 0),
+    CallOperationSite::new("FastRenderNavigation", "goForward", 0),
     CallOperationSite::new("FastRenderNavigation", "navigate", 0),
     CallOperationSite::new("FastRenderNavigation", "reload", 0),
+    CallOperationSite::new("FastRenderNavigation", "stop", 0),
     CallOperationSite::new("FastRenderTabs", "activateTab", 0),
     CallOperationSite::new("FastRenderTabs", "closeTab", 0),
-    CallOperationSite::new("FastRenderTabs", "list", 0),
+    CallOperationSite::new("FastRenderTabs", "getAll", 0),
     CallOperationSite::new("FastRenderTabs", "newTab", 0),
   ]
   .into_iter()

@@ -218,13 +218,13 @@ operations = []
 name = "FastRenderNavigation"
 constructors = false
 attributes = []
-operations = ["navigate", "back", "forward", "reload"]
+operations = ["navigate", "goBack", "goForward", "reload", "stop"]
 
 [[interface]]
 name = "FastRenderTabs"
 constructors = false
 attributes = []
-operations = ["newTab", "closeTab", "activateTab", "list"]
+operations = ["newTab", "closeTab", "activateTab", "getAll"]
 
 [[interface]]
 name = "Window"
