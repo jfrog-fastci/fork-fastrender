@@ -1747,6 +1747,38 @@ mod tests {
   }
 
   #[test]
+  fn window_realm_webidl_dom_backend_exposes_dom_collection_methods() -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut exec = |source: &str| -> Result<Value> {
+      match realm.exec_script(source) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+      }
+    };
+
+    let out = exec(
+      "(() => {\n\
+        const el = document.createElement('div');\n\
+        return (\n\
+          typeof document.getElementsByName === 'function' &&\n\
+          typeof document.getElementsByTagNameNS === 'function' &&\n\
+          typeof el.getElementsByTagName === 'function' &&\n\
+          typeof el.getElementsByClassName === 'function' &&\n\
+          typeof el.getElementsByTagNameNS === 'function'\n\
+        );\n\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn window_realm_webidl_dom_backend_does_not_clobber_element_sibling_accessors() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut event_loop = EventLoop::<WindowHostState>::new();
