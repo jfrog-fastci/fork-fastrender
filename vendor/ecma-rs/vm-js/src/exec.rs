@@ -32883,7 +32883,7 @@ mod tests {
     let err = rt
       .exec_script(
         r#"
-        async function f() {
+        function f() {
           class C {
             static {
               await 0;
