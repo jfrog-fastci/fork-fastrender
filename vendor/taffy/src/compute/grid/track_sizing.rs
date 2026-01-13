@@ -659,7 +659,13 @@ pub(super) fn resolve_item_baselines(
   // - The first other-axis track containing items (needed for grid container baseline computation).
   // - How many items participate in baseline alignment per other-axis track.
   let mut first_group_key: Option<u16> = None;
-  let mut baseline_counts: Map<u16, usize> = Map::default();
+  #[derive(Clone, Copy)]
+  struct BaselineGroupStats {
+    count: usize,
+    max_baseline: f32,
+  }
+
+  let mut group_stats: Map<u16, BaselineGroupStats> = Map::default();
   for item in items.iter() {
     check_layout_abort();
     let key = match other_axis {
@@ -671,14 +677,18 @@ pub(super) fn resolve_item_baselines(
       None => key,
     });
     if is_baseline_aligned(item) {
-      *baseline_counts.entry(key).or_insert(0) += 1;
+      let entry = group_stats.entry(key).or_insert(BaselineGroupStats {
+        count: 0,
+        max_baseline: f32::NEG_INFINITY,
+      });
+      entry.count += 1;
     }
   }
 
   let Some(first_group_key) = first_group_key else {
     return;
   };
-  if baseline_counts.is_empty() {
+  if group_stats.is_empty() {
     return;
   }
 
@@ -736,7 +746,6 @@ pub(super) fn resolve_item_baselines(
 
   // (item_index, other_axis_start_index, baseline_value)
   let mut baseline_entries: Vec<(usize, u16, f32)> = Vec::new();
-  let mut group_max: Map<u16, f32> = Map::default();
 
   for (idx, item) in items.iter_mut().enumerate() {
     check_layout_abort();
@@ -748,7 +757,7 @@ pub(super) fn resolve_item_baselines(
       AbstractAxis::Inline => item.column_indexes.start,
       AbstractAxis::Block => item.row_indexes.start,
     };
-    let baseline_item_count = *baseline_counts.get(&key).unwrap_or(&0);
+    let baseline_item_count = group_stats.get(&key).map(|s| s.count).unwrap_or(0);
 
     // Baseline alignment is a no-op if <= 1 items in an other-axis group participate. In that
     // case we can skip the expensive baseline-measurement pass entirely, with one exception:
@@ -776,15 +785,16 @@ pub(super) fn resolve_item_baselines(
 
     let value = measure_item_baseline_value(item);
     baseline_entries.push((idx, key, value));
-    let entry = group_max.entry(key).or_insert(value);
-    *entry = f32_max(*entry, value);
+    if let Some(entry) = group_stats.get_mut(&key) {
+      entry.max_baseline = f32_max(entry.max_baseline, value);
+    }
   }
 
   for (idx, key, value) in baseline_entries {
-    let Some(group_max) = group_max.get(&key) else {
+    let Some(group_max) = group_stats.get(&key).map(|s| s.max_baseline) else {
       continue;
     };
-    let shim = *group_max - value;
+    let shim = group_max - value;
     let shim = if shim.is_finite() { shim } else { 0.0 };
     match axis {
       AbstractAxis::Inline => items[idx].baseline_shim.y = shim,
