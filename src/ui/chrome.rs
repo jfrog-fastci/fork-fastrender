@@ -79,6 +79,10 @@ pub enum ChromeAction {
   CloseTabSearch,
   /// Toggle visibility of the bookmarks bar.
   ToggleBookmarksBar,
+  /// Show/hide the in-window top menu bar.
+  ///
+  /// This does not affect keyboard shortcuts (which are routed independently).
+  SetShowMenuBar(bool),
   AddressBarFocusChanged(bool),
   /// Toggle a bookmark for the currently active tab.
   ToggleBookmarkForActiveTab,
@@ -2233,6 +2237,27 @@ pub fn chrome_ui_with_bookmarks(
             }
             if menu_open && clear.clicked() {
               actions.push(ChromeAction::OpenClearBrowsingDataDialog);
+              close_menu = true;
+            }
+
+            ui.separator();
+
+            ui.label(egui::RichText::new("Window").strong());
+            let mut show_menu_bar = app.chrome.show_menu_bar;
+            let show_menu_bar_toggle = ui.checkbox(&mut show_menu_bar, "Show menu bar");
+            show_menu_bar_toggle.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, "Show menu bar")
+            });
+            if menu_open {
+              #[cfg(test)]
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_toggle_menu_bar_rect",
+                show_menu_bar_toggle.rect,
+              );
+            }
+            if menu_open && show_menu_bar_toggle.clicked() {
+              actions.push(ChromeAction::SetShowMenuBar(show_menu_bar));
               close_menu = true;
             }
           })

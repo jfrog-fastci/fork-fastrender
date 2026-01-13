@@ -15,6 +15,9 @@ Run:\n\
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_DEBUG_LOG: &str = "FASTR_BROWSER_DEBUG_LOG";
 
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -86,6 +89,53 @@ fn browser_hud_enabled_from_env() -> bool {
     Err(err) => {
       eprintln!("{err}");
       false
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+fn parse_browser_show_menu_bar_env(raw: Option<&str>) -> Result<Option<bool>, String> {
+  let Some(raw) = raw else {
+    return Ok(None);
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return Ok(None);
+  }
+
+  if raw == "1"
+    || raw.eq_ignore_ascii_case("true")
+    || raw.eq_ignore_ascii_case("yes")
+    || raw.eq_ignore_ascii_case("on")
+  {
+    return Ok(Some(true));
+  }
+
+  if raw == "0"
+    || raw.eq_ignore_ascii_case("false")
+    || raw.eq_ignore_ascii_case("no")
+    || raw.eq_ignore_ascii_case("off")
+  {
+    return Ok(Some(false));
+  }
+
+  Err(format!(
+    "{ENV_BROWSER_SHOW_MENU_BAR}: invalid value {raw:?}; expected 0|1|true|false"
+  ))
+}
+
+#[cfg(feature = "browser_ui")]
+fn show_menu_bar_override_from_env() -> Option<bool> {
+  let raw = match std::env::var(ENV_BROWSER_SHOW_MENU_BAR) {
+    Ok(raw) => raw,
+    Err(_) => return None,
+  };
+
+  match parse_browser_show_menu_bar_env(Some(&raw)) {
+    Ok(value) => value,
+    Err(err) => {
+      eprintln!("{err}");
+      None
     }
   }
 }
@@ -1341,6 +1391,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .map(|pos| PhysicalPosition::new(pos.x.saturating_add(32), pos.y.saturating_add(32)))
         });
+        let inherit_show_menu_bar = windows
+          .get(&from_id)
+          .map(|win| win.app.browser_state.chrome.show_menu_bar);
 
         let window = match build_window(event_loop_target, None, inherit_size, inherit_pos) {
           Ok(window) => window,
@@ -1403,6 +1456,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }],
           tab_groups: Vec::new(),
           active_tab_index: 0,
+          show_menu_bar: inherit_show_menu_bar.unwrap_or(!cfg!(target_os = "macos")),
           window_state: None,
         });
 
@@ -2930,8 +2984,13 @@ impl App {
       tabs,
       tab_groups,
       active_tab_index,
+      show_menu_bar,
       ..
     } = window.sanitized();
+
+    // Allow CI/scripts to force showing/hiding the menu bar regardless of persisted state.
+    self.browser_state.chrome.show_menu_bar =
+      show_menu_bar_override_from_env().unwrap_or(show_menu_bar);
 
     // Restore tab groups (create fresh runtime IDs for each persisted group).
     let mut group_ids: Vec<fastrender::ui::TabGroupId> = Vec::with_capacity(tab_groups.len());
@@ -8062,6 +8121,13 @@ impl App {
             !self.browser_state.chrome.bookmarks_bar_visible;
           self.window.request_redraw();
         }
+        ChromeAction::SetShowMenuBar(show) => {
+          if self.browser_state.chrome.show_menu_bar != show {
+            self.browser_state.chrome.show_menu_bar = show;
+            session_dirty = true;
+          }
+          self.window.request_redraw();
+        }
         ChromeAction::Back => {
           self.force_send_viewport_now();
           let Some(tab_id) = self.browser_state.active_tab_id() else {
@@ -8198,6 +8264,7 @@ impl App {
     //
     // Render this before `ui::chrome_ui` so clipboard commands can inject egui events for the
     // address bar (TextEdit reads input during widget construction).
+    if self.browser_state.chrome.show_menu_bar {
     let page_url = self
       .browser_state
       .active_tab()
@@ -8319,6 +8386,7 @@ impl App {
       if !chrome_actions.is_empty() {
         session_dirty |= self.handle_chrome_actions(chrome_actions);
       }
+    }
     }
 
     let appearance_before = self.browser_state.appearance.clone();

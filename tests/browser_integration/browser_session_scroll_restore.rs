@@ -109,6 +109,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
       }],
       tab_groups: Vec::new(),
       active_tab_index: 0,
+      show_menu_bar: !cfg!(target_os = "macos"),
       window_state: None,
     }],
     active_window_index: 0,

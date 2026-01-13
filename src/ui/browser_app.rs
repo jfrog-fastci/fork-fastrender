@@ -682,6 +682,11 @@ pub struct ChromeState {
   pub bookmarks_manager_search_text: String,
   /// Whether the bookmarks bar is visible.
   pub bookmarks_bar_visible: bool,
+  /// Whether the browser-style in-window menu bar is visible.
+  ///
+  /// This is a UI-only preference; on macOS it defaults to hidden so the app feels closer to a
+  /// native "unified toolbar" browser.
+  pub show_menu_bar: bool,
   pub tab_search: TabSearchState,
   /// The currently open tab-strip context menu (right-click on a tab label/icon), if any.
   ///

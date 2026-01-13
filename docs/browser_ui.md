@@ -358,7 +358,17 @@ Note: zoom is tracked per-tab and persisted in the browser session file (see `sr
 
 ## Menu bar
 
-The windowed `browser` UI includes a browser-style menu bar for discoverability and keyboard parity:
+The windowed `browser` UI can optionally show a browser-style **in-window** menu bar for
+discoverability and keyboard parity:
+
+- Default:
+  - **macOS:** hidden (native apps typically use the system menu bar)
+  - **Other platforms:** shown
+- Toggle at runtime via the toolbar hamburger menu: **Menu → Window → “Show menu bar”**.
+- The setting is persisted in the browser session file so it survives restarts.
+  - CI override: `FASTR_BROWSER_SHOW_MENU_BAR=0|1` (takes precedence over the persisted setting).
+
+When hidden, the menu bar does not reserve any vertical space; keyboard shortcuts continue to work.
 
 - **File**
 - **Edit**

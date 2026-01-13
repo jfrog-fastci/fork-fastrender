@@ -49,6 +49,20 @@ fn is_default_home_url(url: &String) -> bool {
   url == about_pages::ABOUT_NEWTAB
 }
 
+fn default_show_menu_bar_for_platform(is_macos: bool) -> bool {
+  // On macOS, native apps typically use the system menu bar rather than an in-window menu bar.
+  // Default to hiding the egui menu bar for a more platform-native feel.
+  !is_macos
+}
+
+fn default_show_menu_bar() -> bool {
+  default_show_menu_bar_for_platform(cfg!(target_os = "macos"))
+}
+
+fn is_default_show_menu_bar(value: &bool) -> bool {
+  *value == default_show_menu_bar()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSessionTab {
   pub url: String,
@@ -124,6 +138,11 @@ pub struct BrowserSessionWindow {
   pub tab_groups: Vec<BrowserSessionTabGroup>,
   #[serde(default)]
   pub active_tab_index: usize,
+  #[serde(
+    default = "default_show_menu_bar",
+    skip_serializing_if = "is_default_show_menu_bar"
+  )]
+  pub show_menu_bar: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub window_state: Option<BrowserWindowState>,
 }
@@ -193,6 +212,7 @@ impl BrowserSessionWindow {
       tabs,
       tab_groups,
       active_tab_index,
+      show_menu_bar: app.chrome.show_menu_bar,
       window_state: None,
     }
     .sanitized()
@@ -333,6 +353,7 @@ impl BrowserSession {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
       active_window_index: 0,
@@ -400,6 +421,7 @@ impl BrowserSession {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       });
       self.active_window_index = 0;
@@ -550,6 +572,7 @@ mod tests {
         ],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
       active_window_index: 0,
@@ -598,6 +621,38 @@ mod tests {
       json.contains("\"pinned\":true"),
       "expected pinned=true to be serialized, got: {json}"
     );
+  }
+
+  #[test]
+  fn show_menu_bar_defaults_off_on_macos_on_elsewhere() {
+    assert_eq!(default_show_menu_bar_for_platform(true), false);
+    assert_eq!(default_show_menu_bar_for_platform(false), true);
+  }
+
+  #[test]
+  fn session_roundtrips_show_menu_bar_and_omits_default() {
+    let default_value = default_show_menu_bar();
+    let mut session = BrowserSession::single("about:newtab".to_string());
+
+    // Default value should be omitted for cleanliness.
+    session.windows[0].show_menu_bar = default_value;
+    let json =
+      serde_json::to_string(&session).expect("serialize session with default show_menu_bar");
+    assert!(
+      !json.contains("show_menu_bar"),
+      "expected default show_menu_bar to be omitted from JSON, got: {json}"
+    );
+
+    // Non-default value should be roundtripped and present in JSON.
+    session.windows[0].show_menu_bar = !default_value;
+    let json =
+      serde_json::to_string(&session).expect("serialize session with non-default show_menu_bar");
+    assert!(
+      json.contains("show_menu_bar"),
+      "expected non-default show_menu_bar to be present in JSON, got: {json}"
+    );
+    let parsed = parse_session_json(&json).expect("parse session JSON");
+    assert_eq!(parsed.windows[0].show_menu_bar, !default_value);
   }
 
   #[test]
@@ -652,6 +707,7 @@ mod tests {
         ],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
       active_window_index: 0,
@@ -913,6 +969,7 @@ mod tests {
           tabs: vec![],
           tab_groups: Vec::new(),
           active_tab_index: 123,
+          show_menu_bar: default_show_menu_bar(),
           window_state: None,
         },
         BrowserSessionWindow {
@@ -925,6 +982,7 @@ mod tests {
           }],
           tab_groups: Vec::new(),
           active_tab_index: 999,
+          show_menu_bar: default_show_menu_bar(),
           window_state: None,
         },
       ],
@@ -962,6 +1020,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: Some(BrowserWindowState {
           x: Some(MAX_WINDOW_POS_ABS_PX + 1),
           y: Some(MAX_WINDOW_POS_ABS_PX),
@@ -1038,6 +1097,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
       active_window_index: 0,
@@ -1067,6 +1127,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
       active_window_index: 0,
@@ -1096,6 +1157,7 @@ mod tests {
         }],
         tab_groups: Vec::new(),
         active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
         window_state: None,
       }],
       active_window_index: 0,
@@ -1269,6 +1331,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
       tabs: v1.tabs,
       tab_groups: Vec::new(),
       active_tab_index: v1.active_tab_index,
+      show_menu_bar: default_show_menu_bar(),
       window_state: None,
     }],
     active_window_index: 0,
