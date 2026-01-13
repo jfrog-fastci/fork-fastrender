@@ -260,7 +260,6 @@ fn apply_paint_interaction_state_to_fragment_tree(
   // This helper takes the `BoxTree` and `FragmentTree` separately so callers can split-borrow a
   // `PreparedDocument` (read box tree while mutating fragment tree) without tripping aliasing
   // restrictions.
-
   // Apply document selection onto the fragment tree for paint-time highlighting.
   crate::interaction::document_selection::apply_document_selection_to_fragment_tree(
     box_tree,
