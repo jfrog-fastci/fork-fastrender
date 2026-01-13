@@ -555,7 +555,7 @@ fn rapid_ticks_cancel_stale_paint() {
     _ => None,
   });
   assert!(
-    initial_frame.is_some_and(|frame| frame.wants_ticks),
+    initial_frame.is_some_and(|frame| frame.next_tick.is_some()),
     "expected animation page to request ticks; messages={initial:?}"
   );
 
@@ -565,7 +565,12 @@ fn rapid_ticks_cancel_stale_paint() {
   // Start a tick-driven paint and wait for it to enter the paint stages so we can cancel it
   // mid-flight.
   cancel_gens.bump_paint();
-  ui_tx.send(UiToWorker::Tick { tab_id }).unwrap();
+  ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .unwrap();
 
   let is_paint_stage = |msg: &WorkerToUi| {
     matches!(
@@ -585,7 +590,12 @@ fn rapid_ticks_cancel_stale_paint() {
   // animation state.
   for _ in 0..5 {
     cancel_gens.bump_paint();
-    ui_tx.send(UiToWorker::Tick { tab_id }).unwrap();
+    ui_tx
+      .send(UiToWorker::Tick {
+        tab_id,
+        delta: Duration::from_millis(16),
+      })
+      .unwrap();
   }
 
   let mut frames = Vec::new();

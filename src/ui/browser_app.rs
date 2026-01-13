@@ -27,7 +27,7 @@ use crate::ui::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = 256;
@@ -196,9 +196,7 @@ pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
   pub viewport_css: (u32, u32),
   pub dpr: f32,
-  /// True when the rendered document contains time-based effects (CSS animations/transitions,
-  /// animated images, JS timers/rAF, etc).
-  pub wants_ticks: bool,
+  pub next_tick: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -1082,7 +1080,7 @@ mod worker_message_validation_tests {
         },
         content_css: (0.0, 0.0),
       },
-      wants_ticks: false,
+      next_tick: None,
     };
 
     let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id, frame });
@@ -2406,7 +2404,7 @@ impl BrowserAppState {
           dpr,
           scroll_state,
           scroll_metrics,
-          wants_ticks,
+          next_tick,
         } = frame;
         let pixmap_px = (pixmap.width(), pixmap.height());
 
@@ -2451,7 +2449,7 @@ impl BrowserAppState {
               pixmap_px,
               viewport_css,
               dpr,
-              wants_ticks,
+              next_tick,
             });
 
             // Only the active tab's page content is visible, so only its frames should trigger a
@@ -3394,7 +3392,7 @@ mod browser_app_tests {
         },
         content_css: (1.0, 1.0),
       },
-      wants_ticks: false,
+      next_tick: None,
     };
 
     let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id: tab_b, frame });
@@ -3706,7 +3704,7 @@ mod browser_app_tests {
         dpr,
         scroll_state: expected_scroll.clone(),
         scroll_metrics,
-        wants_ticks: false,
+        next_tick: None,
       },
     });
 
@@ -3718,7 +3716,7 @@ mod browser_app_tests {
         pixmap_px: (2, 3),
         viewport_css,
         dpr,
-        wants_ticks: false,
+        next_tick: None,
       })
     );
 
@@ -4248,7 +4246,7 @@ mod renderer_ipc_violation_tests {
         },
         content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
       },
-      wants_ticks: false,
+      next_tick: None,
     }
   }
 

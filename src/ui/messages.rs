@@ -247,12 +247,14 @@ pub struct RenderedFrame {
   pub dpr: f32,
   pub scroll_state: ScrollState,
   pub scroll_metrics: ScrollMetrics,
-  /// True when the rendered document contains time-based effects (CSS animations/transitions,
-  /// animated images, JS timers/rAF, etc).
+  /// Schedule hint for the next [`UiToWorker::Tick`] the UI should deliver for this tab.
   ///
-  /// Front-ends that want time-based effects to advance should drive periodic
-  /// [`UiToWorker::Tick`] messages for the active tab while this is `true`.
-  pub wants_ticks: bool,
+  /// - `None` means the worker does not currently need ticks (no time-based effects).
+  /// - `Some(d)` means the UI should send a tick after approximately `d` has elapsed.
+  ///
+  /// This replaces the older `wants_ticks: bool` flag so workers can request more nuanced wake-up
+  /// cadences (e.g. 60fps CSS animations vs. video frame deadlines).
+  pub next_tick: Option<Duration>,
 }
 
 /// A suggestion row shown in a `<datalist>` popup for an `<input list=...>` control.
@@ -293,7 +295,7 @@ impl std::fmt::Debug for RenderedFrame {
       .field("dpr", &self.dpr)
       .field("scroll_state", &self.scroll_state)
       .field("scroll_metrics", &self.scroll_metrics)
-      .field("wants_ticks", &self.wants_ticks)
+      .field("next_tick", &self.next_tick)
       .finish()
   }
 }
@@ -401,6 +403,11 @@ pub enum UiToWorker {
   /// own clocks rather than inferring time from tick frequency. See `docs/media_clocking.md`.
   Tick {
     tab_id: TabId,
+    /// Time elapsed since the previous tick delivered for this tab.
+    ///
+    /// For deterministic harnesses, this can be an injected delta (e.g. exactly 16ms) instead of
+    /// being derived from wall-clock time.
+    delta: Duration,
   },
   ViewportChanged {
     tab_id: TabId,

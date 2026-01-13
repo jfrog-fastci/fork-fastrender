@@ -85,7 +85,12 @@ fn ui_worker_js_input_value_updates_pixels() {
   let _frame_before = next_frame(&ui_rx, tab_id);
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
-  ui_tx.send(UiToWorker::Tick { tab_id }).expect("tick");
+  ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .expect("tick");
   let frame_after = next_frame(&ui_rx, tab_id);
 
   let expected = render_expected(
@@ -173,7 +178,12 @@ fn ui_worker_js_checkbox_checked_updates_pixels() {
   let _frame_before = next_frame(&ui_rx, tab_id);
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
-  ui_tx.send(UiToWorker::Tick { tab_id }).expect("tick");
+  ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .expect("tick");
   let frame_after = next_frame(&ui_rx, tab_id);
 
   let expected = render_expected(
@@ -261,7 +271,12 @@ fn ui_worker_js_textarea_value_updates_pixels() {
   let _frame_before = next_frame(&ui_rx, tab_id);
   let _ = support::drain_for(&ui_rx, Duration::from_millis(100));
 
-  ui_tx.send(UiToWorker::Tick { tab_id }).expect("tick");
+  ui_tx
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
+    .expect("tick");
   let frame_after = next_frame(&ui_rx, tab_id);
 
   let expected = render_expected(
@@ -297,4 +312,3 @@ fn ui_worker_js_textarea_value_updates_pixels() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
-

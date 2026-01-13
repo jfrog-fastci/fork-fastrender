@@ -18,6 +18,7 @@ use crate::ui::messages::{
 };
 use crate::{BrowserDocument, FastRender, RenderOptions, Result};
 use std::path::PathBuf;
+use std::time::Duration;
 use url::Url;
 
 /// Per-tab worker-side controller that owns interactive document state (DOM + scroll + input).
@@ -36,6 +37,7 @@ pub struct BrowserTabController {
   last_pointer_pos_css: Option<(f32, f32)>,
   viewport_css: (u32, u32),
   dpr: f32,
+  tick_animation_time_ms: f32,
   find_query: String,
   find_case_sensitive: bool,
   find_matches: Vec<FindMatch>,
@@ -122,6 +124,7 @@ impl BrowserTabController {
       last_pointer_pos_css: None,
       viewport_css,
       dpr,
+      tick_animation_time_ms: 0.0,
       find_query: String::new(),
       find_case_sensitive: false,
       find_matches: Vec::new(),
@@ -306,6 +309,7 @@ impl BrowserTabController {
         reason,
       } if tab_id == self.tab_id => self.handle_navigation_request_action(request, reason),
       UiToWorker::RequestRepaint { tab_id, .. } if tab_id == self.tab_id => self.force_repaint(),
+      UiToWorker::Tick { tab_id, delta } if tab_id == self.tab_id => self.handle_tick(delta),
       _ => Ok(Vec::new()),
     }
   }
@@ -403,6 +407,32 @@ impl BrowserTabController {
     } else {
       Ok(Vec::new())
     }
+
+  fn handle_tick(&mut self, delta: Duration) -> Result<Vec<WorkerToUi>> {
+    let wants_ticks = self.document.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    });
+    if !wants_ticks {
+      return Ok(Vec::new());
+    }
+
+    let delta_ms = duration_to_ms_f32(delta);
+    if delta_ms == 0.0 {
+      return Ok(Vec::new());
+    }
+
+    let prev = self.tick_animation_time_ms;
+    let next = prev + delta_ms;
+    let next = if next.is_finite() { next } else { f32::MAX };
+    if next == prev {
+      return Ok(Vec::new());
+    }
+
+    self.tick_animation_time_ms = next;
+    self.document.set_animation_time_ms(next);
+
+    self.paint_if_needed()
   }
 
   fn handle_find_query(&mut self, query: &str, case_sensitive: bool) -> Result<Vec<WorkerToUi>> {
@@ -1721,6 +1751,7 @@ impl BrowserTabController {
     self.base_url = strip_fragment(&base_url);
     self.interaction = InteractionEngine::new();
     self.scroll_state = ScrollState::default();
+    self.tick_animation_time_ms = 0.0;
     self.document.set_scroll_state(self.scroll_state.clone());
 
     self.apply_autofocus_if_present();
@@ -1811,6 +1842,7 @@ impl BrowserTabController {
     self.base_url = strip_fragment(&base_url);
     self.interaction = InteractionEngine::new();
     self.scroll_state = ScrollState::default();
+    self.tick_animation_time_ms = 0.0;
     self.document.set_scroll_state(self.scroll_state.clone());
 
     self.apply_autofocus_if_present();
@@ -1928,10 +1960,14 @@ impl BrowserTabController {
             ),
           }
         },
-        wants_ticks: self.document.prepared().is_some_and(|prepared| {
-          let tree = prepared.fragment_tree();
-          !tree.keyframes.is_empty() || tree.transition_state.is_some()
-        }),
+        next_tick: self
+          .document
+          .prepared()
+          .is_some_and(|prepared| {
+            let tree = prepared.fragment_tree();
+            !tree.keyframes.is_empty() || tree.transition_state.is_some()
+          })
+          .then_some(Duration::from_millis(16)),
       },
     });
 
@@ -2122,6 +2158,177 @@ fn datalist_popup_options(
   }
 
   (!options.is_empty()).then_some(options)
+}
+
+fn duration_to_ms_f32(delta: Duration) -> f32 {
+  if delta.is_zero() {
+    return 0.0;
+  }
+  let ms = (delta.as_secs() as f64) * 1000.0 + (delta.subsec_nanos() as f64) / 1_000_000.0;
+  if !ms.is_finite() || ms <= 0.0 {
+    return 0.0;
+  }
+  if ms > f32::MAX as f64 {
+    f32::MAX
+  } else {
+    ms as f32
+  }
+}
+
+#[cfg(test)]
+mod tick_tests {
+  use super::*;
+  use crate::text::font_db::FontConfig;
+  use crate::ui::messages::RepaintReason;
+  use std::time::Duration;
+
+  fn take_frame_bytes(msgs: Vec<WorkerToUi>) -> Option<(Vec<u8>, RenderedFrame)> {
+    for msg in msgs {
+      if let WorkerToUi::FrameReady { frame, .. } = msg {
+        return Some((frame.pixmap.data().to_vec(), frame));
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn tick_emits_new_frames_for_css_animation() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let tab_id = TabId(1);
+    let viewport_css = (64, 64);
+    let dpr = 1.0;
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            html, body { background: rgb(0, 0, 0); }
+            #box {
+              width: 64px;
+              height: 64px;
+              background: rgb(255, 0, 0);
+              animation: fade 100ms linear infinite;
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    let initial = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("initial repaint");
+
+    let (_, initial_frame) =
+      take_frame_bytes(initial).expect("expected an initial FrameReady message");
+    assert!(
+      initial_frame.next_tick.is_some(),
+      "expected animation fixture to request periodic ticks"
+    );
+
+    let tick_delta = Duration::from_millis(16);
+    let out = controller
+      .handle_message(UiToWorker::Tick {
+        tab_id,
+        delta: tick_delta,
+      })
+      .expect("tick 1");
+    let (bytes1, _) = take_frame_bytes(out).expect("expected a FrameReady after tick 1");
+
+    let out = controller
+      .handle_message(UiToWorker::Tick {
+        tab_id,
+        delta: tick_delta,
+      })
+      .expect("tick 2");
+    let (bytes2, _) = take_frame_bytes(out).expect("expected a FrameReady after tick 2");
+
+    assert_ne!(
+      bytes1, bytes2,
+      "expected pixmap to change between tick-driven animation frames"
+    );
+  }
+
+  #[test]
+  fn tick_does_not_repaint_clean_tab() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+    let tab_id = TabId(1);
+    let viewport_css = (32, 32);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            body { background: rgb(0, 0, 0); }
+            #box { width: 32px; height: 32px; background: rgb(255, 0, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    let initial = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("initial repaint");
+
+    let (_, initial_frame) =
+      take_frame_bytes(initial).expect("expected an initial FrameReady message");
+    assert!(
+      initial_frame.next_tick.is_none(),
+      "expected clean fixture to render without time-based effects"
+    );
+
+    let out = controller
+      .handle_message(UiToWorker::Tick {
+        tab_id,
+        delta: Duration::from_millis(16),
+      })
+      .expect("tick");
+    assert!(
+      !out.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+      "expected no FrameReady after tick on a clean page"
+    );
+  }
 }
 
 #[cfg(test)]

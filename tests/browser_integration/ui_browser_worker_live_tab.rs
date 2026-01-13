@@ -34,7 +34,10 @@ fn tick_unknown_tab_is_noop() {
 
   handle
     .ui_tx
-    .send(UiToWorker::Tick { tab_id })
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
     .expect("tick");
 
   let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
@@ -73,14 +76,17 @@ fn tick_does_not_repaint_clean_tab() {
 
   let initial = next_frame(&handle.ui_rx, tab_id);
   assert!(
-    !initial.wants_ticks,
+    initial.next_tick.is_none(),
     "expected about:blank to render without time-based effects"
   );
   while handle.ui_rx.try_recv().is_ok() {}
 
   handle
     .ui_tx
-    .send(UiToWorker::Tick { tab_id })
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
     .expect("tick");
 
   let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
@@ -144,21 +150,27 @@ fn tick_emits_new_frames_for_css_animation() {
 
   let initial = next_frame(&handle.ui_rx, tab_id);
   assert!(
-    initial.wants_ticks,
+    initial.next_tick.is_some(),
     "expected animation fixture page to request periodic ticks"
   );
   while handle.ui_rx.try_recv().is_ok() {}
 
   handle
     .ui_tx
-    .send(UiToWorker::Tick { tab_id })
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
     .expect("tick 1");
   let frame1 = next_frame(&handle.ui_rx, tab_id);
   let bytes1 = frame1.pixmap.data().to_vec();
 
   handle
     .ui_tx
-    .send(UiToWorker::Tick { tab_id })
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
     .expect("tick 2");
   let frame2 = next_frame(&handle.ui_rx, tab_id);
   let bytes2 = frame2.pixmap.data().to_vec();
@@ -215,7 +227,7 @@ fn tick_runs_js_request_animation_frame_and_repaints() {
 
   let initial = next_frame(&handle.ui_rx, tab_id);
   assert!(
-    initial.wants_ticks,
+    initial.next_tick.is_some(),
     "expected JS pages to request ticks (JS timers/rAF)"
   );
   assert_eq!(
@@ -227,7 +239,10 @@ fn tick_runs_js_request_animation_frame_and_repaints() {
 
   handle
     .ui_tx
-    .send(UiToWorker::Tick { tab_id })
+    .send(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    })
     .expect("tick");
   let frame = next_frame(&handle.ui_rx, tab_id);
   assert_eq!(
@@ -288,7 +303,7 @@ fn js_timer_dom_mutation_affects_rendered_pixels() {
 
   let initial = next_frame(&handle.ui_rx, tab_id);
   assert!(
-    initial.wants_ticks,
+    initial.next_tick.is_some(),
     "expected JS pages to request ticks (JS timers/rAF)"
   );
   let baseline = support::rgba_at(&initial.pixmap, 0, 0);
@@ -310,7 +325,10 @@ fn js_timer_dom_mutation_affects_rendered_pixels() {
   for _ in 0..20 {
     handle
       .ui_tx
-      .send(UiToWorker::Tick { tab_id })
+      .send(UiToWorker::Tick {
+        tab_id,
+        delta: Duration::from_millis(16),
+      })
       .expect("tick");
     handle
       .ui_tx

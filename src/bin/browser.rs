@@ -8147,7 +8147,9 @@ struct App {
   /// small scheduler here so the windowed browser can display time-based content without
   /// busy-polling the event loop.
   animation_tick_tab: Option<fastrender::ui::TabId>,
+  animation_tick_interval: Option<std::time::Duration>,
   next_animation_tick: Option<std::time::Instant>,
+  last_animation_tick: Option<std::time::Instant>,
 
   /// Worker-requested "tickless" wakeups for media/A-V timing (e.g. video frame presentation).
   ///
@@ -8168,7 +8170,6 @@ struct WorkerMessageResult {
 #[cfg(feature = "browser_ui")]
 impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
-  const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const RESIZE_PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
   /// Minimum interval between resize-driven redraw requests.
@@ -8937,7 +8938,9 @@ impl App {
       next_worker_redraw: None,
       last_worker_redraw_request: None,
       animation_tick_tab: None,
+      animation_tick_interval: None,
       next_animation_tick: None,
+      last_animation_tick: None,
       next_media_wakeup: std::collections::HashMap::new(),
       last_media_wakeup_tick: std::collections::HashMap::new(),
     })
@@ -9057,7 +9060,7 @@ impl App {
     }
   }
 
-  fn desired_animation_tick_tab(&self) -> Option<fastrender::ui::TabId> {
+  fn desired_animation_tick(&self) -> Option<(fastrender::ui::TabId, std::time::Duration)> {
     // During interactive window resizing, pause worker ticks to keep CPU available for the UI
     // thread. The page will still repaint on user input / new frames, but time-based effects (CSS
     // animations/transitions, animated images, JS timers/rAF, etc) will not advance while the user
@@ -9070,12 +9073,12 @@ impl App {
       return None;
     }
     let tab_id = self.browser_state.active_tab_id()?;
-    let wants_ticks = self
+    let next_tick = self
       .browser_state
       .tab(tab_id)
       .and_then(|tab| tab.latest_frame_meta.as_ref())
-      .is_some_and(|meta| meta.wants_ticks);
-    wants_ticks.then_some(tab_id)
+      .and_then(|meta| meta.next_tick);
+    next_tick.map(|delay| (tab_id, delay))
   }
 
   fn update_resize_burst_state(&mut self, now: std::time::Instant) {
@@ -9138,24 +9141,34 @@ impl App {
   }
 
   fn drive_animation_tick(&mut self) {
-    let Some(tab_id) = self.desired_animation_tick_tab() else {
+    let Some((tab_id, interval)) = self.desired_animation_tick() else {
       self.animation_tick_tab = None;
+      self.animation_tick_interval = None;
       self.next_animation_tick = None;
+      self.last_animation_tick = None;
       return;
     };
 
+    let now = std::time::Instant::now();
+
     // If the active tab changed (or ticking just became enabled), start a fresh schedule.
-    if self.animation_tick_tab != Some(tab_id) {
+    if self.animation_tick_tab != Some(tab_id) || self.animation_tick_interval != Some(interval) {
       self.animation_tick_tab = Some(tab_id);
-      self.next_animation_tick = Some(std::time::Instant::now() + Self::ANIMATION_TICK_INTERVAL);
+      self.animation_tick_interval = Some(interval);
+      self.last_animation_tick = Some(now);
+      self.next_animation_tick = Some(now + interval);
       return;
     }
 
-    let now = std::time::Instant::now();
     let deadline = self.next_animation_tick.unwrap_or(now);
     if now >= deadline {
-      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
-      self.next_animation_tick = Some(now + Self::ANIMATION_TICK_INTERVAL);
+      let delta = self
+        .last_animation_tick
+        .map(|prev| now.saturating_duration_since(prev))
+        .unwrap_or(interval);
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id, delta });
+      self.last_animation_tick = Some(now);
+      self.next_animation_tick = Some(now + interval);
     }
   }
 
@@ -9183,7 +9196,10 @@ impl App {
       if self.browser_state.tab(tab_id).is_none() {
         continue;
       }
-      self.send_worker_msg(fastrender::ui::UiToWorker::Tick { tab_id });
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::Tick {
+        tab_id,
+        delta: std::time::Duration::ZERO,
+      });
       self.last_media_wakeup_tick.insert(tab_id, now);
     }
   }
@@ -9393,15 +9409,17 @@ impl App {
 
     // Worker-driven ticks for time-based effects (CSS animations/transitions, animated images, JS
     // timers/rAF, etc).
-    if let Some(tab_id) = self.desired_animation_tick_tab() {
+    if let Some((tab_id, interval)) = self.desired_animation_tick() {
       // `drive_animation_tick` is responsible for keeping `next_animation_tick` in sync, but be
       // defensive: if the schedule isn't primed yet, fall back to a "first tick" interval.
-      let tick_deadline = if self.animation_tick_tab == Some(tab_id) {
+      let tick_deadline = if self.animation_tick_tab == Some(tab_id)
+        && self.animation_tick_interval == Some(interval)
+      {
         self
           .next_animation_tick
-          .unwrap_or(now + Self::ANIMATION_TICK_INTERVAL)
+          .unwrap_or(now + interval)
       } else {
-        now + Self::ANIMATION_TICK_INTERVAL
+        now + interval
       };
       deadline = Some(match deadline {
         Some(existing) => existing.min(tick_deadline),
@@ -9738,7 +9756,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | UiToWorker::GoForward { tab_id }
       | UiToWorker::Reload { tab_id }
       | UiToWorker::StopLoading { tab_id }
-      | UiToWorker::Tick { tab_id }
+      | UiToWorker::Tick { tab_id, .. }
       | UiToWorker::ViewportChanged { tab_id, .. }
       | UiToWorker::Scroll { tab_id, .. }
       | UiToWorker::ScrollTo { tab_id, .. }
@@ -9959,7 +9977,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         dpr,
         scroll_state,
         scroll_metrics,
-        wants_ticks: false,
+        next_tick: None,
       },
     });
 

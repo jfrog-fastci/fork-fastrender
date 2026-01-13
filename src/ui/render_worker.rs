@@ -148,14 +148,15 @@ struct NavigationRequest {
 }
 
 // `UiToWorker::Tick` is the UI's periodic driver for time-based updates (CSS animations/transitions,
-// animated images, JS timers/rAF, etc).
+// animated images, JS timers/rAF, etc, and eventually media).
 //
-// This worker-side CSS animation sampling intentionally advances by a fixed amount of time per tick
-// to keep behaviour deterministic for tests.
+// The tick message carries an explicit `delta` so deterministic harnesses can drive animation time
+// without relying on wall-clock time. The windowed browser UI supplies deltas based on its own tick
+// scheduler.
 //
-// Do not copy this approach for media playback: audio/video must be driven from a real master clock
-// (audio device time when available) to avoid A/V drift. See `docs/media_clocking.md`.
-const TICK_ANIMATION_STEP: Duration = Duration::from_millis(16);
+// Do not treat ticks as a master clock for media playback: audio/video must be driven from a real
+// master clock (audio device time when available) to avoid A/V drift. See `docs/media_clocking.md`.
+const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(16);
 
 // -----------------------------------------------------------------------------
 // Crash-isolation test hooks
@@ -2558,8 +2559,8 @@ impl BrowserRuntime {
           });
         }
       }
-      UiToWorker::Tick { tab_id } => {
-        self.handle_tick(tab_id, TICK_ANIMATION_STEP);
+      UiToWorker::Tick { tab_id, delta } => {
+        self.handle_tick(tab_id, delta);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -3861,7 +3862,7 @@ impl BrowserRuntime {
     // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
     // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
     if let Some(doc) = tab.document.as_mut() {
-      if document_wants_ticks(doc) {
+      if document_wants_ticks(doc) && delta != Duration::ZERO {
         tab.tick_time = tab.tick_time.checked_add(delta).unwrap_or(Duration::MAX);
 
         // `BrowserDocument` consumes time in milliseconds as `f32` today. Keep the UI worker's
@@ -8491,7 +8492,8 @@ impl BrowserRuntime {
               viewport_css,
               &tab.scroll_state,
             ),
-            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
+            next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
+              .then_some(DEFAULT_TICK_INTERVAL),
           },
         });
         if let Some(doc) = tab.document.as_ref() {
@@ -8769,7 +8771,8 @@ impl BrowserRuntime {
           .unwrap_or(tab.dpr),
         scroll_state: tab.scroll_state.clone(),
         scroll_metrics: compute_scroll_metrics(tab.document.as_ref(), tab.viewport_css, &tab.scroll_state),
-        wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
+        next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
+          .then_some(DEFAULT_TICK_INTERVAL),
       },
     });
     if let Some((tree, bounds_css)) = page_accessibility {
@@ -8916,7 +8919,8 @@ impl BrowserRuntime {
             tab.viewport_css,
             &tab.scroll_state,
           ),
-          wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
+          next_tick: (tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some())
+            .then_some(DEFAULT_TICK_INTERVAL),
         },
       });
       if let Some(doc) = tab.document.as_ref() {

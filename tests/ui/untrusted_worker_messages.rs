@@ -167,7 +167,7 @@ fn frame_ready_with_absurd_pixmap_dimensions_is_rejected() {
       dpr: 1.0,
       scroll_state: ScrollState::default(),
       scroll_metrics,
-      wants_ticks: false,
+      next_tick: None,
     },
   });
 

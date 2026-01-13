@@ -2,6 +2,7 @@ use super::messages::{RepaintReason, TabId, UiToWorker};
 use super::PointerButton;
 use super::PointerModifiers;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Coalesce high-frequency `UiToWorker` messages *before* they enter the worker runtime queue.
 ///
@@ -25,7 +26,7 @@ struct TabPending {
   scroll_to: Option<Pending<(f32, f32)>>,
   scroll: Option<PendingScroll>,
   pointer_move: Option<Pending<PointerMove>>,
-  tick: Option<Pending<()>>,
+  tick: Option<Pending<Duration>>,
   text_input: Option<Pending<String>>,
   ime_preedit: Option<Pending<ImePreedit>>,
   find_query: Option<Pending<FindQuery>>,
@@ -149,9 +150,18 @@ impl UiToWorkerRouterCoalescer {
         delta_css,
         pointer_css,
       } => self.push_scroll(tab_id, delta_css, pointer_css),
-      UiToWorker::Tick { tab_id } => {
+      UiToWorker::Tick { tab_id, delta } => {
         let seq = self.next_seq();
-        self.tab_mut(tab_id).tick = Some(Pending { seq, value: () });
+        let tab = self.tab_mut(tab_id);
+        match tab.tick.as_mut() {
+          Some(pending) => {
+            pending.value = pending.value.checked_add(delta).unwrap_or(Duration::MAX);
+            pending.seq = seq;
+          }
+          None => {
+            tab.tick = Some(Pending { seq, value: delta });
+          }
+        }
         Vec::new()
       }
       UiToWorker::TextInput { tab_id, text } => {
@@ -306,7 +316,13 @@ impl UiToWorkerRouterCoalescer {
         ));
       }
       if let Some(pending) = tab.tick.take() {
-        items.push((pending.seq, UiToWorker::Tick { tab_id }));
+        items.push((
+          pending.seq,
+          UiToWorker::Tick {
+            tab_id,
+            delta: pending.value,
+          },
+        ));
       }
       if let Some(pending) = tab.text_input.take() {
         items.push((
@@ -556,11 +572,23 @@ mod tests {
   #[test]
   fn coalesces_tick() {
     let mut c = UiToWorkerRouterCoalescer::new();
-    assert!(c.push(UiToWorker::Tick { tab_id: TabId(1) }).is_empty());
-    assert!(c.push(UiToWorker::Tick { tab_id: TabId(1) }).is_empty());
+    assert!(c
+      .push(UiToWorker::Tick {
+        tab_id: TabId(1),
+        delta: Duration::from_millis(5),
+      })
+      .is_empty());
+    assert!(c
+      .push(UiToWorker::Tick {
+        tab_id: TabId(1),
+        delta: Duration::from_millis(7),
+      })
+      .is_empty());
     let out = c.flush();
     assert_eq!(out.len(), 1);
-    assert!(matches!(out[0], UiToWorker::Tick { tab_id: TabId(1) }));
+    assert!(
+      matches!(out[0], UiToWorker::Tick { tab_id: TabId(1), delta } if delta == Duration::from_millis(12))
+    );
   }
 
   #[test]
