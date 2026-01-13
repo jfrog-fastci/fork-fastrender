@@ -567,6 +567,9 @@ Notes:
 - Zoom is tracked per-tab and persisted in the browser session file (see `src/ui/session.rs`).
 - Ctrl/Cmd+S and Ctrl/Cmd+P are reserved by browser chrome: they currently show a “not implemented
   yet” toast and are not forwarded to the rendered page.
+- macOS: <kbd>Cmd</kbd>+<kbd>Tab</kbd> is reserved by the OS (app switcher) and generally won’t reach
+  the app. Tab cycling is expected to work via <kbd>Ctrl</kbd>+<kbd>Tab</kbd> /
+  <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd>.
 - Shift+F10 opens the context menu for the currently focused surface:
   - page focus → page context menu
   - focused tab group chip → tab group context menu (rename/color/ungroup)
