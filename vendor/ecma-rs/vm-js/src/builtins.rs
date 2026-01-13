@@ -11346,17 +11346,19 @@ pub fn array_prototype_find_last(
   scope.push_root(Value::Object(obj))?;
 
   let predicate = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !scope.heap().is_callable(predicate)? {
-    return Err(VmError::TypeError(
-      "Array.prototype.findLast predicate is not callable",
-    ));
-  }
   scope.push_root(predicate)?;
 
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
+  // Spec order: `LengthOfArrayLike` is evaluated before `IsCallable(predicate)`.
   let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  if !scope.heap().is_callable(predicate)? {
+    return Err(VmError::TypeError(
+      "Array.prototype.findLast predicate is not callable",
+    ));
+  }
 
   let mut k = len;
   while k > 0 {
@@ -11403,17 +11405,19 @@ pub fn array_prototype_find_last_index(
   scope.push_root(Value::Object(obj))?;
 
   let predicate = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !scope.heap().is_callable(predicate)? {
-    return Err(VmError::TypeError(
-      "Array.prototype.findLastIndex predicate is not callable",
-    ));
-  }
   scope.push_root(predicate)?;
 
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
   scope.push_root(this_arg)?;
 
+  // Spec order: `LengthOfArrayLike` is evaluated before `IsCallable(predicate)`.
   let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  if !scope.heap().is_callable(predicate)? {
+    return Err(VmError::TypeError(
+      "Array.prototype.findLastIndex predicate is not callable",
+    ));
+  }
 
   let mut k = len;
   while k > 0 {
