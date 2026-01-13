@@ -181,6 +181,16 @@ status = "xfail"
 reason = "vm-js does not yet implement class fields (required for private field brand checks)."
 
 [[expectations]]
+id = "language/expressions/in/private-field-presence-method.js"
+status = "xfail"
+reason = "vm-js does not yet implement the private-name brand-check operator (`#x in obj`)."
+
+[[expectations]]
+id = "language/expressions/in/private-field-presence-accessor.js"
+status = "xfail"
+reason = "vm-js does not yet implement the private-name brand-check operator (`#x in obj`)."
+
+[[expectations]]
 id = "language/expressions/in/private-field-rhs-non-object.js"
 status = "xfail"
 reason = "vm-js does not yet implement class fields (required for private field brand checks)."
@@ -628,6 +638,11 @@ reason = "vm-js does not yet implement class fields/private fields."
 id = "language/statements/class/elements/private-methods/prod-private-method.js"
 status = "xfail"
 reason = "vm-js private methods are not fully spec-compliant yet (should not appear as own properties)."
+
+[[expectations]]
+id = "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js"
+status = "xfail"
+reason = "vm-js does not yet implement class fields/private fields (required for private methods to be visible to field initializers)."
 
 [[expectations]]
 id = "language/statements/class/static-init-sequence.js"

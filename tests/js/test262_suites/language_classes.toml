@@ -20,9 +20,13 @@ tests = [
   "language/statements/class/elements/privatefieldget-typeerror-4.js",
   # Private method access + call (`this.#m()`).
   "language/statements/class/elements/private-methods/prod-private-method.js",
+  # Private methods are added before field initializers run (fields can reference later private methods).
+  "language/statements/class/elements/private-methods/prod-private-method-initialize-order.js",
 
   # --- `#x in obj` private-brand-check operator ---
   "language/expressions/in/private-field-presence-field.js",
+  "language/expressions/in/private-field-presence-method.js",
+  "language/expressions/in/private-field-presence-accessor.js",
   "language/expressions/in/private-field-rhs-non-object.js",
 
   # --- `static {}` blocks (ordering vs static fields) ---
