@@ -50,7 +50,7 @@ FastRender’s JS embedding is designed around a **tab-like** host object that o
 
 1. a mutable DOM (`dom2::Document`),
 2. a JS runtime instance (used by WebIDL bindings and, later, page scripts),
-3. an HTML-shaped event loop (tasks + microtasks + timers + `requestAnimationFrame`),
+3. an HTML-shaped event loop (tasks + microtasks + timers + `requestAnimationFrame` + `requestIdleCallback`),
 4. a `<script>` scheduler that follows the HTML Standard (classic + module + import maps).
 
 If you’re deciding between the various public “document/tab” containers (which ones have JS, event

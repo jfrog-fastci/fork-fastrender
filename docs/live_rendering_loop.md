@@ -4,7 +4,7 @@ FastRender’s JS-enabled host container is [`fastrender::BrowserTab`](../src/ap
 couples:
 
 - a live `dom2` document + renderer cache (`BrowserDocumentDom2`),
-- an HTML-shaped event loop (`js::EventLoop`: tasks + microtasks + timers + `requestAnimationFrame`),
+- an HTML-shaped event loop (`js::EventLoop`: tasks + microtasks + timers + `requestAnimationFrame` + `requestIdleCallback`),
 - an HTML-like `<script>` scheduler,
 - (optionally) rendering on DOM invalidation.
 

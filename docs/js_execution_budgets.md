@@ -26,7 +26,7 @@ FastRender has a renderer-level cooperative deadline mechanism:
 This limits overall pipeline work (parse/style/layout/paint *and* any JS-host work that checks the
 deadline). The JS event loop integrates with this via `render_control::check_active(...)`.
 
-## 3) Host event loop limits (tasks + microtasks + timers + `requestAnimationFrame`)
+## 3) Host event loop limits (tasks + microtasks + timers + `requestAnimationFrame` + `requestIdleCallback`)
 
 The HTML event loop model implemented in `src/js/event_loop.rs` has two kinds of limits:
 

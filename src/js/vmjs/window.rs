@@ -740,8 +740,9 @@ impl WindowHostState {
       }
     }
 
-    // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
-    // this host can schedule work onto the accompanying `EventLoop`.
+    // Install timer/loop bindings (`setTimeout`, `setInterval`, `queueMicrotask`,
+    // `requestIdleCallback`) so scripts executed in this host can schedule work onto the
+    // accompanying `EventLoop`.
     let (fetch_bindings, xhr_bindings, websocket_bindings) = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       if let Err(err) = install_window_timers_bindings::<WindowHostState>(vm, realm, heap) {

@@ -4478,7 +4478,7 @@ thread_local! {
 ///
 /// `BrowserTab` couples:
 /// - a live `dom2` document + render caching ([`BrowserDocumentDom2`]),
-/// - an HTML-shaped [`EventLoop`] (tasks + microtasks + timers + `requestAnimationFrame`),
+/// - an HTML-shaped [`EventLoop`] (tasks + microtasks + timers + `requestAnimationFrame` + `requestIdleCallback`),
 /// - HTML `<script>` scheduling integrated with streaming parsing,
 /// - navigation + history state.
 ///
