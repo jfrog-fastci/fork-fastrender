@@ -26,13 +26,15 @@ pub mod demux;
 pub mod loader;
 pub mod master_clock;
 pub mod mp4;
+pub mod timestamp;
 pub mod timebase;
 
 pub use audio_clock::InterpolatedAudioClock;
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use master_clock::{ClockSource, MasterClock};
 pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
-pub use timebase::{duration_to_ticks, ticks_to_duration, Timebase};
+pub use timestamp::MediaTimestamp;
+pub use timebase::{duration_to_ticks, ticks_to_duration, ticks_to_timestamp, timestamp_to_ticks, Timebase};
 
 /// Size information that can help a [`MediaFrameProvider`] choose an appropriate decode/scale
 /// strategy.
