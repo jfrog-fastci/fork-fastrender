@@ -45,9 +45,10 @@ include = [
 
 exclude = [
   # `v` flag (Unicode sets) is extremely large and slow in test262 (generated corpus). Keep it in a
-  # separate suite until the engine is ready.
+  # separate suite (`regexp_unicode_sets.toml`) until the engine is ready.
   "built-ins/RegExp/unicodeSets/**/*.js",
 
   # Generated Unicode property escape tests are large; keep the initial suite runtime manageable.
+  # (See `regexp_property_escapes_generated.toml` for the full generated corpus.)
   "built-ins/RegExp/property-escapes/generated/**/*.js",
 ]
