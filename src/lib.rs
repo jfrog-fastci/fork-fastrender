@@ -271,6 +271,8 @@ pub mod webidl;
 
 pub mod ui;
 pub mod chrome_frame;
+#[cfg(feature = "a11y_accesskit")]
+pub mod renderer_chrome;
 // ============================================================================
 // Public API
 // ============================================================================

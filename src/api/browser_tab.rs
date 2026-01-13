@@ -895,15 +895,15 @@ impl BrowserTabHost {
       // reuses it across listeners. That object captures immutable event fields at allocation time
       // (e.g. `isTrusted` and `MouseEvent` properties like `clientX` and modifier keys).
       //
-      // We therefore must mirror those immutable fields onto the temporary snapshot we pass into
-      // `with_dispatch_event_object`, even though `web_events::dispatch_event` itself operates on
-      // the mutable `event` instance below.
+      // Mirror those immutable fields onto the snapshot passed into `with_dispatch_event_object`,
+      // even though `web_events::dispatch_event` itself operates on the mutable `event` instance
+      // below.
       event_for_event_obj.time_stamp = event.time_stamp;
       event_for_event_obj.is_trusted = event.is_trusted;
-      event_for_event_obj.mouse = event.mouse;
-      event_for_event_obj.drag_data_transfer = event.drag_data_transfer;
       event_for_event_obj.detail = event.detail.clone();
       event_for_event_obj.storage = event.storage.clone();
+      event_for_event_obj.mouse = event.mouse;
+      event_for_event_obj.drag_data_transfer = event.drag_data_transfer;
       return invoker
         .with_dispatch_event_object(&event_for_event_obj, |invoker| {
           crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
@@ -936,11 +936,13 @@ impl BrowserTabHost {
             composed: event.composed,
           },
         );
+        // Mirror immutable, JS-observable fields onto the snapshot used to allocate the JS
+        // `Event`/`MouseEvent` object for this dispatch.
         event_for_event_obj.time_stamp = event.time_stamp;
         event_for_event_obj.is_trusted = event.is_trusted;
-        event_for_event_obj.mouse = event.mouse;
         event_for_event_obj.detail = event.detail.clone();
         event_for_event_obj.storage = event.storage.clone();
+        event_for_event_obj.mouse = event.mouse;
         event_for_event_obj.drag_data_transfer = event.drag_data_transfer;
         invoker.with_dispatch_event_object(&event_for_event_obj, |invoker| {
           crate::web::events::dispatch_event(target, &mut event, dom, dom.events(), invoker)
@@ -5836,6 +5838,46 @@ impl BrowserTab {
     self.dispatch_mouse_event(
       node_id,
       "click",
+      EventInit {
+        bubbles: true,
+        cancelable: true,
+        composed: false,
+      },
+      mouse,
+    )
+  }
+
+  /// Dispatch a trusted `contextmenu` DOM event to `node_id`, including pointer coordinates/buttons.
+  ///
+  /// This is intended for input modalities that request a context menu without a physical right
+  /// click (e.g. assistive technology actions).
+  ///
+  /// When no real pointer state exists, we still shape the event like a secondary mouse click:
+  /// `button=2` and `buttons=2`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_contextmenu_event_with_pointer(
+    &mut self,
+    node_id: NodeId,
+    pos_css: (f32, f32),
+    modifiers: PointerModifiers,
+  ) -> Result<bool> {
+    let mouse = MouseEvent {
+      detail: 0,
+      client_x: pos_css.0 as f64,
+      client_y: pos_css.1 as f64,
+      button: 2,
+      buttons: 2,
+      ctrl_key: modifiers.ctrl(),
+      shift_key: modifiers.shift(),
+      alt_key: modifiers.alt(),
+      meta_key: modifiers.meta(),
+      related_target: None,
+    };
+
+    self.dispatch_mouse_event(
+      node_id,
+      "contextmenu",
       EventInit {
         bubbles: true,
         cancelable: true,
