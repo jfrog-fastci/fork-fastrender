@@ -6,11 +6,11 @@
 //! capture user intent. Side effects (worker messages, OS open/reveal) are performed by the caller
 //! (typically `src/bin/browser.rs`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{
-  a11y_labels, downloads, motion::UiMotion, panel_empty_state, panel_header_with_actions,
-  theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
+  a11y_labels, motion::UiMotion, panel_empty_state, panel_header_with_actions, theme::BrowserTheme,
+  BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
 
 fn format_bytes(bytes: u64) -> String {
@@ -67,11 +67,19 @@ pub struct DownloadsPanelOutput {
   pub reveal_requests: Vec<PathBuf>,
 }
 
+#[cfg(test)]
+fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
+  ctx.data_mut(|d| {
+    d.insert_temp(egui::Id::new(key), id);
+  });
+}
+
 pub fn downloads_panel_ui(
   ctx: &egui::Context,
   downloads: &[DownloadEntry],
   theme: &BrowserTheme,
   request_initial_focus: bool,
+  download_dir: &Path,
 ) -> DownloadsPanelOutput {
   let mut out = DownloadsPanelOutput::default();
 
@@ -117,11 +125,13 @@ pub fn downloads_panel_ui(
         "Downloads",
         |ui| {
           let show_folder = ui.small_button("Show downloads folder");
+          #[cfg(test)]
+          store_test_id(ui.ctx(), "downloads_panel_show_folder_button_id", show_folder.id);
           show_folder.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, "Show downloads folder")
           });
           if show_folder.clicked() {
-            out.open_requests.push(downloads::default_download_dir());
+            out.open_requests.push(download_dir.to_path_buf());
           }
         },
         || {
@@ -444,7 +454,29 @@ pub fn downloads_panel_ui(
 
 #[cfg(test)]
 mod tests {
-  use super::download_progress_a11y_label;
+  use std::path::PathBuf;
+
+  use super::{download_progress_a11y_label, downloads_panel_ui};
+  use crate::ui::theme::BrowserTheme;
+
+  fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    raw.events = events;
+    ctx.begin_frame(raw);
+  }
+
+  fn expect_temp_id(ctx: &egui::Context, key: &'static str) -> egui::Id {
+    ctx
+      .data(|d| d.get_temp::<egui::Id>(egui::Id::new(key)))
+      .unwrap_or_else(|| panic!("expected temp id {key:?}"))
+  }
 
   #[test]
   fn download_progress_a11y_label_contains_file_name() {
@@ -453,6 +485,48 @@ mod tests {
     assert!(
       label.contains("example.zip"),
       "expected label to mention file name; got {label:?}"
+    );
+  }
+
+  #[test]
+  fn show_downloads_folder_uses_injected_download_dir() {
+    let ctx = egui::Context::default();
+    let theme = BrowserTheme::light(None);
+    let download_dir = PathBuf::from("test-download-dir");
+
+    // Frame 0: capture the show-folder button id.
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(&ctx, &[], &theme, false, &download_dir);
+    let _ = ctx.end_frame();
+    let show_folder_id = expect_temp_id(&ctx, "downloads_panel_show_folder_button_id");
+
+    // Frame 1: move focus to the show-folder button.
+    ctx.memory_mut(|mem| mem.request_focus(show_folder_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = downloads_panel_ui(&ctx, &[], &theme, false, &download_dir);
+    let _ = ctx.end_frame();
+    assert!(
+      ctx.memory(|mem| mem.has_focus(show_folder_id)),
+      "expected show downloads folder button to have focus"
+    );
+
+    // Frame 2: press Enter; should enqueue an open request for the injected download_dir.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+      }],
+    );
+    let output = downloads_panel_ui(&ctx, &[], &theme, false, &download_dir);
+    let _ = ctx.end_frame();
+
+    assert_eq!(
+      output.open_requests,
+      vec![download_dir.clone()],
+      "expected Show downloads folder to open injected dir"
     );
   }
 }

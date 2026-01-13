@@ -6895,6 +6895,7 @@ struct App {
 
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
+  /// Configured download directory (from CLI/env fallback).
   download_dir: std::path::PathBuf,
   bookmarks: fastrender::ui::BookmarkStore,
   pending_bookmark_deltas: Vec<fastrender::ui::BookmarkDelta>,
@@ -12145,6 +12146,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         downloads: &self.browser_state.downloads.downloads,
         theme: &self.theme,
         request_initial_focus,
+        download_dir: &self.download_dir,
       },
     );
 
