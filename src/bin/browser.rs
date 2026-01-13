@@ -13220,6 +13220,12 @@ struct App {
   /// Used to position transient overlays (toasts/infobars) without affecting layout.
   content_rect_points: Option<egui::Rect>,
   page_rect_points: Option<egui::Rect>,
+  /// AccessKit node id for the page viewport widget (the egui widget that hosts the page).
+  ///
+  /// Used to distinguish assistive-technology focus/activation requests targeting the page vs the
+  /// browser chrome, preventing the rendered page from stealing focus back when a screen reader
+  /// moves focus to a chrome widget.
+  page_accesskit_node_id: Option<accesskit::NodeId>,
   page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
@@ -14263,6 +14269,7 @@ impl App {
       trusted_about_prepared: std::collections::HashMap::new(),
       content_rect_points: None,
       page_rect_points: None,
+      page_accesskit_node_id: None,
       page_viewport_css: None,
       page_input_tab: None,
       page_input_mapping: None,
@@ -26128,6 +26135,15 @@ impl App {
         let page_accesskit_action_requests =
           fastrender::ui::page_accesskit::drain_page_accesskit_action_requests(&mut raw);
 
+        // Prevent focus bounce: if assistive tech focuses a chrome widget, clear the page focus
+        // flag before we render the page image (which would otherwise call `request_focus()`).
+        clear_page_focus_for_non_page_accesskit_action_requests(
+          self.page_accesskit_node_id,
+          &raw.events,
+          &mut self.page_has_focus,
+          &mut self.cursor_in_page,
+        );
+
         // PERF: Avoid per-frame allocation churn by extracting wheel/paste events into reusable
         // buffers instead of collecting into new `Vec`s every frame. The common case (no wheel/paste)
         // should be allocation-free for this path.
@@ -27817,6 +27833,21 @@ impl App {
     }
     let repaint_after = full_output.repaint_after;
 
+    if let Some(update) = full_output.platform_output.accesskit_update.as_ref() {
+      // Cache the AccessKit id of the page viewport node so we can recognise future
+      // focus/activation requests that target the page (vs browser chrome widgets).
+      if let Some((id, _node)) = update.nodes.iter().find(|(_id, node)| {
+        node.role() == accesskit::Role::WebView
+          && node
+            .name()
+            .unwrap_or("")
+            .trim()
+            .starts_with(fastrender::ui::a11y::PAGE_VIEWPORT_LABEL)
+      }) {
+        self.page_accesskit_node_id = Some(*id);
+      }
+    }
+
     let mut platform_output = full_output.platform_output;
     // Security/perf: egui clipboard writes can originate from UI actions that include untrusted
     // renderer-provided strings (e.g. debug logs). Clamp the outgoing text so we never hand
@@ -28632,6 +28663,37 @@ fn handle_page_host_accesskit_focus_actions(
   apply_page_focus_for_accesskit_action(action, page_has_focus, chrome)
 }
 
+#[cfg(feature = "browser_ui")]
+fn clear_page_focus_for_non_page_accesskit_action_requests(
+  page_node_id: Option<accesskit::NodeId>,
+  events: &[egui::Event],
+  page_has_focus: &mut bool,
+  cursor_in_page: &mut bool,
+) {
+  let Some(page_node_id) = page_node_id else {
+    return;
+  };
+
+  let is_focus_or_activate = |action: accesskit::Action| {
+    matches!(
+      action,
+      accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default
+    )
+  };
+
+  let non_page_focus_requested = events.iter().any(|event| match event {
+    egui::Event::AccessKitActionRequest(request) => {
+      is_focus_or_activate(request.action) && request.target != page_node_id
+    }
+    _ => false,
+  });
+
+  if non_page_focus_requested {
+    *page_has_focus = false;
+    *cursor_in_page = false;
+  }
+}
+
 #[cfg(test)]
 mod debug_log_env_tests {
   use super::{parse_env_bool, should_show_debug_log_ui};
@@ -29238,6 +29300,40 @@ mod page_host_accesskit_action_tests {
       !chrome.address_bar_has_focus,
       "expected chrome address bar focus to be cleared"
     );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_focus_accesskit_action_tests {
+  use super::clear_page_focus_for_non_page_accesskit_action_requests;
+
+  #[test]
+  fn accesskit_focus_on_non_page_node_clears_page_focus() {
+    use std::num::NonZeroU128;
+
+    let page_node_id = accesskit::NodeId(NonZeroU128::new(1).unwrap());
+    let chrome_node_id = accesskit::NodeId(NonZeroU128::new(2).unwrap());
+
+    let events = vec![egui::Event::AccessKitActionRequest(accesskit::ActionRequest {
+      action: accesskit::Action::Focus,
+      target: chrome_node_id,
+      data: None,
+    })];
+
+    let mut page_has_focus = true;
+    let mut cursor_in_page = true;
+    clear_page_focus_for_non_page_accesskit_action_requests(
+      Some(page_node_id),
+      &events,
+      &mut page_has_focus,
+      &mut cursor_in_page,
+    );
+
+    assert!(
+      !page_has_focus,
+      "expected AccessKit focus on a non-page node to clear `page_has_focus`"
+    );
+    assert!(!cursor_in_page);
   }
 }
 
