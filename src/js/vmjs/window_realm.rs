@@ -5435,18 +5435,249 @@ fn location_hash_set_native(
   )
 }
 
-fn location_set_unimplemented_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+fn location_protocol_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
+  this: Value,
+  args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError(
-    "Navigation via location is not implemented yet",
-  ))
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let protocol_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let protocol_value = match protocol_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(protocol_value))?;
+  let mut scheme = scope
+    .heap()
+    .get_string(protocol_value)?
+    .to_utf8_lossy()
+    .trim_end_matches(':')
+    .to_string();
+  scheme.make_ascii_lowercase();
+
+  // Match `request_location_navigation` supported schemes. For invalid/unsupported schemes, behave
+  // browser-like and no-op instead of throwing.
+  match scheme.as_str() {
+    "http" | "https" | "file" | "data" | "about" => {}
+    _ => return Ok(Value::Undefined),
+  }
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+  if url.set_scheme(&scheme).is_err() {
+    return Ok(Value::Undefined);
+  }
+
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
+}
+
+fn location_host_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let host_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let host_value = match host_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(host_value))?;
+  let host_input = scope.heap().get_string(host_value)?.to_utf8_lossy();
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  // Parse "hostname" or "hostname:port", with best-effort support for bracketed IPv6 hosts.
+  let (host_part, port_part) = if let Some(rest) = host_input.strip_prefix('[') {
+    let Some(end) = rest.find(']') else {
+      return Ok(Value::Undefined);
+    };
+    let host = &rest[..end];
+    let after = &rest[end + 1..];
+    let port = if let Some(port) = after.strip_prefix(':') {
+      Some(port)
+    } else {
+      None
+    };
+    (host, port)
+  } else if let Some(colon) = host_input.rfind(':') {
+    let (left, right_with_colon) = host_input.split_at(colon);
+    let right = &right_with_colon[1..];
+    // Only treat the last ':' as a port separator when the left side does not contain ':' (so we
+    // don't misparse unbracketed IPv6).
+    if !left.contains(':') && (right.is_empty() || right.chars().all(|c| c.is_ascii_digit())) {
+      (left, Some(right))
+    } else {
+      (host_input.as_str(), None)
+    }
+  } else {
+    (host_input.as_str(), None)
+  };
+
+  if host_part.is_empty() {
+    return Ok(Value::Undefined);
+  }
+  if url.set_host(Some(host_part)).is_err() {
+    return Ok(Value::Undefined);
+  }
+
+  // Setting `location.host` updates both hostname and port. When no port is provided, clear the
+  // explicit port.
+  let port_value = match port_part {
+    None => None,
+    Some("") => None,
+    Some(port_str) => match port_str.parse::<u32>() {
+      Ok(port) if port <= u16::MAX as u32 => Some(port as u16),
+      _ => return Ok(Value::Undefined),
+    },
+  };
+  if url.set_port(port_value).is_err() {
+    return Ok(Value::Undefined);
+  }
+
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
+}
+
+fn location_hostname_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let hostname_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let hostname_value = match hostname_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(hostname_value))?;
+  let hostname_input = scope.heap().get_string(hostname_value)?.to_utf8_lossy();
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  // Best-effort: accept bracketed IPv6 (`[::1]`) by stripping matching brackets.
+  let hostname = if let Some(rest) = hostname_input.strip_prefix('[') {
+    rest.strip_suffix(']').unwrap_or(rest)
+  } else {
+    hostname_input.as_str()
+  };
+
+  if hostname.is_empty() {
+    return Ok(Value::Undefined);
+  }
+  if url.set_host(Some(hostname)).is_err() {
+    return Ok(Value::Undefined);
+  }
+
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
+}
+
+fn location_port_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+
+  let port_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let port_value = match port_value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  scope.push_root(Value::String(port_value))?;
+  let port_input = scope.heap().get_string(port_value)?.to_utf8_lossy();
+
+  let Some(mut url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::Undefined);
+  };
+
+  let port = if port_input.is_empty() {
+    None
+  } else if port_input.chars().all(|c| c.is_ascii_digit()) {
+    match port_input.parse::<u32>() {
+      Ok(port) if port <= u16::MAX as u32 => Some(port as u16),
+      _ => return Ok(Value::Undefined),
+    }
+  } else {
+    return Ok(Value::Undefined);
+  };
+
+  if url.set_port(port).is_err() {
+    return Ok(Value::Undefined);
+  }
+
+  let new_href = url.to_string();
+  let new_href_s = scope.alloc_string(&new_href)?;
+  request_location_navigation(
+    vm,
+    scope,
+    host,
+    hooks,
+    Some(location_obj),
+    Value::String(new_href_s),
+    false,
+  )
 }
 
 fn throw_data_clone_error(scope: &mut Scope<'_>) -> Result<VmError, VmError> {
@@ -32501,17 +32732,6 @@ fn init_window_globals(
   scope.push_root(Value::Object(reload_func))?;
   scope.define_property(location_obj, reload_key, data_desc(Value::Object(reload_func)))?;
 
-  let location_set_call_id = vm.register_native_call(location_set_unimplemented_native)?;
-  let location_set_name = scope.alloc_string("set location")?;
-  scope.push_root(Value::String(location_set_name))?;
-  let location_set_func =
-    scope.alloc_native_function(location_set_call_id, None, location_set_name, 1)?;
-  scope.heap_mut().object_set_prototype(
-    location_set_func,
-    Some(realm.intrinsics().function_prototype()),
-  )?;
-  scope.push_root(Value::Object(location_set_func))?;
-
   let protocol_get_call_id = vm.register_native_call(location_protocol_get_native)?;
   let protocol_get_name = scope.alloc_string("get protocol")?;
   scope.push_root(Value::String(protocol_get_name))?;
@@ -32522,6 +32742,16 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(protocol_get_func))?;
+  let protocol_set_call_id = vm.register_native_call(location_protocol_set_native)?;
+  let protocol_set_name = scope.alloc_string("set protocol")?;
+  scope.push_root(Value::String(protocol_set_name))?;
+  let protocol_set_func =
+    scope.alloc_native_function(protocol_set_call_id, None, protocol_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    protocol_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(protocol_set_func))?;
   scope.define_property(
     location_obj,
     protocol_key,
@@ -32530,7 +32760,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(protocol_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(protocol_set_func),
       },
     },
   )?;
@@ -32543,6 +32773,14 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(host_get_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(host_get_func))?;
+  let host_set_call_id = vm.register_native_call(location_host_set_native)?;
+  let host_set_name = scope.alloc_string("set host")?;
+  scope.push_root(Value::String(host_set_name))?;
+  let host_set_func = scope.alloc_native_function(host_set_call_id, None, host_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(host_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(host_set_func))?;
   scope.define_property(
     location_obj,
     host_key,
@@ -32551,7 +32789,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(host_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(host_set_func),
       },
     },
   )?;
@@ -32566,6 +32804,16 @@ fn init_window_globals(
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(hostname_get_func))?;
+  let hostname_set_call_id = vm.register_native_call(location_hostname_set_native)?;
+  let hostname_set_name = scope.alloc_string("set hostname")?;
+  scope.push_root(Value::String(hostname_set_name))?;
+  let hostname_set_func =
+    scope.alloc_native_function(hostname_set_call_id, None, hostname_set_name, 1)?;
+  scope.heap_mut().object_set_prototype(
+    hostname_set_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(hostname_set_func))?;
   scope.define_property(
     location_obj,
     hostname_key,
@@ -32574,7 +32822,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(hostname_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(hostname_set_func),
       },
     },
   )?;
@@ -32587,6 +32835,14 @@ fn init_window_globals(
     .heap_mut()
     .object_set_prototype(port_get_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(port_get_func))?;
+  let port_set_call_id = vm.register_native_call(location_port_set_native)?;
+  let port_set_name = scope.alloc_string("set port")?;
+  scope.push_root(Value::String(port_set_name))?;
+  let port_set_func = scope.alloc_native_function(port_set_call_id, None, port_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(port_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(port_set_func))?;
   scope.define_property(
     location_obj,
     port_key,
@@ -32595,7 +32851,7 @@ fn init_window_globals(
       configurable: true,
       kind: PropertyKind::Accessor {
         get: Value::Object(port_get_func),
-        set: Value::Object(location_set_func),
+        set: Value::Object(port_set_func),
       },
     },
   )?;
@@ -40419,7 +40675,6 @@ fn test_unimplemented_native(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::api::RenderOptions;
   use crate::js::clock::VirtualClock;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
   use crate::js::RunLimits;
@@ -49088,6 +49343,54 @@ mod tests {
       .expect("expected pending navigation request");
     assert_eq!(req.url, "https://example.com/");
     assert_eq!(req.replace, true);
+    Ok(())
+  }
+
+  #[test]
+  fn location_protocol_set_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
+    assert!(realm.exec_script("location.protocol = 'http:'; 1 + 2").is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "http://example.com/path");
+    assert_eq!(req.replace, false);
+    Ok(())
+  }
+
+  #[test]
+  fn location_host_set_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
+    assert!(realm.exec_script("location.host = 'example.org:8080'; 1 + 2").is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.org:8080/path");
+    assert_eq!(req.replace, false);
+    Ok(())
+  }
+
+  #[test]
+  fn location_hostname_set_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
+    assert!(realm.exec_script("location.hostname = 'example.org'; 1 + 2").is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.org/path");
+    assert_eq!(req.replace, false);
+    Ok(())
+  }
+
+  #[test]
+  fn location_port_set_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/path"))?;
+    assert!(realm.exec_script("location.port = '8080'; 1 + 2").is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.com:8080/path");
+    assert_eq!(req.replace, false);
     Ok(())
   }
 
