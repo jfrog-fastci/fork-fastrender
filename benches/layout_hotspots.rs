@@ -507,6 +507,21 @@ fn assign_box_ids(node: &mut BoxNode, next: &mut usize) {
   }
 }
 
+fn assign_text_box_ids(node: &mut BoxNode, next: &mut usize) {
+  use fastrender::tree::box_tree::BoxType;
+  if matches!(node.box_type, BoxType::Text(_) | BoxType::Marker(_)) {
+    let id = *next;
+    *next = id.saturating_add(1);
+    node.id = id;
+  }
+  for child in &mut node.children {
+    assign_text_box_ids(child, next);
+  }
+  if let Some(body) = node.footnote_body.as_deref_mut() {
+    assign_text_box_ids(body, next);
+  }
+}
+
 fn build_table_tree(rows: usize, cols: usize) -> BoxNode {
   // Regression protected:
   // - Table auto layout measures min/max-content widths for every cell, then distributes
@@ -917,21 +932,33 @@ fn bench_block_intrinsic_sizing_nowrap(c: &mut Criterion) {
   let mut tree = build_block_intrinsic_tree_nowrap(64);
   // Disable global intrinsic caching for the root so each iteration recomputes the intrinsic width.
   tree.root.id = 0;
-  let node = &tree.root;
+  // NOTE: `InlineFormattingContext` has a text inline-item cache keyed by box id. If the box ids stay
+  // stable across iterations (as they would for a real DOM), the benchmark would measure steady-state
+  // cache hits rather than text item construction / line-break scanning.
+  //
+  // To make this a targeted guardrail for the nowrap fast path (skipping `find_break_opportunities`
+  // when `allow_soft_wrap == false`), reassign ids for text nodes each iteration so the cache misses.
+  let mut id_seed = 1usize;
 
   let mut group = c.benchmark_group("layout_hotspots_block_intrinsic_nowrap");
   group.bench_function("min_content", |b| {
     b.iter(|| {
+      let mut next_id = id_seed;
+      assign_text_box_ids(&mut tree.root, &mut next_id);
+      id_seed = next_id;
       let width = bfc
-        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MinContent)
+        .compute_intrinsic_inline_size(black_box(&tree.root), IntrinsicSizingMode::MinContent)
         .expect("intrinsic sizing should succeed");
       black_box(width);
     })
   });
   group.bench_function("max_content", |b| {
     b.iter(|| {
+      let mut next_id = id_seed;
+      assign_text_box_ids(&mut tree.root, &mut next_id);
+      id_seed = next_id;
       let width = bfc
-        .compute_intrinsic_inline_size(black_box(node), IntrinsicSizingMode::MaxContent)
+        .compute_intrinsic_inline_size(black_box(&tree.root), IntrinsicSizingMode::MaxContent)
         .expect("intrinsic sizing should succeed");
       black_box(width);
     })
