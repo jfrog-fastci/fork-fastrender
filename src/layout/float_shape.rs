@@ -6,6 +6,7 @@
 //! masks.
 
 use crate::css::types::{ColorStop, RadialGradientShape, RadialGradientSize};
+use crate::debug::runtime;
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::{Point, Rect, Size};
 use crate::image_loader::ImageCache;
@@ -13,14 +14,34 @@ use crate::layout::formatting_context::LayoutError;
 use crate::paint::clip_path::{resolve_basic_shape, ResolvedClipPath};
 use crate::paint::pixmap::{new_pixmap, reserve_buffer};
 use crate::style::color::Rgba;
-use crate::style::types::{
-  BackgroundImage, BackgroundPosition, ReferenceBox, ShapeOutside,
-};
+use crate::style::types::{BackgroundImage, BackgroundPosition, ReferenceBox, ShapeOutside};
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
 use std::f32::consts::PI;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use tiny_skia::{Mask, PathBuilder, Pixmap, SpreadMode, Transform};
+
+static FLOAT_SHAPE_NEXT_CHANGE_CALLS: AtomicU64 = AtomicU64::new(0);
+
+fn profile_enabled() -> bool {
+  runtime::runtime_toggles().truthy("FASTR_LAYOUT_PROFILE")
+}
+
+fn profile_count_next_change_call() {
+  if profile_enabled() {
+    FLOAT_SHAPE_NEXT_CHANGE_CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+  }
+}
+
+pub(crate) fn reset_float_shape_profile_counters() {
+  FLOAT_SHAPE_NEXT_CHANGE_CALLS.store(0, AtomicOrdering::Relaxed);
+}
+
+pub(crate) fn float_shape_next_change_calls() -> u64 {
+  FLOAT_SHAPE_NEXT_CHANGE_CALLS.load(AtomicOrdering::Relaxed)
+}
 
 /// Horizontal coverage for a float shape sampled at 1 CSS px increments.
 #[derive(Debug, Clone, PartialEq)]
@@ -120,6 +141,7 @@ impl FloatShape {
   /// This is used by float layout to find the next vertical boundary that could
   /// alter available inline space when a `shape-outside` float is active.
   pub fn next_change_after(&self, y: f32) -> Option<f32> {
+    profile_count_next_change_call();
     let len = self.spans.len();
     if len == 0 {
       return None;
@@ -609,7 +631,9 @@ fn image_mask(
             let row_start = src_y.checked_mul(row_stride)?;
             for x in 0..dst_w {
               let src_x = (u64::from(x).saturating_mul(src_w_u64) / dst_w_u64) as usize;
-              let idx = row_start.checked_add(src_x.checked_mul(4)?)?.checked_add(3)?;
+              let idx = row_start
+                .checked_add(src_x.checked_mul(4)?)?
+                .checked_add(3)?;
               alpha.push(*raw.get(idx)?);
             }
           }

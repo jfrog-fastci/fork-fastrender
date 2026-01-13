@@ -1,5 +1,6 @@
 use crate::debug::runtime;
 use crate::layout::float_context::{float_profile_stats, reset_float_profile_counters};
+use crate::layout::float_shape::float_shape_next_change_calls;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -216,6 +217,13 @@ pub fn log_layout_profile(total: Duration) {
       float_stats.range_boundaries_scanned,
       float_stats.range_cache_segment_splits,
       float_stats.range_cache_segment_merges
+    ));
+  }
+  let shape_next_change_calls = float_shape_next_change_calls();
+  if shape_next_change_calls > 0 {
+    parts.push(format!(
+      "float_shape_next_change_calls={}",
+      shape_next_change_calls
     ));
   }
   let grid_counters = crate::layout::contexts::grid::grid_measure_cache_counters();
