@@ -4575,6 +4575,7 @@ mod tests {
           WebSocketState {
             weak_obj: weak,
             url: "ws://example.invalid/".to_string(),
+            requested_protocols: Vec::new(),
             protocol: String::new(),
             ready_state: WS_OPEN,
             buffered_amount: 0,
