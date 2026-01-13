@@ -187,9 +187,24 @@ Database. When updating the engine’s code-point property data, expect to consu
 * `Scripts.txt` / `ScriptExtensions.txt`
 * `DerivedBinaryProperties.txt`
 
-`vm-js` does **not** currently vendor these UCD files in-tree; the long-term plan is to keep a
-versioned snapshot (e.g. `tools/unicode/ucd-17.0.0/…`) so property escape tables can be regenerated
-offline and kept aligned with test262.
+`vm-js` vendors a pinned Unicode snapshot under `tools/unicode/ucd-17.0.0/` so the RegExp property
+tables can be regenerated offline and kept aligned with test262’s Unicode version.
+
+Generated output (Rust):
+
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs` (`@generated`)
+
+Regeneration:
+
+```bash
+# From the repo root (agent-safe):
+
+# Regenerate (writes vendor/ecma-rs/vm-js/src/regexp_unicode_tables.rs):
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p vm-js --bin generate_regexp_unicode_tables
+
+# Check-only mode:
+timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh run -p vm-js --bin generate_regexp_unicode_tables -- --check
+```
 
 ## Regenerating the generated tables
 
