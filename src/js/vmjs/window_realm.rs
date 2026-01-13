@@ -31510,6 +31510,92 @@ fn parent_node_last_element_child_get_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), found)
 }
 
+fn parent_node_append_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(parent_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let parent_handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), Value::Object(parent_obj))?;
+
+  // `append` is exposed only on ParentNode implementers.
+  {
+    let dom_ptr = dom_ptr_for_document_id_read(vm, host, parent_handle.document_id)
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    // SAFETY: pointers returned by `dom_ptr_for_document_id_*` are valid for the duration of this
+    // native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    match &dom.node(parent_handle.node_id).kind {
+      NodeKind::Document { .. }
+      | NodeKind::DocumentFragment
+      | NodeKind::ShadowRoot { .. }
+      | NodeKind::Element { .. }
+      | NodeKind::Slot { .. } => {}
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    }
+  }
+
+  let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_handle.node_id)?;
+
+  for &arg in args {
+    let is_node = match dom_platform_mut(vm) {
+      Some(platform) => match platform.require_node_handle(scope.heap(), arg) {
+        Ok(_) => true,
+        // `(Node or DOMString)` coercion: non-node values are stringified.
+        Err(VmError::TypeError(_)) => false,
+        Err(err) => return Err(err),
+      },
+      None => return Err(VmError::TypeError("Illegal invocation")),
+    };
+
+    let child_value = if is_node {
+      arg
+    } else {
+      let s = scope.heap_mut().to_string(arg)?;
+      let text = scope
+        .heap()
+        .get_string(s)
+        .map(|s| s.to_utf8_lossy())
+        .unwrap_or_default();
+
+      let node_id = {
+        let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, parent_handle.document_id)
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        unsafe { dom_ptr.as_mut() }.create_text(&text)
+      };
+
+      let dom_ptr = dom_ptr_for_document_id_read(vm, host, parent_handle.document_id)
+        .ok_or(VmError::TypeError("Illegal invocation"))?;
+      // SAFETY: `dom_ptr` is valid for the duration of this native call.
+      let dom = unsafe { dom_ptr.as_ref() };
+      get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)?
+    };
+
+    // Reuse the existing insertion/adoption logic in `Node.appendChild`.
+    let _ = node_append_child_native(
+      vm,
+      scope,
+      host,
+      hooks,
+      /* _callee */ parent_obj,
+      Value::Object(parent_obj),
+      &[child_value],
+    )?;
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn element_next_element_sibling_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -48030,6 +48116,28 @@ fn init_window_globals(
       )?;
     }
 
+    // --- ParentNode.append (Element/Document/DocumentFragment) --------------------------------
+    //
+    // Required by the WPT Range harness (`tests/wpt_dom/tests/dom/common.js`) which calls
+    // `element.append("text")` during `setupRangeTests()`.
+    let parent_append_call_id = vm.register_native_call(parent_node_append_native)?;
+    let parent_append_name = scope.alloc_string("append")?;
+    scope.push_root(Value::String(parent_append_name))?;
+    let parent_append_func =
+      scope.alloc_native_function(parent_append_call_id, None, parent_append_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      parent_append_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(parent_append_func))?;
+
+    let append_key = alloc_key(&mut scope, "append")?;
+    for proto in [element_proto, document_proto, document_fragment_proto] {
+      if scope.heap().object_get_own_property(proto, &append_key)?.is_none() {
+        scope.define_property(proto, append_key, data_desc(Value::Object(parent_append_func)))?;
+      }
+    }
+
     // --- Element: nextElementSibling / previousElementSibling --------------------------------
 
     let next_element_sibling_get_call_id =
@@ -60209,6 +60317,30 @@ mod tests {
     let root = host.dom().get_element_by_id("root").expect("missing #root");
     assert_eq!(host.dom().inner_html(root).unwrap(), "ab");
 
+    Ok(())
+  }
+
+  #[test]
+  fn parent_node_append_coerces_strings_to_text_nodes() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const p = document.createElement('p');\n\
+        p.append('a', 'b');\n\
+        if (p.textContent !== 'ab') return 'text:' + p.textContent;\n\
+        if (p.childNodes.length !== 2) return 'len:' + p.childNodes.length;\n\
+        if (p.childNodes[0].nodeType !== 3) return 't0:' + p.childNodes[0].nodeType;\n\
+        if (p.childNodes[1].nodeType !== 3) return 't1:' + p.childNodes[1].nodeType;\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 
