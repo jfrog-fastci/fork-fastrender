@@ -4639,6 +4639,46 @@ mod tests {
   }
 
   #[test]
+  fn focus_traversal_tab_strip_includes_pinned_tabs_before_unpinned() {
+    let mut app = BrowserAppState::new();
+    let tab_pinned = TabId(1);
+    let tab_unpinned = TabId(2);
+    let mut pinned = BrowserTabState::new(tab_pinned, "https://pinned.example/".to_string());
+    pinned.pinned = true;
+    app.push_tab(pinned, true);
+    app.push_tab(
+      BrowserTabState::new(tab_unpinned, "https://b.example/".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once to capture deterministic close/new-tab ids.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let close_ids = tab_strip_close_ids(&ctx);
+    assert!(
+      !close_ids.contains_key(&tab_pinned),
+      "expected pinned tabs to have no close button in the tab strip"
+    );
+    let new_tab_id = tab_strip_new_tab_id(&ctx);
+
+    let order = vec![
+      tab_strip_tab_widget_id(tab_pinned),
+      tab_strip_tab_widget_id(tab_unpinned),
+      *close_ids
+        .get(&tab_unpinned)
+        .expect("expected close id for tab_unpinned"),
+      new_tab_id,
+    ];
+
+    assert_tab_traversal_forward(&ctx, &mut app, &order);
+    assert_tab_traversal_reverse(&ctx, &mut app, &order);
+  }
+
+  #[test]
   fn shift_tab_focus_traversal_tab_strip_is_right_to_left() {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
