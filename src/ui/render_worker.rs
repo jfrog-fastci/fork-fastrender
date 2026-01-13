@@ -2653,7 +2653,9 @@ impl BrowserRuntime {
         } => {
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
-        UiToWorker::Scroll { .. } | UiToWorker::ScrollTo { .. } => {
+        UiToWorker::Scroll { .. }
+        | UiToWorker::ScrollTo { .. }
+        | UiToWorker::TestQueryJsDomAttribute { .. } => {
           flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
           self.handle_message(msg);
         }
@@ -3005,7 +3007,10 @@ impl BrowserRuntime {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
+        let prev_viewport = tab.viewport_css;
+        let prev_dpr = tab.dpr;
         let clamp = self.limits.clamp_viewport_and_dpr(viewport_css, dpr);
+        let resized = clamp.viewport_css != prev_viewport || clamp.dpr != prev_dpr;
         tab.viewport_css = clamp.viewport_css;
         tab.dpr = clamp.dpr;
         if let Some(text) = clamp.warning_text(&self.limits) {
@@ -3022,6 +3027,19 @@ impl BrowserRuntime {
           doc.set_device_pixel_ratio(tab.dpr);
         }
         tab.sync_js_viewport_state();
+
+        if resized {
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            let _ = js_tab.dispatch_window_event(
+              "resize",
+              web_events::EventInit {
+                bubbles: false,
+                cancelable: false,
+                composed: false,
+              },
+            );
+          }
+        }
       }
       UiToWorker::Scroll {
         tab_id,
@@ -3041,6 +3059,71 @@ impl BrowserRuntime {
           }
           let delta_x = if delta_x.is_finite() { delta_x } else { 0.0 };
           let delta_y = if delta_y.is_finite() { delta_y } else { 0.0 };
+
+          // When scrolling with a stationary pointer, the hovered element can change as content
+          // moves under the cursor. Track the latest pointer position so we can re-run hover
+          // hit-testing after applying scroll offsets.
+          let pointer_pos_css = pointer_css
+            .filter(|(x, y)| x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0);
+
+          // Dispatch a cancelable `wheel` event *before* applying wheel deltas. If a listener calls
+          // `preventDefault()`, the scroll gesture should be ignored.
+          if let Some(pointer_css) = pointer_pos_css {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let target_node = tab.last_hovered_dom_node_id.and_then(|preorder_id| {
+                js_dom_node_for_preorder_id(
+                  js_tab,
+                  preorder_id,
+                  tab.last_hovered_dom_element_id.as_deref(),
+                )
+              });
+              let target = target_node
+                .map(|id| web_events::EventTargetId::Node(id).normalize())
+                .unwrap_or(web_events::EventTargetId::Window);
+
+              let dom = js_tab.dom();
+              let has_listeners = dom.events().has_listeners_for_dispatch(
+                target,
+                "wheel",
+                dom,
+                /* bubbles */ true,
+                /* composed */ false,
+              );
+
+              if has_listeners {
+                let mouse = web_events::MouseEvent {
+                  client_x: mouse_client_coord(pointer_css.0),
+                  client_y: mouse_client_coord(pointer_css.1),
+                  button: 0,
+                  buttons: tab.pointer_buttons,
+                  detail: 0,
+                  ctrl_key: false,
+                  shift_key: false,
+                  alt_key: false,
+                  meta_key: false,
+                  related_target: None,
+                };
+
+                let mut event = web_events::Event::new(
+                  "wheel",
+                  web_events::EventInit {
+                    bubbles: true,
+                    cancelable: true,
+                    composed: false,
+                  },
+                );
+                event.is_trusted = true;
+                event.mouse = Some(mouse);
+
+                // Best-effort: treat dispatch failures like uncaught exceptions in event handlers
+                // (report but do not block default actions).
+                let wheel_default_allowed = js_tab.dispatch_event(target, event).unwrap_or(true);
+                if !wheel_default_allowed {
+                  return;
+                }
+              }
+            }
+          }
 
           let Some(doc) = tab.document.as_mut() else {
             // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
@@ -3062,17 +3145,12 @@ impl BrowserRuntime {
             return;
           };
 
-          // When scrolling with a stationary pointer, the hovered element can change as content
-          // moves under the cursor. Track the latest pointer position so we can re-run hover
-          // hit-testing after applying scroll offsets.
-          let pointer_pos_css =
-            pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0);
-
           let current_scroll = doc.scroll_state();
           let mut changed = false;
           let mut scroll_changed = false;
           let mut wheel_handled = false;
           let mut emit_scroll_state_updated = false;
+          let mut viewport_scrolled = false;
 
           if let Some(pointer_css) = pointer_pos_css {
             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
@@ -3126,6 +3204,7 @@ impl BrowserRuntime {
                     scroll_changed = true;
                     emit_scroll_state_updated = doc.prepared().is_some();
                     changed = true;
+                    viewport_scrolled = tab.scroll_state.viewport != current_scroll.viewport;
                   }
                 }
                 Err(_) => {
@@ -3173,6 +3252,7 @@ impl BrowserRuntime {
                   scroll_changed = true;
                   emit_scroll_state_updated = true;
                   changed = true;
+                  viewport_scrolled = tab.scroll_state.viewport != current_scroll.viewport;
                 } else {
                   // Preserve the historical "overscroll repaint" behaviour: even if the requested
                   // delta clamps back to the current scroll offset, still schedule a repaint so
@@ -3189,6 +3269,7 @@ impl BrowserRuntime {
                 tab.sync_js_scroll_state();
                 scroll_changed = true;
                 changed = true;
+                viewport_scrolled = tab.scroll_state.viewport != current_scroll.viewport;
               }
             }
           }
@@ -3211,6 +3292,19 @@ impl BrowserRuntime {
               tab.pending_hover_sync_pos_css = pointer_pos_css.or(tab.last_pointer_pos_css);
             }
           }
+
+          if viewport_scrolled {
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              let _ = js_tab.dispatch_window_event(
+                "scroll",
+                web_events::EventInit {
+                  bubbles: false,
+                  cancelable: false,
+                  composed: false,
+                },
+              );
+            }
+          }
         }
       }
       UiToWorker::ScrollTo { tab_id, pos_css } => {
@@ -3220,6 +3314,7 @@ impl BrowserRuntime {
 
         let sanitize = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
         let target = Point::new(sanitize(pos_css.0), sanitize(pos_css.1));
+        let mut viewport_scrolled = false;
 
         if let Some(doc) = tab.document.as_mut() {
           let current = doc.scroll_state();
@@ -3237,6 +3332,7 @@ impl BrowserRuntime {
               effective.update_deltas_from(&current);
               doc.set_scroll_state(effective.clone());
               tab.scroll_state = effective;
+              viewport_scrolled = tab.scroll_state.viewport != current.viewport;
               tab.sync_js_scroll_state();
               let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
                 tab_id,
@@ -3252,6 +3348,7 @@ impl BrowserRuntime {
             // No cached layout yet; record the scroll position for the first frame.
             next.update_deltas_from(&current);
             doc.set_scroll_state(next.clone());
+            viewport_scrolled = next.viewport != current.viewport;
             tab.scroll_state = next;
             tab.sync_js_scroll_state();
             tab.cancel.bump_paint();
@@ -3273,6 +3370,19 @@ impl BrowserRuntime {
                 .history
                 .update_scroll_state(&tab.scroll_state);
             }
+          }
+        }
+
+        if viewport_scrolled {
+          if let Some(js_tab) = tab.js_tab.as_mut() {
+            let _ = js_tab.dispatch_window_event(
+              "scroll",
+              web_events::EventInit {
+                bubbles: false,
+                cancelable: false,
+                composed: false,
+              },
+            );
           }
         }
       }
@@ -3521,6 +3631,30 @@ impl BrowserRuntime {
         download_id,
       } => {
         self.cancel_download(download_id);
+      }
+      UiToWorker::TestQueryJsDomAttribute {
+        tab_id,
+        element_id,
+        attr,
+        response,
+      } => {
+        let value = self
+          .tabs
+          .get(&tab_id)
+          .and_then(|tab| tab.js_tab.as_ref())
+          .and_then(|js_tab| {
+            let dom = js_tab.dom();
+            let node = match element_id.as_deref() {
+              Some(id) => dom.get_element_by_id(id),
+              None => dom.body(),
+            }?;
+            dom
+              .get_attribute(node, &attr)
+              .ok()
+              .flatten()
+              .map(|v| v.to_string())
+          });
+        let _ = response.send(value);
       }
       UiToWorker::FindQuery {
         tab_id,
@@ -10664,6 +10798,7 @@ impl BrowserRuntime {
     if tab.document.is_none() {
       return None;
     }
+    let prev_viewport_scroll = tab.scroll_state.viewport;
 
     let snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = combine_cancel_callbacks(
@@ -10747,11 +10882,11 @@ impl BrowserRuntime {
       }
     }
 
+    let mut viewport_scrolled = false;
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();
-      if let Some(js_tab) = tab.js_tab.as_mut() {
-        js_tab.set_scroll_state(tab.scroll_state.clone());
-      }
+      viewport_scrolled = tab.scroll_state.viewport != prev_viewport_scroll;
+      tab.sync_js_scroll_state();
       tab
         .history
         .update_scroll_state(&tab.scroll_state);
@@ -10822,6 +10957,19 @@ impl BrowserRuntime {
             bounds_css,
           });
         }
+      }
+    }
+
+    if viewport_scrolled {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let _ = js_tab.dispatch_window_event(
+          "scroll",
+          web_events::EventInit {
+            bubbles: false,
+            cancelable: false,
+            composed: false,
+          },
+        );
       }
     }
 

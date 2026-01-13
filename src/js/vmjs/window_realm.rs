@@ -25580,6 +25580,7 @@ impl<Host: WindowRealmHost + 'static> WindowRealmDomEventListenerInvoker<Host> {
           | "mouseleave"
           | "mouseover"
           | "mouseout"
+          | "wheel"
       )
     {
       EventInterface::MouseEvent
@@ -48098,6 +48099,10 @@ fn init_window_globals(
     // Form events.
     ("onsubmit", "submit"),
     ("onchange", "change"),
+    // Viewport events.
+    ("onscroll", "scroll"),
+    ("onresize", "resize"),
+    ("onwheel", "wheel"),
     // Storage events.
     ("onstorage", "storage"),
     // Media events.

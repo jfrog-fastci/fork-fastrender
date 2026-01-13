@@ -217,6 +217,7 @@ mod ui_worker_robustness;
 mod ui_worker_overscroll_behavior;
 mod ui_worker_overflow_hidden_scroll;
 mod ui_worker_scroll;
+mod ui_worker_event_handler_properties;
 mod ui_worker_scroll_state_early;
 mod ui_worker_scroll_update_dedup;
 mod ui_worker_scroll_hover_coalescing;

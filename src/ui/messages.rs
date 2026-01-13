@@ -9,6 +9,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 #[cfg(test)]
 use std::sync::Mutex;
@@ -860,6 +861,21 @@ pub enum UiToWorker {
   CancelDownload {
     tab_id: TabId,
     download_id: DownloadId,
+  },
+  /// Integration-test hook: query the JS tab's DOM for a specific attribute value.
+  ///
+  /// This is intended for `browser_ui` integration tests that need to assert that JS event
+  /// dispatch (e.g. `window.onscroll`) actually ran.
+  ///
+  /// The worker replies by sending the attribute value (when present) to `response`.
+  TestQueryJsDomAttribute {
+    tab_id: TabId,
+    /// Element `id=` to query; when `None`, queries `document.body`.
+    element_id: Option<String>,
+    /// Attribute name to query.
+    attr: String,
+    /// One-shot response channel.
+    response: Sender<Option<String>>,
   },
 }
 

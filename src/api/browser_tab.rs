@@ -7100,6 +7100,29 @@ impl BrowserTab {
     let raw = NonZeroU128::new(preorder as u128)?;
     Some(AccessKitNodeId(raw))
   }
+  /// Dispatch a trusted DOM event at `target`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_event(&mut self, target: EventTargetId, mut event: Event) -> Result<bool> {
+    event.is_trusted = true;
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(target.normalize(), event, event_loop)
+  }
+
+  /// Dispatch a trusted DOM event on the window (`EventTargetId::Window`).
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_window_event(&mut self, type_: &str, init: EventInit) -> Result<bool> {
+    self.dispatch_event(EventTargetId::Window, Event::new(type_, init))
+  }
+
+  /// Dispatch a trusted DOM event on the document (`EventTargetId::Document`).
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_document_event(&mut self, type_: &str, init: EventInit) -> Result<bool> {
+    self.dispatch_event(EventTargetId::Document, Event::new(type_, init))
+  }
+
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
   /// element's default click action should navigate.
   ///
