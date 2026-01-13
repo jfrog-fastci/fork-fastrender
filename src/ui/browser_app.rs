@@ -2444,6 +2444,13 @@ impl BrowserAppState {
       } => {
         let safe_url = sanitize_untrusted_text(&url, MAX_URL_BYTES);
         let safe_file_name = sanitize_untrusted_text(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
+        // `file_name` is used only for display in the downloads panel; sanitize it defensively so
+        // untrusted worker messages cannot inject path separators/control characters into the UI.
+        let safe_file_name = crate::ui::downloads::sanitize_download_filename(&safe_file_name);
+        // `sanitize_download_filename` may add a prefix (e.g. Windows reserved device names), so
+        // clamp again to our protocol limits.
+        let safe_file_name =
+          crate::ui::untrusted::clamp_untrusted_utf8(&safe_file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
         self.downloads.insert_or_update(DownloadEntry {
           download_id,
           tab_id,

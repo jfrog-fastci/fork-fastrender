@@ -324,6 +324,58 @@ fn resolve_typed_navigation_url(raw: &str, current_url: Option<&str>) -> Result<
   Ok(normalized)
 }
 
+/// Best-effort check that `path` is within `dir`.
+///
+/// This is used to validate download "open" / "reveal" requests coming from the downloads panel
+/// UI. Download metadata (including filesystem paths) is sourced from the renderer/worker process
+/// and must be treated as untrusted.
+///
+/// Semantics:
+/// - Performs a lexical prefix check on normalized paths (resolving `.` / `..`).
+/// - When possible, also compares canonicalized paths (resolving symlinks) for defense-in-depth.
+#[cfg(any(test, feature = "browser_ui"))]
+fn is_path_within_dir(dir: &std::path::Path, path: &std::path::Path) -> bool {
+  use std::path::{Component, Path, PathBuf};
+
+  if dir.as_os_str().is_empty() || path.as_os_str().is_empty() {
+    return false;
+  }
+
+  fn absolutize(p: &Path) -> PathBuf {
+    if p.is_absolute() {
+      p.to_path_buf()
+    } else {
+      std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(p)
+    }
+  }
+
+  fn clean(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+      match comp {
+        Component::CurDir => {}
+        Component::ParentDir => {
+          // `pop` is a no-op at the filesystem root/prefix.
+          out.pop();
+        }
+        other => out.push(other.as_os_str()),
+      }
+    }
+    out
+  }
+
+  let dir_abs = clean(&absolutize(dir));
+  let path_abs = clean(&absolutize(path));
+
+  if let (Ok(dir_can), Ok(path_can)) = (std::fs::canonicalize(&dir_abs), std::fs::canonicalize(&path_abs)) {
+    return path_can.starts_with(&dir_can);
+  }
+
+  path_abs.starts_with(&dir_abs)
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn open_url_in_new_tab_state(
   browser_state: &mut fastrender::ui::BrowserAppState,
@@ -1038,6 +1090,63 @@ mod resize_dpr_scale_env_tests {
     assert!(parse_resize_dpr_scale_env(Some("nope")).is_err());
     assert!(parse_resize_dpr_scale_env(Some("NaN")).is_err());
     assert!(parse_resize_dpr_scale_env(Some("inf")).is_err());
+  }
+}
+
+#[cfg(test)]
+mod download_dir_validation_tests {
+  use super::is_path_within_dir;
+
+  #[test]
+  fn path_within_download_dir_rejects_traversal_and_outside_paths() {
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let download_dir = temp.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).expect("create downloads dir");
+
+    let valid_child = download_dir.join("file.bin");
+    assert!(is_path_within_dir(&download_dir, &valid_child));
+
+    // `..` should not be able to escape the download dir.
+    let escape = download_dir.join("../escape.bin");
+    assert!(!is_path_within_dir(&download_dir, &escape));
+
+    // Absolute path outside the download dir should be rejected.
+    let outside_abs = temp.path().join("outside.bin");
+    assert!(!is_path_within_dir(&download_dir, &outside_abs));
+  }
+
+  #[test]
+  fn download_started_filename_is_sanitized_and_truncated_for_display() {
+    use fastrender::ui::protocol_limits::MAX_DOWNLOAD_FILE_NAME_BYTES;
+    use fastrender::ui::{BrowserAppState, DownloadId, TabId, WorkerToUi};
+
+    let mut app = BrowserAppState::new();
+    let raw = format!(
+      "a/b\\\\c\u{0000}{}",
+      "x".repeat(MAX_DOWNLOAD_FILE_NAME_BYTES + 32)
+    );
+    assert!(raw.len() > MAX_DOWNLOAD_FILE_NAME_BYTES);
+
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id: TabId(1),
+      download_id: DownloadId(1),
+      url: "https://example.com/file".to_string(),
+      file_name: raw,
+      path: std::path::PathBuf::from("downloads/file.bin"),
+      total_bytes: None,
+    });
+
+    let entry = app
+      .downloads
+      .downloads
+      .iter()
+      .find(|d| d.download_id == DownloadId(1))
+      .expect("download entry should be inserted");
+    assert!(entry.file_name.len() <= MAX_DOWNLOAD_FILE_NAME_BYTES);
+    assert!(entry.file_name.starts_with("abc"));
+    assert!(!entry.file_name.contains('/'));
+    assert!(!entry.file_name.contains('\\'));
+    assert!(!entry.file_name.chars().any(|c| c.is_control()));
   }
 }
 
@@ -3039,6 +3148,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       theme_accent,
       bookmarks_path.clone(),
       history_path.clone(),
+      download_dir.clone(),
       global_bookmarks.clone(),
       global_history.clone(),
     )?;
@@ -3504,6 +3614,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           theme_accent,
           bookmarks_path.clone(),
           history_path.clone(),
+          download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
         ) {
@@ -3649,6 +3760,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           theme_accent,
           bookmarks_path.clone(),
           history_path.clone(),
+          download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
         ) {
@@ -5657,6 +5769,7 @@ struct App {
 
   bookmarks_path: std::path::PathBuf,
   history_path: std::path::PathBuf,
+  download_dir: std::path::PathBuf,
   bookmarks: fastrender::ui::BookmarkStore,
   pending_bookmark_deltas: Vec<fastrender::ui::BookmarkDelta>,
   profile_autosave_tx: Option<std::sync::mpsc::Sender<fastrender::ui::AutosaveMsg>>,
@@ -6197,6 +6310,7 @@ impl App {
     theme_accent: Option<egui::Color32>,
     bookmarks_path: std::path::PathBuf,
     history_path: std::path::PathBuf,
+    download_dir: std::path::PathBuf,
     bookmarks: fastrender::ui::BookmarkStore,
     history: fastrender::ui::GlobalHistoryStore,
   ) -> Result<Self, Box<dyn std::error::Error>> {
@@ -6387,6 +6501,7 @@ impl App {
       ),
       bookmarks_path,
       history_path,
+      download_dir,
       bookmarks,
       pending_bookmark_deltas: Vec::new(),
       profile_autosave_tx: None,
@@ -10404,10 +10519,26 @@ impl App {
     }
 
     for path in output.open_requests {
-      open_file_with_os_default(&path);
+      if is_path_within_dir(&self.download_dir, &path) {
+        open_file_with_os_default(&path);
+      } else {
+        eprintln!(
+          "warning: ignoring download open request for path outside download dir: {} (download dir: {})",
+          path.display(),
+          self.download_dir.display()
+        );
+      }
     }
     for path in output.reveal_requests {
-      reveal_file_in_os_file_manager(&path);
+      if is_path_within_dir(&self.download_dir, &path) {
+        reveal_file_in_os_file_manager(&path);
+      } else {
+        eprintln!(
+          "warning: ignoring download reveal request for path outside download dir: {} (download dir: {})",
+          path.display(),
+          self.download_dir.display()
+        );
+      }
     }
   }
 
