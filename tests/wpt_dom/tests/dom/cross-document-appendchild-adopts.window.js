@@ -12,11 +12,7 @@ test(() => {
   const doc1 = document;
   clear_children(doc1.body);
 
-  // TODO(multi-document): use `doc1.implementation.createHTMLDocument("t")` once implemented.
-  //
-  // For now, create a second Document wrapper object that shares the same underlying dom2 document.
-  // This still exercises the cross-document wrapper adoption/remapping path.
-  const doc2 = Object.create(doc1);
+  const doc2 = doc1.implementation.createHTMLDocument("t");
   const foreign_el = doc2.createElement("div");
   foreign_el.appendChild(doc2.createTextNode("hello"));
 

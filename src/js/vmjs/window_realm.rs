@@ -25907,28 +25907,27 @@ fn node_owner_document_get_native(
     return Err(VmError::TypeError("Illegal invocation"));
   };
 
-  let node_key = dom_platform_mut(vm)
+  let handle = dom_platform_mut(vm)
     .ok_or(VmError::TypeError("Illegal invocation"))?
     .require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
   // Document.ownerDocument is always null. The `dom2` document root is `NodeId(0)`, but detached
   // documents created by DOMParser (and cloned documents) have their own `NodeKind::Document` nodes
   // with non-zero ids.
-  if node_key.node_id.index() == 0 {
+  if handle.node_id.index() == 0 {
     return Ok(Value::Null);
   }
-
-  let dom_ptr = dom_ptr_for_document_id_read(vm, host, node_key.document_id)
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
     .ok_or(VmError::TypeError("Illegal invocation"))?;
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
-  if node_key.node_id.index() >= dom.nodes_len() {
+  if handle.node_id.index() >= dom.nodes_len() {
     return Err(VmError::TypeError("Illegal invocation"));
   }
-  if matches!(dom.node(node_key.node_id).kind, NodeKind::Document { .. }) {
+  if matches!(dom.node(handle.node_id).kind, NodeKind::Document { .. }) {
     return Ok(Value::Null);
   }
 
-  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, node_key.node_id)?;
+  let document_obj = node_wrapper_document_obj(scope, wrapper_obj, handle.node_id)?;
   Ok(Value::Object(document_obj))
 }
 

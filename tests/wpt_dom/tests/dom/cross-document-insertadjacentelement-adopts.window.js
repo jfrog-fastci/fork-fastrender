@@ -1,14 +1,9 @@
 // META: script=/resources/testharness.js
 //
 // Cross-document insertion should implicitly adopt nodes into the target document.
-//
-// Note: FastRender's vm-js DOM shim does not yet implement `document.implementation.createHTMLDocument()`
-// (true multi-document). Use `Object.create(document)` to create a second Document wrapper ID that
-// shares the same underlying `dom2::Document` arena. This still exercises the cross-document wrapper
-// adoption/remapping path.
 test(() => {
   const doc1 = document;
-  const doc2 = Object.create(doc1);
+  const doc2 = doc1.implementation.createHTMLDocument("t");
 
   const foreign_el = doc2.createElement("div");
   assert_equals(foreign_el.ownerDocument, doc2, "sanity: element should initially belong to doc2 wrapper");
@@ -23,4 +18,3 @@ test(() => {
     "cross-document insertAdjacentElement should adopt the node into the target document"
   );
 }, "Element.insertAdjacentElement adopts a node created in another document");
-

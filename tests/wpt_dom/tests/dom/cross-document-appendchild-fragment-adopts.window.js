@@ -2,11 +2,6 @@
 //
 // Cross-document insertion should implicitly adopt nodes into the target document.
 //
-// Note: FastRender's vm-js DOM shim does not yet implement `document.implementation.createHTMLDocument()`
-// (true multi-document). Use `Object.create(document)` to create a second Document wrapper ID that
-// shares the same underlying `dom2::Document` arena. This still exercises the cross-document wrapper
-// adoption/remapping path.
-//
 // DocumentFragment insertion is special: the fragment itself stays detached and is emptied, while its
 // children are moved/adopted into the destination document.
 
@@ -20,7 +15,7 @@ test(() => {
   const doc1 = document;
   clear_children(doc1.body);
 
-  const doc2 = Object.create(doc1);
+  const doc2 = doc1.implementation.createHTMLDocument("t");
 
   const parent = doc1.createElement("div");
   doc1.body.appendChild(parent);
@@ -47,4 +42,3 @@ test(() => {
   // Fragment itself stays owned by its original document wrapper.
   assert_equals(frag.ownerDocument, doc2, "fragment ownerDocument should not change during insertion");
 }, "Node.appendChild adopts children from a foreign DocumentFragment");
-

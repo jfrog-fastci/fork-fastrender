@@ -1,11 +1,6 @@
 // META: script=/resources/testharness.js
 //
 // Cross-document insertion should implicitly adopt nodes into the target document.
-//
-// Note: FastRender's vm-js DOM shim does not yet implement `document.implementation.createHTMLDocument()`
-// (true multi-document). Use `Object.create(document)` to create a second Document wrapper ID that
-// shares the same underlying `dom2::Document` arena. This still exercises the cross-document wrapper
-// adoption/remapping path.
 
 function clear_children(node) {
   while (node.childNodes.length !== 0) {
@@ -17,7 +12,7 @@ test(() => {
   const doc1 = document;
   clear_children(doc1.body);
 
-  const doc2 = Object.create(doc1);
+  const doc2 = doc1.implementation.createHTMLDocument("t");
 
   const parent = doc1.createElement("div");
   const ref = doc1.createElement("span");
@@ -44,4 +39,3 @@ test(() => {
     "cross-document insertBefore should also adopt descendants into the target document"
   );
 }, "Node.insertBefore adopts a node created in another document");
-
