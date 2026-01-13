@@ -653,6 +653,46 @@ fn p2_async_module_scripts_execute_asap_before_later_parser_scripts() -> Result<
 }
 
 #[test]
+fn p2_dynamic_module_scripts_with_async_false_execute_in_insertion_order() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    supports_module_scripts: true,
+    ..Default::default()
+  };
+  let mut h = Harness::new("https://example.invalid/p2_dynamic_module_ordered.html", js_options)?;
+
+  h.register_script_source("https://example.invalid/a.js", "console.log('A');");
+  h.register_script_source("https://example.invalid/b.js", "console.log('B');");
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        const a = document.createElement('script');
+        a.type = 'module';
+        a.src = 'https://example.invalid/a.js';
+        a.async = false;
+        document.body.appendChild(a);
+
+        const b = document.createElement('script');
+        b.type = 'module';
+        b.src = 'https://example.invalid/b.js';
+        b.async = false;
+        document.body.appendChild(b);
+
+        console.log('after');
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["after".to_string(), "A".to_string(), "B".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p2_module_top_level_await_works_when_it_settles_via_microtasks() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = true;
