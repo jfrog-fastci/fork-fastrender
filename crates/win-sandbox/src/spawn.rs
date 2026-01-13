@@ -222,10 +222,7 @@ fn spawn_appcontainer_inner(cfg: &SpawnConfig, mitigation_policy: u64) -> Result
   )?;
 
   let mut capabilities = SECURITY_CAPABILITIES {
-    AppContainerSid: profile
-      .sid()
-      .expect("AppContainerProfile should be enabled after ensure()")
-      .as_ptr(),
+    AppContainerSid: profile.sid().as_ptr(),
     Capabilities: std::ptr::null_mut(),
     CapabilityCount: 0,
     Reserved: 0,

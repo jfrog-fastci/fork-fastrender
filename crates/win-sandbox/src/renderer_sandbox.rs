@@ -85,10 +85,7 @@ fn spawn_appcontainer_no_capabilities(
   )?;
 
   let mut capabilities = SECURITY_CAPABILITIES {
-    AppContainerSid: profile
-      .sid()
-      .expect("AppContainerProfile should be enabled after ensure()")
-      .as_ptr(),
+    AppContainerSid: profile.sid().as_ptr(),
     Capabilities: std::ptr::null_mut(),
     CapabilityCount: 0,
     Reserved: 0,
@@ -163,10 +160,7 @@ fn spawn_appcontainer_no_capabilities(
   // derived AppContainer SID.
   let (temp_dir, relocated) = relocate_exe_for_appcontainer(
     exe,
-    profile
-      .sid()
-      .expect("AppContainerProfile should be enabled after ensure()")
-      .as_ptr(),
+    profile.sid().as_ptr(),
   )?;
   let current_dir_w = wide_null(temp_dir.path().as_os_str());
   let pi = create_process(&relocated, Some(&current_dir_w))?;

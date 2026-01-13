@@ -375,10 +375,7 @@ fn spawn_windows(
     let mut attrs = crate::spawn::AttributeList::new(attr_count)?;
 
     if sandbox.appcontainer.is_enabled() {
-      let sid = sandbox
-        .appcontainer
-        .sid()
-        .expect("AppContainerProfile enabled but sid is missing");
+      let sid = sandbox.appcontainer.sid();
       security_capabilities = windows_sys::Win32::Security::SECURITY_CAPABILITIES {
         AppContainerSid: sid.as_ptr(),
         Capabilities: std::ptr::null_mut(),

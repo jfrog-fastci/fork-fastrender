@@ -220,8 +220,21 @@ impl AppContainerProfile {
     self.sid.is_some()
   }
 
+  /// Returns the AppContainer SID.
+  ///
+  /// # Panics
+  ///
+  /// Panics if this profile is disabled. Callers that support running without AppContainer should
+  /// check [`Self::is_enabled`] first.
+  pub fn sid(&self) -> &OwnedSid {
+    self
+      .sid
+      .as_ref()
+      .expect("AppContainerProfile is disabled (no SID available)")
+  }
+
   /// Returns the AppContainer SID, if enabled.
-  pub fn sid(&self) -> Option<&OwnedSid> {
+  pub fn sid_opt(&self) -> Option<&OwnedSid> {
     self.sid.as_ref()
   }
 
