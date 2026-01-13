@@ -35,9 +35,11 @@ use crate::style::content::{
 use crate::style::display::{Display, FormattingContextType};
 use crate::style::page::{resolve_page_style, PageSide, ResolvedPageStyle};
 use crate::style::position::Position;
-use crate::style::types::{FootnotePolicy, WritingMode};
+use crate::style::types::{FootnoteDisplay, FootnotePolicy, WritingMode};
 use crate::style::values::Length;
-use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, ComputedStyle};
+use crate::style::{
+  block_axis_is_horizontal, inline_axis_is_horizontal, inline_axis_positive, ComputedStyle,
+};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::{
   BoxNode, BoxTree, CrossOriginAttribute, ImageDecodingAttribute, ImageLoadingAttribute,
@@ -3039,17 +3041,120 @@ fn build_footnote_area_fragment(
     }
   };
 
-  let mut snapshots: Vec<FragmentNode> = Vec::with_capacity(slices.len());
-  let mut total_footnote_block = 0.0f32;
+  #[derive(Debug)]
+  struct FootnotePlacement {
+    snapshot: FragmentNode,
+    block_size: f32,
+    inline_size: f32,
+    display: FootnoteDisplay,
+    flow_block_start: f32,
+    flow_inline_start: f32,
+  }
+
+  let mut placements: Vec<FootnotePlacement> = Vec::with_capacity(slices.len());
   for occ in slices {
     let mut snapshot = occ.clone();
     let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
     snapshot.translate_root_in_place(offset);
-    total_footnote_block += axis.block_size(&snapshot.bounds).max(0.0);
-    snapshots.push(snapshot);
+
+    let display = snapshot
+      .style
+      .as_deref()
+      .map(|style| style.footnote_display)
+      .unwrap_or(FootnoteDisplay::Block);
+    let block_size = axis.block_size(&snapshot.bounds).max(0.0);
+    let inline_size = axis.inline_size(&snapshot.bounds).max(0.0);
+
+    placements.push(FootnotePlacement {
+      snapshot,
+      block_size,
+      inline_size,
+      display,
+      flow_block_start: 0.0,
+      flow_inline_start: 0.0,
+    });
   }
 
-  let footnote_block = separator_block + total_footnote_block;
+  // Use the footnote area's *content* inline size for wrapping decisions so `@footnote` padding
+  // (when supported) reduces the available width for inline footnotes.
+  let available_inline = footnote_area_content_inline_size(page_style)
+    .unwrap_or(page_inline)
+    .max(0.0);
+  let available_inline = if available_inline.is_finite() {
+    available_inline
+  } else {
+    page_inline
+  };
+
+  // Lay out footnote bodies in insertion order.
+  //
+  // `footnote-display` applies per footnote element; for now we model it as a simple packing
+  // algorithm:
+  // - `block`: each footnote starts on a new line and stacks along the block axis.
+  // - `inline`: footnotes are treated as atomic inline-level boxes that can share a line.
+  // - `compact`: currently treated like `inline`, which matches the spec requirement that if two
+  //   or more footnotes fit on the same line, they should be placed inline.
+  let inline_positive = inline_axis_positive(
+    page_style.page_style.writing_mode,
+    page_style.page_style.direction,
+  );
+  let inline_box_start_to_physical =
+    |flow_offset: f32, inline_size: f32, parent_inline_size: f32| {
+      if inline_positive {
+        flow_offset
+      } else {
+        parent_inline_size - flow_offset - inline_size
+      }
+    };
+
+  let mut flow_block_cursor = separator_block;
+  let mut line_inline_cursor = 0.0f32;
+  let mut line_block_size = 0.0f32;
+  let mut line_has_items = false;
+
+  for placement in &mut placements {
+    let is_inline = matches!(
+      placement.display,
+      FootnoteDisplay::Inline | FootnoteDisplay::Compact
+    );
+
+    if !is_inline {
+      // Block footnotes always start on a new line.
+      if line_has_items {
+        flow_block_cursor += line_block_size;
+        line_inline_cursor = 0.0;
+        line_block_size = 0.0;
+        line_has_items = false;
+      }
+
+      placement.flow_block_start = flow_block_cursor;
+      placement.flow_inline_start = 0.0;
+      flow_block_cursor += placement.block_size;
+      continue;
+    }
+
+    // Inline/compact footnotes are packed into lines and wrapped when they exceed the available
+    // inline size.
+    if line_has_items
+      && line_inline_cursor + placement.inline_size > available_inline + EPSILON
+    {
+      flow_block_cursor += line_block_size;
+      line_inline_cursor = 0.0;
+      line_block_size = 0.0;
+    }
+
+    placement.flow_block_start = flow_block_cursor;
+    placement.flow_inline_start = line_inline_cursor;
+    line_inline_cursor += placement.inline_size;
+    line_block_size = line_block_size.max(placement.block_size);
+    line_has_items = true;
+  }
+
+  if line_has_items {
+    flow_block_cursor += line_block_size;
+  }
+
+  let footnote_block = flow_block_cursor;
   if footnote_block <= EPSILON {
     return None;
   }
@@ -3078,7 +3183,7 @@ fn build_footnote_area_fragment(
     )
   };
 
-  let mut children: Vec<FragmentNode> = Vec::with_capacity(1 + snapshots.len());
+  let mut children: Vec<FragmentNode> = Vec::with_capacity(1 + placements.len());
 
   // Separator fragment.
   let mut separator_style = ComputedStyle::default();
@@ -3103,19 +3208,22 @@ fn build_footnote_area_fragment(
     separator_style,
   ));
 
-  // Stack footnote body snapshots along the block axis in insertion order.
-  let mut flow_offset = separator_block;
-  for mut snapshot in snapshots {
-    let body_block = axis.block_size(&snapshot.bounds).max(0.0);
-    let body_block_start = flow_box_start_to_physical(flow_offset, body_block, footnote_block);
+  // Position footnote bodies using the computed packing offsets.
+  for mut placement in placements {
+    let body_block_start = flow_box_start_to_physical(
+      placement.flow_block_start,
+      placement.block_size,
+      footnote_block,
+    );
+    let body_inline_start =
+      inline_box_start_to_physical(placement.flow_inline_start, placement.inline_size, page_inline);
     let translate = if axis.block_is_horizontal {
-      Point::new(body_block_start, 0.0)
+      Point::new(body_block_start, body_inline_start)
     } else {
-      Point::new(0.0, body_block_start)
+      Point::new(body_inline_start, body_block_start)
     };
-    snapshot.translate_root_in_place(translate);
-    children.push(snapshot);
-    flow_offset += body_block;
+    placement.snapshot.translate_root_in_place(translate);
+    children.push(placement.snapshot);
   }
 
   Some(FragmentNode::new_block(bounds, children))

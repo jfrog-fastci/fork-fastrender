@@ -90,6 +90,7 @@ use types::BoxDecorationBreak;
 use types::BoxSizing;
 use types::BreakBetween;
 use types::BreakInside;
+use types::FootnoteDisplay;
 use types::FootnotePolicy;
 use types::CaptionSide;
 use types::CaretColor;
@@ -1016,6 +1017,7 @@ pub struct ComputedStyle {
   pub left: InsetValue,
   pub float: Float,
   pub footnote_policy: FootnotePolicy,
+  pub footnote_display: FootnoteDisplay,
   pub clear: Clear,
   pub shape_outside: ShapeOutside,
   pub shape_margin: Length,
@@ -1517,6 +1519,7 @@ impl Default for ComputedStyle {
       left: InsetValue::Auto,
       float: Float::None,
       footnote_policy: FootnotePolicy::Line,
+      footnote_display: FootnoteDisplay::Block,
       clear: Clear::None,
       shape_outside: ShapeOutside::None,
       shape_margin: Length::px(0.0),

@@ -7028,6 +7028,139 @@ fn footnote_body_snapshots_use_footnote_area_content_width() {
 }
 
 #[test]
+fn footnote_display_block_stacks_footnotes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; display: inline-block; height: 10px; footnote-display: block; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">First</span><span class="note">Second</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(wrapper.children.len(), 2);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  let (_, y_first) =
+    find_text_position(footnote_area, "First", (0.0, 0.0)).expect("First in footnote area");
+  let (_, y_second) =
+    find_text_position(footnote_area, "Second", (0.0, 0.0)).expect("Second in footnote area");
+
+  assert!(
+    y_first < y_second - 0.5,
+    "expected block footnotes to stack vertically (y_first={y_first}, y_second={y_second})"
+  );
+}
+
+#[test]
+fn footnote_display_inline_packs_footnotes_on_one_line() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; display: inline-block; height: 10px; footnote-display: inline; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">First</span><span class="note">Second</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+  let page1 = page_roots[0];
+  let wrapper = page_document_wrapper(page1);
+  assert_eq!(wrapper.children.len(), 2);
+  let footnote_area = wrapper.children.get(1).expect("footnote area");
+
+  let (x_first, y_first) =
+    find_text_position(footnote_area, "First", (0.0, 0.0)).expect("First in footnote area");
+  let (x_second, y_second) =
+    find_text_position(footnote_area, "Second", (0.0, 0.0)).expect("Second in footnote area");
+
+  assert!(
+    (y_first - y_second).abs() < 0.5,
+    "expected inline footnotes to share a line (y_first={y_first}, y_second={y_second})"
+  );
+  assert!(
+    x_second > x_first + 1.0,
+    "expected inline footnotes to flow left-to-right (x_first={x_first}, x_second={x_second})"
+  );
+}
+
+#[test]
+fn footnote_display_compact_is_more_compact_than_block() {
+  fn layout_footnote_area_height(footnote_display: &str) -> f32 {
+    let html = format!(
+      r#"
+      <html>
+        <head>
+          <style>
+            @page {{ size: 200px 200px; margin: 0; }}
+            body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+            p {{ margin: 0; }}
+            .note {{ float: footnote; display: inline-block; height: 10px; footnote-display: {footnote_display}; }}
+          </style>
+        </head>
+        <body>
+          <p>Main<span class="note">First</span><span class="note">Second</span></p>
+        </body>
+      </html>
+    "#
+    );
+
+    let mut renderer = FastRender::new().unwrap();
+    let dom = renderer.parse_html(&html).unwrap();
+    let tree = renderer
+      .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+      .unwrap();
+
+    let page_roots = pages(&tree);
+    assert!(!page_roots.is_empty());
+    let page1 = page_roots[0];
+    let wrapper = page_document_wrapper(page1);
+    assert_eq!(wrapper.children.len(), 2);
+    let footnote_area = wrapper.children.get(1).expect("footnote area");
+    footnote_area.bounds.height()
+  }
+
+  let block_height = layout_footnote_area_height("block");
+  let compact_height = layout_footnote_area_height("compact");
+
+  assert!(
+    compact_height < block_height - 0.5,
+    "expected compact footnote layout to use <= the block footnote area height (block={block_height}, compact={compact_height})"
+  );
+}
+
+#[test]
 fn footnote_overflow_defers_later_calls_to_next_page() {
   let html = r#"
     <html>

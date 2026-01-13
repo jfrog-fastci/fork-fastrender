@@ -10608,6 +10608,17 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
+    "footnote-display" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        let kw = kw.to_ascii_lowercase();
+        styles.footnote_display = match kw.as_str() {
+          "block" => FootnoteDisplay::Block,
+          "inline" => FootnoteDisplay::Inline,
+          "compact" => FootnoteDisplay::Compact,
+          _ => styles.footnote_display,
+        };
+      }
+    }
     "clear" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(value) = Clear::parse(kw) {

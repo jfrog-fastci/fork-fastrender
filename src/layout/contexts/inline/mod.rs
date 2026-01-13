@@ -81,6 +81,7 @@ use crate::render_control::{
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::types::Direction;
+use crate::style::types::FootnoteDisplay;
 use crate::style::types::FontStyle;
 use crate::style::types::HyphensMode;
 use crate::style::types::LineBreak;
@@ -1339,19 +1340,69 @@ impl InlineFormattingContext {
     } else {
       0.0
     };
-    let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
-      if snapshot_node.is_block_level() {
-        FormattingContextType::Block
-      } else {
-        FormattingContextType::Inline
+
+    // `footnote-display` controls how the element is placed inside the footnote area. For
+    // `inline`/`compact` we prefer to snapshot the footnote body at a shrink-to-fit width so the
+    // paginator can pack multiple footnotes on the same line.
+    let snapshot_fragment = match body.style.footnote_display {
+      FootnoteDisplay::Block => {
+        let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
+          if snapshot_node.is_block_level() {
+            FormattingContextType::Block
+          } else {
+            FormattingContextType::Inline
+          }
+        });
+        let fc = self.factory.get(fc_type);
+        let snapshot_constraints = LayoutConstraints::new(
+          AvailableSpace::Definite(inline_size),
+          AvailableSpace::Indefinite,
+        );
+        fc.layout(&snapshot_node, &snapshot_constraints)?
       }
-    });
-    let fc = self.factory.get(fc_type);
-    let snapshot_constraints = LayoutConstraints::new(
-      AvailableSpace::Definite(inline_size),
-      AvailableSpace::Indefinite,
-    );
-    let snapshot_fragment = fc.layout(&snapshot_node, &snapshot_constraints)?;
+      FootnoteDisplay::Inline | FootnoteDisplay::Compact => {
+        // Lay out the footnote body as a single inline-level atomic inside a synthetic inline
+        // formatting context whose available inline size matches the footnote area.
+        //
+        // This matches the shrink-to-fit behavior authors expect when placing multiple inline
+        // footnotes on one line.
+        let mut wrapper_style = ComputedStyle::default();
+        wrapper_style.display = Display::Block;
+        wrapper_style.writing_mode = body.style.writing_mode;
+        wrapper_style.direction = body.style.direction;
+        wrapper_style.font_size = body.style.font_size;
+        wrapper_style.root_font_size = body.style.root_font_size;
+        wrapper_style.font_family = body.style.font_family.clone();
+        wrapper_style.line_height = body.style.line_height.clone();
+        wrapper_style.color = body.style.color;
+        wrapper_style.background_color = body.style.background_color;
+
+        let wrapper = BoxNode::new_block(
+          Arc::new(wrapper_style),
+          FormattingContextType::Inline,
+          vec![snapshot_node.clone()],
+        );
+        let wrapper_constraints = LayoutConstraints::new(
+          AvailableSpace::Definite(inline_size),
+          AvailableSpace::Indefinite,
+        );
+        let wrapper_fragment = self.layout(&wrapper, &wrapper_constraints)?;
+
+        fn find_fragment(node: &FragmentNode, target: usize) -> Option<FragmentNode> {
+          if node.box_id() == Some(target) {
+            return Some(node.clone());
+          }
+          for child in node.children.iter() {
+            if let Some(found) = find_fragment(child, target) {
+              return Some(found);
+            }
+          }
+          None
+        }
+
+        find_fragment(&wrapper_fragment, snapshot_node.id).unwrap_or(wrapper_fragment)
+      }
+    };
     Ok(FootnoteInfo {
       snapshot: snapshot_fragment,
       policy: body.style.footnote_policy,

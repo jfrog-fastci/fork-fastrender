@@ -2403,6 +2403,31 @@ impl Default for FootnotePolicy {
   }
 }
 
+/// CSS GCPM `footnote-display` property.
+///
+/// Controls how `float: footnote` bodies are placed inside the per-page footnote area.
+///
+/// Spec (CSS GCPM 3): <https://drafts.csswg.org/css-gcpm-3/#footnote-display>
+///
+/// - Applies to: elements
+/// - Inherited: no
+/// - Initial: `block`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FootnoteDisplay {
+  /// Place the footnote element as a block (stacked vertically).
+  Block,
+  /// Place the footnote element as an inline element (allow multiple per line).
+  Inline,
+  /// UA-controlled block/inline choice; initial implementation treats this as `inline`.
+  Compact,
+}
+
+impl Default for FootnoteDisplay {
+  fn default() -> Self {
+    FootnoteDisplay::Block
+  }
+}
+
 /// CSS `resize` property
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resize {
