@@ -3414,6 +3414,7 @@ pub fn chrome_ui_with_bookmarks(
       let menu_response = egui::Area::new(menu_id)
         .order(egui::Order::Foreground)
         .fixed_pos(menu_pos)
+        .constrain_to(ctx.screen_rect())
         .show(ctx, |ui| {
           ui.visuals_mut().override_text_color =
             Some(with_alpha(ui.visuals().text_color(), open_opacity));
@@ -3887,7 +3888,7 @@ mod tests {
     ChromeAction,
   };
   use crate::ui::a11y_test_util;
-  use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+  use crate::ui::browser_app::{BrowserAppState, BrowserTabState, OpenTabContextMenuState};
   use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
 
   fn new_context() -> egui::Context {
@@ -7835,6 +7836,70 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::DuplicateTab(id) if *id == tab_a)),
       "expected ChromeAction::DuplicateTab({tab_a:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn tab_context_menu_is_constrained_to_screen_rect() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    let mut tab_a_state = BrowserTabState::new(tab_a, "about:newtab".to_string());
+    // Pinned tabs avoid extra group-related menu items, keeping the popup small enough for the
+    // constrained screen size used in this regression test.
+    tab_a_state.pinned = true;
+    app.push_tab(tab_a_state, true);
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
+
+    let ctx = egui::Context::default();
+    let screen_size = egui::vec2(320.0, 200.0);
+    let screen_rect =
+      egui::Rect::from_min_size(egui::Pos2::new(0.0, 0.0), screen_size);
+
+    // Anchor the menu at the bottom-right corner so it would overflow without constraint.
+    app.chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
+      tab_id: tab_a,
+      anchor_points: (screen_rect.right() - 1.0, screen_rect.bottom() - 1.0),
+      opener_id: egui::Id::new("tab_context_menu_test_opener"),
+    });
+    app.chrome.tab_context_menu_rect = None;
+
+    begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+
+    let (min_x, min_y, max_x, max_y) =
+      app.chrome.tab_context_menu_rect.expect("expected tab context menu rect");
+    let menu_rect =
+      egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
+
+    let eps = 0.01;
+    assert!(
+      menu_rect.left() >= screen_rect.left() - eps,
+      "expected menu left ({}) >= screen left ({})",
+      menu_rect.left(),
+      screen_rect.left()
+    );
+    assert!(
+      menu_rect.top() >= screen_rect.top() - eps,
+      "expected menu top ({}) >= screen top ({})",
+      menu_rect.top(),
+      screen_rect.top()
+    );
+    assert!(
+      menu_rect.right() <= screen_rect.right() + eps,
+      "expected menu right ({}) <= screen right ({})",
+      menu_rect.right(),
+      screen_rect.right()
+    );
+    assert!(
+      menu_rect.bottom() <= screen_rect.bottom() + eps,
+      "expected menu bottom ({}) <= screen bottom ({})",
+      menu_rect.bottom(),
+      screen_rect.bottom()
     );
   }
 }
