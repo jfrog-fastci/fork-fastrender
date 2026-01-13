@@ -522,6 +522,22 @@ fn trim_ascii_whitespace_start(value: &str) -> &str {
   })
 }
 
+pub(crate) fn url_looks_like_gif(url: &str) -> bool {
+  let trimmed = trim_ascii_whitespace(url);
+  let lower = trimmed.to_ascii_lowercase();
+  if let Some(rest) = lower.strip_prefix("data:") {
+    return rest.starts_with("image/gif");
+  }
+  if let Ok(parsed) = Url::parse(trimmed) {
+    return parsed.path().to_ascii_lowercase().ends_with(".gif");
+  }
+  let without_query = trimmed
+    .split(|ch| ch == '?' || ch == '#')
+    .next()
+    .unwrap_or(trimmed);
+  without_query.to_ascii_lowercase().ends_with(".gif")
+}
+
 fn css_display_value_is_none(value: &str) -> bool {
   let mut tokens = value.split_ascii_whitespace();
   let Some(first) = tokens.next() else {
@@ -6961,22 +6977,6 @@ impl ImageCache {
     }
 
     if let Some(time_ms) = self.animation_time_ms {
-      fn url_looks_like_gif(url: &str) -> bool {
-        let trimmed = trim_ascii_whitespace(url);
-        let lower = trimmed.to_ascii_lowercase();
-        if let Some(rest) = lower.strip_prefix("data:") {
-          return rest.starts_with("image/gif");
-        }
-        if let Ok(parsed) = Url::parse(trimmed) {
-          return parsed.path().to_ascii_lowercase().ends_with(".gif");
-        }
-        let without_query = trimmed
-          .split(|ch| ch == '?' || ch == '#')
-          .next()
-          .unwrap_or(trimmed);
-        without_query.to_ascii_lowercase().ends_with(".gif")
-      }
-
       if url_looks_like_gif(resolved_url) {
         key.push_str("@@animation_time_ms=");
         key.push_str(&format!("{:08x}", f32_to_canonical_bits(time_ms)));
@@ -12448,6 +12448,14 @@ mod tests_inline {
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.current_bytes(), 4);
     assert_eq!(cache.get_cloned("a"), Some(2));
+  }
+
+  #[test]
+  fn url_looks_like_gif_detects_common_sources() {
+    assert!(url_looks_like_gif("data:image/gif;base64,R0lGODlhAQABAAAAACw="));
+    assert!(url_looks_like_gif("file:///tmp/x.gif"));
+    assert!(url_looks_like_gif("https://example.com/x.gif?query#frag"));
+    assert!(!url_looks_like_gif("https://example.com/x.png"));
   }
 
   #[test]
