@@ -579,6 +579,23 @@ mod tests {
   }
 
   #[test]
+  fn user_navigation_scheme_validation_rejects_privileged_renderer_chrome_schemes() {
+    // These schemes are reserved for the trusted browser-process chrome renderer and must not be
+    // accepted for user/content navigations.
+    let err = validate_user_navigation_url_scheme("chrome://styles/chrome.css").unwrap_err();
+    assert!(
+      err.to_ascii_lowercase().contains("unsupported") && err.contains("chrome"),
+      "unexpected error for chrome://: {err}"
+    );
+
+    let err = validate_user_navigation_url_scheme("chrome-action:new-tab").unwrap_err();
+    assert!(
+      err.to_ascii_lowercase().contains("unsupported") && err.contains("chrome-action"),
+      "unexpected error for chrome-action:: {err}"
+    );
+  }
+
+  #[test]
   fn user_navigation_scheme_validation_allows_about_and_https() {
     assert!(validate_user_navigation_url_scheme("about:newtab").is_ok());
     assert!(validate_user_navigation_url_scheme("https://example.com/").is_ok());

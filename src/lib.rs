@@ -232,8 +232,6 @@ pub mod image_output;
 pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
-#[cfg(target_os = "linux")]
-pub mod ipc;
 pub mod js;
 pub mod media;
 pub mod memory;
