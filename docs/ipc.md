@@ -94,6 +94,7 @@ transport/codec yet:
   - It performs an auth-token handshake (`IPC_AUTH_TOKEN_ENV`) and enforces per-direction frame caps
     (`IPC_MAX_INBOUND_FRAME_BYTES`, `IPC_MAX_OUTBOUND_FRAME_BYTES`) plus per-field limits.
   - See: [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs).
+  - Protocol spec: [`docs/ipc/network_fetch_protocol.md`](ipc/network_fetch_protocol.md).
 - **Browser ↔ network (prototype `network` subprocess):**
   - The `network` binary ([`src/bin/network.rs`](../src/bin/network.rs)) uses JSON framing helpers in
     [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) (`u32_be length` + JSON).

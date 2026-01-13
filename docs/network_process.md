@@ -217,6 +217,8 @@ There are currently multiple HTTP IPC shapes in-tree:
 - **Full `ResourceFetcher` proxy protocol:** [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs)
   defines `IpcRequest`/`IpcResponse` messages that cover the broader `ResourceFetcher` surface
   (including cookies and cache artifacts).
+  - Detailed message-level documentation (framing, schema, chunked body transfer, limits) lives in:
+    [`docs/ipc/network_fetch_protocol.md`](ipc/network_fetch_protocol.md).
 - **Bounded binary network protocol (long-term):** [`src/net/transport.rs`](../src/net/transport.rs)
   defines a request/response/events protocol with explicit per-field limits and streaming event
   types for WebSockets and downloads.

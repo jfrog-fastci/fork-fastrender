@@ -159,6 +159,15 @@ deployed in lockstep.
 Future work: extend `Hello` to include a `protocol_version` or a supported version range so upgrades
 can be rolled out safely.
 
+### Connection lifetime
+
+This is a **long-lived** connection:
+
+- One `Hello`/`HelloAck` handshake at connect time.
+- Many request/response exchanges.
+- On any protocol violation, the receiver closes the connection; the client must reconnect and redo
+  the hello handshake.
+
 ---
 
 ## Request IDs and (future) multiplexing
@@ -185,9 +194,17 @@ Despite the name (`BrowserToNetwork`), this is the **client → server** request
 
 ### Multiplexing
 
-The wire format is ID-addressed and therefore *can* support multiplexing, but the current client
-implementation serializes requests with a mutex around the connection and expects responses to be in
-order.
+The wire format is ID-addressed and therefore *could* support multiplexing, but the current
+implementation is **strictly sequential**:
+
+- The client (`IpcResourceFetcher`) uses a mutex around the connection and issues a request only when
+  it can synchronously read that request’s full response.
+- The server (`IpcFetchServer`) processes requests in a simple loop and writes the response frames
+  inline during that loop (including all chunk frames for large bodies).
+
+**Protocol rule (v1 / implemented behavior):** on a single connection, there is at most **one**
+request “in flight” at a time. A client must not send request `N+1` until it has fully consumed the
+response for request `N` (including `FetchEnd` for chunked bodies).
 
 If a future implementation allows concurrent in-flight requests on one connection, the invariant is:
 
@@ -258,6 +275,34 @@ Request body note:
 
 - `body_b64` is base64-encoded and hard-limited: decoded bytes must be `<= IPC_MAX_REQUEST_BODY_BYTES`
   (1 MiB). Larger uploads need a future chunked request-body extension.
+
+### Validation rules (server-side, hard failures)
+
+The server treats incoming requests as attacker-controlled input and validates before executing.
+Validation is performed by `validate_ipc_request()` in `src/resource/ipc_fetcher.rs` and includes:
+
+- URL byte length caps:
+  - `http`/`https` URLs: `IPC_MAX_URL_BYTES` (8 KiB)
+  - other schemes: `IPC_MAX_NON_HTTP_URL_BYTES` (1 MiB)
+- URL byte restrictions:
+  - NUL bytes are always rejected
+  - CR/LF are rejected for `http`/`https` URLs (avoid header injection / parsing ambiguity)
+- HTTP method:
+  - non-empty, <= `IPC_MAX_METHOD_BYTES`
+  - must parse as a valid `http::Method`
+  - no NUL/CR/LF
+- Headers:
+  - count <= `IPC_MAX_HEADER_COUNT`
+  - name/value <= `IPC_MAX_HEADER_NAME_BYTES` / `IPC_MAX_HEADER_VALUE_BYTES`
+  - name must parse as a valid `http::header::HeaderName`
+  - name/value must not contain NUL/CR/LF
+- Request body (`body_b64`):
+  - conservative upper bound estimate before decode (avoid allocating huge attacker strings)
+  - decoded bytes <= `IPC_MAX_REQUEST_BODY_BYTES`
+- `document.cookie` setter string is capped (`MAX_COOKIE_BYTES = 4096`).
+
+Validation failures are treated as **protocol violations**; the server closes the connection (see
+“Error reporting vs protocol violations” below).
 
 ### Server → client: `NetworkToBrowser`
 
@@ -492,6 +537,8 @@ Future work:
 - Add `Cancel { id }` so the client can explicitly cancel an in-flight request on a long-lived
   connection.
 - Add request-body streaming so uploads can be canceled mid-stream.
+- Add an explicit per-request timeout / deadline budget field so the server can enforce timeouts
+  without relying solely on the HTTP client’s global timeout configuration.
 
 ---
 
