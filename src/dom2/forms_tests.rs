@@ -708,3 +708,61 @@ fn select_selected_index_setter_noop_does_not_bump_generation_or_record_mutation
     "no-op selectedIndex setter should not record mutations"
   );
 }
+
+#[test]
+fn file_input_value_string_is_host_settable_and_roundtrips_through_renderer_snapshot() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let input = doc.create_element("input", "");
+  doc.append_child(root, input).unwrap();
+  doc.set_attribute(input, "id", "f").unwrap();
+  doc.set_attribute(input, "type", "file").unwrap();
+
+  assert_eq!(doc.input_value(input).unwrap(), "");
+  assert_eq!(doc.get_attribute(input, "data-fastr-file-value").unwrap(), None);
+
+  doc
+    .set_file_input_value_string(input, r"C:\fakepath\hello.txt")
+    .unwrap();
+
+  assert_eq!(doc.input_value(input).unwrap(), r"C:\fakepath\hello.txt");
+  assert_eq!(
+    doc.get_attribute(input, "data-fastr-file-value").unwrap(),
+    Some(r"C:\fakepath\hello.txt")
+  );
+
+  let snapshot = doc.to_renderer_dom();
+  let doc2 = Document::from_renderer_dom(&snapshot);
+  let input2 = doc2.get_element_by_id("f").expect("imported file input");
+  assert_eq!(doc2.input_value(input2).unwrap(), r"C:\fakepath\hello.txt");
+  assert_eq!(
+    doc2.get_attribute(input2, "data-fastr-file-value").unwrap(),
+    Some(r"C:\fakepath\hello.txt")
+  );
+}
+
+#[test]
+fn file_input_value_property_setter_rejects_non_empty_and_allows_clearing() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let input = doc.create_element("input", "");
+  doc.set_attribute(input, "type", "file").unwrap();
+
+  // Script cannot set a non-empty value.
+  doc.set_input_value(input, "x").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+
+  // Host can set a value string.
+  doc
+    .set_file_input_value_string(input, r"C:\fakepath\a.txt")
+    .unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), r"C:\fakepath\a.txt");
+
+  // Script still cannot overwrite it.
+  doc.set_input_value(input, "x").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), r"C:\fakepath\a.txt");
+
+  // Script can clear.
+  doc.set_input_value(input, "").unwrap();
+  assert_eq!(doc.input_value(input).unwrap(), "");
+  assert_eq!(doc.get_attribute(input, "data-fastr-file-value").unwrap(), None);
+}

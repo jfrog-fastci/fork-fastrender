@@ -36,6 +36,36 @@ fn attrs_has_ci(attrs: &[Attribute], name: &str) -> bool {
     .any(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
 }
 
+#[inline]
+fn attrs_remove_ci_mut(attrs: &mut Vec<Attribute>, name: &str) -> bool {
+  let Some(idx) = attrs
+    .iter()
+    .position(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+  else {
+    return false;
+  };
+  attrs.remove(idx);
+  true
+}
+
+#[inline]
+fn attrs_set_ci_mut(attrs: &mut Vec<Attribute>, name: &str, value: &str) -> bool {
+  if let Some(existing) = attrs
+    .iter_mut()
+    .find(|attr| attr.namespace == NULL_NAMESPACE && attr.local_name.eq_ignore_ascii_case(name))
+  {
+    if existing.value == value {
+      return false;
+    }
+    existing.value.clear();
+    existing.value.push_str(value);
+    true
+  } else {
+    attrs.push(Attribute::new_no_namespace(name, value));
+    true
+  }
+}
+
 fn is_input_checkable(type_attr: Option<&str>) -> bool {
   let ty = type_attr.unwrap_or("text");
   ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio")
@@ -80,6 +110,22 @@ struct RadioGroupKey {
 }
 
 impl Document {
+  #[inline]
+  fn is_file_input_node_kind(&self, kind: &NodeKind) -> bool {
+    let NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+      ..
+    } = kind
+    else {
+      return false;
+    };
+    self.is_html_case_insensitive_namespace(namespace)
+      && tag_name.eq_ignore_ascii_case("input")
+      && is_input_type_file(attrs_get_ci(attributes, "type"))
+  }
+
   fn is_html_form_element(&self, node: NodeId) -> bool {
     let Some(node) = self.nodes.get(node.index()) else {
       return false;
@@ -286,14 +332,24 @@ impl Document {
 
     if tag_name.eq_ignore_ascii_case("input") {
       let type_attr = attrs_get_ci(attributes, "type");
-      let value_attr = attrs_get_ci(attributes, "value");
-      let value = input_default_value(type_attr, value_attr);
+      let is_file_input = is_input_type_file(type_attr);
+      let value = if is_file_input {
+        // File inputs cannot be prefilled via markup. We only populate their `.value` state from
+        // the internal renderer snapshot attribute that represents a user selection.
+        attrs_get_ci(attributes, "data-fastr-file-value")
+          .unwrap_or("")
+          .to_string()
+      } else {
+        let value_attr = attrs_get_ci(attributes, "value");
+        input_default_value(type_attr, value_attr)
+      };
+      let dirty_value = is_file_input && !value.is_empty();
       let checkable = is_input_checkable(type_attr);
       let checkedness = checkable && attrs_has_ci(attributes, "checked");
       return (
         Some(InputState {
           value,
-          dirty_value: false,
+          dirty_value,
           checkedness,
           dirty_checkedness: false,
         }),
@@ -396,6 +452,27 @@ impl Document {
     if let Some((dirty_value, dirty_checkedness)) = input_dirty {
       let is_file = is_input_type_file(self.get_attribute(node, "type")?);
 
+      // File inputs mirror their current "value string" (e.g. `C:\fakepath\...`) via a synthetic
+      // internal attribute (`data-fastr-file-value`) used by the renderer pipeline.
+      if name.eq_ignore_ascii_case("data-fastr-file-value") && is_file {
+        let new_value = self
+          .get_attribute(node, "data-fastr-file-value")?
+          .unwrap_or("")
+          .to_string();
+        if let Some(state) = self
+          .input_states
+          .get_mut(node.index())
+          .and_then(|s| s.as_mut())
+        {
+          let new_dirty = !new_value.is_empty();
+          if state.value != new_value || state.dirty_value != new_dirty {
+            state.value = new_value;
+            state.dirty_value = new_dirty;
+            self.record_form_state_mutation(node);
+          }
+        }
+      }
+
       // HTML: when an input becomes type=file, its `.value` must be the empty string unless set via
       // a user file selection mechanism (out of scope here). Clear the current value regardless of
       // the dirty value flag so scripts cannot smuggle a non-empty value by changing `type`.
@@ -406,6 +483,7 @@ impl Document {
           .and_then(|s| s.as_mut())
         {
           state.value.clear();
+          state.dirty_value = false;
         }
       } else if (name.eq_ignore_ascii_case("value") || name.eq_ignore_ascii_case("type")) && !dirty_value && !is_file {
         let type_attr = self.get_attribute(node, "type")?;
@@ -493,7 +571,20 @@ impl Document {
 
   pub fn input_value(&self, input: NodeId) -> Result<&str, DomError> {
     // Bounds check + validate node type.
-    let _ = self.node_checked(input)?;
+    let node = self.node_checked(input)?;
+    if self.is_file_input_node_kind(&node.kind) {
+      let state_value = self.input_state(input)?.value.as_str();
+      if !state_value.is_empty() {
+        return Ok(state_value);
+      }
+      // For file inputs, the browser-like "value string" is represented by the internal renderer
+      // attribute `data-fastr-file-value`. Prefer the internal state slot, but fall back to the
+      // attribute so imported renderer snapshots remain observable.
+      if let Ok(Some(attr_value)) = self.get_attribute(input, "data-fastr-file-value") {
+        return Ok(attr_value);
+      }
+      return Ok("");
+    }
     Ok(self.input_state(input)?.value.as_str())
   }
 
@@ -509,15 +600,8 @@ impl Document {
         // No-op: do not mutate state and do not bump mutation generation.
         return Ok(false);
       }
-      let state = self.input_state_mut(input)?;
-      if state.value.is_empty() {
-        return Ok(false);
-      }
-      state.dirty_value = true;
-      state.value.clear();
-      self.record_form_state_mutation(input);
-      self.bump_mutation_generation_classified();
-      return Ok(true);
+      // Clearing is allowed.
+      return self.set_file_input_value_string(input, "");
     }
 
     let state = self.input_state_mut(input)?;
@@ -530,6 +614,59 @@ impl Document {
     self.record_form_state_mutation(input);
     self.bump_mutation_generation_classified();
     Ok(true)
+  }
+
+  /// Host-only API: set the browser-like "value string" for an `<input type="file">`.
+  ///
+  /// The renderer pipeline uses an internal `data-fastr-file-value` attribute to represent the
+  /// pseudo value string (`C:\fakepath\...`) for validation and painting. Unlike `set_input_value`,
+  /// this method allows setting a non-empty value string (mirroring a trusted file picker / drop).
+  pub fn set_file_input_value_string(
+    &mut self,
+    input: NodeId,
+    value_string: &str,
+  ) -> Result<bool, DomError> {
+    let is_file_input = {
+      let node = self.node_checked(input)?;
+      self.is_file_input_node_kind(&node.kind)
+    };
+    if !is_file_input {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+
+    let mut changed = false;
+    {
+      let state = self.input_state_mut(input)?;
+      if state.value != value_string {
+        state.value.clear();
+        state.value.push_str(value_string);
+        changed = true;
+      }
+      let new_dirty = !value_string.is_empty();
+      if state.dirty_value != new_dirty {
+        state.dirty_value = new_dirty;
+        changed = true;
+      }
+    }
+
+    {
+      let node = self.node_checked_mut(input)?;
+      let NodeKind::Element { attributes, .. } = &mut node.kind else {
+        return Err(DomError::InvalidNodeTypeError);
+      };
+      let attr_changed = if value_string.is_empty() {
+        attrs_remove_ci_mut(attributes, "data-fastr-file-value")
+      } else {
+        attrs_set_ci_mut(attributes, "data-fastr-file-value", value_string)
+      };
+      changed |= attr_changed;
+    }
+
+    if changed {
+      self.record_form_state_mutation(input);
+      self.bump_mutation_generation_classified();
+    }
+    Ok(changed)
   }
 
   pub fn input_checked(&self, input: NodeId) -> Result<bool, DomError> {
@@ -686,6 +823,7 @@ impl Document {
     let type_attr = self.get_attribute(input, "type")?;
     let value_attr = self.get_attribute(input, "value")?;
     let default_value = input_default_value(type_attr, value_attr);
+    let is_file_input = is_input_type_file(type_attr);
     let checkable = is_input_checkable(type_attr);
     let checked_attr = self.has_attribute(input, "checked")?;
     let default_checkedness = checkable && checked_attr;
@@ -695,6 +833,14 @@ impl Document {
       state.value = default_value;
       state.dirty_checkedness = false;
       state.checkedness = default_checkedness;
+    }
+    if is_file_input {
+      // File inputs must reset any internal file selection value string.
+      if let Ok(node) = self.node_checked_mut(input) {
+        if let NodeKind::Element { attributes, .. } = &mut node.kind {
+          attrs_remove_ci_mut(attributes, "data-fastr-file-value");
+        }
+      }
     }
     if default_checkedness {
       // Reset operations restore default checkedness and clear dirty flags, so other radios that get
@@ -788,6 +934,7 @@ impl Document {
         let type_attr = self.get_attribute(node_id, "type")?;
         let value_attr = self.get_attribute(node_id, "value")?;
         let default_value = input_default_value(type_attr, value_attr);
+        let is_file_input = is_input_type_file(type_attr);
         let checkable = is_input_checkable(type_attr);
         let checked_attr = self.has_attribute(node_id, "checked")?;
         let default_checkedness = checkable && checked_attr;
@@ -803,6 +950,13 @@ impl Document {
             state.checkedness = default_checkedness;
             self.record_form_state_mutation(node_id);
             any = true;
+          }
+        }
+        if is_file_input {
+          if let Some(node) = self.nodes.get_mut(node_id.index()) {
+            if let NodeKind::Element { attributes, .. } = &mut node.kind {
+              attrs_remove_ci_mut(attributes, "data-fastr-file-value");
+            }
           }
         }
         if default_checkedness {
