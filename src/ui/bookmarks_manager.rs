@@ -250,9 +250,7 @@ pub fn bookmarks_manager_side_panel(
               .hint_text(profile_path.display().to_string())
               .desired_width(f32::INFINITY),
           );
-          resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Export path")
-          });
+          resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Export path"));
           if resp.has_focus() || resp.clicked() {
             out.unfocus_page = true;
           }
@@ -305,9 +303,7 @@ pub fn bookmarks_manager_side_panel(
               .hint_text(profile_path.display().to_string())
               .desired_width(f32::INFINITY),
           );
-          resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import path")
-          });
+          resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import path"));
           if resp.has_focus() || resp.clicked() {
             out.unfocus_page = true;
           }
@@ -393,30 +389,48 @@ pub fn bookmarks_manager_side_panel(
       }
 
       let query = state.search.trim().to_string();
-      egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        if query.is_empty() {
-          let roots = store.roots.clone();
-          render_nodes(ui, state, store, &roots, &folder_options, &folder_labels, &mut out);
-        } else {
-          let results = store.search(&query, usize::MAX);
-          if results.is_empty() {
-            ui.label("No matching bookmarks.");
-            return;
+      egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+          if query.is_empty() {
+            let roots = store.roots.clone();
+            render_nodes(
+              ui,
+              state,
+              store,
+              &roots,
+              &folder_options,
+              &folder_labels,
+              &mut out,
+            );
+          } else {
+            let results = store.search(&query, usize::MAX);
+            if results.is_empty() {
+              ui.label("No matching bookmarks.");
+              return;
+            }
+            for id in results {
+              let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&id).cloned() else {
+                continue;
+              };
+              let parent_label = folder_labels
+                .get(&entry.parent)
+                .map(String::as_str)
+                .unwrap_or("Root");
+              ui.group(|ui| {
+                render_bookmark_row(
+                  ui,
+                  state,
+                  store,
+                  entry,
+                  &folder_options,
+                  parent_label,
+                  &mut out,
+                );
+              });
+            }
           }
-          for id in results {
-            let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&id).cloned() else {
-              continue;
-            };
-            let parent_label = folder_labels
-              .get(&entry.parent)
-              .map(String::as_str)
-              .unwrap_or("Root");
-            ui.group(|ui| {
-              render_bookmark_row(ui, state, store, entry, &folder_options, parent_label, &mut out);
-            });
-          }
-        }
-      });
+        });
     });
 
   // Clear edit state if the underlying node disappeared.
@@ -458,11 +472,9 @@ fn render_nodes(
           ui.horizontal(|ui| {
             let delete_a11y_label = format!("Delete folder: {}", folder.title);
             let delete_resp = ui.small_button("Delete folder");
-            delete_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                delete_a11y_label.clone(),
-              )
+            delete_resp.widget_info({
+              let label = delete_a11y_label.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
             });
             if delete_resp.clicked() {
               if store.remove_by_id(folder.id) {
@@ -472,7 +484,15 @@ fn render_nodes(
               }
             }
           });
-          render_nodes(ui, state, store, &children, folder_options, folder_labels, out);
+          render_nodes(
+            ui,
+            state,
+            store,
+            &children,
+            folder_options,
+            folder_labels,
+            out,
+          );
         });
       }
     }
@@ -493,7 +513,10 @@ fn render_bookmark_row(
     .as_ref()
     .is_some_and(|edit| edit.id == entry.id)
   {
-    let mut edit = state.editing_bookmark.take().expect("edit state must exist");
+    let mut edit = state
+      .editing_bookmark
+      .take()
+      .expect("edit state must exist");
     ui.label(egui::RichText::new("Edit bookmark").strong());
     ui.horizontal(|ui| {
       ui.label("Title:");
@@ -576,23 +599,30 @@ fn render_bookmark_row(
     let delete_a11y_label = format!("Delete bookmark: {label}");
 
     let resp = ui.button(label).on_hover_text(entry.url.clone());
-    resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, open_a11y_label.clone())
+    resp.widget_info({
+      let label = open_a11y_label.clone();
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     if resp.clicked() {
-      out.actions.push(BookmarksManagerAction::Open(entry.url.clone()));
+      out
+        .actions
+        .push(BookmarksManagerAction::Open(entry.url.clone()));
     }
 
     let new_tab_resp = ui.small_button("New tab");
-    new_tab_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, new_tab_a11y_label.clone())
+    new_tab_resp.widget_info({
+      let label = new_tab_a11y_label.clone();
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     if new_tab_resp.clicked() {
-      out.actions.push(BookmarksManagerAction::OpenInNewTab(entry.url.clone()));
+      out
+        .actions
+        .push(BookmarksManagerAction::OpenInNewTab(entry.url.clone()));
     }
     let edit_resp = ui.small_button("Edit");
-    edit_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, edit_a11y_label.clone())
+    edit_resp.widget_info({
+      let label = edit_a11y_label.clone();
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     if edit_resp.clicked() {
       state.editing_bookmark = Some(EditBookmarkState {
@@ -606,8 +636,9 @@ fn render_bookmark_row(
       out.unfocus_page = true;
     }
     let delete_resp = ui.small_button("Delete");
-    delete_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, delete_a11y_label.clone())
+    delete_resp.widget_info({
+      let label = delete_a11y_label.clone();
+      move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     if delete_resp.clicked() {
       if store.remove_by_id(entry.id) {
