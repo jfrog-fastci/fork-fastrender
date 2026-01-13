@@ -794,7 +794,6 @@ impl ChromeFrameDocument {
                 ChromeActionUrl::ActivateTab { tab_id: *tab_id }.to_url_string()
               }
             };
- 
             let type_class = match &suggestion.action {
               OmniboxAction::NavigateToUrl => "omnibox-type-url",
               OmniboxAction::Search(_) => "omnibox-type-search",

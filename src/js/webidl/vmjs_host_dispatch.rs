@@ -385,14 +385,6 @@ fn sync_cached_child_nodes_for_wrapper(
     return Ok(());
   }
 
-  let child_nodes_key = key_from_str(scope, NODE_CHILD_NODES_KEY)?;
-  let Some(Value::Object(list_obj)) = scope
-    .heap()
-    .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
-  else {
-    return Ok(());
-  };
-
   let mut children: Vec<(NodeId, DomInterface)> = Vec::new();
   children
     .try_reserve(dom.node(node_id).children.len())
@@ -412,6 +404,24 @@ fn sync_cached_child_nodes_for_wrapper(
     let primary = DomInterface::primary_for_node_kind(&child.kind);
     children.push((child_id, primary));
   }
+
+  sync_cached_child_nodes_for_wrapper_with_nodes(vm, scope, wrapper_obj, document_id, &children)
+}
+
+fn sync_cached_child_nodes_for_wrapper_with_nodes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  document_id: DocumentId,
+  children: &[(NodeId, DomInterface)],
+) -> Result<(), VmError> {
+  let child_nodes_key = key_from_str(scope, NODE_CHILD_NODES_KEY)?;
+  let Some(Value::Object(list_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
+  else {
+    return Ok(());
+  };
 
   sync_dom_node_collection_object(vm, scope, list_obj, document_id, &children)
 }

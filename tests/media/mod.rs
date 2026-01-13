@@ -118,6 +118,68 @@ fn assert_mostly_red(label: &str, stats: RgbaStats) {
   );
 }
 
+fn assert_mostly_blue(label: &str, stats: RgbaStats) {
+  assert!(
+    stats.avg_b > 180.0,
+    "{label}: expected avg B to be high, got {:.2} (avg R={:.2}, avg G={:.2}, avg A={:.2}, center={:?})",
+    stats.avg_b,
+    stats.avg_r,
+    stats.avg_g,
+    stats.avg_a,
+    stats.center
+  );
+  assert!(
+    stats.avg_r < 80.0,
+    "{label}: expected avg R to be low, got {:.2} (avg B={:.2}, avg G={:.2}, avg A={:.2}, center={:?})",
+    stats.avg_r,
+    stats.avg_b,
+    stats.avg_g,
+    stats.avg_a,
+    stats.center
+  );
+  assert!(
+    stats.avg_g < 80.0,
+    "{label}: expected avg G to be low, got {:.2} (avg B={:.2}, avg R={:.2}, avg A={:.2}, center={:?})",
+    stats.avg_g,
+    stats.avg_b,
+    stats.avg_r,
+    stats.avg_a,
+    stats.center
+  );
+  assert!(
+    stats.avg_a > 250.0,
+    "{label}: expected avg A to be ~255, got {:.2} (avg R={:.2}, avg G={:.2}, avg B={:.2}, center={:?})",
+    stats.avg_a,
+    stats.avg_r,
+    stats.avg_g,
+    stats.avg_b,
+    stats.center
+  );
+
+  // Dominance (helps catch channel swaps).
+  assert!(
+    stats.avg_b > stats.avg_r + 100.0,
+    "{label}: expected avg B to dominate avg R, got avg B={:.2} avg R={:.2}",
+    stats.avg_b,
+    stats.avg_r
+  );
+  assert!(
+    stats.avg_b > stats.avg_g + 100.0,
+    "{label}: expected avg B to dominate avg G, got avg B={:.2} avg G={:.2}",
+    stats.avg_b,
+    stats.avg_g
+  );
+
+  assert!(
+    stats.center[2] > 180
+      && stats.center[0] < 80
+      && stats.center[1] < 80
+      && stats.center[3] > 250,
+    "{label}: expected center pixel to be blue-dominant, got {:?}",
+    stats.center
+  );
+}
+
 #[test]
 fn mp4_h264_aac_decodes_first_video_and_audio() -> MediaResult<()> {
   let demuxer = Mp4PacketDemuxer::open("tests/fixtures/media/test_h264_aac.mp4")?;
@@ -186,10 +248,10 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
   let demuxer = fastrender::media::demux::webm::WebmDemuxer::open(BufReader::new(file))?;
   let mut pipeline = MediaDecodePipeline::new(Box::new(demuxer))?;
 
-  let mut got_video = false;
+  let mut video_frames = Vec::new();
   let mut got_audio = false;
 
-  for _ in 0..128 {
+  for _ in 0..256 {
     let Some(item) = pipeline.next_decoded()? else {
       break;
     };
@@ -198,9 +260,9 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
       DecodedItem::Video(frame) => {
         assert_eq!((frame.width, frame.height), (64, 64));
         assert_eq!(frame.rgba.len(), (frame.width * frame.height * 4) as usize);
-        let stats = rgba_stats(&frame.rgba, frame.width as usize, frame.height as usize);
-        assert_mostly_red("webm/vp9 first frame (test_vp9_opus.webm)", stats);
-        got_video = true;
+        if video_frames.len() < 2 {
+          video_frames.push(frame);
+        }
       }
       DecodedItem::Audio(chunk) => {
         assert_eq!(chunk.sample_rate_hz, 48_000);
@@ -210,14 +272,29 @@ fn webm_vp9_opus_decodes_first_video_and_audio() -> MediaResult<()> {
       }
     }
 
-    if got_video && got_audio {
-      return Ok(());
+    if video_frames.len() >= 2 && got_audio {
+      break;
     }
   }
 
-  Err(MediaError::Decode(format!(
-    "did not decode both video ({got_video}) and audio ({got_audio}) within limit"
-  )))
+  if !got_audio || video_frames.len() < 2 {
+    return Err(MediaError::Decode(format!(
+      "did not decode 2 video frames (got {}) and audio ({got_audio}) within limit",
+      video_frames.len()
+    )));
+  }
+
+  // Deterministic fixture: 2 frames, red then blue.
+  video_frames.sort_by_key(|f| f.pts_ns);
+  let (first, second) = (&video_frames[0], &video_frames[1]);
+
+  let stats0 = rgba_stats(&first.rgba, first.width as usize, first.height as usize);
+  assert_mostly_red("webm/vp9 first frame (test_vp9_opus.webm)", stats0);
+
+  let stats1 = rgba_stats(&second.rgba, second.width as usize, second.height as usize);
+  assert_mostly_blue("webm/vp9 second frame (test_vp9_opus.webm)", stats1);
+
+  Ok(())
 }
 
 #[test]

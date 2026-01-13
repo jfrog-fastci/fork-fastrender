@@ -29,21 +29,48 @@ impl Vp9Decoder {
 
   /// Decode a compressed VP9 packet.
   ///
-  /// Note: a single packet may yield 0+ output frames. For now, all output frames inherit the input
-  /// packet's PTS.
+  /// Note: a single packet may yield 0+ output frames (VP9 "superframes"). When this happens, the
+  /// container typically provides a duration for the packet; we distribute PTS across the decoded
+  /// frames to keep timestamps monotonic.
   pub fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVp9Frame>> {
     let frames = self
       .inner
       .decode(packet.as_slice())
       .map_err(map_libvpx_error)?;
+    if frames.is_empty() {
+      return Ok(Vec::new());
+    }
+
+    let count = frames.len() as u64;
+    let step_ns = if packet.duration_ns != 0 {
+      packet.duration_ns / count
+    } else {
+      0
+    };
+
     Ok(
       frames
         .into_iter()
-        .map(|f| DecodedVp9Frame {
-          pts_ns: packet.pts_ns,
-          width: f.width,
-          height: f.height,
-          rgba8: f.rgba8,
+        .enumerate()
+        .map(|(idx, f)| {
+          let pts_ns = if idx == 0 {
+            packet.pts_ns
+          } else if step_ns != 0 {
+            packet
+              .pts_ns
+              .saturating_add(step_ns.saturating_mul(idx as u64))
+          } else {
+            // Ensure monotonic timestamps even when the container doesn't provide per-packet
+            // durations.
+            packet.pts_ns.saturating_add(idx as u64)
+          };
+
+          DecodedVp9Frame {
+            pts_ns,
+            width: f.width,
+            height: f.height,
+            rgba8: f.rgba8,
+          }
         })
         .collect(),
     )

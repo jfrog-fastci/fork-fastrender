@@ -3969,18 +3969,21 @@ impl BrowserRuntime {
           // `preventDefault()`, the scroll gesture should be ignored.
           if let Some(pointer_css) = pointer_pos_css {
             if let Some(js_tab) = tab.js_tab.as_mut() {
-              let hovered_element_id = tab.last_hovered_dom_element_id.as_deref();
-              let target_node = if let Some(preorder_id) = tab.last_hovered_dom_node_id {
-                js_dom_node_for_preorder_id(
+              let hovered_preorder_id = tab.last_hovered_dom_node_id;
+              let hovered_element_id = tab.last_hovered_dom_element_id.clone();
+              let target_node = hovered_preorder_id.and_then(|preorder_id| {
+                js_dom_node_for_preorder_id_with_log(
+                  &self.ui_tx,
+                  tab_id,
                   js_tab,
                   preorder_id,
-                  hovered_element_id,
+                  hovered_element_id.as_deref(),
                   &mut tab.js_dom_mapping_generation,
                   &mut tab.js_dom_mapping,
+                  &mut tab.js_dom_mapping_miss_log_last,
+                  "wheel",
                 )
-              } else {
-                None
-              };
+              });
               let target = target_node
                 .map(|id| web_events::EventTargetId::Node(id).normalize())
                 .unwrap_or(web_events::EventTargetId::Window);
