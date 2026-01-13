@@ -13,6 +13,10 @@ fn is_async_generator_syntax_unsupported(
   intr: &Intrinsics,
   err: &VmError,
 ) -> Result<bool, VmError> {
+  if let VmError::Unimplemented(msg) = err {
+    return Ok(msg.contains("async generator functions"));
+  }
+
   let thrown = match err {
     VmError::Throw(v) => *v,
     VmError::ThrowWithStack { value, .. } => *value,
