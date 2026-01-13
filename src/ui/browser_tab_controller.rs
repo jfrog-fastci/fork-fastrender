@@ -279,6 +279,13 @@ impl BrowserTabController {
       UiToWorker::TextInput { tab_id, text } if tab_id == self.tab_id => {
         self.handle_text_input(&text)
       }
+      UiToWorker::ImePreedit {
+        tab_id,
+        text,
+        cursor,
+      } if tab_id == self.tab_id => self.handle_ime_preedit(&text, cursor),
+      UiToWorker::ImeCommit { tab_id, text } if tab_id == self.tab_id => self.handle_ime_commit(&text),
+      UiToWorker::ImeCancel { tab_id } if tab_id == self.tab_id => self.handle_ime_cancel(),
       UiToWorker::A11ySetTextValue {
         tab_id,
         node_id,
@@ -1499,10 +1506,43 @@ impl BrowserTabController {
       return;
     };
     if self.interaction_state().focused != Some(open_input) {
-      out.push(WorkerToUi::DatalistClosed {
-        tab_id: self.tab_id,
-      });
+      out.push(WorkerToUi::DatalistClosed { tab_id: self.tab_id });
       self.datalist_open_input = None;
+    }
+  }
+
+  fn handle_ime_preedit(
+    &mut self,
+    text: &str,
+    cursor: Option<(usize, usize)>,
+  ) -> Result<Vec<WorkerToUi>> {
+    let changed = self
+      .document
+      .mutate_dom(|dom| self.interaction.ime_preedit(dom, text, cursor));
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
+  fn handle_ime_commit(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
+    let changed = self
+      .document
+      .mutate_dom(|dom| self.interaction.ime_commit(dom, text));
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
+    }
+  }
+
+  fn handle_ime_cancel(&mut self) -> Result<Vec<WorkerToUi>> {
+    let changed = self.document.mutate_dom(|dom| self.interaction.ime_cancel(dom));
+    if changed {
+      self.paint_if_needed()
+    } else {
+      Ok(Vec::new())
     }
   }
 

@@ -1664,3 +1664,90 @@ fn textarea_auto_scrolls_after_caret_moves_to_end_across_wrapped_lines() -> Resu
 
   Ok(())
 }
+
+#[test]
+fn ime_preedit_commit_cancel_routes_through_browser_tab_controller() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 180px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="abc">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let click = (10.0, 10.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Place caret after the first character.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowRight))?;
+
+  let _ = controller.handle_message(UiToWorker::ImePreedit {
+    tab_id,
+    text: "X".to_string(),
+    cursor: None,
+  })?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(
+    input.get_attribute_ref("value"),
+    Some("abc"),
+    "IME preedit should not mutate the input value attribute"
+  );
+
+  let _ = controller.handle_message(UiToWorker::ImeCommit {
+    tab_id,
+    text: "X".to_string(),
+  })?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(
+    input.get_attribute_ref("value"),
+    Some("aXbc"),
+    "IME commit should insert committed text at the caret"
+  );
+
+  let _ = controller.handle_message(UiToWorker::ImePreedit {
+    tab_id,
+    text: "Y".to_string(),
+    cursor: None,
+  })?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(
+    input.get_attribute_ref("value"),
+    Some("aXbc"),
+    "IME preedit should not mutate the input value attribute after commit"
+  );
+
+  let _ = controller.handle_message(UiToWorker::ImeCancel { tab_id })?;
+  let input = find_element_by_id(controller.document().dom(), "txt");
+  assert_eq!(
+    input.get_attribute_ref("value"),
+    Some("aXbc"),
+    "IME cancel should not mutate the input value attribute"
+  );
+
+  Ok(())
+}
