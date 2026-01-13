@@ -732,6 +732,80 @@ fn declarative_shadow_dom_insertion_emits_live_pre_insert_hook() {
 }
 
 #[test]
+fn declarative_shadow_dom_insertion_does_not_shift_live_range_offsets() {
+  use html5ever::tendril::StrTendril;
+  use html5ever::tree_builder::TreeSink;
+  use markup5ever::interface::Attribute;
+  use markup5ever::{LocalName, Namespace, QualName};
+
+  let sink = Dom2TreeSink::new(None);
+
+  // Pre-populate the host with a single light-DOM child so a boundary point at offset 1 would shift
+  // if the ShadowRoot insertion were incorrectly counted as a tree child.
+  let (host, template, range) = {
+    let mut doc = sink.document_mut();
+
+    let host = doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+    let _light_child = doc.push_node(
+      NodeKind::Element {
+        tag_name: "span".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      Some(host),
+      /* inert_subtree */ false,
+    );
+
+    let template = doc.push_node(
+      NodeKind::Element {
+        tag_name: "template".to_string(),
+        namespace: String::new(),
+        prefix: None,
+        attributes: Vec::new(),
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+
+    let range = doc.create_range();
+    doc
+      .range_set_start(range, host, 1)
+      .expect("expected setStart to succeed");
+    doc
+      .range_set_end(range, host, 1)
+      .expect("expected setEnd to succeed");
+
+    (host, template, range)
+  };
+
+  let attrs = vec![Attribute {
+    name: QualName::new(None, Namespace::from(""), LocalName::from("shadowrootmode")),
+    value: StrTendril::from("open"),
+  }];
+
+  assert!(
+    sink.attach_declarative_shadow(&host, &template, &attrs),
+    "expected declarative shadow root attachment to succeed"
+  );
+
+  let doc = sink.document();
+  assert_eq!(doc.range_start_container(range).unwrap(), host);
+  assert_eq!(doc.range_end_container(range).unwrap(), host);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
 fn append_text_emits_live_replace_data_hook() {
   use html5ever::tendril::StrTendril;
   use html5ever::tree_builder::NodeOrText;
