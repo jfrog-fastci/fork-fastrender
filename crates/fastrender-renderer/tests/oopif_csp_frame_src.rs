@@ -91,19 +91,24 @@ fn oopif_parent_csp_frame_src_none_blocks_iframe_creation() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   assert!(
-    csp_values
+    committed
+      .csp
       .iter()
       .any(|v| v.contains("frame-src") && v.contains("'none'")),
-    "expected renderer to report CSP values via NavigationCommitted, got {csp_values:?}"
+    "expected renderer to report CSP values via NavigationCommitted, got {:?}",
+    committed.csp
   );
 
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe = &ready.subframes[0];
   let child_src = iframe
@@ -242,12 +247,15 @@ fn oopif_parent_csp_src_change_to_blocked_url_does_not_navigate_child() {
     ready1.last_error
   );
   assert_eq!(ready1.subframes.len(), 1);
-  let (committed1, csp1) = ready1
+  let committed1 = ready1
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed1, csp1);
+  node.navigation_committed(committed1.url, committed1.csp);
+  if let Some(base_url) = committed1.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe1 = &ready1.subframes[0];
   let src1 = iframe1
@@ -311,11 +319,14 @@ fn oopif_parent_csp_src_change_to_blocked_url_does_not_navigate_child() {
     ready2.last_error
   );
   assert_eq!(ready2.subframes.len(), 1);
-  let (committed2, csp2) = ready2
+  let committed2 = ready2
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
-  node.navigation_committed(committed2, csp2);
+  node.navigation_committed(committed2.url, committed2.csp);
+  if let Some(base_url) = committed2.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe2 = &ready2.subframes[0];
   assert_eq!(iframe2.child, child_frame, "iframe FrameId should be stable");
@@ -434,12 +445,15 @@ fn oopif_parent_csp_src_change_to_allowed_url_navigates_child() {
     ready1.last_error
   );
   assert_eq!(ready1.subframes.len(), 1);
-  let (committed1, csp1) = ready1
+  let committed1 = ready1
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed1, csp1);
+  node.navigation_committed(committed1.url, committed1.csp);
+  if let Some(base_url) = committed1.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe1 = &ready1.subframes[0];
   let src1 = iframe1.src.as_deref().expect("expected iframe src");
@@ -494,11 +508,14 @@ fn oopif_parent_csp_src_change_to_allowed_url_navigates_child() {
     ready2.last_error
   );
   assert_eq!(ready2.subframes.len(), 1);
-  let (committed2, csp2) = ready2
+  let committed2 = ready2
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
-  node.navigation_committed(committed2, csp2);
+  node.navigation_committed(committed2.url, committed2.csp);
+  if let Some(base_url) = committed2.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe2 = &ready2.subframes[0];
   assert_eq!(
@@ -645,19 +662,24 @@ fn oopif_parent_csp_default_src_none_blocks_iframe_creation() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   assert!(
-    csp_values
+    committed
+      .csp
       .iter()
       .any(|v| v.contains("default-src") && v.contains("'none'")),
-    "expected renderer to report CSP values via NavigationCommitted, got {csp_values:?}"
+    "expected renderer to report CSP values via NavigationCommitted, got {:?}",
+    committed.csp
   );
 
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe = &ready.subframes[0];
   let child_src = iframe
@@ -775,23 +797,32 @@ fn oopif_parent_csp_multiple_policies_intersect_to_block_iframe() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   assert!(
-    csp_values.iter().any(|v| v.contains("frame-src") && v.contains("*")),
-    "expected CSP header value to be reported, got {csp_values:?}"
+    committed
+      .csp
+      .iter()
+      .any(|v| v.contains("frame-src") && v.contains("*")),
+    "expected CSP header value to be reported, got {:?}",
+    committed.csp
   );
   assert!(
-    csp_values
+    committed
+      .csp
       .iter()
       .any(|v| v.contains("frame-src") && v.contains("'none'")),
-    "expected CSP meta value to be reported, got {csp_values:?}"
+    "expected CSP meta value to be reported, got {:?}",
+    committed.csp
   );
 
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe = &ready.subframes[0];
   let child_src = iframe
@@ -915,12 +946,15 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe = &ready.subframes[0];
   let requested_src = iframe
@@ -964,10 +998,11 @@ fn oopif_parent_csp_frame_src_checked_against_final_redirect_url() {
   });
 
   let child_ready = child_renderer.recv_frame_ready(Duration::from_secs(10));
-  let (child_committed_url, _child_csp) = child_ready
+  let child_committed_url = child_ready
     .last_committed
     .clone()
-    .expect("expected child NavigationCommitted");
+    .expect("expected child NavigationCommitted")
+    .url;
   assert_eq!(
     child_committed_url, blocked_url,
     "expected child navigation to commit the redirected URL"
@@ -1077,19 +1112,24 @@ fn oopif_parent_csp_frame_src_self_allows_same_origin_iframe_navigation() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   assert!(
-    csp_values
+    committed
+      .csp
       .iter()
       .any(|v| v.contains("frame-src") && v.contains("'self'")),
-    "expected renderer to report CSP values via NavigationCommitted, got {csp_values:?}"
+    "expected renderer to report CSP values via NavigationCommitted, got {:?}",
+    committed.csp
   );
 
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
 
   let iframe = &ready.subframes[0];
   let child_src = iframe
@@ -1165,4 +1205,119 @@ fn oopif_parent_csp_frame_src_self_allows_same_origin_iframe_navigation() {
   child_renderer.shutdown();
   parent_renderer.shutdown();
   let _ = server.shutdown_and_join();
+}
+
+#[test]
+fn oopif_parent_csp_base_href_affects_iframe_src_resolution() {
+  let _net_guard = net_test_lock();
+
+  let Some(blocked_server) = TestServer::start(
+    "oopif_parent_csp_base_href_blocked_server",
+    |path| match path {
+      "/frame.html" => Some((b"<!doctype html><p>blocked</p>".to_vec(), "text/html")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let blocked_base = blocked_server.url("");
+  let blocked_url = blocked_server.url("frame.html");
+
+  let blocked_base_for_parent = blocked_base.clone();
+  let Some(parent_server) = TestServer::start(
+    "oopif_parent_csp_base_href_parent",
+    move |path| match path {
+      "/index.html" => Some((
+        format!(
+          "<!doctype html><html><head>\
+           <meta http-equiv=\"Content-Security-Policy\" content=\"frame-src 'self'\">\
+           <base href=\"{blocked_base_for_parent}\">\
+           </head><body>\
+           <iframe src=\"frame.html\"></iframe>\
+           </body></html>"
+        )
+        .into_bytes(),
+        "text/html",
+      )),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+  let parent_url = parent_server.url("index.html");
+
+  let site_keys = SiteKeyFactory::new_with_seed(1);
+  let parent_site_key = site_keys.site_key_for_navigation(&parent_url, None);
+
+  let mut parent_renderer = RendererProc::spawn();
+  let parent_frame = FrameId(1);
+  parent_renderer.send(&BrowserToRenderer::CreateFrame {
+    frame_id: parent_frame,
+  });
+  parent_renderer.send(&BrowserToRenderer::Resize {
+    frame_id: parent_frame,
+    width: 2,
+    height: 2,
+    dpr: 1.0,
+  });
+  parent_renderer.send(&BrowserToRenderer::Navigate {
+    frame_id: parent_frame,
+    url: parent_url.clone(),
+    context: NavigationContext {
+      referrer_url: None,
+      referrer_policy: ReferrerPolicy::default(),
+      site_key: parent_site_key,
+      ..Default::default()
+    },
+  });
+  parent_renderer.send(&BrowserToRenderer::RequestRepaint {
+    frame_id: parent_frame,
+  });
+
+  let ready = parent_renderer.recv_frame_ready(Duration::from_secs(10));
+  assert_eq!(
+    ready.frame_id, parent_frame,
+    "expected FrameReady for parent (err={:?})",
+    ready.last_error
+  );
+  assert_eq!(ready.subframes.len(), 1);
+
+  let committed = ready
+    .last_committed
+    .clone()
+    .expect("expected NavigationCommitted before FrameReady");
+  assert_eq!(
+    committed.base_url.as_deref(),
+    Some(blocked_base.as_str()),
+    "expected renderer to report <base href> via NavigationCommitted"
+  );
+
+  let mut node = FrameNode::new(parent_frame);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
+
+  let iframe = &ready.subframes[0];
+  let child_src = iframe.src.as_deref().expect("expected iframe src");
+  assert_eq!(child_src, "frame.html");
+
+  // With `<base href>` set to a different origin, a relative iframe `src` must resolve against the
+  // base URL and therefore be blocked by `frame-src 'self'`.
+  let diag = node
+    .check_frame_src(child_src)
+    .expect_err("expected base href to affect CSP iframe URL resolution");
+  assert_eq!(
+    diag,
+    format!("Blocked by Content-Security-Policy (frame-src) for requested URL: {blocked_url}")
+  );
+
+  let blocked_captured = blocked_server.shutdown_and_join();
+  assert!(
+    blocked_captured.is_empty(),
+    "expected no fetches to blocked base origin when browser blocks navigation, got {blocked_captured:?}"
+  );
+
+  parent_renderer.shutdown();
+  let _ = parent_server.shutdown_and_join();
 }

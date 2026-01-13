@@ -1099,6 +1099,11 @@ pub enum RendererToBrowser {
   NavigationCommitted {
     frame_id: FrameId,
     url: String,
+    /// Effective base URL for resolving relative URLs in the committed document.
+    ///
+    /// This reflects the document's `<base href>` when present; otherwise it is `None`, which
+    /// signals that the browser should fall back to the committed `url`.
+    base_url: Option<String>,
     /// Raw `Content-Security-Policy` values observed for this document (header and/or `<meta>`).
     csp: Vec<String>,
   },

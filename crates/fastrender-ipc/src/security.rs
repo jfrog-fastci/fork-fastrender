@@ -456,6 +456,7 @@ mod tests {
       RendererToBrowser::NavigationCommitted {
         frame_id: unknown,
         url: "https://example.test/".to_string(),
+        base_url: None,
         csp: Vec::new(),
       },
     );

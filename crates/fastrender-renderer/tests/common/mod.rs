@@ -330,8 +330,15 @@ pub struct FrameReadyWithMeta {
   pub frame_id: FrameId,
   pub buffer: FrameBuffer,
   pub subframes: Vec<SubframeInfo>,
-  pub last_committed: Option<(String, Vec<String>)>,
+  pub last_committed: Option<CommittedNavigation>,
   pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommittedNavigation {
+  pub url: String,
+  pub base_url: Option<String>,
+  pub csp: Vec<String>,
 }
 
 pub struct RendererProc {
@@ -383,7 +390,7 @@ impl RendererProc {
   pub fn recv_frame_ready(&self, timeout: Duration) -> FrameReadyWithMeta {
     let deadline = Instant::now() + timeout;
     let mut last_error: Option<String> = None;
-    let mut last_committed: Option<(String, Vec<String>)> = None;
+    let mut last_committed: Option<CommittedNavigation> = None;
 
     while Instant::now() < deadline {
       let msg = match self.rx.recv_timeout(Duration::from_millis(50)) {
@@ -392,8 +399,13 @@ impl RendererProc {
         Err(mpsc::RecvTimeoutError::Disconnected) => break,
       };
       match msg {
-        RendererToBrowser::NavigationCommitted { url, csp, .. } => {
-          last_committed = Some((url, csp));
+        RendererToBrowser::NavigationCommitted {
+          url,
+          base_url,
+          csp,
+          ..
+        } => {
+          last_committed = Some(CommittedNavigation { url, base_url, csp });
         }
         RendererToBrowser::FrameReady {
           frame_id,

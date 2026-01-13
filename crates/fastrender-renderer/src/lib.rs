@@ -424,6 +424,45 @@ fn csp_values_from_html_meta(html: &str) -> Vec<String> {
   out
 }
 
+fn find_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+  if needle.is_empty() || haystack.len() < needle.len() {
+    return None;
+  }
+  haystack
+    .windows(needle.len())
+    .position(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// Extract the effective document base URL from `<base href>`, when present.
+///
+/// This is a minimal approximation of FastRender's in-process base URL tracker: it considers only
+/// the first `<base href>` with a non-empty, non-fragment-only href found in the document head
+/// (approximated here as the prefix before `</head>` or `<body>`). Later base tags are ignored.
+fn base_url_from_html(document_url: &Url, html: &str) -> Option<String> {
+  let bytes = html.as_bytes();
+  let scan_end = find_case_insensitive(bytes, b"</head")
+    .or_else(|| find_case_insensitive(bytes, b"<body"))
+    .unwrap_or(bytes.len());
+  let head_html = &html[..scan_end];
+
+  let base_tags = find_start_tags(head_html, "base");
+  for tag in base_tags {
+    let attrs = parse_tag_attributes(tag);
+    let Some(href_raw) = attrs.get("href") else {
+      continue;
+    };
+    let href = trim_ascii_whitespace(href_raw);
+    if href.is_empty() || href.starts_with('#') {
+      continue;
+    }
+
+    let resolved = Url::parse(href).ok().or_else(|| document_url.join(href).ok());
+    return resolved.map(|url| url.to_string());
+  }
+
+  None
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
@@ -847,11 +886,13 @@ impl<T: IpcTransport> RendererMainLoop<T> {
 
                     let mut csp_values = csp_values_from_http_headers(&response.headers);
                     csp_values.extend(csp_values_from_html_meta(html.as_ref()));
+                    let base_url = base_url_from_html(&response.final_url, html.as_ref());
                     // Report the committed CSP values to the browser so it can enforce parent
                     // `frame-src` on out-of-process iframe navigations.
                     self.transport.send(RendererToBrowser::NavigationCommitted {
                       frame_id,
                       url: committed_url.clone(),
+                      base_url,
                       csp: csp_values,
                     })?;
 

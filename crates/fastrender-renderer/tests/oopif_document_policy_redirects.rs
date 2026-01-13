@@ -83,12 +83,15 @@ fn oopif_parent_policy_blocks_mixed_content_redirect_final_url() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
   // Mirror the embedder's policy: HTTPS document blocks mixed HTTP content.
   node.set_resource_policy(false, true);
 
@@ -132,10 +135,11 @@ fn oopif_parent_policy_blocks_mixed_content_redirect_final_url() {
   });
 
   let child_ready = child_renderer.recv_frame_ready(Duration::from_secs(10));
-  let (child_committed_url, _child_csp) = child_ready
+  let child_committed_url = child_ready
     .last_committed
     .clone()
-    .expect("expected child NavigationCommitted");
+    .expect("expected child NavigationCommitted")
+    .url;
   assert_eq!(
     child_committed_url, insecure_url,
     "expected child navigation to commit the redirected URL"
@@ -221,12 +225,15 @@ fn oopif_parent_policy_blocks_file_redirect_final_url() {
     ready.last_error
   );
 
-  let (committed_url, csp_values) = ready
+  let committed = ready
     .last_committed
     .clone()
     .expect("expected NavigationCommitted before FrameReady");
   let mut node = FrameNode::new(parent_frame);
-  node.navigation_committed(committed_url, csp_values);
+  node.navigation_committed(committed.url, committed.csp);
+  if let Some(base_url) = committed.base_url {
+    node.set_base_url(base_url);
+  }
   // Default allow_file_from_http is false. No mixed-content blocking needed for this test.
   node.set_resource_policy(false, false);
 
@@ -268,10 +275,11 @@ fn oopif_parent_policy_blocks_file_redirect_final_url() {
   });
 
   let child_ready = child_renderer.recv_frame_ready(Duration::from_secs(10));
-  let (child_committed_url, _child_csp) = child_ready
+  let child_committed_url = child_ready
     .last_committed
     .clone()
-    .expect("expected child NavigationCommitted");
+    .expect("expected child NavigationCommitted")
+    .url;
   assert_eq!(
     child_committed_url, FILE_URL,
     "expected child navigation to commit the redirected file:// URL"
