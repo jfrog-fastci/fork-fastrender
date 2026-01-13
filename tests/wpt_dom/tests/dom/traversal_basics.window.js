@@ -14,9 +14,17 @@ function clear_children(node) {
 test(() => {
   assert_equals(typeof document.createNodeIterator, "function");
   assert_equals(typeof document.createTreeWalker, "function");
+  assert_equals(typeof NodeFilter, "function", "NodeFilter should be a legacy callback interface object");
   assert_true(
-    typeof NodeFilter === "function" || typeof NodeFilter === "object",
-    "NodeFilter should be exposed as a global interface object"
+    (() => {
+      try {
+        NodeFilter();
+        return false;
+      } catch (e) {
+        return e instanceof TypeError;
+      }
+    })(),
+    "NodeFilter() should throw TypeError"
   );
 
   assert_equals(NodeFilter.FILTER_ACCEPT, 1);

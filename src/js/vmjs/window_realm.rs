@@ -1983,6 +1983,22 @@ fn illegal_dom_constructor_construct_native(
   illegal_dom_constructor_native(vm, scope, host, hooks, ctor, Value::Undefined, args)
 }
 
+// WebIDL legacy callback interface object call handler.
+//
+// NodeFilter is a callback interface with constants, so WebIDL exposes it as a *function object*
+// (not a plain object) whose call path throws TypeError.
+fn node_filter_legacy_callback_interface_object_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(""))
+}
+
 fn storage_require_this(
   scope: &mut Scope<'_>,
   this: Value,
@@ -38799,6 +38815,48 @@ fn init_window_globals(
   //
   // These are needed for `instanceof` checks in the curated WPT DOM tests.
   if let Some(platform) = dom_platform.as_ref() {
+    // NodeFilter legacy callback interface object + constants.
+    //
+    // WebIDL: https://webidl.spec.whatwg.org/#legacy-callback-interface-object
+    //
+    // `NodeFilter` is a callback interface with constants, so it's exposed as a callable function
+    // object on `globalThis` (whose call path throws TypeError) rather than a plain object.
+    let node_filter_key = alloc_key(&mut scope, "NodeFilter")?;
+    let node_filter_call_id =
+      vm.register_native_call(node_filter_legacy_callback_interface_object_native)?;
+    let node_filter_name = scope.alloc_string("NodeFilter")?;
+    scope.push_root(Value::String(node_filter_name))?;
+    let node_filter_obj = scope.alloc_native_function(node_filter_call_id, None, node_filter_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      node_filter_obj,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(node_filter_obj))?;
+    scope.define_property(global, node_filter_key, data_desc(Value::Object(node_filter_obj)))?;
+    for (name, value) in [
+      // Constants for acceptNode().
+      ("FILTER_ACCEPT", 1.0),
+      ("FILTER_REJECT", 2.0),
+      ("FILTER_SKIP", 3.0),
+      // Constants for whatToShow.
+      ("SHOW_ALL", 4294967295.0), // 0xFFFFFFFF
+      ("SHOW_ELEMENT", 0x1 as f64),
+      ("SHOW_ATTRIBUTE", 0x2 as f64),
+      ("SHOW_TEXT", 0x4 as f64),
+      ("SHOW_CDATA_SECTION", 0x8 as f64),
+      ("SHOW_ENTITY_REFERENCE", 0x10 as f64),
+      ("SHOW_ENTITY", 0x20 as f64),
+      ("SHOW_PROCESSING_INSTRUCTION", 0x40 as f64),
+      ("SHOW_COMMENT", 0x80 as f64),
+      ("SHOW_DOCUMENT", 0x100 as f64),
+      ("SHOW_DOCUMENT_TYPE", 0x200 as f64),
+      ("SHOW_DOCUMENT_FRAGMENT", 0x400 as f64),
+      ("SHOW_NOTATION", 0x800 as f64),
+    ] {
+      let key = alloc_key(&mut scope, name)?;
+      scope.define_property(node_filter_obj, key, const_desc(Value::Number(value)))?;
+    }
+
     let illegal_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
     let illegal_ctor_construct_id =
       vm.register_native_construct(illegal_dom_constructor_construct_native)?;
