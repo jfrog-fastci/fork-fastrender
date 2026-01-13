@@ -358,6 +358,7 @@ mod tests {
       estimated_output_latency: Duration::from_millis(200),
       backend_name: "test",
     };
+    assert_eq!(output_info.estimated_latency_frames(), 2);
 
     let mut out = vec![0.0; 2];
     // played=4, latency=2 => device_frame=2 => should read samples [3,4].
@@ -386,6 +387,7 @@ mod tests {
     let clock = AudioClock::OutputFrames {
       clock: inner_clock,
     };
+    assert_eq!(clock.frames(), 4);
 
     let mut out = vec![0.0; 2];
     // frames_written=4 => next buffer should start at frame 4 (samples 5 and 6).
