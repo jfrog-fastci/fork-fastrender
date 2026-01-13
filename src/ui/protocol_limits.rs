@@ -36,6 +36,14 @@ pub const MAX_FIND_QUERY_BYTES: usize = 8 * 1024; // 8 KiB
 /// Keep this in sync with the worker-side favicon limits in `ui/render_worker.rs`.
 pub const MAX_FAVICON_BYTES: usize = 32 * 32 * 4; // 4 KiB
 
+/// Maximum width/height allowed in a worker-provided favicon payload.
+///
+/// Kept alongside [`MAX_FAVICON_BYTES`] so all UI↔worker favicon limits live in one place and can be
+/// reused by both the trusted UI and the worker.
+///
+/// Keep this in sync with the favicon sizing policy in `ui/render_worker.rs`.
+pub const MAX_FAVICON_EDGE_PX: u32 = 32;
+
 /// Maximum bytes kept for clipboard text set by the worker.
 ///
 /// This limit is enforced before the browser forwards the text to OS clipboard APIs.

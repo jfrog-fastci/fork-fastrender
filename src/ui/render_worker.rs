@@ -40,6 +40,7 @@ use crate::ui::messages::{
   PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
+use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
 use image::imageops::FilterType;
@@ -183,15 +184,8 @@ fn is_crash_panic_url(url: &str) -> bool {
 // Favicon loading
 // -----------------------------------------------------------------------------
 
-/// Target maximum size for decoded favicons.
-///
-/// The UI renders favicons at a small logical size (e.g. 16 points). Keeping the decoded buffer
-/// bounded avoids untrusted pages sending arbitrarily large payloads over the UI protocol.
-const FAVICON_MAX_EDGE_PX: u32 = 32;
-
-/// Maximum bytes allowed in a `WorkerToUi::Favicon` payload.
-const MAX_FAVICON_BYTES: usize =
-  (FAVICON_MAX_EDGE_PX as usize) * (FAVICON_MAX_EDGE_PX as usize) * 4;
+// Favicon payload sizing is kept in `ui::protocol_limits` so the UI and worker share the same
+// invariants.
 
 // -----------------------------------------------------------------------------
 // Visited link state
@@ -1254,8 +1248,8 @@ fn load_favicon_rgba_from_image_cache(
     let pixmap = image_cache
       .render_svg_pixmap_at_size(
         svg,
-        FAVICON_MAX_EDGE_PX,
-        FAVICON_MAX_EDGE_PX,
+        MAX_FAVICON_EDGE_PX,
+        MAX_FAVICON_EDGE_PX,
         favicon_url,
         1.0,
       )
@@ -1264,7 +1258,7 @@ fn load_favicon_rgba_from_image_cache(
     if w == 0 || h == 0 {
       return None;
     }
-    if w > FAVICON_MAX_EDGE_PX || h > FAVICON_MAX_EDGE_PX {
+    if w > MAX_FAVICON_EDGE_PX || h > MAX_FAVICON_EDGE_PX {
       return None;
     }
     let rgba = pixmap.data().to_vec();
@@ -1284,8 +1278,8 @@ fn load_favicon_rgba_from_image_cache(
   }
 
   // Downscale (never upscale) each axis independently toward our cap.
-  let target_w = src_w.min(FAVICON_MAX_EDGE_PX);
-  let target_h = src_h.min(FAVICON_MAX_EDGE_PX);
+  let target_w = src_w.min(MAX_FAVICON_EDGE_PX);
+  let target_h = src_h.min(MAX_FAVICON_EDGE_PX);
   if target_w != src_w || target_h != src_h {
     rgba = image::imageops::resize(&rgba, target_w, target_h, FilterType::Triangle);
   }
@@ -1294,7 +1288,7 @@ fn load_favicon_rgba_from_image_cache(
   if w == 0 || h == 0 {
     return None;
   }
-  if w > FAVICON_MAX_EDGE_PX || h > FAVICON_MAX_EDGE_PX {
+  if w > MAX_FAVICON_EDGE_PX || h > MAX_FAVICON_EDGE_PX {
     return None;
   }
 
@@ -7436,8 +7430,8 @@ impl BrowserRuntime {
           .saturating_mul(4);
         if width == 0
           || height == 0
-          || width > FAVICON_MAX_EDGE_PX
-          || height > FAVICON_MAX_EDGE_PX
+          || width > MAX_FAVICON_EDGE_PX
+          || height > MAX_FAVICON_EDGE_PX
           || rgba.len() != expected_len
           || rgba.len() > MAX_FAVICON_BYTES
         {

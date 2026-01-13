@@ -32,8 +32,6 @@ use url::Url;
 
 const DEBUG_LOG_CAPACITY: usize = 256;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
-// Keep in sync with `src/ui/render_worker.rs`'s `FAVICON_MAX_EDGE_PX`.
-const FAVICON_MAX_EDGE_PX: u32 = 32;
 /// Maximum number of download entries stored in the browser UI state.
 ///
 /// In a multi-process architecture the renderer is untrusted; without a hard cap a compromised
@@ -968,10 +966,11 @@ mod tab_tests {
 
 #[cfg(test)]
 mod worker_message_validation_tests {
-  use super::{BrowserAppState, BrowserTabState, FAVICON_MAX_EDGE_PX};
+  use super::{BrowserAppState, BrowserTabState};
   use crate::scroll::{ScrollBounds, ScrollState};
   use crate::ui::browser_limits::BrowserLimits;
   use crate::ui::messages::{RenderedFrame, ScrollMetrics, TabId, WorkerToUi};
+  use crate::ui::protocol_limits::MAX_FAVICON_EDGE_PX;
 
   fn app_with_single_tab(tab_id: TabId) -> BrowserAppState {
     let mut app = BrowserAppState::new();
@@ -1004,7 +1003,7 @@ mod worker_message_validation_tests {
     let tab_id = TabId(1);
     let mut app = app_with_single_tab(tab_id);
 
-    let width = FAVICON_MAX_EDGE_PX + 1;
+    let width = MAX_FAVICON_EDGE_PX + 1;
     let height = 1;
     let rgba_len = (width as usize) * (height as usize) * 4;
 
@@ -2723,12 +2722,9 @@ impl BrowserAppState {
         // Validate favicon payload invariants before storing metadata or asking the UI to upload a
         // GPU texture. In multiprocess builds, the renderer process is treated as untrusted.
         //
-        // Note: enforce both total byte length and per-axis dimension limits (see
-        // `FAVICON_MAX_EDGE_PX`).
-        if validate_untrusted_favicon_rgba(rgba.len(), width, height)
-          && width <= FAVICON_MAX_EDGE_PX
-          && height <= FAVICON_MAX_EDGE_PX
-        {
+        // Note: payload validation enforces both total byte length and per-axis dimension limits
+        // (see `ui::protocol_limits`).
+        if validate_untrusted_favicon_rgba(rgba.len(), width, height) {
           if let Some(tab) = self.tab_mut(tab_id) {
             tab.favicon_meta = Some(FaviconMeta {
               size_px: (width, height),

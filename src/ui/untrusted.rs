@@ -7,6 +7,7 @@ use crate::interaction::FormSubmission;
 use crate::tree::box_tree::{SelectControl, SelectItem};
 use crate::ui::protocol_limits::{
   MAX_FAVICON_BYTES,
+  MAX_FAVICON_EDGE_PX,
   MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES,
   MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_COUNT,
   MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_NAME_BYTES,
@@ -213,6 +214,9 @@ pub fn validate_untrusted_favicon_rgba(rgba_len: usize, width: u32, height: u32)
   if width == 0 || height == 0 {
     return false;
   }
+  if width > MAX_FAVICON_EDGE_PX || height > MAX_FAVICON_EDGE_PX {
+    return false;
+  }
   let expected = (width as usize)
     .checked_mul(height as usize)
     .and_then(|px| px.checked_mul(4));
@@ -289,6 +293,14 @@ mod tests {
   fn validate_untrusted_favicon_rgba_rejects_mismatched_len() {
     assert!(!validate_untrusted_favicon_rgba(3, 2, 2));
     assert!(validate_untrusted_favicon_rgba(2 * 2 * 4, 2, 2));
+  }
+
+  #[test]
+  fn validate_untrusted_favicon_rgba_rejects_oversized_dimensions() {
+    let width = crate::ui::protocol_limits::MAX_FAVICON_EDGE_PX + 1;
+    let height = 1;
+    let len = (width as usize) * (height as usize) * 4;
+    assert!(!validate_untrusted_favicon_rgba(len, width, height));
   }
 
   #[test]

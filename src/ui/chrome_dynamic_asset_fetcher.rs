@@ -1,11 +1,11 @@
 use crate::error::{Error, ResourceError, Result};
 use crate::resource::{FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
 use crate::ui::TabId;
+use crate::ui::protocol_limits::MAX_FAVICON_EDGE_PX;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const DEFAULT_MAX_FAVICON_EDGE_PX: u32 = 64;
 const DEFAULT_MAX_FAVICON_PNG_BYTES: usize = 32 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -19,7 +19,9 @@ pub struct ChromeDynamicAssetLimits {
 impl Default for ChromeDynamicAssetLimits {
   fn default() -> Self {
     Self {
-      max_favicon_edge_px: DEFAULT_MAX_FAVICON_EDGE_PX,
+      // Reuse the same edge limit enforced on untrusted favicon payloads coming from the UI↔worker
+      // protocol so all favicon allocations stay in a small, predictable budget.
+      max_favicon_edge_px: MAX_FAVICON_EDGE_PX,
       max_favicon_png_bytes: DEFAULT_MAX_FAVICON_PNG_BYTES,
     }
   }
@@ -303,6 +305,25 @@ mod tests {
 
     let url = ChromeDynamicAssetFetcher::favicon_url(tab_id);
     let res = fetcher.fetch(&url).expect("fetch favicon");
+    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert_eq!(res.bytes, png);
+  }
+
+  #[test]
+  fn fetch_supports_chrome_favicon_without_png_suffix() {
+    let inner: Arc<dyn ResourceFetcher> = Arc::new(PanicFetcher);
+    let fetcher = ChromeDynamicAssetFetcher::new(inner);
+    let tab_id = TabId(123);
+    let png = tiny_png_bytes();
+
+    fetcher
+      .set_tab_favicon_png(tab_id, png.clone(), 1, 1)
+      .expect("set favicon");
+
+    // Support the singular host + no extension form (`chrome://favicon/<tab_id>`).
+    let res = fetcher
+      .fetch("chrome://favicon/123")
+      .expect("fetch favicon without suffix");
     assert_eq!(res.content_type.as_deref(), Some("image/png"));
     assert_eq!(res.bytes, png);
   }
