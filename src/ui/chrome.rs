@@ -4148,6 +4148,40 @@ mod tests {
   }
 
   #[test]
+  fn appearance_popup_accesskit_roles_for_accent_controls_are_buttons() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.chrome.appearance_popup_open = true;
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let output = ctx.end_frame();
+
+    let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
+    let snapshot = a11y_test_util::accesskit_named_roles_pretty_json_from_full_output(&output);
+
+    for expected in [
+      "Set accent color: Blue",
+      "Set accent color: Green",
+      "Set accent color: Purple",
+      "Set accent color: Orange",
+      "Set accent color: Red",
+      "Set accent color: Gray",
+      "Custom accent color",
+    ] {
+      assert!(
+        nodes
+          .iter()
+          .any(|n| n.name == expected && n.role == "Button"),
+        "expected {expected:?} to appear as a Button in AccessKit output.\n\nsnapshot:\n{snapshot}"
+      );
+    }
+  }
+
+  #[test]
   fn chrome_accesskit_roles_for_core_navigation_controls_are_buttons() {
     let mut app = BrowserAppState::new();
     app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
