@@ -248,27 +248,14 @@ fn tab_a11y_label(
   has_error: bool,
   has_warning: bool,
 ) -> String {
-  let mut parts: Vec<&'static str> = Vec::new();
-  if is_active {
-    parts.push("current tab");
-  }
-  if is_pinned {
-    parts.push("pinned");
-  }
-  if loading {
-    parts.push("loading");
-  }
-  if has_error {
-    parts.push("error");
-  }
-  if has_warning {
-    parts.push("warning");
-  }
-  if parts.is_empty() {
-    title.to_string()
-  } else {
-    format!("{title} ({})", parts.join(", "))
-  }
+  crate::ui::tab_accessible_label::format_tab_accessible_label(
+    title,
+    is_active,
+    is_pinned,
+    loading,
+    has_error,
+    has_warning,
+  )
 }
 
 fn paint_tab_status_badges(
@@ -1337,14 +1324,8 @@ fn tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
-  let a11y_label = tab_a11y_label(
-    title.as_str(),
-    is_active,
-    tab.pinned,
-    tab.loading,
-    err.is_some(),
-    warn.is_some(),
-  );
+  let a11y_label =
+    tab_a11y_label(title.as_str(), is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
@@ -1700,14 +1681,8 @@ fn pinned_tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
-  let a11y_label = tab_a11y_label(
-    title.as_str(),
-    is_active,
-    tab.pinned,
-    tab.loading,
-    err.is_some(),
-    warn.is_some(),
-  );
+  let a11y_label =
+    tab_a11y_label(title.as_str(), is_active, tab.pinned, tab.loading, err.is_some(), warn.is_some());
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())

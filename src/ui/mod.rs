@@ -49,6 +49,9 @@ pub mod loading_overlay;
 pub mod viewport_throttle;
 pub mod notifications;
 
+#[cfg(any(test, feature = "browser_ui"))]
+mod tab_accessible_label;
+
 pub mod a11y_labels;
 
 // egui widget accessibility helpers (AccessKit).
