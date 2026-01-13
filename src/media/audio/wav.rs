@@ -8,6 +8,7 @@ use std::thread;
 
 use parking_lot::{Condvar, Mutex, RwLock};
 
+use super::convert::{sanitize_mix_sample, sanitize_sample};
 use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
 
 /// An audio backend that mixes sinks and writes the resulting PCM stream into a `.wav` file.
@@ -190,22 +191,33 @@ impl MixerState {
 
     let mut any = false;
     for sink in sinks_snapshot {
-      let gain = f32::from_bits(sink.volume_bits.load(Ordering::Relaxed));
-      if gain == 0.0 {
-        continue;
-      }
+      let gain_raw = f32::from_bits(sink.volume_bits.load(Ordering::Relaxed));
+      // Treat non-finite/denormal gain values as silence so we never poison the mix.
+      // Still drain the sink buffer so muting/corruption does not behave like pausing.
+      let gain = if gain_raw.is_finite() && gain_raw.is_normal() {
+        gain_raw
+      } else {
+        0.0
+      };
       let mut buf = sink.buffer.lock();
       let to_read = dst.len().min(buf.len());
       if to_read == 0 {
         continue;
       }
       any = true;
-      for i in 0..to_read {
-        if let Some(sample) = buf.pop_front() {
-          dst[i] += sample * gain;
-        } else {
-          break;
+      if gain == 0.0 {
+        // Drain without mixing (muted).
+        for _ in 0..to_read {
+          let _ = buf.pop_front();
         }
+        continue;
+      }
+      for i in 0..to_read {
+        let Some(sample) = buf.pop_front() else {
+          break;
+        };
+        // Sanitize per-sample before accumulation so malformed values can't poison the entire mix.
+        dst[i] += sanitize_mix_sample(sample * gain);
       }
     }
 
@@ -351,9 +363,6 @@ fn run_mix_loop(
 
 #[inline]
 fn f32_to_i16(sample: f32) -> i16 {
-  if !sample.is_finite() {
-    return 0;
-  }
-  let clamped = sample.clamp(-1.0, 1.0);
-  (clamped * i16::MAX as f32) as i16
+  let sample = sanitize_sample(sample);
+  (sample * i16::MAX as f32) as i16
 }
