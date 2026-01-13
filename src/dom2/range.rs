@@ -1805,6 +1805,11 @@ impl Document {
   /// Live range pre-insert steps.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-insert
+  ///
+  /// Note: Range boundary point offsets into element-like nodes are defined in terms of DOM "tree
+  /// children" (excluding the ShadowRoot pseudo-child stored by `dom2`). Callers are responsible
+  /// for passing `index`/`count` in that tree-child coordinate space (see
+  /// `tree_child_index_from_raw_index_for_range` and `inserted_tree_children_count_for_range`).
   pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
     if count == 0 || self.ranges.is_empty() {
       return;
