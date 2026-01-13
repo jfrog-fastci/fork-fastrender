@@ -19788,16 +19788,6 @@ mod tests {
       crate::tree::box_tree::MarkerContent::Image(replaced) => replaced,
       other => panic!("unexpected marker content: {other:?}"),
     };
-    let srcset = chosen
-      .override_resolution
-      .filter(|d| d.is_finite() && *d > 0.0)
-      .map(|density| {
-        vec![SrcsetCandidate {
-          url: chosen.url.clone(),
-          descriptor: SrcsetDescriptor::Density(density),
-        }]
-      })
-      .unwrap_or_default();
 
     let fragment =
       FragmentNode::new_replaced(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), replaced.replaced_type);
