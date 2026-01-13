@@ -53,6 +53,10 @@ const MAX_COMPONENT_TRANSFER_TABLE_VALUES: usize = 1024;
 const MAX_COMPONENT_TRANSFER_TABLE_TOKENS: usize = MAX_COMPONENT_TRANSFER_TABLE_VALUES * 4;
 // Reject absurdly long numeric tokens to avoid spending excessive CPU in float parsing.
 const MAX_SVG_NUMBER_TOKEN_BYTES: usize = 128;
+// Cap the number of bytes scanned for list-valued numeric attributes (e.g. kernel matrices, table
+// values). This bounds worst-case CPU when parsing hostile SVG that includes huge attributes with
+// no separators.
+const MAX_SVG_FILTER_NUMBER_LIST_BYTES: usize = 1024 * 1024;
 const FILTER_DEADLINE_STRIDE: usize = 256;
 const MAX_SVG_FILTER_DEPTH: usize = 128;
 
@@ -2411,6 +2415,17 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn truncate_str_to_utf8_boundary(value: &str, max_bytes: usize) -> &str {
+  if value.len() <= max_bytes {
+    return value;
+  }
+  let mut end = max_bytes;
+  while end > 0 && !value.is_char_boundary(end) {
+    end -= 1;
+  }
+  &value[..end]
+}
+
 fn split_ascii_whitespace(value: &str) -> impl Iterator<Item = &str> {
   value
     .split(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
@@ -2495,8 +2510,9 @@ fn attribute_ci<'a>(node: &'a roxmltree::Node, name: &str) -> Option<&'a str> {
 }
 
 fn parse_number(value: Option<&str>) -> f32 {
-  value
-    .and_then(|v| split_ascii_whitespace(v).next())
+  let value = truncate_str_to_utf8_boundary(value.unwrap_or(""), MAX_SVG_FILTER_NUMBER_LIST_BYTES);
+  split_ascii_whitespace(value)
+    .next()
     .and_then(|v| {
       if v.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
         None
@@ -2508,8 +2524,8 @@ fn parse_number(value: Option<&str>) -> f32 {
 }
 
 fn parse_number_iter<'a>(value: Option<&'a str>) -> impl Iterator<Item = f32> + 'a {
+  let value = truncate_str_to_utf8_boundary(value.unwrap_or(""), MAX_SVG_FILTER_NUMBER_LIST_BYTES);
   value
-    .unwrap_or("")
     .split(|c: char| {
       matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
     })
@@ -2850,9 +2866,11 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
     }
   };
   let parse_table_values = || {
-    node
-      .attribute("tableValues")
-      .unwrap_or("")
+    let attr = truncate_str_to_utf8_boundary(
+      node.attribute("tableValues").unwrap_or(""),
+      MAX_SVG_FILTER_NUMBER_LIST_BYTES,
+    );
+    attr
       .split(|c: char| c.is_ascii_whitespace() || c == ',')
       .take(MAX_COMPONENT_TRANSFER_TABLE_TOKENS)
       .map(trim_ascii_whitespace)
@@ -3093,9 +3111,11 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   // `kernelMatrix` must contain exactly `order_x * order_y` values. Parse at most one more than
   // expected so hostile markup cannot force an unbounded allocation for mismatched lists.
   let max_kernel_tokens = total_taps.saturating_mul(4).saturating_add(1);
-  let kernel = node
-    .attribute("kernelMatrix")
-    .unwrap_or("")
+  let kernel_attr = truncate_str_to_utf8_boundary(
+    node.attribute("kernelMatrix").unwrap_or(""),
+    MAX_SVG_FILTER_NUMBER_LIST_BYTES,
+  );
+  let kernel = kernel_attr
     .split(|c: char| {
       matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
     })
