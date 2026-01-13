@@ -148,7 +148,7 @@ Linux implementation checklist (shared memory + FD passing footguns): [`docs/ipc
 | Platform | Sandbox mechanism |
 |----------|-------------------|
 | Linux | seccomp-bpf, namespaces, landlock |
-| macOS | Seatbelt (`sandbox_init` / `sandbox-exec`), App Sandbox |
+| macOS | Seatbelt (`sandbox_init`; optional `sandbox-exec` spawn wrapper **deprecated by Apple**), App Sandbox |
 | Windows | Job objects, AppContainer, LPAC |
 
 See also: [docs/sandboxing.md](../docs/sandboxing.md) for repo-specific sandbox implementation notes
@@ -165,6 +165,15 @@ See:
 - `src/sandbox/macos.rs` (`apply_strict_sandbox`) for implementation details.
 - [`docs/macos_sandbox.md`](../docs/macos_sandbox.md) for debugging tips and the `macos_sandbox_probe` tool.
 - Renderer-focused quick reference: [`docs/security/macos_renderer_sandbox.md`](../docs/security/macos_renderer_sandbox.md)
+
+`sandbox-exec` note: FastRender keeps a **debug/legacy** spawn-time wrapper for launching a renderer
+already sandboxed via `/usr/bin/sandbox-exec` (useful when the parent is multithreaded and cannot
+safely run `CommandExt::pre_exec`). This path is opt-in and gated by:
+
+- `FASTR_MACOS_USE_SANDBOX_EXEC=1`
+
+See `src/sandbox/macos_spawn.rs` (`wrap_command_with_sandbox_exec` /
+`maybe_wrap_command_with_sandbox_exec`). Prefer in-process `sandbox_init` for long-term sandboxing.
 
 Windows quick reference:
 - Detailed boundary doc: [`docs/windows_sandbox.md`](../docs/windows_sandbox.md)
