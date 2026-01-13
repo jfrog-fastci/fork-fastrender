@@ -36,6 +36,10 @@ Code map (repo reality):
         directory may be inaccessible and can cause surprising startup failures (or break code that
         uses relative paths). Callers should set an explicit, sandbox-accessible working directory
         when using this low-level helper.
+      - Note: `SpawnConfig.env` is an *override list* applied on top of the current process
+        environment; this low-level helper does **not** implement `fastrender`'s environment
+        sanitization. If you need to avoid leaking secrets from the broker process environment into
+        the untrusted child, use `src/sandbox/windows.rs`'s `spawn_sandboxed(...)` helper.
       - Supports handle inheritance allowlisting (`inherit_handles` /
         `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
       - When `SpawnConfig.job` is set and the parent process is already inside a Job, the spawner
@@ -52,6 +56,7 @@ Code map (repo reality):
         unsupported Windows builds).
     - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
       - Uses a low-integrity restricted primary token (from `RestrictedToken`).
+      - Inherits the parent process environment by default (no environment sanitization).
       - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
       - When `SpawnConfig.job` is set and the parent process is already inside a Job, the spawner
         attempts `CREATE_BREAKAWAY_FROM_JOB` first, then retries without breakaway on
