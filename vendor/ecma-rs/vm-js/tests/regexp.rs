@@ -42,6 +42,44 @@ fn regexp_flags_parsing_rejects_duplicates() {
 }
 
 #[test]
+fn regexp_incomplete_hex_and_unicode_escapes_follow_annex_b_in_non_unicode_mode() {
+  // Annex B: In non-unicode mode, incomplete `\x` and `\u` escapes fall through to IdentityEscape.
+  // This matches test262:
+  // annexB/built-ins/RegExp/incomplete_hex_unicode_escape.js
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          /\x/.test("x"),
+          /\xa/.test("xa"),
+          /\u/.test("u"),
+          /\ua/.test("ua"),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true,true");
+}
+
+#[test]
+fn regexp_incomplete_hex_and_unicode_escapes_are_syntax_errors_in_unicode_mode() {
+  // In `u` mode, `\x`/`\u` must be strict and incomplete sequences are syntax errors.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          (() => { try { new RegExp("\\x", "u"); return "no"; } catch (e) { return e.name; } })(),
+          (() => { try { new RegExp("\\u", "u"); return "no"; } catch (e) { return e.name; } })(),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError,SyntaxError");
+}
+
+#[test]
 fn regexp_prototype_unicode_getter_metadata_and_behavior() {
   let mut rt = new_runtime();
 
