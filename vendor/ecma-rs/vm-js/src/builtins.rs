@@ -18818,6 +18818,100 @@ pub fn string_prototype_to_upper_case(
   Ok(Value::String(out))
 }
 
+/// `String.prototype.toLocaleLowerCase` (ECMA-262 / ECMA-402) (minimal).
+///
+/// FastRender currently does not implement locale-aware case mapping. We delegate to
+/// `String.prototype.toLowerCase`, which performs Unicode case conversion without a locale.
+pub fn string_prototype_to_locale_lower_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolocalelowercase
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+  string_prototype_to_lower_case(vm, scope, host, hooks, callee, this, &[])
+}
+
+/// `String.prototype.toLocaleUpperCase` (ECMA-262 / ECMA-402) (minimal).
+///
+/// FastRender currently does not implement locale-aware case mapping. We delegate to
+/// `String.prototype.toUpperCase`, which performs Unicode case conversion without a locale.
+pub fn string_prototype_to_locale_upper_case(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolocaleuppercase
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+  string_prototype_to_upper_case(vm, scope, host, hooks, callee, this, &[])
+}
+
+/// `String.prototype.localeCompare` (ECMA-262) (minimal).
+///
+/// This implementation performs a simple lexicographic comparison of the two UTF-16 code unit
+/// sequences. It does **not** implement locale-sensitive collation.
+pub fn string_prototype_locale_compare(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.localecompare
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
+  let mut scope = scope.reborrow();
+  let a = scope.to_string(vm, host, hooks, this)?;
+  scope.push_root(Value::String(a))?;
+
+  let that = args.get(0).copied().unwrap_or(Value::Undefined);
+  let b = scope.to_string(vm, host, hooks, that)?;
+  scope.push_root(Value::String(b))?;
+
+  let a_units = { scope.heap().get_string(a)?.as_code_units() };
+  let b_units = { scope.heap().get_string(b)?.as_code_units() };
+
+  let min_len = a_units.len().min(b_units.len());
+  for i in 0..min_len {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+    match a_units[i].cmp(&b_units[i]) {
+      core::cmp::Ordering::Less => return Ok(Value::Number(-1.0)),
+      core::cmp::Ordering::Greater => return Ok(Value::Number(1.0)),
+      core::cmp::Ordering::Equal => {}
+    }
+  }
+
+  Ok(Value::Number(match a_units.len().cmp(&b_units.len()) {
+    core::cmp::Ordering::Less => -1.0,
+    core::cmp::Ordering::Equal => 0.0,
+    core::cmp::Ordering::Greater => 1.0,
+  }))
+}
+
 /// `%String.prototype%[@@iterator]` (ECMA-262).
 ///
 /// This returns an iterator object with internal slots:
