@@ -30532,6 +30532,141 @@ fn css_style_remove_property_native(
   Ok(Value::String(scope.alloc_string(&prev)?))
 }
 
+fn css_style_css_text_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration cssText getter must be called on a style object",
+    ));
+  };
+
+  let Some(dom) = dom_from_vm_host(host) else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let Some(node_id) = dom_node_id_from_obj(scope, dom, style_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let value = dom
+    .get_attribute(node_id, "style")
+    .ok()
+    .flatten()
+    .unwrap_or("");
+  Ok(Value::String(scope.alloc_string(value)?))
+}
+
+fn css_style_css_text_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(style_obj) = this else {
+    return Err(VmError::TypeError(
+      "CSSStyleDeclaration cssText setter must be called on a style object",
+    ));
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(style_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => return Ok(Value::Undefined),
+  };
+
+  let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = scope.heap_mut().to_string(new_value)?;
+  let new_value = scope
+    .heap()
+    .get_string(new_value)
+    .map(|s| s.to_utf8_lossy().to_string())
+    .unwrap_or_default();
+  let should_remove = new_value.trim().is_empty();
+
+  let host_result: Option<Result<bool, VmError>> = mutate_dom_for_vm_host(host, |dom| {
+    let node_id = match dom.node_id_from_index(node_index) {
+      Ok(id) => id,
+      Err(_) => return (Ok(false), false),
+    };
+
+    let res = if should_remove {
+      dom.remove_attribute(node_id, "style")
+    } else {
+      dom.set_attribute(node_id, "style", &new_value)
+    };
+
+    match res {
+      Ok(changed) => {
+        let needs_microtask = if changed {
+          dom.take_mutation_observer_microtask_needed()
+        } else {
+          false
+        };
+        (Ok(needs_microtask), changed)
+      }
+      Err(err) => {
+        let exc = match make_dom_exception(scope, err.code(), "") {
+          Ok(v) => VmError::Throw(v),
+          Err(e) => e,
+        };
+        (Err(exc), false)
+      }
+    }
+  });
+
+  if let Some(needs_microtask) = host_result {
+    let needs_microtask = needs_microtask?;
+    maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+    return Ok(Value::Undefined);
+  }
+
+  let Some(dom) = dom_from_vm_host_mut(host) else {
+    return Ok(Value::Undefined);
+  };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => return Ok(Value::Undefined),
+  };
+
+  let changed = if should_remove {
+    dom.remove_attribute(node_id, "style")
+  } else {
+    dom.set_attribute(node_id, "style", &new_value)
+  };
+  let changed = match changed {
+    Ok(changed) => changed,
+    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  };
+  let needs_microtask = if changed {
+    dom.take_mutation_observer_microtask_needed()
+  } else {
+    false
+  };
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
 fn css_style_named_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -40479,17 +40614,11 @@ fn init_window_globals(
   )?;
 
   // CSSStyleDeclaration.cssText reflects the element's raw `style` attribute.
-  let style_attr_s = scope.alloc_string("style")?;
-  scope.push_root(Value::String(style_attr_s))?;
+  let css_text_get_call_id = vm.register_native_call(css_style_css_text_get_native)?;
+  let css_text_set_call_id = vm.register_native_call(css_style_css_text_set_native)?;
   let css_text_get_name = scope.alloc_string("get cssText")?;
   scope.push_root(Value::String(css_text_get_name))?;
-  let css_text_get_func = scope.alloc_native_function_with_slots(
-    reflected_string_get_call_id,
-    None,
-    css_text_get_name,
-    0,
-    &[Value::String(style_attr_s)],
-  )?;
+  let css_text_get_func = scope.alloc_native_function(css_text_get_call_id, None, css_text_get_name, 0)?;
   scope.heap_mut().object_set_prototype(
     css_text_get_func,
     Some(realm.intrinsics().function_prototype()),
@@ -40504,13 +40633,7 @@ fn init_window_globals(
 
   let css_text_set_name = scope.alloc_string("set cssText")?;
   scope.push_root(Value::String(css_text_set_name))?;
-  let css_text_set_func = scope.alloc_native_function_with_slots(
-    reflected_string_set_call_id,
-    None,
-    css_text_set_name,
-    1,
-    &[Value::String(style_attr_s)],
-  )?;
+  let css_text_set_func = scope.alloc_native_function(css_text_set_call_id, None, css_text_set_name, 1)?;
   scope.heap_mut().object_set_prototype(
     css_text_set_func,
     Some(realm.intrinsics().function_prototype()),
