@@ -366,3 +366,47 @@ fn using_declaration_does_not_allow_destructuring_pattern_is_syntax_error() {
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
+
+#[test]
+fn await_using_declaration_in_for_in_head_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ for (await using x in [1]) {} }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_in_switch_case_clause_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ switch (true) { case true: await using x = null; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_in_switch_default_clause_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ switch (true) { default: await using x = null; } }")
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_using_declaration_does_not_allow_destructuring_pattern_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(
+      r#"
+      async function f() {
+        {
+          await using [] = null;
+        }
+      }
+    "#,
+    )
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
