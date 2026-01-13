@@ -15,6 +15,7 @@ For this project, prefer `memfd_create(2)` over `shm_open(3)` / POSIX shared mem
 
 Repo reality:
 - Linux memfd-backed SHM helper with size caps + best-effort seals: [`src/ipc/shm.rs`](../src/ipc/shm.rs)
+- Shared-memory backend crate (POSIX `shm_open` hardening + Linux memfd sealing): [`crates/fastrender-shmem`](../crates/fastrender-shmem/)
 
 ### Creation template (recommended)
 
