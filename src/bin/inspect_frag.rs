@@ -2086,7 +2086,6 @@ mod tests {
         shaped: None,
         is_marker: false,
         emphasis_offset: Default::default(),
-        document_selection: None,
       },
       vec![],
     );

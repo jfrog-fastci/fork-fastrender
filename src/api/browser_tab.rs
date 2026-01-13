@@ -4267,7 +4267,6 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4523,7 +4522,6 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4676,7 +4674,6 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4762,7 +4759,6 @@ impl BrowserTab {
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -4902,7 +4898,6 @@ impl BrowserTab {
     host.external_script_sources = Arc::clone(&external_script_sources);
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
-    event_loop.set_microtask_checkpoint_hook(Some(BrowserTabHost::executor_microtask_checkpoint_hook));
 
     let mut tab = Self {
       trace: trace_handle,
@@ -9025,6 +9020,45 @@ mod tests {
       calls.get(),
       1,
       "expected tick_frame to invoke after_microtask_checkpoint once (not twice)"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn from_html_with_event_loop_preserves_existing_microtask_checkpoint_hooks() -> Result<()> {
+    // Embeddings can register microtask checkpoint hooks (e.g. promise rejection tracking). Passing
+    // an `EventLoop` into `BrowserTab` must not clobber existing hooks.
+    let counter = Arc::new(AtomicUsize::new(0));
+    let _guard = MicrotaskCheckpointTestCounterGuard::install(Arc::clone(&counter));
+    let mut event_loop = EventLoop::<BrowserTabHost>::new();
+    event_loop.register_microtask_checkpoint_hook(microtask_checkpoint_counting_hook)?;
+
+    let calls = Rc::new(Cell::new(0));
+    let executor = AfterMicrotaskCheckpointCountingExecutor {
+      calls: Rc::clone(&calls),
+    };
+    let mut tab =
+      BrowserTab::from_html_with_event_loop("", RenderOptions::default(), executor, event_loop)?;
+
+    // Ensure we only observe the checkpoint we trigger below.
+    counter.store(0, Ordering::SeqCst);
+    calls.set(0);
+    tab.event_loop.clear_all_pending_work();
+
+    tab
+      .event_loop
+      .queue_microtask(|_host, _event_loop| Ok(()))?;
+    tab.event_loop.perform_microtask_checkpoint(&mut tab.host)?;
+
+    assert_eq!(
+      counter.load(Ordering::SeqCst),
+      1,
+      "expected embedding microtask checkpoint hook to survive BrowserTab construction"
+    );
+    assert_eq!(
+      calls.get(),
+      1,
+      "expected executor after_microtask_checkpoint hook to remain installed"
     );
     Ok(())
   }
