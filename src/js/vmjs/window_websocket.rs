@@ -71,6 +71,20 @@ const MAX_WEBSOCKET_PROTOCOLS_USIZE: usize = MAX_WEBSOCKET_PROTOCOLS as usize;
 const MAX_WEBSOCKET_PROTOCOL_BYTES_USIZE: usize = MAX_WEBSOCKET_PROTOCOL_BYTES as usize;
 const MAX_WEBSOCKET_MESSAGE_BYTES_USIZE: usize = MAX_WEBSOCKET_MESSAGE_BYTES as usize;
 const MAX_WEBSOCKET_CLOSE_REASON_BYTES_USIZE: usize = MAX_WEBSOCKET_CLOSE_REASON_BYTES as usize;
+/// Hard cap on total queued inbound WebSocket message payload bytes per socket.
+///
+/// WebSocket events are delivered to JS by queueing `EventLoop` tasks. A hostile server can send
+/// many max-sized messages faster than the JS event loop can process them, causing unbounded memory
+/// growth if we only cap by event count.
+///
+/// When this limit would be exceeded we drop the message and close the connection with code 1009
+/// ("Message Too Big") to keep memory usage bounded.
+#[cfg(not(test))]
+const MAX_WEBSOCKET_PENDING_EVENT_BYTES: usize = 32 * 1024 * 1024;
+// Keep byte-cap tests deterministic with a smaller limit (the production cap is large enough to
+// tolerate real-world bursts without closing).
+#[cfg(test)]
+const MAX_WEBSOCKET_PENDING_EVENT_BYTES: usize = 512 * 1024;
 const MAX_QUEUED_WEBSOCKET_SEND_COMMANDS: usize = 1_024;
 #[cfg(not(test))]
 const MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET: usize = 1_024;
@@ -191,6 +205,7 @@ struct WebSocketState {
   ready_state: u16,
   buffered_amount: usize,
   pending_events: usize,
+  pending_event_bytes: usize,
   close_task_queued: bool,
   /// When set, the renderer has determined the socket must close (e.g. incoming event queue
   /// overflow). This is used as a fallback close trigger even if the command channel is full.
@@ -993,6 +1008,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
           pending_events: 0,
+          pending_event_bytes: 0,
           close_task_queued: false,
           forced_close: None,
           cmd_tx: None,
@@ -1016,6 +1032,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
           pending_events: 0,
+          pending_event_bytes: 0,
           close_task_queued: false,
           forced_close: None,
           cmd_tx: Some(cmd_tx.clone()),
@@ -1536,10 +1553,11 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
   Ok(Value::Undefined)
 }
 
-fn decrement_pending_event_count(env_id: u64, ws_id: u64) {
+fn decrement_pending_event(env_id: u64, ws_id: u64, payload_bytes: usize) {
   let _ = with_env_state_mut(env_id, |state| {
     if let Some(ws) = state.sockets.get_mut(&ws_id) {
       ws.pending_events = ws.pending_events.saturating_sub(1);
+      ws.pending_event_bytes = ws.pending_event_bytes.saturating_sub(payload_bytes);
     }
     Ok(())
   });
@@ -1560,6 +1578,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
   env_id: u64,
   ws_id: u64,
   kind: WsTaskKind,
+  payload_bytes: usize,
   f: impl FnOnce(
       &mut dyn VmHost,
       &mut vm_js::Heap,
@@ -1579,6 +1598,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     // Close tasks are allowed to exceed the normal cap by one, ensuring the JS `close` event is
     // delivered even when we're closing due to event-queue overflow.
     if kind == WsTaskKind::Close {
+      debug_assert_eq!(payload_bytes, 0, "close tasks must not account payload bytes");
       if ws.close_task_queued {
         return Ok(false);
       }
@@ -1608,6 +1628,36 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
         } else if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
           let _ = cmd_tx.try_send(WsCommand::Close {
             code: Some(code),
+            reason: Some(reason),
+          });
+        }
+      }
+      return Ok(false);
+    }
+
+    let next_bytes = ws.pending_event_bytes.saturating_add(payload_bytes);
+    if next_bytes > MAX_WEBSOCKET_PENDING_EVENT_BYTES {
+      // Renderer-side backlog has exceeded the byte cap: initiate close rather than silently
+      // dropping events (dropping can desync JS state).
+      if ws.forced_close.is_none() {
+        ws.ready_state = WS_CLOSING;
+        let reason = WS_CLOSE_EVENT_QUEUE_OVERFLOW_REASON.to_string();
+        ws.forced_close = Some((WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE, reason.clone()));
+        // Best-effort close request:
+        // - Legacy in-process backend: the websocket thread also observes `forced_close` and will
+        //   close even if the per-socket command queue is full.
+        // - IPC backend: notify the network process to close the connection.
+        if let Some(ipc) = state.ipc.as_ref() {
+          let _ = ipc.cmd_tx.try_send(WebSocketIpcCommand::WebSocket {
+            conn_id: ws_id,
+            cmd: WebSocketCommand::Close {
+              code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
+              reason: Some(reason),
+            },
+          });
+        } else if let Some(cmd_tx) = ws.cmd_tx.as_ref() {
+          let _ = cmd_tx.try_send(WsCommand::Close {
+            code: Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE),
             reason: Some(reason),
           });
         }
@@ -1645,6 +1695,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     }
 
     ws.pending_events = ws.pending_events.saturating_add(1);
+    ws.pending_event_bytes = next_bytes;
     Ok(true)
   })
   .unwrap_or(false);
@@ -1656,13 +1707,18 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
     struct PendingGuard {
       env_id: u64,
       ws_id: u64,
+      payload_bytes: usize,
     }
     impl Drop for PendingGuard {
       fn drop(&mut self) {
-        decrement_pending_event_count(self.env_id, self.ws_id);
+        decrement_pending_event(self.env_id, self.ws_id, self.payload_bytes);
       }
     }
-    let _pending = PendingGuard { env_id, ws_id };
+    let _pending = PendingGuard {
+      env_id,
+      ws_id,
+      payload_bytes,
+    };
 
     let mut hooks = VmJsEventLoopHooks::<Host>::new_with_host(host)?;
     hooks.set_event_loop(event_loop);
@@ -1721,7 +1777,7 @@ fn queue_ws_task<Host: WindowRealmHost + 'static>(
   });
 
   if queue_result.is_err() {
-    decrement_pending_event_count(env_id, ws_id);
+    decrement_pending_event(env_id, ws_id, payload_bytes);
     if kind == WsTaskKind::Close {
       // If we failed to enqueue the close task (e.g. external task queue full/closed), allow a
       // later attempt. This is best-effort and only affects the close task; normal tasks remain
@@ -2361,7 +2417,6 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
           ws.protocol = selected_protocol;
           return Ok(OpenAction::DispatchOpen);
         }
-
         // Treat the network process as untrusted input. If it reports a selected subprotocol that
         // was not requested, fail the connection and close.
         ws.ready_state = WS_CLOSED;
@@ -2389,6 +2444,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
             env_id,
             ws_id,
             WsTaskKind::Normal,
+            0,
             |vm_host, heap, vm, hooks, ws_obj| {
               let mut scope = heap.scope();
               let ev = make_simple_event(&mut scope, "open")?;
@@ -2403,6 +2459,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
             env_id,
             ws_id,
             WsTaskKind::Close,
+            0,
             move |vm_host, heap, vm, hooks, ws_obj| {
               let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
                 Ok(
@@ -2436,7 +2493,8 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
       }
     }
     WebSocketEvent::MessageText { text } => {
-      if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
+      let payload_bytes = text.as_bytes().len();
+      if payload_bytes > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
         return;
       }
       queue_ws_task::<Host>(
@@ -2444,20 +2502,22 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Normal,
+        payload_bytes,
         move |vm_host, heap, vm, hooks, ws_obj| {
-        let mut scope = heap.scope();
-        let ev = make_simple_event(&mut scope, "message")?;
-        let data_s = scope.alloc_string(&text)?;
-        scope.push_root(Value::String(data_s))?;
-        let data_key = alloc_key(&mut scope, "data")?;
-        scope.define_property(ev, data_key, data_desc(Value::String(data_s), false))?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
-        Ok(())
-      },
+          let mut scope = heap.scope();
+          let ev = make_simple_event(&mut scope, "message")?;
+          let data_s = scope.alloc_string(&text)?;
+          scope.push_root(Value::String(data_s))?;
+          let data_key = alloc_key(&mut scope, "data")?;
+          scope.define_property(ev, data_key, data_desc(Value::String(data_s), false))?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
+          Ok(())
+        },
       );
     }
     WebSocketEvent::MessageBinary { data } => {
-      if data.len() > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
+      let payload_bytes = data.len();
+      if payload_bytes > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
         return;
       }
       queue_ws_task::<Host>(
@@ -2465,22 +2525,23 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Normal,
+        payload_bytes,
         move |vm_host, heap, vm, hooks, ws_obj| {
-        let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
-          "WebSocket message dispatch requires intrinsics",
-        ))?;
-        let mut scope = heap.scope();
-        let ev = make_simple_event(&mut scope, "message")?;
-        let ab = scope.alloc_array_buffer_from_u8_vec(data)?;
-        scope.push_root(Value::Object(ab))?;
-        scope
-          .heap_mut()
-          .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-        let data_key = alloc_key(&mut scope, "data")?;
-        scope.define_property(ev, data_key, data_desc(Value::Object(ab), false))?;
-        dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
-        Ok(())
-      },
+          let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+            "WebSocket message dispatch requires intrinsics",
+          ))?;
+          let mut scope = heap.scope();
+          let ev = make_simple_event(&mut scope, "message")?;
+          let ab = scope.alloc_array_buffer_from_u8_vec(data)?;
+          scope.push_root(Value::Object(ab))?;
+          scope
+            .heap_mut()
+            .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+          let data_key = alloc_key(&mut scope, "data")?;
+          scope.define_property(ev, data_key, data_desc(Value::Object(ab), false))?;
+          dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onmessage")?;
+          Ok(())
+        },
       );
     }
     WebSocketEvent::SendAck { bytes } => {
@@ -2505,19 +2566,20 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
+        0,
         move |vm_host, heap, vm, hooks, ws_obj| {
-        let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
-          Ok(
-            state
-              .sockets
-              .get(&ws_id)
-              .map(|ws| (ws.url.clone(), ws.protocol.clone()))
-              .unwrap_or_default(),
-          )
-        })
-        .unwrap_or_default();
+          let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
+            Ok(
+              state
+                .sockets
+                .get(&ws_id)
+                .map(|ws| (ws.url.clone(), ws.protocol.clone()))
+                .unwrap_or_default(),
+            )
+          })
+          .unwrap_or_default();
 
-        let mut scope = heap.scope();
+          let mut scope = heap.scope();
         let ev = make_simple_event(&mut scope, "error")?;
         dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
         let close_ev = make_simple_event(&mut scope, "close")?;
@@ -2549,6 +2611,7 @@ fn handle_ipc_event<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
+        0,
         move |vm_host, heap, vm, hooks, ws_obj| {
         let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
           Ok(
@@ -2631,6 +2694,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
+        0,
         move |vm_host, heap, vm, hooks, ws_obj| {
           let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
             Ok(
@@ -2688,6 +2752,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
       env_id,
       ws_id,
       WsTaskKind::Close,
+      0,
       move |vm_host, heap, vm, hooks, ws_obj| {
         let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
           Ok(
@@ -2754,6 +2819,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
+        0,
         move |vm_host, heap, vm, hooks, ws_obj| {
           let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
             Ok(
@@ -2835,6 +2901,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         env_id,
         ws_id,
         WsTaskKind::Close,
+        0,
         move |vm_host, heap, vm, hooks, ws_obj| {
           let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
             Ok(
@@ -2905,6 +2972,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           env_id,
           ws_id,
           WsTaskKind::Close,
+          0,
           move |vm_host, heap, vm, hooks, ws_obj| {
             let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
               Ok(
@@ -2916,6 +2984,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
               )
             })
             .unwrap_or_else(|_| (url.clone(), String::new()));
+
             let mut scope = heap.scope();
             let ev = make_simple_event(&mut scope, "error")?;
             dispatch_ws_event(vm, &mut scope, vm_host, hooks, ws_obj, Value::Object(ev), "onerror")?;
@@ -2952,6 +3021,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     env_id,
     ws_id,
     WsTaskKind::Normal,
+    0,
     |vm_host, heap, vm, hooks, ws_obj| {
       let mut scope = heap.scope();
       let ev = make_simple_event(&mut scope, "open")?;
@@ -3093,7 +3163,8 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
 
     match socket.read_message() {
       Ok(Message::Text(text)) => {
-        if text.as_bytes().len() > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
+        let payload_bytes = text.as_bytes().len();
+        if payload_bytes > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
           closing = Some((1009, "message too large".to_string()));
           let _ = socket.close(None);
           break;
@@ -3104,6 +3175,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           env_id,
           ws_id,
           WsTaskKind::Normal,
+          payload_bytes,
           move |vm_host, heap, vm, hooks, ws_obj| {
           let mut scope = heap.scope();
           let ev = make_simple_event(&mut scope, "message")?;
@@ -3122,7 +3194,8 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         }
       }
       Ok(Message::Binary(bytes)) => {
-        if bytes.len() > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
+        let payload_bytes = bytes.len();
+        if payload_bytes > MAX_WEBSOCKET_MESSAGE_BYTES_USIZE {
           closing = Some((1009, "message too large".to_string()));
           let _ = socket.close(None);
           break;
@@ -3133,6 +3206,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           env_id,
           ws_id,
           WsTaskKind::Normal,
+          payload_bytes,
           move |vm_host, heap, vm, hooks, ws_obj| {
           let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
             "WebSocket message dispatch requires intrinsics",
@@ -3201,6 +3275,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     env_id,
     ws_id,
     WsTaskKind::Close,
+    0,
     move |vm_host, heap, vm, hooks, ws_obj| {
       let (url_snapshot, protocol_snapshot) = with_env_state(env_id, |state| {
         Ok(
@@ -4724,6 +4799,160 @@ mod tests {
   }
 
   #[test]
+  fn websocket_closes_when_pending_event_bytes_overflow() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_closes_when_pending_event_bytes_overflow") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    // Ensure we trigger the pending-byte cap without hitting the (test-only) pending event-count cap.
+    // In tests, `MAX_QUEUED_WEBSOCKET_EVENTS_PER_SOCKET` is 4, and the open + first message events are
+    // below that limit.
+    let msg_len = (MAX_WEBSOCKET_PENDING_EVENT_BYTES / 2).saturating_add(1);
+    assert!(
+      msg_len <= MAX_WEBSOCKET_MESSAGE_BYTES as usize,
+      "test message len must be <= MAX_WEBSOCKET_MESSAGE_BYTES"
+    );
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            // Bounded failures instead of hanging forever.
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            let payload = vec![0u8; msg_len];
+            // Two messages are enough to exceed `MAX_WEBSOCKET_PENDING_EVENT_BYTES`.
+            for _ in 0..2 {
+              if ws
+                .write_message(Message::Binary(payload.clone()))
+                .is_err()
+              {
+                break;
+              }
+            }
+
+            // Keep the connection open until the client initiates close.
+            let read_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed)
+                | Err(tungstenite::Error::Protocol(_)) => break,
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                {
+                  if Instant::now() >= read_deadline {
+                    panic!("server did not observe client close");
+                  }
+                }
+                Err(err) => panic!("server read failed: {err}"),
+              }
+            }
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "http://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__err = "";
+      globalThis.__close_fired = false;
+      globalThis.__close_code = 0;
+      globalThis.__close_reason = "";
+      globalThis.__ready_state = -1;
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+      ws.onmessage = function (_e) {{}};
+      ws.onerror = function (_e) {{
+        globalThis.__err = "error";
+        globalThis.__done = true;
+      }};
+      ws.onclose = function (e) {{
+        globalThis.__close_fired = true;
+        globalThis.__close_code = Number(e && e.code) || 0;
+        globalThis.__close_reason = String(e && e.reason);
+        globalThis.__ready_state = ws.readyState;
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    // Allow the socket thread to enqueue enough payload bytes to overflow before we begin draining
+    // the JS event loop.
+    std::thread::sleep(Duration::from_millis(100));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let expected_code = WS_CLOSE_EVENT_QUEUE_OVERFLOW_CODE.to_string();
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__err").unwrap_or_default(),
+      "",
+      "unexpected websocket error: {:?}",
+      get_global_prop_utf8(&mut host, "__err")
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__close_fired").as_deref(),
+      Some("true"),
+      "expected onclose to fire when the pending-byte cap is exceeded"
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__ready_state").as_deref(),
+      Some("3"),
+      "expected websocket to transition to CLOSED"
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__close_code").as_deref(),
+      Some(expected_code.as_str()),
+      "expected overflow close code"
+    );
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__close_reason").as_deref(),
+      Some(WS_CLOSE_EVENT_QUEUE_OVERFLOW_REASON),
+      "expected overflow close reason"
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
   fn websocket_send_oversize_uint8array_throws_without_buffering() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) =
@@ -5191,6 +5420,7 @@ mod tests {
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
           pending_events: 0,
+          pending_event_bytes: 0,
           close_task_queued: false,
           forced_close: None,
           cmd_tx: Some(cmd_tx),
@@ -5262,6 +5492,7 @@ mod tests {
           ready_state: WS_CONNECTING,
           buffered_amount: 0,
           pending_events: 0,
+          pending_event_bytes: 0,
           close_task_queued: false,
           forced_close: None,
           cmd_tx: Some(cmd_tx),
