@@ -371,3 +371,28 @@ fn async_class_heritage_self_reference_is_tdz_error() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, out), "ReferenceError");
   Ok(())
 }
+
+#[test]
+fn script_await_in_class_heritage_runs_as_async_script() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      class B {}
+      out += "a";
+      class D extends (await Promise.resolve(B)) {}
+      out += (Object.getPrototypeOf(D) === B ? "S" : "s");
+      out += (Object.getPrototypeOf(D.prototype) === B.prototype ? "I" : "i");
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "a");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "aSI");
+  Ok(())
+}
