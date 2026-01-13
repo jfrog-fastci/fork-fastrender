@@ -45,11 +45,11 @@ This repo will likely evolve through two related policies:
   - `about:` internal pages must not share processes with arbitrary web content.
   - `about:blank` / `about:srcdoc` inherit from their initiator.
   - `data:` uses an opaque key (unique; never shared).
-  - `file:` is isolated from network sites and is expected to be brokered by the browser process.
+  - `file:` is isolated from network origins and is expected to be brokered by the browser process.
 
 ### How this differs from Chrome’s “SiteInstance”
 
-Chrome’s model is more complex than “site → process”:
+Chrome’s model is more complex than “`SiteKey` → process”:
 
 - Chrome uses **SiteInstance** objects scoped to a **BrowsingInstance** (session history/opener graph), not a single global site key.
 - Chrome supports **out-of-process iframes (OOPIF)** as a mature feature set.
@@ -269,6 +269,18 @@ Define a browser-side helper:
 fn derive_site_key(url: &Url, initiator_site: Option<&SiteKey>) -> SiteKey
 ```
 
+### 2.0 Summary table
+
+| URL kind | Example | `SiteKey` | Inherits `initiator_site`? |
+|---|---|---|---|
+| Network origin | `https://a.test/` | `SiteKey::Origin { https, a.test, 443 }` | N/A |
+| `file:` | `file:///tmp/a.html` | `SiteKey::File` | No |
+| `about:blank` | `about:blank` | `initiator_site` if present, else `Opaque` | Yes (if present) |
+| `about:srcdoc` | `about:srcdoc` | `initiator_site` if present, else `Opaque` | Yes (if present) |
+| Internal `about:*` | `about:newtab` | `SiteKey::Internal` | No |
+| `data:` | `data:text/html,hi` | `SiteKey::Opaque(new)` | No |
+| Unknown scheme | `blob:...` | `SiteKey::Opaque(new)` | No |
+
 ### 2.1 Network origins (`http`, `https`)
 
 ```
@@ -359,6 +371,10 @@ Implementation note:
 - `SiteKey::Internal` is expected to run in a **trusted** context (browser process or a dedicated
   privileged renderer), since internal pages can embed browser-owned state snapshots (history,
   bookmarks, downloads).
+
+Repo reality note:
+- The in-tree browser has a concrete set of built-in about pages defined in
+  [`src/ui/about_pages.rs`](../src/ui/about_pages.rs) (`ABOUT_*` constants + `ABOUT_PAGE_URLS`).
 
 ### 2.7 Other schemes (`blob:`, `javascript:`, unknown)
 
