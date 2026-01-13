@@ -355,3 +355,23 @@ fn aria_describedby_does_not_include_described_node_when_reference_contains_it()
   let field = find_by_id(&tree, "field").expect("described input");
   assert_eq!(field.description.as_deref(), Some("Helper text"));
 }
+
+#[test]
+fn aria_description_empty_blocks_title_fallback() {
+  let html = r#"
+    <html><body>
+      <input id="x" aria-label="Name" aria-description="" title="Tooltip" />
+      <input id="y" aria-label="Name" aria-description="   " title="Tooltip" />
+    </body></html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+
+  let x = find_by_id(&tree, "x").expect("input x");
+  assert_eq!(x.name.as_deref(), Some("Name"));
+  assert_eq!(x.description, None);
+
+  let y = find_by_id(&tree, "y").expect("input y");
+  assert_eq!(y.name.as_deref(), Some("Name"));
+  assert_eq!(y.description, None);
+}

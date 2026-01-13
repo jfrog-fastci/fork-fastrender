@@ -3379,7 +3379,7 @@ fn compute_description(
   let mut parts: Vec<String> = Vec::new();
   let mut seen: HashSet<String> = HashSet::new();
 
-  let mut has_describedby = false;
+  let has_describedby_attr = node.node.get_attribute_ref("aria-describedby").is_some();
   if let Some(desc_attr) = node.node.get_attribute_ref("aria-describedby") {
     let mut visited = HashSet::new();
     visited.insert(node.node_id);
@@ -3391,7 +3391,6 @@ fn compute_description(
       TextAlternativeMode::Referenced,
     );
     if !desc.is_empty() {
-      has_describedby = true;
       if seen.insert(desc.clone()) {
         parts.push(desc);
       }
@@ -3419,11 +3418,10 @@ fn compute_description(
     }
   }
 
-  let mut has_aria_description = false;
+  let has_aria_description_attr = node.node.get_attribute_ref("aria-description").is_some();
   if let Some(description) = node.node.get_attribute_ref("aria-description") {
     let norm = normalize_whitespace(description);
     if !norm.is_empty() {
-      has_aria_description = true;
       if seen.insert(norm.clone()) {
         parts.push(norm);
       }
@@ -3433,7 +3431,7 @@ fn compute_description(
   // The HTML `title` attribute is treated as a low-priority description fallback when ARIA
   // description sources are absent. Avoid duplicating the title when it was already used as the
   // accessible name.
-  if !has_describedby && !has_aria_description {
+  if !has_describedby_attr && !has_aria_description_attr {
     if let Some(title) = node.node.get_attribute_ref("title") {
       let norm_title = normalize_whitespace(title);
       if !norm_title.is_empty() {
