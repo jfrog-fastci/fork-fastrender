@@ -6243,6 +6243,22 @@ impl BrowserTab {
     self.host.js_execution_options
   }
 
+  /// Returns a thread-safe handle for queueing tasks onto this tab's event loop from other threads.
+  ///
+  /// This is intended for integrations where external I/O (network callbacks, UI threads, etc.)
+  /// needs to schedule work to run on the tab's live loop without holding `&mut BrowserTab`.
+  ///
+  /// ## Lifetime / invalidation
+  ///
+  /// The returned handle is tied to the **currently active** event loop. Navigations reset the
+  /// event loop (dropping the old one), so any previously acquired handles will become invalid and
+  /// `queue_task` will start returning an error ("external task queue is closed").
+  pub fn external_task_queue_handle(
+    &self,
+  ) -> crate::js::event_loop::ExternalTaskQueueHandle<BrowserTabHost> {
+    self.event_loop.external_task_queue_handle()
+  }
+
   pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
     self.host.js_execution_options = options;
     self.host.scheduler.set_options(options);
@@ -7240,6 +7256,76 @@ mod tests {
     let digest = Sha256::digest(bytes);
     let b64 = BASE64_STANDARD.encode(digest);
     format!("sha256-{b64}")
+  }
+
+  #[test]
+  fn browser_tab_external_task_queue_handle_allows_cross_thread_dom_mutations() -> Result<()> {
+    let html = "<!doctype html><html><body><div id=box></div></body></html>";
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      html,
+      RenderOptions::new().with_viewport(64, 64),
+      TestExecutor {
+        log: Rc::new(RefCell::new(Vec::new())),
+      },
+      JsExecutionOptions::default(),
+    )?;
+
+    // Drain any initial lifecycle work queued during parsing, then render a baseline frame so that
+    // subsequent renders are attributable to the externally queued task.
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    let _ = tab.render_if_needed()?;
+    assert!(
+      tab.render_if_needed()?.is_none(),
+      "expected tab to be clean after baseline render"
+    );
+
+    let box_id = tab
+      .dom_mut()
+      .query_selector("#box", None)
+      .expect("query_selector")
+      .expect("expected #box element");
+
+    let handle = tab.external_task_queue_handle();
+    let thread = std::thread::spawn(move || {
+      handle
+        .queue_task(TaskSource::DOMManipulation, move |host, _event_loop| {
+          host.mutate_dom(|dom| {
+            let changed = dom
+              .set_attribute(
+                box_id,
+                "style",
+                "width: 10px; height: 10px; background: #f00;",
+              )
+              .expect("set_attribute(style)");
+            ((), changed)
+          });
+          Ok(())
+        })
+        .expect("queue_task");
+    });
+    thread.join().expect("external task thread join");
+
+    // The task is queued externally but has not yet run.
+    assert_eq!(
+      tab.dom().get_attribute(box_id, "style").unwrap(),
+      None,
+      "expected style attribute to be unset before driving the event loop"
+    );
+
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let style = tab.dom().get_attribute(box_id, "style").unwrap();
+    assert_eq!(
+      style,
+      Some("width: 10px; height: 10px; background: #f00;")
+    );
+
+    // Style mutation should invalidate paint.
+    assert!(
+      tab.render_if_needed()?.is_some(),
+      "expected external DOM mutation to produce a new frame"
+    );
+    Ok(())
   }
 
   #[test]
