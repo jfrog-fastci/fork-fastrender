@@ -5098,6 +5098,17 @@ impl BrowserRuntime {
     // ---------------------------------------------------------------------------
     // DOM mouse events (`mousemove` + hover transitions)
     // ---------------------------------------------------------------------------
+    //
+    // Shadow DOM note:
+    // In browsers, most hover-related mouse events are *composed* so they can cross shadow DOM
+    // boundaries and be observed by listeners on the shadow host / document with proper
+    // retargeting (`Event.composedPath()` / `Event.target`).
+    //
+    // - `mouseover` / `mouseout` / `mousemove` => composed
+    // - `mouseenter` / `mouseleave`           => NOT composed (and do not bubble)
+    //
+    // Keep `has_listeners_for_dispatch` in sync with the actual `EventInit` we dispatch; otherwise
+    // we can incorrectly skip dispatch when listeners exist outside a shadow tree.
     let prev_hovered_dom_node_id = tab.last_hovered_dom_node_id;
     let prev_target = tab.last_hovered_dom2_node;
     tab.last_hovered_dom_node_id = hovered_dom_node_id;
@@ -5168,7 +5179,7 @@ impl BrowserRuntime {
             "mouseout",
             dom,
             /* bubbles */ true,
-            /* composed */ false,
+            /* composed */ true,
           )
         };
         has_listeners
@@ -5192,7 +5203,7 @@ impl BrowserRuntime {
             web_events::EventInit {
               bubbles: true,
               cancelable: true,
-              composed: false,
+              composed: true,
             },
             mouse,
           );
@@ -5311,7 +5322,7 @@ impl BrowserRuntime {
             "mouseover",
             dom,
             /* bubbles */ true,
-            /* composed */ false,
+            /* composed */ true,
           )
         };
         has_listeners
@@ -5335,7 +5346,7 @@ impl BrowserRuntime {
             web_events::EventInit {
               bubbles: true,
               cancelable: true,
-              composed: false,
+              composed: true,
             },
             mouse,
           );
@@ -5388,7 +5399,7 @@ impl BrowserRuntime {
           "mousemove",
           dom,
           /* bubbles */ true,
-          /* composed */ false,
+          /* composed */ true,
         )
       };
       has_listeners
@@ -5405,7 +5416,7 @@ impl BrowserRuntime {
           web_events::EventInit {
             bubbles: true,
             cancelable: false,
-            composed: false,
+            composed: true,
           },
           mouse_base,
         );
@@ -11350,6 +11361,119 @@ mod js_tab_navigation_deadlines_tests {
     assert!(
       saw_timeout_log,
       "expected a DebugLog describing the timeout; got: {msgs:?}"
+    );
+  }
+}
+
+#[cfg(test)]
+mod hover_composed_shadow_dom_tests {
+  use super::*;
+
+  use std::sync::mpsc;
+
+  #[test]
+  fn hover_mouseover_is_composed_across_open_shadow_root() {
+    // Regression test for Shadow DOM compatibility:
+    // `mouseover` is composed in browsers, meaning it must cross the shadow boundary so listeners
+    // on the host/document can observe it with proper retargeting.
+    //
+    // The UI worker's hover dispatch uses `has_listeners_for_dispatch` to avoid wasted work, so this
+    // test also ensures that pre-check uses the same `composed` value as the dispatched event.
+    let html = r#"<!doctype html>
+      <html>
+        <body style="margin:0;padding:0;">
+          <div id="host">
+            <template shadowroot="open">
+              <div id="inner" style="width:40px;height:40px;background:rgb(255,0,0);"></div>
+            </template>
+          </div>
+          <script>
+            const host = document.getElementById("host");
+            host.addEventListener("mouseover", (ev) => {
+              document.body.setAttribute("data-mouseover-composed", String(ev.composed));
+            });
+          </script>
+        </body>
+      </html>"#;
+
+    let viewport = (64u32, 64u32);
+    let options = RenderOptions::default()
+      .with_viewport(viewport.0, viewport.1)
+      .with_device_pixel_ratio(1.0);
+
+    // Renderer-side document (used for hit-testing hover targets).
+    let mut doc = BrowserDocument::from_html(html, options.clone()).expect("BrowserDocument");
+    // `handle_pointer_move` requires cached layout artifacts.
+    let _ = doc.render_frame().expect("render initial frame");
+
+    // JS-side document (event listeners + Shadow DOM event propagation).
+    let js_tab = BrowserTab::from_html(html, options.clone(), VmJsBrowserTabExecutor::default())
+      .expect("BrowserTab");
+
+    // Create a runtime with a single tab containing both documents.
+    let (_ui_to_worker_tx, ui_to_worker_rx) = mpsc::channel::<UiToWorker>();
+    let (worker_to_ui_tx, _worker_to_ui_rx) = mpsc::channel::<WorkerToUi>();
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let factory = default_ui_worker_factory().expect("default ui worker factory");
+    let mut runtime = BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    let mut tab = TabState::new(CancelGens::new());
+    tab.viewport_css = viewport;
+    tab.dpr = 1.0;
+    tab.document = Some(doc);
+    tab.js_tab = Some(js_tab);
+    runtime.tabs.insert(tab_id, tab);
+
+    // Move the pointer over the shadow DOM child. This should dispatch `mouseover` targeted at the
+    // shadow node, which then crosses the shadow boundary because it is composed.
+    runtime.handle_pointer_move(
+      tab_id,
+      (10.0, 10.0),
+      PointerButton::None,
+      crate::ui::PointerModifiers::NONE,
+    );
+
+    let tab = runtime.tabs.get_mut(&tab_id).expect("tab state");
+    assert_eq!(
+      tab.last_hovered_dom_element_id.as_deref(),
+      Some("inner"),
+      "expected hit-testing to target the shadow DOM child element"
+    );
+
+    {
+      let js_tab = tab.js_tab.as_ref().expect("js tab");
+      let dom = js_tab.dom();
+      let body = dom.body().expect("expected document.body");
+      assert_eq!(
+        dom.get_attribute(body, "data-mouseover-composed").unwrap(),
+        Some("true"),
+        "expected host mouseover listener to fire with composed=true"
+      );
+    }
+
+    // Sanity check: ensure the JS-side hover target we dispatched to is actually inside a shadow
+    // root, so the test exercises shadow boundary crossing rather than a light-DOM event.
+    let hovered_preorder = tab
+      .last_hovered_dom_node_id
+      .expect("expected hovered node id");
+    let hovered_element_id = tab.last_hovered_dom_element_id.clone();
+    let js_target = {
+      let js_tab = tab.js_tab.as_mut().expect("js tab");
+      js_dom_node_for_preorder_id(
+        js_tab,
+        hovered_preorder,
+        hovered_element_id.as_deref(),
+        &mut tab.js_dom_mapping_generation,
+        &mut tab.js_dom_mapping,
+      )
+      .expect("expected hovered node to map into the JS DOM")
+    };
+    let dom = tab.js_tab.as_ref().expect("js tab").dom();
+    assert!(
+      dom.containing_shadow_root(js_target).is_some(),
+      "expected hover target to be inside a shadow root"
     );
   }
 }
