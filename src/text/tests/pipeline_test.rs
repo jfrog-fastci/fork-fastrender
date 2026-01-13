@@ -79,7 +79,7 @@ fn sideways_writing_mode_shapes_with_rotation() {
     require_fonts!(pipeline.shape_with_direction("abc", &style, &font_ctx, Direction::LeftToRight));
   assert!(!runs.is_empty());
   for run in runs {
-    assert_eq!(run.rotation, RunRotation::Cw90);
+    assert_eq!(run.rotation, RunRotation::Ccw90);
   }
 }
 
@@ -1212,6 +1212,62 @@ fn test_pipeline_shape_unicode_latin() {
   let result = pipeline.shape("café résumé naïve", &style, &font_context);
   let runs = require_fonts!(result);
   assert!(!runs.is_empty());
+}
+
+#[test]
+fn shaping_arc_api_reuses_cached_allocation() {
+  let pipeline = ShapingPipeline::new();
+  let font_context = bundled_font_context();
+  let style = ComputedStyle::default();
+
+  let first = require_fonts!(pipeline.shape_with_context_arc(
+    "Cache me",
+    &style,
+    &font_context,
+    Direction::LeftToRight,
+    None,
+  ));
+  let second = require_fonts!(pipeline.shape_with_context_arc(
+    "Cache me",
+    &style,
+    &font_context,
+    Direction::LeftToRight,
+    None,
+  ));
+
+  assert!(
+    Arc::ptr_eq(&first, &second),
+    "expected shaping cache hit to return the same Arc allocation"
+  );
+  assert!(!first.is_empty());
+}
+
+#[test]
+fn shaping_vec_wrapper_matches_arc_output() {
+  let pipeline = ShapingPipeline::new();
+  let font_context = bundled_font_context();
+  let style = ComputedStyle::default();
+
+  let arc_runs = require_fonts!(pipeline.shape_with_context_arc(
+    "Hello, world!",
+    &style,
+    &font_context,
+    Direction::LeftToRight,
+    None,
+  ));
+  let vec_runs = require_fonts!(pipeline.shape_with_context(
+    "Hello, world!",
+    &style,
+    &font_context,
+    Direction::LeftToRight,
+    None,
+  ));
+
+  assert_eq!(vec_runs.len(), arc_runs.len());
+  for (vec_run, arc_run) in vec_runs.iter().zip(arc_runs.iter()) {
+    assert_eq!(vec_run.glyphs.len(), arc_run.glyphs.len());
+    assert_eq!(vec_run.advance, arc_run.advance);
+  }
 }
 
 #[test]

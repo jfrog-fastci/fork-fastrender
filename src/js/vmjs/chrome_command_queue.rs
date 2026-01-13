@@ -1,4 +1,4 @@
-use crate::js::chrome_api::{ChromeApiHost, ChromeCommand};
+use crate::js::vmjs_chrome_api::{ChromeApiHost, ChromeCommand};
 use std::collections::VecDeque;
 
 const DEFAULT_MAX_QUEUE_LEN: usize = 1024;

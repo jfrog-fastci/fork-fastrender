@@ -6790,7 +6790,35 @@ impl ShapingPipeline {
     style: &ComputedStyle,
     font_context: &FontContext,
   ) -> Result<Vec<ShapedRun>> {
+    Ok(self.shape_arc(text, style, font_context)?.as_ref().clone())
+  }
+
+  /// Shapes text into positioned glyphs and returns an `Arc` to the cached runs.
+  ///
+  /// This is equivalent to [`Self::shape`], but avoids cloning on shaping-cache hits.
+  pub fn shape_arc(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+  ) -> Result<Arc<Vec<ShapedRun>>> {
     self.shape_core(text, style, font_context, None, None)
+  }
+
+  fn shape_core_vec(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    base_direction: Option<Direction>,
+    explicit_bidi: Option<ExplicitBidiContext>,
+  ) -> Result<Vec<ShapedRun>> {
+    Ok(
+      self
+        .shape_core(text, style, font_context, base_direction, explicit_bidi)?
+        .as_ref()
+        .clone(),
+    )
   }
 
   fn shape_core(
@@ -6800,7 +6828,7 @@ impl ShapingPipeline {
     font_context: &FontContext,
     base_direction: Option<Direction>,
     explicit_bidi: Option<ExplicitBidiContext>,
-  ) -> Result<Vec<ShapedRun>> {
+  ) -> Result<Arc<Vec<ShapedRun>>> {
     self.shape_core_impl(
       text,
       style,
@@ -6819,7 +6847,7 @@ impl ShapingPipeline {
     base_direction: Option<Direction>,
     explicit_bidi: Option<ExplicitBidiContext>,
     style_hash: u64,
-  ) -> Result<Vec<ShapedRun>> {
+  ) -> Result<Arc<Vec<ShapedRun>>> {
     self.shape_core_impl(
       text,
       style,
@@ -6838,10 +6866,10 @@ impl ShapingPipeline {
     base_direction: Option<Direction>,
     explicit_bidi: Option<ExplicitBidiContext>,
     style_hash: Option<u64>,
-  ) -> Result<Vec<ShapedRun>> {
+  ) -> Result<Arc<Vec<ShapedRun>>> {
     // Handle empty text
     if text.is_empty() {
-      return Ok(Vec::new());
+      return Ok(Arc::new(Vec::new()));
     }
 
     let diag_enabled = text_diagnostics_enabled();
@@ -6853,7 +6881,13 @@ impl ShapingPipeline {
       )
     {
       if !has_native_small_caps(style, font_context) && style.font_synthesis.small_caps {
-        return self.shape_small_caps(text, style, font_context, base_direction, explicit_bidi);
+        return Ok(Arc::new(self.shape_small_caps(
+          text,
+          style,
+          font_context,
+          base_direction,
+          explicit_bidi,
+        )?));
       }
     }
 
@@ -6895,13 +6929,12 @@ impl ShapingPipeline {
       bidi_signature: shaping_bidi_signature(resolved_base_dir, bidi_context),
     };
     if let Some(cached) = self.cache.get(&cache_key, text) {
-      let shaped_runs = cached.as_ref().clone();
       if diag_enabled {
-        let glyphs: usize = shaped_runs.iter().map(|run| run.glyphs.len()).sum();
-        record_text_shape(None, shaped_runs.len(), glyphs);
-        record_font_face_override_usage(&shaped_runs);
+        let glyphs: usize = cached.iter().map(|run| run.glyphs.len()).sum();
+        record_text_shape(None, cached.len(), glyphs);
+        record_font_face_override_usage(cached.as_ref());
       }
-      return Ok(shaped_runs);
+      return Ok(cached);
     }
 
     let cache_stats_before = diag_enabled.then(|| self.font_cache.stats());
@@ -6960,9 +6993,12 @@ impl ShapingPipeline {
       reorder_runs(&mut shaped_runs, bidi.paragraphs());
     }
 
-    self
+    let shaped_runs = Arc::new(shaped_runs);
+    let shaped_runs = self
       .cache
-      .insert(cache_key, Arc::clone(&bidi.text), Arc::new(shaped_runs.clone()));
+      // Reuse the `Arc<str>` allocated by bidi analysis so a single cache miss does not clone the
+      // full text multiple times (see `SHAPE_FULL_TEXT_ARC_ALLOCS` test guardrail).
+      .insert(cache_key, Arc::clone(&bidi.text), Arc::clone(&shaped_runs));
 
     let glyphs = shape_timer
       .as_ref()
@@ -6970,7 +7006,7 @@ impl ShapingPipeline {
       .unwrap_or(0);
     record_text_shape(shape_timer, shaped_runs.len(), glyphs);
     if diag_enabled {
-      record_font_face_override_usage(&shaped_runs);
+      record_font_face_override_usage(shaped_runs.as_ref());
     }
     if let (Some(before), Some(after)) = (
       cache_stats_before,
@@ -6985,6 +7021,16 @@ impl ShapingPipeline {
   /// Shapes text with explicit direction override.
   ///
   /// Useful when the CSS direction property is known.
+  pub fn shape_with_direction_arc(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    base_direction: Direction,
+  ) -> Result<Arc<Vec<ShapedRun>>> {
+    self.shape_core(text, style, font_context, Some(base_direction), None)
+  }
+
   pub fn shape_with_direction(
     &self,
     text: &str,
@@ -6992,10 +7038,32 @@ impl ShapingPipeline {
     font_context: &FontContext,
     base_direction: Direction,
   ) -> Result<Vec<ShapedRun>> {
-    self.shape_core(text, style, font_context, Some(base_direction), None)
+    Ok(
+      self
+        .shape_with_direction_arc(text, style, font_context, base_direction)?
+        .as_ref()
+        .clone(),
+    )
   }
 
   /// Shapes text with an explicit bidi context (embedding level/override).
+  pub fn shape_with_context_arc(
+    &self,
+    text: &str,
+    style: &ComputedStyle,
+    font_context: &FontContext,
+    base_direction: Direction,
+    bidi_context: Option<ExplicitBidiContext>,
+  ) -> Result<Arc<Vec<ShapedRun>>> {
+    self.shape_core(
+      text,
+      style,
+      font_context,
+      Some(base_direction),
+      bidi_context,
+    )
+  }
+
   pub fn shape_with_context(
     &self,
     text: &str,
@@ -7004,12 +7072,11 @@ impl ShapingPipeline {
     base_direction: Direction,
     bidi_context: Option<ExplicitBidiContext>,
   ) -> Result<Vec<ShapedRun>> {
-    self.shape_core(
-      text,
-      style,
-      font_context,
-      Some(base_direction),
-      bidi_context,
+    Ok(
+      self
+        .shape_with_context_arc(text, style, font_context, base_direction, bidi_context)?
+        .as_ref()
+        .clone(),
     )
   }
 
@@ -7027,13 +7094,18 @@ impl ShapingPipeline {
     bidi_context: Option<ExplicitBidiContext>,
     style_hash: u64,
   ) -> Result<Vec<ShapedRun>> {
-    self.shape_core_with_style_hash(
-      text,
-      style,
-      font_context,
-      Some(base_direction),
-      bidi_context,
-      style_hash,
+    Ok(
+      self
+        .shape_core_with_style_hash(
+          text,
+          style,
+          font_context,
+          Some(base_direction),
+          bidi_context,
+          style_hash,
+        )?
+        .as_ref()
+        .clone(),
     )
   }
 
@@ -7047,7 +7119,12 @@ impl ShapingPipeline {
     font_context: &FontContext,
     style_hash: u64,
   ) -> Result<Vec<ShapedRun>> {
-    self.shape_core_with_style_hash(text, style, font_context, None, None, style_hash)
+    Ok(
+      self
+        .shape_core_with_style_hash(text, style, font_context, None, None, style_hash)?
+        .as_ref()
+        .clone(),
+    )
   }
 
   /// Measures the total advance width of shaped text.
@@ -7059,7 +7136,7 @@ impl ShapingPipeline {
     style: &ComputedStyle,
     font_context: &FontContext,
   ) -> Result<f32> {
-    let runs = self.shape(text, style, font_context)?;
+    let runs = self.shape_arc(text, style, font_context)?;
     // Shaping backends may express inline advances with negative values for RTL runs (e.g.
     // HarfBuzz uses a leftward pen direction). Callers expect a physical width, so sum the
     // magnitude of each run's advance.
@@ -7186,7 +7263,7 @@ impl ShapingPipeline {
     if is_small {
       seg_style.font_size *= scale;
     }
-    let mut shaped = self.shape_core(
+    let mut shaped = self.shape_core_vec(
       segment_text,
       &seg_style,
       font_context,
@@ -9215,7 +9292,7 @@ mod tests {
     SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.set(0));
 
     pipeline
-      .shape_core("Cached bidi", &style, &ctx, None, None)
+      .shape_arc("Cached bidi", &style, &ctx)
       .expect("initial shape succeeds");
 
     let stats_after_first = pipeline.cache_stats();
@@ -9224,11 +9301,11 @@ mod tests {
     assert_eq!(pipeline.cache_len(), 1);
 
     pipeline
-      .shape_core(
+      .shape_with_context_arc(
         "Cached bidi",
         &style,
         &ctx,
-        None,
+        Direction::LeftToRight,
         Some(ExplicitBidiContext {
           level: Level::rtl(),
           override_all: true,
