@@ -1,6 +1,10 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::{origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest};
+use fastrender::resource::web_fetch::RequestRedirect;
+use fastrender::resource::{
+  origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, HttpRequest,
+};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
+use std::env;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -8,7 +12,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::env;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 const TEST_AUTH_TOKEN: &str = "fastrender-network-process-test-token";
@@ -112,7 +115,8 @@ fn spawn_http_server(listener: TcpListener, cors_headers: &'static str) -> threa
 fn cors_mode_fetch_blocked_in_network_process_when_missing_acao() {
   let _net_guard = net_test_lock();
 
-  let Some(listener) = try_bind_localhost("cors_mode_fetch_blocked_in_network_process_when_missing_acao")
+  let Some(listener) =
+    try_bind_localhost("cors_mode_fetch_blocked_in_network_process_when_missing_acao")
   else {
     return;
   };
@@ -121,8 +125,8 @@ fn cors_mode_fetch_blocked_in_network_process_when_missing_acao() {
 
   let (mut child, ipc_addr) = spawn_network_process();
 
-  let fetcher =
-    IpcResourceFetcher::new_with_auth_token(ipc_addr, TEST_AUTH_TOKEN).expect("connect ipc fetcher");
+  let fetcher = IpcResourceFetcher::new_with_auth_token(ipc_addr, TEST_AUTH_TOKEN)
+    .expect("connect ipc fetcher");
   let url = format!("http://{addr}/secret");
   let client_origin = origin_from_url("https://client.example/").expect("client origin");
   let req = FetchRequest::new(&url, FetchDestination::Fetch).with_client_origin(&client_origin);
@@ -158,8 +162,8 @@ fn cors_mode_fetch_allowed_in_network_process_with_matching_acao_and_credentials
 
   let (mut child, ipc_addr) = spawn_network_process();
 
-  let fetcher =
-    IpcResourceFetcher::new_with_auth_token(ipc_addr, TEST_AUTH_TOKEN).expect("connect ipc fetcher");
+  let fetcher = IpcResourceFetcher::new_with_auth_token(ipc_addr, TEST_AUTH_TOKEN)
+    .expect("connect ipc fetcher");
   let url = format!("http://{addr}/secret");
   let client_origin = origin_from_url("https://client.example/").expect("client origin");
   let req = FetchRequest::new(&url, FetchDestination::Fetch)
@@ -170,6 +174,92 @@ fn cors_mode_fetch_allowed_in_network_process_with_matching_acao_and_credentials
     .fetch_with_request(req)
     .expect("expected CORS response to be allowed");
   assert_eq!(res.bytes, b"secret");
+
+  let _ = child.kill();
+  let _ = child.wait();
+  http_handle.join().unwrap();
+}
+
+#[test]
+#[cfg(feature = "direct_network")]
+fn cors_mode_http_request_blocked_in_network_process_and_ignores_malicious_origin_header() {
+  let _net_guard = net_test_lock();
+
+  let Some(listener) = try_bind_localhost(
+    "cors_mode_http_request_blocked_in_network_process_and_ignores_malicious_origin_header",
+  ) else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+  let http_handle = spawn_http_server(listener, "");
+
+  let (mut child, ipc_addr) = spawn_network_process();
+
+  let fetcher = IpcResourceFetcher::new_with_auth_token(ipc_addr, TEST_AUTH_TOKEN)
+    .expect("connect ipc fetcher");
+  let url = format!("http://{addr}/secret");
+  let client_origin = origin_from_url("https://client.example/").expect("client origin");
+  let fetch = FetchRequest::new(&url, FetchDestination::Fetch).with_client_origin(&client_origin);
+
+  // Simulate a malicious renderer trying to spoof the Origin request header directly. The HTTP
+  // fetch layer must drop user-provided Origin headers and instead compute them from the
+  // client-origin context.
+  let user_headers = vec![("Origin".to_string(), "https://evil.example".to_string())];
+  let req = HttpRequest {
+    fetch,
+    method: "GET",
+    redirect: RequestRedirect::Follow,
+    headers: &user_headers,
+    body: None,
+  };
+
+  let err = fetcher
+    .fetch_http_request(req)
+    .expect_err("expected network process to enforce CORS");
+  assert!(
+    err.to_string().contains("blocked by CORS"),
+    "unexpected error message: {err}"
+  );
+
+  let _ = child.kill();
+  let _ = child.wait();
+  http_handle.join().unwrap();
+}
+
+#[test]
+#[cfg(feature = "direct_network")]
+fn credentialed_cors_mode_fetch_requires_allow_credentials_in_network_process() {
+  let _net_guard = net_test_lock();
+
+  let Some(listener) = try_bind_localhost(
+    "credentialed_cors_mode_fetch_requires_allow_credentials_in_network_process",
+  ) else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+  let http_handle = spawn_http_server(
+    listener,
+    // Matching ACAO but no Access-Control-Allow-Credentials.
+    "Access-Control-Allow-Origin: https://client.example\r\n",
+  );
+
+  let (mut child, ipc_addr) = spawn_network_process();
+
+  let fetcher = IpcResourceFetcher::new_with_auth_token(ipc_addr, TEST_AUTH_TOKEN)
+    .expect("connect ipc fetcher");
+  let url = format!("http://{addr}/secret");
+  let client_origin = origin_from_url("https://client.example/").expect("client origin");
+  let req = FetchRequest::new(&url, FetchDestination::Fetch)
+    .with_client_origin(&client_origin)
+    .with_credentials_mode(FetchCredentialsMode::Include);
+
+  let err = fetcher
+    .fetch_with_request(req)
+    .expect_err("expected credentialed CORS request to require ACAC");
+  assert!(
+    err.to_string().contains("Access-Control-Allow-Credentials"),
+    "unexpected error message: {err}"
+  );
 
   let _ = child.kill();
   let _ = child.wait();
