@@ -9061,6 +9061,23 @@ struct App {
   next_media_wakeup: std::collections::HashMap<fastrender::ui::TabId, std::time::Instant>,
   /// Last time we sent a worker-driven tick due to `next_media_wakeup` (rate limiting).
   last_media_wakeup_tick: std::collections::HashMap<fastrender::ui::TabId, std::time::Instant>,
+  /// Suppress exactly one upcoming `WindowEvent::ReceivedCharacter` event.
+  ///
+  /// Winit delivers some printable keys (notably Space) as both `KeyboardInput` and
+  /// `ReceivedCharacter`. The page/media input pipeline consumes `KeyboardInput` for key actions
+  /// (e.g. play/pause) and `ReceivedCharacter` for text input. When an overlay (such as native
+  /// media controls) wants shortcuts but *not* text insertion, we suppress the corresponding
+  /// `ReceivedCharacter` to avoid double-triggering.
+  suppress_next_received_character: Option<SuppressReceivedCharacter>,
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuppressReceivedCharacter {
+  /// Suppress the next `ReceivedCharacter` event regardless of the character.
+  AnyOnce,
+  /// Suppress the next `ReceivedCharacter` event only if it matches `ch` (ASCII case-insensitive).
+  CharOnce(char),
 }
 
 #[cfg(feature = "browser_ui")]
@@ -9852,6 +9869,7 @@ impl App {
       last_animation_tick: None,
       next_media_wakeup: std::collections::HashMap::new(),
       last_media_wakeup_tick: std::collections::HashMap::new(),
+      suppress_next_received_character: None,
     })
   }
 
@@ -17736,6 +17754,8 @@ impl App {
             if let Some(controls) = self.open_media_controls.as_ref() {
               match key {
                 VirtualKeyCode::Space => {
+                  self.suppress_next_received_character =
+                    Some(SuppressReceivedCharacter::CharOnce(' '));
                   let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
                     tab_id: controls.tab_id,
                     node_id: controls.media_node_id,
@@ -17763,6 +17783,8 @@ impl App {
                   return;
                 }
                 VirtualKeyCode::M => {
+                  self.suppress_next_received_character =
+                    Some(SuppressReceivedCharacter::CharOnce('m'));
                   let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
                     tab_id: controls.tab_id,
                     node_id: controls.media_node_id,
@@ -17772,6 +17794,8 @@ impl App {
                   return;
                 }
                 VirtualKeyCode::F => {
+                  self.suppress_next_received_character =
+                    Some(SuppressReceivedCharacter::CharOnce('f'));
                   self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ToggleFullScreen]);
                   self.window.request_redraw();
                   return;
@@ -18126,6 +18150,38 @@ impl App {
           return;
         }
 
+        if self.should_consume_media_shortcuts() {
+          match key {
+            // Prefer handling printable media shortcuts on `KeyboardInput` when possible, and
+            // suppress the matching `ReceivedCharacter` to avoid double delivery.
+            VirtualKeyCode::M => {
+              self.suppress_next_received_character =
+                Some(SuppressReceivedCharacter::CharOnce('m'));
+              self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
+                tab_id,
+                text: "m".to_string(),
+              });
+              return;
+            }
+            VirtualKeyCode::F => {
+              self.suppress_next_received_character =
+                Some(SuppressReceivedCharacter::CharOnce('f'));
+              self.send_worker_msg(fastrender::ui::UiToWorker::TextInput {
+                tab_id,
+                text: "f".to_string(),
+              });
+              return;
+            }
+            VirtualKeyCode::Space => {
+              // Space is delivered as both a KeyAction and a printable character by winit; avoid
+              // sending `TextInput(" ")` so media controls only see one play/pause shortcut.
+              self.suppress_next_received_character =
+                Some(SuppressReceivedCharacter::CharOnce(' '));
+            }
+            _ => {}
+          }
+        }
+
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Delete => Some(fastrender::interaction::KeyAction::Delete),
@@ -18252,6 +18308,16 @@ impl App {
         }
       }
       WindowEvent::ReceivedCharacter(ch) => {
+        if let Some(suppress) = self.suppress_next_received_character.take() {
+          match suppress {
+            SuppressReceivedCharacter::AnyOnce => return,
+            SuppressReceivedCharacter::CharOnce(expected) => {
+              if expected.to_ascii_lowercase() == ch.to_ascii_lowercase() {
+                return;
+              }
+            }
+          }
+        }
         if self.clear_browsing_data_dialog_open {
           return;
         }
@@ -18268,19 +18334,45 @@ impl App {
         if ch.is_control() {
           return;
         }
-        if self.open_media_controls.is_some()
-          && matches!(*ch, ' ' | 'm' | 'M' | 'f' | 'F')
-        {
-          // Media overlay keyboard shortcuts should not be forwarded to the page as text input.
-          //
-          // These keys are handled at the `KeyboardInput` layer so they work reliably regardless of
-          // IME/`ReceivedCharacter` behaviour.
-          return;
-        }
         if self.open_select_dropdown.is_some() {
           self.handle_select_dropdown_typeahead(*ch);
           self.window.request_redraw();
           return;
+        }
+        if let Some(controls) = self.open_media_controls.as_ref() {
+          // Media keyboard shortcuts should only trigger for the plain key (no browser/chrome
+          // command modifiers), otherwise reserved shortcuts like Alt+Left/Right should keep
+          // working.
+          //
+          // Note: do not treat Shift as a command modifier here so uppercase shortcuts (Shift+M/F)
+          // still work.
+          let has_command_modifiers =
+            self.modifiers.ctrl() || self.modifiers.alt() || self.modifiers.logo();
+          if !has_command_modifiers {
+            match *ch {
+              ' ' => {
+                // Space is delivered as both `KeyboardInput` and `ReceivedCharacter(' ')`. When the
+                // media overlay is open, the `KeyboardInput` path triggers play/pause; suppress the
+                // character event so the page doesn't also receive a text input.
+                return;
+              }
+              'm' | 'M' => {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
+                  tab_id: controls.tab_id,
+                  node_id: controls.media_node_id,
+                  command: fastrender::ui::messages::MediaCommand::ToggleMute,
+                });
+                self.window.request_redraw();
+                return;
+              }
+              'f' | 'F' => {
+                self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ToggleFullScreen]);
+                self.window.request_redraw();
+                return;
+              }
+              _ => {}
+            }
+          }
         }
         if self.open_date_time_picker.is_some() {
           self.cancel_date_time_picker();
