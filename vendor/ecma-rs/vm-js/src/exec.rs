@@ -37807,6 +37807,48 @@ mod tests {
     assert_eq!(value, Value::Number(155.0));
     Ok(())
   }
+
+  #[test]
+  fn global_typed_array_and_data_view_survive_host_gc_between_exec_script_calls(
+  ) -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    // A relatively small heap to stress GC. Note: `JsRuntime::new` needs enough space for realm
+    // initialization in debug builds, so keep the max modest but non-trivial.
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 64 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    rt.exec_script(
+      r#"
+      globalThis.ab = new ArrayBuffer(16);
+      globalThis.ta = new Uint8Array(globalThis.ab);
+      ta[0] = 42;
+      globalThis.dv = new DataView(globalThis.ab);
+    "#,
+    )?;
+
+    // Force host-side GC between `exec_script` calls to ensure the runtime object graph keeps the
+    // backing buffer alive (global object → typed array / DataView → ArrayBuffer).
+    rt.heap.collect_garbage();
+    rt.heap.collect_garbage();
+
+    let mut eval = |src: &str| -> Result<Value, VmError> {
+      match rt.exec_script(src) {
+        Ok(v) => Ok(v),
+        Err(err @ VmError::InvalidHandle { .. }) => {
+          panic!("unexpected InvalidHandle from `{src}`: {err:?}");
+        }
+        Err(err) => Err(err),
+      }
+    };
+
+    assert_eq!(eval("ta.byteLength")?, Value::Number(16.0));
+    assert_eq!(eval("ta.buffer.byteLength")?, Value::Number(16.0));
+    assert_eq!(eval("ta[0]")?, Value::Number(42.0));
+    assert_eq!(eval("dv.byteLength")?, Value::Number(16.0));
+    assert_eq!(eval("dv.buffer.byteLength")?, Value::Number(16.0));
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]
