@@ -759,6 +759,43 @@ fn range_compare_boundary_points_returns_wrong_document_error_for_different_root
 }
 
 #[test]
+fn range_compare_boundary_points_returns_wrong_document_error_between_light_dom_and_shadow_tree() {
+  let html = concat!(
+    "<!doctype html>",
+    "<div id=host>",
+    "<template shadowrootmode=open><span id=inside></span></template>",
+    "<p id=light></p>",
+    "</div>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let host = doc.get_element_by_id("host").expect("host node not found");
+  let shadow_root = doc.node(host).children[0];
+  assert!(
+    matches!(doc.node(shadow_root).kind, NodeKind::ShadowRoot { .. }),
+    "expected host to have an attached ShadowRoot"
+  );
+  let inside = doc.node(shadow_root).children[0];
+
+  let in_light_dom = doc.create_range();
+  doc.range_set_start(in_light_dom, host, 0).unwrap();
+  doc.range_set_end(in_light_dom, host, 0).unwrap();
+
+  let in_shadow = doc.create_range();
+  doc.range_set_start(in_shadow, inside, 0).unwrap();
+  doc.range_set_end(in_shadow, inside, 0).unwrap();
+
+  let err = doc
+    .range_compare_boundary_points(in_light_dom, 0, in_shadow)
+    .unwrap_err();
+  assert_eq!(
+    err,
+    DomError::WrongDocumentError,
+    "ShadowRoot is the root of a separate tree for Range algorithms"
+  );
+}
+
+#[test]
 fn range_compare_boundary_points_orders_boundary_points() {
   let mut doc: Document =
     parse_html("<!doctype html><html><body><p id=a>abcd</p></body></html>").unwrap();
