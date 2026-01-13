@@ -584,7 +584,7 @@ enum ScriptExecutionCompletion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OrderedModuleQueueKind {
+enum OrderedScriptQueueKind {
   OrderedAsap,
   PostParse,
 }
@@ -630,10 +630,10 @@ pub struct BrowserTabHost {
   /// Ordered module scripts must not start until the prior one finishes evaluation (including
   /// top-level await).
   in_flight_ordered_asap_module: Option<HtmlScriptId>,
-  queued_ordered_asap_modules: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
+  queued_ordered_asap_scripts: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
   /// The currently in-flight post-parse module script (parser-inserted, non-async `type=module`).
   in_flight_post_parse_module: Option<HtmlScriptId>,
-  queued_post_parse_modules: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
+  queued_post_parse_scripts: VecDeque<HtmlScriptSchedulerAction<NodeId>>,
   /// Script execution tasks (`HtmlScriptSchedulerAction::QueueTask`) that were deferred because the
   /// document still has script-blocking stylesheets.
   ///
@@ -738,9 +738,9 @@ impl BrowserTabHost {
       image_load_state: HashMap::new(),
       next_image_load_request_id: 1,
       in_flight_ordered_asap_module: None,
-      queued_ordered_asap_modules: VecDeque::new(),
+      queued_ordered_asap_scripts: VecDeque::new(),
       in_flight_post_parse_module: None,
-      queued_post_parse_modules: VecDeque::new(),
+      queued_post_parse_scripts: VecDeque::new(),
       queued_stylesheet_blocked_script_tasks: VecDeque::new(),
       parser_blocked_on: None,
       document_url: None,
@@ -1115,9 +1115,9 @@ impl BrowserTabHost {
     self.image_load_state.clear();
     self.next_image_load_request_id = 1;
     self.in_flight_ordered_asap_module = None;
-    self.queued_ordered_asap_modules.clear();
+    self.queued_ordered_asap_scripts.clear();
     self.in_flight_post_parse_module = None;
-    self.queued_post_parse_modules.clear();
+    self.queued_post_parse_scripts.clear();
     self.queued_stylesheet_blocked_script_tasks.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url.clone();
@@ -3320,24 +3320,50 @@ impl BrowserTabHost {
             })
             .unwrap_or(TaskSource::Script);
 
-          // Ordered module scripts must not start until the prior ordered module has fully completed
-          // evaluation (including top-level await). When the scheduler queues multiple module
-          // scripts at once, delay queuing subsequent ones until the in-flight module completes.
-          if let Some(kind) = self.ordered_module_queue_kind(script_id) {
-            if self.ordered_module_queue_is_blocked(kind) {
-              self.enqueue_ordered_module_action(
+          // HTML's ordered script execution lists (`ordered_asap` / `post_parse`) run scripts
+          // sequentially:
+          // - "list of scripts that will execute in order as soon as possible"
+          //   (`specs/whatwg-html/source` `#script-processing-src-sync`)
+          // - "list of scripts that will execute when the document has finished parsing"
+          //   (`specs/whatwg-html/source` heading "The end")
+          //
+          // For module scripts with top-level await, `run a module script` returns a Promise that
+          // can settle on a future turn. Until that promise settles, later scripts in the same
+          // ordered list must not start (even if they are classic scripts), otherwise their
+          // execution could interleave between the module's pre- and post-`await` portions.
+          if let Some(kind) = self.ordered_script_queue_kind(script_id) {
+            let script_type = self
+              .scripts
+              .get(&script_id)
+              .map(|entry| entry.spec.script_type)
+              .unwrap_or(ScriptType::Unknown);
+            if self.ordered_script_queue_is_blocked(kind) {
+              let work = match script_type {
+                ScriptType::Classic => HtmlScriptWork::Classic {
+                  source_text: Some(source_text),
+                },
+                ScriptType::Module => HtmlScriptWork::Module {
+                  source_text: Some(source_text),
+                },
+                _ => {
+                  return Err(Error::Other(format!(
+                    "attempted to enqueue ordered script action for unsupported type: {script_type:?}"
+                  )));
+                }
+              };
+              self.enqueue_ordered_script_action(
                 kind,
                 HtmlScriptSchedulerAction::QueueTask {
                   script_id,
                   node_id,
-                  work: HtmlScriptWork::Module {
-                    source_text: Some(source_text),
-                  },
+                  work,
                 },
               );
               continue;
             }
-            self.mark_ordered_module_in_flight(kind, script_id);
+            if script_type == ScriptType::Module {
+              self.mark_ordered_module_in_flight(kind, script_id);
+            }
           }
 
           event_loop.queue_task(task_source, move |host, event_loop| {
@@ -3430,46 +3456,103 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn ordered_module_queue_kind(&self, script_id: HtmlScriptId) -> Option<OrderedModuleQueueKind> {
+  fn ordered_script_queue_kind(&self, script_id: HtmlScriptId) -> Option<OrderedScriptQueueKind> {
     let entry = self.scripts.get(&script_id)?;
-    if entry.spec.script_type != ScriptType::Module {
-      return None;
-    }
-    if entry.spec.async_attr || entry.spec.force_async {
-      // Async module scripts execute as soon as possible once ready; they are not part of the
-      // ordered module queues.
-      return None;
-    }
-    if entry.spec.parser_inserted {
-      Some(OrderedModuleQueueKind::PostParse)
-    } else {
-      Some(OrderedModuleQueueKind::OrderedAsap)
+    match entry.spec.script_type {
+      ScriptType::Module => {
+        if entry.spec.async_attr || entry.spec.force_async {
+          // Async module scripts execute as soon as possible once ready; they are not part of the
+          // ordered script queues.
+          return None;
+        }
+        if entry.spec.parser_inserted {
+          Some(OrderedScriptQueueKind::PostParse)
+        } else {
+          Some(OrderedScriptQueueKind::OrderedAsap)
+        }
+      }
+      ScriptType::Classic => {
+        // Classic scripts participate in ordered execution via two distinct lists:
+        // - Parser-inserted `defer` scripts (`post_parse`)
+        // - DOM-inserted (`parser_inserted=false`) external scripts with `async=false`
+        //   (`ordered_asap`)
+        //
+        // These correspond to:
+        // - "The end" loop that executes the "list of scripts that will execute when the document
+        //   has finished parsing" (spec `#the-end`)
+        // - The "list of scripts that will execute in order as soon as possible" loop (spec
+        //   `#script-processing-src-sync`)
+        if entry.spec.parser_inserted {
+          let is_post_parse = entry.spec.src_attr_present
+            && entry
+              .spec
+              .src
+              .as_deref()
+              .is_some_and(|src| !src.is_empty())
+            && entry.spec.defer_attr
+            && !entry.spec.async_attr;
+          is_post_parse.then_some(OrderedScriptQueueKind::PostParse)
+        } else {
+          let is_ordered_asap = entry.spec.src_attr_present
+            && entry
+              .spec
+              .src
+              .as_deref()
+              .is_some_and(|src| !src.is_empty())
+            && !entry.spec.async_attr
+            && !entry.spec.force_async;
+          is_ordered_asap.then_some(OrderedScriptQueueKind::OrderedAsap)
+        }
+      }
+      ScriptType::ImportMap | ScriptType::Unknown => None,
     }
   }
 
-  fn ordered_module_queue_is_blocked(&self, kind: OrderedModuleQueueKind) -> bool {
+  fn ordered_script_queue_is_blocked(&self, kind: OrderedScriptQueueKind) -> bool {
     match kind {
-      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module.is_some(),
-      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module.is_some(),
+      OrderedScriptQueueKind::OrderedAsap => self.in_flight_ordered_asap_module.is_some(),
+      OrderedScriptQueueKind::PostParse => self.in_flight_post_parse_module.is_some(),
     }
   }
 
-  fn enqueue_ordered_module_action(
+  fn enqueue_ordered_script_action(
     &mut self,
-    kind: OrderedModuleQueueKind,
+    kind: OrderedScriptQueueKind,
     action: HtmlScriptSchedulerAction<NodeId>,
   ) {
     match kind {
-      OrderedModuleQueueKind::OrderedAsap => self.queued_ordered_asap_modules.push_back(action),
-      OrderedModuleQueueKind::PostParse => self.queued_post_parse_modules.push_back(action),
+      OrderedScriptQueueKind::OrderedAsap => self.queued_ordered_asap_scripts.push_back(action),
+      OrderedScriptQueueKind::PostParse => self.queued_post_parse_scripts.push_back(action),
     }
   }
 
-  fn mark_ordered_module_in_flight(&mut self, kind: OrderedModuleQueueKind, script_id: HtmlScriptId) {
+  fn mark_ordered_module_in_flight(
+    &mut self,
+    kind: OrderedScriptQueueKind,
+    script_id: HtmlScriptId,
+  ) {
     match kind {
-      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module = Some(script_id),
-      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module = Some(script_id),
+      OrderedScriptQueueKind::OrderedAsap => self.in_flight_ordered_asap_module = Some(script_id),
+      OrderedScriptQueueKind::PostParse => self.in_flight_post_parse_module = Some(script_id),
     }
+  }
+
+  fn resume_ordered_script_queue(
+    &mut self,
+    kind: OrderedScriptQueueKind,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    while !self.ordered_script_queue_is_blocked(kind) {
+      let next = match kind {
+        OrderedScriptQueueKind::OrderedAsap => self.queued_ordered_asap_scripts.pop_front(),
+        OrderedScriptQueueKind::PostParse => self.queued_post_parse_scripts.pop_front(),
+      };
+      let Some(action) = next else {
+        break;
+      };
+      self.apply_scheduler_actions(vec![action], event_loop)?;
+    }
+    Ok(())
   }
 
   fn finish_ordered_module_and_maybe_start_next(
@@ -3477,30 +3560,30 @@ impl BrowserTabHost {
     script_id: HtmlScriptId,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    let Some(kind) = self.ordered_module_queue_kind(script_id) else {
+    let Some(kind) = self.ordered_script_queue_kind(script_id) else {
       return Ok(());
     };
+    let Some(entry) = self.scripts.get(&script_id) else {
+      return Ok(());
+    };
+    if entry.spec.script_type != ScriptType::Module {
+      return Ok(());
+    }
 
     let in_flight_matches = match kind {
-      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module == Some(script_id),
-      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module == Some(script_id),
+      OrderedScriptQueueKind::OrderedAsap => self.in_flight_ordered_asap_module == Some(script_id),
+      OrderedScriptQueueKind::PostParse => self.in_flight_post_parse_module == Some(script_id),
     };
     if !in_flight_matches {
       return Ok(());
     }
 
     match kind {
-      OrderedModuleQueueKind::OrderedAsap => self.in_flight_ordered_asap_module = None,
-      OrderedModuleQueueKind::PostParse => self.in_flight_post_parse_module = None,
+      OrderedScriptQueueKind::OrderedAsap => self.in_flight_ordered_asap_module = None,
+      OrderedScriptQueueKind::PostParse => self.in_flight_post_parse_module = None,
     }
 
-    let next = match kind {
-      OrderedModuleQueueKind::OrderedAsap => self.queued_ordered_asap_modules.pop_front(),
-      OrderedModuleQueueKind::PostParse => self.queued_post_parse_modules.pop_front(),
-    };
-    if let Some(action) = next {
-      self.apply_scheduler_actions(vec![action], event_loop)?;
-    }
+    self.resume_ordered_script_queue(kind, event_loop)?;
     Ok(())
   }
 
@@ -17304,6 +17387,115 @@ html, body { margin: 0; padding: 0; }
       Some("m1-start,m1-end,m2,DOMContentLoaded,load"),
       "expected ordered module scripts to execute sequentially even across top-level await, and to delay DOMContentLoaded/load",
     );
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_blocks_later_classic_defer_scripts_in_post_parse_queue() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let classic_source = r#"globalThis.__log.push("classic-defer");"#;
+    let b64 = BASE64_STANDARD.encode(classic_source.as_bytes());
+    let classic_url = Url::parse(&format!("data:text/javascript;base64,{b64}"))
+      .expect("data URL should parse")
+      .to_string();
+
+    let html = format!(
+      r#"<!doctype html><body>
+        <script>
+          globalThis.__log = [];
+          document.addEventListener("DOMContentLoaded", () => globalThis.__log.push("DOMContentLoaded"));
+          window.addEventListener("load", () => {{
+            globalThis.__log.push("load");
+            document.body.setAttribute("data-log", globalThis.__log.join(","));
+          }});
+        </script>
+        <script type="module">
+          globalThis.__log.push("m1-start");
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          globalThis.__log.push("m1-end");
+        </script>
+        <script defer src="{classic_url}"></script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-log")
+        .expect("get_attribute should succeed"),
+      Some("m1-start,m1-end,classic-defer,DOMContentLoaded,load"),
+      "expected classic defer scripts to remain blocked behind a prior ordered module script whose evaluation is pending due to top-level await",
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn module_top_level_await_blocks_mixed_ordered_asap_classic_and_module_scripts() -> Result<()> {
+    let mut js_options = JsExecutionOptions::default();
+    js_options.supports_module_scripts = true;
+
+    let classic_source = r#"globalThis.__log.push("classic");"#;
+    let b64 = BASE64_STANDARD.encode(classic_source.as_bytes());
+    let classic_url = Url::parse(&format!("data:text/javascript;base64,{b64}"))
+      .expect("data URL should parse")
+      .to_string();
+
+    let html = format!(
+      r#"<!doctype html><body>
+        <script>
+          globalThis.__log = [];
+          window.addEventListener("load", () => {{
+            globalThis.__log.push("load");
+            document.body.setAttribute("data-log", globalThis.__log.join(","));
+          }});
+
+          const mod = document.createElement("script");
+          mod.type = "module";
+          mod.async = false;
+          mod.textContent = `
+            globalThis.__log.push("m1-start");
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            globalThis.__log.push("m1-end");
+          `;
+
+          const classic = document.createElement("script");
+          classic.async = false;
+          classic.src = "{classic_url}";
+
+          document.body.appendChild(mod);
+          document.body.appendChild(classic);
+        </script>
+      </body>"#
+    );
+
+    let mut tab = BrowserTab::from_html_with_js_execution_options(
+      &html,
+      RenderOptions::default(),
+      crate::api::VmJsBrowserTabExecutor::default(),
+      js_options,
+    )?;
+    tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+
+    let dom = tab.dom();
+    let body = dom.body().expect("body should exist");
+    assert_eq!(
+      dom.get_attribute(body, "data-log")
+        .expect("get_attribute should succeed"),
+      Some("m1-start,m1-end,classic,load"),
+      "expected ordered-asap scripts to preserve sequential execution even when a module script has pending top-level await",
+    );
+
     Ok(())
   }
 
