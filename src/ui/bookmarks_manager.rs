@@ -11,7 +11,8 @@ use std::path::Path;
 use crate::ui::motion::UiMotion;
 
 use super::{
-  icon_button, icon_tinted, panel_search_field, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon,
+  icon_button, icon_tinted, panel_empty_state, panel_header, panel_search_field, BookmarkId,
+  BookmarkNode, BookmarkStore, BrowserIcon,
 };
 
 #[derive(Debug, Clone)]
@@ -90,23 +91,8 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       // Header
       // -----------------------------------------------------------------------
-      ui.horizontal(|ui| {
-        icon_tinted(
-          ui,
-          BrowserIcon::BookmarkFilled,
-          ui.spacing().icon_width,
-          ui.visuals().hyperlink_color,
-        );
-        ui.heading("Bookmarks");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          let close_resp = icon_button(ui, BrowserIcon::Close, "Close", true);
-          close_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close bookmarks manager")
-          });
-          if close_resp.clicked() {
-            out.close_requested = true;
-          }
-        });
+      panel_header(ui, BrowserIcon::BookmarkFilled, "Bookmarks", || {
+        out.close_requested = true;
       });
 
       let folder_options = folder_options(store);
@@ -677,56 +663,33 @@ fn bookmarks_list(
 
   frame.show(ui, |ui| {
     if store.roots.is_empty() {
-      ui.add_space(24.0);
-      ui.vertical_centered(|ui| {
-        icon_tinted(
-          ui,
-          BrowserIcon::BookmarkOutline,
-          32.0,
-          ui.visuals().weak_text_color(),
-        );
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("No bookmarks").strong());
-        ui.label(
-          egui::RichText::new("Press Ctrl/Cmd+D to bookmark the current page.")
-            .small()
-            .color(ui.visuals().weak_text_color()),
-        );
-      });
-      ui.add_space(24.0);
+      panel_empty_state(
+        ui,
+        BrowserIcon::BookmarkOutline,
+        "No bookmarks",
+        Some("Press Ctrl/Cmd+D to bookmark the current page."),
+        None,
+      );
       return;
     }
 
     let query = state.search.trim().to_string();
-    egui::ScrollArea::vertical()
-      .auto_shrink([false, false])
-      .show(ui, |ui| {
-        if query.is_empty() {
-          let roots = store.roots.clone();
-          render_nodes(ui, state, store, &roots, folder_options, folder_labels, out);
-        } else {
-          let results = store.search(&query, usize::MAX);
-          if results.is_empty() {
-            ui.add_space(24.0);
-            ui.vertical_centered(|ui| {
-              icon_tinted(
-                ui,
-                BrowserIcon::Search,
-                28.0,
-                ui.visuals().weak_text_color(),
-              );
-              ui.add_space(8.0);
-              ui.label(egui::RichText::new("No matches").strong());
-              ui.label(
-                egui::RichText::new("Try a different search.")
-                  .small()
-                  .color(ui.visuals().weak_text_color()),
-              );
-            });
-            ui.add_space(24.0);
-            return;
-          }
+    if !query.is_empty() {
+      let results = store.search(&query, usize::MAX);
+      if results.is_empty() {
+        panel_empty_state(
+          ui,
+          BrowserIcon::Search,
+          "No matches",
+          Some("Try a different search."),
+          None,
+        );
+        return;
+      }
 
+      egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
           for id in results {
             let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&id).cloned() else {
               continue;
@@ -737,7 +700,15 @@ fn bookmarks_list(
               .unwrap_or("Root");
             render_bookmark_row(ui, state, store, entry, folder_options, parent_label, out);
           }
-        }
+        });
+      return;
+    }
+
+    egui::ScrollArea::vertical()
+      .auto_shrink([false, false])
+      .show(ui, |ui| {
+        let roots = store.roots.clone();
+        render_nodes(ui, state, store, &roots, folder_options, folder_labels, out);
       });
   });
 }
