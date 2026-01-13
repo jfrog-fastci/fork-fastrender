@@ -2319,6 +2319,7 @@ impl JsRuntime {
               &mut tick,
             )?;
           }
+
           let mut scope = self.heap.scope();
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -2499,9 +2500,8 @@ impl JsRuntime {
             host,
             &mut hooks,
             await_value,
-          );
-          let resolve_res =
-            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -2964,10 +2964,14 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res =
-            promise_resolve_for_await_with_host_and_hooks(&mut *vm_frame, &mut root_scope, host, hooks, await_value);
-          let resolve_res =
-            resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
+          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut root_scope,
+            host,
+            hooks,
+            await_value,
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -6975,8 +6979,8 @@ impl<'a> Evaluator<'a> {
       ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
     }
 
-      let mut ctor_length: u32 = 0;
-      let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+    let mut ctor_length: u32 = 0;
+    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
         if func_node.stx.generator {
           return Err(syntax_error(
             loc,
@@ -14765,12 +14769,17 @@ fn async_handle_body_result(
       // `promise.then`, which creates a derived promise using `promise.constructor[Symbol.species]`.
       //
       // We still need to perform `Get(promise, \"constructor\")` for side effects/throws (per
-       // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
-       // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
-       // undefined)` is sufficient and avoids Promise species side effects.
-       let resolve_res =
-         promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
-       let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+      // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
+      // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
+      // undefined)` is sufficient and avoids Promise species side effects.
+      let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+        vm,
+        &mut await_scope,
+        host,
+        hooks,
+        await_value,
+      )
+      .map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
@@ -17550,7 +17559,10 @@ fn async_eval_class_after_super(
     };
 
     if ctor_method.is_some() {
-      return Err(syntax_error(member.loc, "A class may only have one constructor"));
+      return Err(syntax_error(
+        member.loc,
+        "A class may only have one constructor",
+      ));
     }
     ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
   }
@@ -17766,7 +17778,7 @@ fn async_eval_class_after_super(
       Value::Null => class_scope.heap_mut().object_set_prototype(prototype_obj, None),
       Value::Object(super_ctor) => {
         let proto_parent: Option<GcObject> = {
-          // `Get(superCtor, "prototype")` (Proxy-aware / accessor-aware).
+          // `Get(superCtor, \"prototype\")` (Proxy-aware / accessor-aware).
           let mut proto_scope = class_scope.reborrow();
           proto_scope.push_root(Value::Object(super_ctor))?;
           let proto_key_s = proto_scope.alloc_string("prototype")?;
@@ -34934,9 +34946,8 @@ pub(crate) fn run_ecma_function(
           &mut *evaluator.host,
           &mut *evaluator.hooks,
           await_value,
-        );
-        let resolve_res =
-          resolve_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
 
         let awaited_promise = match resolve_res {
           Ok(p) => p,
