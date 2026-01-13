@@ -7,6 +7,7 @@
 
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 pub type GlobalTestLockGuard = ReentrantMutexGuard<'static, ()>;
 
@@ -141,6 +142,43 @@ impl Drop for EnvVarsGuard {
       }
     }
   }
+}
+
+/// RAII guard that sets the current working directory for the lifetime of the guard while holding
+/// the global test lock.
+///
+/// This is needed because `std::env::set_current_dir` is process-global in the unified integration
+/// test binary. Tests should use this guard (or [`with_current_dir`]) so changes are serialized and
+/// automatically reverted.
+#[must_use]
+pub(crate) struct CurrentDirGuard {
+  _lock: GlobalTestLockGuard,
+  previous: PathBuf,
+}
+
+impl CurrentDirGuard {
+  /// Set the current directory to `path` for the lifetime of this guard.
+  pub(crate) fn set(path: impl AsRef<Path>) -> std::io::Result<Self> {
+    let lock = global_test_lock();
+    let previous = std::env::current_dir()?;
+    std::env::set_current_dir(path)?;
+    Ok(Self { _lock: lock, previous })
+  }
+}
+
+impl Drop for CurrentDirGuard {
+  fn drop(&mut self) {
+    let _ = std::env::set_current_dir(&self.previous);
+  }
+}
+
+/// Run `f` while the current directory is set to `path`.
+pub(crate) fn with_current_dir<R>(
+  path: impl AsRef<Path>,
+  f: impl FnOnce() -> R,
+) -> std::io::Result<R> {
+  let _guard = CurrentDirGuard::set(path)?;
+  Ok(f())
 }
 
 /// RAII guard that installs a process-global stage listener and restores the previous listener on

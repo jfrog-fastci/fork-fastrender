@@ -198,15 +198,14 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     let _inherit_guard = HandleInheritGuard::new(&std_handles);
     // The Windows sandbox may not have access to the repository working directory; use System32 as a
     // conservative working directory during process creation.
-    let prev_dir = std::env::current_dir().ok();
-    if let Some(root) = std::env::var_os("SystemRoot") {
+    let _cwd_guard = if let Some(root) = std::env::var_os("SystemRoot") {
       let system32 = PathBuf::from(root).join("System32");
-      let _ = std::env::set_current_dir(&system32);
-    }
+      crate::common::CurrentDirGuard::set(&system32).ok()
+    } else {
+      None
+    };
     let child = spawn_sandboxed(&exe, &args, &inherit_handles);
-    if let Some(prev_dir) = prev_dir {
-      let _ = std::env::set_current_dir(prev_dir);
-    }
+    drop(_cwd_guard);
     child.expect("spawn sandboxed child test process")
   });
 
