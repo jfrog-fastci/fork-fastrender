@@ -7078,17 +7078,23 @@ fn history_state_change_native(
   };
   let cloned_state_value = history_state_structured_clone(vm, scope, host, hooks, state_value)?;
 
-  // The optional URL argument is resolved against the document URL (not `document.baseURI`).
+  // The optional URL argument is resolved against the document base URL (`document.baseURI`).
+  // This differs from `document.URL` when a `<base href>` element (or embedder override) is present.
   let url_value = args.get(2).copied().unwrap_or(Value::Undefined);
   let url_provided = !matches!(url_value, Value::Undefined | Value::Null);
   if url_provided {
-    let current_document_url = {
-      let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
-        return Err(VmError::InvariantViolation(
-          "window realm missing user data",
-        ));
+    let (base_url, current_document_url) = {
+      let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+        return Err(VmError::InvariantViolation("window realm missing user data"));
       };
-      data.document_url.clone()
+      // Match `document.baseURI`: fall back to the document URL when no explicit base URL is set.
+      (
+        data
+          .base_url
+          .clone()
+          .unwrap_or_else(|| data.document_url.clone()),
+        data.document_url.clone(),
+      )
     };
 
     let url_value = match url_value {
@@ -7098,8 +7104,7 @@ fn history_state_change_native(
     scope.push_root(Value::String(url_value))?;
     let url_input = scope.heap().get_string(url_value)?.to_utf8_lossy();
 
-    let resolved =
-      match crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url)) {
+    let resolved = match crate::js::url_resolve::resolve_url(&url_input, Some(base_url.as_str())) {
         Ok(resolved) => resolved,
         Err(err) => {
           return Err(VmError::Throw(make_dom_exception(vm, scope,
@@ -62905,6 +62910,25 @@ mod tests {
     scope.push_root(Value::Object(obj))?;
     let name = get_prop(vm, &mut scope, obj, "name")?;
     assert_eq!(get_string(scope.heap(), name), "SecurityError");
+    Ok(())
+  }
+
+  #[test]
+  fn history_push_state_resolves_url_against_document_base_url() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    realm.set_base_url(Some("https://example.com/base/".to_string()));
+    realm.exec_script("history.pushState(null, '', 'next');")?;
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), "https://example.com/base/next");
+    Ok(())
+  }
+
+  #[test]
+  fn history_push_state_resolves_url_against_document_url_by_default() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/dir/page.html"))?;
+    realm.exec_script("history.pushState(null, '', 'next');")?;
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), "https://example.com/dir/next");
     Ok(())
   }
 
