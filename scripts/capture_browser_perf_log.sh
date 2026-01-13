@@ -151,7 +151,10 @@ find_summary_bin() {
 if [[ "${run_summary}" -eq 1 ]]; then
   if summary_bin="$(find_summary_bin)"; then
     echo "capture_browser_perf_log: running ${summary_bin} --input \"${out_path}\"" >&2
-    bash "${repo_root}/scripts/run_limited.sh" --as 64G -- "${summary_bin}" --input "${out_path}"
+    # Keep stdout reserved for the perf JSONL stream. `browser_perf_log_summary` prints a JSON
+    # summary on stdout and a human-readable summary on stderr; redirect stdout so everything stays
+    # on stderr when `--summary` is used.
+    bash "${repo_root}/scripts/run_limited.sh" --as 64G -- "${summary_bin}" --input "${out_path}" 1>&2
   else
     echo "capture_browser_perf_log: --summary requested but browser_perf_log_summary was not found." >&2
     echo "capture_browser_perf_log: build + run it with:" >&2
