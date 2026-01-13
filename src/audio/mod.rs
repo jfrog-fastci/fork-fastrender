@@ -281,6 +281,51 @@ pub struct AudioStreamHandle {
 }
 
 impl AudioStreamHandle {
+  /// Configures the output preroll/latency model for this stream.
+  ///
+  /// The stream's `current_time()` is defined as the time of the audio that is reaching the
+  /// speakers (or would, on a real backend). Many real audio backends have a constant latency
+  /// between "samples written to the output callback" and "samples actually audible". To keep
+  /// `current_time()` aligned with first audible audio, we subtract a configurable preroll from the
+  /// played frame counter.
+  ///
+  /// A non-zero preroll means:
+  /// - `current_time()` remains at `base_pts` until at least `preroll` worth of frames have been
+  ///   rendered.
+  /// - after that, `current_time()` advances normally.
+  ///
+  /// This is safe to call at any time, but changing it during playback may introduce a discontinuity
+  /// in `current_time()`. Typical usage is to set it before `play()`.
+  pub fn set_preroll(&self, preroll: Duration) {
+    let preroll_frames = duration_to_frames_floor(preroll, self.inner.sample_rate_hz);
+    let mut state = self.inner.state.lock();
+    state.preroll_frames = preroll_frames;
+  }
+
+  /// Returns `true` once the stream has started producing *audible* audio.
+  ///
+  /// With `preroll=0`, this becomes `true` after the first frame has been rendered.
+  /// With `preroll>0`, it becomes `true` once enough frames have been rendered to cover the preroll
+  /// latency.
+  #[must_use]
+  pub fn playback_started(&self) -> bool {
+    let state = self.inner.state.lock();
+    playback_started(state.preroll_frames, state.played_frames)
+  }
+
+  /// Returns the device-time offset at which playback became audible.
+  ///
+  /// This is `None` until [`Self::playback_started`] is true.
+  #[must_use]
+  pub fn playback_started_at(&self) -> Option<Duration> {
+    let state = self.inner.state.lock();
+    if playback_started(state.preroll_frames, state.played_frames) {
+      Some(frames_to_duration(state.preroll_frames, self.inner.sample_rate_hz))
+    } else {
+      None
+    }
+  }
+
   /// Enqueues interleaved `f32` samples for playback.
   ///
   /// The input must have a length that is a multiple of the stream's channel count.
@@ -401,7 +446,10 @@ impl AudioStreamHandle {
   #[must_use]
   pub fn current_time(&self) -> Duration {
     let state = self.inner.state.lock();
-    let played = frames_to_duration(state.played_frames, self.inner.sample_rate_hz);
+    // `played_frames` advances when we render audio into the backend/output buffer.
+    // To align this with "audio the user can hear", subtract preroll/latency.
+    let audible_frames = state.played_frames.saturating_sub(state.preroll_frames);
+    let played = frames_to_duration(audible_frames, self.inner.sample_rate_hz);
     state.base_pts.saturating_add(played)
   }
 
@@ -506,6 +554,8 @@ impl AudioStreamInner {
 struct AudioStreamState {
   is_playing: bool,
   base_pts: Duration,
+  /// Output latency/preroll, expressed in frames at `sample_rate_hz`.
+  preroll_frames: u64,
   played_frames: u64,
   queue: VecDeque<f32>,
   eos: bool,
@@ -518,6 +568,7 @@ impl AudioStreamState {
     Self {
       is_playing: false,
       base_pts: Duration::ZERO,
+      preroll_frames: 0,
       played_frames: 0,
       queue: VecDeque::new(),
       eos: false,
@@ -547,6 +598,14 @@ fn duration_to_frames_floor(duration: Duration, sample_rate_hz: u32) -> u64 {
   }
   let frames = duration.as_nanos().saturating_mul(sample_rate_hz as u128) / 1_000_000_000u128;
   u64::try_from(frames).unwrap_or(u64::MAX)
+}
+
+fn playback_started(preroll_frames: u64, played_frames: u64) -> bool {
+  if preroll_frames == 0 {
+    played_frames > 0
+  } else {
+    played_frames >= preroll_frames
+  }
 }
 
 // === Backends =================================================================
@@ -1008,5 +1067,33 @@ mod tests {
       ramp_frames,
       last
     );
+  }
+
+  #[test]
+  fn audio_preroll_delays_stream_timeline_until_audible() {
+    let backend = NullAudioBackend::new(48_000, 1);
+    let stream = backend.create_stream();
+    stream.set_preroll(Duration::from_millis(100));
+    stream.enqueue_samples(vec![1.0; 48_000]).unwrap();
+
+    stream.play();
+    assert_eq!(stream.current_time(), Duration::ZERO);
+    assert!(!stream.playback_started());
+    assert_eq!(stream.playback_started_at(), None);
+
+    // Render just under the preroll threshold: timeline should remain near the start.
+    let _ = backend.render(4_799);
+    assert_eq!(stream.current_time(), Duration::ZERO);
+    assert!(!stream.playback_started());
+
+    // Cross the threshold: playback is now considered audible (timeline starts).
+    let _ = backend.render(1);
+    assert_eq!(stream.current_time(), Duration::ZERO);
+    assert!(stream.playback_started());
+    assert_eq!(stream.playback_started_at(), Some(Duration::from_millis(100)));
+
+    // After the preroll, timeline should advance with rendered frames.
+    let _ = backend.render(480); // +10ms
+    assert_eq!(stream.current_time(), Duration::from_millis(10));
   }
 }

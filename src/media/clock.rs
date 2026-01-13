@@ -78,6 +78,12 @@ impl MediaClock for RealAudioDeviceClock {
 /// when all audio is mixed into a single output device.
 pub struct AudioStreamClock {
   device_clock: Arc<AudioDeviceClock>,
+  /// Output latency/preroll in nanoseconds.
+  ///
+  /// This is modeled as a constant delay between "the device clock position we can observe" and
+  /// "the audio that is actually audible". The stream timeline will not advance until the device
+  /// clock has advanced by at least this amount, so `currentTime` aligns to first audible audio.
+  preroll_nanos: AtomicU64,
   /// Device timestamp corresponding to `start_media_time` (in nanoseconds).
   start_device_time: AtomicU64,
   /// Media timestamp corresponding to `start_device_time` (in nanoseconds).
@@ -95,6 +101,7 @@ impl std::fmt::Debug for AudioStreamClock {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("AudioStreamClock")
       .field("device_clock", &"<dyn MediaClock>")
+      .field("preroll", &self.preroll())
       .field(
         "start_device_time",
         &Duration::from_nanos(self.start_device_time.load(Ordering::Relaxed)),
@@ -110,14 +117,71 @@ impl std::fmt::Debug for AudioStreamClock {
 
 impl AudioStreamClock {
   pub fn new(device_clock: Arc<AudioDeviceClock>, start_media_time: Duration) -> Self {
-    let start_device_time = device_clock.now();
+    Self::new_with_preroll(device_clock, start_media_time, Duration::ZERO)
+  }
+
+  /// Creates a new stream clock with an output preroll/latency model.
+  ///
+  /// The stream timeline will remain pinned to `start_media_time` until the device clock has
+  /// advanced by `preroll`. This keeps `now()` aligned to the first audio that should be audible
+  /// (instead of advancing during initial buffering/output latency).
+  pub fn new_with_preroll(
+    device_clock: Arc<AudioDeviceClock>,
+    start_media_time: Duration,
+    preroll: Duration,
+  ) -> Self {
+    let preroll_nanos = duration_to_nanos_u64(preroll);
+    let start_device_time = device_clock
+      .now()
+      .saturating_add(Duration::from_nanos(preroll_nanos));
     let start_media_nanos = duration_to_nanos_u64(start_media_time);
     Self {
       device_clock,
+      preroll_nanos: AtomicU64::new(preroll_nanos),
       start_device_time: AtomicU64::new(duration_to_nanos_u64(start_device_time)),
       start_media_time: AtomicU64::new(start_media_nanos),
       rate: AtomicU64::new(1.0_f64.to_bits()),
       last_now: AtomicU64::new(start_media_nanos),
+    }
+  }
+
+  /// Returns the configured preroll/latency model.
+  #[must_use]
+  pub fn preroll(&self) -> Duration {
+    Duration::from_nanos(self.preroll_nanos.load(Ordering::Relaxed))
+  }
+
+  /// (Re-)configures the output preroll/latency model.
+  ///
+  /// This keeps `now()` continuous by re-anchoring the mapping at the current device time.
+  pub fn set_preroll(&self, preroll: Duration) {
+    let preroll_nanos = duration_to_nanos_u64(preroll);
+    self.preroll_nanos.store(preroll_nanos, Ordering::Relaxed);
+
+    // Keep `now()` continuous at the moment we update the preroll.
+    let media_now = self.now();
+    let device_now = self.device_clock.now();
+
+    let media_now_nanos = duration_to_nanos_u64(media_now);
+    self.start_media_time.store(media_now_nanos, Ordering::Relaxed);
+    self.last_now.store(media_now_nanos, Ordering::Relaxed);
+
+    let start_device_time = duration_to_nanos_u64(device_now).saturating_add(preroll_nanos);
+    self
+      .start_device_time
+      .store(start_device_time, Ordering::Relaxed);
+  }
+
+  /// Returns `Some(device_time)` once the stream timeline has started advancing (i.e. once the
+  /// device clock has advanced past the preroll threshold).
+  #[must_use]
+  pub fn playback_started_at(&self) -> Option<Duration> {
+    let device_now = duration_to_nanos_u64(self.device_clock.now());
+    let start_device = self.start_device_time.load(Ordering::Relaxed);
+    if device_now >= start_device {
+      Some(Duration::from_nanos(start_device))
+    } else {
+      None
     }
   }
 
@@ -137,14 +201,13 @@ impl AudioStreamClock {
     // Capture current mapping so the rate change does not introduce a discontinuity.
     let media_now = self.now();
     let device_now = self.device_clock.now();
+    let preroll_nanos = self.preroll_nanos.load(Ordering::Relaxed);
 
     let media_now_nanos = duration_to_nanos_u64(media_now);
     self
       .start_device_time
-      .store(duration_to_nanos_u64(device_now), Ordering::Relaxed);
-    self
-      .start_media_time
-      .store(media_now_nanos, Ordering::Relaxed);
+      .store(duration_to_nanos_u64(device_now).saturating_add(preroll_nanos), Ordering::Relaxed);
+    self.start_media_time.store(media_now_nanos, Ordering::Relaxed);
     self.last_now.store(media_now_nanos, Ordering::Relaxed);
     self.rate.store(new_rate.to_bits(), Ordering::Relaxed);
   }
@@ -152,13 +215,12 @@ impl AudioStreamClock {
   /// Resets the mapping so that `now()` returns `new_media_time` at the current device time.
   pub fn seek(&self, new_media_time: Duration) {
     let device_now = self.device_clock.now();
+    let preroll_nanos = self.preroll_nanos.load(Ordering::Relaxed);
     let new_media_nanos = duration_to_nanos_u64(new_media_time);
     self
       .start_device_time
-      .store(duration_to_nanos_u64(device_now), Ordering::Relaxed);
-    self
-      .start_media_time
-      .store(new_media_nanos, Ordering::Relaxed);
+      .store(duration_to_nanos_u64(device_now).saturating_add(preroll_nanos), Ordering::Relaxed);
+    self.start_media_time.store(new_media_nanos, Ordering::Relaxed);
     self.last_now.store(new_media_nanos, Ordering::Relaxed);
   }
 
