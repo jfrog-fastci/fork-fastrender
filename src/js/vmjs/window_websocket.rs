@@ -480,6 +480,19 @@ fn resolve_websocket_url(vm: &mut Vm, env_id: u64, url: &str) -> Result<url::Url
   Ok(resolved)
 }
 
+fn is_valid_websocket_subprotocol_token(s: &str) -> bool {
+  if s.is_empty() {
+    return false;
+  }
+  s.bytes().all(|b| {
+    matches!(b, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z')
+      || matches!(
+        b,
+        b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+      )
+  })
+}
+
 fn parse_protocols(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -496,6 +509,9 @@ fn parse_protocols(
       let s = js_string_to_rust_string_limited(scope.heap(), s, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
       if s.is_empty() {
         return Ok(Vec::new());
+      }
+      if !is_valid_websocket_subprotocol_token(&s) {
+        return Err(VmError::TypeError("WebSocket protocol must be a token"));
       }
       Ok(vec![s])
     }
@@ -517,6 +533,9 @@ fn parse_protocols(
           let s = to_rust_string_limited(scope.heap_mut(), item, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
           if s.is_empty() {
             return Err(VmError::TypeError("WebSocket protocol must not be empty"));
+          }
+          if !is_valid_websocket_subprotocol_token(&s) {
+            return Err(VmError::TypeError("WebSocket protocol must be a token"));
           }
           if out.iter().any(|p| p == &s) {
             return Err(VmError::TypeError(
@@ -563,6 +582,9 @@ fn parse_protocols(
       let s = to_rust_string_limited(scope.heap_mut(), other, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
       if s.is_empty() {
         return Ok(Vec::new());
+      }
+      if !is_valid_websocket_subprotocol_token(&s) {
+        return Err(VmError::TypeError("WebSocket protocol must be a token"));
       }
       Ok(vec![s])
     }
