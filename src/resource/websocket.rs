@@ -199,9 +199,11 @@ pub(crate) fn connect_websocket_with_cookies(
 ) -> tungstenite::Result<(ClientSocket, ClientResponse)> {
   // Treat renderer-supplied WebSocket URLs as untrusted: validate and canonicalize here even if the
   // renderer performed its own resolution/validation.
-  let parsed = crate::ipc::websocket::validate_and_normalize_url(ws_url).map_err(|err| {
-    tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))
-  })?;
+  let parsed = crate::ipc::websocket::validate_and_normalize_url(ws_url).map_err(
+    |err: crate::ipc::websocket::WebSocketValidationError| {
+      tungstenite::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))
+    },
+  )?;
   let cookie_url = cookie_url_for_ws_url(&parsed);
 
   let mut request = parsed.clone().into_client_request()?;
