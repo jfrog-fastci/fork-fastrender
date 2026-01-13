@@ -4993,6 +4993,13 @@ pub(crate) struct DatalistOption {
   pub disabled: bool,
 }
 
+/// A `<datalist>` `<option>` along with its stable pre-order DOM node id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DatalistOptionEntry {
+  pub node_id: usize,
+  pub option: DatalistOption,
+}
+
 fn is_html_datalist(node: &DomNode) -> bool {
   if !node
     .tag_name()
@@ -5071,7 +5078,10 @@ fn datalist_option_text(node: &DomNode) -> String {
   )
 }
 
-fn collect_datalist_options_in_index(index: &DomIndexMut, datalist_node_id: usize) -> Vec<DatalistOption> {
+fn collect_datalist_option_entries_in_index(
+  index: &DomIndexMut,
+  datalist_node_id: usize,
+) -> Vec<DatalistOptionEntry> {
   let Some(datalist) = index.node(datalist_node_id) else {
     return Vec::new();
   };
@@ -5096,7 +5106,7 @@ fn collect_datalist_options_in_index(index: &DomIndexMut, datalist_node_id: usiz
     }
   }
 
-  let mut options: Vec<DatalistOption> = Vec::new();
+  let mut options: Vec<DatalistOptionEntry> = Vec::new();
   for id in (datalist_node_id + 1)..=end {
     let Some(node) = index.node(id) else {
       continue;
@@ -5137,14 +5147,37 @@ fn collect_datalist_options_in_index(index: &DomIndexMut, datalist_node_id: usiz
     };
     let disabled = node.get_attribute_ref("disabled").is_some();
 
-    options.push(DatalistOption {
-      value,
-      label,
-      disabled,
+    options.push(DatalistOptionEntry {
+      node_id: id,
+      option: DatalistOption {
+        value,
+        label,
+        disabled,
+      },
     });
   }
 
   options
+}
+
+fn collect_datalist_options_in_index(index: &DomIndexMut, datalist_node_id: usize) -> Vec<DatalistOption> {
+  collect_datalist_option_entries_in_index(index, datalist_node_id)
+    .into_iter()
+    .map(|entry| entry.option)
+    .collect()
+}
+
+/// Collect all `<option>` descendants of a `<datalist>` in DOM (pre-order) order, returning the
+/// option element's node id along with extracted value/label metadata.
+///
+/// Options inside inert `<template>` contents are ignored. Descendant text used for value/label
+/// fallback ignores `<script>` and does not cross shadow-root boundaries.
+pub(crate) fn collect_datalist_option_entries(
+  dom: &mut DomNode,
+  datalist_node_id: usize,
+) -> Vec<DatalistOptionEntry> {
+  let index = DomIndexMut::new(dom);
+  collect_datalist_option_entries_in_index(&index, datalist_node_id)
 }
 
 /// Collect all `<option>` descendants of a `<datalist>` in DOM (pre-order) order.

@@ -1,8 +1,11 @@
 use super::{
-  collect_datalist_options, datalist_option_matches_input_value, resolve_associated_datalist,
+  collect_datalist_option_entries, datalist_option_matches_input_value, resolve_associated_datalist,
   DatalistOption,
 };
-use crate::dom::{enumerate_dom_ids, DomNode, DomNodeType, ShadowRootMode, HTML_NAMESPACE};
+use crate::dom::{
+  enumerate_dom_ids, find_node_mut_by_preorder_id, DomNode, DomNodeType, ShadowRootMode,
+  HTML_NAMESPACE,
+};
 use selectors::context::QuirksMode;
 
 fn doc(children: Vec<DomNode>) -> DomNode {
@@ -136,18 +139,22 @@ fn datalist_option_extraction_extracts_value_label_and_disabled() {
         "datalist",
         vec![("id", "dl")],
         vec![
-          el("option", vec![("value", "A"), ("label", "Alpha")], vec![]),
-          el("option", vec![("value", "B")], vec![text("Bravo")]),
-          el("option", vec![], vec![text("  Charlie  ")]),
-          el("option", vec![("label", "")], vec![text("Delta")]),
           el(
             "option",
-            vec![("value", ""), ("disabled", "")],
+            vec![("id", "o1"), ("value", "A"), ("label", "Alpha")],
+            vec![],
+          ),
+          el("option", vec![("id", "o2"), ("value", "B")], vec![text("Bravo")]),
+          el("option", vec![("id", "o3")], vec![text("  Charlie  ")]),
+          el("option", vec![("id", "o4"), ("label", "")], vec![text("Delta")]),
+          el(
+            "option",
+            vec![("id", "o5"), ("value", ""), ("disabled", "")],
             vec![text("Echo")],
           ),
           el(
             "option",
-            vec![],
+            vec![("id", "o6")],
             vec![
               text("Hi"),
               el("script", vec![], vec![text("ignored")]),
@@ -160,7 +167,8 @@ fn datalist_option_extraction_extracts_value_label_and_disabled() {
   )]);
 
   let dl_id = node_id(&dom, "dl");
-  let options = collect_datalist_options(&mut dom, dl_id);
+  let entries = collect_datalist_option_entries(&mut dom, dl_id);
+  let options: Vec<DatalistOption> = entries.iter().map(|entry| entry.option.clone()).collect();
   assert_eq!(
     options,
     vec![
@@ -197,6 +205,18 @@ fn datalist_option_extraction_extracts_value_label_and_disabled() {
     ]
   );
 
+  // Returned option node ids should reference real `<option>` nodes in the DOM.
+  assert_eq!(entries[0].node_id, node_id(&dom, "o1"));
+  for entry in &entries {
+    let node = find_node_mut_by_preorder_id(&mut dom, entry.node_id).expect("option node");
+    assert!(
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("option")),
+      "datalist option entry ids must reference <option> elements"
+    );
+  }
+
   // Case-insensitive prefix matching on either value or label.
   assert!(datalist_option_matches_input_value(&options[0], "a"));
   assert!(datalist_option_matches_input_value(&options[0], "AL"));
@@ -220,9 +240,17 @@ fn datalist_option_extraction_ignores_template_descendants() {
           el(
             "template",
             vec![],
-            vec![el("option", vec![("value", "t")], vec![text("Template")])],
+            vec![el(
+              "option",
+              vec![("id", "t"), ("value", "t")],
+              vec![text("Template")],
+            )],
           ),
-          el("option", vec![("value", "r")], vec![text("Real")]),
+          el(
+            "option",
+            vec![("id", "r"), ("value", "r")],
+            vec![text("Real")],
+          ),
           el(
             "div",
             vec![],
@@ -230,9 +258,17 @@ fn datalist_option_extraction_ignores_template_descendants() {
               el(
                 "template",
                 vec![],
-                vec![el("option", vec![("value", "t2")], vec![text("Template2")])],
+                vec![el(
+                  "option",
+                  vec![("id", "t2"), ("value", "t2")],
+                  vec![text("Template2")],
+                )],
               ),
-              el("option", vec![("value", "r2")], vec![text("Real2")]),
+              el(
+                "option",
+                vec![("id", "r2"), ("value", "r2")],
+                vec![text("Real2")],
+              ),
             ],
           ),
         ],
@@ -241,7 +277,8 @@ fn datalist_option_extraction_ignores_template_descendants() {
   )]);
 
   let dl_id = node_id(&dom, "dl");
-  let options = collect_datalist_options(&mut dom, dl_id);
+  let entries = collect_datalist_option_entries(&mut dom, dl_id);
+  let options: Vec<DatalistOption> = entries.iter().map(|entry| entry.option.clone()).collect();
   assert_eq!(
     options,
     vec![
@@ -256,6 +293,12 @@ fn datalist_option_extraction_ignores_template_descendants() {
         disabled: false,
       },
     ]
+  );
+
+  // Ensure we keep pre-order order and only include real options (not inside templates).
+  assert_eq!(
+    entries.iter().map(|entry| entry.node_id).collect::<Vec<_>>(),
+    vec![node_id(&dom, "r"), node_id(&dom, "r2")]
   );
 }
 
