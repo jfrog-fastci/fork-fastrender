@@ -574,6 +574,12 @@ impl BrowserTabState {
     self.current_url.as_deref()
   }
 
+  /// Returns the user-visible tab title without allocating.
+  ///
+  /// Semantics match the legacy `display_title()` behavior from before this method returned `&str`:
+  /// - Prefer a non-empty [`BrowserTabState::title`] (after trimming for emptiness).
+  /// - Otherwise fall back to [`BrowserTabState::current_url`].
+  /// - Otherwise fall back to `"New Tab"`.
   pub fn display_title(&self) -> &str {
     if let Some(title) = self.title.as_deref().filter(|t| !t.trim().is_empty()) {
       return title;
@@ -928,6 +934,28 @@ mod tab_tests {
       super::CRASH_REASON_MAX_CHARS,
       reason.chars().count()
     );
+  }
+
+  #[test]
+  fn display_title_prefers_non_empty_title() {
+    let mut tab = BrowserTabState::new(TabId(1), "https://example.com".to_string());
+    tab.title = Some("Example Domain".to_string());
+    assert_eq!(tab.display_title(), "Example Domain");
+  }
+
+  #[test]
+  fn display_title_falls_back_to_url_when_title_empty() {
+    let mut tab = BrowserTabState::new(TabId(1), "https://example.com".to_string());
+    tab.title = Some("   ".to_string());
+    assert_eq!(tab.display_title(), "https://example.com");
+  }
+
+  #[test]
+  fn display_title_falls_back_to_new_tab_when_no_title_or_url() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    tab.title = None;
+    tab.current_url = None;
+    assert_eq!(tab.display_title(), "New Tab");
   }
 }
 

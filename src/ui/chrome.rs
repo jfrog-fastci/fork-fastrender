@@ -573,7 +573,7 @@ fn tab_search_overlay_ui(
                 let tab = &app.tabs[m.tab_index];
                 let is_selected = idx == selected;
 
-                let title = tab.display_title().to_string();
+                let title = tab.display_title();
                 let secondary = tab_search_secondary_text(tab);
 
                 // Use an explicit per-tab widget id so the AccessKit node id remains stable even if
