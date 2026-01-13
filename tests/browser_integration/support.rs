@@ -555,12 +555,14 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     if let WorkerToUi::FrameReady { tab_id, frame } = msg {
       let _ = writeln!(
         &mut out,
-        "FrameReady(tab={}, pixmap={}x{}, viewport_css={:?}, dpr={})",
+        "FrameReady(tab={}, pixmap={}x{}, viewport_css={:?}, dpr={}, scroll_viewport={:?}, element_scrolls={})",
         tab_id.0,
         frame.pixmap.width(),
         frame.pixmap.height(),
         frame.viewport_css,
-        frame.dpr
+        frame.dpr,
+        frame.scroll_state.viewport,
+        frame.scroll_state.elements.len()
       );
       continue;
     }
