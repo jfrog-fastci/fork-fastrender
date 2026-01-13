@@ -1519,6 +1519,38 @@ fn validate_regex_pattern(
         }
       }
       // Any other source character inside the disjunction counts as one `ClassSetCharacter`.
+      if j + 1 < bytes.len() && bytes[j] == bytes[j + 1] {
+        // ClassSetCharacter disallows SourceCharacters that begin a ClassSetReservedDoublePunctuator.
+        // These can still be expressed by escaping each punctuator (e.g. `\&\&`).
+        if matches!(
+          bytes[j],
+          b'&'
+            | b'!'
+            | b'#'
+            | b'$'
+            | b'%'
+            | b'*'
+            | b'+'
+            | b','
+            | b'.'
+            | b':'
+            | b';'
+            | b'<'
+            | b'='
+            | b'>'
+            | b'?'
+            | b'@'
+            | b'^'
+            | b'`'
+            | b'~'
+        ) {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + j,
+            len: 2,
+          });
+        }
+      }
       let ch = pattern[j..].chars().next().unwrap();
       match ch {
         '(' | ')' | '[' | ']' | '/' | '-' => {
@@ -3055,6 +3087,7 @@ mod regex_validation_tests {
     assert_valid(r"/[\q{|a}]/v");
     assert_valid(r"/[\q{a\|b}]/v");
     assert_valid(r"/[\q{a\}b}]/v");
+    assert_valid(r"/[\q{\&\&}]/v");
   }
 
   #[test]
@@ -3136,6 +3169,9 @@ mod regex_validation_tests {
     assert_invalid(r"/[\q]/v"); // missing `{`
     assert_invalid(r"/[\q{a|b]/v"); // unterminated `}`
     assert_invalid(r"/[\q{a{b}|c}]/v"); // raw `{` inside disjunction
+    assert_invalid(r"/[\q{&&}]/v"); // reserved double punctuator
+    assert_invalid(r"/[\q{\d}]/v"); // character class escape not allowed in ClassString
+    assert_invalid(r"/[\q{\q}]/v"); // invalid escape in UnicodeMode
   }
 }
 
