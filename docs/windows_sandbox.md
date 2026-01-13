@@ -46,6 +46,10 @@ Code map (repo reality):
         - Best-effort compatibility: if the OS rejects the mitigation attribute (e.g.
           `ERROR_INVALID_PARAMETER` / `ERROR_NOT_SUPPORTED`), the spawner retries without mitigations
           rather than failing process creation.
+      - Can remove the broad `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the created
+        AppContainer token via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`
+        (`SpawnConfig::all_application_packages_hardened`, best-effort / retried without on
+        unsupported Windows builds).
     - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
       - Uses a low-integrity restricted primary token (from `RestrictedToken`).
       - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
@@ -199,6 +203,14 @@ and setting:
 - `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` → a `SECURITY_CAPABILITIES` struct containing:
   - `AppContainerSid = <derived AppContainer SID>`
   - `Capabilities = NULL`, `CapabilityCount = 0` (no capabilities)
+- `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (best-effort) →
+  `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK`
+  - Removes the broad `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the created
+    AppContainer token.
+  - Some system objects are ACL'd to `ALL APPLICATION PACKAGES`; removing the group reduces ambient
+    access for the renderer.
+  - Compatibility: older Windows builds may reject this attribute (`ERROR_NOT_SUPPORTED` /
+    `ERROR_INVALID_PARAMETER`). The spawner retries without it.
 
 This is implemented in `src/sandbox/windows.rs::spawn_appcontainer`.
 
@@ -601,6 +613,8 @@ Windows-only tests that encode the intended boundary:
 - No child processes (active process job limit): `tests/sandbox/windows_no_child_process.rs`
 - Parent process handle escape attempt: `tests/sandbox/windows_process_handle_escape.rs`
 - AppContainer spawn smoke: `tests/sandbox/windows_sandbox_appcontainer_spawn.rs`
+- AppContainer token does not include `ALL APPLICATION PACKAGES` when hardening is enabled:
+  `tests/sandbox/windows_all_application_packages_hardening.rs`
 - Sandboxed renderer smoke (can initialize FastRender + render minimal HTML under AppContainer + mitigations): `tests/sandbox/windows_renderer_smoke.rs`
 - Environment sanitization (no secret env inheritance): `tests/sandbox/windows_sandbox_env_sanitization.rs`
 - AppContainer temp dir is writable (override parent TEMP/TMP): `tests/sandbox/windows_appcontainer_temp_dir.rs`

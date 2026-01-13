@@ -32,8 +32,13 @@ use windows_sys::Win32::Security::ACL;
 // exporting the constants.
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
+// ProcThreadAttributeValue(15, FALSE, TRUE, FALSE) → 0x0002_000F.
+const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000F;
 // ProcThreadAttributeValue(7, FALSE, TRUE, FALSE) → 0x0002_0007.
 const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
+
+// Value for `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (winbase.h).
+const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 
 /// Sandbox configuration for spawning untrusted renderer processes.
 ///
@@ -90,6 +95,7 @@ fn spawn_appcontainer_no_capabilities(
 
   let mut handles = standard_handle_list();
   let _inherit_guard = HandleInheritGuard::new(&handles);
+  let mut all_packages_policy_value = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK;
 
   fn mitigation_policy_unsupported(err: &WinSandboxError) -> bool {
     const ERROR_INVALID_PARAMETER: u32 = 87;
@@ -105,27 +111,31 @@ fn spawn_appcontainer_no_capabilities(
   let mut mitigation_policy_value = mitigation_policy;
 
   let base_attribute_count = 1 + u32::from(!handles.is_empty());
-  let mut attrs_without_mitigations = AttributeList::new(base_attribute_count)?;
-  attrs_without_mitigations.update_raw(
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    std::ptr::addr_of_mut!(capabilities).cast::<c_void>(),
-    std::mem::size_of::<SECURITY_CAPABILITIES>(),
-  )?;
-  if !handles.is_empty() {
-    attrs_without_mitigations.update_raw(
-      PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-      handles.as_mut_ptr().cast::<c_void>(),
-      handles.len() * std::mem::size_of::<windows_sys::Win32::Foundation::HANDLE>(),
-    )?;
-  }
+  let attribute_count_with_aap = base_attribute_count + 1;
 
-  let attrs_with_mitigations = if mitigation_policy_value != 0 {
-    let mut attrs = AttributeList::new(base_attribute_count + 1)?;
+  let mut init_attrs_base = |attrs: &mut AttributeList, include_aap: bool| -> Result<()> {
     attrs.update_raw(
       PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
       std::ptr::addr_of_mut!(capabilities).cast::<c_void>(),
       std::mem::size_of::<SECURITY_CAPABILITIES>(),
     )?;
+
+    if include_aap {
+      if let Err(err) = attrs.update_raw(
+        PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+        std::ptr::addr_of_mut!(all_packages_policy_value).cast::<c_void>(),
+        std::mem::size_of::<u32>(),
+      ) {
+        if mitigation_policy_unsupported(&err) {
+          eprintln!(
+            "warning: win-sandbox RendererSandbox: AAP hardening attribute unsupported ({err}); continuing without it"
+          );
+        } else {
+          return Err(err);
+        }
+      }
+    }
+
     if !handles.is_empty() {
       attrs.update_raw(
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
@@ -133,32 +143,53 @@ fn spawn_appcontainer_no_capabilities(
         handles.len() * std::mem::size_of::<windows_sys::Win32::Foundation::HANDLE>(),
       )?;
     }
+    Ok(())
+  };
+
+  let mut attrs_without_mitigations = AttributeList::new(attribute_count_with_aap)?;
+  init_attrs_base(&mut attrs_without_mitigations, true)?;
+
+  let mut attrs_without_aap = AttributeList::new(base_attribute_count)?;
+  init_attrs_base(&mut attrs_without_aap, false)?;
+
+  let mut attrs_with_mitigations: Option<AttributeList> = None;
+  let mut attrs_with_mitigations_no_aap: Option<AttributeList> = None;
+
+  if mitigation_policy_value != 0 {
+    let mut attrs = AttributeList::new(attribute_count_with_aap + 1)?;
+    init_attrs_base(&mut attrs, true)?;
     match attrs.update_raw(
       PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
       std::ptr::addr_of_mut!(mitigation_policy_value).cast::<c_void>(),
       std::mem::size_of::<u64>(),
     ) {
-      Ok(()) => Some(attrs),
+      Ok(()) => attrs_with_mitigations = Some(attrs),
       Err(err) if mitigation_policy_unsupported(&err) => {
         eprintln!(
           "warning: win-sandbox RendererSandbox: mitigation policy attribute unsupported ({err}); continuing without mitigations"
         );
-        None
       }
       Err(err) => return Err(err),
     }
-  } else {
-    None
-  };
+
+    let mut attrs = AttributeList::new(base_attribute_count + 1)?;
+    init_attrs_base(&mut attrs, false)?;
+    match attrs.update_raw(
+      PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+      std::ptr::addr_of_mut!(mitigation_policy_value).cast::<c_void>(),
+      std::mem::size_of::<u64>(),
+    ) {
+      Ok(()) => attrs_with_mitigations_no_aap = Some(attrs),
+      Err(err) if mitigation_policy_unsupported(&err) => {}
+      Err(err) => return Err(err),
+    }
+  }
 
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
   let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 
   let system32 = system32_dir();
   let system32_w = wide_null(system32.as_os_str());
-
-  let attrs_without_list = attrs_without_mitigations.list;
-  let attrs_with_list = attrs_with_mitigations.as_ref().map(|attrs| attrs.list);
 
   let create_process = |image: &Path, current_dir: Option<&[u16]>| -> Result<PROCESS_INFORMATION> {
     let application_name = wide_null(image.as_os_str());
@@ -194,23 +225,32 @@ fn spawn_appcontainer_no_capabilities(
       Ok(pi)
     };
 
-    if let Some(attr_list) = attrs_with_list {
-      match create_process_with_attrs(attr_list) {
-        Ok(pi) => Ok(pi),
-        Err(err) => {
-          if mitigation_policy_unsupported(&err) {
-            eprintln!(
-              "warning: win-sandbox RendererSandbox: CreateProcessW rejected mitigation policy attribute ({err}); retrying without mitigations"
-            );
-            create_process_with_attrs(attrs_without_list)
-          } else {
-            Err(err)
-          }
-        }
-      }
-    } else {
-      create_process_with_attrs(attrs_without_list)
+    let mut attempts: Vec<(LPPROC_THREAD_ATTRIBUTE_LIST, &'static str)> = Vec::new();
+    if let Some(attrs) = attrs_with_mitigations.as_ref() {
+      attempts.push((attrs.list, "mitigations + AAP hardening"));
     }
+    attempts.push((attrs_without_mitigations.list, "AAP hardening"));
+    if let Some(attrs) = attrs_with_mitigations_no_aap.as_ref() {
+      attempts.push((attrs.list, "mitigations (no AAP hardening)"));
+    }
+    attempts.push((attrs_without_aap.list, "no mitigations, no AAP hardening"));
+
+    let mut last_optional_err: Option<WinSandboxError> = None;
+    for (list, label) in attempts {
+      match create_process_with_attrs(list) {
+        Ok(pi) => return Ok(pi),
+        Err(err) if mitigation_policy_unsupported(&err) => {
+          eprintln!(
+            "warning: win-sandbox RendererSandbox: CreateProcessW rejected startup attributes ({label}): {err}; retrying with weaker attribute set"
+          );
+          last_optional_err = Some(err);
+          continue;
+        }
+        Err(err) => return Err(err),
+      }
+    }
+
+    Err(last_optional_err.unwrap_or_else(|| WinSandboxError::from_code("CreateProcessW", 0)))
   };
 
   match create_process(exe, Some(&system32_w)) {

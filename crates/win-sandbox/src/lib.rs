@@ -467,6 +467,7 @@ mod tests {
       appcontainer: None,
       job: None,
       mitigation_policy: Some(mitigations::renderer_mitigation_policy()),
+      all_application_packages_hardened: true,
     };
 
     let child = spawn_sandboxed(&cfg).unwrap();

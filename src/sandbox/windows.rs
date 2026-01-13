@@ -73,6 +73,20 @@ const FALLBACK_APPCONTAINER_TEMP: &str = r"C:\Windows\Temp";
 // ProcThreadAttributeValue(7, FALSE, TRUE, FALSE) → 0x0002_0007.
 const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
 
+// STARTUPINFOEX attribute value:
+// ProcThreadAttributeValue(15, FALSE, TRUE, FALSE) → 0x0002_000F.
+//
+// When set to `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK`, the created AppContainer
+// token does **not** include the broad `ALL APPLICATION PACKAGES` group (S-1-15-2-1). This reduces
+// default access to resources that are ACL'd to that group.
+const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000F;
+
+// Value for `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (winbase.h).
+//
+// `PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK` removes the `ALL APPLICATION PACKAGES`
+// group from the created token.
+const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WindowsRendererSandboxLevel {
   /// Primary mode: AppContainer with zero capabilities.
@@ -237,6 +251,31 @@ impl SandboxedChild {
     let mut code: u32 = 0;
     win32_bool(unsafe { GetExitCodeProcess(process, &mut code as *mut u32) })?;
     Ok(code)
+  }
+}
+
+/// Additional configuration for spawning Windows sandboxed child processes.
+#[derive(Debug, Clone, Copy)]
+pub struct SpawnConfig {
+  /// When `true`, the spawned AppContainer token has the broad
+  /// `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) removed via
+  /// `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`.
+  ///
+  /// This is a defense-in-depth hardening measure: some system objects are ACL'd to
+  /// `ALL APPLICATION PACKAGES`, so removing the group reduces ambient access for the renderer.
+  ///
+  /// Compatibility note: on Windows builds that do not support this attribute, the spawner
+  /// automatically retries without it.
+  pub all_application_packages_hardened: bool,
+}
+
+impl Default for SpawnConfig {
+  fn default() -> Self {
+    Self {
+      // Enable by default for the renderer sandbox preset. If this turns out to be incompatible
+      // with some Windows builds (e.g. font loading), callers can disable it explicitly.
+      all_application_packages_hardened: true,
+    }
   }
 }
 
@@ -488,6 +527,15 @@ pub fn spawn_sandboxed(
   args: &[OsString],
   inherit_handles: &[RawHandle],
 ) -> io::Result<SandboxedChild> {
+  spawn_sandboxed_with_config(exe, args, inherit_handles, SpawnConfig::default())
+}
+
+pub fn spawn_sandboxed_with_config(
+  exe: &Path,
+  args: &[OsString],
+  inherit_handles: &[RawHandle],
+  config: SpawnConfig,
+) -> io::Result<SandboxedChild> {
   let mitigation_policy = mitigations::renderer_mitigation_policy();
   let allow_fallback = allow_unsandboxed_renderer_via_env();
   let parent_in_job = match current_process_in_job() {
@@ -519,6 +567,7 @@ pub fn spawn_sandboxed(
       inherit_handles,
       parent_in_job,
       mitigation_policy,
+      config.all_application_packages_hardened,
       allow_fallback,
     ) {
       Ok(child) => Ok(child),
@@ -624,6 +673,7 @@ fn spawn_appcontainer(
   inherit_handles: &[RawHandle],
   parent_in_job: bool,
   mitigation_policy: u64,
+  all_application_packages_hardened: bool,
   allow_jobless: bool,
 ) -> io::Result<SandboxedChild> {
   let job = JobObject::new()?;
@@ -656,55 +706,101 @@ fn spawn_appcontainer(
     .collect();
   let mut handles = handles;
 
-  let base_attribute_count = 1 + u32::from(!handles.is_empty());
-  let mut attrs_without_mitigations = AttributeList::new(base_attribute_count)?;
-  attrs_without_mitigations.update_raw(
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-    std::ptr::addr_of_mut!(capabilities).cast(),
-    std::mem::size_of::<SECURITY_CAPABILITIES>(),
-  )?;
-  if !handles.is_empty() {
-    attrs_without_mitigations.update_raw(
-      PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-      handles.as_mut_ptr().cast(),
-      handles.len() * std::mem::size_of::<HANDLE>(),
-    )?;
-  }
-
+  let mut all_packages_policy_value = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK;
   let mut mitigation_policy_value = mitigation_policy;
-  let attrs_with_mitigations = if mitigation_policy_value != 0 {
-    let mut attrs = AttributeList::new(base_attribute_count + 1)?;
-    attrs.update_raw(
-      PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
-      std::ptr::addr_of_mut!(capabilities).cast(),
-      std::mem::size_of::<SECURITY_CAPABILITIES>(),
-    )?;
-    if !handles.is_empty() {
+
+  let base_attribute_count = 1 + u32::from(!handles.is_empty());
+  let attribute_count_with_aap = base_attribute_count + u32::from(all_application_packages_hardened);
+  let attribute_count_with_aap_and_mitigations =
+    attribute_count_with_aap + u32::from(mitigation_policy_value != 0);
+
+  // Build attribute list variants up-front so CreateProcess retries can switch between them without
+  // reallocating the whole list under error paths.
+  let mut attrs_without_mitigations = AttributeList::new(attribute_count_with_aap)?;
+  let mut attrs_without_aap: Option<AttributeList> = None;
+  let mut attrs_with_mitigations: Option<AttributeList> = None;
+  let mut attrs_with_mitigations_no_aap: Option<AttributeList> = None;
+
+  {
+    // Helper closure for populating a STARTUPINFOEX attribute list.
+    //
+    // This closure borrows `handles` mutably (for `as_mut_ptr()`), so keep it scoped to this block
+    // to avoid borrow-checker conflicts with later uses of `handles`.
+    let mut init_attrs_base = |attrs: &mut AttributeList, include_aap: bool| -> io::Result<()> {
       attrs.update_raw(
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        handles.as_mut_ptr().cast(),
-        handles.len() * std::mem::size_of::<HANDLE>(),
+        PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+        std::ptr::addr_of_mut!(capabilities).cast(),
+        std::mem::size_of::<SECURITY_CAPABILITIES>(),
       )?;
-    }
-    if let Err(err) = attrs.update_raw(
-      PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-      std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
-      std::mem::size_of::<u64>(),
-    ) {
-      if mitigation_policy_attribute_unsupported(&err) {
-        log_sandbox_debug(&format!(
-          "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
-        ));
-        None
-      } else {
-        return Err(err);
+
+      if include_aap {
+        // Best-effort: older Windows builds may not support this attribute. If the OS rejects it as
+        // invalid/unsupported, continue without the hardening policy.
+        if let Err(err) = attrs.update_raw(
+          PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+          std::ptr::addr_of_mut!(all_packages_policy_value).cast(),
+          std::mem::size_of::<u32>(),
+        ) {
+          if mitigation_policy_attribute_unsupported(&err) {
+            log_sandbox_debug(&format!(
+              "windows sandbox: UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY) rejected by OS ({err}); continuing without ALL APPLICATION PACKAGES hardening"
+            ));
+          } else {
+            return Err(err);
+          }
+        }
       }
-    } else {
-      Some(attrs)
+
+      if !handles.is_empty() {
+        attrs.update_raw(
+          PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+          handles.as_mut_ptr().cast(),
+          handles.len() * std::mem::size_of::<HANDLE>(),
+        )?;
+      }
+      Ok(())
+    };
+
+    init_attrs_base(&mut attrs_without_mitigations, all_application_packages_hardened)?;
+
+    if all_application_packages_hardened {
+      let mut attrs = AttributeList::new(base_attribute_count)?;
+      init_attrs_base(&mut attrs, false)?;
+      attrs_without_aap = Some(attrs);
     }
-  } else {
-    None
-  };
+
+    if mitigation_policy_value != 0 {
+      let mut attrs = AttributeList::new(attribute_count_with_aap_and_mitigations)?;
+      init_attrs_base(&mut attrs, all_application_packages_hardened)?;
+      match attrs.update_raw(
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+        std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
+        std::mem::size_of::<u64>(),
+      ) {
+        Ok(()) => attrs_with_mitigations = Some(attrs),
+        Err(err) if mitigation_policy_attribute_unsupported(&err) => {
+          log_sandbox_debug(&format!(
+            "windows sandbox: UpdateProcThreadAttribute rejected mitigation policy attribute ({err}); continuing without mitigations"
+          ));
+        }
+        Err(err) => return Err(err),
+      }
+
+      if all_application_packages_hardened {
+        let mut attrs = AttributeList::new(base_attribute_count + 1)?;
+        init_attrs_base(&mut attrs, false)?;
+        match attrs.update_raw(
+          PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+          std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
+          std::mem::size_of::<u64>(),
+        ) {
+          Ok(()) => attrs_with_mitigations_no_aap = Some(attrs),
+          Err(err) if mitigation_policy_attribute_unsupported(&err) => {}
+          Err(err) => return Err(err),
+        }
+      }
+    }
+  }
 
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
   let env_flags = if env_block.is_some() {
@@ -760,25 +856,50 @@ fn spawn_appcontainer(
         Ok(pi)
       };
 
+    // Try CreateProcess with the strongest available configuration first (mitigations + AAP
+    // hardening), then fall back on older/unsupported Windows builds that reject particular
+    // `STARTUPINFOEX` attributes.
+    //
+    // `ERROR_NOT_SUPPORTED (50)` and `ERROR_INVALID_PARAMETER (87)` are the most common errors when
+    // an attribute is not supported by the host OS.
+    let is_optional_attr_error = |err: &io::Error| {
+      matches!(err.raw_os_error(), Some(code) if code == 50 || code == 87)
+    };
+
+    let mut attempts: Vec<(*mut PROC_THREAD_ATTRIBUTE_LIST, &'static str)> = Vec::new();
     if let Some(attrs) = attrs_with_mitigations.as_ref() {
-      match create_process_with_attrs(attrs.list) {
-        Ok(pi) => Ok(pi),
+      attempts.push((attrs.list, "mitigations + AAP hardening"));
+    }
+    attempts.push((attrs_without_mitigations.list, "AAP hardening"));
+    if let Some(attrs) = attrs_with_mitigations_no_aap.as_ref() {
+      attempts.push((attrs.list, "mitigations (no AAP hardening)"));
+    }
+    if let Some(attrs) = attrs_without_aap.as_ref() {
+      attempts.push((attrs.list, "no mitigations, no AAP hardening"));
+    }
+
+    let mut last_optional_err: Option<io::Error> = None;
+    for (list, label) in attempts {
+      match create_process_with_attrs(list) {
+        Ok(pi) => return Ok(pi),
         Err(err) => {
-          // Older/odd Windows builds may reject `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`. If so,
-          // retry without mitigations rather than failing the spawn entirely.
-          if mitigation_policy_attribute_unsupported(&err) {
+          if is_optional_attr_error(&err) {
             log_sandbox_debug(&format!(
-              "windows sandbox: CreateProcessW rejected mitigation policy attribute ({err}); retrying without mitigations"
+              "windows sandbox: CreateProcessW rejected startup attributes ({label}): {err}; retrying with weaker attribute set"
             ));
-            create_process_with_attrs(attrs_without_mitigations.list)
-          } else {
-            Err(err)
+            last_optional_err = Some(err);
+            continue;
           }
+          return Err(err);
         }
       }
-    } else {
-      create_process_with_attrs(attrs_without_mitigations.list)
     }
+    Err(last_optional_err.unwrap_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::Other,
+        "CreateProcessW failed with unsupported startup attributes",
+      )
+    }))
   };
 
   let mut create_process_with_job_strategy =

@@ -80,3 +80,6 @@ mod windows_sandbox_env_sanitization;
 
 #[cfg(windows)]
 mod windows_sandbox_appcontainer_spawn;
+
+#[cfg(windows)]
+mod windows_all_application_packages_hardening;

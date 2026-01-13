@@ -48,6 +48,7 @@ fn handle_list_is_enforced() {
       appcontainer: None,
       job: None,
       mitigation_policy: None,
+      all_application_packages_hardened: true,
     };
 
     let child = spawn_sandboxed(&cfg).expect("spawn (no handles) failed");
@@ -78,6 +79,7 @@ fn handle_list_is_enforced() {
       appcontainer: None,
       job: None,
       mitigation_policy: None,
+      all_application_packages_hardened: true,
     };
 
     let child = spawn_sandboxed(&cfg).expect("spawn (handle list) failed");

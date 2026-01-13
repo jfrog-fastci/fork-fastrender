@@ -44,11 +44,24 @@ binary’s directory does not grant the derived AppContainer SID read/execute ac
 `spawn_sandboxed(...)` may:
 
 1. Copy the renderer image to a temporary directory, and
-2. Grant the AppContainer SID (or, as a fallback, **ALL APPLICATION PACKAGES**) read/execute ACLs on
-   the copied file,
+2. Grant the AppContainer SID read/execute ACLs on the copied file (narrowest),
+   - Compatibility fallback: if granting to the AppContainer SID fails unexpectedly, it may fall
+     back to granting **ALL APPLICATION PACKAGES**. Note that when
+     `SpawnConfig::all_application_packages_hardened` is enabled, the token does **not** contain
+     that group, so this fallback only helps when hardening is disabled or unsupported on the host.
 3. Retry the AppContainer spawn.
 
 Use `FASTR_LOG_SANDBOX=1` to see detailed logs for this path.
+
+#### Defense in depth: remove `ALL APPLICATION PACKAGES` from the AppContainer token
+
+As a defense-in-depth hardening layer, the Windows spawner can remove the broad
+`ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the created AppContainer token via
+`PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`.
+
+This is controlled by `SpawnConfig::all_application_packages_hardened` (enabled by default for the
+renderer sandbox). On Windows builds that do not support the attribute, the spawner retries without
+it.
 
 ### Defense in depth: Job object guardrails
 

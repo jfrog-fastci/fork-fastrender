@@ -219,6 +219,8 @@ impl ShmemHandle {
       ShmemHandle::PosixShm { len, .. } => *len,
       #[cfg(target_os = "linux")]
       ShmemHandle::LinuxMemfd { len, .. } => *len,
+      #[cfg(not(unix))]
+      _ => unreachable!("ShmemHandle is not supported on non-Unix platforms"),
     }
   }
 

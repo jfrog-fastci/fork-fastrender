@@ -270,6 +270,7 @@ fn restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile() {
     appcontainer: None,
     job: None,
     mitigation_policy: None,
+    all_application_packages_hardened: true,
   };
 
   let token = RestrictedToken::for_current_process_low_integrity()
