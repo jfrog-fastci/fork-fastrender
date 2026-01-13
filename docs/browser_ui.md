@@ -805,7 +805,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `Navigate { tab_id, url, reason }`
 - History actions (`GoBack { tab_id }`, `GoForward { tab_id }`, `Reload { tab_id }`)
 - `Tick { tab_id, delta }` — periodic wake-up used to advance time-based effects and drive the tab
-  event loop (CSS animations/transitions, animated images, JS timers/`requestAnimationFrame`, etc).
+  event loop (CSS animations/transitions, animated images, JS timers/`requestAnimationFrame`/`requestIdleCallback`, etc).
   Front-ends should schedule ticks for the active/visible tab using the `RenderedFrame.next_tick`
   hint reported on `WorkerToUi::FrameReady`.
   - `delta` is the time elapsed since the previous tick delivered for this tab (front-ends can
@@ -910,7 +910,7 @@ Front-ends drive time-based behavior by sending periodic
     bursts. In these cases the browser resets the tick schedule, so time-based effects may appear to
     pause while the window is not actively being driven.
 - A tick is the worker’s chance to run a bounded slice of time-based work (CSS
-  animations/transitions, animated images, JS timers/`requestAnimationFrame`, etc) and schedule a
+  animations/transitions, animated images, JS timers/`requestAnimationFrame`/`requestIdleCallback`, etc) and schedule a
   repaint if the page becomes dirty.
 - `Tick` is a wake-up signal (no absolute timestamp). The UI provides a best-effort `delta` duration
   (elapsed since the previous tick for the tab) so the worker can advance CSS animation time;
