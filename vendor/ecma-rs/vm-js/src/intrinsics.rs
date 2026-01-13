@@ -6107,32 +6107,37 @@ impl Intrinsics {
     define_dv_method(
       "getInt16",
       vm.register_native_call(builtins::data_view_prototype_get_int16)?,
-      2,
+      1,
     )?;
     define_dv_method(
       "getUint16",
       vm.register_native_call(builtins::data_view_prototype_get_uint16)?,
-      2,
+      1,
     )?;
     define_dv_method(
       "getInt32",
       vm.register_native_call(builtins::data_view_prototype_get_int32)?,
-      2,
+      1,
     )?;
     define_dv_method(
       "getUint32",
       vm.register_native_call(builtins::data_view_prototype_get_uint32)?,
-      2,
+      1,
+    )?;
+    define_dv_method(
+      "getFloat16",
+      vm.register_native_call(builtins::data_view_prototype_get_float16)?,
+      1,
     )?;
     define_dv_method(
       "getFloat32",
       vm.register_native_call(builtins::data_view_prototype_get_float32)?,
-      2,
+      1,
     )?;
     define_dv_method(
       "getFloat64",
       vm.register_native_call(builtins::data_view_prototype_get_float64)?,
-      2,
+      1,
     )?;
 
     define_dv_method(
@@ -6148,32 +6153,37 @@ impl Intrinsics {
     define_dv_method(
       "setInt16",
       vm.register_native_call(builtins::data_view_prototype_set_int16)?,
-      3,
+      2,
     )?;
     define_dv_method(
       "setUint16",
       vm.register_native_call(builtins::data_view_prototype_set_uint16)?,
-      3,
+      2,
     )?;
     define_dv_method(
       "setInt32",
       vm.register_native_call(builtins::data_view_prototype_set_int32)?,
-      3,
+      2,
     )?;
     define_dv_method(
       "setUint32",
       vm.register_native_call(builtins::data_view_prototype_set_uint32)?,
-      3,
+      2,
+    )?;
+    define_dv_method(
+      "setFloat16",
+      vm.register_native_call(builtins::data_view_prototype_set_float16)?,
+      2,
     )?;
     define_dv_method(
       "setFloat32",
       vm.register_native_call(builtins::data_view_prototype_set_float32)?,
-      3,
+      2,
     )?;
     define_dv_method(
       "setFloat64",
       vm.register_native_call(builtins::data_view_prototype_set_float64)?,
-      3,
+      2,
     )?;
 
     // `%Math%`

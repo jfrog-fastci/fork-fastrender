@@ -4072,6 +4072,7 @@ enum DataViewElementKind {
   Uint16,
   Int32,
   Uint32,
+  Float16,
   Float32,
   Float64,
 }
@@ -4080,7 +4081,7 @@ impl DataViewElementKind {
   fn size(self) -> usize {
     match self {
       DataViewElementKind::Int8 | DataViewElementKind::Uint8 => 1,
-      DataViewElementKind::Int16 | DataViewElementKind::Uint16 => 2,
+      DataViewElementKind::Int16 | DataViewElementKind::Uint16 | DataViewElementKind::Float16 => 2,
       DataViewElementKind::Int32 | DataViewElementKind::Uint32 | DataViewElementKind::Float32 => 4,
       DataViewElementKind::Float64 => 8,
     }
@@ -4210,6 +4211,19 @@ fn data_view_get_impl(
       } else {
         u32::from_be_bytes(bytes) as f64
       }
+    }
+    DataViewElementKind::Float16 => {
+      let bytes: [u8; 2] = data
+        .get(abs..abs + 2)
+        .ok_or(VmError::TypeError("DataView offset out of bounds"))?
+        .try_into()
+        .map_err(|_| VmError::InvariantViolation("DataView slice length mismatch"))?;
+      let bits = if little_endian {
+        u16::from_le_bytes(bytes)
+      } else {
+        u16::from_be_bytes(bytes)
+      };
+      f16_bits_to_f64(bits)
     }
     DataViewElementKind::Float32 => {
       let bytes: [u8; 4] = data
@@ -4349,6 +4363,14 @@ fn data_view_set_impl(
         v.to_be_bytes().to_vec()
       }
     }
+    DataViewElementKind::Float16 => {
+      let bits = f64_to_f16_bits_round_ties_to_even(n);
+      if little_endian {
+        bits.to_le_bytes().to_vec()
+      } else {
+        bits.to_be_bytes().to_vec()
+      }
+    }
     DataViewElementKind::Float32 => {
       let v = (n as f32).to_bits();
       if little_endian {
@@ -4414,6 +4436,7 @@ data_view_get!(data_view_prototype_get_int16, DataViewElementKind::Int16);
 data_view_get!(data_view_prototype_get_uint16, DataViewElementKind::Uint16);
 data_view_get!(data_view_prototype_get_int32, DataViewElementKind::Int32);
 data_view_get!(data_view_prototype_get_uint32, DataViewElementKind::Uint32);
+data_view_get!(data_view_prototype_get_float16, DataViewElementKind::Float16);
 data_view_get!(data_view_prototype_get_float32, DataViewElementKind::Float32);
 data_view_get!(data_view_prototype_get_float64, DataViewElementKind::Float64);
 
@@ -4423,6 +4446,7 @@ data_view_set!(data_view_prototype_set_int16, DataViewElementKind::Int16);
 data_view_set!(data_view_prototype_set_uint16, DataViewElementKind::Uint16);
 data_view_set!(data_view_prototype_set_int32, DataViewElementKind::Int32);
 data_view_set!(data_view_prototype_set_uint32, DataViewElementKind::Uint32);
+data_view_set!(data_view_prototype_set_float16, DataViewElementKind::Float16);
 data_view_set!(data_view_prototype_set_float32, DataViewElementKind::Float32);
 data_view_set!(data_view_prototype_set_float64, DataViewElementKind::Float64);
 
