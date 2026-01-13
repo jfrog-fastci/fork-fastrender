@@ -16,78 +16,86 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
 }
 
 #[test]
-fn for_await_of_sync_iterator_close_error_overrides_promise_resolve_throw() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_is_ignored_on_promise_resolve_throw() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
     r#"
-      var out = null;
+       var out = null;
+       var closed = false;
 
-      var thenable = {};
-      Object.defineProperty(thenable, "then", {
-        get: function () { throw { tag: "then" }; },
-      });
+       var thenable = {};
+       Object.defineProperty(thenable, "then", {
+         get: function () { throw { tag: "then" }; },
+       });
 
       var iterable = {};
-      iterable[Symbol.iterator] = function () {
-        return {
-          next: function () { return { value: thenable, done: false }; },
-          get "return"() { throw "close"; },
-        };
-      };
+       iterable[Symbol.iterator] = function () {
+         return {
+           next: function () { return { value: thenable, done: false }; },
+           get "return"() { closed = true; throw "close"; },
+         };
+       };
 
-      (async function () {
-        try {
-          for await (const _ of iterable) {}
-        } catch (e) {
-          out = e;
-        }
-      })();
+       (async function () {
+         try {
+           for await (const _ of iterable) {}
+         } catch (e) {
+           out = (e && e.tag) || e;
+         }
+       })();
 
-      out
-    "#,
+       out
+     "#,
   )?;
   assert_eq!(value, Value::Null);
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "close");
+  assert_eq!(value_to_string(&rt, value), "then");
+
+  let closed = rt.exec_script("closed")?;
+  assert_eq!(closed, Value::Bool(true));
   Ok(())
 }
 
 #[test]
-fn for_await_of_sync_iterator_close_error_overrides_awaited_value_rejection() -> Result<(), VmError> {
+fn for_await_of_sync_iterator_close_error_is_ignored_on_awaited_value_rejection() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   let value = rt.exec_script(
     r#"
-      var out = null;
+       var out = null;
+       var closed = false;
 
-      var iterable = {};
-      iterable[Symbol.iterator] = function () {
-        return {
-          next: function () { return { value: Promise.reject({ tag: "reason" }), done: false }; },
-          return: function () { throw "close"; },
-        };
-      };
+       var iterable = {};
+       iterable[Symbol.iterator] = function () {
+         return {
+           next: function () { return { value: Promise.reject({ tag: "reason" }), done: false }; },
+           return: function () { closed = true; throw "close"; },
+         };
+       };
 
-      (async function () {
-        try {
-          for await (const _ of iterable) {}
-        } catch (e) {
-          out = e;
-        }
-      })();
+       (async function () {
+         try {
+           for await (const _ of iterable) {}
+         } catch (e) {
+           out = (e && e.tag) || e;
+         }
+       })();
 
-      out
-    "#,
+       out
+     "#,
   )?;
   assert_eq!(value, Value::Null);
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
   let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "close");
+  assert_eq!(value_to_string(&rt, value), "reason");
+
+  let closed = rt.exec_script("closed")?;
+  assert_eq!(closed, Value::Bool(true));
   Ok(())
 }

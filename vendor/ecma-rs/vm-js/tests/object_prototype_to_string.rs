@@ -83,7 +83,9 @@ fn object_prototype_to_string_weak_map_falls_back_to_weak_map_when_to_string_tag
          var wm = new WeakMap();
          toString.call(wm) === "[object WeakMap]" &&
          (delete WeakMap.prototype[Symbol.toStringTag], true) &&
-         toString.call(wm) === "[object WeakMap]""#,
+         // WeakMap is not part of the legacy builtinTag table; removing `@@toStringTag` falls back
+         // to "Object".
+         toString.call(wm) === "[object Object]""#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));
@@ -98,7 +100,9 @@ fn object_prototype_to_string_weak_set_falls_back_to_weak_set_when_to_string_tag
          var ws = new WeakSet();
          toString.call(ws) === "[object WeakSet]" &&
          (delete WeakSet.prototype[Symbol.toStringTag], true) &&
-         toString.call(ws) === "[object WeakSet]""#,
+         // WeakSet is not part of the legacy builtinTag table; removing `@@toStringTag` falls back
+         // to "Object".
+         toString.call(ws) === "[object Object]""#,
     )
     .unwrap();
   assert_eq!(value, Value::Bool(true));

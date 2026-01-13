@@ -21478,22 +21478,38 @@ fn async_resume_from_frames(
               };
 
               let Some(throw_method) = throw_method else {
-                // No `throw` method: close the iterator, then rethrow the original reason.
+                // No `throw` method:
+                // Spec: perform ? IteratorClose(iteratorRecord, NormalCompletion(~empty~)), then
+                // throw a TypeError exception.
                 if let Err(close_err) = iterator::iterator_close(
                   evaluator.vm,
                   &mut *evaluator.host,
                   &mut *evaluator.hooks,
                   scope,
                   &iterator_record,
-                  iterator::CloseCompletionKind::Throw,
+                  iterator::CloseCompletionKind::NonThrow,
                 ) {
                   scope.heap_mut().remove_root(iterator_root);
                   scope.heap_mut().remove_root(next_method_root);
                   return Err(close_err);
                 }
+
+                let type_err = match throw_type_error(
+                  evaluator.vm,
+                  scope,
+                  "yield* protocol violation: iterator does not have a throw method",
+                ) {
+                  Ok(e) => e,
+                  Err(err) => {
+                    scope.heap_mut().remove_root(iterator_root);
+                    scope.heap_mut().remove_root(next_method_root);
+                    return Err(err);
+                  }
+                };
+
                 scope.heap_mut().remove_root(iterator_root);
                 scope.heap_mut().remove_root(next_method_root);
-                state = AsyncState::Expr(Err(err));
+                state = AsyncState::Expr(Err(type_err));
                 continue;
               };
 

@@ -830,7 +830,7 @@ fn object_from_entries_iterator_close_error_does_not_override_thrown_entry_error
 }
 
 #[test]
-fn object_from_entries_iterator_close_return_throw_overrides_original_throw() -> Result<(), VmError> {
+fn object_from_entries_iterator_close_return_throw_is_ignored_on_throw_completion() -> Result<(), VmError> {
   let mut rt = new_runtime()?;
 
   let value = rt.exec_script(
@@ -846,8 +846,9 @@ fn object_from_entries_iterator_close_return_throw_overrides_original_throw() ->
               if (!done) {
                 done = true;
                 // Non-object entry triggers the entry-processing TypeError inside Object.fromEntries,
-                // then `IteratorClose` is performed. Per ECMA-262 `IteratorClose`, errors thrown while
-                // calling `iterator.return` override the incoming completion.
+                 // then `IteratorClose` is performed. Per ECMA-262 `IteratorClose`, errors thrown while
+                 // calling `iterator.return` are ignored for throw completions (the original throw is
+                 // preserved).
                 return { done: false, value: 1 };
               }
               return { done: true };
@@ -863,7 +864,7 @@ fn object_from_entries_iterator_close_return_throw_overrides_original_throw() ->
           Object.fromEntries(iterable);
           return "no throw";
         } catch (e) {
-          return String(returnCalled) + "|" + (e === "return" ? "return" : (e.name + ":" + e.message));
+          return String(returnCalled) + "|" + (e && e.name);
         }
       })()
     "#,
@@ -871,7 +872,7 @@ fn object_from_entries_iterator_close_return_throw_overrides_original_throw() ->
 
   assert_eq!(
     as_utf8_lossy(&rt, value),
-    "true|return"
+    "true|TypeError"
   );
   Ok(())
 }

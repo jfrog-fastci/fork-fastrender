@@ -62,7 +62,7 @@ fn iterator_close_return_throw_overrides_break() {
 }
 
 #[test]
-fn iterator_close_return_throw_overrides_throw_completion() {
+fn iterator_close_return_throw_is_ignored_on_throw_completion() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -84,7 +84,7 @@ fn iterator_close_return_throw_overrides_throw_completion() {
     "#,
     )
     .unwrap();
-  assert_value_is_utf8(&rt, value, "close");
+  assert_value_is_utf8(&rt, value, "body");
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn iterator_close_get_method_throw_overrides_break() {
 }
 
 #[test]
-fn iterator_close_get_method_throw_overrides_throw_completion() {
+fn iterator_close_get_method_throw_is_ignored_on_throw_completion() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(
@@ -303,7 +303,7 @@ fn iterator_close_get_method_throw_overrides_throw_completion() {
   let thrown = err
     .thrown_value()
     .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
-  assert_value_is_utf8(&rt, thrown, "getter");
+  assert_value_is_utf8(&rt, thrown, "body");
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn iterator_close_get_method_non_callable_overrides_break() {
 }
 
 #[test]
-fn iterator_close_get_method_non_callable_overrides_throw_completion() {
+fn iterator_close_get_method_non_callable_is_ignored_on_throw_completion() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -349,7 +349,7 @@ fn iterator_close_get_method_non_callable_overrides_throw_completion() {
       try {
         for (var x of iterable) { throw "body"; }
       } catch (e) {
-        ok = e && e.name === "TypeError";
+        ok = e === "body";
       }
       ok
     "#,
@@ -359,7 +359,7 @@ fn iterator_close_get_method_non_callable_overrides_throw_completion() {
 }
 
 #[test]
-fn iterator_close_get_method_throw_overrides_throw_completion_in_array_destructuring_assignment() {
+fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_array_destructuring_assignment() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(
@@ -385,7 +385,7 @@ fn iterator_close_get_method_throw_overrides_throw_completion_in_array_destructu
   let thrown = err
     .thrown_value()
     .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
-  assert_value_is_utf8(&rt, thrown, "close");
+  assert_value_is_utf8(&rt, thrown, "assign");
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn iterator_step_error_does_not_invoke_iterator_close() {
 }
 
 #[test]
-fn iterator_close_get_method_throw_overrides_throw_completion_in_array_destructuring() {
+fn iterator_close_get_method_throw_is_ignored_on_throw_completion_in_array_destructuring() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(
@@ -434,11 +434,11 @@ fn iterator_close_get_method_throw_overrides_throw_completion_in_array_destructu
   let thrown = err
     .thrown_value()
     .unwrap_or_else(|| panic!("expected thrown exception, got {err:?}"));
-  assert_value_is_utf8(&rt, thrown, "close");
+  assert_value_is_utf8(&rt, thrown, "body");
 }
 
 #[test]
-fn iterator_close_get_method_non_callable_overrides_throw_completion_in_array_destructuring() {
+fn iterator_close_get_method_non_callable_is_ignored_on_throw_completion_in_array_destructuring() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(
@@ -455,7 +455,7 @@ fn iterator_close_get_method_non_callable_overrides_throw_completion_in_array_de
         var x;
         var [x = (function () { throw "body"; })()] = iterable;
       } catch (e) {
-        ok = e && e.name === "TypeError";
+        ok = e === "body";
       }
       ok
     "#,

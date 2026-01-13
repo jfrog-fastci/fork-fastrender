@@ -7,7 +7,7 @@ fn new_runtime() -> JsRuntime {
 }
 
 #[test]
-fn array_destructuring_iterator_close_throw_overrides_throw_completion() {
+fn array_destructuring_iterator_close_throw_is_ignored_on_throw_completion() {
   let mut rt = new_runtime();
 
   let ok = rt
@@ -34,7 +34,7 @@ fn array_destructuring_iterator_close_throw_overrides_throw_completion() {
         caught = e;
       }
 
-      caught === "return" && returnCalled === true
+      caught === "default" && returnCalled === true
       "#,
     )
     .unwrap();
