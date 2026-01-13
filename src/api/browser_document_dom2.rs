@@ -9,7 +9,7 @@ use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::style::cascade::StyledNode;
 use crate::style::ComputedStyle;
-use crate::tree::box_tree::{BoxNode, BoxType};
+use crate::tree::box_tree::{BoxNode, BoxType, FormControlKind, ReplacedType, SelectItem};
 use crate::web::dom::DocumentVisibilityState;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::hash_map::DefaultHasher;
@@ -753,7 +753,13 @@ impl BrowserDocumentDom2 {
         capture_text_for_styled_node_ids(&prepared.box_tree.root, &updated_styled_ids)
       };
 
-      match self.incremental_relayout_for_text_changes(&mut prepared) {
+      let incremental_result = match self.incremental_relayout_for_text_changes(&mut prepared) {
+        Ok(true) => Ok(true),
+        Ok(false) => self.incremental_relayout_for_form_control_text_changes(&mut prepared),
+        Err(err) => Err(err),
+      };
+
+      match incremental_result {
         Ok(true) => {
           self.invalidation_counters.incremental_relayouts = self
             .invalidation_counters
@@ -2243,6 +2249,7 @@ impl BrowserDocumentDom2 {
 
     // Map dom2 text node ids to renderer preorder ids (styled_node_id) for box lookup.
     let mut updates: FxHashMap<usize, String> = FxHashMap::default();
+    let mut updated_styled_node_ids: FxHashSet<usize> = FxHashSet::default();
     for &node in &self.dirty_text_nodes {
       let Some(preorder) = mapping.preorder_for_node_id(node) else {
         // Mapping mismatch: fall back to a full pipeline run.
@@ -2253,24 +2260,23 @@ impl BrowserDocumentDom2 {
         _ => return Ok(false),
       };
       updates.insert(preorder, text);
+      updated_styled_node_ids.insert(preorder);
     }
 
-    let updated_styled_ids = if updates.is_empty() {
-      FxHashSet::default()
-    } else {
-      apply_text_updates_to_box_tree(&mut prepared.box_tree.root, &updates)
-    };
-
-    // Incremental relayout can only be correct when every dirty text node actually corresponds to at
-    // least one `BoxType::Text` node. Some text nodes do not generate text boxes (e.g. `<textarea>`
-    // contents or `<option>` labels inside a `<select>` replaced control). In those cases we must
-    // fall back to a full pipeline run so form control models and other non-text-box consumers see
-    // the update.
-    if updates
-      .keys()
-      .any(|styled_id| !updated_styled_ids.contains(styled_id))
-    {
-      return Ok(false);
+    if !updates.is_empty() {
+      // Only take the incremental path when every dirty text node corresponds to a concrete
+      // `BoxType::Text` entry in the box tree. Text nodes under replaced form controls like
+      // `<textarea>`/`<option>` do not have a corresponding text box, so we must return `false` so
+      // callers can fall back (or try another incremental path).
+      let original_text =
+        capture_text_for_styled_node_ids(&prepared.box_tree.root, &updated_styled_node_ids);
+      let applied = apply_text_updates_to_box_tree(&mut prepared.box_tree.root, &updates);
+      if applied.len() != updates.len() {
+        // Restore any partial mutations so callers that fall back to a full pipeline run still see
+        // the previously committed box tree.
+        restore_text_for_box_ids(&mut prepared.box_tree.root, &original_text);
+        return Ok(false);
+      }
     }
 
     // Snapshot animation timing once so the layout/transition update is consistent within the call.
@@ -2358,13 +2364,621 @@ impl BrowserDocumentDom2 {
 
     Ok(true)
   }
+
+  fn incremental_relayout_for_form_control_text_changes(
+    &mut self,
+    prepared: &mut PreparedDocument,
+  ) -> Result<bool> {
+    let Some(mapping) = self.last_dom_mapping.as_ref() else {
+      return Ok(false);
+    };
+
+    fn attrs_get_ci<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+      attrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+    }
+
+    fn collect_descendant_text(doc: &crate::dom2::Document, root: crate::dom2::NodeId) -> String {
+      let mut out = String::new();
+      let mut stack: Vec<crate::dom2::NodeId> = vec![root];
+      while let Some(node_id) = stack.pop() {
+        match &doc.node(node_id).kind {
+          crate::dom2::NodeKind::Text { content } => out.push_str(content),
+          _ => {}
+        }
+        for &child in doc.node(node_id).children.iter().rev() {
+          if doc.node(child).parent == Some(node_id) {
+            stack.push(child);
+          }
+        }
+      }
+      out
+    }
+
+    fn option_label_text(doc: &crate::dom2::Document, option: crate::dom2::NodeId) -> Option<String> {
+      let crate::dom2::NodeKind::Element {
+        tag_name,
+        namespace,
+        attributes,
+        ..
+      } = &doc.node(option).kind
+      else {
+        return None;
+      };
+
+      if !doc.is_html_case_insensitive_namespace(namespace) || !tag_name.eq_ignore_ascii_case("option") {
+        return None;
+      }
+
+      if let Some(label) = attrs_get_ci(attributes, "label").filter(|label| !label.is_empty()) {
+        return Some(label.to_string());
+      }
+
+      let mut text = String::new();
+      let mut stack: Vec<crate::dom2::NodeId> = vec![option];
+      while let Some(node_id) = stack.pop() {
+        match &doc.node(node_id).kind {
+          crate::dom2::NodeKind::Text { content } => text.push_str(content),
+          crate::dom2::NodeKind::Element { tag_name, namespace, .. } => {
+            if tag_name.eq_ignore_ascii_case("script")
+              && (namespace.is_empty()
+                || namespace == crate::dom::HTML_NAMESPACE
+                || namespace == crate::dom::SVG_NAMESPACE)
+            {
+              continue;
+            }
+          }
+          _ => {}
+        }
+        for &child in doc.node(node_id).children.iter().rev() {
+          if doc.node(child).parent == Some(node_id) {
+            stack.push(child);
+          }
+        }
+      }
+
+      Some(crate::dom::strip_and_collapse_ascii_whitespace(&text))
+    }
+
+    let dom = self.dom();
+
+    let mut textarea_nodes: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
+    let mut select_option_nodes: FxHashMap<crate::dom2::NodeId, FxHashSet<crate::dom2::NodeId>> =
+      FxHashMap::default();
+
+    for &node_id in &self.dirty_text_nodes {
+      if mapping.preorder_for_node_id(node_id).is_none() {
+        return Ok(false);
+      }
+
+      if !matches!(dom.node(node_id).kind, crate::dom2::NodeKind::Text { .. }) {
+        return Ok(false);
+      }
+
+      let mut current = node_id;
+      let mut found_textarea: Option<crate::dom2::NodeId> = None;
+      let mut found_option: Option<crate::dom2::NodeId> = None;
+
+      while let Some(parent) = dom.parent_node(current) {
+        match &dom.node(parent).kind {
+          crate::dom2::NodeKind::Element { tag_name, namespace, .. }
+            if dom.is_html_case_insensitive_namespace(namespace) =>
+          {
+            if tag_name.eq_ignore_ascii_case("textarea") {
+              found_textarea = Some(parent);
+              break;
+            }
+            if tag_name.eq_ignore_ascii_case("option") {
+              found_option = Some(parent);
+              break;
+            }
+          }
+          _ => {}
+        }
+        current = parent;
+      }
+
+      if let Some(textarea) = found_textarea {
+        textarea_nodes.insert(textarea);
+        continue;
+      }
+
+      let Some(option) = found_option else {
+        return Ok(false);
+      };
+
+      let mut select: Option<crate::dom2::NodeId> = None;
+      let mut ancestor = option;
+      while let Some(parent) = dom.parent_node(ancestor) {
+        if let crate::dom2::NodeKind::Element { tag_name, namespace, .. } = &dom.node(parent).kind {
+          if dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("select") {
+            select = Some(parent);
+            break;
+          }
+        }
+        ancestor = parent;
+      }
+
+      let Some(select) = select else {
+        return Ok(false);
+      };
+
+      select_option_nodes
+        .entry(select)
+        .or_default()
+        .insert(option);
+    }
+
+    let mut textarea_updates: FxHashMap<usize, String> = FxHashMap::default();
+    for textarea in textarea_nodes {
+      let dirty = dom.textarea_value_is_dirty(textarea).map_err(|_| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "textarea_value_is_dirty failed".to_string(),
+        })
+      })?;
+      if dirty {
+        continue;
+      }
+
+      let Some(textarea_preorder) = mapping.preorder_for_node_id(textarea) else {
+        return Ok(false);
+      };
+      // Default value: concatenate descendant text node data in tree order.
+      let value = collect_descendant_text(dom, textarea);
+      textarea_updates.insert(textarea_preorder, value);
+    }
+
+    let mut select_updates: FxHashMap<usize, FxHashMap<usize, String>> = FxHashMap::default();
+    for (select, option_nodes) in select_option_nodes {
+      let Some(select_preorder) = mapping.preorder_for_node_id(select) else {
+        return Ok(false);
+      };
+      let mut option_updates: FxHashMap<usize, String> = FxHashMap::default();
+      for option in option_nodes {
+        let Some(option_preorder) = mapping.preorder_for_node_id(option) else {
+          return Ok(false);
+        };
+        let Some(label) = option_label_text(dom, option) else {
+          return Ok(false);
+        };
+        option_updates.insert(option_preorder, label);
+      }
+      select_updates.insert(select_preorder, option_updates);
+    }
+
+    // Ensure every form control we intend to update actually exists in the current box tree. This
+    // keeps `Ok(false)` "transactional": if we decide to fall back to a full pipeline run, we must
+    // not have partially mutated cached layout artifacts.
+    {
+      let mut found_textareas: FxHashSet<usize> = FxHashSet::default();
+      let mut found_selects: FxHashSet<usize> = FxHashSet::default();
+      let mut stack: Vec<&BoxNode> = vec![&prepared.box_tree.root];
+      while let Some(node) = stack.pop() {
+        if let Some(styled_id) = node.styled_node_id {
+          if let BoxType::Replaced(replaced) = &node.box_type {
+            if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+              match &control.control {
+                FormControlKind::TextArea { .. } => {
+                  found_textareas.insert(styled_id);
+                }
+                FormControlKind::Select(_) => {
+                  found_selects.insert(styled_id);
+                }
+                _ => {}
+              }
+            }
+          }
+          if let Some(control) = node.form_control.as_ref() {
+            match &control.control {
+              FormControlKind::TextArea { .. } => {
+                found_textareas.insert(styled_id);
+              }
+              FormControlKind::Select(_) => {
+                found_selects.insert(styled_id);
+              }
+              _ => {}
+            }
+          }
+        }
+
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+
+      if textarea_updates
+        .keys()
+        .any(|id| !found_textareas.contains(id))
+      {
+        return Ok(false);
+      }
+      if select_updates.keys().any(|id| !found_selects.contains(id)) {
+        return Ok(false);
+      }
+    }
+
+    enum UndoOp {
+      TextareaReplaced {
+        node_ptr: *mut BoxNode,
+        value: String,
+        caret: usize,
+        selection: Option<(usize, usize)>,
+      },
+      TextareaFormControlArc {
+        node_ptr: *mut BoxNode,
+        form_control: Arc<crate::tree::box_tree::FormControl>,
+      },
+      SelectReplaced {
+        node_ptr: *mut BoxNode,
+        items: Arc<Vec<SelectItem>>,
+      },
+      SelectFormControlArc {
+        node_ptr: *mut BoxNode,
+        form_control: Arc<crate::tree::box_tree::FormControl>,
+      },
+    }
+
+    let mut undo_ops: Vec<UndoOp> = Vec::new();
+    let mut undo_all = |undo_ops: &mut Vec<UndoOp>| {
+      for op in undo_ops.drain(..).rev() {
+        // Safety: undo pointers refer to nodes owned by `prepared.box_tree.root`, which remain valid
+        // because we never move nodes during traversal.
+        unsafe {
+          match op {
+            UndoOp::TextareaReplaced {
+              node_ptr,
+              value,
+              caret,
+              selection,
+            } => {
+              let node = &mut *node_ptr;
+              if let BoxType::Replaced(replaced) = &mut node.box_type {
+                if let ReplacedType::FormControl(control) = &mut replaced.replaced_type {
+                  if let FormControlKind::TextArea {
+                    value: current,
+                    caret: current_caret,
+                    selection: current_sel,
+                    ..
+                  } = &mut control.control
+                  {
+                    *current = value;
+                    *current_caret = caret;
+                    *current_sel = selection;
+                  }
+                }
+              }
+            }
+            UndoOp::TextareaFormControlArc {
+              node_ptr,
+              form_control,
+            } => {
+              let node = &mut *node_ptr;
+              node.form_control = Some(form_control);
+            }
+            UndoOp::SelectReplaced {
+              node_ptr,
+              items,
+            } => {
+              let node = &mut *node_ptr;
+              if let BoxType::Replaced(replaced) = &mut node.box_type {
+                if let ReplacedType::FormControl(control) = &mut replaced.replaced_type {
+                  if let FormControlKind::Select(select) = &mut control.control {
+                    select.items = items;
+                  }
+                }
+              }
+            }
+            UndoOp::SelectFormControlArc {
+              node_ptr,
+              form_control,
+            } => {
+              let node = &mut *node_ptr;
+              node.form_control = Some(form_control);
+            }
+          }
+        }
+      }
+    };
+
+    let mut processed_textareas: FxHashSet<usize> = FxHashSet::default();
+    let mut processed_selects: FxHashSet<usize> = FxHashSet::default();
+
+    let mut stack: Vec<*mut BoxNode> = vec![&mut prepared.box_tree.root as *mut _];
+    while let Some(node_ptr) = stack.pop() {
+      // Safety: stack contains pointers to nodes owned by `root` and we never move nodes during the
+      // traversal.
+      unsafe {
+        let node = &mut *node_ptr;
+        let styled_id = node.styled_node_id;
+
+        if let Some(styled_id) = styled_id {
+          if let Some(new_value) = textarea_updates.get(&styled_id) {
+            let mut handled = false;
+
+            if let BoxType::Replaced(replaced) = &mut node.box_type {
+              if let ReplacedType::FormControl(control) = &mut replaced.replaced_type {
+                if let FormControlKind::TextArea {
+                  value,
+                  caret,
+                  selection,
+                  ..
+                } = &mut control.control
+                {
+                  let old_len = value.chars().count();
+                  let new_len = new_value.chars().count();
+                  let old_caret = *caret;
+                  undo_ops.push(UndoOp::TextareaReplaced {
+                    node_ptr,
+                    value: value.clone(),
+                    caret: *caret,
+                    selection: *selection,
+                  });
+
+                  value.clear();
+                  value.push_str(new_value);
+
+                  if old_caret == old_len {
+                    *caret = new_len;
+                  } else {
+                    *caret = old_caret.min(new_len);
+                  }
+                  if let Some((start, end)) = selection {
+                    let start = (*start).min(new_len);
+                    let end = (*end).min(new_len);
+                    *selection = if start == end {
+                      None
+                    } else if start < end {
+                      Some((start, end))
+                    } else {
+                      Some((end, start))
+                    };
+                  }
+
+                  handled = true;
+                }
+              }
+            }
+
+            if let Some(form_control) = node.form_control.as_mut() {
+              if matches!(&form_control.control, FormControlKind::TextArea { .. }) {
+                undo_ops.push(UndoOp::TextareaFormControlArc {
+                  node_ptr,
+                  form_control: Arc::clone(form_control),
+                });
+                let form_control = Arc::make_mut(form_control);
+                if let FormControlKind::TextArea {
+                  value,
+                  caret,
+                  selection,
+                  ..
+                } = &mut form_control.control
+                {
+                  let old_len = value.chars().count();
+                  let new_len = new_value.chars().count();
+                  let old_caret = *caret;
+
+                  value.clear();
+                  value.push_str(new_value);
+
+                  if old_caret == old_len {
+                    *caret = new_len;
+                  } else {
+                    *caret = old_caret.min(new_len);
+                  }
+                  if let Some((start, end)) = selection {
+                    let start = (*start).min(new_len);
+                    let end = (*end).min(new_len);
+                    *selection = if start == end {
+                      None
+                    } else if start < end {
+                      Some((start, end))
+                    } else {
+                      Some((end, start))
+                    };
+                  }
+
+                  handled = true;
+                }
+              }
+            }
+
+            if handled {
+              processed_textareas.insert(styled_id);
+            }
+          }
+
+          if let Some(option_updates) = select_updates.get(&styled_id) {
+            let mut any_patched = false;
+            let mut all_patches_complete = true;
+
+            let patch_select_control =
+              |select: &mut crate::tree::box_tree::SelectControl| -> bool {
+                let mut items = select.items.as_ref().clone();
+                let mut any_label_change = false;
+                let mut found_options: FxHashSet<usize> = FxHashSet::default();
+
+                for item in items.iter_mut() {
+                  let SelectItem::Option { node_id, label, .. } = item else {
+                    continue;
+                  };
+                  if let Some(new_label) = option_updates.get(node_id) {
+                    found_options.insert(*node_id);
+                    if label != new_label {
+                      *label = new_label.clone();
+                      any_label_change = true;
+                    }
+                  }
+                }
+
+                let all_found = option_updates.keys().all(|id| found_options.contains(id));
+                if any_label_change {
+                  select.items = Arc::new(items);
+                }
+                all_found
+              };
+
+            if let BoxType::Replaced(replaced) = &mut node.box_type {
+              if let ReplacedType::FormControl(control) = &mut replaced.replaced_type {
+                if let FormControlKind::Select(select) = &mut control.control {
+                  any_patched = true;
+                  undo_ops.push(UndoOp::SelectReplaced {
+                    node_ptr,
+                    items: Arc::clone(&select.items),
+                  });
+                  if !patch_select_control(select) {
+                    all_patches_complete = false;
+                  }
+                }
+              }
+            }
+
+            if let Some(form_control) = node.form_control.as_mut() {
+              if matches!(&form_control.control, FormControlKind::Select(_)) {
+                any_patched = true;
+                undo_ops.push(UndoOp::SelectFormControlArc {
+                  node_ptr,
+                  form_control: Arc::clone(form_control),
+                });
+                let form_control = Arc::make_mut(form_control);
+                if let FormControlKind::Select(select) = &mut form_control.control {
+                  if !patch_select_control(select) {
+                    all_patches_complete = false;
+                  }
+                }
+              }
+            }
+
+            if any_patched && all_patches_complete {
+              processed_selects.insert(styled_id);
+            }
+          }
+        }
+
+        if let Some(body) = node.footnote_body.as_deref_mut() {
+          stack.push(body as *mut _);
+        }
+        for child in node.children.iter_mut().rev() {
+          stack.push(child as *mut _);
+        }
+      }
+    }
+
+    if textarea_updates
+      .keys()
+      .any(|id| !processed_textareas.contains(id))
+    {
+      undo_all(&mut undo_ops);
+      return Ok(false);
+    }
+
+    if select_updates.keys().any(|id| !processed_selects.contains(id)) {
+      undo_all(&mut undo_ops);
+      return Ok(false);
+    }
+
+    // Snapshot animation timing once so the layout/transition update is consistent within the call.
+    let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
+
+    let options = self.options.clone();
+    let toggles = self.renderer.resolve_runtime_toggles(&options);
+    let _toggles_guard =
+      super::RuntimeTogglesSwap::new(&mut self.renderer.runtime_toggles, toggles.clone());
+
+    let layout_result = crate::debug::runtime::with_runtime_toggles(toggles, || {
+      let trace = super::TraceSession::from_options(Some(&options));
+      let trace_handle = trace.handle();
+      let _root_span =
+        trace_handle.span("browser_document_dom2_incremental_relayout_form_controls", "pipeline");
+
+      let shared_diagnostics =
+        self
+          .renderer
+          .diagnostics
+          .as_ref()
+          .map(|diag| super::SharedRenderDiagnostics {
+            inner: std::sync::Arc::clone(diag),
+          });
+      let context = Some(self.renderer.build_resource_context(
+        self.renderer.document_url_hint(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.renderer.push_resource_context(context);
+
+      let result = (|| -> Result<()> {
+        let deadline = crate::render_control::RenderDeadline::new(
+          options.timeout,
+          options.cancel_callback.clone(),
+        );
+        let _deadline_guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+        crate::render_control::check_active(RenderStage::Layout).map_err(Error::Render)?;
+
+        let memory_sampling_enabled = options.stage_mem_budget_bytes.is_some();
+        let layout_rss_start = memory_sampling_enabled
+          .then(crate::memory::current_rss_bytes)
+          .flatten();
+        super::check_stage_mem_budget(
+          RenderStage::Layout,
+          layout_rss_start,
+          options.stage_mem_budget_bytes,
+        )?;
+
+        crate::render_control::record_stage(crate::render_control::StageHeartbeat::Layout);
+        let _layout_span = trace_handle.span("layout_tree", "layout");
+        let mut fragment_tree = self
+          .renderer
+          .layout_engine
+          .layout_tree_with_trace(&prepared.box_tree, trace_handle)
+          .map_err(super::map_formatting_layout_error)?;
+        drop(_layout_span);
+
+        // Preserve (and refresh) transition state across incremental relayouts.
+        match now_ms {
+          None => {
+            fragment_tree.transition_state = None;
+          }
+          Some(_now_ms) => {
+            if let Some(prev) = prepared.fragment_tree.transition_state.as_deref() {
+              let mut next = prev.clone();
+              next.capture_layout_from_fragment_tree(&fragment_tree);
+              fragment_tree.transition_state = Some(Arc::new(next));
+            } else {
+              fragment_tree.transition_state = None;
+            }
+          }
+        }
+
+        prepared.fragment_tree = fragment_tree;
+        Ok(())
+      })();
+
+      self
+        .renderer
+        .pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      drop(_root_span);
+      trace.finalize(result)
+    });
+
+    if let Err(err) = layout_result {
+      undo_all(&mut undo_ops);
+      return Err(err);
+    }
+
+    Ok(true)
+  }
 }
 
 fn apply_text_updates_to_box_tree(
   root: &mut BoxNode,
   updates: &FxHashMap<usize, String>,
 ) -> FxHashSet<usize> {
-  let mut updated: FxHashSet<usize> = FxHashSet::default();
+  let mut applied: FxHashSet<usize> = FxHashSet::default();
   let mut stack: Vec<*mut BoxNode> = vec![root as *mut _];
   while let Some(node_ptr) = stack.pop() {
     // Safety: stack contains pointers to nodes owned by `root` and we never move nodes during the
@@ -2376,7 +2990,7 @@ fn apply_text_updates_to_box_tree(
           if let BoxType::Text(text_box) = &mut node.box_type {
             text_box.text.clear();
             text_box.text.push_str(new_text);
-            updated.insert(styled_id);
+            applied.insert(styled_id);
           }
         }
       }
@@ -2390,7 +3004,7 @@ fn apply_text_updates_to_box_tree(
     }
   }
 
-  updated
+  applied
 }
 
 fn principal_box_style_for_styled_node_id(
@@ -2578,6 +3192,71 @@ mod tests {
         return Some(id);
       }
       for &child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn first_text_child(
+    doc: &crate::dom2::Document,
+    parent: crate::dom2::NodeId,
+  ) -> Option<crate::dom2::NodeId> {
+    doc
+      .node(parent)
+      .children
+      .iter()
+      .copied()
+      .find(|&child| {
+        doc.node(child).parent == Some(parent)
+          && matches!(doc.node(child).kind, crate::dom2::NodeKind::Text { .. })
+      })
+  }
+
+  fn find_first_textarea_control_value(root: &BoxNode) -> Option<String> {
+    let mut stack: Vec<&BoxNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+          if let FormControlKind::TextArea { value, .. } = &control.control {
+            return Some(value.clone());
+          }
+        }
+      }
+      if let Some(control) = node.form_control.as_ref() {
+        if let FormControlKind::TextArea { value, .. } = &control.control {
+          return Some(value.clone());
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn find_first_select_control(root: &BoxNode) -> Option<crate::tree::box_tree::SelectControl> {
+    let mut stack: Vec<&BoxNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &replaced.replaced_type {
+          if let FormControlKind::Select(select) = &control.control {
+            return Some(select.clone());
+          }
+        }
+      }
+      if let Some(control) = node.form_control.as_ref() {
+        if let FormControlKind::Select(select) = &control.control {
+          return Some(select.clone());
+        }
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
         stack.push(child);
       }
     }
@@ -3026,6 +3705,72 @@ mod tests {
       "synthetic ZWSP text node should inherit updated color after incremental restyle"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn textarea_text_mutation_updates_form_control_model_without_full_restyle() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><textarea id=t>Hello</textarea></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    let textarea = doc.dom().get_element_by_id("t").expect("textarea element");
+    let text_id = first_text_child(doc.dom(), textarea).expect("textarea text node");
+    let changed = doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.full_relayouts, before.full_relayouts);
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    let value =
+      find_first_textarea_control_value(prepared.box_tree()).expect("textarea form control value");
+    assert_eq!(value, "Updated");
+    Ok(())
+  }
+
+  #[test]
+  fn select_option_label_text_mutation_updates_select_items_without_full_restyle() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><select id=s><option id=o>One</option></select></body></html>",
+      RenderOptions::new().with_viewport(64, 64),
+    )?;
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    let option = doc.dom().get_element_by_id("o").expect("option element");
+    let option_preorder = doc
+      .last_dom_mapping()
+      .and_then(|mapping| mapping.preorder_for_node_id(option))
+      .expect("option preorder id");
+    let text_id = first_text_child(doc.dom(), option).expect("option text node");
+    let changed =
+      doc.mutate_dom(|dom| dom.set_text_data(text_id, "Updated").expect("set text"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+    assert_eq!(after.full_restyles, before.full_restyles);
+    assert_eq!(after.full_relayouts, before.full_relayouts);
+    assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
+
+    let prepared = doc.prepared().expect("prepared");
+    let select = find_first_select_control(prepared.box_tree()).expect("select form control");
+    let updated_label = select.items.iter().find_map(|item| match item {
+      SelectItem::Option { node_id, label, .. } if *node_id == option_preorder => Some(label.as_str()),
+      _ => None,
+    });
+    assert_eq!(updated_label, Some("Updated"));
     Ok(())
   }
 

@@ -264,6 +264,11 @@ impl Document {
     self.textarea_default_value(textarea)
   }
 
+  pub(crate) fn textarea_value_is_dirty(&self, textarea: NodeId) -> Result<bool, DomError> {
+    let _ = self.node_checked(textarea)?;
+    Ok(self.textarea_state(textarea)?.dirty_value)
+  }
+
   pub fn set_textarea_value(&mut self, textarea: NodeId, value: &str) -> Result<(), DomError> {
     let _ = self.node_checked(textarea)?;
     let state = self.textarea_state_mut(textarea)?;
