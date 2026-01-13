@@ -112,6 +112,8 @@ fn compiled_async_function_suspension_does_not_teardown_env() -> Result<(), VmEr
     )?;
   }
 
+  let baseline_env_roots = rt.heap.persistent_env_root_count();
+
   // If compiled async execution is not yet implemented, skip: this test specifically targets the
   // `Vm::call_user_function` plumbing once async HIR execution exists.
   match rt.exec_script("var out = 0; f().then(v => { out = v; });") {
@@ -126,5 +128,64 @@ fn compiled_async_function_suspension_does_not_teardown_env() -> Result<(), VmEr
 
   rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
   assert_eq!(rt.exec_script("out")?, Value::Number(42.0));
+  assert_eq!(
+    rt.heap.persistent_env_root_count(),
+    baseline_env_roots,
+    "async compiled call should not leak persistent env roots"
+  );
   Ok(())
+}
+
+#[test]
+fn compiled_async_unimplemented_does_not_leak_env_roots() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "compiled_async_unimplemented_does_not_leak_env_roots.js",
+    r#"
+      async function f() {
+        await Promise.resolve(1);
+        return 42;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let result: Result<(), VmError> = (|| {
+    let baseline_env_roots = heap.persistent_env_root_count();
+
+    let mut scope = heap.scope();
+    let name_s = scope.alloc_string("f")?;
+    let f_obj = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: f_body,
+      },
+      name_s,
+      0,
+    )?;
+    scope.push_root(Value::Object(f_obj))?;
+
+    match vm.call_without_host(&mut scope, Value::Object(f_obj), Value::Undefined, &[]) {
+      // Async compiled execution is not yet implemented; ensure we didn't leak the function's env root.
+      Err(VmError::Unimplemented(msg)) if msg.contains("async functions (hir-js compiled path)") => {
+        assert_eq!(
+          scope.heap().persistent_env_root_count(),
+          baseline_env_roots,
+          "unimplemented async compiled call leaked a persistent env root"
+        );
+        Ok(())
+      }
+      // Once async compiled execution exists, this test becomes redundant with
+      // `compiled_async_function_suspension_does_not_teardown_env`.
+      Ok(_) => Ok(()),
+      Err(err) => Err(err),
+    }
+  })();
+
+  realm.teardown(&mut heap);
+  result
 }
