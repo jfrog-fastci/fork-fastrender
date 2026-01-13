@@ -2718,6 +2718,60 @@ fn compiled_object_destructuring_decl_default_executes() -> Result<(), VmError> 
 }
 
 #[test]
+fn compiled_for_of_labeled_continue_targets_loop() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let out = '';
+      outer: for (let ch of 'ab') {
+        out = out + ch;
+        continue outer;
+      }
+      out
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_labeled_continue_targets_loop() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let out = '';
+      outer: for (let k in ({a:1, b:2})) {
+        out = out + k;
+        continue outer;
+      }
+      out
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}
+
+#[test]
 fn compiled_function_length_ignores_rest_param() -> Result<(), VmError> {
   let source = r#"
     function g(a, ...rest) {}

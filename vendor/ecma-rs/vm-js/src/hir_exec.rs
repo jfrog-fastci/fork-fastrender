@@ -973,6 +973,21 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     stmt_id: hir_js::StmtId,
   ) -> Result<Flow, VmError> {
+    self.eval_stmt_labelled(scope, body, stmt_id, &[])
+  }
+
+  /// Evaluates a statement with an associated label set.
+  ///
+  /// This models ECMA-262 `LabelledEvaluation` / `LoopEvaluation` label propagation:
+  /// nested label statements extend `label_set`, and iteration statements use it to determine which
+  /// labelled `continue` completions are consumed by the loop.
+  fn eval_stmt_labelled(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmt_id: hir_js::StmtId,
+    label_set: &[hir_js::NameId],
+  ) -> Result<Flow, VmError> {
     // Budget once per statement evaluation.
     self.vm.tick()?;
 
@@ -1026,6 +1041,7 @@ impl<'vm> HirEvaluator<'vm> {
           match self.eval_stmt(scope, body, *inner)? {
             Flow::Normal(_) => {}
             Flow::Continue(None) => {}
+            Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
             Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
             Flow::Break(None) => return Ok(Flow::empty()),
             Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
@@ -1039,6 +1055,7 @@ impl<'vm> HirEvaluator<'vm> {
           match self.eval_stmt(scope, body, *inner)? {
             Flow::Normal(_) => {}
             Flow::Continue(None) => {}
+            Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
             Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
             Flow::Break(None) => return Ok(Flow::empty()),
             Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
@@ -1117,6 +1134,7 @@ impl<'vm> HirEvaluator<'vm> {
               match self.eval_stmt(scope, body, *inner)? {
                 Flow::Normal(_) => {}
                 Flow::Continue(None) => {}
+                Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
                 Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
                 Flow::Break(None) => return Ok(Flow::empty()),
                 Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
@@ -1163,6 +1181,7 @@ impl<'vm> HirEvaluator<'vm> {
           match self.eval_stmt(scope, body, *inner)? {
             Flow::Normal(_) => {}
             Flow::Continue(None) => {}
+            Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
             Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
             Flow::Break(None) => return Ok(Flow::empty()),
             Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
@@ -1299,6 +1318,7 @@ impl<'vm> HirEvaluator<'vm> {
             match flow {
               Flow::Normal(_) => {}
               Flow::Continue(None) => {}
+              Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
               Flow::Continue(Some(label)) => {
                 if let Err(err) = iterator::iterator_close(
                   self.vm,
@@ -1433,6 +1453,7 @@ impl<'vm> HirEvaluator<'vm> {
             match flow {
               Flow::Normal(_) => {}
               Flow::Continue(None) => {}
+              Flow::Continue(Some(label)) if label_set.iter().any(|l| *l == label) => {}
               Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
               Flow::Break(None) => return Ok(Flow::empty()),
               Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
@@ -1719,10 +1740,11 @@ impl<'vm> HirEvaluator<'vm> {
         }
       }
       hir_js::StmtKind::Labeled { label, body: inner } => {
-        let flow = self.eval_stmt(scope, body, *inner)?;
+        let mut new_label_set: Vec<hir_js::NameId> = label_set.to_vec();
+        new_label_set.push(*label);
+        let flow = self.eval_stmt_labelled(scope, body, *inner, new_label_set.as_slice())?;
         match flow {
           Flow::Break(Some(target)) if target == *label => Ok(Flow::empty()),
-          Flow::Continue(Some(target)) if target == *label => Ok(Flow::Continue(None)),
           other => Ok(other),
         }
       }
