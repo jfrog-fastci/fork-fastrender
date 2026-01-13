@@ -809,11 +809,34 @@ mod tests {
   use super::*;
 
   #[test]
-  fn cors_safelisted_range_does_not_trim_non_ascii_whitespace() {
+  fn cors_safelisted_range_request_header_value_grammar() {
+    // Valid single range forms.
+    for value in ["bytes=0-1", "bytes=123-", "bytes=0-0", "Bytes=0-1"] {
+      assert!(
+        crate::resource::web_fetch::is_cors_safelisted_request_header("range", value),
+        "expected {value:?} to be CORS-safelisted"
+      );
+    }
+
+    // Invalid forms should not be safelisted.
+    for value in [
+      // Multiple ranges are disallowed by the restricted grammar.
+      "bytes=0-1,2-3",
+      // Suffix ranges are not safelisted.
+      "bytes=-10",
+      // Non-digits.
+      "bytes=abc-1",
+    ] {
+      assert!(
+        !crate::resource::web_fetch::is_cors_safelisted_request_header("range", value),
+        "expected {value:?} to be CORS-unsafe"
+      );
+    }
+
+    // Non-ASCII whitespace must not be trimmed for CORS safelisting checks.
     let nbsp = "\u{00A0}";
     let value = format!("{nbsp}bytes=0-1");
-    assert!(!is_safelisted_range_header_value(&value));
-    assert!(is_safelisted_range_header_value("bytes=0-1"));
+    assert!(!crate::resource::web_fetch::is_cors_safelisted_request_header("range", &value));
   }
 
   #[test]

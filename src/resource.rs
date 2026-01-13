@@ -14605,6 +14605,21 @@ mod tests {
   }
 
   #[test]
+  fn cors_unsafe_request_header_names_treats_safelisted_range_as_safe() {
+    let safe = vec![("Range".to_string(), "bytes=0-1".to_string())];
+    assert!(
+      cors_unsafe_request_header_names(&safe).is_empty(),
+      "expected single safelisted Range header to not trigger preflight"
+    );
+
+    let unsafe_multi = vec![("Range".to_string(), "bytes=0-1,2-3".to_string())];
+    assert_eq!(
+      cors_unsafe_request_header_names(&unsafe_multi),
+      vec!["range".to_string()]
+    );
+  }
+
+  #[test]
   fn cors_preflight_cache_updates_wildcard_method_entry() {
     let now = Instant::now();
     let mut cache = CorsPreflightCache::default();
