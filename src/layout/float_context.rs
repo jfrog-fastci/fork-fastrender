@@ -3354,7 +3354,10 @@ mod tests {
       // Construct enough float boundaries that `find_fit` will hit its periodic deadline check.
       let mut ctx = FloatContext::new(200.0);
       for i in 0..256 {
-        ctx.add_float_at(FloatSide::Left, 0.0, i as f32, 150.0, 1.0);
+        // Vary the edge each row so the range cache cannot coalesce segments and `find_fit` is
+        // forced to step through enough boundaries to hit its periodic deadline check.
+        let w = if i % 2 == 0 { 150.0 } else { 149.0 };
+        ctx.add_float_at(FloatSide::Left, 0.0, i as f32, w, 1.0);
       }
 
       let _ = ctx.find_fit(180.0, 1.0, 0.0);
