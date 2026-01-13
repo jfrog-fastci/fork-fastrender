@@ -139,11 +139,29 @@ pub fn history_panel_ui(
         return;
       }
 
+      // Virtualize the rows so stable queries do not require walking the entire (up to 500 row)
+      // result set every frame; only visible rows are built.
+      let row_gap = 6.0;
+      let row_height = {
+        let padding = ui.spacing().button_padding;
+        let text_h = ui.text_style_height(&egui::TextStyle::Body);
+        let small_h = ui.text_style_height(&egui::TextStyle::Small);
+        let content_h = text_h + small_h + small_h;
+        (content_h + padding.y * 2.0).max(ui.spacing().interact_size.y.max(30.0))
+      };
+      let row_total_h = row_height + row_gap;
+
       egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-          ui.spacing_mut().item_spacing.y = 6.0;
-          for &idx in results {
+        .show_rows(ui, row_total_h, results.len(), |ui, row_range| {
+          // We account for spacing via `row_gap`, so avoid implicit spacing from egui layouts.
+          ui.spacing_mut().item_spacing.y = 0.0;
+
+          for row_idx in row_range {
+            let Some(&idx) = results.get(row_idx) else {
+              continue;
+            };
+
             let entry = &history.entries[idx];
             let title = entry
               .title
@@ -204,6 +222,9 @@ pub fn history_panel_ui(
             if row_resp.response.clicked() && !action_clicked {
               out.open_url = Some(url.clone());
             }
+
+            // Manual spacing so `show_rows` can assume a constant row height.
+            ui.add_space(row_gap);
           }
         });
     });
