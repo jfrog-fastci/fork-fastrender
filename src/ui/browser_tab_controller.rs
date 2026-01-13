@@ -1213,15 +1213,31 @@ impl BrowserTabController {
 
   fn handle_text_input(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
-    let changed = self.document.mutate_dom(|dom| {
-      let changed = self.interaction.text_input(dom, text);
-      if changed {
-        if let Some(focused) = self.interaction.focused_node_id() {
-          datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
+    // Prefer using cached layout artifacts when available so `<select>` typeahead can use the
+    // painted option list (skipping options hidden via computed `display:none`, etc).
+    let engine = &mut self.interaction;
+    let changed = match self
+      .document
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+        let changed = engine.text_input_with_box_tree(dom, Some(box_tree), text);
+        if changed {
+          if let Some(focused) = engine.focused_node_id() {
+            datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
+          }
         }
-      }
-      changed
-    });
+        (changed, changed)
+      }) {
+      Ok(changed) => changed,
+      Err(_) => self.document.mutate_dom(|dom| {
+        let changed = engine.text_input(dom, text);
+        if changed {
+          if let Some(focused) = engine.focused_node_id() {
+            datalist_open = datalist_popup_options(dom, focused).map(|options| (focused, options));
+          }
+        }
+        changed
+      }),
+    };
 
     let mut out = Vec::new();
     if let Some((input_node_id, options)) = datalist_open {

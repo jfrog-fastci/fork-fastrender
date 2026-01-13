@@ -9614,6 +9614,20 @@ impl InteractionEngine {
 
   /// Insert typed text into focused text control (input/textarea) and set focus-visible.
   pub fn text_input(&mut self, dom: &mut DomNode, text: &str) -> bool {
+    self.text_input_with_box_tree(dom, None, text)
+  }
+
+  /// Like [`InteractionEngine::text_input`], but optionally accepts a cached [`BoxTree`].
+  ///
+  /// This is used for `<select>` typeahead: when layout artifacts are available, the box tree's
+  /// `SelectControl` snapshot reflects the painted/visible option list (e.g. options with computed
+  /// `display:none` are absent).
+  pub fn text_input_with_box_tree(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: Option<&BoxTree>,
+    text: &str,
+  ) -> bool {
     self.modality = InputModality::Keyboard;
     let Some(focused) = self.state.focused else {
       return false;
@@ -9645,9 +9659,20 @@ impl InteractionEngine {
         return changed;
       }
 
-      let Some(control) = select_control_snapshot_from_dom(&index, focused) else {
+      let mut computed_disabled = false;
+      let control = match box_tree.and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused)) {
+        Some((_, control, disabled, _)) => {
+          computed_disabled = disabled;
+          Some(control)
+        }
+        None => select_control_snapshot_from_dom(&index, focused),
+      };
+      let Some(control) = control else {
         return changed;
       };
+      if computed_disabled {
+        return changed;
+      }
       if control.multiple || control.size != 1 {
         return changed;
       }

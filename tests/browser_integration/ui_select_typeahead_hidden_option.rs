@@ -118,3 +118,82 @@ fn browser_tab_controller_select_typeahead_skips_hidden_options() -> Result<()> 
   Ok(())
 }
 
+#[test]
+fn browser_tab_controller_select_typeahead_skips_css_hidden_options() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId(1);
+  let viewport_css = (200, 80);
+  let url = "https://example.com/index.html";
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #sel { position: absolute; left: 0; top: 0; width: 120px; height: 24px; }
+          #hid { display: none; }
+        </style>
+      </head>
+      <body>
+        <select id="sel">
+          <option id="a">Apple</option>
+          <option id="hid">Cherry</option>
+          <option id="vis">Cherry</option>
+        </select>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+
+  // Ensure the document is laid out before hit-testing pointer events.
+  let _ = controller.handle_message(UiToWorker::RequestRepaint {
+    tab_id,
+    reason: RepaintReason::Explicit,
+  })?;
+
+  // Click to focus the select.
+  let _ = controller.handle_message(UiToWorker::PointerDown {
+    tab_id,
+    pos_css: (10.0, 10.0),
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+    click_count: 1,
+  })?;
+  let _ = controller.handle_message(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (10.0, 10.0),
+    button: PointerButton::Primary,
+    modifiers: PointerModifiers::NONE,
+  })?;
+
+  let select_node_id = node_id_by_id_attr(controller.document().dom(), "sel");
+  assert_eq!(
+    controller.interaction_state().focused,
+    Some(select_node_id),
+    "expected click to focus the <select>"
+  );
+
+  // Typeahead should match "Cherry" while skipping the CSS-hidden option.
+  let _ = controller.handle_message(UiToWorker::TextInput {
+    tab_id,
+    text: "c".to_string(),
+  })?;
+
+  assert_eq!(
+    selected_option_id_attrs(controller.document().dom()),
+    vec![Some("vis".to_string())],
+    "expected typeahead to select the visible option and skip computed display:none options",
+  );
+
+  Ok(())
+}

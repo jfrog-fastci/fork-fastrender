@@ -6548,8 +6548,18 @@ impl BrowserRuntime {
     };
 
     let mut datalist_open: Option<(usize, Vec<DatalistOption>)> = None;
+    let box_tree_ptr = doc
+      .prepared()
+      .map(|prepared| prepared.box_tree() as *const crate::BoxTree);
     let changed = doc.mutate_dom(|dom| {
-      let changed = tab.interaction.text_input(dom, text);
+      // Prefer using cached layout artifacts when available so `<select>` typeahead can use the
+      // painted option list (skipping options hidden via computed `display:none`, etc).
+      let changed = match box_tree_ptr {
+        Some(box_tree_ptr) => tab
+          .interaction
+          .text_input_with_box_tree(dom, Some(unsafe { &*box_tree_ptr }), text),
+        None => tab.interaction.text_input(dom, text),
+      };
       if changed {
         let Some(input_node_id) = tab.interaction.focused_node_id() else {
           return changed;
