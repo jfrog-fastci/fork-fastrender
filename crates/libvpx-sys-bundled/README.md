@@ -39,6 +39,8 @@ Common flags:
 - `--disable-examples --disable-tools --disable-unit-tests --disable-docs`
 - Decoder-only build:
   - `--enable-vp8-decoder --enable-vp9-decoder`
+  - `--enable-vp9-highbitdepth` (allows decoding 10/12-bit VP9 streams; callers must handle
+    16-bit output frames)
   - `--disable-vp8-encoder --disable-vp9-encoder`
 - `--disable-webm-io` (no libwebm dependency)
 - `--disable-libyuv` (avoid C++ compilation)
