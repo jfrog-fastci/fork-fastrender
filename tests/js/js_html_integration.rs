@@ -188,6 +188,35 @@ fn p0_external_classic_scripts_are_parser_blocking_and_resolve_relative_src_agai
 }
 
 #[test]
+fn p0_external_classic_scripts_set_document_current_script_during_execution_and_clear_afterward(
+) -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p0_external_current_script.html", js_options)?;
+
+  h.register_script_source(
+    "https://example.invalid/a.js",
+    r#"console.log('cs:' + document.currentScript.getAttribute('id'));"#,
+  );
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script id="ext" src="https://example.invalid/a.js"></script>
+      <script>
+        queueMicrotask(() => console.log('after:' + (document.currentScript === null)));
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["cs:ext".to_string(), "after:true".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p0_external_classic_script_parse_errors_do_not_break_parsing() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p0_external_error.html", js_options)?;
