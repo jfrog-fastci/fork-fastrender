@@ -940,8 +940,21 @@ fn regexp_lookbehind_direction_minus_one_backref_before_capture_allows_greedy_gr
 }
 
 #[test]
+fn regexp_lookbehind_direction_minus_one_forward_reference_backref_respects_ignore_case() {
+  // From test262: back-references-to-captures.js#1
+  //
+  // A forward reference (`\1`) inside a lookbehind: the capture runs first (right-to-left), and
+  // the backreference should be evaluated with ignoreCase semantics.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("abcCd".match(/(?<=\1(\w))d/i))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["d","C"]"#);
+}
+
+#[test]
 fn regexp_lookbehind_direction_minus_one_forward_reference_backref_sees_capture() {
-  // From test262: back-references-to-captures.js#1/#2
+  // From test262: back-references-to-captures.js#2
   //
   // `\1` is a forward reference to a capture that appears later in the lookbehind pattern.
   // With direction=-1 evaluation, the capture runs first (right-to-left), so the backreference
@@ -951,6 +964,33 @@ fn regexp_lookbehind_direction_minus_one_forward_reference_backref_sees_capture(
     .exec_script(r#"JSON.stringify("abxxd".match(/(?<=\1([abx]))d/))"#)
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), r#"["d","x"]"#);
+}
+
+#[test]
+fn regexp_lookbehind_direction_minus_one_forward_reference_backref_greedy_capture_backtracks() {
+  // From test262: back-references-to-captures.js#3-#5
+  //
+  // This is a forward reference (`\1`) to a greedy capture group. With direction=-1 matching, the
+  // capture is evaluated first and must backtrack so that `\1` can match the same substring.
+  //
+  // A naive implementation that runs the lookbehind body forward from a start index can treat `\1`
+  // as empty and incorrectly succeed with an over-large capture, or succeed when it should fail.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        [
+          JSON.stringify("ababc".match(/(?<=\1(\w+))c/)),
+          JSON.stringify("ababbc".match(/(?<=\1(\w+))c/)),
+          JSON.stringify("ababdc".match(/(?<=\1(\w+))c/)),
+        ].join("|")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    r#"["c","ab"]|["c","b"]|null"#
+  );
 }
 
 #[test]
