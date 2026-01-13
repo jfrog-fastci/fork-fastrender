@@ -247,12 +247,15 @@ If the parent process is already running inside a Windows Job (common in CI/supe
 
 - `spawn_sandboxed(...)` may try `CREATE_BREAKAWAY_FROM_JOB` first, then retry without breakaway on
   `ERROR_ACCESS_DENIED`.
-- Assigning the child to our new Job can still fail (nested jobs/breakaway restrictions). In that
-  case `SandboxedChild.job` is `None` and the code prints a warning: **kill-on-close + active
-  process limit are not enforced**.
+- Assigning the child to our new Job can still fail (nested jobs/breakaway restrictions).
+  - **Default:** fail closed. The spawner terminates the child process and returns an error (so we
+    don’t silently lose `kill-on-close` / active-process limits).
+  - **Opt-in:** if `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` is set, the spawner may continue *jobless*
+    (`SandboxedChild.job == None`) and prints a warning: **kill-on-close + active process limit are
+    not enforced**.
 
 Note: `crates/win-sandbox::spawn_sandboxed` is stricter here: it treats “cannot assign process to
-Job” as a hard error and will terminate + return an error rather than running jobless.
+Job” as a hard error and will always terminate + return an error (no jobless fallback path).
 
 ## Handle inheritance allowlisting (critical)
 
