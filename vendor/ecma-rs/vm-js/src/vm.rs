@@ -4398,6 +4398,13 @@ mod tests {
     rt.heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
+  fn new_runtime() -> crate::JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    // Match other tests: keep heap reasonably small to exercise GC paths without being flaky.
+    let heap = Heap::new(crate::HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    crate::JsRuntime::new(vm, heap).unwrap()
+  }
+
   fn noop_call(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
@@ -5045,6 +5052,53 @@ mod tests {
     );
 
     Ok(())
+  }
+
+  #[test]
+  fn arrow_this_in_derived_constructor_observes_initialized_this_after_super() {
+    let mut rt = new_runtime();
+    let value = rt
+      .exec_script(
+        r#"
+        class B {}
+        class D extends B {
+          constructor() {
+            let f = () => this;
+            super();
+            // Return an object wrapper so the arrow's return value is observable even if it is
+            // `undefined` (constructor primitive return values are ignored).
+            return { v: f() };
+          }
+        }
+        const o = new D();
+        o.v instanceof D
+      "#,
+      )
+      .unwrap();
+    assert_eq!(value, Value::Bool(true));
+  }
+
+  #[test]
+  fn arrow_this_before_super_throws_reference_error() {
+    let mut rt = new_runtime();
+    let value = rt
+      .exec_script(
+        r#"
+        let err;
+        class B {}
+        class D extends B {
+          constructor() {
+            let f = () => this;
+            try { f(); } catch (e) { err = e.name; }
+            super();
+          }
+        }
+        new D();
+        err
+      "#,
+      )
+      .unwrap();
+    assert_eq!(value_to_string(&rt, value), "ReferenceError");
   }
 
   #[test]
