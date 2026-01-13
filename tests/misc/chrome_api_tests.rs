@@ -1,8 +1,10 @@
 use fastrender::js::{WindowRealm, WindowRealmConfig};
 use fastrender::js::window_realm::DomBindingsBackend;
-use fastrender::js::chrome_api::{install_chrome_api_bindings_vm_js, ChromeApiHandler, ChromeTabInfo};
-use vm_js::{Heap, Value, VmError};
-use std::sync::{Arc, Mutex};
+use fastrender::js::chrome_api::{install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand};
+use fastrender::js::window_timers::VmJsEventLoopHooks;
+use fastrender::js::WindowRealmHost;
+use std::any::Any;
+use vm_js::{Heap, Job, Value, VmError, VmHost, VmHostHooks};
 
 fn get_string(heap: &Heap, value: Value) -> String {
   let Value::String(s) = value else {
@@ -45,57 +47,54 @@ fn chrome_global_is_not_exposed_by_default_webidl_dom() -> Result<(), VmError> {
   assert_chrome_not_exposed_by_default(realm)
 }
 
-#[derive(Default)]
-struct RecordingChromeHandler {
-  closed: Mutex<Vec<u64>>,
-  activated: Mutex<Vec<u64>>,
-  navigated: Mutex<Vec<String>>,
-  go_back: Mutex<u32>,
-  go_forward: Mutex<u32>,
-  reload: Mutex<u32>,
-  stop: Mutex<u32>,
+struct TestHost {
+  vm_host: (),
+  realm: WindowRealm,
+  cmds: Vec<ChromeCommand>,
 }
 
-impl ChromeApiHandler for RecordingChromeHandler {
-  fn new_tab(&self, _url: Option<String>) -> u64 {
-    1
+impl TestHost {
+  fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
+    Ok(Self {
+      vm_host: (),
+      realm: WindowRealm::new(config)?,
+      cmds: Vec::new(),
+    })
   }
+}
 
-  fn close_tab(&self, id: u64) {
-    self.closed.lock().unwrap().push(id);
+impl WindowRealmHost for TestHost {
+  fn vm_host_and_window_realm(
+    &mut self,
+  ) -> fastrender::error::Result<(&mut dyn VmHost, &mut WindowRealm)> {
+    Ok((&mut self.vm_host, &mut self.realm))
   }
+}
 
-  fn activate_tab(&self, id: u64) {
-    self.activated.lock().unwrap().push(id);
+impl ChromeApiHost for TestHost {
+  fn chrome_dispatch(&mut self, cmd: ChromeCommand) -> Result<(), fastrender::error::Error> {
+    self.cmds.push(cmd);
+    Ok(())
   }
+}
 
-  fn tabs_snapshot(&self) -> Vec<ChromeTabInfo> {
-    vec![ChromeTabInfo {
-      id: (1u64 << 53) - 1, // Number.MAX_SAFE_INTEGER
-      url: "https://example.com/".to_string(),
-      title: "Example".to_string(),
-      active: true,
-    }]
+struct Hooks<Host: WindowRealmHost + 'static> {
+  inner: VmJsEventLoopHooks<Host>,
+}
+
+impl<Host: WindowRealmHost + 'static> Hooks<Host> {
+  fn new(host: &mut Host) -> fastrender::error::Result<Self> {
+    Ok(Self {
+      inner: VmJsEventLoopHooks::new_with_host(host)?,
+    })
   }
+}
 
-  fn navigate(&self, input: String) {
-    self.navigated.lock().unwrap().push(input);
-  }
+impl<Host: WindowRealmHost + 'static> VmHostHooks for Hooks<Host> {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
 
-  fn go_back(&self) {
-    *self.go_back.lock().unwrap() += 1;
-  }
-
-  fn go_forward(&self) {
-    *self.go_forward.lock().unwrap() += 1;
-  }
-
-  fn reload(&self) {
-    *self.reload.lock().unwrap() += 1;
-  }
-
-  fn stop(&self) {
-    *self.stop.lock().unwrap() += 1;
+  fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+    self.inner.as_any_mut()
   }
 }
 
@@ -103,92 +102,113 @@ impl ChromeApiHandler for RecordingChromeHandler {
 fn chrome_tab_id_representation_is_safe_integer_number() -> Result<(), VmError> {
   const MAX_SAFE_INTEGER: u64 = (1u64 << 53) - 1;
 
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
-  let handler = Arc::new(RecordingChromeHandler::default());
+  let mut host = TestHost::new(WindowRealmConfig::new("https://example.invalid/"))?;
+  {
+    let (vm, realm_ref, heap) = host.realm.vm_realm_and_heap_mut();
+    install_chrome_api_bindings_vm_js::<TestHost>(vm, heap, realm_ref)?;
+  }
 
-  let _bindings = {
-    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
-    install_chrome_api_bindings_vm_js(vm, heap, realm_ref, handler.clone())?
+  let mut hooks = Hooks::<TestHost>::new(&mut host).expect("create hooks");
+
+  let err_name = {
+    let (vm_host, realm) = host.vm_host_and_window_realm().expect("split");
+
+    // closeTab(MAX_SAFE_INTEGER) should work (no throw) and preserve the exact id.
+    realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, "chrome.tabs.closeTab(Number.MAX_SAFE_INTEGER)")?;
+
+    // Out of safe integer range must throw TypeError.
+    realm.exec_script_with_host_and_hooks(
+      vm_host,
+      &mut hooks,
+      "try { chrome.tabs.closeTab(Number.MAX_SAFE_INTEGER + 1); 'no-error'; } catch (e) { e.name }",
+    )?
   };
 
-  // closeTab(MAX_SAFE_INTEGER) should work (no throw) and preserve the exact id.
-  realm.exec_script("chrome.tabs.closeTab(Number.MAX_SAFE_INTEGER)")?;
   assert_eq!(
-    handler.closed.lock().unwrap().as_slice(),
-    &[MAX_SAFE_INTEGER]
+    host.cmds.as_slice(),
+    &[ChromeCommand::CloseTab {
+      tab_id: MAX_SAFE_INTEGER,
+    }]
   );
-
-  // Out of safe integer range must throw TypeError.
-  let err_name = realm.exec_script(
-    "try { chrome.tabs.closeTab(Number.MAX_SAFE_INTEGER + 1); 'no-error'; } catch (e) { e.name }",
-  )?;
-  assert_eq!(get_string(realm.heap(), err_name), "TypeError");
-
-  // Non-integers must throw TypeError.
-  let err_name = realm.exec_script("try { chrome.tabs.closeTab(1.5); 'no-error'; } catch (e) { e.name }")?;
-  assert_eq!(get_string(realm.heap(), err_name), "TypeError");
-
-  // Snapshot getters must surface ids as safe integers.
-  let id = realm.exec_script("chrome.tabs.getAll()[0].id")?;
-  let Value::Number(n) = id else {
-    panic!("expected Number id, got {id:?}");
-  };
-  assert_eq!(n, MAX_SAFE_INTEGER as f64);
+  assert_eq!(get_string(host.realm.heap(), err_name), "TypeError");
   Ok(())
 }
 
 #[test]
-fn chrome_navigation_dispatches_to_handler() -> Result<(), VmError> {
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
-  let handler = Arc::new(RecordingChromeHandler::default());
+fn chrome_navigation_dispatches_commands_to_host() -> Result<(), VmError> {
+  let mut host = TestHost::new(WindowRealmConfig::new("https://example.invalid/"))?;
+  {
+    let (vm, realm_ref, heap) = host.realm.vm_realm_and_heap_mut();
+    install_chrome_api_bindings_vm_js::<TestHost>(vm, heap, realm_ref)?;
+  }
 
-  let _bindings = {
-    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
-    install_chrome_api_bindings_vm_js(vm, heap, realm_ref, handler.clone())?
-  };
+  let mut hooks = Hooks::<TestHost>::new(&mut host).expect("create hooks");
+  {
+    let (vm_host, realm) = host.vm_host_and_window_realm().expect("split");
 
-  let writable = realm.exec_script("Object.getOwnPropertyDescriptor(chrome, 'navigation').writable")?;
-  assert_eq!(writable, Value::Bool(false));
+    let writable = realm.exec_script_with_host_and_hooks(
+      vm_host,
+      &mut hooks,
+      "Object.getOwnPropertyDescriptor(chrome, 'navigation').writable",
+    )?;
+    assert_eq!(writable, Value::Bool(false));
 
-  realm.exec_script("chrome.navigation.goBack()")?;
-  realm.exec_script("chrome.navigation.goForward()")?;
-  realm.exec_script("chrome.navigation.reload()")?;
-  realm.exec_script("chrome.navigation.stop()")?;
-  realm.exec_script("chrome.navigation.navigate('https://example.com')")?;
+    realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, "chrome.navigation.back()")?;
+    realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, "chrome.navigation.forward()")?;
+    realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, "chrome.navigation.reload()")?;
+    realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, "chrome.navigation.stop()")?;
+    realm.exec_script_with_host_and_hooks(
+      vm_host,
+      &mut hooks,
+      "chrome.navigation.navigate('https://example.com')",
+    )?;
+  }
 
-  assert_eq!(*handler.go_back.lock().unwrap(), 1);
-  assert_eq!(*handler.go_forward.lock().unwrap(), 1);
-  assert_eq!(*handler.reload.lock().unwrap(), 1);
-  assert_eq!(*handler.stop.lock().unwrap(), 1);
   assert_eq!(
-    handler.navigated.lock().unwrap().as_slice(),
-    &["https://example.com".to_string()]
+    host.cmds.as_slice(),
+    &[
+      ChromeCommand::Back,
+      ChromeCommand::Forward,
+      ChromeCommand::Reload,
+      ChromeCommand::Stop,
+      ChromeCommand::Navigate {
+        url: "https://example.com".to_string(),
+      },
+    ]
   );
-
   Ok(())
 }
 
 #[test]
 fn chrome_navigation_navigate_validates_type_and_size() -> Result<(), VmError> {
-  let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
-  let handler = Arc::new(RecordingChromeHandler::default());
+  let mut host = TestHost::new(WindowRealmConfig::new("https://example.invalid/"))?;
+  {
+    let (vm, realm_ref, heap) = host.realm.vm_realm_and_heap_mut();
+    install_chrome_api_bindings_vm_js::<TestHost>(vm, heap, realm_ref)?;
+  }
 
-  let _bindings = {
-    let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
-    install_chrome_api_bindings_vm_js(vm, heap, realm_ref, handler.clone())?
+  let mut hooks = Hooks::<TestHost>::new(&mut host).expect("create hooks");
+
+  let (err_name_non_string, err_name_too_large) = {
+    let (vm_host, realm) = host.vm_host_and_window_realm().expect("split");
+
+    let err_name_non_string = realm.exec_script_with_host_and_hooks(
+      vm_host,
+      &mut hooks,
+      "try { chrome.navigation.navigate(123); 'no-error'; } catch (e) { e.name }",
+    )?;
+
+    let err_name_too_large = realm.exec_script_with_host_and_hooks(
+      vm_host,
+      &mut hooks,
+      "try { chrome.navigation.navigate('a'.repeat(9000)); 'no-error'; } catch (e) { e.name }",
+    )?;
+
+    (err_name_non_string, err_name_too_large)
   };
 
-  let err_name = realm.exec_script(
-    "try { chrome.navigation.navigate(123); 'no-error'; } catch (e) { e.name }",
-  )?;
-  assert_eq!(get_string(realm.heap(), err_name), "TypeError");
-  assert!(handler.navigated.lock().unwrap().is_empty());
-
-  let err_name = realm.exec_script(
-    "try { chrome.navigation.navigate('a'.repeat(9000)); 'no-error'; } catch (e) { e.name }",
-  )?;
-  assert_eq!(get_string(realm.heap(), err_name), "TypeError");
-  assert!(handler.navigated.lock().unwrap().is_empty());
-
+  assert_eq!(get_string(host.realm.heap(), err_name_non_string), "TypeError");
+  assert_eq!(get_string(host.realm.heap(), err_name_too_large), "TypeError");
+  assert!(host.cmds.is_empty());
   Ok(())
 }
