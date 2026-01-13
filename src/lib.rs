@@ -214,7 +214,6 @@ pub mod interaction;
 pub mod layout;
 pub mod math;
 pub mod paint;
-pub mod media;
 pub mod render_control;
 pub mod scroll;
 pub mod style;
