@@ -36,6 +36,8 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
   `validate_user_navigation_url_scheme`).
 - Integration test asserts “unsupported schemes fail fast (no error page render)”:
   [`tests/browser_integration/ui_worker_unsupported_scheme.rs`](../tests/browser_integration/ui_worker_unsupported_scheme.rs).
+- Integration test asserts an *untrusted* page can’t click-navigate to these schemes either:
+  [`tests/browser_integration/ui_worker_untrusted_chrome_schemes.rs`](../tests/browser_integration/ui_worker_untrusted_chrome_schemes.rs).
 - Browser CLI start URL validation also uses the same allowlist:
   [`src/bin/browser.rs`](../src/bin/browser.rs) +
   [`tests/browser_integration/browser_cli_start_url_scheme.rs`](../tests/browser_integration/browser_cli_start_url_scheme.rs).
@@ -184,3 +186,6 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
   bash scripts/cargo_agent.sh test --features browser_ui --test integration \
     ui_worker_rejects_unsupported_schemes_without_rendering_error_page
   ```
+
+- [`tests/browser_integration/ui_worker_untrusted_chrome_schemes.rs`](../tests/browser_integration/ui_worker_untrusted_chrome_schemes.rs) asserts an untrusted
+  page cannot *click* a link to `chrome-action:` or `chrome://` (same rejection behavior).
