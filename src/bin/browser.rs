@@ -9967,6 +9967,11 @@ struct App {
   resize_burst_active: bool,
   resize_dpr_scale: f32,
   modifiers: winit::event::ModifiersState,
+  /// Browser-side gate for worker-initiated clipboard writes.
+  ///
+  /// This ensures an untrusted worker cannot overwrite the OS clipboard unless the browser UI has
+  /// explicitly initiated a copy/cut request for the same tab.
+  clipboard_write_gate: fastrender::ui::clipboard_gate::ClipboardWriteGate,
   /// Whether the current frame should ignore `egui::Event::Paste` events.
   ///
   /// We handle Ctrl/Cmd+V ourselves (reading the OS clipboard and sending `UiToWorker::Paste`) when
@@ -10865,6 +10870,7 @@ impl App {
       resize_burst_active: false,
       resize_dpr_scale: resize_dpr_scale_from_env(),
       modifiers: winit::event::ModifiersState::default(),
+      clipboard_write_gate: Default::default(),
       suppress_paste_events: false,
       wheel_events_buf: Vec::with_capacity(8),
       paste_events_buf: Vec::with_capacity(2),
@@ -11878,6 +11884,16 @@ impl App {
       self
         .overlay_scrollbar_visibility
         .register_interaction(std::time::Instant::now());
+    }
+
+    // Clipboard writes requested by the worker are gated on browser-initiated Copy/Cut actions.
+    // Record those requests here (browser process) so that an untrusted renderer cannot overwrite
+    // the OS clipboard at arbitrary times.
+    match &msg {
+      UiToWorker::Copy { tab_id } => self.clipboard_write_gate.register_copy(*tab_id),
+      UiToWorker::Cut { tab_id } => self.clipboard_write_gate.register_cut(*tab_id),
+      UiToWorker::CloseTab { tab_id } => self.clipboard_write_gate.clear_tab(*tab_id),
+      _ => {}
     }
 
     let tab_id = match &msg {
@@ -13222,6 +13238,36 @@ impl App {
     &mut self,
     clipboard_update: fastrender::ui::protocol_limits::ClipboardTextLimitResult,
   ) -> WorkerMessageResult {
+    match self
+      .clipboard_write_gate
+      .on_worker_set_clipboard_text(clipboard_update.tab_id)
+    {
+      fastrender::ui::clipboard_gate::ClipboardWriteGateDecision::Allowed => {}
+      fastrender::ui::clipboard_gate::ClipboardWriteGateDecision::Rejected { should_log } => {
+        if should_log {
+          let debug_line = format!(
+            "[security] ignored unexpected clipboard write request from worker (tab {})",
+            clipboard_update.tab_id.0
+          );
+          // Best-effort logging only; ignore failures so a closed stderr cannot panic the browser.
+          {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "{debug_line}");
+          }
+          if self.debug_log_ui_enabled {
+            if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+              self.debug_log.pop_front();
+            }
+            self.debug_log.push_back(debug_line);
+          }
+        }
+        return WorkerMessageResult {
+          request_redraw: false,
+          history_deltas: Vec::new(),
+        };
+      }
+    }
+
     let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
     if clipboard_update.truncated {
       use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
