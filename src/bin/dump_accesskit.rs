@@ -31,6 +31,20 @@ mod enabled {
     role: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expanded: Option<bool>,
+    /// Whether the node explicitly supports the Expand action.
+    ///
+    /// This is only populated for debugging; most chrome widgets rely on default actions.
+    #[serde(skip_serializing_if = "is_false")]
+    supports_expand: bool,
+    /// Whether the node explicitly supports the Collapse action.
+    #[serde(skip_serializing_if = "is_false")]
+    supports_collapse: bool,
+  }
+
+  fn is_false(value: &bool) -> bool {
+    !*value
   }
 
   /// Snapshot-friendly representation of an AccessKit update.
@@ -145,6 +159,9 @@ mod enabled {
           id: id.0.get().to_string(),
           role: format!("{:?}", node.role()),
           name,
+          expanded: node.is_expanded(),
+          supports_expand: node.supports_action(accesskit::Action::Expand),
+          supports_collapse: node.supports_action(accesskit::Action::Collapse),
         })
       })
       .collect();
