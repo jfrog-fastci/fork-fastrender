@@ -452,6 +452,10 @@ harness = false
 name = "history_search_tokens"
 harness = false
 
+[[bench]]
+name = "omnibox_bookmarks"
+harness = false
+
 # Default release profile: fast compilation, good performance.
 #
 # This is what agents and developers use for day-to-day work. Optimized but

@@ -8,11 +8,11 @@ use super::string_match::{
   contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
 };
 use std::cmp::Ordering;
-use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 use publicsuffix::{List, Psl};
+use rustc_hash::FxHashSet;
 
 /// The input + state available to [`OmniboxProvider`] implementations.
 ///
@@ -336,7 +336,7 @@ impl OmniboxProvider for BookmarksProvider {
     }
 
     let mut out = Vec::new();
-    let mut seen_urls = HashSet::new();
+    let mut seen_urls: FxHashSet<AsciiCaseInsensitiveStr<'_>> = FxHashSet::default();
 
     for id in matches {
       let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
