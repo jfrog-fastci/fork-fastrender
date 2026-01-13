@@ -26,7 +26,7 @@ and others are scaffolding. A few important “don’t get surprised” points:
     `--no-default-features --features renderer_minimal`.
 - There is a minimal `network` subprocess today:
   - Binary: [`src/bin/network.rs`](../src/bin/network.rs)
-  - Spawn helper (library): [`src/network_process.rs`](../src/network_process.rs)
+  - Spawn helper (library): [`src/network_process/mod.rs`](../src/network_process/mod.rs)
   - Current protocol is intentionally tiny: `Fetch { url }` + `Shutdown` (see
     `fastrender::network_process::ipc`).
 - There are additional (more complete) IPC protocols already defined, even if not yet wired up
@@ -196,7 +196,7 @@ The response payload typically includes:
 There are currently multiple HTTP IPC shapes in-tree:
 
 - **Prototype (`network` binary):** [`src/bin/network.rs`](../src/bin/network.rs) implements a tiny
-  request set (`Fetch { url }` / `Shutdown`) defined in [`src/network_process.rs`](../src/network_process.rs)
+  request set (`Fetch { url }` / `Shutdown`) defined in [`src/network_process/mod.rs`](../src/network_process/mod.rs)
   (`fastrender::network_process::ipc`).
   - Transport: TCP on localhost, length-prefixed JSON (`u32_be` length; see `write_frame` /
     `read_frame` in `network_process::ipc`).
@@ -395,7 +395,7 @@ Because the network process is a separate OS process, make sure you’re looking
   should inherit the parent’s stdio unless explicitly redirected).
 - Enable `RUST_BACKTRACE=1` when diagnosing crashes.
 - The `NetworkProcessConfig` used by `spawn_network_process` has an `inherit_stderr` knob; see
-  [`src/network_process.rs`](../src/network_process.rs).
+  [`src/network_process/mod.rs`](../src/network_process/mod.rs).
 
 ### Feature gates (ensuring the renderer has no direct network access)
 
