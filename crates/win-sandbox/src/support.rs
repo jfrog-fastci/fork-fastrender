@@ -68,18 +68,17 @@ unsafe fn is_appcontainer_supported_impl() -> bool {
   use windows_sys::Win32::Foundation::HMODULE;
   use windows_sys::Win32::Foundation::FreeLibrary;
   use windows_sys::Win32::System::LibraryLoader::{
-    GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
   };
 
   // `userenv.dll` provides the AppContainer profile APIs on Windows 8+.
   let userenv: Vec<u16> = "userenv.dll\0".encode_utf16().collect();
-  let mut module: HMODULE = GetModuleHandleW(userenv.as_ptr());
-  let mut loaded = false;
-  if module.is_null() {
-    // Load from `System32` explicitly to avoid DLL search order hijacking.
-    module = LoadLibraryExW(userenv.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
-    loaded = !module.is_null();
-  }
+  // Load from `System32` explicitly to avoid DLL search order hijacking.
+  //
+  // Even if `userenv.dll` is already loaded, `LoadLibraryExW` returns the existing module handle
+  // (refcount bump). We always `FreeLibrary` at the end so this probe doesn't change the process's
+  // steady-state DLL set.
+  let module: HMODULE = LoadLibraryExW(userenv.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
   if module.is_null() {
     return false;
   }
@@ -91,11 +90,9 @@ unsafe fn is_appcontainer_supported_impl() -> bool {
   );
   let supported = create_profile.is_some() && derive_sid.is_some();
 
-  // If we had to load `userenv.dll` ourselves, drop our reference now so this
-  // lightweight probe doesn't permanently increase process DLL load surface.
-  if loaded {
-    let _ = FreeLibrary(module);
-  }
+  // Drop our reference now so this lightweight probe doesn't permanently increase process DLL load
+  // surface.
+  let _ = FreeLibrary(module);
 
   supported
 }
