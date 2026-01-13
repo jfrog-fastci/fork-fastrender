@@ -3163,6 +3163,58 @@ fn native_has_instance_returns_true(
 }
 
 #[test]
+fn compiled_user_function_is_constructable() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+  let mut realm = vm_js::Realm::new(&mut vm, &mut heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function C(x) { this.x = x; }
+    "#,
+  )?;
+  let c_body = find_function_body(&script, "C");
+
+  {
+    let mut scope = heap.scope();
+    let name = scope.alloc_string("C")?;
+    let c = scope.alloc_user_function(
+      CompiledFunctionRef {
+        script,
+        body: c_body,
+      },
+      name,
+      1,
+    )?;
+
+    // new C(7).x === 7
+    let obj = vm.construct_without_host(
+      &mut scope,
+      Value::Object(c),
+      &[Value::Number(7.0)],
+      Value::Object(c),
+    )?;
+    let Value::Object(obj) = obj else {
+      panic!("expected object, got {obj:?}");
+    };
+
+    let x_key = vm_js::PropertyKey::from_string(scope.alloc_string("x")?);
+    let x = vm.get(&mut scope, obj, x_key)?;
+    assert_eq!(x, Value::Number(7.0));
+
+    // Ordinary compiled functions should have a `.prototype` object.
+    let prototype_key = vm_js::PropertyKey::from_string(scope.alloc_string("prototype")?);
+    let proto = vm.get(&mut scope, c, prototype_key)?;
+    assert!(matches!(proto, Value::Object(_)));
+  }
+
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
 fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
