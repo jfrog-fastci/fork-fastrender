@@ -627,7 +627,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(feature = "direct_websocket")]
   fn websocket_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost(
@@ -682,7 +681,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(feature = "direct_websocket")]
   fn websocket_protocol_is_set_from_server_handshake_response() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost(
@@ -734,7 +732,6 @@ mod tests {
   }
 
   #[test]
-  #[cfg(feature = "direct_websocket")]
   fn websocket_rejects_protocol_when_none_were_requested() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) =
