@@ -1121,6 +1121,93 @@ mod tests {
   }
 
   #[test]
+  fn arrow_keys_cancel_ime_preedit_for_focused_input() {
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"abcd\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    // Place caret between "b" and "c".
+    set_text_selection_caret(&mut engine, &mut dom, input_id, 2);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowLeft));
+    assert!(engine.state.ime_preedit.is_none());
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+    assert!(engine.key_action(&mut dom, KeyAction::ArrowRight));
+    assert!(engine.state.ime_preedit.is_none());
+  }
+
+  #[test]
+  fn pointer_caret_placement_cancels_ime_preedit_for_focused_input() {
+    use crate::style::display::FormattingContextType;
+    use crate::tree::fragment_tree::FragmentNode;
+
+    let mut dom =
+      crate::dom::parse_html("<html><body><input value=\"hello\"></body></html>").expect("parse");
+    let input_id = find_element_node_id(&mut dom, "input");
+
+    let mut input_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    input_box.styled_node_id = Some(input_id);
+    let box_tree = BoxTree::new(BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![input_box],
+    ));
+
+    let mut input_box_id = None;
+    let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+    while let Some(node) = stack.pop() {
+      if node.styled_node_id == Some(input_id) {
+        input_box_id = Some(node.id);
+        break;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    let input_box_id = input_box_id.expect("input box id");
+
+    let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+      vec![FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+        input_box_id,
+        vec![],
+      )],
+    ));
+
+    let mut engine = InteractionEngine::new();
+    engine.focus_node_id(&mut dom, Some(input_id), true);
+
+    engine.ime_preedit(&mut dom, "あ", None);
+    assert!(engine.state.ime_preedit.is_some());
+
+    assert!(engine.pointer_down_with_click_count(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(10.0, 10.0),
+      PointerButton::Primary,
+      PointerModifiers::NONE,
+      1,
+    ));
+    assert!(engine.state.ime_preedit.is_none());
+  }
+
+  #[test]
   fn delete_removes_next_character_in_focused_input() {
     let mut dom =
       crate::dom::parse_html("<html><body><input value=\"aあb\"></body></html>").expect("parse");
@@ -7415,20 +7502,29 @@ impl InteractionEngine {
         && page_point.y.is_finite()
         && page_point.x >= 0.0
         && page_point.y >= 0.0
+      {
+        if self
+          .state
+          .ime_preedit
+          .as_ref()
+          .is_some_and(|ime_state| ime_state.node_id == state.node_id)
         {
-          if let Some(edit) = self
-            .text_edit
-            .as_mut()
-            .filter(|edit| edit.node_id == state.node_id)
-          {
-            if let Some((raw_caret, raw_affinity)) = caret_index_for_text_control_point(
-              &index,
-              &box_index,
-              fragment_tree,
-              scroll,
-              state.node_id,
-              state.box_id,
-              page_point,
+          dom_changed |= self.ime_cancel_internal();
+        }
+
+        if let Some(edit) = self
+          .text_edit
+          .as_mut()
+          .filter(|edit| edit.node_id == state.node_id)
+        {
+          if let Some((raw_caret, raw_affinity)) = caret_index_for_text_control_point(
+            &index,
+            &box_index,
+            fragment_tree,
+            scroll,
+            state.node_id,
+            state.box_id,
+            page_point,
           ) {
             let prev_caret = edit.caret;
             let prev_affinity = edit.caret_affinity;
@@ -7916,6 +8012,16 @@ impl InteractionEngine {
                 }
               }
             }
+          }
+
+          if !started_drag_drop
+            && self
+              .state
+              .ime_preedit
+              .as_ref()
+              .is_some_and(|ime_state| ime_state.node_id == hit.dom_node_id)
+          {
+            dom_changed |= self.ime_cancel_internal();
           }
 
           let text_edit_changed = if started_drag_drop {
@@ -10778,6 +10884,34 @@ impl InteractionEngine {
       edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
 
       let original = edit;
+
+      if matches!(
+        key,
+        KeyAction::ArrowLeft
+          | KeyAction::ArrowRight
+          | KeyAction::ShiftArrowLeft
+          | KeyAction::ShiftArrowRight
+          | KeyAction::ShiftArrowUp
+          | KeyAction::ShiftArrowDown
+          | KeyAction::ArrowUp
+          | KeyAction::ArrowDown
+          | KeyAction::WordLeft
+          | KeyAction::WordRight
+          | KeyAction::WordSelectLeft
+          | KeyAction::WordSelectRight
+          | KeyAction::Home
+          | KeyAction::End
+          | KeyAction::ShiftHome
+          | KeyAction::ShiftEnd
+          | KeyAction::SelectAll
+      ) && self
+        .state
+        .ime_preedit
+        .as_ref()
+        .is_some_and(|ime_state| ime_state.node_id == focused)
+      {
+        changed |= self.ime_cancel_internal();
+      }
 
       match key {
         KeyAction::Backspace
