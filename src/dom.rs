@@ -10435,6 +10435,56 @@ mod tests {
   }
 
   #[test]
+  fn details_name_group_does_not_cross_shadow_root() {
+    let html = r#"
+      <details name=g open id=light>light</details>
+      <div id=host>
+        <template shadowroot=open>
+          <details name=g open id=shadow>shadow</details>
+        </template>
+      </div>
+    "#;
+    let dom = parse_html(html).expect("parse standard DOM");
+
+    let light = find_by_id(&dom, "light").expect("details#light");
+    assert!(
+      light.get_attribute_ref("open").is_some(),
+      "shadow root boundaries must prevent details name groups from affecting the light DOM"
+    );
+
+    let shadow = find_by_id(&dom, "shadow").expect("details#shadow");
+    assert!(
+      shadow.get_attribute_ref("open").is_some(),
+      "shadow root boundaries must prevent details name groups from affecting the shadow tree"
+    );
+  }
+
+  #[test]
+  fn details_name_group_last_open_wins_within_shadow_root_tree() {
+    let html = r#"
+      <div id=host>
+        <template shadowroot=open>
+          <details name=g open id=one>one</details>
+          <details name=g open id=two>two</details>
+        </template>
+      </div>
+    "#;
+    let dom = parse_html(html).expect("parse standard DOM");
+
+    let one = find_by_id(&dom, "one").expect("details#one");
+    assert!(
+      one.get_attribute_ref("open").is_none(),
+      "expected details#one to be closed by later open details within the same shadow tree"
+    );
+
+    let two = find_by_id(&dom, "two").expect("details#two");
+    assert!(
+      two.get_attribute_ref("open").is_some(),
+      "expected details#two to remain open as the last open details in the shadow tree name group"
+    );
+  }
+
+  #[test]
   fn compatibility_mode_flips_expected_classes() {
     let html = "<html class='no-js foo'><body class='bar'></body></html>";
 
