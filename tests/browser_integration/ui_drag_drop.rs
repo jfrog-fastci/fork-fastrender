@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::interaction::KeyAction;
-use fastrender::ui::messages::{PointerButton, RepaintReason, TabId};
+use fastrender::ui::messages::{PointerButton, PointerModifiers, RepaintReason, TabId};
 use fastrender::ui::BrowserTabController;
 use fastrender::{dom::DomNode, Result};
 
@@ -106,6 +106,91 @@ fn drag_drop_selected_text_between_text_inputs_copies_text() -> Result<()> {
   let src = find_element_by_id(controller.document().dom(), "src");
   let dst = find_element_by_id(controller.document().dom(), "dst");
   assert_eq!(src.get_attribute_ref("value"), Some("hello"));
+  assert_eq!(dst.get_attribute_ref("value"), Some("hello"));
+  Ok(())
+}
+
+#[test]
+fn drag_drop_document_selection_into_text_input_inserts_text() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (320, 180);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          body { font: 40px/80px monospace; }
+          #src { position: absolute; top: 0; left: 10px; margin: 0; }
+          input {
+            position: absolute;
+            left: 0;
+            top: 90px;
+            width: 260px;
+            height: 40px;
+            padding: 0;
+            border: 0;
+            outline: none;
+            font-family: "Noto Sans Mono";
+            font-size: 24px;
+          }
+        </style>
+      </head>
+      <body>
+        <p id="src">hello</p>
+        <input id="dst" value="">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Double-click selects the word in the document (document selection, not a text control).
+  let src_click = (20.0, 40.0);
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+
+  // Drag the selected text into the input.
+  let dst_drop = (10.0, 110.0);
+  let _ = controller.handle_message(support::pointer_down(
+    tab_id,
+    src_click,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_move(
+    tab_id,
+    dst_drop,
+    PointerButton::Primary,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    dst_drop,
+    PointerButton::Primary,
+  ))?;
+
+  let dst = find_element_by_id(controller.document().dom(), "dst");
   assert_eq!(dst.get_attribute_ref("value"), Some("hello"));
   Ok(())
 }
