@@ -880,6 +880,16 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
   - Can be surfaced by chrome UIs while loading (e.g. [`src/ui/chrome.rs`](../src/ui/chrome.rs)).
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
+  - `ScrollStateUpdated` is emitted when the worker's scroll model changes, but it is **not**
+    guaranteed to be produced for every navigation or every scroll input:
+    - some navigations update scroll state only via the next `FrameReady` (no standalone scroll
+      message),
+    - clamped/no-op scroll requests may schedule a repaint without changing scroll state (so no
+      scroll update),
+    - scroll updates may be forwarded **before** the corresponding `FrameReady` so UIs can
+      async-scroll the last painted texture while waiting for repaint.
+  - `FrameReady.frame.scroll_state` is the canonical "painted" scroll state; UIs should not assume
+    any specific ordering between `ScrollStateUpdated` and `FrameReady`.
 - `FindResult { tab_id, query, case_sensitive, match_count, active_match_index }` — find-in-page
   match count + active match updates.
 - `SetClipboardText { tab_id, text }` — request the UI update the OS clipboard (copy/cut).
