@@ -97,22 +97,31 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
   let mut renderer = FastRender::with_config(config).expect("create renderer");
   let pixmap = renderer.render_html(&html, 24, 24).expect("render");
 
-  // Chrome paints a thin border around broken images.
-  let border_px = pixmap.pixel(0, 0).expect("border pixel in bounds");
+  // The broken-image placeholder keeps the image box transparent (so author-provided backgrounds
+  // show through); the only non-transparent pixels should come from the UA icon.
+  let bg_px = pixmap.pixel(0, 0).expect("pixel in bounds");
+  assert_eq!(
+    (bg_px.red(), bg_px.green(), bg_px.blue(), bg_px.alpha()),
+    (0, 0, 0, 255),
+    "expected background to show through at top-left (no full-frame border)",
+  );
+
+  // The UA icon has a crisp 1px border.
+  let icon_border_px = pixmap.pixel(2, 2).expect("icon border pixel in bounds");
   assert_eq!(
     (
-      border_px.red(),
-      border_px.green(),
-      border_px.blue(),
-      border_px.alpha()
+      icon_border_px.red(),
+      icon_border_px.green(),
+      icon_border_px.blue(),
+      icon_border_px.alpha()
     ),
-    (192, 192, 192, 255),
-    "expected broken-image border to be light gray, got {:?}",
+    (163, 163, 163, 255),
+    "expected broken-image icon border to be gray, got {:?}",
     (
-      border_px.red(),
-      border_px.green(),
-      border_px.blue(),
-      border_px.alpha()
+      icon_border_px.red(),
+      icon_border_px.green(),
+      icon_border_px.blue(),
+      icon_border_px.alpha()
     )
   );
 
@@ -169,17 +178,23 @@ fn display_list_img_alt_text_wraps_within_replaced_box() {
   let pixmap = renderer.render_html(&html, 60, 60).expect("render");
 
   // If the alt text is wrapped into multiple lines, we should see red glyph pixels both near the
-  // top of the replaced box and further down.
-  let border_px = pixmap.pixel(0, 0).expect("border pixel in bounds");
+  // top of the replaced box and further down, while the top-left background remains transparent.
+  let bg_px = pixmap.pixel(0, 0).expect("pixel in bounds");
+  assert_eq!(
+    (bg_px.red(), bg_px.green(), bg_px.blue(), bg_px.alpha()),
+    (0, 0, 0, 255),
+    "expected background to show through at top-left (no full-frame border)",
+  );
+  let icon_border_px = pixmap.pixel(2, 2).expect("icon border pixel in bounds");
   assert_eq!(
     (
-      border_px.red(),
-      border_px.green(),
-      border_px.blue(),
-      border_px.alpha()
+      icon_border_px.red(),
+      icon_border_px.green(),
+      icon_border_px.blue(),
+      icon_border_px.alpha()
     ),
-    (192, 192, 192, 255),
-    "expected broken-image border to be light gray"
+    (163, 163, 163, 255),
+    "expected broken-image icon border to be gray"
   );
 
   let top_red = count_red(&pixmap, 0, 0, 60, 20);
