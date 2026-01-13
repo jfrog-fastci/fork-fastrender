@@ -30525,7 +30525,7 @@ mod tests {
   }
 
   #[test]
-  fn yield_star_throw_without_throw_method_closes_and_rethrows() -> Result<(), VmError> {
+  fn yield_star_throw_without_throw_method_closes_and_throws_type_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -30566,7 +30566,7 @@ mod tests {
         if (first.value !== 0 || first.done !== false) return false;
 
         const res = it.throw(42);
-        return res.value === 42 && res.done === true && closed;
+        return res.value instanceof TypeError && res.done === true && closed;
       })()
     "#,
     )?;
@@ -30574,7 +30574,7 @@ mod tests {
     assert_eq!(
       value,
       Value::Bool(true),
-      "expected yield* throw to rethrow the provided reason and close the iterator"
+      "expected yield* throw to close the iterator and produce a TypeError when the delegate lacks a throw method"
     );
 
     Ok(())
