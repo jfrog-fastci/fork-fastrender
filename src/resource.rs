@@ -958,7 +958,7 @@ fn http_browser_origin_and_referer_for_url(url: &Url) -> Option<(String, String)
   Some((origin, referer))
 }
 
-fn http_browser_registrable_domain(host: &str) -> Option<String> {
+pub(crate) fn http_browser_registrable_domain(host: &str) -> Option<String> {
   static PSL: OnceLock<List> = OnceLock::new();
   let list = PSL.get_or_init(List::default);
 

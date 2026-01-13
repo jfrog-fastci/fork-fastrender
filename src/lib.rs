@@ -313,6 +313,7 @@ pub use api::VmJsBrowserTabExecutor;
 pub use compat::CompatProfile;
 pub use debug::inspect::{InspectQuery, InspectionSnapshot};
 pub use render_control::CancelCallback;
+pub use site_isolation::SiteKey;
 // CSS
 pub use css::parser::parse_stylesheet_with_errors;
 pub use css::types::CssParseError;
