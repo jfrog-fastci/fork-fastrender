@@ -224,11 +224,20 @@ impl Drop for ModuleGraphPtrGuard {
   }
 }
 
-/// Minimal in-memory module graph used to exercise ECMA-262 module record algorithms.
+/// An embedding-owned graph of ECMAScript module records.
 ///
-/// This intentionally does **not** implement a full module loader. Tests are responsible for
-/// constructing module records and linking their `[[RequestedModules]]` entries to concrete
-/// [`ModuleId`]s.
+/// `ModuleGraph` stores [`SourceTextModuleRecord`]s and their resolved `[[LoadedModules]]` edges,
+/// and implements the core linking/evaluation algorithms (including dynamic `import()` and
+/// top-level `await` bookkeeping).
+///
+/// The host environment is still responsible for *fetching and parsing* modules. Integrate module
+/// loading via:
+///
+/// - the module-loading state machine ([`crate::load_requested_modules`] +
+///   [`crate::Vm::finish_loading_imported_module`]), and
+/// - [`crate::VmHostHooks::host_load_imported_module`] (host-defined module fetch/parse).
+///
+/// For a full embedder-facing guide, see [`crate::docs::modules`].
 #[derive(Debug)]
 pub struct ModuleGraph {
   modules: Vec<SourceTextModuleRecord>,
