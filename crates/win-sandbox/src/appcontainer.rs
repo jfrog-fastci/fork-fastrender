@@ -151,7 +151,7 @@ unsafe fn get_proc<T>(module: HMODULE, symbol: &'static [u8], func: &'static str
 /// `CreateAppContainerProfile` and treats `ERROR_ALREADY_EXISTS` as success.
 #[derive(Debug)]
 pub struct AppContainerProfile {
-  sid: OwnedSid,
+  sid: Option<OwnedSid>,
 }
 
 impl AppContainerProfile {
@@ -183,11 +183,11 @@ impl AppContainerProfile {
       if !sid.is_null() {
         // Some Windows builds may still return the SID on `ERROR_ALREADY_EXISTS`.
         return Ok(Self {
-          sid: OwnedSid::from_free_sid(sid as _),
+          sid: Some(OwnedSid::from_free_sid(sid as _)),
         });
       }
       return Ok(Self {
-        sid: derive_appcontainer_sid(name)?,
+        sid: Some(derive_appcontainer_sid(name)?),
       });
     }
 
@@ -208,12 +208,26 @@ impl AppContainerProfile {
     }
 
     Ok(Self {
-      sid: OwnedSid::from_free_sid(sid as _),
+      sid: Some(OwnedSid::from_free_sid(sid as _)),
     })
   }
 
-  pub fn sid(&self) -> &OwnedSid {
-    &self.sid
+  /// Returns whether this profile should be applied when spawning a process.
+  ///
+  /// A profile can be disabled when sandboxing is explicitly allowed to be unsupported by the
+  /// caller (e.g. older Windows versions without AppContainer APIs).
+  pub fn is_enabled(&self) -> bool {
+    self.sid.is_some()
+  }
+
+  /// Returns the AppContainer SID, if enabled.
+  pub fn sid(&self) -> Option<&OwnedSid> {
+    self.sid.as_ref()
+  }
+
+  /// Constructs a disabled (no-op) profile.
+  pub fn disabled() -> Self {
+    Self { sid: None }
   }
 }
 

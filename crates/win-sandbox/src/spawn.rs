@@ -11,7 +11,6 @@
 
 use std::ffi::{c_void, OsStr, OsString};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::io::{AsRawHandle, RawHandle};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -115,12 +114,6 @@ impl ChildProcess {
     }
 
     Err(WinSandboxError::last("WaitForSingleObject"))
-  }
-}
-
-impl AsRawHandle for OwnedHandle {
-  fn as_raw_handle(&self) -> RawHandle {
-    self.as_raw() as RawHandle
   }
 }
 
@@ -229,7 +222,10 @@ fn spawn_appcontainer_inner(cfg: &SpawnConfig, mitigation_policy: u64) -> Result
   )?;
 
   let mut capabilities = SECURITY_CAPABILITIES {
-    AppContainerSid: profile.sid().as_ptr(),
+    AppContainerSid: profile
+      .sid()
+      .expect("AppContainerProfile should be enabled after ensure()")
+      .as_ptr(),
     Capabilities: std::ptr::null_mut(),
     CapabilityCount: 0,
     Reserved: 0,
@@ -566,4 +562,3 @@ impl Drop for AttributeList {
     let _ = &self.buffer;
   }
 }
-

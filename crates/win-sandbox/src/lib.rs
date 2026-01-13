@@ -180,6 +180,9 @@ pub enum WinSandboxError {
 
   #[error("{arg} contains an interior NUL character")]
   InteriorNul { arg: &'static str },
+
+  #[error("invalid environment variable `{name}`: `{value}`")]
+  InvalidEnvVar { name: &'static str, value: String },
 }
 
 impl WinSandboxError {
@@ -367,12 +370,12 @@ pub use support::{is_appcontainer_supported, is_nested_job_supported, SandboxSup
 
 /// Runtime sandbox configuration for the Windows renderer sandbox.
 ///
-/// `RendererSandbox::new_default()` enforces a "no silent downgrade" policy:
+/// `RendererSandboxMode::new_default()` enforces a "no silent downgrade" policy:
 /// - If the host supports the required primitives, the sandbox is enabled.
 /// - Otherwise, `new_default()` returns an error unless the caller has explicitly opted in to
 ///   running unsandboxed via `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RendererSandbox {
+pub enum RendererSandboxMode {
   /// Full sandboxing is enabled (AppContainer + nested job objects).
   Enabled,
   /// The caller explicitly opted in to running without a sandbox.
@@ -382,25 +385,25 @@ pub enum RendererSandbox {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum RendererSandboxError {
+pub enum RendererSandboxModeError {
   #[error(
     "windows renderer sandbox is unavailable ({support}); set FASTR_ALLOW_UNSANDBOXED_RENDERER=1 to allow running without a sandbox"
   )]
   Unsupported { support: SandboxSupport },
 }
 
-impl RendererSandbox {
-  pub fn new_default() -> std::result::Result<Self, RendererSandboxError> {
+impl RendererSandboxMode {
+  pub fn new_default() -> std::result::Result<Self, RendererSandboxModeError> {
     let support = SandboxSupport::detect();
     if support == SandboxSupport::Full {
-      return Ok(RendererSandbox::Enabled);
+      return Ok(RendererSandboxMode::Enabled);
     }
 
     if allow_unsandboxed_renderer() {
-      return Ok(RendererSandbox::Disabled);
+      return Ok(RendererSandboxMode::Disabled);
     }
 
-    Err(RendererSandboxError::Unsupported { support })
+    Err(RendererSandboxModeError::Unsupported { support })
   }
 }
 
@@ -458,3 +461,8 @@ mod tests {
     assert_eq!(exit_code, 0, "sandboxed child exited with non-zero status");
   }
 }
+
+#[cfg(windows)]
+mod child_process;
+#[cfg(windows)]
+pub mod renderer;

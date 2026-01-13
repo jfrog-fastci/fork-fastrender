@@ -6405,6 +6405,8 @@ checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 name = "win-sandbox"
 version = "0.1.0"
 dependencies = [
+ "fastrender",
+ "tempfile",
  "thiserror 1.0.69",
  "windows-sys 0.61.2",
 ]

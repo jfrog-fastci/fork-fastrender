@@ -16,13 +16,13 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Threading::{
   CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, ResumeThread,
   UpdateProcThreadAttribute, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-  PROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW, STARTUPINFOW,
+  STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
-  EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, NO_INHERITANCE, SE_FILE_OBJECT,
-  TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
+  EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID,
+  TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::ACL;
 
@@ -32,6 +32,9 @@ use windows_sys::Win32::Security::ACL;
 // exporting the constants.
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
+
+// `NO_INHERITANCE` is defined as 0 in Windows headers. `windows-sys` does not currently export it.
+const NO_INHERITANCE: u32 = 0;
 
 /// Sandbox configuration for spawning untrusted renderer processes.
 ///
@@ -80,7 +83,10 @@ fn spawn_appcontainer_no_capabilities(
   )?;
 
   let mut capabilities = SECURITY_CAPABILITIES {
-    AppContainerSid: profile.sid().as_ptr(),
+    AppContainerSid: profile
+      .sid()
+      .expect("AppContainerProfile should be enabled after ensure()")
+      .as_ptr(),
     Capabilities: std::ptr::null_mut(),
     CapabilityCount: 0,
     Reserved: 0,
@@ -109,7 +115,7 @@ fn spawn_appcontainer_no_capabilities(
   let system32 = system32_dir();
   let system32_w = wide_null(system32.as_os_str());
 
-  let mut create_process = |image: &Path, current_dir: Option<&[u16]>| -> Result<PROCESS_INFORMATION> {
+  let create_process = |image: &Path, current_dir: Option<&[u16]>| -> Result<PROCESS_INFORMATION> {
     let application_name = wide_null(image.as_os_str());
     let mut cmdline = build_command_line(image, args);
     let current_dir_ptr = current_dir
@@ -153,7 +159,13 @@ fn spawn_appcontainer_no_capabilities(
   // Developer builds / CI checkouts often reside in directories without AppContainer ACL entries.
   // Remediate by copying the executable to a fresh temp directory and granting read+execute to the
   // derived AppContainer SID.
-  let (temp_dir, relocated) = relocate_exe_for_appcontainer(exe, profile.sid().as_ptr())?;
+  let (temp_dir, relocated) = relocate_exe_for_appcontainer(
+    exe,
+    profile
+      .sid()
+      .expect("AppContainerProfile should be enabled after ensure()")
+      .as_ptr(),
+  )?;
   let current_dir_w = wide_null(temp_dir.path().as_os_str());
   let pi = create_process(&relocated, Some(&current_dir_w))?;
   finish_spawn(pi, Some(temp_dir))
@@ -322,7 +334,7 @@ fn grant_read_execute_acl(path: &Path, sid: windows_sys::Win32::Security::PSID) 
   let status = unsafe { SetEntriesInAclW(1, &mut ea, dacl, &mut new_dacl) };
   if status != 0 {
     unsafe {
-      windows_sys::Win32::Foundation::LocalFree(sd as isize);
+      windows_sys::Win32::Foundation::LocalFree(sd as _);
     }
     return Err(WinSandboxError::from_code("SetEntriesInAclW", status));
   }
@@ -340,8 +352,8 @@ fn grant_read_execute_acl(path: &Path, sid: windows_sys::Win32::Security::PSID) 
   };
 
   unsafe {
-    windows_sys::Win32::Foundation::LocalFree(sd as isize);
-    windows_sys::Win32::Foundation::LocalFree(new_dacl as isize);
+    windows_sys::Win32::Foundation::LocalFree(sd as _);
+    windows_sys::Win32::Foundation::LocalFree(new_dacl as _);
   }
 
   if status != 0 {
@@ -355,9 +367,12 @@ fn grant_read_execute_acl(path: &Path, sid: windows_sys::Win32::Security::PSID) 
 // -----------------------------------------------------------------------------
 
 struct AttributeList {
-  list: *mut PROC_THREAD_ATTRIBUTE_LIST,
+  list: windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST,
   // Use `usize` buffer to guarantee pointer alignment.
-  buffer: Vec<usize>,
+  //
+  // This is never read; it only keeps the backing allocation alive while `list` is in use.
+  #[allow(dead_code)]
+  _buffer: Vec<usize>,
 }
 
 impl AttributeList {
@@ -374,13 +389,17 @@ impl AttributeList {
 
     let units = (size + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>();
     let mut buffer = vec![0usize; units];
-    let list = buffer.as_mut_ptr().cast::<PROC_THREAD_ATTRIBUTE_LIST>();
+    let list = buffer.as_mut_ptr().cast::<c_void>()
+      as windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST;
     let ok = unsafe { InitializeProcThreadAttributeList(list, attribute_count, 0, &mut size) };
     if ok == 0 {
       return Err(WinSandboxError::last("InitializeProcThreadAttributeList"));
     }
 
-    Ok(Self { list, buffer })
+    Ok(Self {
+      list,
+      _buffer: buffer,
+    })
   }
 
   fn update_raw(&mut self, attribute: usize, value: *mut c_void, size: usize) -> Result<()> {
