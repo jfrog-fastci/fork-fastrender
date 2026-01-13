@@ -82,12 +82,22 @@ Look at the diff and identify the root cause category:
 **Preferred**: Create an offline fixture that demonstrates the bug.
 
 ```bash
-# Bundle a page to an offline fixture
-timeout -k 10 300 bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
-  --url https://example.com --output tests/pages/fixtures/my_fixture/
+# Capture a self-contained bundle (network):
+timeout -k 10 300 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin bundle_page -- \
+  fetch https://example.com --out /tmp/capture.tar
 
-# Or import from cached HTML
-timeout -k 10 300 bash scripts/cargo_agent.sh xtask import-page-fixture --page example.com
+# Or capture from warmed pageset caches (offline; requires disk_cache):
+timeout -k 10 300 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features disk_cache --bin bundle_page -- \
+  cache example.com --out /tmp/capture.tar
+
+# Import the bundle into an offline fixture under tests/pages/fixtures/:
+timeout -k 10 300 bash scripts/cargo_agent.sh xtask import-page-fixture /tmp/capture.tar my_fixture
+
+# Media sources are placeholder-only by default (fixtures stay small). Opt in to vendoring playable
+# media with --include-media, subject to size budgets (--media-max-bytes / --media-max-file-bytes;
+# set to 0 to disable).
 ```
 
 Fixtures should be:
