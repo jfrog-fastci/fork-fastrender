@@ -5713,6 +5713,56 @@ mod tests {
   }
 
   #[test]
+  fn uncaught_request_idle_callback_exception_dispatches_error_event_and_onerror_can_cancel(
+  ) -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    host.exec_script(
+      r#"
+        globalThis.__idle_error_is_instance = false;
+        globalThis.__idle_error_message = "";
+        globalThis.__idle_onerror_called = false;
+
+        addEventListener("error", (e) => {
+          globalThis.__idle_error_is_instance = (e instanceof ErrorEvent);
+          globalThis.__idle_error_message = String(e && e.message);
+        });
+
+        globalThis.onerror = function () {
+          globalThis.__idle_onerror_called = true;
+          return true; // cancel default reporting
+        };
+
+        requestIdleCallback(() => { throw new Error("idleboom"); });
+      "#,
+    )?;
+
+    let mut errors: Vec<String> = Vec::new();
+    assert_eq!(
+      host.run_until_idle_handling_errors(RunLimits::unbounded(), |err| {
+        errors.push(err.to_string());
+      })?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      errors.is_empty(),
+      "expected onerror cancellation to suppress host error reporting, got errors={errors:?}"
+    );
+
+    let ok = host.exec_script(
+      r#"
+        globalThis.__idle_error_is_instance === true &&
+        globalThis.__idle_error_message.includes("idleboom") &&
+        globalThis.__idle_onerror_called === true
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn uncaught_queue_microtask_exception_dispatches_error_event_and_onerror_can_cancel() -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);

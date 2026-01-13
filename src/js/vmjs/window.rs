@@ -424,6 +424,19 @@ impl WindowHost {
     self.event_loop.run_until_idle(&mut self.host, limits)
   }
 
+  pub fn run_until_idle_handling_errors<F>(
+    &mut self,
+    limits: RunLimits,
+    on_error: F,
+  ) -> Result<RunUntilIdleOutcome>
+  where
+    F: FnMut(Error),
+  {
+    self
+      .event_loop
+      .run_until_idle_handling_errors(&mut self.host, limits, on_error)
+  }
+
   /// Update the window's [`MediaContext`] (viewport size, DPR, etc).
   ///
   /// This updates the `matchMedia()` environment immediately, and schedules `MediaQueryList`
