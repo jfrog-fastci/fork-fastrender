@@ -3514,6 +3514,86 @@ fn compiled_class_call_without_new_throws() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_named_class_expression_has_inner_name_binding() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let C = class D {
+          static g() { return D; }
+        };
+        return C.g() === C && typeof D === "undefined";
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_decl_inner_binding_is_immutable_and_shields_methods_from_outer_reassign() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        class C {
+          static self() { return C; }
+          static tryReassignInner() {
+            try { C = 1; return 0; } catch (e) { return 1; }
+          }
+        }
+
+        let orig = C;
+        C = 1;
+        return orig.self() === orig && orig.tryReassignInner() === 1;
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_class_constructor_prototype_is_non_writable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        class C {}
+        const d = Object.getOwnPropertyDescriptor(C, "prototype");
+        return d.writable === false;
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_function_length_counts_params_before_first_default() -> Result<(), VmError> {
   let source = r#"
     function f(a, b = 1, c) {}
