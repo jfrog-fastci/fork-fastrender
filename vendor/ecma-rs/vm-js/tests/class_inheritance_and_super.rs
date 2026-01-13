@@ -315,6 +315,86 @@ fn derived_ctor_return_override_object_and_primitive_compiled() -> Result<(), Vm
   Ok(())
 }
 
+#[test]
+fn derived_ctor_can_return_object_without_calling_super() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var side = "";
+      class B { constructor() { side = "B"; } }
+      class D extends B {
+        constructor() { return { ok: true }; }
+      }
+      var o = new D();
+      o.ok === true &&
+        side === "" &&
+        (o instanceof D) === false && (o instanceof B) === false &&
+        Object.getPrototypeOf(o) === Object.prototype
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_can_return_object_without_calling_super_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = match exec_compiled(
+    &mut rt,
+    r#"
+      var side = "";
+      class B { constructor() { side = "B"; } }
+      class D extends B {
+        constructor() { return { ok: true }; }
+      }
+      var o = new D();
+      o.ok === true &&
+        side === "" &&
+        (o instanceof D) === false && (o instanceof B) === false &&
+        Object.getPrototypeOf(o) === Object.prototype
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_returning_primitive_without_super_throws_reference_error() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      class B {}
+      class D extends B { constructor() { return 1; } }
+      try { new D(); "no"; } catch (e) { e.name; }
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn derived_ctor_returning_primitive_without_super_throws_reference_error_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = match exec_compiled(
+    &mut rt,
+    r#"
+      class B {}
+      class D extends B { constructor() { return 1; } }
+      try { new D(); "no"; } catch (e) { e.name; }
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value_to_string(&rt, value), "ReferenceError");
+  Ok(())
+}
+
 // === 3. `super.prop` read/write/getter+setter/method receiver. ===
 
 #[test]
@@ -428,6 +508,87 @@ fn super_property_reference_semantics_in_base_class_compiled_path() -> Result<()
   ) {
     Ok(v) => v,
     // Compiled HIR execution does not implement `super` property references yet.
+    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_reference_semantics_in_derived_static_method() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = match rt.exec_script(
+    r#"
+      class B {
+        static get __g() { return this.__x + 1; }
+        static set __g(v) { this.__x = v * 2; }
+        static __m() { return this.__x; }
+      }
+      B.__data = 1;
+
+      class D extends B {
+        static test() {
+          this.__x = 10;
+          const r1 = super.__g;
+          super.__g = 7;
+          const r2 = this.__x;
+          const r3 = super.__m();
+
+          super.__data = 5;
+          const r4 = this.__data === 5 &&
+            B.__data === 1 &&
+            Object.prototype.hasOwnProperty.call(this, "__data");
+          const r5 = super.__data === 1;
+
+          return r1 === 11 && r2 === 14 && r3 === 14 && r4 && r5;
+        }
+      }
+      D.test()
+    "#,
+  ) {
+    Ok(v) => v,
+    Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
+    Err(err) => return Err(err),
+  };
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn super_property_reference_semantics_in_derived_static_method_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = match exec_compiled(
+    &mut rt,
+    r#"
+      class B {
+        static get __g() { return this.__x + 1; }
+        static set __g(v) { this.__x = v * 2; }
+        static __m() { return this.__x; }
+      }
+      B.__data = 1;
+
+      class D extends B {
+        static test() {
+          this.__x = 10;
+          const r1 = super.__g;
+          super.__g = 7;
+          const r2 = this.__x;
+          const r3 = super.__m();
+
+          super.__data = 5;
+          const r4 = this.__data === 5 &&
+            B.__data === 1 &&
+            Object.prototype.hasOwnProperty.call(this, "__data");
+          const r5 = super.__data === 1;
+
+          return r1 === 11 && r2 === 14 && r3 === 14 && r4 && r5;
+        }
+      }
+      D.test()
+    "#,
+  ) {
+    Ok(v) => v,
     Err(err) if is_unimplemented_error(&mut rt, &err) => return Ok(()),
     Err(err) => return Err(err),
   };
