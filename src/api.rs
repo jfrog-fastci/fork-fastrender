@@ -6759,6 +6759,10 @@ impl FastRender {
   /// This is the main entry point for rendering. It takes HTML (which may include
   /// embedded CSS via `<style>` tags) and produces a rendered image.
   ///
+  /// Note: this is a **one-shot** render API. It does **not** execute author JavaScript (`<script>`).
+  /// For JS + event loop + live DOM mutation support, use [`BrowserTab`] (see `docs/runtime_stacks.md`
+  /// in the repository).
+  ///
   /// # Arguments
   ///
   /// * `html` - HTML source code (may include embedded `<style>` tags)
@@ -9644,6 +9648,10 @@ impl FastRender {
   }
 
   /// Fetches and renders a document from a URL using default options.
+  ///
+  /// Note: this is a **one-shot** render API. It does **not** execute author JavaScript (`<script>`).
+  /// For JS + event loop + navigation support, use [`BrowserTab`] (see `docs/runtime_stacks.md` in
+  /// the repository).
   pub fn render_url(&mut self, url: &str) -> Result<RenderResult> {
     self
       .render_url_with_options_report(url, RenderOptions::default(), RenderArtifactRequest::none())
