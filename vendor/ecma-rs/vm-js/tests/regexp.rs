@@ -664,3 +664,31 @@ fn regexp_lookbehind_alternations_ordering_and_atomicity() {
     "xabcd,cd,|xabcd,bcd,|xxabcd,bcd,|xxabcd,xx,abcd"
   );
 }
+
+#[test]
+fn regexp_lookbehind_direction_minus_one_backref_before_capture_allows_greedy_growth() {
+  // From test262: back-references-to-captures.js#6
+  //
+  // This relies on spec-accurate right-to-left (direction=-1) evaluation inside the lookbehind:
+  // the backreference is evaluated before the capture group when matching backwards, so it starts
+  // as empty and allows the capture group to grow greedily to its maximal value.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("ababc".match(/(?<=(\w+)\1)c/))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["c","abab"]"#);
+}
+
+#[test]
+fn regexp_lookbehind_direction_minus_one_forward_reference_backref_sees_capture() {
+  // From test262: back-references-to-captures.js#1/#2
+  //
+  // `\1` is a forward reference to a capture that appears later in the lookbehind pattern.
+  // With direction=-1 evaluation, the capture runs first (right-to-left), so the backreference
+  // sees the captured value.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("abxxd".match(/(?<=\1([abx]))d/))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["d","x"]"#);
+}
