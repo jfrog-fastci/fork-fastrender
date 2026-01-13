@@ -86,6 +86,9 @@ fn sandbox_exec_custom_profile_denies_file_and_network() {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
+  // Prove custom SBPL profiles written to temp files stay alive until spawn.
+  std::thread::sleep(std::time::Duration::from_millis(200));
+
   let output = cmd.output().expect("run sandboxed child");
   assert!(
     output.status.success(),
@@ -96,4 +99,3 @@ fn sandbox_exec_custom_profile_denies_file_and_network() {
 
   drop(listener);
 }
-

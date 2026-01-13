@@ -13,7 +13,8 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::ops::{Deref, DerefMut};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output};
 
 /// Standard Seatbelt parameters passed to sandbox profiles.
@@ -73,22 +74,18 @@ impl SandboxExecProfile {
   }
 }
 
-/// A `sandbox-exec` command wrapper that cleans up any temporary profile file on spawn.
+/// RAII wrapper that keeps any temporary `sandbox-exec` profile file alive until spawn.
 ///
-/// When `profile` is [`SandboxExecProfile::Custom`], the profile is written to a secure temporary
-/// file (mode `0600`). The file is removed immediately after spawning the sandboxed child process
-/// (best-effort).
-///
-/// If spawning fails, the temporary file is still dropped and will be removed best-effort.
+/// This is required when using `sandbox-exec -f <profile-file>` with a temporary file: if the
+/// temp file is dropped before `Command::spawn()` is called, `sandbox-exec` will fail to open it.
 #[derive(Debug)]
-pub struct SandboxExecCommand {
+pub struct SandboxedCommand {
   cmd: Command,
-  profile_file: Option<tempfile::NamedTempFile>,
-  #[allow(dead_code)]
-  profile_path: Option<PathBuf>,
+  _profile_file: Option<tempfile::NamedTempFile>,
+  used_temp_profile: bool,
 }
 
-impl SandboxExecCommand {
+impl SandboxedCommand {
   const SANDBOX_EXEC: &'static str = "/usr/bin/sandbox-exec";
 
   /// Build a new command that runs `program` (with `args`) under `sandbox-exec`.
@@ -107,7 +104,7 @@ impl SandboxExecCommand {
 
     let mut cmd = Command::new(sandbox_exec);
     let mut profile_file: Option<tempfile::NamedTempFile> = None;
-    let mut profile_path: Option<PathBuf> = None;
+    let used_temp_profile = matches!(profile, SandboxExecProfile::Custom(_));
 
     match profile {
       SandboxExecProfile::Named(name) => {
@@ -132,9 +129,7 @@ impl SandboxExecCommand {
         tmp.as_file_mut().write_all(contents.as_bytes())?;
         tmp.as_file_mut().flush()?;
 
-        let path = tmp.path().to_path_buf();
-        cmd.arg("-f").arg(&path);
-        profile_path = Some(path);
+        cmd.arg("-f").arg(tmp.path());
         profile_file = Some(tmp);
       }
     }
@@ -146,8 +141,8 @@ impl SandboxExecCommand {
 
     Ok(Self {
       cmd,
-      profile_file,
-      profile_path,
+      _profile_file: profile_file,
+      used_temp_profile,
     })
   }
 
@@ -158,28 +153,50 @@ impl SandboxExecCommand {
 
   /// Spawn the sandboxed command.
   ///
-  /// The temporary profile file (if any) is removed immediately after spawning (best-effort).
-  pub fn spawn(mut self) -> io::Result<Child> {
-    let result = self.cmd.spawn();
-    // Drop the temp file after spawning so the profile does not linger on disk while the sandboxed
-    // process runs. This is best-effort: if removal fails, we intentionally ignore the error.
-    drop(self.profile_file.take());
-    drop(self.profile_path.take());
-    result
+  /// When a temporary profile file is used, it is dropped (and therefore deleted) immediately
+  /// after the child process has been created.
+  pub fn spawn(&mut self) -> io::Result<Child> {
+    if self.used_temp_profile && self._profile_file.is_none() {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "sandbox-exec command already spawned (temporary profile file consumed)",
+      ));
+    }
+    let child = self.cmd.spawn()?;
+    // Drop the temp file only after spawn succeeds.
+    self._profile_file = None;
+    Ok(child)
   }
 
   /// Run the command to completion and return its exit status.
-  pub fn status(self) -> io::Result<ExitStatus> {
+  pub fn status(&mut self) -> io::Result<ExitStatus> {
     let mut child = self.spawn()?;
     child.wait()
   }
 
   /// Run the command to completion and capture its output.
-  pub fn output(self) -> io::Result<Output> {
+  pub fn output(&mut self) -> io::Result<Output> {
     let mut child = self.spawn()?;
     child.wait_with_output()
   }
 }
+
+impl Deref for SandboxedCommand {
+  type Target = Command;
+
+  fn deref(&self) -> &Self::Target {
+    &self.cmd
+  }
+}
+
+impl DerefMut for SandboxedCommand {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.cmd
+  }
+}
+
+/// Backwards compatible alias for the older wrapper name.
+pub type SandboxExecCommand = SandboxedCommand;
 
 #[cfg(test)]
 mod tests {
