@@ -720,7 +720,6 @@ impl<Host: 'static> EventLoop<Host> {
     }
     true
   }
-
   pub fn has_pending_animation_frame_callbacks(&self) -> bool {
     !self.animation_frame_callbacks.is_empty()
   }

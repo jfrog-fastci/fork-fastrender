@@ -7206,6 +7206,29 @@ impl BrowserTab {
     }
   }
 
+  /// Returns whether this tab should continue to be driven by a periodic "tick" loop.
+  ///
+  /// This is the single source of truth for embedders that want to stop driving a tab once it has
+  /// no more work. A tab wants ticks when *any* of these are true:
+  ///
+  /// - The document has active CSS animations/transitions (so repainting over time is meaningful).
+  /// - The document is dirty and needs a new frame rendered.
+  /// - The JavaScript event loop has runnable work (tasks/microtasks/external tasks/idle callbacks).
+  /// - The JavaScript event loop has any scheduled timers (even if none are due yet).
+  /// - The JavaScript event loop has pending `requestAnimationFrame` callbacks.
+  pub fn wants_ticks(&self) -> bool {
+    let document_wants_ticks = self.host.document.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    });
+
+    document_wants_ticks
+      || self.host.document.is_dirty()
+      || !self.event_loop.is_idle()
+      || self.event_loop.has_pending_timers()
+      || self.event_loop.has_pending_animation_frame_callbacks()
+  }
+
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
   ///
@@ -9101,6 +9124,57 @@ mod tests {
       fetcher.fetch_with_request(req)?;
       Ok(())
     }
+  }
+
+  #[test]
+  fn browser_tab_wants_ticks_for_queued_tasks() -> Result<()> {
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), NoopExecutor::default())?;
+    match tab.run_until_stable(10)? {
+      RunUntilStableOutcome::Stable { .. } => {}
+      other => return Err(Error::Other(format!("expected stable tab, got {other:?}"))),
+    }
+    assert!(
+      !tab.wants_ticks(),
+      "expected empty tab to not want ticks after reaching stability"
+    );
+
+    tab
+      .event_loop
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+    assert!(
+      tab.wants_ticks(),
+      "expected queued event-loop task to make BrowserTab want ticks"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn browser_tab_wants_ticks_for_scheduled_future_timers() -> Result<()> {
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), NoopExecutor::default())?;
+    match tab.run_until_stable(10)? {
+      RunUntilStableOutcome::Stable { .. } => {}
+      other => return Err(Error::Other(format!("expected stable tab, got {other:?}"))),
+    }
+    assert!(
+      !tab.wants_ticks(),
+      "expected empty tab to not want ticks after reaching stability"
+    );
+
+    tab.event_loop.set_timeout(std::time::Duration::from_secs(60), |_host, _event_loop| {
+      Ok(())
+    })?;
+
+    assert!(
+      tab.event_loop.is_idle(),
+      "expected EventLoop::is_idle to ignore future timers"
+    );
+    assert!(
+      tab.wants_ticks(),
+      "expected scheduled future timer to make BrowserTab want ticks"
+    );
+
+    Ok(())
   }
 
   struct WindowRealmExecutor {
