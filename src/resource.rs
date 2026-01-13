@@ -13146,6 +13146,77 @@ pub(crate) fn parse_content_range(value: &str) -> Option<ParsedContentRange> {
   Some(ParsedContentRange::Range { start, end, size })
 }
 
+#[cfg(test)]
+mod content_range_tests {
+  use super::{parse_content_range, ParsedContentRange};
+
+  #[test]
+  fn parse_content_range_parses_valid_ranges() {
+    assert_eq!(
+      parse_content_range("bytes 0-99/1000"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 99,
+        size: Some(1000)
+      })
+    );
+
+    // Extra ASCII HTTP whitespace is tolerated.
+    assert_eq!(
+      parse_content_range(" \tbytes\t0 - 99 / 1000\t"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 99,
+        size: Some(1000)
+      })
+    );
+
+    // RFC allows unknown instance length.
+    assert_eq!(
+      parse_content_range("bytes 0-0/*"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 0,
+        size: None
+      })
+    );
+
+    assert_eq!(
+      parse_content_range("bytes */1000"),
+      Some(ParsedContentRange::Unsatisfied { size: Some(1000) })
+    );
+  }
+
+  #[test]
+  fn parse_content_range_rejects_invalid_values() {
+    // Wrong unit.
+    assert_eq!(parse_content_range("items 0-99/1000"), None);
+
+    // Negative numbers.
+    assert_eq!(parse_content_range("bytes -1-99/1000"), None);
+    assert_eq!(parse_content_range("bytes 0--1/1000"), None);
+
+    // End < start.
+    assert_eq!(parse_content_range("bytes 10-9/1000"), None);
+
+    // Overflow.
+    assert_eq!(
+      parse_content_range("bytes 18446744073709551616-99/1000"),
+      None
+    );
+
+    // Garbage suffix.
+    assert_eq!(parse_content_range("bytes 0-99/1000 trailing"), None);
+
+    // Claimed size must be consistent with the returned range.
+    assert_eq!(parse_content_range("bytes 0-99/50"), None);
+
+    // NBSP must not be treated as HTTP whitespace.
+    assert_eq!(parse_content_range("bytes\u{00A0}0-99/1000"), None);
+    assert_eq!(parse_content_range("bytes 0\u{00A0}-99/1000"), None);
+  }
+}
+
 fn parse_cors_response_headers(headers: &HeaderMap) -> (Option<String>, bool) {
   let allow_origin = header_values_joined(headers, "access-control-allow-origin");
   let credentials_values: Vec<&str> = headers
@@ -13819,72 +13890,6 @@ mod tests {
     }
 
     Some(listener)
-  }
-
-  #[test]
-  fn parse_content_range_parses_valid_ranges() {
-    assert_eq!(
-      parse_content_range("bytes 0-99/1000"),
-      Some(ParsedContentRange::Range {
-        start: 0,
-        end: 99,
-        size: Some(1000)
-      })
-    );
-
-    // Extra ASCII HTTP whitespace is tolerated.
-    assert_eq!(
-      parse_content_range(" \tbytes\t0 - 99 / 1000\t"),
-      Some(ParsedContentRange::Range {
-        start: 0,
-        end: 99,
-        size: Some(1000)
-      })
-    );
-
-    // RFC allows unknown instance length.
-    assert_eq!(
-      parse_content_range("bytes 0-0/*"),
-      Some(ParsedContentRange::Range {
-        start: 0,
-        end: 0,
-        size: None
-      })
-    );
-
-    assert_eq!(
-      parse_content_range("bytes */1000"),
-      Some(ParsedContentRange::Unsatisfied { size: Some(1000) })
-    );
-  }
-
-  #[test]
-  fn parse_content_range_rejects_invalid_values() {
-    // Wrong unit.
-    assert_eq!(parse_content_range("items 0-99/1000"), None);
-
-    // Negative numbers.
-    assert_eq!(parse_content_range("bytes -1-99/1000"), None);
-    assert_eq!(parse_content_range("bytes 0--1/1000"), None);
-
-    // End < start.
-    assert_eq!(parse_content_range("bytes 10-9/1000"), None);
-
-    // Overflow.
-    assert_eq!(
-      parse_content_range("bytes 18446744073709551616-99/1000"),
-      None
-    );
-
-    // Garbage suffix.
-    assert_eq!(parse_content_range("bytes 0-99/1000 trailing"), None);
-
-    // Claimed size must be consistent with the returned range.
-    assert_eq!(parse_content_range("bytes 0-99/50"), None);
-
-    // NBSP must not be treated as HTTP whitespace.
-    assert_eq!(parse_content_range("bytes\u{00A0}0-99/1000"), None);
-    assert_eq!(parse_content_range("bytes 0\u{00A0}-99/1000"), None);
   }
 
   #[test]
