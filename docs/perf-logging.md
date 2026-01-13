@@ -40,6 +40,16 @@ See the workstream goals/metric definitions in
 Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
 line) describing UI responsiveness events.
 
+For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1`, resource
+limits, and saving stdout to a JSONL file):
+
+```bash
+scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
+
+# Capture + run `browser_perf_log_summary` (if available):
+scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
+```
+
 Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
 
 ```bash
