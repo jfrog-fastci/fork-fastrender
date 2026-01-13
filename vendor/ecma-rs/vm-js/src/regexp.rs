@@ -5089,7 +5089,7 @@ impl ProgramBuilder {
 }
 
 #[cfg(test)]
-mod tests {
+mod regexp_unicode_sets_tests {
   use super::*;
   use crate::{HeapLimits, JsRuntime, Value, Vm, VmOptions};
 

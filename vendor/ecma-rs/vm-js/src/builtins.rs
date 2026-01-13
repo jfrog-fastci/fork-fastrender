@@ -15188,7 +15188,9 @@ pub fn regexp_prototype_symbol_replace(
       vec_try_extend_from_slice_u16_with_ticks(vm, &mut buf, units)?;
       buf
     } else {
-      let replace_s = replace_s.expect("replace string should be computed");
+      let Some(replace_s) = replace_s else {
+        return Err(VmError::InvariantViolation("RegExp @@replace replace string missing"));
+      };
       let mut match_scope = scope.reborrow();
       let named_captures = if named_group_count == 0 {
         None
@@ -17747,7 +17749,9 @@ pub fn string_prototype_replace_all(
     }
   } else {
     let Some(replace_s) = replace_s else {
-      return Err(VmError::InvariantViolation("replace string should be computed"));
+      return Err(VmError::InvariantViolation(
+        "String.prototype.replaceAll replace string missing",
+      ));
     };
     for (mi, &pos) in positions.iter().enumerate() {
       if mi % 256 == 0 {
@@ -27398,6 +27402,20 @@ mod string_replace_all_tests {
           threw = e instanceof TypeError;
         }
         threw
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn replace_all_string_replace_value_and_substitutions() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        "aba".replaceAll("a", "x") === "xbx" &&
+        "abc".replaceAll("", "-") === "-a-b-c-" &&
+        "aba".replaceAll("a", "$&$&") === "aabaa"
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
