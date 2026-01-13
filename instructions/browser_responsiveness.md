@@ -85,7 +85,9 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
 # Headless smoke harness (`ui_perf_smoke`; JSON summary).
-# Measures navigation→first frame (TTFP proxy) for a few built-in about: scenarios.
+# - TTFP: reported as navigation→first frame (per scenario).
+# - Scroll/resize frame time + input latency: capture a windowed `FASTR_PERF_LOG` session (below) while
+#   interacting with e.g. `about:test-layout-stress`, then summarize with `browser_perf_log_summary`.
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 
 # CPU profiling (Linux): reproduce resize/scroll jank, then close the window to finish recording.
