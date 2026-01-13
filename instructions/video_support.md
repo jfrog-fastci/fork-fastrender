@@ -119,6 +119,10 @@ video.addEventListener('error', ...);
 
 ## Architecture
 
+Developer reference: [`docs/media_pipeline.md`](../docs/media_pipeline.md) describes the chosen
+demux+decode dependency stack (MP4/WebM + H.264/VP9/AAC/Opus), timestamp normalization, seeking, and
+build constraints.
+
 ### Decoding library options
 
 | Library | Pros | Cons |
