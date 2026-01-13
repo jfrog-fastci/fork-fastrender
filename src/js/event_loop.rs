@@ -1891,10 +1891,15 @@ impl<Host: 'static> EventLoop<Host> {
 
     let callbacks_result = (|| -> Result<usize> {
       let mut executed = 0usize;
-      while let Some(id) = queue.pop_front() {
+      while let Some(id) = queue.front().copied() {
         // Integrate renderer-level cancellation/deadlines.
+        //
+        // IMPORTANT: check before popping so a timeout/cancel does not drop the next queued
+        // callback ID. Dropping an ID without running/canceling the corresponding callback makes
+        // it unreachable (it remains in `animation_frame_callbacks` but is no longer in the
+        // scheduling queue).
         render_control::check_active(stage)?;
-
+        let _ = queue.pop_front();
         let Some(mut callback) = self.animation_frame_callbacks.remove(&id) else {
           continue;
         };
@@ -4916,6 +4921,61 @@ mod tests {
       RunAnimationFrameOutcome::Ran { callbacks: 1 }
     );
     assert_eq!(host.log, vec!["a", "b"]);
+  }
+
+  #[test]
+  fn animation_frame_deadline_abort_preserves_remaining_callbacks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("a");
+      Ok(())
+    })?;
+    event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("b");
+      Ok(())
+    })?;
+
+    let checks = Arc::new(AtomicUsize::new(0));
+    let checks_for_cancel = Arc::clone(&checks);
+    let deadline = RenderDeadline::new(None, Some(Arc::new(move || {
+      // `run_animation_frame` checks once before starting and again before each callback.
+      // Trip on the second check to abort before any callbacks are popped/executed.
+      checks_for_cancel.fetch_add(1, Ordering::SeqCst) >= 1
+    })));
+
+    let mut host = Host::default();
+    {
+      let _guard = render_control::DeadlineGuard::install(Some(&deadline));
+      let err = event_loop
+        .run_animation_frame(&mut host)
+        .expect_err("expected deadline timeout");
+      match err {
+        Error::Render(RenderError::Timeout { stage, .. }) => {
+          assert_eq!(stage, RenderStage::Script);
+        }
+        err => panic!("expected RenderError::Timeout, got {err:?}"),
+      }
+    }
+
+    assert_eq!(host.log, Vec::<&'static str>::new());
+    assert_eq!(event_loop.currently_running_task(), None);
+    assert_eq!(event_loop.animation_frame_callbacks.len(), 2);
+    assert_eq!(event_loop.animation_frame_queue.len(), 2);
+
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+    assert_eq!(host.log, vec!["a", "b"]);
+    Ok(())
   }
 
   #[test]
