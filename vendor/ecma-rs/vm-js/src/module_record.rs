@@ -245,6 +245,15 @@ pub struct SourceTextModuleRecord {
   pub source: Option<Arc<SourceText>>,
   /// Parsed `parse-js` AST for this module.
   pub ast: Option<Arc<Node<TopLevel>>>,
+  /// External-memory token for retained module ASTs (`ast`).
+  ///
+  /// Module ASTs live outside the GC heap. When a module is compiled to HIR but must retain/parse
+  /// an AST for a fallback execution path (e.g. top-level await or async-generator fallback), the
+  /// host must charge the additional memory usage via [`Heap::charge_external`].
+  ///
+  /// This token is stored in an [`Arc`] so `SourceTextModuleRecord` remains `Clone` without
+  /// duplicating the external-memory charge.
+  pub(crate) ast_external_memory: Option<Arc<ExternalMemoryToken>>,
   /// Compiled module code (source text + lowered HIR).
   ///
   /// When present, module bodies may be executed via the compiled (HIR) executor instead of the
@@ -335,6 +344,13 @@ pub struct SourceTextModuleRecord {
 }
 
 impl SourceTextModuleRecord {
+  /// Clears the retained module AST, dropping any associated external-memory charge.
+  pub(crate) fn clear_ast(&mut self) {
+    // Drop the AST first so its memory is freed before releasing the external-memory charge.
+    self.ast = None;
+    self.ast_external_memory = None;
+  }
+
   #[allow(dead_code)]
   pub(crate) fn set_top_level_capability(
     &mut self,

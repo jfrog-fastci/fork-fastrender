@@ -353,6 +353,70 @@ impl ModuleGraph {
     Self::default()
   }
 
+  /// Ensures that `module` has a parsed `parse-js` AST available in its module record.
+  ///
+  /// This supports execution paths where a module is primarily compiled to HIR, but must retain an
+  /// AST for a fallback interpreter path (for example top-level await or async-generator fallback).
+  ///
+  /// When parsing/storing an AST into a module record that previously had none, this charges a
+  /// conservative estimate of the AST's host memory usage against [`HeapLimits`] via
+  /// [`Heap::charge_external`].
+  fn ensure_module_ast(&mut self, vm: &mut Vm, heap: &mut Heap, module: ModuleId) -> Result<(), VmError> {
+    let idx = module_index(module);
+    let record = self
+      .modules
+      .get_mut(idx)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    if record.ast.is_some() {
+      return Ok(());
+    }
+
+    debug_assert!(
+      record.ast_external_memory.is_none(),
+      "module record has an AST external-memory token but no AST"
+    );
+
+    let source = record
+      .source
+      .clone()
+      .or_else(|| record.compiled.as_ref().map(|c| c.source.clone()))
+      .ok_or(VmError::Unimplemented("module source missing"))?;
+
+    // `parse-js` AST nodes can be significantly larger than the original source. Use the same
+    // conservative multiplier as `Vm::ecma_function_ast` so hostile modules can't bypass heap
+    // limits by forcing large retained ASTs.
+    let estimated_ast_bytes = source.text.len().saturating_mul(4);
+
+    // Charge before parsing so we can fail fast without allocating an untracked AST when the heap
+    // is already at its limit. If parsing fails, the token is dropped and the charge is released.
+    let token = arc_try_new_vm(heap.charge_external(estimated_ast_bytes)?)?;
+
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Module,
+    };
+    let top = vm.parse_top_level_with_budget(&source.text, opts)?;
+
+    {
+      let mut cancel = || vm.tick();
+      crate::early_errors::validate_top_level(
+        &top.stx.body,
+        crate::early_errors::EarlyErrorOptions::module(),
+        &mut cancel,
+      )?;
+    }
+
+    // Install the AST + token. This should be infallible after successful parsing and charging.
+    let top = arc_try_new_vm(top)?;
+    // Storing the `SourceText` in the module record ensures AST interpreter fallbacks can access it
+    // without needing to plumb the `CompiledScript` through all module graph paths.
+    record.source = Some(source);
+    record.ast = Some(top);
+    record.ast_external_memory = Some(token);
+    self.torn_down = false;
+    Ok(())
+  }
+
   /// Marks the cached SCC (cycle) structure as dirty so it will be recomputed before the next
   /// module evaluation.
   ///
@@ -624,6 +688,14 @@ impl ModuleGraph {
       if vm.module_graph_ptr() == Some(self as *mut ModuleGraph) {
         vm.clear_module_graph();
       }
+      // Also clear any retained module ASTs that were charged as external memory (for example,
+      // compiled-module fallback ASTs). Teardown is intended to be safe and idempotent even when the
+      // graph is reused, and these tokens are not represented as GC roots.
+      for module in &mut self.modules {
+        if module.ast_external_memory.is_some() {
+          module.clear_ast();
+        }
+      }
       return;
     }
     self.torn_down = true;
@@ -659,6 +731,12 @@ impl ModuleGraph {
       // Cyclic module record persistent roots (top-level await state / cached errors).
       module.teardown_top_level_capability(heap);
       module.teardown_evaluation_error(heap);
+
+      // Drop any charged retained ASTs so their external-memory tokens are released when tearing
+      // down a graph (important for heap reuse).
+      if module.ast_external_memory.is_some() {
+        module.clear_ast();
+      }
     }
 
     // Ensure the VM does not retain a raw pointer to this graph after teardown.
@@ -946,6 +1024,9 @@ impl ModuleGraph {
         }
         self.modules[midx].status = ModuleStatus::Errored;
         let _ = self.cache_module_error_value(&mut scope, midx, reason);
+        if self.modules[midx].ast_external_memory.is_some() {
+          self.modules[midx].clear_ast();
+        }
       }
 
       // Reject the evaluation promise if one exists.
@@ -1564,6 +1645,10 @@ impl ModuleGraph {
         self.torn_down = false;
       }
 
+      // If this module was loaded in a compiled-only form, it may not retain an AST by default.
+      // Ensure we have one before proceeding with interpreter-based linking/instantiation.
+      self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+
       // Avoid cloning attacker-controlled strings during linking: infallible `String::clone` can
       // abort the process under allocator OOM (see `oom_regressions` / `oom_harness` moduleLink).
       //
@@ -1808,6 +1893,11 @@ impl ModuleGraph {
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
         self.cache_module_error_from_err(vm, scope, idx, &err)?;
+        // If we parsed and retained an AST solely for a compiled-module fallback, it is no longer
+        // needed once the module has transitioned to an errored state.
+        if self.modules[idx].ast_external_memory.is_some() {
+          self.modules[idx].clear_ast();
+        }
         Err(err)
       }
     }
@@ -2489,7 +2579,9 @@ impl ModuleGraph {
         .heap()
         .get_env_root(env_root)
         .ok_or_else(|| VmError::invalid_handle())?;
-      let source = source.ok_or(VmError::Unimplemented("module source missing"))?;
+      let source = source
+        .or_else(|| compiled.as_ref().map(|c| c.source.clone()))
+        .ok_or(VmError::Unimplemented("module source missing"))?;
 
       if has_tla {
         let mut tla_fallback_ast: Option<Arc<Node<TopLevel>>> = None;
@@ -2623,7 +2715,18 @@ impl ModuleGraph {
           }
         }
 
-        let ast = ast.ok_or(VmError::Unimplemented("module AST missing"))?;
+        let ast = match ast {
+          Some(ast) => ast,
+          None => {
+            // Interpreter fallback: ensure a parsed module AST exists, charging it against heap
+            // limits when installing it into the module record.
+            self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+            self.modules[idx]
+              .ast
+              .clone()
+              .ok_or(VmError::Unimplemented("module AST missing"))?
+          }
+        };
         match run_module(
           vm,
           scope,
@@ -2680,6 +2783,9 @@ impl ModuleGraph {
       let idx = module_index(member);
       if idx < self.modules.len() {
         self.modules[idx].status = ModuleStatus::Evaluated;
+        if self.modules[idx].ast_external_memory.is_some() {
+          self.modules[idx].clear_ast();
+        }
       }
     }
 
@@ -2808,6 +2914,11 @@ impl ModuleGraph {
       self.modules[idx].status = ModuleStatus::Errored;
       // Best-effort: cache the thrown value for deterministic future operations.
       let _ = self.cache_module_error_value(scope, idx, reason);
+      // If this module retained a charged AST for a compiled-module fallback, drop it now that the
+      // module is irrecoverably errored.
+      if self.modules[idx].ast_external_memory.is_some() {
+        self.modules[idx].clear_ast();
+      }
     }
 
     self.scc_eval_states[root_idx] = None;
@@ -3034,6 +3145,9 @@ impl ModuleGraph {
           compiled,
         )?;
       } else {
+        // Ensure we have an AST for interpreter execution.
+        self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+
         let source = self.modules[idx]
           .source
           .clone()
@@ -3060,11 +3174,17 @@ impl ModuleGraph {
     match eval_result {
       Ok(()) => {
         self.modules[idx].status = ModuleStatus::Evaluated;
+        if self.modules[idx].ast_external_memory.is_some() {
+          self.modules[idx].clear_ast();
+        }
         Ok(())
       }
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
         self.cache_module_error_from_err(vm, scope, idx, &err)?;
+        if self.modules[idx].ast_external_memory.is_some() {
+          self.modules[idx].clear_ast();
+        }
         Err(err)
       }
     }
@@ -3121,6 +3241,10 @@ impl ModuleGraph {
         .heap()
         .get_env_root(env_root)
         .ok_or_else(|| VmError::invalid_handle())?;
+
+      // Ensure we have an AST for interpreter-based async module execution.
+      self.ensure_module_ast(vm, scope.heap_mut(), module)?;
+
       let source = self.modules[idx]
         .source
         .clone()
@@ -3153,10 +3277,20 @@ impl ModuleGraph {
     })();
 
     match eval_result {
-      Ok(step) => Ok(step),
+      Ok(step) => {
+        if matches!(step, ModuleTlaStepResult::Completed) {
+          if self.modules[idx].ast_external_memory.is_some() {
+            self.modules[idx].clear_ast();
+          }
+        }
+        Ok(step)
+      }
       Err(err) => {
         self.modules[idx].status = ModuleStatus::Errored;
         self.cache_module_error_from_err(vm, scope, idx, &err)?;
+        if self.modules[idx].ast_external_memory.is_some() {
+          self.modules[idx].clear_ast();
+        }
         Err(err)
       }
     }
@@ -3438,6 +3572,9 @@ fn module_tla_resume_inner(
     if idx < graph.modules.len() {
       graph.modules[idx].status = ModuleStatus::Errored;
       let _ = graph.cache_module_error_from_err(vm, scope, idx, &err);
+      if graph.modules[idx].ast_external_memory.is_some() {
+        graph.modules[idx].clear_ast();
+      }
     }
     state.teardown(vm, scope.heap_mut());
     if graph.module_graph_ptr_refcount > 0 {
