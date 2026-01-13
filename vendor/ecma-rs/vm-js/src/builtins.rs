@@ -663,12 +663,162 @@ pub fn object_constructor_call(
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let intr = require_intrinsics(vm)?;
-  object_constructor_impl(vm, scope, host, hooks, args, Value::Object(intr.object_constructor()))
+  // Spec: https://tc39.es/ecma262/#sec-object-constructor
+  //
+  // Note: `vm-js` is single-realm in the general case, but test262 uses multiple realms on a shared
+  // heap. For cross-realm tests, `Object` called as a function must box primitives using the
+  // *callee's* realm intrinsics.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(callee))?;
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(arg0, Value::Object(_)) {
+    return Ok(arg0);
+  }
+
+  let global_object = match scope.heap().get_function_realm(callee) {
+    Ok(Some(obj)) => obj,
+    _ => {
+      // Fallback to the VM's active intrinsics if the callee doesn't have realm metadata.
+      let intr = require_intrinsics(vm)?;
+      return object_constructor_impl(vm, &mut scope, host, hooks, args, Value::Object(intr.object_constructor()));
+    }
+  };
+  scope.push_root(Value::Object(global_object))?;
+
+  fn get_realm_prototype(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    global_object: GcObject,
+    ctor_name: &'static str,
+  ) -> Result<GcObject, VmError> {
+    let ctor_key_s = scope.alloc_string(ctor_name)?;
+    scope.push_root(Value::String(ctor_key_s))?;
+    let ctor = crate::spec_ops::internal_get_with_host_and_hooks(
+      vm,
+      scope,
+      host,
+      hooks,
+      global_object,
+      PropertyKey::from_string(ctor_key_s),
+      Value::Object(global_object),
+    )?;
+    scope.push_root(ctor)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError("Object constructor realm missing intrinsic constructor"));
+    };
+
+    let proto_key_s = scope.alloc_string("prototype")?;
+    scope.push_root(Value::String(proto_key_s))?;
+    let proto = crate::spec_ops::internal_get_with_host_and_hooks(
+      vm,
+      scope,
+      host,
+      hooks,
+      ctor_obj,
+      PropertyKey::from_string(proto_key_s),
+      Value::Object(ctor_obj),
+    )?;
+    scope.push_root(proto)?;
+    let Value::Object(proto_obj) = proto else {
+      return Err(VmError::TypeError(
+        "Object constructor realm intrinsic prototype is not an object",
+      ));
+    };
+    Ok(proto_obj)
+  }
+
+  match arg0 {
+    Value::Undefined | Value::Null => {
+      let obj_proto = get_realm_prototype(vm, &mut scope, host, hooks, global_object, "Object")?;
+      scope.push_root(Value::Object(obj_proto))?;
+      let obj = scope.alloc_object_with_prototype(Some(obj_proto))?;
+      Ok(Value::Object(obj))
+    }
+    Value::String(s) => {
+      scope.push_root(Value::String(s))?;
+      let proto = get_realm_prototype(vm, &mut scope, host, hooks, global_object, "String")?;
+      scope.push_root(Value::Object(proto))?;
+      let obj = scope.alloc_object_with_prototype(Some(proto))?;
+      scope.push_root(Value::Object(obj))?;
+      let marker_sym = scope.heap_mut().ensure_internal_string_data_symbol()?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      scope.define_property(
+        obj,
+        marker_key,
+        data_desc(Value::String(s), true, false, false),
+      )?;
+      Ok(Value::Object(obj))
+    }
+    Value::Number(n) => {
+      let proto = get_realm_prototype(vm, &mut scope, host, hooks, global_object, "Number")?;
+      scope.push_root(Value::Object(proto))?;
+      let obj = scope.alloc_object_with_prototype(Some(proto))?;
+      scope.push_root(Value::Object(obj))?;
+      let marker_sym = scope.heap_mut().ensure_internal_number_data_symbol()?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      scope.define_property(
+        obj,
+        marker_key,
+        data_desc(Value::Number(n), true, false, false),
+      )?;
+      Ok(Value::Object(obj))
+    }
+    Value::Bool(b) => {
+      let proto = get_realm_prototype(vm, &mut scope, host, hooks, global_object, "Boolean")?;
+      scope.push_root(Value::Object(proto))?;
+      let obj = scope.alloc_object_with_prototype(Some(proto))?;
+      scope.push_root(Value::Object(obj))?;
+      let marker_sym = scope.heap_mut().ensure_internal_boolean_data_symbol()?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      scope.define_property(
+        obj,
+        marker_key,
+        data_desc(Value::Bool(b), true, false, false),
+      )?;
+      Ok(Value::Object(obj))
+    }
+    Value::Symbol(sym) => {
+      scope.push_root(Value::Symbol(sym))?;
+      let proto = get_realm_prototype(vm, &mut scope, host, hooks, global_object, "Symbol")?;
+      scope.push_root(Value::Object(proto))?;
+      let obj = scope.alloc_object_with_prototype(Some(proto))?;
+      scope.push_root(Value::Object(obj))?;
+      let marker_sym = match scope.heap().internal_symbol_data_symbol() {
+        Some(sym) => sym,
+        None => scope.heap_mut().ensure_internal_symbol_data_symbol()?,
+      };
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      scope.define_property(
+        obj,
+        marker_key,
+        data_desc(Value::Symbol(sym), true, false, false),
+      )?;
+      Ok(Value::Object(obj))
+    }
+    Value::BigInt(b) => {
+      scope.push_root(Value::BigInt(b))?;
+      let proto = get_realm_prototype(vm, &mut scope, host, hooks, global_object, "BigInt")?;
+      scope.push_root(Value::Object(proto))?;
+      let obj = scope.alloc_object_with_prototype(Some(proto))?;
+      scope.push_root(Value::Object(obj))?;
+      let marker_sym = scope.heap_mut().ensure_internal_bigint_data_symbol()?;
+      let marker_key = PropertyKey::from_symbol(marker_sym);
+      scope.define_property(
+        obj,
+        marker_key,
+        data_desc(Value::BigInt(b), true, false, false),
+      )?;
+      Ok(Value::Object(obj))
+    }
+    Value::Object(_) => Ok(arg0),
+  }
 }
 
 pub fn object_constructor_construct(
@@ -16426,25 +16576,34 @@ fn parse_to_primitive_hint(
 pub fn string_prototype_to_primitive(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let _hint = parse_to_primitive_hint(
+  let hint = parse_to_primitive_hint(
     &scope,
     args.get(0).copied().unwrap_or(Value::Undefined),
     "String.prototype[@@toPrimitive] called with invalid hint",
   )?;
-  let s = this_string_value(
-    vm,
-    &mut scope,
-    this,
-    "String.prototype[@@toPrimitive] called on incompatible receiver",
-  )?;
-  Ok(Value::String(s))
+  match this {
+    Value::String(s) => Ok(Value::String(s)),
+    Value::Object(obj) => {
+      // Validate that `this` is a String wrapper object before invoking user code.
+      let _ = this_string_value(
+        vm,
+        &mut scope,
+        this,
+        "String.prototype[@@toPrimitive] called on incompatible receiver",
+      )?;
+      scope.ordinary_to_primitive(vm, host, hooks, obj, hint)
+    }
+    _ => Err(VmError::TypeError(
+      "String.prototype[@@toPrimitive] called on incompatible receiver",
+    )),
+  }
 }
 fn this_string_value(
   _vm: &mut Vm,
@@ -19970,28 +20129,37 @@ pub fn number_prototype_to_locale_string(
 
 /// `Number.prototype[Symbol.toPrimitive]` (ECMA-262).
 pub fn number_prototype_to_primitive(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
-  let x = this_number_value(
-    &mut scope,
-    this,
-    "Number.prototype[@@toPrimitive] called on incompatible receiver",
-  )?;
   let hint = parse_to_primitive_hint(
     &scope,
     args.get(0).copied().unwrap_or(Value::Undefined),
     "Number.prototype[@@toPrimitive] called with invalid hint",
   )?;
-  match hint {
-    crate::ToPrimitiveHint::String => Ok(Value::String(scope.heap_mut().to_string(Value::Number(x))?)),
-    crate::ToPrimitiveHint::Number | crate::ToPrimitiveHint::Default => Ok(Value::Number(x)),
+  match this {
+    Value::Number(n) => match hint {
+      crate::ToPrimitiveHint::String => Ok(Value::String(scope.heap_mut().to_string(Value::Number(n))?)),
+      crate::ToPrimitiveHint::Number | crate::ToPrimitiveHint::Default => Ok(Value::Number(n)),
+    },
+    Value::Object(obj) => {
+      // Validate that `this` is a Number wrapper object before invoking user code.
+      let _ = this_number_value(
+        &mut scope,
+        this,
+        "Number.prototype[@@toPrimitive] called on incompatible receiver",
+      )?;
+      scope.ordinary_to_primitive(vm, host, hooks, obj, hint)
+    }
+    _ => Err(VmError::TypeError(
+      "Number.prototype[@@toPrimitive] called on incompatible receiver",
+    )),
   }
 }
 
@@ -24579,15 +24747,18 @@ pub fn json_parse(
           .try_reserve_exact(keys.len())
           .map_err(|_| VmError::OutOfMemory)?;
 
-        for (i, k) in keys.into_iter().enumerate() {
-          if i % 1024 == 0 {
-            vm.tick()?;
-          }
+        for k in keys {
           let PropertyKey::String(s) = k else {
             continue;
           };
-          let Some(desc) =
-            scope.get_own_property_with_host_and_hooks_with_tick(vm, host, hooks, obj, PropertyKey::from_string(s), &mut tick)?
+          let Some(desc) = scope.get_own_property_with_host_and_hooks_with_tick(
+            vm,
+            host,
+            hooks,
+            obj,
+            PropertyKey::from_string(s),
+            &mut tick,
+          )?
           else {
             continue;
           };
@@ -25338,23 +25509,11 @@ pub fn json_stringify(
     Ok(())
   }
 
-  // --- Initialize wrapper marker keys for primitive wrapper detection ---
-  fn marker_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
-    let sym = match name {
-      "vm-js.internal.NumberData" => scope.heap_mut().ensure_internal_number_data_symbol()?,
-      "vm-js.internal.StringData" => scope.heap_mut().ensure_internal_string_data_symbol()?,
-      "vm-js.internal.BooleanData" => scope.heap_mut().ensure_internal_boolean_data_symbol()?,
-      "vm-js.internal.BigIntData" => scope.heap_mut().ensure_internal_bigint_data_symbol()?,
-      _ => return Err(VmError::InvariantViolation("unknown wrapper marker key")),
-    };
-    Ok(PropertyKey::from_symbol(sym))
-  }
-
   let wrapper_markers = WrapperMarkerKeys {
-    number: marker_key(&mut scope, "vm-js.internal.NumberData")?,
-    string: marker_key(&mut scope, "vm-js.internal.StringData")?,
-    boolean: marker_key(&mut scope, "vm-js.internal.BooleanData")?,
-    bigint: marker_key(&mut scope, "vm-js.internal.BigIntData")?,
+    number: PropertyKey::from_symbol(scope.heap_mut().ensure_internal_number_data_symbol()?),
+    string: PropertyKey::from_symbol(scope.heap_mut().ensure_internal_string_data_symbol()?),
+    boolean: PropertyKey::from_symbol(scope.heap_mut().ensure_internal_boolean_data_symbol()?),
+    bigint: PropertyKey::from_symbol(scope.heap_mut().ensure_internal_bigint_data_symbol()?),
   };
 
   // --- Replacer function / property list ---
@@ -25409,15 +25568,9 @@ pub fn json_stringify(
         )?;
         scope.push_root(v)?;
 
-        let mut needs_root = false;
         let item_string: Option<crate::GcString> = match v {
           Value::String(s) => Some(s),
-          Value::Number(n) => {
-            // `ToString(number)` does not invoke user code, but the result string is not referenced
-            // by the JS heap.
-            needs_root = true;
-            Some(scope.heap_mut().to_string(Value::Number(n))?)
-          }
+          Value::Number(n) => Some(scope.heap_mut().to_string(Value::Number(n))?),
           Value::Object(o) => {
             // Spec: only String/Number wrapper objects contribute to the propertyList, and the
             // conversion is `? ToString(v)` (invokes user code).
@@ -25430,7 +25583,6 @@ pub fn json_stringify(
               Some(Value::Number(_))
             );
             if is_string || is_number {
-              needs_root = true;
               Some(scope.to_string(vm, host, hooks, Value::Object(o))?)
             } else {
               None
@@ -25454,11 +25606,9 @@ pub fn json_stringify(
           }
         }
         if !exists {
-          if needs_root {
-            // Strings created via `ToString(number)` are not referenced by the JS heap, so keep them
-            // alive for the duration of the stringify operation.
-            scope.push_root(Value::String(s))?;
-          }
+          // Property-list keys are stored in a Rust vector (not GC-traced), so keep any observed
+          // strings alive for the duration of stringify.
+          scope.push_root(Value::String(s))?;
           vec_try_push(&mut list, s)?;
         }
       }
