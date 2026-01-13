@@ -209,7 +209,14 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     can_go_forward,
   );
   push_toolbar_button(&mut out, "reload", "↻", "chrome-action:reload", !loading);
-  push_toolbar_button(&mut out, "stop", "✕", "chrome-action:stop", loading);
+  // Keep action names in sync with `ui::ChromeActionUrl` parsing ("stop-loading").
+  push_toolbar_button(
+    &mut out,
+    "stop",
+    "✕",
+    "chrome-action:stop-loading",
+    loading,
+  );
   push_toolbar_button(&mut out, "home", "⌂", "chrome-action:home", true);
 
   // Address bar.
@@ -257,6 +264,7 @@ mod tests {
     tab2.title = Some("Tab 2".to_string());
     tab2.can_go_back = true;
     tab2.can_go_forward = false;
+    tab2.loading = true;
 
     let tab3 = BrowserTabState::new(TabId(3), "about:newtab".to_string());
 
@@ -290,6 +298,9 @@ mod tests {
     // Titles are escaped.
     assert!(html.contains("Rust &amp; &lt;Friends&gt;"));
     assert!(!html.contains("Rust & <Friends>"));
+
+    // Stop-loading uses the canonical chrome-action name (not `stop`).
+    assert!(html.contains("chrome-action:stop-loading"));
   }
 
   #[test]
