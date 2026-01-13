@@ -21,6 +21,7 @@ Related context:
 - Renderer-chrome overview: [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 - Multiprocess security model: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
 - Chrome JS bridge (trusted `globalThis.chrome` API): [`docs/chrome_js_bridge.md`](chrome_js_bridge.md)
+- No-JS chrome interaction roadmap (`chrome-action:` links/forms): [`docs/renderer_chrome_non_js.md`](renderer_chrome_non_js.md)
 
 ---
 
