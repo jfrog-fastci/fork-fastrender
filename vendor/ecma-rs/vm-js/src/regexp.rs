@@ -4033,6 +4033,46 @@ impl<'a> Parser<'a> {
       negated = true;
     }
 
+    // Fast-path for a single character class escape (`[\d]`, `[\S]`, etc).
+    //
+    // These should behave the same as the corresponding escape outside character classes. In
+    // particular, the negated forms (`\D`, `\S`, `\W`) must match non-BMP code points in UnicodeMode
+    // (which would otherwise be missed by the current `/v` UnicodeSet `CharSet` representation).
+    if self.peek() == Some(b'\\' as u16)
+      && matches!(
+        self.units.get(self.idx + 1).copied(),
+        Some(x)
+          if x == (b'd' as u16)
+            || x == (b'D' as u16)
+            || x == (b'w' as u16)
+            || x == (b'W' as u16)
+            || x == (b's' as u16)
+            || x == (b'S' as u16)
+      )
+      && self.units.get(self.idx + 2).copied() == Some(b']' as u16)
+    {
+      self.next(); // consume '\'
+      let esc = self.next().unwrap();
+      let item = match esc {
+        x if x == (b'd' as u16) => CharClassItem::Digit { negated: false },
+        x if x == (b'D' as u16) => CharClassItem::Digit { negated: true },
+        x if x == (b'w' as u16) => CharClassItem::Word { negated: false },
+        x if x == (b'W' as u16) => CharClassItem::Word { negated: true },
+        x if x == (b's' as u16) => CharClassItem::Space { negated: false },
+        x if x == (b'S' as u16) => CharClassItem::Space { negated: true },
+        _ => unreachable!("filtered by fast-path guard"),
+      };
+      let mut items: Vec<CharClassItem> = Vec::new();
+      ctx.vec_try_push(&mut items, item)?;
+      if !self.eat(b']' as u16) {
+        return Err(RegExpSyntaxError {
+          message: "Unterminated character class",
+        }
+        .into());
+      }
+      return Ok(Atom::Class(CharClass { negated, items }));
+    }
+
     // UnicodeSetsMode allows empty class contents (`[]` / `[^]`).
     let set = if self.peek() == Some(b']' as u16) {
       UnicodeSet::new()
@@ -5722,17 +5762,16 @@ mod regexp_unicode_sets_tests {
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
     let exec_mem = RegExpExecMemoryBudget::new(1024 * 1024);
-    fn matches_one(
+    fn matches_units(
       prog: &RegExpProgram,
       flags: RegExpFlags,
       exec_mem: &RegExpExecMemoryBudget,
-      unit: u16,
+      input: &[u16],
     ) -> Result<bool, VmError> {
-      let input = [unit];
       let mut tick = || Ok(());
       Ok(
         prog
-          .exec_at(&input, 0, flags, &mut tick, exec_mem, None)?
+          .exec_at(input, 0, flags, &mut tick, exec_mem, None)?
           .is_some(),
       )
     }
@@ -5774,35 +5813,43 @@ mod regexp_unicode_sets_tests {
       0x2028u16, // Line separator
       0x2029u16, // Paragraph separator
     ] {
-      assert!(matches_one(&re_s, none, &exec_mem, u)?);
-      assert!(!matches_one(&re_not_s, none, &exec_mem, u)?);
-      assert!(matches_one(&re_v_s, v, &exec_mem, u)?);
-      assert!(!matches_one(&re_v_not_s, v, &exec_mem, u)?);
+      assert!(matches_units(&re_s, none, &exec_mem, &[u])?);
+      assert!(!matches_units(&re_not_s, none, &exec_mem, &[u])?);
+      assert!(matches_units(&re_v_s, v, &exec_mem, &[u])?);
+      assert!(!matches_units(&re_v_not_s, v, &exec_mem, &[u])?);
     }
     for u in 0x2000u16..=0x200Au16 {
-      assert!(matches_one(&re_s, none, &exec_mem, u)?);
-      assert!(!matches_one(&re_not_s, none, &exec_mem, u)?);
-      assert!(matches_one(&re_v_s, v, &exec_mem, u)?);
-      assert!(!matches_one(&re_v_not_s, v, &exec_mem, u)?);
+      assert!(matches_units(&re_s, none, &exec_mem, &[u])?);
+      assert!(!matches_units(&re_not_s, none, &exec_mem, &[u])?);
+      assert!(matches_units(&re_v_s, v, &exec_mem, &[u])?);
+      assert!(!matches_units(&re_v_not_s, v, &exec_mem, &[u])?);
     }
 
     // Negation is the complement of the `\s` set.
-    assert!(!matches_one(&re_s, none, &exec_mem, b'a' as u16)?);
-    assert!(matches_one(&re_not_s, none, &exec_mem, b'a' as u16)?);
-    assert!(!matches_one(&re_v_s, v, &exec_mem, b'a' as u16)?);
-    assert!(matches_one(&re_v_not_s, v, &exec_mem, b'a' as u16)?);
+    assert!(!matches_units(&re_s, none, &exec_mem, &[b'a' as u16])?);
+    assert!(matches_units(&re_not_s, none, &exec_mem, &[b'a' as u16])?);
+    assert!(!matches_units(&re_v_s, v, &exec_mem, &[b'a' as u16])?);
+    assert!(matches_units(&re_v_not_s, v, &exec_mem, &[b'a' as u16])?);
 
     // A common "Unicode whitespace" code point that is *not* in the ECMAScript `\s` set.
-    assert!(!matches_one(&re_s, none, &exec_mem, 0x200B)?);
-    assert!(matches_one(&re_not_s, none, &exec_mem, 0x200B)?);
-    assert!(!matches_one(&re_v_s, v, &exec_mem, 0x200B)?);
-    assert!(matches_one(&re_v_not_s, v, &exec_mem, 0x200B)?);
+    assert!(!matches_units(&re_s, none, &exec_mem, &[0x200B])?);
+    assert!(matches_units(&re_not_s, none, &exec_mem, &[0x200B])?);
+    assert!(!matches_units(&re_v_s, v, &exec_mem, &[0x200B])?);
+    assert!(matches_units(&re_v_not_s, v, &exec_mem, &[0x200B])?);
     // Mongolian vowel separator: historically treated as whitespace in some contexts, but **not**
     // in the ECMAScript `\s` set.
-    assert!(!matches_one(&re_s, none, &exec_mem, 0x180E)?);
-    assert!(matches_one(&re_not_s, none, &exec_mem, 0x180E)?);
-    assert!(!matches_one(&re_v_s, v, &exec_mem, 0x180E)?);
-    assert!(matches_one(&re_v_not_s, v, &exec_mem, 0x180E)?);
+    assert!(!matches_units(&re_s, none, &exec_mem, &[0x180E])?);
+    assert!(matches_units(&re_not_s, none, &exec_mem, &[0x180E])?);
+    assert!(!matches_units(&re_v_s, v, &exec_mem, &[0x180E])?);
+    assert!(matches_units(&re_v_not_s, v, &exec_mem, &[0x180E])?);
+
+    // Non-BMP code points must also follow the same `\s`/`\S` semantics. (ECMAScript `\s` contains
+    // no non-BMP characters.)
+    let grinning_face: [u16; 2] = [0xD83D, 0xDE00]; // U+1F600
+    assert!(!matches_units(&re_s, none, &exec_mem, &grinning_face)?);
+    assert!(matches_units(&re_not_s, none, &exec_mem, &grinning_face)?);
+    assert!(!matches_units(&re_v_s, v, &exec_mem, &grinning_face)?);
+    assert!(matches_units(&re_v_not_s, v, &exec_mem, &grinning_face)?);
 
     Ok(())
   }
