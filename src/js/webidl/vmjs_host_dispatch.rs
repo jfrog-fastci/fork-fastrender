@@ -2346,6 +2346,108 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(())
   }
 
+  fn sync_cached_children_for_wrapper(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    wrapper_obj: GcObject,
+    node_id: NodeId,
+    document_id: DocumentId,
+  ) -> Result<(), VmError>
+  where
+    Host: DomHost,
+  {
+    let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
+    let Some(Value::Object(collection_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper_obj, &children_key)?
+    else {
+      return Ok(());
+    };
+
+    #[derive(Debug)]
+    enum SyncChildrenError {
+      Dom(DomError),
+      OutOfMemory,
+    }
+
+    let children: Result<Vec<(NodeId, DomInterface)>, SyncChildrenError> =
+      self.with_dom_host(vm, |host| {
+        Ok(host.with_dom(|dom| {
+          if node_id.index() >= dom.nodes_len() {
+            return Err(SyncChildrenError::Dom(DomError::NotFoundError));
+          }
+
+          let child_ids = dom.children_elements(node_id);
+          let mut out: Vec<(NodeId, DomInterface)> = Vec::new();
+          out
+            .try_reserve(child_ids.len())
+            .map_err(|_| SyncChildrenError::OutOfMemory)?;
+
+          for child_id in child_ids {
+            let primary = if child_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+            };
+            out.push((child_id, primary));
+          }
+
+          Ok(out)
+        }))
+      })?;
+
+    let children = match children {
+      Ok(v) => v,
+      Err(SyncChildrenError::Dom(err)) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+      Err(SyncChildrenError::OutOfMemory) => return Err(VmError::OutOfMemory),
+    };
+
+    // Root the collection object while allocating keys and wrappers.
+    scope.push_root(Value::Object(collection_obj))?;
+
+    let length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+    let old_len = match scope
+      .heap()
+      .object_get_own_data_property_value(collection_obj, &length_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => 0,
+    };
+
+    for (idx, (child_id, primary)) in children.iter().copied().enumerate() {
+      let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+        scope,
+        document_id,
+        child_id,
+        primary,
+      )?;
+      scope.push_root(Value::Object(child_wrapper))?;
+
+      let idx_key = key_from_str(scope, &idx.to_string())?;
+      scope.define_property(
+        collection_obj,
+        idx_key,
+        data_property(Value::Object(child_wrapper), true, true, true),
+      )?;
+    }
+
+    for idx in children.len()..old_len {
+      let idx_key = key_from_str(scope, &idx.to_string())?;
+      scope.heap_mut().delete_property_or_throw(collection_obj, idx_key)?;
+    }
+
+    // Update internal length storage. Public `length` is exposed as a readonly accessor on
+    // `HTMLCollection.prototype`.
+    scope.define_property(
+      collection_obj,
+      length_key,
+      data_property(Value::Number(children.len() as f64), true, false, false),
+    )?;
+
+    Ok(())
+  }
+
   fn try_delegate_dom_call_operation(
     &mut self,
     vm: &mut Vm,
@@ -7548,7 +7650,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let Value::Object(element_obj) = receiver else {
           return Err(VmError::TypeError("Illegal invocation"));
         };
- 
+
         let (document_id, element_id) = {
           let platform = require_dom_platform_mut(vm)?;
           let handle = platform.require_element_handle(scope.heap(), Value::Object(element_obj))?;
@@ -13055,18 +13157,18 @@ mod document_element_accessors_tests {
   use crate::js::window_timers::VmJsEventLoopHooks;
   use crate::js::{DocumentHostState, WindowHostState};
   use vm_js::Value;
- 
+
   fn make_window_and_dom_host() -> Result<(WindowRealm, DocumentHostState), VmError> {
     let config = WindowRealmConfig::new("https://example.invalid/")
       .with_dom_bindings_backend(DomBindingsBackend::WebIdl);
     let window = WindowRealm::new(config)?;
- 
+
     let root = crate::dom::parse_html("<!doctype html><html><head></head><body></body></html>")
       .map_err(|_| VmError::TypeError("failed to parse HTML fixture"))?;
     let dom_host = DocumentHostState::from_renderer_dom(&root);
     Ok((window, dom_host))
   }
- 
+
   #[test]
   fn document_element_head_body_accessors_expose_expected_elements() -> Result<(), VmError> {
     let (mut window, mut dom_host) = make_window_and_dom_host()?;
@@ -13077,7 +13179,7 @@ mod document_element_accessors_tests {
       &mut window,
       Some(&mut webidl_host),
     );
- 
+
     let out = window.exec_script_with_host_and_hooks(
       &mut dom_host,
       &mut hooks,
@@ -13095,7 +13197,7 @@ mod document_element_accessors_tests {
     assert_eq!(out, Value::Bool(true));
     Ok(())
   }
- 
+
   #[test]
   fn document_body_setter_replaces_body_element() -> Result<(), VmError> {
     let (mut window, mut dom_host) = make_window_and_dom_host()?;
@@ -13106,7 +13208,7 @@ mod document_element_accessors_tests {
       &mut window,
       Some(&mut webidl_host),
     );
- 
+
     let out = window.exec_script_with_host_and_hooks(
       &mut dom_host,
       &mut hooks,

@@ -24,6 +24,7 @@ pub struct ChromeFrameDocument {
   document: BrowserDocument,
   interaction: InteractionEngine,
   hover_state: ChromeHoverState,
+  animation_time_ms: f32,
 }
 
 impl ChromeFrameDocument {
@@ -39,6 +40,7 @@ impl ChromeFrameDocument {
       document: BrowserDocument::new(renderer, html, options)?,
       interaction: InteractionEngine::new(),
       hover_state: ChromeHoverState::default(),
+      animation_time_ms: 0.0,
     })
   }
 
@@ -89,29 +91,16 @@ impl ChromeFrameDocument {
     crate::document_ticks::browser_document_wants_ticks(&self.document)
   }
 
-  /// Advance the chrome document's animation timeline.
+  /// Advance the chrome document's deterministic animation timeline by `dt_ms`.
   ///
-  /// - When `now_ms` is `Some(t)`, CSS animations/transitions are sampled at `t` milliseconds since
-  ///   load by calling [`BrowserDocument::set_animation_time_ms`]. This only invalidates paint, so
-  ///   the next render can repaint from cached layout artifacts.
-  /// - When `now_ms` is `None`, real-time animation sampling is enabled and callers should only
-  ///   repaint when [`BrowserDocument::needs_animation_frame`] reports that the animation clock has
-  ///   advanced.
-  ///
-  /// Returns `true` when callers should render a new frame.
-  pub fn tick(&mut self, now_ms: Option<f32>) -> bool {
-    match now_ms {
-      Some(ms) => {
-        self.document.set_animation_time_ms(ms);
-        true
-      }
-      None => {
-        // Ensure explicit timelines are cleared so real-time sampling is active.
-        self.document.set_animation_time(None);
-        self.document.set_realtime_animations_enabled(true);
-        self.document.needs_animation_frame()
-      }
-    }
+  /// This updates the underlying [`BrowserDocument`] animation timestamp via
+  /// [`BrowserDocument::set_animation_time_ms`], which only invalidates paint. Callers can then
+  /// repaint via [`ChromeFrameDocument::render_if_needed`] without rerunning cascade/layout.
+  pub fn tick(&mut self, dt_ms: f32) {
+    let dt_ms = if dt_ms.is_finite() { dt_ms.max(0.0) } else { 0.0 };
+    let next = self.animation_time_ms + dt_ms;
+    self.animation_time_ms = if next.is_finite() { next } else { f32::MAX };
+    self.document.set_animation_time_ms(self.animation_time_ms);
   }
 
   /// Update hover state for a pointer move in viewport CSS pixels.
@@ -135,6 +124,7 @@ impl ChromeFrameDocument {
       document,
       interaction,
       hover_state,
+      ..
     } = self;
 
     let scroll: ScrollState = document.scroll_state();
@@ -330,27 +320,26 @@ mod tests {
     );
 
     // Prime layout/paint cache so wants_ticks inspects the prepared fragment tree.
-    doc.render_frame()?;
+    let initial = doc.render_frame()?;
+    let initial_hash = pixmap_hash(&initial);
     assert!(
       doc.wants_ticks(),
       "expected wants_ticks to be true after first render for document with @keyframes"
     );
 
-    assert!(doc.tick(Some(0.0)), "tick(Some) should request a repaint");
-    let first = doc
-      .render_if_needed()?
-      .expect("expected repaint after tick(Some(0.0))");
-    let first_hash = pixmap_hash(&first);
+    // Drive the animation timeline deterministically using fixed dt steps.
+    for _ in 0..5 {
+      doc.tick(100.0);
+    }
 
-    assert!(doc.tick(Some(500.0)), "tick(Some) should request a repaint");
     let second = doc
       .render_if_needed()?
-      .expect("expected repaint after tick(Some(500.0))");
+      .expect("expected repaint after tick()");
     let second_hash = pixmap_hash(&second);
 
     assert_ne!(
-      first_hash, second_hash,
-      "expected keyframes animation sampling to change rendered output between two times"
+      initial_hash, second_hash,
+      "expected keyframes animation sampling to change rendered output after ticking"
     );
 
     Ok(())
