@@ -57,7 +57,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance"
+    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance | register_ecma_function"
   );
   process::exit(2);
 }
@@ -759,6 +759,30 @@ fn main() {
       let _keep = &filler;
       agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
     }
+    "register_ecma_function" => {
+      // Force many `Vm::register_ecma_function` calls (and thus many `ecma_function_cache` inserts)
+      // under an OS address-space limit. Historically `HashMap::insert` here could abort the
+      // process on allocator OOM.
+      //
+      // Interpret `len_code_units` as the number of dynamic `Function` constructor calls to run.
+      let func_count = len_code_units;
+      let mut script = String::new();
+      if script.try_reserve(256).is_err() {
+        eprintln!("oom_harness: failed to allocate register_ecma_function script buffer");
+        process::exit(1);
+      }
+      use std::fmt::Write;
+      script.push_str("for (let i = 0; i < ");
+      if write!(&mut script, "{func_count}").is_err() {
+        eprintln!("oom_harness: failed to format register_ecma_function iteration count");
+        process::exit(1);
+      }
+      script.push_str("; i++) { Function(''); }\n0;\n");
+
+      // Keep `filler` alive for the duration of the run.
+      let _keep = &filler;
+      agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
+    }
     "eval"
     | "function"
     | "generator"
@@ -855,6 +879,8 @@ fn main() {
     // UTF-16 without allocating an intermediate `String`. The key invariant is that it must not
     // abort the process under memory pressure.
     Ok(_) if scenario == "parseFloat" || scenario == "number" => process::exit(0),
+    Err(VmError::Termination(_)) if scenario == "register_ecma_function" => process::exit(0),
+    Ok(_) if scenario == "register_ecma_function" => process::exit(0),
     Ok(v) => {
       eprintln!("oom_harness: unexpected success: {v:?}");
       process::exit(1);

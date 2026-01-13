@@ -220,6 +220,25 @@ fn capture_stack_does_not_abort_on_oom() {
 }
 
 #[test]
+fn register_ecma_function_does_not_abort_on_oom() {
+  // Growing the VM's `ecma_function_cache` must use fallible allocations (no process abort under
+  // allocator OOM).
+  //
+  // The oom harness interprets `len_code_units` as the number of dynamic `Function` constructor
+  // calls to run.
+  //
+  // Use a more aggressive filler buffer so we reliably hit allocator OOM quickly (otherwise this
+  // test can take a very long time to complete when `Function('')` creation succeeds).
+  const REGISTER_FILLER_BYTES: usize = 168 * 1024 * 1024;
+  run_oom_harness_with_limits(
+    "register_ecma_function",
+    200_000,
+    LIMIT_AS_BYTES,
+    REGISTER_FILLER_BYTES,
+  );
+}
+
+#[test]
 fn promise_job_creation_does_not_abort_on_oom() {
   // Enqueuing a Promise job (`HostEnqueuePromiseJob`) boxes an internal job closure. Ensure this
   // allocation is fallible under RLIMIT_AS pressure (no process abort on allocator OOM).

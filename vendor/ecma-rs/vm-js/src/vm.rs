@@ -1700,6 +1700,12 @@ impl Vm {
       .ecma_functions
       .try_reserve(1)
       .map_err(|_| VmError::OutOfMemory)?;
+    // `HashMap::insert` can abort the process on allocator OOM during table growth. Reserve both the
+    // vector slot and the cache entry up-front so we never partially update state.
+    self
+      .ecma_function_cache
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
 
     let prefix_len = match kind {
       EcmaFunctionKind::Decl => 0,
