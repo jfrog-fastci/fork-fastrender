@@ -6868,6 +6868,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // `about:` pages, but rebuilding it requires traversing the entire bookmark tree.
   let mut bookmarks_about_snapshot_scheduler =
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
+  // Revision of the bookmark store used to build the current about-page bookmark snapshot.
+  let mut about_page_bookmarks_snapshot_revision = global_bookmarks.revision();
 
   let wgpu_init = {
     let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
@@ -8676,9 +8678,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      // About-page bookmark snapshot rebuild is throttled below to avoid repeatedly traversing the
-      // full tree during rapid edits (drag/drop reorder, folder edits, etc).
-      bookmarks_about_snapshot_scheduler.mark_dirty();
+      // About-page bookmark snapshot rebuild is driven by the throttled scheduler below and gated
+      // on whether an `about:` page that depends on bookmarks is currently visible.
 
       for (id, win) in windows.iter_mut() {
         let is_source_window = *id == source_window_id;
@@ -8987,13 +8988,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Flush a debounced session snapshot if it is due.
     let now = std::time::Instant::now();
 
+    let any_about_bookmarks_visible = windows.values().any(|win| {
+      win
+        .app
+        .browser_state
+        .active_tab()
+        .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+        .is_some_and(|url| {
+          let base = url
+            .trim()
+            .split(|c| matches!(c, '?' | '#'))
+            .next()
+            .unwrap_or(url);
+          base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
+            || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
+        })
+    });
+
+    // Only rebuild the about-page bookmark snapshot when it is actually needed (i.e. an about page
+    // that depends on bookmarks is visible). This avoids repeatedly traversing the entire bookmark
+    // tree while the user is editing bookmarks elsewhere in the UI.
+    let bookmarks_revision = global_bookmarks.revision();
+    if any_about_bookmarks_visible && bookmarks_revision != about_page_bookmarks_snapshot_revision {
+      bookmarks_about_snapshot_scheduler.mark_dirty();
+    }
+
     // Flush a throttled about-page bookmark snapshot rebuild if it is due. This keeps `about:newtab`
     // and `about:bookmarks` reasonably fresh without rebuilding the snapshot on every bookmark
     // mutation batch.
-    if bookmarks_about_snapshot_scheduler.take_if_due(now) {
+    if any_about_bookmarks_visible && bookmarks_about_snapshot_scheduler.take_if_due(now) {
       fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
         &global_bookmarks,
       );
+      about_page_bookmarks_snapshot_revision = bookmarks_revision;
 
       // If any window is currently showing an about-page that depends on bookmark snapshots,
       // invalidate its cached render so the next redraw re-renders with the updated snapshot.
@@ -9092,12 +9119,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
     }
-    for deadline in [bookmarks_about_snapshot_scheduler.next_deadline(now)] {
-      if let Some(deadline) = deadline {
-        next_deadline = Some(match next_deadline {
-          Some(existing) => existing.min(deadline),
-          None => deadline,
-        });
+    if any_about_bookmarks_visible {
+      for deadline in [bookmarks_about_snapshot_scheduler.next_deadline(now)] {
+        if let Some(deadline) = deadline {
+          next_deadline = Some(match next_deadline {
+            Some(existing) => existing.min(deadline),
+            None => deadline,
+          });
+        }
       }
     }
     if let Some(deadline) = cpu_sampler.next_deadline() {
