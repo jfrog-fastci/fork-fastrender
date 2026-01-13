@@ -945,6 +945,7 @@ pub(crate) use types::{GridCoordinate, GridLine, OriginZeroLine};
 mod alignment;
 mod explicit_grid;
 mod implicit_grid;
+mod limits;
 mod placement;
 #[cfg(test)]
 mod rerun_detection_tests;

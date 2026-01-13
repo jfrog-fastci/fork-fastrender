@@ -8,6 +8,7 @@ use crate::{CheapCloneStr, GridItemStyle};
 use core::cmp::{max, min};
 
 use super::types::TrackCounts;
+use super::limits::{clamp_grid_area_to_implicit_grid_limit, max_implicit_tracks_per_side};
 use super::OriginZeroLine;
 
 /// Estimate the number of rows and columns in the grid
@@ -24,6 +25,7 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
   child_styles_iter: impl Iterator<Item = (NodeId, S)>,
   get_child_subgrid_auto_span: impl Fn(NodeId) -> InBothAbsAxis<Option<u16>>,
 ) -> (TrackCounts, TrackCounts) {
+  let implicit_track_limit = max_implicit_tracks_per_side();
   // Iterate over children, producing an estimate of the min and max grid lines (in origin-zero coordinates where)
   // along with the span of each item
   let (col_min, col_max, col_max_span, row_min, row_max, row_max_span) = get_known_child_positions(
@@ -36,14 +38,18 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
   // Compute *track* count estimates for each axis from:
   //   - The explicit track counts
   //   - The origin-zero coordinate min and max grid line variables
-  let negative_implicit_inline_tracks = col_min.implied_negative_implicit_tracks();
+  let negative_implicit_inline_tracks = col_min
+    .implied_negative_implicit_tracks()
+    .min(implicit_track_limit);
   let explicit_inline_tracks = explicit_col_count;
   let mut positive_implicit_inline_tracks =
-    col_max.implied_positive_implicit_tracks(explicit_col_count);
-  let negative_implicit_block_tracks = row_min.implied_negative_implicit_tracks();
+    col_max.implied_positive_implicit_tracks(explicit_col_count).min(implicit_track_limit);
+  let negative_implicit_block_tracks = row_min
+    .implied_negative_implicit_tracks()
+    .min(implicit_track_limit);
   let explicit_block_tracks = explicit_row_count;
   let mut positive_implicit_block_tracks =
-    row_max.implied_positive_implicit_tracks(explicit_row_count);
+    row_max.implied_positive_implicit_tracks(explicit_row_count).min(implicit_track_limit);
 
   // In each axis, adjust positive track estimate if any items have a span that does not fit within
   // the total number of tracks in the estimate
@@ -53,6 +59,7 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
     positive_implicit_inline_tracks =
       col_max_span - explicit_inline_tracks - negative_implicit_inline_tracks;
   }
+  positive_implicit_inline_tracks = positive_implicit_inline_tracks.min(implicit_track_limit);
 
   let tot_block_tracks =
     negative_implicit_block_tracks + explicit_block_tracks + positive_implicit_block_tracks;
@@ -60,6 +67,7 @@ pub(crate) fn compute_grid_size_estimate<'a, S: GridItemStyle + 'a>(
     positive_implicit_block_tracks =
       row_max_span - explicit_block_tracks - negative_implicit_block_tracks;
   }
+  positive_implicit_block_tracks = positive_implicit_block_tracks.min(implicit_track_limit);
 
   let column_counts = TrackCounts::from_raw(
     negative_implicit_inline_tracks,
@@ -143,7 +151,7 @@ fn child_min_line_max_line_span<S: CheapCloneStr>(
   line: Line<GridPlacement<S>>,
   explicit_track_count: u16,
 ) -> (OriginZeroLine, OriginZeroLine, u16) {
-  use GenericGridPlacement::*;
+  use GenericGridPlacement as GP;
 
   // 8.3.1. Grid Placement Conflict Handling
   // A. If the placement for a grid item contains two lines, and the start line is further end-ward than the end line, swap the two lines.
@@ -155,62 +163,85 @@ fn child_min_line_max_line_span<S: CheapCloneStr>(
   // We ignore named lines here as they are accounted for separately
   let oz_line = line.into_origin_zero_ignoring_named(explicit_track_count);
 
-  let min = match (oz_line.start, oz_line.end) {
+  #[inline]
+  fn add_i32_clamped(line: OriginZeroLine, delta: i32) -> OriginZeroLine {
+    OriginZeroLine((line.0 as i32 + delta).clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+  }
+
+  // For definite placements, compute a concrete span and clamp it using the same UA-defined
+  // overlarge-grid rules as the placement algorithm.
+  let (min_line, max_line) = match (oz_line.start, oz_line.end) {
     // Both tracks specified
-    (Line(track1), Line(track2)) => {
-      // See rules A and B above
-      if track1 == track2 {
-        track1
+    (GP::Line(track1), GP::Line(track2)) => {
+      let span = if track1 == track2 {
+        Line {
+          start: track1,
+          end: add_i32_clamped(track1, 1),
+        }
       } else {
-        min(track1, track2)
-      }
+        Line {
+          start: min(track1, track2),
+          end: max(track1, track2),
+        }
+      };
+      let span = clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count);
+      (span.start, span.end)
     }
 
     // Start track specified
-    (Line(track), Auto) => track,
-    (Line(track), Span(_)) => track,
-
-    // End track specified
-    (Auto, Line(track)) => track,
-    (Span(span), Line(track)) => track - span,
-
-    // Only spans or autos
-    // We ignore spans here by returning 0 which never effect the estimate as these are accounted for separately
-    (Auto | Span(_), Auto | Span(_)) => OriginZeroLine(0),
-  };
-
-  let max = match (oz_line.start, oz_line.end) {
-    // Both tracks specified
-    (Line(track1), Line(track2)) => {
-      // See rules A and B above
-      if track1 == track2 {
-        track1 + 1
-      } else {
-        max(track1, track2)
-      }
+    (GP::Line(track), GP::Auto) => {
+      let span = Line {
+        start: track,
+        end: add_i32_clamped(track, 1),
+      };
+      let span = clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count);
+      (span.start, span.end)
+    }
+    (GP::Line(track), GP::Span(span_len)) => {
+      let span = Line {
+        start: track,
+        end: add_i32_clamped(track, span_len as i32),
+      };
+      let span = clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count);
+      (span.start, span.end)
     }
 
-    // Start track specified
-    (Line(track), Auto) => track + 1,
-    (Line(track), Span(span)) => track + span,
-
     // End track specified
-    (Auto, Line(track)) => track,
-    (Span(_), Line(track)) => track,
+    (GP::Auto, GP::Line(track)) => {
+      let span = Line {
+        start: add_i32_clamped(track, -1),
+        end: track,
+      };
+      let span = clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count);
+      (span.start, span.end)
+    }
+    (GP::Span(span_len), GP::Line(track)) => {
+      let span = Line {
+        start: add_i32_clamped(track, -(span_len as i32)),
+        end: track,
+      };
+      let span = clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count);
+      (span.start, span.end)
+    }
 
     // Only spans or autos
-    // We ignore spans here by returning 0 which never effect the estimate as these are accounted for separately
-    (Auto | Span(_), Auto | Span(_)) => OriginZeroLine(0),
+    // We ignore placement positions here by returning 0 which never affects the estimate.
+    (GP::Auto | GP::Span(_), GP::Auto | GP::Span(_)) => (OriginZeroLine(0), OriginZeroLine(0)),
   };
 
-  // Calculate span only for indefinitely placed items as we don't need for other items (whose required space will
-  // be taken into account by min and max)
+  // Calculate span only for indefinitely placed items as we don't need it for other items (whose
+  // required space will be taken into account by min/max line positions).
   let span = match (oz_line.start, oz_line.end) {
-    (Auto | Span(_), Auto | Span(_)) => oz_line.indefinite_span(),
+    (GP::Auto | GP::Span(_), GP::Auto | GP::Span(_)) => {
+      let span = oz_line.indefinite_span();
+      let implicit_limit = max_implicit_tracks_per_side();
+      let max_span = explicit_track_count.saturating_add(implicit_limit.saturating_mul(2));
+      span.min(max_span)
+    }
     _ => 1,
   };
 
-  (min, max, span)
+  (min_line, max_line, span)
 }
 
 #[allow(clippy::bool_assert_comparison)]

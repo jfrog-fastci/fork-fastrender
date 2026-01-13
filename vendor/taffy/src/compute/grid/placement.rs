@@ -1,6 +1,7 @@
 //! Implements placing items in the grid and resolving the implicit grid.
 //! <https://www.w3.org/TR/css-grid-1/#placement>
 use super::types::{CellOccupancyMatrix, CellOccupancyState, GridItem};
+use super::limits::clamp_grid_area_to_implicit_grid_limit;
 use super::{NamedLineResolver, OriginZeroLine};
 use crate::geometry::Line;
 use crate::geometry::{AbsoluteAxis, InBothAbsAxis};
@@ -10,6 +11,11 @@ use crate::util::check_layout_abort;
 use crate::util::sys::Vec;
 use crate::{CoreStyle, GridItemStyle};
 use core::cmp::{max, min};
+
+#[inline]
+fn add_i32_clamped(line: OriginZeroLine, delta: i32) -> OriginZeroLine {
+  OriginZeroLine((line.0 as i32 + delta).clamp(i16::MIN as i32, i16::MAX as i32) as i16)
+}
 
 #[inline]
 fn clamp_span_to_explicit_tracks(
@@ -70,14 +76,15 @@ fn placement_is_definite<S: crate::CheapCloneStr>(
 
 fn resolve_definite_grid_lines<S: crate::CheapCloneStr>(
   placement: &Line<OriginZeroGridPlacementWithNamedSpan<S>>,
+  explicit_track_count: u16,
 ) -> Line<OriginZeroLine> {
   use OriginZeroGridPlacementWithNamedSpan as GP;
-  match (&placement.start, &placement.end) {
+  let span = match (&placement.start, &placement.end) {
     (GP::Line(line1), GP::Line(line2)) => {
       if line1 == line2 {
         Line {
           start: *line1,
-          end: *line1 + 1,
+          end: add_i32_clamped(*line1, 1),
         }
       } else {
         Line {
@@ -88,22 +95,24 @@ fn resolve_definite_grid_lines<S: crate::CheapCloneStr>(
     }
     (GP::Line(line), GP::Span(span)) => Line {
       start: *line,
-      end: *line + *span,
+      end: add_i32_clamped(*line, *span as i32),
     },
     (GP::Line(line), GP::Auto) => Line {
       start: *line,
-      end: *line + 1,
+      end: add_i32_clamped(*line, 1),
     },
     (GP::Span(span), GP::Line(line)) => Line {
-      start: *line - *span,
+      start: add_i32_clamped(*line, -(*span as i32)),
       end: *line,
     },
     (GP::Auto, GP::Line(line)) => Line {
-      start: *line - 1,
+      start: add_i32_clamped(*line, -1),
       end: *line,
     },
     _ => panic!("resolve_definite_grid_lines should only be called on definite grid tracks"),
-  }
+  };
+
+  clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count)
 }
 
 #[inline]
@@ -142,10 +151,21 @@ fn fixed_indefinite_span<S: crate::CheapCloneStr>(
 fn initial_candidate<S: crate::CheapCloneStr>(
   placement: &Line<OriginZeroGridPlacementWithNamedSpan<S>>,
   cursor: OriginZeroLine,
+  explicit_track_count: u16,
 ) -> OriginZeroLine {
   use OriginZeroGridPlacementWithNamedSpan as GP;
   match (&placement.start, &placement.end) {
-    (GP::NamedSpan(_, span), GP::Auto) => cursor + *span,
+    (GP::NamedSpan(_, span), GP::Auto) => {
+      let candidate = add_i32_clamped(cursor, *span as i32);
+      clamp_grid_area_to_implicit_grid_limit(
+        Line {
+          start: candidate,
+          end: add_i32_clamped(candidate, 1),
+        },
+        explicit_track_count,
+      )
+      .start
+    }
     _ => cursor,
   }
 }
@@ -155,6 +175,7 @@ fn resolve_indefinite_grid_lines<S: crate::CheapCloneStr>(
   candidate: OriginZeroLine,
   named_line_resolver: &NamedLineResolver<S>,
   axis: AbsoluteAxis,
+  explicit_track_count: u16,
 ) -> Line<OriginZeroLine> {
   use OriginZeroGridPlacementWithNamedSpan as GP;
   let axis = grid_area_axis(axis);
@@ -174,12 +195,13 @@ fn resolve_indefinite_grid_lines<S: crate::CheapCloneStr>(
       let start = candidate;
       Line {
         start,
-        end: start + span,
+        end: add_i32_clamped(start, span as i32),
       }
     }
   };
 
-  normalize_resolved_span(span)
+  let span = normalize_resolved_span(span);
+  clamp_grid_area_to_implicit_grid_limit(span, explicit_track_count)
 }
 
 /// 8.5. Grid Item Placement Algorithm
@@ -212,10 +234,13 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       .explicit,
   };
   let clamp_span = |axis: AbsoluteAxis, span: Line<OriginZeroLine>| {
-    if !disallow_implicit_tracks.get(axis) {
-      return span;
-    }
-    clamp_span_to_explicit_tracks(span, explicit_track_counts.get(axis))
+    let span = if disallow_implicit_tracks.get(axis) {
+      clamp_span_to_explicit_tracks(span, explicit_track_counts.get(axis))
+    } else {
+      span
+    };
+
+    clamp_grid_area_to_implicit_grid_limit(span, explicit_track_counts.get(axis))
   };
 
   let map_child_style_to_origin_zero_placement = {
@@ -294,7 +319,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       #[cfg(all(test, feature = "debug"))]
       println!("Definite Item {}\n==============", index);
 
-      let (primary_span, secondary_span) = place_definite_grid_item(child_placement, primary_axis);
+      let (primary_span, secondary_span) =
+        place_definite_grid_item(child_placement, primary_axis, explicit_track_counts);
       let primary_span = clamp_span(primary_axis, primary_span);
       let secondary_span = clamp_span(secondary_axis, secondary_span);
       record_grid_placement(
@@ -336,7 +362,10 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       )
     } else {
       // Primary axis definite, secondary auto
-      let primary_placement = resolve_definite_grid_lines(axis_item(child_placement, primary_axis));
+      let primary_placement = resolve_definite_grid_lines(
+        axis_item(child_placement, primary_axis),
+        explicit_track_counts.get(primary_axis),
+      );
       let secondary_start = match grid_auto_flow.is_dense() {
         true => cell_occupancy_matrix
           .track_counts(primary_axis.other_axis())
@@ -346,7 +375,13 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
 
       // Find first free secondary position for this primary span
       let secondary_placement = axis_item(child_placement, primary_axis.other_axis());
-      let mut sec_idx = initial_candidate(secondary_placement, secondary_start);
+      let mut sec_idx = initial_candidate(
+        secondary_placement,
+        secondary_start,
+        cell_occupancy_matrix
+          .track_counts(primary_axis.other_axis())
+          .explicit,
+      );
       loop {
         check_layout_abort();
         let secondary_span = resolve_indefinite_grid_lines(
@@ -354,6 +389,9 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
           sec_idx,
           named_line_resolver,
           primary_axis.other_axis(),
+          cell_occupancy_matrix
+            .track_counts(primary_axis.other_axis())
+            .explicit,
         );
         if cell_occupancy_matrix.line_area_is_unoccupied(
           primary_axis,
@@ -448,10 +486,17 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
 fn place_definite_grid_item<I: crate::CheapCloneStr>(
   placement: &InBothAbsAxis<Line<OriginZeroGridPlacementWithNamedSpan<I>>>,
   primary_axis: AbsoluteAxis,
+  explicit_track_counts: InBothAbsAxis<u16>,
 ) -> (Line<OriginZeroLine>, Line<OriginZeroLine>) {
   // Resolve spans to tracks
-  let primary_span = resolve_definite_grid_lines(axis_item(placement, primary_axis));
-  let secondary_span = resolve_definite_grid_lines(axis_item(placement, primary_axis.other_axis()));
+  let primary_span = resolve_definite_grid_lines(
+    axis_item(placement, primary_axis),
+    explicit_track_counts.get(primary_axis),
+  );
+  let secondary_span = resolve_definite_grid_lines(
+    axis_item(placement, primary_axis.other_axis()),
+    explicit_track_counts.get(primary_axis.other_axis()),
+  );
 
   (primary_span, secondary_span)
 }
@@ -467,7 +512,10 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
   let primary_axis = auto_flow.primary_axis();
   let secondary_axis = primary_axis.other_axis();
 
-  let secondary_axis_placement = resolve_definite_grid_lines(axis_item(placement, secondary_axis));
+  let secondary_axis_placement = resolve_definite_grid_lines(
+    axis_item(placement, secondary_axis),
+    cell_occupancy_matrix.track_counts(secondary_axis).explicit,
+  );
   let primary_axis_grid_start_line = cell_occupancy_matrix
     .track_counts(primary_axis)
     .implicit_start_line();
@@ -483,8 +531,11 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
   };
 
   let primary_axis_placement_spec = axis_item(placement, primary_axis);
-  let mut position: OriginZeroLine =
-    initial_candidate(primary_axis_placement_spec, starting_position);
+  let mut position: OriginZeroLine = initial_candidate(
+    primary_axis_placement_spec,
+    starting_position,
+    cell_occupancy_matrix.track_counts(primary_axis).explicit,
+  );
   loop {
     check_layout_abort();
     let primary_axis_placement = resolve_indefinite_grid_lines(
@@ -492,6 +543,7 @@ fn place_definite_secondary_axis_item<I: crate::CheapCloneStr>(
       position,
       named_line_resolver,
       primary_axis,
+      cell_occupancy_matrix.track_counts(primary_axis).explicit,
     );
 
     let does_fit = cell_occupancy_matrix.line_area_is_unoccupied(
@@ -538,17 +590,36 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
   };
 
   let (mut primary_idx, mut secondary_idx) = (
-    initial_candidate(primary_placement_style, grid_position.0),
-    initial_candidate(secondary_placement_style, grid_position.1),
+    initial_candidate(
+      primary_placement_style,
+      grid_position.0,
+      cell_occupancy_matrix.track_counts(primary_axis).explicit,
+    ),
+    initial_candidate(
+      secondary_placement_style,
+      grid_position.1,
+      cell_occupancy_matrix
+        .track_counts(primary_axis.other_axis())
+        .explicit,
+    ),
   );
 
   if has_definite_primary_axis_position {
-    let primary_span = resolve_definite_grid_lines(primary_placement_style);
+    let primary_span = resolve_definite_grid_lines(
+      primary_placement_style,
+      cell_occupancy_matrix.track_counts(primary_axis).explicit,
+    );
 
     // Compute secondary axis starting position for search
     secondary_idx = match auto_flow.is_dense() {
       // If auto-flow is dense then we always search from the first track
-      true => initial_candidate(secondary_placement_style, secondary_axis_grid_start_line),
+      true => initial_candidate(
+        secondary_placement_style,
+        secondary_axis_grid_start_line,
+        cell_occupancy_matrix
+          .track_counts(primary_axis.other_axis())
+          .explicit,
+      ),
       false => {
         if primary_span.start < primary_idx {
           secondary_idx + 1
@@ -567,6 +638,9 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
         secondary_idx,
         named_line_resolver,
         primary_axis.other_axis(),
+        cell_occupancy_matrix
+          .track_counts(primary_axis.other_axis())
+          .explicit,
       );
 
       // If area is occupied, increment the index and try again
@@ -589,12 +663,16 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
         primary_idx,
         named_line_resolver,
         primary_axis,
+        cell_occupancy_matrix.track_counts(primary_axis).explicit,
       );
       let secondary_span = resolve_indefinite_grid_lines(
         secondary_placement_style,
         secondary_idx,
         named_line_resolver,
         primary_axis.other_axis(),
+        cell_occupancy_matrix
+          .track_counts(primary_axis.other_axis())
+          .explicit,
       );
 
       // If the primary index is out of bounds, then increment the secondary index and reset the primary
@@ -602,7 +680,11 @@ fn place_indefinitely_positioned_item<I: crate::CheapCloneStr>(
       let primary_out_of_bounds = primary_span.end > primary_axis_grid_end_line;
       if primary_out_of_bounds {
         secondary_idx += 1;
-        primary_idx = initial_candidate(primary_placement_style, primary_axis_grid_start_line);
+        primary_idx = initial_candidate(
+          primary_placement_style,
+          primary_axis_grid_start_line,
+          cell_occupancy_matrix.track_counts(primary_axis).explicit,
+        );
         continue;
       }
 
@@ -1308,6 +1390,115 @@ mod tests {
         negative_implicit: 2,
         explicit: 2,
         positive_implicit: 0,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
+    fn test_overlarge_grid_clamps_extreme_line_numbers() {
+      // Exercise CSS Grid 2 §"Limiting Large Grids" clamping behaviour.
+      //
+      // These placements would otherwise attempt to allocate an enormous implicit grid.
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = vec![(
+        1,
+        (line(i16::MAX), auto(), line(i16::MIN), auto()).into_grid_child(),
+        // With the test UA limit (see `compute/grid/limits.rs`), this is clamped into the
+        // last column track and first row track.
+        (33, 34, -32, -31),
+      )];
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 32,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 32,
+        explicit: 2,
+        positive_implicit: 0,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
+    fn test_overlarge_grid_clamp_span_and_reposition_semantics() {
+      // Spec example (scaled down to the unit test UA limit):
+      //   - If the grid area spans outside the limited grid, clamp the overflowing edge.
+      //   - If the grid area is completely outside, truncate to 1 and reposition into the last track.
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = vec![(
+        1,
+        (line(100), line(120), line(20), line(80)).into_grid_child(),
+        // Column is completely outside the max line -> last track.
+        // Row spans outside -> clamp end to max line.
+        (33, 34, 19, 34),
+      )];
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 32,
+      };
+      let expected_rows = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 32,
+      };
+      placement_test_runner(
+        explicit_col_count,
+        explicit_row_count,
+        children,
+        expected_cols,
+        expected_rows,
+        flow,
+      );
+    }
+
+    #[test]
+    fn test_overlarge_grid_clamps_named_line_resolution() {
+      // Ensure clamping is applied after named line resolution, even if the resolved line index is
+      // far outside the limited grid.
+      let flow = GridAutoFlow::Row;
+      let explicit_col_count = 2;
+      let explicit_row_count = 2;
+      let children = vec![(
+        1,
+        (
+          GridPlacement::NamedLine("foo".to_string(), 5000),
+          auto(),
+          auto(),
+          auto(),
+        )
+          .into_grid_child(),
+        // Named line fallback resolves to a far-outside line; it should be clamped to the last column track.
+        (33, 34, 0, 1),
+      )];
+      let expected_cols = TrackCounts {
+        negative_implicit: 0,
+        explicit: 2,
+        positive_implicit: 32,
       };
       let expected_rows = TrackCounts {
         negative_implicit: 0,
