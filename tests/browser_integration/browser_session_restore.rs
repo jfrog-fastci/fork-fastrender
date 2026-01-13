@@ -337,3 +337,58 @@ fn browser_restores_legacy_v1_session_file_and_upgrades_to_v2() {
   assert_eq!(disk_session.version, 2);
   assert_eq!(disk_session, restored);
 }
+
+#[test]
+fn browser_skips_restore_after_repeated_unclean_exits_and_starts_safe_session() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  const THRESHOLD: u32 = 3;
+
+  let dir = tempfile::tempdir().expect("temp dir");
+  let session_path = dir.path().join("session.json");
+
+  let mut session = fastrender::ui::BrowserSession::single("about:blank".to_string());
+  session.did_exit_cleanly = false;
+  session.unclean_exit_streak = THRESHOLD;
+  fastrender::ui::session::save_session_atomic(&session_path, &session).expect("seed session");
+
+  let (status, stderr, stdout) = run_browser_headless_smoke(&[], &session_path, &[]);
+  assert_browser_succeeded(status, &stderr, &stdout);
+
+  let (source, session) = parse_headless_session(&stdout);
+  assert_eq!(source, "default", "expected safe-start to avoid restoring");
+  assert_eq!(session.windows.len(), 1);
+  assert_eq!(session.windows[0].tabs.len(), 1);
+  assert_eq!(session.windows[0].tabs[0].url, "about:newtab");
+
+  assert!(
+    stderr.contains("session restore skipped due to repeated crashes"),
+    "expected crash-loop breaker message in stderr, got:\n{stderr}\nstdout:\n{stdout}"
+  );
+}
+
+#[test]
+fn browser_restore_flag_forces_restore_even_when_unclean_exit_streak_is_high() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  const THRESHOLD: u32 = 3;
+
+  let dir = tempfile::tempdir().expect("temp dir");
+  let session_path = dir.path().join("session.json");
+
+  let mut session = fastrender::ui::BrowserSession::single("about:blank".to_string());
+  session.did_exit_cleanly = false;
+  session.unclean_exit_streak = THRESHOLD;
+  fastrender::ui::session::save_session_atomic(&session_path, &session).expect("seed session");
+
+  let (status, stderr, stdout) = run_browser_headless_smoke(&["--restore"], &session_path, &[]);
+  assert_browser_succeeded(status, &stderr, &stdout);
+
+  let (source, session) = parse_headless_session(&stdout);
+  assert_eq!(source, "restored");
+  assert_eq!(session.windows.len(), 1);
+  assert_eq!(session.windows[0].tabs.len(), 1);
+  assert_eq!(session.windows[0].tabs[0].url, "about:blank");
+}

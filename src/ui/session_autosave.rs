@@ -199,6 +199,22 @@ fn session_writer_thread(
   // leave the file untouched and wait for the first explicit Save request from the UI.
   let (mut current_session, mut last_write_result) = match initial_session {
     Some(mut session) => {
+      // Crash-loop tracking: bump the unclean-exit streak when we mark the session as running.
+      //
+      // When an initial in-memory snapshot is supplied, it does not contain the previous-run crash
+      // marker. Best-effort read the on-disk marker to determine whether the previous run exited
+      // cleanly.
+      let (prev_clean, prev_streak) = match load_session(&path) {
+        Ok(Some(prev)) => (prev.did_exit_cleanly, prev.unclean_exit_streak),
+        Ok(None) => (true, 0),
+        Err(_) => (true, 0),
+      };
+      session.unclean_exit_streak = if prev_clean {
+        1
+      } else {
+        prev_streak.saturating_add(1)
+      };
+
       session.did_exit_cleanly = false;
       let result = save_session_atomic(&path, &session);
       if result.is_ok() {
@@ -208,7 +224,13 @@ fn session_writer_thread(
     }
     None => match load_session(&path) {
       Ok(Some(mut session)) => {
+        session.unclean_exit_streak = if session.did_exit_cleanly {
+          1
+        } else {
+          session.unclean_exit_streak.saturating_add(1)
+        };
         session.did_exit_cleanly = false;
+
         let result = save_session_atomic(&path, &session);
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
@@ -218,6 +240,7 @@ fn session_writer_thread(
       Ok(None) => {
         let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
         session.did_exit_cleanly = false;
+        session.unclean_exit_streak = 1;
         let result = save_session_atomic(&path, &session);
         if result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
@@ -227,6 +250,7 @@ fn session_writer_thread(
       Err(_) => {
         let mut session = BrowserSession::single(about_pages::ABOUT_NEWTAB.to_string());
         session.did_exit_cleanly = false;
+        session.unclean_exit_streak = 1;
         // Leave `last_write_result` as Ok so `flush()` doesn't try to "repair" the file by writing
         // our fallback session.
         (session, Ok(()))
@@ -242,6 +266,9 @@ fn session_writer_thread(
       if Instant::now().duration_since(updated_at) >= debounce {
         let mut to_write = session;
         to_write.did_exit_cleanly = false;
+        // Preserve the crash-loop streak managed by this thread. Session snapshots produced by the
+        // UI do not track it.
+        to_write.unclean_exit_streak = current_session.unclean_exit_streak;
         last_write_result = save_session_atomic(&path, &to_write);
         if last_write_result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
@@ -271,6 +298,7 @@ fn session_writer_thread(
         let result = if let Some((session, _)) = pending.take() {
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
+          to_write.unclean_exit_streak = current_session.unclean_exit_streak;
           last_write_result = save_session_atomic(&path, &to_write);
           if last_write_result.is_ok() {
             write_count.fetch_add(1, Ordering::Relaxed);
@@ -296,6 +324,7 @@ fn session_writer_thread(
       Ok(Command::Shutdown(done_tx)) => {
         let mut to_write = pending.take().map(|(session, _)| session).unwrap_or(current_session);
         to_write.did_exit_cleanly = true;
+        to_write.unclean_exit_streak = 0;
         last_write_result = save_session_atomic(&path, &to_write);
         if last_write_result.is_ok() {
           write_count.fetch_add(1, Ordering::Relaxed);
@@ -311,6 +340,7 @@ fn session_writer_thread(
         if let Some((session, _)) = pending.take() {
           let mut to_write = session;
           to_write.did_exit_cleanly = false;
+          to_write.unclean_exit_streak = current_session.unclean_exit_streak;
           if save_session_atomic(&path, &to_write).is_ok() {
             write_count.fetch_add(1, Ordering::Relaxed);
           }
@@ -344,6 +374,7 @@ mod tests {
 
     let mut expected = initial.sanitized();
     expected.did_exit_cleanly = false;
+    expected.unclean_exit_streak = 1;
 
     let session = load_session(&path).unwrap().unwrap();
     assert_eq!(session, expected);
@@ -361,6 +392,7 @@ mod tests {
     let session = load_session(&path).unwrap().unwrap();
     assert_eq!(session.version, 2);
     assert!(!session.did_exit_cleanly);
+    assert_eq!(session.unclean_exit_streak, 1);
     assert_eq!(session.windows.len(), 1);
     assert_eq!(session.windows[0].tabs.len(), 1);
     assert_eq!(session.windows[0].tabs[0].url, about_pages::ABOUT_NEWTAB);
@@ -392,6 +424,7 @@ mod tests {
       "expected only the final snapshot to be persisted"
     );
     assert!(!session.did_exit_cleanly, "expected running sessions to be unclean");
+    assert_eq!(session.unclean_exit_streak, 1);
     assert_eq!(
       autosave.successful_write_count(),
       baseline + 1,
@@ -415,6 +448,7 @@ mod tests {
     assert_eq!(session.windows.len(), 1);
     assert_eq!(session.windows[0].tabs[0].url, "about:blank");
     assert!(!session.did_exit_cleanly);
+    assert_eq!(session.unclean_exit_streak, 1);
     assert_eq!(autosave.successful_write_count(), baseline + 1);
   }
 
@@ -432,10 +466,12 @@ mod tests {
 
     let session = load_session(&path).unwrap().unwrap();
     assert!(!session.did_exit_cleanly, "startup should mark session as unclean");
+    assert_eq!(session.unclean_exit_streak, 1);
 
     autosave.shutdown(Duration::from_secs(2)).unwrap();
     let session = load_session(&path).unwrap().unwrap();
     assert!(session.did_exit_cleanly, "clean shutdown should mark session as clean");
+    assert_eq!(session.unclean_exit_streak, 0);
   }
 
   #[test]
@@ -455,6 +491,25 @@ mod tests {
       !session.did_exit_cleanly,
       "dropping SessionAutosave should not mark the session as clean"
     );
+    assert_eq!(session.unclean_exit_streak, 1);
+  }
+
+  #[test]
+  fn startup_increments_unclean_exit_streak_when_previous_exit_was_unclean() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.json");
+
+    let mut initial = BrowserSession::single("about:blank".to_string());
+    initial.did_exit_cleanly = false;
+    initial.unclean_exit_streak = 2;
+    save_session_atomic(&path, &initial).unwrap();
+
+    let autosave = SessionAutosave::new_with_debounce(path.clone(), Duration::from_millis(10));
+    autosave.flush(Duration::from_secs(2)).unwrap();
+
+    let session = load_session(&path).unwrap().unwrap();
+    assert!(!session.did_exit_cleanly);
+    assert_eq!(session.unclean_exit_streak, 3);
   }
 
   #[test]

@@ -4495,6 +4495,31 @@ mod resize_burst_detector_tests {
 }
 
 #[cfg(feature = "browser_ui")]
+const SESSION_RESTORE_CRASH_LOOP_THRESHOLD: u32 = 3;
+
+#[cfg(feature = "browser_ui")]
+fn single_tab_session_preserving_config(
+  url: String,
+  loaded_session: Option<&fastrender::ui::BrowserSession>,
+) -> fastrender::ui::BrowserSession {
+  let mut session = fastrender::ui::BrowserSession::single(url);
+  if let Some(loaded) = loaded_session {
+    session.home_url = loaded.home_url.clone();
+    session.appearance = loaded.appearance.clone();
+
+    // Preserve the most-relevant window chrome settings (geometry + menu bar visibility) from the
+    // user's previous session even when we don't restore tabs (CLI URL / safe-start).
+    if let Some(active_window) = loaded.windows.get(loaded.active_window_index) {
+      if let Some(win0) = session.windows.get_mut(0) {
+        win0.show_menu_bar = active_window.show_menu_bar;
+        win0.window_state = active_window.window_state.clone();
+      }
+    }
+  }
+  session.sanitized()
+}
+
+#[cfg(feature = "browser_ui")]
 fn determine_startup_session(
   cli_url: Option<String>,
   restore: RestoreMode,
@@ -4519,61 +4544,42 @@ fn determine_startup_session(
 
   if wants_restore {
     if let Some(session) = loaded_session.take() {
+      if restore != RestoreMode::Force
+        && !session.did_exit_cleanly
+        && session.unclean_exit_streak >= SESSION_RESTORE_CRASH_LOOP_THRESHOLD
+      {
+        eprintln!(
+          "session restore skipped due to repeated crashes (unclean_exit_streak={}, threshold={}); starting with a safe new tab. Use --restore to force restoring anyway.",
+          session.unclean_exit_streak,
+          SESSION_RESTORE_CRASH_LOOP_THRESHOLD
+        );
+        let safe = single_tab_session_preserving_config(
+          fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+          Some(&session),
+        );
+        return (safe, StartupSessionSource::DefaultNewTab);
+      }
+
       if !session.did_exit_cleanly {
-        eprintln!("previous session ended unexpectedly; restoring");
+        eprintln!(
+          "previous session ended unexpectedly (unclean_exit_streak={}); restoring",
+          session.unclean_exit_streak
+        );
       }
       return (session.sanitized(), StartupSessionSource::Restored);
     }
   }
 
-  // Preserve user/session configuration even when we don't restore tabs (e.g. `browser <url>`,
-  // `--no-restore`).
-  let home_url = loaded_session
-    .as_ref()
-    .map(|s| s.home_url.clone())
-    .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
-  let appearance = loaded_session
-    .as_ref()
-    .map(|s| s.appearance.clone());
-  let (window_state, show_menu_bar) = loaded_session
-    .as_ref()
-    .and_then(|session| {
-      session
-        .windows
-        .get(session.active_window_index)
-        .or_else(|| session.windows.get(0))
-    })
-    .map(|window| (window.window_state.clone(), Some(window.show_menu_bar)))
-    .unwrap_or((None, None));
-
   if let Some(url) = cli_url {
-    let mut session = fastrender::ui::BrowserSession::single(url);
-    session.home_url = home_url;
-    if let Some(appearance) = appearance {
-      session.appearance = appearance;
-    }
-    if let Some(show_menu_bar) = show_menu_bar {
-      if let Some(window) = session.windows.get_mut(0) {
-        window.show_menu_bar = show_menu_bar;
-        window.window_state = window_state;
-      }
-    }
-    return (session.sanitized(), StartupSessionSource::CliUrl);
+    let session = single_tab_session_preserving_config(url, loaded_session.as_ref());
+    return (session, StartupSessionSource::CliUrl);
   }
 
-  let mut session =
-    fastrender::ui::BrowserSession::single(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
-  session.home_url = home_url;
-  if let Some(appearance) = appearance {
-    session.appearance = appearance;
-  }
-  if let Some(show_menu_bar) = show_menu_bar {
-    if let Some(window) = session.windows.get_mut(0) {
-      window.show_menu_bar = show_menu_bar;
-      window.window_state = window_state;
-    }
-  }
-  (session.sanitized(), StartupSessionSource::DefaultNewTab)
+  let session = single_tab_session_preserving_config(
+    fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
+    loaded_session.as_ref(),
+  );
+  (session, StartupSessionSource::DefaultNewTab)
 }
 
 #[cfg(feature = "browser_ui")]

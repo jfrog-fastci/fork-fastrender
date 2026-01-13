@@ -37,6 +37,10 @@ fn is_false(value: &bool) -> bool {
   !*value
 }
 
+fn is_zero_u32(value: &u32) -> bool {
+  *value == 0
+}
+
 fn is_default_tab_group_color(value: &TabGroupColor) -> bool {
   *value == TabGroupColor::default()
 }
@@ -356,6 +360,16 @@ pub struct BrowserSession {
   /// preserve the old semantics (sessions were only written on clean shutdown).
   #[serde(default = "default_did_exit_cleanly", skip_serializing_if = "is_true")]
   pub did_exit_cleanly: bool,
+  /// Number of consecutive unclean exits observed across startups.
+  ///
+  /// This is a crash-loop breaker input: if session restore repeatedly crashes immediately, the
+  /// browser can stop auto-restoring tabs after a threshold and start in a safe mode instead.
+  ///
+  /// Managed by `session_autosave`:
+  /// - On startup, when the crash marker flips `did_exit_cleanly=false`, this streak is incremented.
+  /// - On clean shutdown, it is reset to 0.
+  #[serde(default, skip_serializing_if = "is_zero_u32")]
+  pub unclean_exit_streak: u32,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub ui_scale: Option<f32>,
 }
@@ -381,6 +395,7 @@ impl BrowserSession {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized()
@@ -402,6 +417,7 @@ impl BrowserSession {
       active_window_index,
       appearance,
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: (ui_scale != appearance::DEFAULT_UI_SCALE).then_some(ui_scale),
     }
     .sanitized()
@@ -422,6 +438,11 @@ impl BrowserSession {
   pub fn sanitized(mut self) -> Self {
     self.version = SESSION_VERSION;
     self.appearance = self.appearance.sanitized();
+
+    if self.did_exit_cleanly {
+      // Ensure an on-disk "clean" marker always implies a reset streak.
+      self.unclean_exit_streak = 0;
+    }
 
     let home_trimmed = self.home_url.trim().to_string();
     self.home_url =
@@ -599,6 +620,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -734,6 +756,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -996,6 +1019,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -1080,6 +1104,7 @@ mod tests {
       active_window_index: 999,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -1123,6 +1148,7 @@ mod tests {
       active_window_index: 0,
       appearance: AppearanceSettings::default(),
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -1250,6 +1276,7 @@ mod tests {
         reduced_motion: false,
       },
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -1280,6 +1307,7 @@ mod tests {
         reduced_motion: false,
       },
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -1310,6 +1338,7 @@ mod tests {
         reduced_motion: false,
       },
       did_exit_cleanly: true,
+      unclean_exit_streak: 0,
       ui_scale: None,
     }
     .sanitized();
@@ -1589,6 +1618,7 @@ fn v1_into_v2(v1: BrowserSessionV1) -> BrowserSession {
     active_window_index: 0,
     appearance: AppearanceSettings::default(),
     did_exit_cleanly: true,
+    unclean_exit_streak: 0,
     ui_scale: None,
   }
 }

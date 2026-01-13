@@ -115,6 +115,7 @@ fn browser_session_restores_scroll_position_via_scroll_to() {
     active_window_index: 0,
     appearance: fastrender::ui::appearance::AppearanceSettings::default(),
     did_exit_cleanly: true,
+    unclean_exit_streak: 0,
     ui_scale: None,
   }
   .sanitized();
