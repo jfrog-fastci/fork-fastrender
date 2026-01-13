@@ -77,6 +77,7 @@ struct ExternalTask<Host: 'static> {
 struct ExternalTaskQueueState<Host: 'static> {
   queue: VecDeque<ExternalTask<Host>>,
   max_pending_tasks: usize,
+  waker: Option<Arc<dyn Fn() + Send + Sync>>,
   closed: bool,
 }
 
@@ -105,9 +106,15 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
       inner: Arc::new(Mutex::new(ExternalTaskQueueState {
         queue: VecDeque::new(),
         max_pending_tasks,
+        waker: None,
         closed: false,
       })),
     }
+  }
+
+  pub fn set_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    lock.waker = waker;
   }
 
   fn set_max_pending_tasks(&self, max_pending_tasks: usize) {
@@ -141,20 +148,30 @@ impl<Host: 'static> ExternalTaskQueueHandle<Host> {
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + Send + 'static,
   {
-    let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if lock.closed {
-      return Err(Error::Other("EventLoop external task queue is closed".to_string()));
+    let waker = {
+      let mut lock = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      if lock.closed {
+        return Err(Error::Other("EventLoop external task queue is closed".to_string()));
+      }
+      if lock.queue.len() >= lock.max_pending_tasks {
+        return Err(Error::Other(format!(
+          "EventLoop exceeded max pending external tasks (limit={})",
+          lock.max_pending_tasks
+        )));
+      }
+      lock.queue.push_back(ExternalTask {
+        source,
+        runnable: Box::new(runnable),
+      });
+      lock.waker.clone()
+    };
+
+    // IMPORTANT: do not invoke the waker while holding the mutex. Embeddings may re-enter the
+    // event loop (draining this queue) from inside the waker.
+    if let Some(waker) = waker {
+      // Best-effort wakeup: never let a waker panic propagate into an unrelated producer thread.
+      let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (waker)()));
     }
-    if lock.queue.len() >= lock.max_pending_tasks {
-      return Err(Error::Other(format!(
-        "EventLoop exceeded max pending external tasks (limit={})",
-        lock.max_pending_tasks
-      )));
-    }
-    lock.queue.push_back(ExternalTask {
-      source,
-      runnable: Box::new(runnable),
-    });
     Ok(())
   }
 }
@@ -635,6 +652,10 @@ impl<Host: 'static> EventLoop<Host> {
   /// Returns a thread-safe handle for queueing tasks from other threads.
   pub fn external_task_queue_handle(&self) -> ExternalTaskQueueHandle<Host> {
     self.external_task_queue.clone()
+  }
+
+  pub fn set_external_task_waker(&self, waker: Option<Arc<dyn Fn() + Send + Sync>>) {
+    self.external_task_queue.set_waker(waker);
   }
 
   fn drain_external_tasks(&mut self) -> Result<()> {
@@ -2398,6 +2419,7 @@ mod tests {
   use crate::{error::RenderError, render_control::RenderDeadline};
   use std::cell::Cell;
   use std::rc::Rc;
+  use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Mutex;
 
   #[derive(Default)]
@@ -2458,6 +2480,33 @@ mod tests {
 
     event_loop.perform_microtask_checkpoint(&mut host)?;
     assert_eq!(host.calls, 1);
+    Ok(())
+  }
+
+  #[test]
+  fn external_task_queue_waker_fires_on_successful_enqueue() -> Result<()> {
+    let mut host = TestHost::default();
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    let handle = event_loop.external_task_queue_handle();
+
+    let wake_count = Arc::new(AtomicUsize::new(0));
+    let wake_count2 = Arc::clone(&wake_count);
+    handle.set_waker(Some(Arc::new(move || {
+      wake_count2.fetch_add(1, Ordering::SeqCst);
+    })));
+
+    handle.queue_task(TaskSource::Networking, |host, _event_loop| {
+      host.count += 1;
+      Ok(())
+    })?;
+
+    assert_eq!(wake_count.load(Ordering::SeqCst), 1);
+
+    let outcome = event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+    assert_eq!(host.count, 1);
+    assert_eq!(wake_count.load(Ordering::SeqCst), 1);
     Ok(())
   }
 
