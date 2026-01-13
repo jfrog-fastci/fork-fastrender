@@ -418,12 +418,12 @@ pub fn clear_default_web_storage_hub() {
 
 /// Derive a storage origin key from a document URL.
 ///
-/// Only `http:` / `https:` documents get a persistent storage origin key. Everything else is
-/// treated as an **opaque origin** and returns `None` (including `file:`), matching
-/// `window.origin === "null"` semantics.
+/// Documents with a non-opaque origin get a persistent storage origin key (currently: `http:`,
+/// `https:`, and trusted `chrome:` URLs). Everything else is treated as an **opaque origin** and
+/// returns `None` (including `file:`), matching `window.origin === "null"` semantics.
 pub fn origin_key_from_document_url(url: &str) -> StorageOriginKey {
   let origin = crate::resource::origin_from_url(url)?;
-  if !matches!(origin.scheme(), "http" | "https") {
+  if !matches!(origin.scheme(), "http" | "https" | "chrome") {
     return None;
   }
   // `DocumentOrigin::to_string` uses a sentinel host string for missing hosts. Treat these as
@@ -510,8 +510,8 @@ pub fn set_default_storage_quota_for_tests(bytes: usize) {
 mod tests {
   use super::{
     get_local_area, get_session_area, reset_default_web_storage_hub_for_tests,
-    set_default_storage_quota_for_tests, with_default_hub, with_default_hub_mut, SessionNamespaceId,
-    StorageArea, StorageError,
+    set_default_storage_quota_for_tests, with_default_hub, with_default_hub_mut,
+    origin_key_from_document_url, SessionNamespaceId, StorageArea, StorageError,
   };
 
   #[test]
@@ -709,5 +709,66 @@ mod tests {
 
     drop(window);
     assert_eq!(with_default_hub(|hub| hub.session_areas.len()), 0);
+  }
+
+  #[test]
+  fn chrome_origin_key_is_persistent() {
+    assert_eq!(
+      origin_key_from_document_url("chrome://settings/page"),
+      Some("chrome://settings".to_string())
+    );
+    // Still treat `about:` / `data:` as opaque.
+    assert_eq!(origin_key_from_document_url("about:blank"), None);
+    assert_eq!(origin_key_from_document_url("data:text/plain,hello"), None);
+  }
+
+  #[test]
+  fn chrome_pages_share_local_storage_by_origin() {
+    reset_default_web_storage_hub_for_tests();
+    // Ensure this test leaves the thread-local hub in a clean state even if it fails (the Rust test
+    // harness may reuse worker threads between tests).
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+      fn drop(&mut self) {
+        reset_default_web_storage_hub_for_tests();
+      }
+    }
+    let _guard = ResetGuard;
+
+    let origin_1 = origin_key_from_document_url("chrome://settings/page");
+    let area_1 = get_local_area(origin_1.as_deref());
+    area_1.lock().set_item("k", "v").unwrap();
+
+    let origin_2 = origin_key_from_document_url("chrome://settings/other");
+    let area_2 = get_local_area(origin_2.as_deref());
+    assert!(std::sync::Arc::ptr_eq(&area_1, &area_2));
+    assert_eq!(area_2.lock().get_item("k").as_deref(), Some("v"));
+  }
+
+  #[test]
+  fn different_chrome_hosts_do_not_share_local_storage() {
+    reset_default_web_storage_hub_for_tests();
+    // Ensure this test leaves the thread-local hub in a clean state even if it fails (the Rust test
+    // harness may reuse worker threads between tests).
+    struct ResetGuard;
+    impl Drop for ResetGuard {
+      fn drop(&mut self) {
+        reset_default_web_storage_hub_for_tests();
+      }
+    }
+    let _guard = ResetGuard;
+
+    let settings_origin = origin_key_from_document_url("chrome://settings/page");
+    let newtab_origin = origin_key_from_document_url("chrome://newtab/page");
+    assert_eq!(settings_origin.as_deref(), Some("chrome://settings"));
+    assert_eq!(newtab_origin.as_deref(), Some("chrome://newtab"));
+
+    let settings_area = get_local_area(settings_origin.as_deref());
+    settings_area.lock().set_item("k", "v").unwrap();
+
+    let newtab_area = get_local_area(newtab_origin.as_deref());
+    assert!(!std::sync::Arc::ptr_eq(&settings_area, &newtab_area));
+    assert_eq!(newtab_area.lock().get_item("k"), None);
+    assert_eq!(settings_area.lock().get_item("k").as_deref(), Some("v"));
   }
 }
