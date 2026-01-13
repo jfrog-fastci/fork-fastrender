@@ -1,6 +1,7 @@
 use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Rect, Size};
+use crate::interaction::InteractionState;
 use crate::js::clock::{Clock, RealClock};
 use crate::js::host_document::{ActiveEventGuard, ActiveEventStack};
 use crate::js::CurrentScriptStateHandle;
@@ -11,6 +12,8 @@ use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxType};
 use crate::web::dom::DocumentVisibilityState;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,6 +66,13 @@ pub struct BrowserDocumentDom2 {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  interaction_state: Option<InteractionState>,
+  /// Hash of the most recently prepared/painted interaction state.
+  ///
+  /// Interaction state influences pseudo-class matching (`:hover`, `:focus`, etc) and form control
+  /// painting (caret/selection/IME). When it changes we must treat cached style/layout results as
+  /// invalid, even if the DOM itself is unchanged.
+  interaction_state_hash: u64,
   dirty_style_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_text_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_structure_nodes: FxHashSet<crate::dom2::NodeId>,
@@ -71,6 +81,77 @@ pub struct BrowserDocumentDom2 {
   realtime_animations_enabled: bool,
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
+}
+
+fn hash_usize_set(hasher: &mut DefaultHasher, set: &FxHashSet<usize>) {
+  let mut values: Vec<usize> = set.iter().copied().collect();
+  values.sort_unstable();
+  values.hash(hasher);
+}
+
+fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  match state {
+    None => {
+      0u8.hash(&mut hasher);
+    }
+    Some(state) => {
+      1u8.hash(&mut hasher);
+      state.focused.hash(&mut hasher);
+      state.focus_visible.hash(&mut hasher);
+      state.focus_chain.hash(&mut hasher);
+      state.hover_chain.hash(&mut hasher);
+      state.active_chain.hash(&mut hasher);
+      hash_usize_set(&mut hasher, &state.visited_links);
+      // File input state is stored out-of-DOM, so include it in the interaction fingerprint so file
+      // drops trigger a rerender (label updates and form submission semantics).
+      if !state.form_state.file_inputs.is_empty() {
+        let mut keys: Vec<usize> = state.form_state.file_inputs.keys().copied().collect();
+        keys.sort_unstable();
+        for node_id in keys {
+          node_id.hash(&mut hasher);
+          if let Some(files) = state.form_state.file_inputs.get(&node_id) {
+            files.len().hash(&mut hasher);
+            for file in files {
+              file
+                .path
+                .to_string_lossy()
+                .as_ref()
+                .hash(&mut hasher);
+              file.filename.hash(&mut hasher);
+              file.bytes.len().hash(&mut hasher);
+              file.content_type.hash(&mut hasher);
+            }
+          }
+        }
+      }
+      if let Some(preedit) = &state.ime_preedit {
+        1u8.hash(&mut hasher);
+        preedit.node_id.hash(&mut hasher);
+        preedit.text.hash(&mut hasher);
+        preedit.cursor.hash(&mut hasher);
+      } else {
+        0u8.hash(&mut hasher);
+      }
+      if let Some(edit) = &state.text_edit {
+        1u8.hash(&mut hasher);
+        edit.node_id.hash(&mut hasher);
+        edit.caret.hash(&mut hasher);
+        edit.caret_affinity.hash(&mut hasher);
+        edit.selection.hash(&mut hasher);
+      } else {
+        0u8.hash(&mut hasher);
+      }
+      if let Some(selection) = &state.document_selection {
+        1u8.hash(&mut hasher);
+        selection.hash(&mut hasher);
+      } else {
+        0u8.hash(&mut hasher);
+      }
+      hash_usize_set(&mut hasher, &state.user_validity);
+    }
+  }
+  hasher.finish()
 }
 
 impl BrowserDocumentDom2 {
@@ -111,6 +192,8 @@ impl BrowserDocumentDom2 {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      interaction_state: None,
+      interaction_state_hash: interaction_state_fingerprint(None),
       dirty_style_nodes: FxHashSet::default(),
       dirty_text_nodes: FxHashSet::default(),
       dirty_structure_nodes: FxHashSet::default(),
@@ -253,6 +336,8 @@ impl BrowserDocumentDom2 {
     self.options = options;
     self.prepared = None;
     self.last_dom_mapping = None;
+    self.interaction_state = None;
+    self.interaction_state_hash = interaction_state_fingerprint(None);
     // Reset per-document CSP state. `reset_with_dom` replaces the entire document, so any previously
     // captured CSP headers/meta should not leak into the new DOM.
     self.renderer.document_csp = None;
@@ -278,6 +363,8 @@ impl BrowserDocumentDom2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
+    self.interaction_state = None;
+    self.interaction_state_hash = interaction_state_fingerprint(None);
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
@@ -486,6 +573,20 @@ impl BrowserDocumentDom2 {
     self.paint_dirty = true;
   }
 
+  /// Updates the interaction state used for pseudo-class matching and form-control paint hints.
+  ///
+  /// Interaction state is keyed by renderer DOM pre-order IDs (see
+  /// `crate::dom::enumerate_dom_ids`). When it changes we conservatively invalidate style/layout so
+  /// the next render reflects updated `:hover`/`:active`/`:focus` pseudo-classes and input caret/
+  /// selection/IME paint hints.
+  pub fn set_interaction_state(&mut self, state: Option<InteractionState>) {
+    let fingerprint = interaction_state_fingerprint(state.as_ref());
+    self.interaction_state = state;
+    if fingerprint != self.interaction_state_hash {
+      self.invalidate_all();
+    }
+  }
+
   /// Updates the device pixel ratio used for media queries and resolution-dependent resources.
   ///
   /// Non-finite or non-positive values clear the override (falling back to the renderer default).
@@ -519,6 +620,7 @@ impl BrowserDocumentDom2 {
     self.prepared.is_none()
       || self.style_dirty
       || self.layout_dirty
+      || interaction_state_fingerprint(self.interaction_state.as_ref()) != self.interaction_state_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
   }
 
@@ -533,6 +635,13 @@ impl BrowserDocumentDom2 {
   /// - style/layout dirty flags and per-node dirty sets are cleared, and
   /// - `paint_dirty` remains (or becomes) true so a subsequent `render_if_needed()` will repaint.
   pub fn ensure_layout_for_dom_queries(&mut self) -> Result<()> {
+    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
+    if interaction_hash != self.interaction_state_hash {
+      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
+      // re-run style/layout when it changes.
+      self.invalidate_all();
+    }
+
     // Layout queries should not force a re-layout when we already have an up-to-date prepared cache.
     if self.prepared.is_some() && !self.needs_layout() {
       self.dom.clear_mutations();
@@ -672,6 +781,7 @@ impl BrowserDocumentDom2 {
     // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
     // can be retried.
     self.paint_dirty = true;
+    self.interaction_state_hash = interaction_hash;
     self.dom.clear_mutations();
     Ok(())
   }
@@ -1681,7 +1791,11 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<Option<super::PaintedFrame>> {
-    if !self.is_dirty() && self.prepared.is_some() {
+    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
+    if !self.is_dirty()
+      && self.prepared.is_some()
+      && interaction_hash == self.interaction_state_hash
+    {
       return Ok(None);
     }
     let frame = self.render_frame_with_deadlines(paint_deadline)?;
@@ -1704,6 +1818,13 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
+    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
+    if interaction_hash != self.interaction_state_hash {
+      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
+      // re-run style/layout when it changes.
+      self.invalidate_all();
+    }
+
     // Rendering requires up-to-date layout caches. Reuse the same host-side layout flush used by
     // DOM/layout query APIs (e.g. `getBoundingClientRect`) so JS-driven `scrollTo` can clamp against
     // current scroll bounds without forcing a paint.
@@ -1715,6 +1836,7 @@ impl BrowserDocumentDom2 {
     if self.is_dirty() {
       self.clear_dirty();
     }
+    self.interaction_state_hash = interaction_hash;
 
     Ok(frame)
   }
@@ -1727,6 +1849,13 @@ impl BrowserDocumentDom2 {
   /// Callers can use this to satisfy CSSOM View properties (e.g. `Element.clientTop/clientLeft`)
   /// that need computed border widths while avoiding the cost/side-effects of a paint.
   pub(crate) fn ensure_layout_for_dom_query(&mut self) -> Result<()> {
+    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
+    if interaction_hash != self.interaction_state_hash {
+      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
+      // re-run style/layout when it changes.
+      self.invalidate_all();
+    }
+
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -1734,6 +1863,7 @@ impl BrowserDocumentDom2 {
 
     let needs_layout = self.style_dirty
       || self.layout_dirty
+      || interaction_hash != self.interaction_state_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
     if !needs_layout {
       self.dom.clear_mutations();
@@ -1830,6 +1960,7 @@ impl BrowserDocumentDom2 {
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.paint_dirty = true;
+    self.interaction_state_hash = interaction_hash;
     self.dom.clear_mutations();
     Ok(())
   }
@@ -2002,6 +2133,7 @@ impl BrowserDocumentDom2 {
     let renderer_dom = snapshot.dom;
     let mapping = snapshot.mapping;
     let renderer_dom_ref = &renderer_dom;
+    let interaction_state = self.interaction_state.as_ref();
 
     let prepared = {
       let renderer = &mut self.renderer;
@@ -2033,7 +2165,7 @@ impl BrowserDocumentDom2 {
           renderer_dom_ref,
           options.clone(),
           trace_handle,
-          None,
+          interaction_state,
         );
         renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
         drop(_root_span);
@@ -2055,6 +2187,13 @@ impl BrowserDocumentDom2 {
   ///
   /// This is a "layout flush" that runs at most cascade+layout. It intentionally does **not** paint.
   fn ensure_layout_for_hit_testing(&mut self) -> Result<()> {
+    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
+    if interaction_hash != self.interaction_state_hash {
+      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
+      // re-run style/layout when it changes.
+      self.invalidate_all();
+    }
+
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -2065,6 +2204,7 @@ impl BrowserDocumentDom2 {
       || self.layout_dirty
       || self.prepared.is_none()
       || self.last_dom_mapping.is_none()
+      || interaction_hash != self.interaction_state_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
 
     if !needs_layout {
@@ -2155,6 +2295,7 @@ impl BrowserDocumentDom2 {
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.paint_dirty = true;
+    self.interaction_state_hash = interaction_hash;
 
     self.dom.clear_mutations();
     Ok(())
@@ -2647,6 +2788,62 @@ mod tests {
       after, before,
       "paint-only invalidation should reuse cached style/layout artifacts"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn hover_interaction_state_triggers_rerender_and_coalesces() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            body { margin: 0; }
+            #a { width: 10px; height: 10px; background: rgb(255, 0, 0); }
+            #a:hover { background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>
+          <div id="a"></div>
+        </body>
+      </html>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(16, 16))?;
+
+    let pixmap0 = doc.render_frame()?;
+    let p0 = pixmap0.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!(p0.alpha(), 255);
+    assert_eq!(p0.red(), 255);
+    assert_eq!(p0.green(), 0);
+    assert_eq!(p0.blue(), 0);
+
+    let node_id = doc.dom().get_element_by_id("a").expect("#a element");
+    let preorder_id = doc
+      .last_dom_mapping()
+      .expect("dom mapping")
+      .preorder_for_node_id(node_id)
+      .expect("preorder id");
+
+    doc.set_interaction_state(Some(InteractionState {
+      hover_chain: vec![preorder_id],
+      ..Default::default()
+    }));
+
+    let pixmap1 = doc
+      .render_if_needed()?
+      .expect("interaction state should invalidate and repaint");
+    let p1 = pixmap1.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!(p1.alpha(), 255);
+    assert_eq!(p1.red(), 0);
+    assert_eq!(p1.green(), 0);
+    assert_eq!(p1.blue(), 255);
+
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected no-op render when interaction state unchanged"
+    );
+
     Ok(())
   }
 
