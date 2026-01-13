@@ -459,19 +459,72 @@ fn about_shared_css() -> &'static str {
   CSS
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BuiltInPageLink {
+  url: &'static str,
+  label: &'static str,
+}
+
+/// Built-in `about:*` pages intended to be linked from user-facing UI surfaces.
+///
+/// This list intentionally excludes test-only pages (`about:test-*`) so they do not show up in
+/// "help"/"settings" documentation or other discovery surfaces.
+const BUILT_IN_PAGE_LINKS: &[BuiltInPageLink] = &[
+  BuiltInPageLink {
+    url: ABOUT_NEWTAB,
+    label: "New tab",
+  },
+  BuiltInPageLink {
+    url: ABOUT_HISTORY,
+    label: "History",
+  },
+  BuiltInPageLink {
+    url: ABOUT_BOOKMARKS,
+    label: "Bookmarks",
+  },
+  BuiltInPageLink {
+    url: ABOUT_SETTINGS,
+    label: "Settings",
+  },
+  BuiltInPageLink {
+    url: ABOUT_HELP,
+    label: "Help",
+  },
+  BuiltInPageLink {
+    url: ABOUT_VERSION,
+    label: "Version",
+  },
+  BuiltInPageLink {
+    url: ABOUT_GPU,
+    label: "GPU",
+  },
+  BuiltInPageLink {
+    url: ABOUT_PROCESSES,
+    label: "Processes",
+  },
+];
+
+fn built_in_page_links() -> &'static [BuiltInPageLink] {
+  BUILT_IN_PAGE_LINKS
+}
+
+fn built_in_pages_list_items_html() -> String {
+  use std::fmt::Write;
+
+  let mut out = String::new();
+  for &BuiltInPageLink { url, .. } in built_in_page_links() {
+    let safe_url = escape_html(url);
+    let _ = write!(
+      out,
+      r#"<li><a href="{safe_url}">{safe_url}</a></li>"#
+    );
+  }
+  out
+}
+
 fn about_header_html(current: &str) -> String {
-  let items = [
-    (ABOUT_NEWTAB, "New tab"),
-    (ABOUT_HISTORY, "History"),
-    (ABOUT_BOOKMARKS, "Bookmarks"),
-    (ABOUT_SETTINGS, "Settings"),
-    (ABOUT_HELP, "Help"),
-    (ABOUT_VERSION, "Version"),
-    (ABOUT_GPU, "GPU"),
-    (ABOUT_PROCESSES, "Processes"),
-  ];
   let mut links = String::with_capacity(256);
-  for (url, label) in items {
+  for &BuiltInPageLink { url, label } in built_in_page_links() {
     let aria = if url == current {
       " aria-current=\"page\""
     } else {
@@ -996,18 +1049,9 @@ fn settings_html(_full_url: &str) -> String {
       ));
     }
   }
-
-  let pages = [
-    (ABOUT_NEWTAB, "New tab"),
-    (ABOUT_HISTORY, "History"),
-    (ABOUT_BOOKMARKS, "Bookmarks"),
-    (ABOUT_HELP, "Help"),
-    (ABOUT_VERSION, "Version"),
-    (ABOUT_GPU, "GPU"),
-  ];
   use std::fmt::Write;
   let mut page_links = String::new();
-  for (url, label) in pages {
+  for &BuiltInPageLink { url, label } in built_in_page_links() {
     let safe_url = escape_html(url);
     let safe_label = escape_html(label);
     let _ = write!(
@@ -1064,10 +1108,12 @@ fn settings_html(_full_url: &str) -> String {
 }
 
 fn help_html() -> String {
+  let built_in_pages = built_in_pages_list_items_html();
   about_layout_html(
     "Help",
     ABOUT_HELP,
-    "<h1>FastRender Help</h1>
+    &format!(
+      "<h1>FastRender Help</h1>
       <p>This is an offline <code>about:help</code> page.</p>
 
       <h2>Usage</h2>
@@ -1099,25 +1145,24 @@ fn help_html() -> String {
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> — Next/prev tab</li>
           <li><kbd>Alt</kbd>+<kbd>Left</kbd> / <kbd>Alt</kbd>+<kbd>Right</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>[</kbd> / <kbd>Cmd</kbd>+<kbd>]</kbd> (macOS) — Back/forward</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>R</kbd> / <kbd>F5</kbd> — Reload</li>
-          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> / <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Zoom in/out/reset</li>
+          <li><kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Toggle downloads panel</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd> — Zoom in</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd> — Zoom out</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd> — Reset zoom</li>
           <li><kbd>F11</kbd> (Win/Linux); <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> (macOS) — Toggle fullscreen</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>1</kbd>…<kbd>9</kbd> — Activate tab (9 = last)</li>
          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>D</kbd> — Toggle bookmark</li>
          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — Toggle bookmarks bar</li>
          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> — Show bookmarks manager</li>
-         <li><kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS) — Show downloads (<code>Window → Show Downloads…</code>)</li>
-         <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
-       </ul>
+          <li><kbd>Ctrl</kbd>+<kbd>H</kbd> (Win/Linux); <kbd>Cmd</kbd>+<kbd>Y</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> (macOS) — Show history</li>
+      </ul>
 
-       <h2>Built-in pages</h2>
-       <ul>
-         <li><a href=\"about:newtab\">about:newtab</a></li>
-         <li><a href=\"about:history\">about:history</a></li>
-         <li><a href=\"about:bookmarks\">about:bookmarks</a></li>
-         <li><a href=\"about:settings\">about:settings</a></li>
-         <li><a href=\"about:version\">about:version</a></li>
-         <li><a href=\"about:gpu\">about:gpu</a></li>
-       </ul>",
+      <h2>Built-in pages</h2>
+      <ul>
+        {built_in_pages}
+      </ul>",
+      built_in_pages = built_in_pages
+    ),
     "",
   )
 }
@@ -2790,6 +2835,13 @@ mod tests {
         "expected about:newtab HTML to link to {url}"
       );
     }
+
+    for url in [ABOUT_SETTINGS, ABOUT_PROCESSES] {
+      assert!(
+        html.contains(&format!("class=\"about-tile\" href=\"{url}\"")),
+        "expected about:newtab shortcuts grid to include tile link to {url}"
+      );
+    }
   }
 
   #[test]
@@ -3275,6 +3327,80 @@ mod tests {
       assert!(
         html.contains(needle),
         "expected about:help HTML to contain {needle:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn help_page_includes_find_downloads_zoom_fullscreen_and_bookmarks_bar_shortcuts() {
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+
+    for needle in [
+      // Find in page.
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>F</kbd>",
+      "Find in page",
+      // Downloads.
+      "<kbd>Ctrl</kbd>+<kbd>J</kbd>",
+      "<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd>",
+      "Toggle downloads panel",
+      // Zoom.
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>+</kbd>",
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>-</kbd>",
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>0</kbd>",
+      "Reset zoom",
+      // Fullscreen.
+      "<kbd>F11</kbd>",
+      "<kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd>",
+      "Toggle fullscreen",
+      // Bookmarks bar.
+      "<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>",
+      "Toggle bookmarks bar",
+    ] {
+      assert!(
+        html.contains(needle),
+        "expected about:help HTML to contain {needle:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn help_and_settings_pages_link_to_all_built_in_pages_and_exclude_test_pages() {
+    let help = html_for_about_url(ABOUT_HELP).unwrap();
+    let settings = html_for_about_url(ABOUT_SETTINGS).unwrap();
+
+    for url in [
+      ABOUT_NEWTAB,
+      ABOUT_HISTORY,
+      ABOUT_BOOKMARKS,
+      ABOUT_SETTINGS,
+      ABOUT_HELP,
+      ABOUT_VERSION,
+      ABOUT_GPU,
+      ABOUT_PROCESSES,
+    ] {
+      assert!(
+        help.contains(&format!("<a href=\"{url}\">{url}</a>")),
+        "expected about:help built-in pages list to link to {url}"
+      );
+      assert!(
+        settings.contains(&format!("class=\"about-tile\" href=\"{url}\"")),
+        "expected about:settings built-in pages tiles to link to {url}"
+      );
+    }
+
+    for needle in [
+      ABOUT_TEST_SCROLL,
+      ABOUT_TEST_HEAVY,
+      ABOUT_TEST_LAYOUT_STRESS,
+      ABOUT_TEST_FORM,
+    ] {
+      assert!(
+        !help.contains(needle),
+        "about:help should not link to test-only page {needle}"
+      );
+      assert!(
+        !settings.contains(needle),
+        "about:settings should not link to test-only page {needle}"
       );
     }
   }
