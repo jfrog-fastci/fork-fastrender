@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 #[cfg(any(test, feature = "browser_ui"))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use url::Url;
@@ -170,7 +170,11 @@ pub struct RendererProcessRegistry<S: ProcessSpawner> {
   config: RendererProcessRegistryConfig,
   by_site: HashMap<SiteKey, S::Handle>,
   by_process: HashMap<RendererProcessId, SiteKey>,
-  frames_by_process: HashMap<RendererProcessId, HashSet<FrameId>>,
+  /// Per-process frame refcounts.
+  ///
+  /// A single `FrameId` can be retained multiple times (e.g. by multiple owners in the frame tree);
+  /// callers must release the same number of times before the frame is considered gone.
+  frames_by_process: HashMap<RendererProcessId, HashMap<FrameId, usize>>,
 }
 
 impl<S: ProcessSpawner> RendererProcessRegistry<S> {
@@ -213,7 +217,8 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
 
   /// Retain a frame in `process`.
   ///
-  /// Retaining the same `frame_id` more than once is idempotent.
+  /// Retaining the same `frame_id` more than once increments an internal refcount; callers must
+  /// balance retains with releases.
   pub fn retain_frame(&mut self, process: RendererProcessId, frame_id: FrameId) {
     if !self.by_process.contains_key(&process) {
       debug_assert!(
@@ -223,11 +228,9 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
       );
       return;
     }
-    self
-      .frames_by_process
-      .entry(process)
-      .or_default()
-      .insert(frame_id);
+    let frames = self.frames_by_process.entry(process).or_default();
+    let counter = frames.entry(frame_id).or_insert(0);
+    *counter = counter.saturating_add(1);
   }
 
   /// Release a previously-retained frame.
@@ -243,7 +246,7 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
       );
       return;
     };
-    if !frames.remove(&frame_id) {
+    let Some(count) = frames.get_mut(&frame_id) else {
       debug_assert!(
         false,
         "release_frame called for unknown frame {:?} in process {:?}",
@@ -251,6 +254,19 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
         process
       );
       return;
+    };
+    if *count == 0 {
+      debug_assert!(
+        false,
+        "release_frame called with zero refcount for frame {:?} in process {:?}",
+        frame_id,
+        process
+      );
+      return;
+    } else if *count == 1 {
+      frames.remove(&frame_id);
+    } else {
+      *count -= 1;
     }
     if !frames.is_empty() {
       return;
@@ -486,6 +502,38 @@ mod tests {
     assert_eq!(drop_count.load(Ordering::Relaxed), 0);
 
     reg.release_frame(pid, f2);
+    assert_eq!(reg.process_count(), 0);
+    assert_eq!(terminate_count.load(Ordering::Relaxed), 1);
+    assert_eq!(drop_count.load(Ordering::Relaxed), 1);
+  }
+
+  #[test]
+  fn frame_refcounting_requires_balanced_releases() {
+    let spawn_count = Arc::new(AtomicUsize::new(0));
+    let terminate_count = Arc::new(AtomicUsize::new(0));
+    let drop_count = Arc::new(AtomicUsize::new(0));
+
+    let spawner = FakeSpawner::new(
+      Arc::clone(&spawn_count),
+      Arc::clone(&terminate_count),
+      Arc::clone(&drop_count),
+    );
+    let mut reg = RendererProcessRegistry::new_with_config(
+      spawner,
+      RendererProcessRegistryConfig { keep_alive: false },
+    );
+
+    let pid = reg.get_or_spawn(site("https://example.com/"));
+    let frame = FrameId::new(1);
+    reg.retain_frame(pid, frame);
+    reg.retain_frame(pid, frame);
+
+    reg.release_frame(pid, frame);
+    assert_eq!(reg.process_count(), 1);
+    assert_eq!(terminate_count.load(Ordering::Relaxed), 0);
+    assert_eq!(drop_count.load(Ordering::Relaxed), 0);
+
+    reg.release_frame(pid, frame);
     assert_eq!(reg.process_count(), 0);
     assert_eq!(terminate_count.load(Ordering::Relaxed), 1);
     assert_eq!(drop_count.load(Ordering::Relaxed), 1);
