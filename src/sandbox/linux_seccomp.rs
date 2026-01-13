@@ -139,6 +139,19 @@ fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter
     libc::SYS_creat,
     libc::SYS_open_by_handle_at,
     libc::SYS_name_to_handle_at,
+    // Filesystem metadata / enumeration (defense in depth).
+    //
+    // These syscalls don't necessarily grant file contents, but they can leak information about the
+    // host filesystem (existence, ownership, timestamps, directory structure). Returning EPERM is
+    // also more ergonomic than the default KILL policy for unexpected libc behavior.
+    libc::SYS_statx,
+    libc::SYS_newfstatat,
+    libc::SYS_access,
+    libc::SYS_faccessat,
+    libc::SYS_getdents64,
+    libc::SYS_readlink,
+    libc::SYS_readlinkat,
+    libc::SYS_statfs,
     // Filesystem mutation.
     libc::SYS_unlink,
     libc::SYS_unlinkat,

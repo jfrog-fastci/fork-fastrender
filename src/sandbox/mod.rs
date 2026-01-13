@@ -770,6 +770,14 @@ mod tests {
       let thread = std::thread::spawn(|| 1u32 + 1u32);
       assert_eq!(thread.join().expect("join thread"), 2);
 
+      let meta_err =
+        std::fs::metadata("/etc/passwd").expect_err("expected /etc/passwd metadata to fail");
+      assert_eq!(
+        meta_err.raw_os_error(),
+        Some(libc::EPERM),
+        "expected EPERM for filesystem metadata (got {meta_err:?})"
+      );
+
       let fs_err = std::fs::read("/etc/passwd").expect_err("expected /etc/passwd read to fail");
       assert_eq!(
         fs_err.raw_os_error(),
