@@ -210,7 +210,7 @@ Run a quick offline perf pass against the curated pages fixtures with bundled fo
 machine-readable timings:
 
 ```
-bash scripts/cargo_agent.sh xtask perf-smoke [--suite core|pageset-guardrails|all] [--top 5] [--output target/perf_smoke.json] [-- <extra perf_smoke args...>]
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask perf-smoke [--suite core|pageset-guardrails|all] [--top 5] [--output target/perf_smoke.json] [-- <extra perf_smoke args...>]
 ```
 
 The command renders the HTML under `tests/pages/fixtures/*`, captures `DiagnosticsLevel::Basic`
@@ -222,7 +222,7 @@ separately; they are not included in `stage_ms`.)
 Compare against a saved baseline to flag obvious regressions:
 
 ```
-bash scripts/cargo_agent.sh xtask perf-smoke --baseline ../baseline/perf_smoke.json --threshold 0.05 --fail-on-regression
+timeout -k 10 600 bash scripts/cargo_agent.sh xtask perf-smoke --baseline ../baseline/perf_smoke.json --threshold 0.05 --fail-on-regression
 ```
 
 `--top N` prints the slowest fixtures. With `--fail-on-regression`, baseline comparisons fail the
@@ -231,7 +231,7 @@ lightweight CI or local preflight checks.
 
 ## Pipeline benchmarks (Criterion)
 
-Run `bash scripts/cargo_agent.sh bench --bench perf_regressions -- --noplot` to exercise each stage of the rendering pipeline with fixed fixtures and bundled fonts (`tests/fixtures/fonts/DejaVuSans-subset.*`):
+Run `timeout -k 10 600 bash scripts/cargo_agent.sh bench --bench perf_regressions -- --noplot` to exercise each stage of the rendering pipeline with fixed fixtures and bundled fonts (`tests/fixtures/fonts/DejaVuSans-subset.*`):
 
 - `bench_parse_dom`
 - `bench_css_parse`
@@ -251,7 +251,7 @@ Outputs are written under `target/criterion/<bench>/new/estimates.json` and do n
 Use the helper to flag regressions between two Criterion output trees:
 
 ```
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
   -- --baseline ../baseline/target/criterion --new target/criterion \
   --regression-threshold 0.05 --metric median
 ```
@@ -260,10 +260,10 @@ bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --releas
 
 ### Automated regression checks
 
-Nightly at 06:00 UTC (and on `workflow_dispatch`), `.github/workflows/perf.yml` runs the pipeline benchmarks with `bash scripts/cargo_agent.sh bench --bench perf_regressions --locked -- --noplot`, uploads `target/criterion` as the `criterion-output` artifact, and downloads the most recent successful artifact from `main`. It then runs:
+Nightly at 06:00 UTC (and on `workflow_dispatch`), `.github/workflows/perf.yml` runs the pipeline benchmarks with `timeout -k 10 600 bash scripts/cargo_agent.sh bench --bench perf_regressions --locked -- --noplot`, uploads `target/criterion` as the `criterion-output` artifact, and downloads the most recent successful artifact from `main`. It then runs:
 
 ```
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
   -- --baseline baseline/target/criterion --new target/criterion \
   --regression-threshold 0.05 --metric median
 ```
@@ -272,12 +272,12 @@ The comparison output is attached to the job summary, and regressions over 5% fa
 
 ### Reproducing the CI diff locally
 
-1. Generate a fresh set of measurements: `bash scripts/cargo_agent.sh bench --bench perf_regressions -- --noplot`.
+1. Generate a fresh set of measurements: `timeout -k 10 600 bash scripts/cargo_agent.sh bench --bench perf_regressions -- --noplot`.
 2. Download the latest `criterion-output` artifact from the "Performance regression" workflow so it sits under `baseline/target/criterion` (for example, `gh run download --workflow perf.yml --branch main --name criterion-output --dir baseline`).
 3. Compare against your local run with the same thresholds CI uses:
 
 ```
-bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bench_compare \
   -- --baseline baseline/target/criterion --new target/criterion \
   --regression-threshold 0.05 --metric median
 ```
@@ -286,4 +286,4 @@ If the command exits non-zero, the benches listed in its output regressed beyond
 
 ## Microbenchmarks
 
-- Run `bash scripts/cargo_agent.sh bench --bench cascade_bench -- ":has"` to focus on the `:has()` traversal microbench alongside the existing cascade benchmark. The full suite is available via `bash scripts/cargo_agent.sh bench --bench cascade_bench`.
+- Run `timeout -k 10 600 bash scripts/cargo_agent.sh bench --bench cascade_bench -- ":has"` to focus on the `:has()` traversal microbench alongside the existing cascade benchmark. The full suite is available via `timeout -k 10 600 bash scripts/cargo_agent.sh bench --bench cascade_bench`.

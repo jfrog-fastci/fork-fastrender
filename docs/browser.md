@@ -54,15 +54,15 @@ hosts without a working display/GPU (they do not create a window or initialise `
 
 ```bash
 # Basic “is UI↔worker wired up” smoke test:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke
 
 # JS smoke test (vm-js `BrowserTab` execution path):
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-smoke --js
 
 # “renderer crash shouldn’t take down the browser” smoke test:
-bash scripts/run_limited.sh --as 64G -- \
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- --headless-crash-smoke
 ```
 
@@ -244,7 +244,7 @@ timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_l
   --input target/browser_perf.jsonl
 ```
 
-(`bash scripts/capture_browser_perf_log.sh --summary ...` runs the summary tool automatically after the
+(`timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary ...` runs the summary tool automatically after the
 browser exits.)
 
 For automated, headless measurements (JSON summary):
