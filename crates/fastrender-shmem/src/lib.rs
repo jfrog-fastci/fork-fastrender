@@ -674,6 +674,8 @@ fn clear_fd_cloexec(fd: RawFd) -> io::Result<()> {
 mod tests {
   use super::*;
   use std::collections::HashSet;
+  #[cfg(target_os = "linux")]
+  use std::os::unix::process::CommandExt as _;
 
   #[cfg(target_os = "linux")]
   #[test]
@@ -788,5 +790,58 @@ mod tests {
         .iter()
         .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')));
     }
+  }
+
+  // This test does a best-effort exec-based inheritance check. It is still unit-test scoped (no
+  // dependency on the renderer binary), but validates that `dup_to_fd` works in the intended
+  // `CommandExt::pre_exec` environment.
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn linux_memfd_inheritance_across_exec_smoke() -> io::Result<()> {
+    const CHILD_ENV: &str = "FASTR_SHMEM_TEST_CHILD";
+    const SHMEM_FD_ENV: &str = "FASTR_SHMEM_TEST_SHMEM_FD";
+    const SHMEM_LEN_ENV: &str = "FASTR_SHMEM_TEST_SHMEM_LEN";
+    const TARGET_FD: RawFd = 100;
+
+    if std::env::var_os(CHILD_ENV).is_some() {
+      let fd: RawFd = std::env::var(SHMEM_FD_ENV)
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "missing SHMEM_FD_ENV"))?
+        .parse::<i32>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid SHMEM_FD_ENV"))?;
+      let len: usize = std::env::var(SHMEM_LEN_ENV)
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "missing SHMEM_LEN_ENV"))?
+        .parse::<usize>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid SHMEM_LEN_ENV"))?;
+
+      let handle = ShmemHandle::LinuxMemfd { fd, len };
+      let mut region = ShmemRegion::map(&handle)?;
+      assert_eq!(&region.as_slice()[0..4], b"PING");
+      region.as_mut_slice()[0..4].copy_from_slice(b"PONG");
+      return Ok(());
+    }
+
+    let (mut region, handle) = ShmemRegion::create(ShmemBackend::LinuxMemfd, 4096)?;
+    region.as_mut_slice()[0..4].copy_from_slice(b"PING");
+
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.env(CHILD_ENV, "1");
+    cmd.env(SHMEM_FD_ENV, TARGET_FD.to_string());
+    cmd.env(SHMEM_LEN_ENV, handle.len().to_string());
+    // Run only this test in the child.
+    cmd.arg("linux_memfd_inheritance_across_exec_smoke");
+
+    // SAFETY: pre_exec runs after fork and before exec; the closure must only use
+    // async-signal-safe operations.
+    let handle_for_child = handle.clone();
+    unsafe {
+      cmd.pre_exec(move || handle_for_child.dup_to_fd(TARGET_FD));
+    }
+
+    let status = cmd.status()?;
+    assert!(status.success(), "child exited with {status:?}");
+    assert_eq!(&region.as_slice()[0..4], b"PONG");
+
+    Ok(())
   }
 }
