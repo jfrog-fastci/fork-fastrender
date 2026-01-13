@@ -39,14 +39,6 @@ fn sandboxed_child_does_not_inherit_parent_environment_by_default() {
     return;
   }
 
-  let support = win_sandbox::SandboxSupport::detect();
-  if support != win_sandbox::SandboxSupport::Full {
-    eprintln!(
-      "skipping Windows sandbox env sanitization test: Windows sandbox is unavailable ({support})"
-    );
-    return;
-  }
-
   let exe = std::env::current_exe().expect("current test exe path");
   for mode in ["no_inherit", "inherit"] {
     let mut cmd = Command::new(&exe);
