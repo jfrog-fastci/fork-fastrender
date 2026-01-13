@@ -5799,6 +5799,85 @@ mod tests {
     );
   }
 
+  #[test]
+  fn shift_tab_focus_traversal_in_nav_row_is_right_to_left() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 1: layout and capture widget IDs.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    let home_id = expect_temp_id(&ctx, "chrome_home_button_id");
+    let address_bar_text_edit_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
+    let address_bar_display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
+    let menu_button_id = expect_temp_id(&ctx, "chrome_menu_button_id");
+
+    // Frame 2: focus the menu button as a right-side anchor, then Shift+Tab backward.
+    ctx.memory_mut(|mem| mem.request_focus(menu_button_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(menu_button_id)),
+      "expected initial focus on menu button"
+    );
+
+    fn shift_tab_press() -> egui::Event {
+      egui::Event::Key {
+        key: egui::Key::Tab,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          shift: true,
+          ..Default::default()
+        },
+      }
+    }
+
+    let mut address_step: Option<usize> = None;
+    let mut home_step: Option<usize> = None;
+
+    for step in 0..32 {
+      begin_frame(&ctx, vec![shift_tab_press()]);
+      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+      let _ = ctx.end_frame();
+
+      let address_focused = ctx.memory(|mem| {
+        mem.has_focus(address_bar_text_edit_id) || mem.has_focus(address_bar_display_id)
+      });
+      let home_focused = ctx.memory(|mem| mem.has_focus(home_id));
+
+      if address_focused && address_step.is_none() {
+        address_step = Some(step);
+      }
+      if home_focused && home_step.is_none() {
+        home_step = Some(step);
+      }
+
+      if address_step.is_some() && home_step.is_some() {
+        break;
+      }
+    }
+
+    let address_step =
+      address_step.unwrap_or_else(|| panic!("expected Shift+Tab traversal to reach address bar"));
+    let home_step =
+      home_step.unwrap_or_else(|| panic!("expected Shift+Tab traversal to reach home button"));
+
+    assert!(
+      address_step < home_step,
+      "expected address bar to be focused before home button when Shift+Tabbing backward (address step {address_step}, home step {home_step})"
+    );
+  }
+
   fn click_menu_item(
     ctx: &egui::Context,
     app: &mut BrowserAppState,
