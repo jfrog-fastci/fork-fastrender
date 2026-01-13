@@ -11956,6 +11956,35 @@ mod async_generator_object_tests {
 mod typed_array_helper_tests {
   use super::*;
 
+  fn trigger_gc_via_allocations(scope: &mut Scope<'_>) -> Result<(), VmError> {
+    let before = scope.heap().gc_runs();
+
+    // Allocate some unrooted garbage so the upcoming GC has work to do.
+    for i in 0..8 {
+      let _ = scope.alloc_object()?;
+      let s = format!("gc-garbage-{i}");
+      let _ = scope.alloc_string(&s)?;
+    }
+
+    // Allocate an ArrayBuffer sized to exceed `gc_threshold` and therefore force an implicit GC in
+    // `ensure_can_allocate`. Using an ArrayBuffer keeps slot-table growth small while still
+    // exercising the external-bytes accounting path.
+    let threshold = scope.heap().limits().gc_threshold;
+    let current = scope.heap().estimated_total_bytes();
+    let bytes_to_force_gc = threshold
+      .saturating_sub(current)
+      .saturating_add(1)
+      .max(1);
+    let _ = scope.alloc_array_buffer(bytes_to_force_gc)?;
+
+    assert!(
+      scope.heap().gc_runs() > before,
+      "expected allocations to trigger GC (before={before}, after={})",
+      scope.heap().gc_runs()
+    );
+    Ok(())
+  }
+
   #[test]
   fn typed_array_is_integer_kind_classifies_int_vs_float() -> Result<(), VmError> {
     let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -12073,6 +12102,52 @@ mod typed_array_helper_tests {
     assert_eq!(scope.heap().typed_array_byte_length(view)?, 0);
     assert_eq!(scope.heap().typed_array_byte_offset(view)?, 0);
     assert_eq!(scope.heap().typed_array_get_element_value(view, 0)?, None);
+
+    Ok(())
+  }
+
+  #[test]
+  fn typed_array_keeps_backing_array_buffer_alive_across_gc() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(128 * 1024, 64 * 1024));
+    let mut scope = heap.scope();
+
+    let buf = scope.alloc_array_buffer(16)?;
+    let view = scope.alloc_uint8_array(buf, 0, 16)?;
+
+    // Root only the TypedArray, not the backing buffer.
+    scope.push_root(Value::Object(view))?;
+
+    // Force at least one GC cycle via `ensure_can_allocate` and ensure we exercise allocation
+    // paths that normally trigger GC.
+    trigger_gc_via_allocations(&mut scope)?;
+
+    // Also run an explicit GC cycle to ensure the typed array continues to keep the buffer alive.
+    scope.heap_mut().collect_garbage();
+
+    assert_eq!(scope.heap().typed_array_buffer(view)?, buf);
+    assert_eq!(scope.heap().array_buffer_byte_length(buf)?, 16);
+    assert_eq!(scope.heap().typed_array_byte_length(view)?, 16);
+
+    Ok(())
+  }
+
+  #[test]
+  fn data_view_keeps_backing_array_buffer_alive_across_gc() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(128 * 1024, 64 * 1024));
+    let mut scope = heap.scope();
+
+    let buf = scope.alloc_array_buffer(16)?;
+    let view = scope.alloc_data_view(buf, 0, 16)?;
+
+    // Root only the DataView, not the backing buffer.
+    scope.push_root(Value::Object(view))?;
+
+    trigger_gc_via_allocations(&mut scope)?;
+    scope.heap_mut().collect_garbage();
+
+    assert_eq!(scope.heap().data_view_buffer(view)?, buf);
+    assert_eq!(scope.heap().array_buffer_byte_length(buf)?, 16);
+    assert_eq!(scope.heap().data_view_byte_length(view)?, 16);
 
     Ok(())
   }
