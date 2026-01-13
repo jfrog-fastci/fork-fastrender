@@ -3,7 +3,9 @@ use crate::paint::display_list::DisplayItem;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::style::types::{Appearance, CaretColor};
 use crate::text::caret::CaretAffinity;
-use crate::tree::box_tree::{FormControl, FormControlKind, ReplacedType, TextControlKind};
+use crate::tree::box_tree::{
+  FormControl, FormControlKind, ImePreeditPaintState, ReplacedType, TextControlKind,
+};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use crate::{ComputedStyle, Rgba};
 use std::sync::Arc;
@@ -52,7 +54,10 @@ fn focused_text_input_fragment(
     meter_suboptimum_value_style: None,
     meter_even_less_good_value_style: None,
     file_selector_button_style: None,
-    ime_preedit: ime_preedit.map(|s| s.to_string()),
+    ime_preedit: ime_preedit.map(|s| ImePreeditPaintState {
+      text: s.to_string(),
+      cursor: None,
+    }),
   };
 
   FragmentNode::new_with_style(
@@ -92,4 +97,3 @@ fn ime_preedit_inserts_at_caret_in_native_input() {
     "expected caret with preedit to be between caret@1 and caret@end (caret_x_1={caret_x_1}, caret_x_preedit={caret_x_preedit}, caret_x_end={caret_x_end})"
   );
 }
-
