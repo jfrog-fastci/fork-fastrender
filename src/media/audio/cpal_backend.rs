@@ -13,11 +13,15 @@ use super::{
 };
 use super::convert::sanitize_sample;
 use crate::debug::trace::TraceHandle;
+use crate::media::audio_engine::{
+  AudioBackend as IdleBackend, AudioEngine as IdleEngine, AudioEngineTelemetry,
+  AudioStreamHandle as IdleStreamHandle, DEFAULT_IDLE_TIMEOUT,
+};
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
-use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy, RestartState};
 use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
 use crate::media::audio_clock::InterpolatedAudioClock;
+use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy, RestartState};
 use cpal::traits::{HostTrait, StreamTrait};
 
 fn device_name_best_effort(device: &cpal::Device) -> String {
@@ -210,6 +214,35 @@ fn gain_ramp_frames(sample_rate_hz: u32) -> u32 {
     / 1000) as u32;
   frames.max(1)
 }
+
+enum StreamCommand {
+  Start {
+    reply: std::sync::mpsc::Sender<Result<(), String>>,
+  },
+  Stop,
+  Shutdown,
+}
+
+#[derive(Clone)]
+struct CpalStreamControlBackend {
+  command_tx: std::sync::mpsc::Sender<StreamCommand>,
+}
+
+impl IdleBackend for CpalStreamControlBackend {
+  fn start_stream(&mut self) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    self
+      .command_tx
+      .send(StreamCommand::Start { reply: tx })
+      .map_err(|_| "cpal audio thread terminated".to_string())?;
+    rx.recv()
+      .map_err(|_| "cpal audio thread terminated".to_string())?
+  }
+
+  fn stop_stream(&mut self) {
+    let _ = self.command_tx.send(StreamCommand::Stop);
+  }
+}
 pub struct CpalAudioBackend {
   config: AudioStreamConfig,
   max_buffered_duration: Duration,
@@ -221,10 +254,11 @@ pub struct CpalAudioBackend {
   diagnostics: Arc<CpalStreamDiagnostics>,
   fell_back_to_null: Arc<AtomicBool>,
   fallback_start: Arc<OnceLock<Instant>>,
+  idle_engine: IdleEngine<CpalStreamControlBackend>,
   // `cpal::Stream` is neither `Send` nor `Sync`, so it cannot live inside a `Send + Sync`
   // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its lifetime
   // via a shutdown channel + join handle.
-  shutdown_tx: std::sync::mpsc::Sender<()>,
+  command_tx: std::sync::mpsc::Sender<StreamCommand>,
   stream_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -282,27 +316,24 @@ impl CpalAudioBackend {
       Arc<InterpolatedAudioClock>,
     );
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<ReadyState, AudioError>>();
-    let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
+    let (command_tx, command_rx) = std::sync::mpsc::channel::<StreamCommand>();
 
     let diagnostics_thread = diagnostics.clone();
     let thread_fell_back_to_null = fell_back_to_null.clone();
     let thread_fallback_start = fallback_start.clone();
     let thread = std::thread::spawn(move || {
       let selector = selector;
-      let init =
-        (|| -> Result<(ReadyState, cpal::Stream, Arc<StreamErrorState>), AudioError> {
+      let init = (|| -> Result<(ReadyState, Arc<StreamErrorState>), AudioError> {
         let host = cpal::default_host();
         let device = select_output_device(&host, &selector)?;
         let device_name = device_name_best_effort(&device);
-
-         let (stream_config, cpal_sample_format) =
-           select_output_stream_config(&device, &device_name)?;
-         let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
-         let sample_format = AudioSampleFormat::from(cpal_sample_format);
-         let fixed_callback_frames = match stream_config.buffer_size {
-           cpal::BufferSize::Fixed(frames) => Some(frames),
-           cpal::BufferSize::Default => None,
-         };
+        let (stream_config, _cpal_sample_format) =
+          select_output_stream_config(&device, &device_name)?;
+        let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
+        let fixed_callback_frames = match stream_config.buffer_size {
+          cpal::BufferSize::Fixed(frames) => Some(frames),
+          cpal::BufferSize::Default => None,
+        };
         let last_callback_frames = Arc::new(AtomicU32::new(0));
 
         // Start with a conservative estimate; the callback will refine this using timestamps (when
@@ -316,30 +347,6 @@ impl CpalAudioBackend {
         let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz));
         let mixer = Arc::new(MixerState::new(config));
         let errors = Arc::new(StreamErrorState::new());
-
-        let stream = build_stream(
-          &device,
-          &device_name,
-          &stream_config,
-          cpal_sample_format,
-          config,
-          sample_format,
-          mixer.clone(),
-          clock.clone(),
-          fixed_callback_frames,
-          last_callback_frames.clone(),
-          estimated_latency_nanos.clone(),
-          errors.clone(),
-          diagnostics_thread.clone(),
-          trace.clone(),
-        )?;
-        stream
-          .play()
-          .map_err(|err| AudioError::StreamPlayFailed {
-            device_name: device_name.clone(),
-            source: Box::new(err),
-          })?;
-
         Ok((
           (
             config,
@@ -349,12 +356,11 @@ impl CpalAudioBackend {
             mixer,
             clock,
           ),
-          stream,
           errors,
         ))
       })();
 
-      let (ready, stream, errors) = match init {
+      let (ready, errors) = match init {
         Ok(ok) => ok,
         Err(err) => {
           let _ = ready_tx.send(Err(err));
@@ -385,7 +391,9 @@ impl CpalAudioBackend {
         errors: errors.clone(),
         trace,
       };
-      let mut manager = ResilientStreamManager::new_running(factory, policy, stream);
+      // Start suspended: do not open an OS audio device until we actually have active audio.
+      let mut manager = ResilientStreamManager::new(factory, policy, Instant::now());
+      let mut suspended = true;
 
       let mut last_frames_written = clock_for_fallback.frames_written();
       let mut last_progress_at = Instant::now();
@@ -408,6 +416,25 @@ impl CpalAudioBackend {
       };
 
       loop {
+        if suspended {
+          let cmd = match command_rx.recv() {
+            Ok(cmd) => cmd,
+            Err(_) => break,
+          };
+          match cmd {
+            StreamCommand::Start { reply } => {
+              suspended = false;
+              let now = Instant::now();
+              manager.request_restart(now);
+              let _ = manager.tick(now);
+              let _ = reply.send(Ok(()));
+            }
+            StreamCommand::Stop => {}
+            StreamCommand::Shutdown => break,
+          }
+          continue;
+        }
+
         let now = Instant::now();
 
         // Detect output callback stalls even if CPAL never invokes the error callback (e.g. some
@@ -488,8 +515,18 @@ impl CpalAudioBackend {
           .map(|dur| dur.min(STREAM_RESTART_POLL_INTERVAL))
           .unwrap_or(STREAM_RESTART_POLL_INTERVAL);
 
-        match shutdown_rx.recv_timeout(sleep) {
-          Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        match command_rx.recv_timeout(sleep) {
+          Ok(cmd) => match cmd {
+            StreamCommand::Start { reply } => {
+              let _ = reply.send(Ok(()));
+            }
+            StreamCommand::Stop => {
+              suspended = true;
+              manager.request_restart(Instant::now());
+            }
+            StreamCommand::Shutdown => break,
+          },
+          Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
           Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
       }
@@ -514,6 +551,14 @@ impl CpalAudioBackend {
        }
      };
 
+    let idle_backend = CpalStreamControlBackend {
+      command_tx: command_tx.clone(),
+    };
+    let idle_engine = IdleEngine::with_idle_timeout(idle_backend, DEFAULT_IDLE_TIMEOUT);
+    // Ensure the stream is suspended after the debounce window even when the embedder doesn't have a
+    // central tick loop.
+    idle_engine.spawn_idle_watcher();
+
     Ok(Self {
       config,
       max_buffered_duration,
@@ -525,7 +570,8 @@ impl CpalAudioBackend {
       diagnostics,
       fell_back_to_null,
       fallback_start,
-      shutdown_tx,
+      idle_engine,
+      command_tx,
       stream_thread: Mutex::new(Some(thread)),
     })
   }
@@ -533,11 +579,16 @@ impl CpalAudioBackend {
   fn report_warnings_once(&self) {
     self.diagnostics.report_warnings_once();
   }
+
+  /// Snapshot of the debounced output-stream lifecycle state (useful for telemetry/debugging).
+  pub fn idle_telemetry(&self) -> AudioEngineTelemetry {
+    self.idle_engine.telemetry()
+  }
 }
 
 impl Drop for CpalAudioBackend {
   fn drop(&mut self) {
-    let _ = self.shutdown_tx.send(());
+    let _ = self.command_tx.send(StreamCommand::Shutdown);
     if let Some(handle) = self.stream_thread.lock().take() {
       // Avoid panicking if the backend is dropped on its own stream thread.
       if handle.thread().id() != std::thread::current().id() {
@@ -602,7 +653,12 @@ impl AudioBackend for CpalAudioBackend {
 
   fn create_sink(&self) -> Box<dyn AudioSink> {
     self.report_warnings_once();
-    let sink = Arc::new(SinkState::new(self.config, self.max_buffered_duration));
+    let activity = self.idle_engine.register_stream();
+    let sink = Arc::new(SinkState::new(
+      self.config,
+      self.max_buffered_duration,
+      activity,
+    ));
     self.mixer.register_sink(&sink);
     Box::new(CpalAudioSink { state: sink })
   }
@@ -733,6 +789,10 @@ impl MixerState {
           if sink.is_fully_muted() {
             sink.buffer.pop_discard(output_samples);
             sink.maybe_audible.store(false, Ordering::Relaxed);
+            if sink.buffer.is_empty() {
+              // Best-effort: if the engine is already torn down, ignore.
+              let _ = sink.activity.set_active(false);
+            }
           }
         }
       }
@@ -754,10 +814,18 @@ impl MixerState {
       if sink.is_fully_muted() {
         sink.buffer.pop_discard(to_drain);
         sink.maybe_audible.store(false, Ordering::Relaxed);
+        if sink.buffer.is_empty() {
+          // Best-effort: if the engine is already torn down, ignore.
+          let _ = sink.activity.set_active(false);
+        }
         continue;
       }
 
       sink.mix_into(dst);
+      if sink.buffer.is_empty() {
+        // Best-effort: if the engine is already torn down, ignore.
+        let _ = sink.activity.set_active(false);
+      }
     }
   }
 
@@ -799,6 +867,7 @@ impl MixerState {
 struct SinkState {
   config: AudioStreamConfig,
   buffer: AudioRingBuffer,
+  activity: IdleStreamHandle<CpalStreamControlBackend>,
   volume_target_bits: AtomicU32,
   ramp_target_bits: AtomicU32,
   ramp_current_bits: AtomicU32,
@@ -809,7 +878,11 @@ struct SinkState {
 }
 
 impl SinkState {
-  fn new(config: AudioStreamConfig, max_buffered: Duration) -> Self {
+  fn new(
+    config: AudioStreamConfig,
+    max_buffered: Duration,
+    activity: IdleStreamHandle<CpalStreamControlBackend>,
+  ) -> Self {
     let channels = usize::from(config.channels.max(1));
     let frames = super::duration_to_frames_ceil(config.sample_rate_hz, max_buffered);
     let frames = usize::try_from(frames).unwrap_or(usize::MAX);
@@ -818,6 +891,7 @@ impl SinkState {
     Self {
       config,
       buffer: AudioRingBuffer::new(capacity),
+      activity,
       volume_target_bits: AtomicU32::new(1.0f32.to_bits()),
       ramp_target_bits: AtomicU32::new(1.0f32.to_bits()),
       ramp_current_bits: AtomicU32::new(1.0f32.to_bits()),
@@ -966,6 +1040,9 @@ impl AudioSink for CpalAudioSink {
       if self.state.gain_nonzero_for_hint(volume) {
         self.state.maybe_audible.store(true, Ordering::Relaxed);
       }
+      // Mark this sink as active so the output stream is started (if needed) and kept alive long
+      // enough to play out (or drain) the buffered samples.
+      let _ = self.state.activity.set_active(true);
     }
 
     written
@@ -1344,8 +1421,8 @@ where
               let frame_counter_time = frames_to_duration(sample_rate_hz, clock.frames_written());
               let buffer_duration = frames_to_duration(sample_rate_hz, frames);
 
-              match playback_origin.as_ref() {
-                Some(origin) => match playback.duration_since(origin) {
+               match playback_origin.as_ref() {
+                 Some(origin) => match playback.duration_since(origin) {
                   Some(since_origin) => Some(
                     playback_origin_offset
                       .saturating_add(since_origin)

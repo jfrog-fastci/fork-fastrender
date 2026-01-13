@@ -1,5 +1,6 @@
 use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -39,11 +40,13 @@ impl<T: AudioBackend + ?Sized> AudioBackend for Box<T> {
 }
 
 struct AudioEngineInner<B: AudioBackend> {
-  backend: B,
+  backend: Mutex<B>,
   idle_timeout: Duration,
-  backend_running: bool,
-  active_streams: usize,
-  last_non_silent: Option<Instant>,
+  backend_running: AtomicBool,
+  active_streams: AtomicUsize,
+  start: Instant,
+  /// Monotonic timestamp (nanoseconds since `start`) for the last observed non-silent activity.
+  last_non_silent_nanos: AtomicU64,
 }
 
 /// A debounced audio output controller that suspends the backend stream when idle.
@@ -53,7 +56,7 @@ struct AudioEngineInner<B: AudioBackend> {
 /// period to avoid keeping the OS audio device open unnecessarily.
 #[derive(Clone)]
 pub struct AudioEngine<B: AudioBackend> {
-  inner: Arc<Mutex<AudioEngineInner<B>>>,
+  inner: Arc<AudioEngineInner<B>>,
 }
 
 impl<B: AudioBackend> AudioEngine<B> {
@@ -62,14 +65,16 @@ impl<B: AudioBackend> AudioEngine<B> {
   }
 
   pub fn with_idle_timeout(backend: B, idle_timeout: Duration) -> Self {
+    let start = Instant::now();
     Self {
-      inner: Arc::new(Mutex::new(AudioEngineInner {
-        backend,
+      inner: Arc::new(AudioEngineInner {
+        backend: Mutex::new(backend),
         idle_timeout,
-        backend_running: false,
-        active_streams: 0,
-        last_non_silent: None,
-      })),
+        backend_running: AtomicBool::new(false),
+        active_streams: AtomicUsize::new(0),
+        start,
+        last_non_silent_nanos: AtomicU64::new(0),
+      }),
     }
   }
 
@@ -80,7 +85,7 @@ impl<B: AudioBackend> AudioEngine<B> {
   pub fn register_stream(&self) -> AudioStreamHandle<B> {
     AudioStreamHandle {
       inner: Arc::downgrade(&self.inner),
-      active: false,
+      active: AtomicBool::new(false),
     }
   }
 
@@ -89,28 +94,26 @@ impl<B: AudioBackend> AudioEngine<B> {
   }
 
   fn tick_at(&self, now: Instant) {
-    let mut inner = self.inner.lock();
-    if inner.active_streams > 0 {
-      // Treat "has active streams" as non-silent activity for idle tracking purposes.
-      inner.last_non_silent = Some(now);
-      return;
-    }
+    tick_inner(&self.inner, now);
+  }
 
-    if !inner.backend_running {
-      return;
-    }
+  /// Spawn a background watchdog that periodically calls [`AudioEngine::tick`].
+  ///
+  /// This is useful for integrations that don't have a central "main loop" tick driving audio
+  /// housekeeping. The thread exits automatically once the [`AudioEngine`] is dropped.
+  pub fn spawn_idle_watcher(&self) {
+    let interval = (self.inner.idle_timeout / 4)
+      .max(Duration::from_millis(50))
+      .min(Duration::from_millis(250));
 
-    let Some(last) = inner.last_non_silent else {
-      // Shouldn't happen (we set the timestamp on activity transitions), but stay conservative.
-      inner.last_non_silent = Some(now);
-      return;
-    };
-
-    let idle_for = now.checked_duration_since(last).unwrap_or(Duration::ZERO);
-    if idle_for >= inner.idle_timeout {
-      inner.backend.stop_stream();
-      inner.backend_running = false;
-    }
+    let weak = Arc::downgrade(&self.inner);
+    std::thread::spawn(move || loop {
+      std::thread::sleep(interval);
+      let Some(inner) = weak.upgrade() else {
+        break;
+      };
+      tick_inner(&inner, Instant::now());
+    });
   }
 
   pub fn telemetry(&self) -> AudioEngineTelemetry {
@@ -118,81 +121,175 @@ impl<B: AudioBackend> AudioEngine<B> {
   }
 
   fn telemetry_at(&self, now: Instant) -> AudioEngineTelemetry {
-    let inner = self.inner.lock();
-    let output_state = if inner.backend_running {
+    let output_state = if self.inner.backend_running.load(Ordering::Relaxed) {
       OutputStreamState::Running
     } else {
       OutputStreamState::Suspended
     };
-    let idle_for = if inner.active_streams == 0 {
-      inner
-        .last_non_silent
-        .and_then(|last| now.checked_duration_since(last))
+    let active_streams = self.inner.active_streams.load(Ordering::Relaxed);
+    let idle_for = if active_streams == 0 {
+      let now_nanos = instant_to_nanos_u64(self.inner.start, now);
+      let last = self.inner.last_non_silent_nanos.load(Ordering::Relaxed);
+      Some(Duration::from_nanos(now_nanos.saturating_sub(last)))
     } else {
       None
     };
     AudioEngineTelemetry {
       output_state,
-      active_streams: inner.active_streams,
+      active_streams,
       idle_for,
     }
   }
 }
 
 pub struct AudioStreamHandle<B: AudioBackend> {
-  inner: Weak<Mutex<AudioEngineInner<B>>>,
-  active: bool,
+  inner: Weak<AudioEngineInner<B>>,
+  active: AtomicBool,
 }
 
 impl<B: AudioBackend> AudioStreamHandle<B> {
-  pub fn set_active(&mut self, active: bool) -> Result<(), String> {
+  pub fn set_active(&self, active: bool) -> Result<(), String> {
     self.set_active_at(active, Instant::now())
   }
 
-  fn set_active_at(&mut self, active: bool, now: Instant) -> Result<(), String> {
-    if self.active == active {
-      return Ok(());
+  fn set_active_at(&self, active: bool, now: Instant) -> Result<(), String> {
+    if active {
+      self.set_active_true(now)
+    } else {
+      self.set_active_false(now);
+      Ok(())
     }
+  }
 
+  fn set_active_true(&self, now: Instant) -> Result<(), String> {
     let Some(inner) = self.inner.upgrade() else {
-      // Engine dropped; nothing to do.
-      self.active = active;
+      self.active.store(true, Ordering::Relaxed);
       return Ok(());
     };
-    let mut inner = inner.lock();
 
-    if active {
-      if inner.active_streams == 0 && !inner.backend_running {
-        inner.backend.start_stream()?;
-        inner.backend_running = true;
-      }
-      inner.active_streams = inner.active_streams.saturating_add(1);
-      inner.last_non_silent = Some(now);
-      self.active = true;
-      return Ok(());
+    let changed = self
+      .active
+      .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+      .is_ok();
+    if changed {
+      inner.active_streams.fetch_add(1, Ordering::Relaxed);
     }
 
-    if inner.active_streams > 0 {
-      inner.active_streams -= 1;
+    inner
+      .last_non_silent_nanos
+      .store(instant_to_nanos_u64(inner.start, now), Ordering::Relaxed);
+
+    maybe_start_backend(&inner)
+  }
+
+  fn set_active_false(&self, now: Instant) {
+    let Some(inner) = self.inner.upgrade() else {
+      self.active.store(false, Ordering::Relaxed);
+      return;
+    };
+
+    if self
+      .active
+      .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+      .is_err()
+    {
+      return;
     }
-    if inner.active_streams == 0 {
-      // Start the idle timer from when we became silent (pause/end/drain).
-      inner.last_non_silent = Some(now);
+
+    let now_nanos = instant_to_nanos_u64(inner.start, now);
+
+    let prev = inner
+      .active_streams
+      .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        value.checked_sub(1)
+      })
+      .unwrap_or(0);
+
+    if prev <= 1 {
+      // This was the last active stream; start the idle timer.
+      inner.last_non_silent_nanos.store(now_nanos, Ordering::Relaxed);
     }
-    self.active = false;
-    Ok(())
   }
 }
 
 impl<B: AudioBackend> Drop for AudioStreamHandle<B> {
   fn drop(&mut self) {
-    if !self.active {
-      return;
-    }
-
     // Best-effort: dropping a handle should never panic.
-    let _ = self.set_active_at(false, Instant::now());
+    let _ = self.set_active(false);
   }
+}
+
+fn maybe_start_backend<B: AudioBackend>(inner: &AudioEngineInner<B>) -> Result<(), String> {
+  if inner.backend_running.load(Ordering::Relaxed) {
+    return Ok(());
+  }
+  if inner.active_streams.load(Ordering::Relaxed) == 0 {
+    return Ok(());
+  }
+
+  // Attempt to claim stream start so only one caller performs backend initialization.
+  if inner
+    .backend_running
+    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+    .is_err()
+  {
+    return Ok(());
+  }
+
+  // Avoid starting the backend if we've already become idle again.
+  if inner.active_streams.load(Ordering::Relaxed) == 0 {
+    inner.backend_running.store(false, Ordering::Relaxed);
+    return Ok(());
+  }
+
+  let mut backend = inner.backend.lock();
+  match backend.start_stream() {
+    Ok(()) => Ok(()),
+    Err(err) => {
+      inner.backend_running.store(false, Ordering::Relaxed);
+      Err(err)
+    }
+  }
+}
+
+fn tick_inner<B: AudioBackend>(inner: &AudioEngineInner<B>, now: Instant) {
+  if inner.active_streams.load(Ordering::Relaxed) > 0 {
+    inner
+      .last_non_silent_nanos
+      .store(instant_to_nanos_u64(inner.start, now), Ordering::Relaxed);
+    // Ensure the backend is running while streams are active. This also provides a retry path if
+    // `start_stream` previously failed and there are no further `set_active(true)` calls (for
+    // example, when audio has already been buffered).
+    let _ = maybe_start_backend(inner);
+    return;
+  }
+
+  if !inner.backend_running.load(Ordering::Relaxed) {
+    return;
+  }
+
+  let now_nanos = instant_to_nanos_u64(inner.start, now);
+  let last = inner.last_non_silent_nanos.load(Ordering::Relaxed);
+  let idle_for = Duration::from_nanos(now_nanos.saturating_sub(last));
+  if idle_for < inner.idle_timeout {
+    return;
+  }
+
+  // Stop is non-real-time; double-check state after taking the lock to avoid races with
+  // concurrent `set_active(true)`.
+  let mut backend = inner.backend.lock();
+  if inner.active_streams.load(Ordering::Relaxed) == 0 {
+    backend.stop_stream();
+    inner.backend_running.store(false, Ordering::Relaxed);
+  }
+}
+
+fn duration_to_nanos_u64(duration: Duration) -> u64 {
+  u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn instant_to_nanos_u64(start: Instant, now: Instant) -> u64 {
+  duration_to_nanos_u64(now.checked_duration_since(start).unwrap_or(Duration::ZERO))
 }
 
 /// A backend that does nothing; useful for headless runs and unit tests.
@@ -308,7 +405,7 @@ mod tests {
     let engine = AudioEngine::with_idle_timeout(backend, idle_timeout);
 
     let t0 = Instant::now();
-    let mut stream = engine.register_stream();
+    let stream = engine.register_stream();
     stream.set_active_at(true, t0).unwrap();
     assert_eq!(probe.started(), 1);
     assert!(probe.is_running());
@@ -337,7 +434,7 @@ mod tests {
 
     // New activity should restart output immediately.
     let t2 = t1 + idle_timeout + Duration::from_millis(2);
-    let mut stream2 = engine.register_stream();
+    let stream2 = engine.register_stream();
     stream2.set_active_at(true, t2).unwrap();
     assert_eq!(probe.started(), 2);
     assert!(probe.is_running());
