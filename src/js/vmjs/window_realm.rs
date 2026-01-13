@@ -46510,7 +46510,6 @@ fn init_window_globals(
     create_tree_walker_key,
     data_desc(Value::Object(create_tree_walker_func)),
   )?;
-
   // document.importNode
   let import_node_key = alloc_key(&mut scope, "importNode")?;
   let import_node_call_id = vm.register_native_call(document_import_node_native)?;
