@@ -54473,6 +54473,60 @@ mod tests {
       get_string(realm.heap(), illegal_invocation_message),
       ILLEGAL_INVOCATION_ERROR
     );
+
+    let set_item_illegal_name = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.setItem.call({}, 'a', '1'); return 'no error'; }\n\
+        catch (e) { return e && e.name; }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), set_item_illegal_name), "TypeError");
+    let set_item_illegal_message = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.setItem.call({}, 'a', '1'); return 'no error'; }\n\
+        catch (e) { return e && e.message; }\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), set_item_illegal_message),
+      ILLEGAL_INVOCATION_ERROR
+    );
+
+    let remove_item_illegal_name = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.removeItem.call({}, 'a'); return 'no error'; }\n\
+        catch (e) { return e && e.name; }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), remove_item_illegal_name), "TypeError");
+    let remove_item_illegal_message = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.removeItem.call({}, 'a'); return 'no error'; }\n\
+        catch (e) { return e && e.message; }\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), remove_item_illegal_message),
+      ILLEGAL_INVOCATION_ERROR
+    );
+
+    let clear_illegal_name = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.clear.call({}); return 'no error'; }\n\
+        catch (e) { return e && e.name; }\n\
+      })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), clear_illegal_name), "TypeError");
+    let clear_illegal_message = realm.exec_script(
+      "(() => {\n\
+        try { Storage.prototype.clear.call({}); return 'no error'; }\n\
+        catch (e) { return e && e.message; }\n\
+      })()",
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), clear_illegal_message),
+      ILLEGAL_INVOCATION_ERROR
+    );
     assert_eq!(
       realm.exec_script(
         "(() => {\n\
