@@ -53553,6 +53553,34 @@ fn init_window_globals(
       },
     )?;
 
+    // Document.createCDATASection(data)
+    //
+    // This is used by WPT range/staticrange tests, which construct detached XML documents via
+    // `new Document()`/`DOMParser.parseFromString(..., 'application/xml')` and then create CDATA
+    // nodes to use as CharacterData endpoints.
+    let create_cdata_key = alloc_key(&mut scope, "createCDATASection")?;
+    if scope
+      .heap()
+      .object_get_own_property(document_proto, &create_cdata_key)?
+      .is_none()
+    {
+      let create_cdata_call_id = vm.register_native_call(document_create_cdata_section_native)?;
+      let create_cdata_name = scope.alloc_string("createCDATASection")?;
+      scope.push_root(Value::String(create_cdata_name))?;
+      let create_cdata_func =
+        scope.alloc_native_function(create_cdata_call_id, None, create_cdata_name, 1)?;
+      scope.heap_mut().object_set_prototype(
+        create_cdata_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(create_cdata_func))?;
+      scope.define_property(
+        document_proto,
+        create_cdata_key,
+        data_desc(Value::Object(create_cdata_func)),
+      )?;
+    }
+
     // DocumentType.name/publicId/systemId
     let doc_type_name_get_call_id = vm.register_native_call(document_type_name_get_native)?;
     let doc_type_name_get_name = scope.alloc_string("get name")?;
@@ -59988,6 +60016,41 @@ mod tests {
       "#,
     )?;
     assert_eq!(value, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn document_constructor_cdata_can_be_adopted_into_host_document() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const xmlDoc = new Document();
+        if (xmlDoc.defaultView !== null) throw new Error('expected detached Document.defaultView === null');
+
+        const cdata = xmlDoc.createCDATASection('1234');
+        if (cdata.data !== '1234') throw new Error(`expected CharacterData.data to be 1234, got ${cdata.data}`);
+
+        const hostEl = document.createElement('div');
+        if (hostEl.ownerDocument !== document) throw new Error('expected host element ownerDocument === document');
+
+        hostEl.appendChild(cdata);
+        if (hostEl.textContent !== '1234') throw new Error(`expected adopted textContent 1234, got ${hostEl.textContent}`);
+        if (cdata.ownerDocument !== document) throw new Error('expected CDATASection to be adopted into host document');
+
+        const parsed = new DOMParser().parseFromString('<root/>', 'application/xml');
+        if (parsed.defaultView !== null) throw new Error('expected DOMParser XML document defaultView === null');
+        const parsedCdata = parsed.createCDATASection('abc');
+        const hostEl2 = document.createElement('div');
+        hostEl2.appendChild(parsedCdata);
+        if (hostEl2.textContent !== 'abc') throw new Error(`expected adopted DOMParser CDATA abc, got ${hostEl2.textContent}`);
+
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
     Ok(())
   }
 
