@@ -5689,7 +5689,7 @@ mod regexp_unicode_sets_tests {
   }
 
   #[test]
-  fn regexp_v_enables_unicode_mode_for_control_escapes() -> Result<(), VmError> {
+  fn regexp_unicode_mode_rejects_invalid_control_escapes() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -5698,7 +5698,15 @@ mod regexp_unicode_sets_tests {
     // an ASCII letter, otherwise it is a syntax error (unicode-restricted identity escape).
     assert!(eval_bool(
       &mut rt,
+      r#"(function () { try { new RegExp("\\c", "u"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
       r#"(function () { try { new RegExp("\\c", "v"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("\\c1", "u"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
     )?);
     assert!(eval_bool(
       &mut rt,
@@ -5708,7 +5716,15 @@ mod regexp_unicode_sets_tests {
     // Same restriction inside character classes.
     assert!(eval_bool(
       &mut rt,
+      r#"(function () { try { new RegExp("[\\c]", "u"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
       r#"(function () { try { new RegExp("[\\c]", "v"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[\\c1]", "u"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
     )?);
     assert!(eval_bool(
       &mut rt,
