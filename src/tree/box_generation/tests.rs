@@ -2440,6 +2440,196 @@ fn new_form_control_input_types_are_identified() {
 }
 
 #[test]
+fn form_state_overrides_text_input_value() {
+  let html = "<html><body><input value=\"default\"></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+
+  fn find_input_id(node: &StyledNode) -> Option<usize> {
+    if node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+    {
+      return Some(node.node_id);
+    }
+    node.children.iter().find_map(find_input_id)
+  }
+
+  let input_id = find_input_id(&styled).expect("expected input element in styled tree");
+  let mut interaction_state = InteractionState::default();
+  interaction_state
+    .form_state
+    .values
+    .insert(input_id, "override".to_string());
+
+  let box_tree = generate_box_tree_with_options_and_interaction_state(
+    &styled,
+    &BoxGenerationOptions::default(),
+    Some(&interaction_state),
+  )
+  .expect("box generation failed");
+
+  fn find_text_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::FormControl(control) = &repl.replaced_type {
+        if matches!(control.control, FormControlKind::Text { .. }) {
+          return Some(control);
+        }
+      }
+    }
+    node.children.iter().find_map(find_text_control)
+  }
+
+  let control = find_text_control(&box_tree.root).expect("expected text input form control");
+  let FormControlKind::Text { value, .. } = &control.control else {
+    panic!("expected text form control kind");
+  };
+  assert_eq!(value.as_str(), "override");
+}
+
+#[test]
+fn form_state_overrides_checkbox_checkedness() {
+  let html = "<html><body><input type=\"checkbox\" checked></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+
+  fn find_checkbox_id(node: &StyledNode) -> Option<usize> {
+    let is_checkbox = node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      && node
+        .node
+        .get_attribute_ref("type")
+        .is_some_and(|t| t.eq_ignore_ascii_case("checkbox"));
+    if is_checkbox {
+      return Some(node.node_id);
+    }
+    node.children.iter().find_map(find_checkbox_id)
+  }
+
+  let checkbox_id = find_checkbox_id(&styled).expect("expected checkbox element in styled tree");
+  let mut interaction_state = InteractionState::default();
+  interaction_state
+    .form_state
+    .checked
+    .insert(checkbox_id, false);
+
+  let box_tree = generate_box_tree_with_options_and_interaction_state(
+    &styled,
+    &BoxGenerationOptions::default(),
+    Some(&interaction_state),
+  )
+  .expect("box generation failed");
+
+  fn find_checkbox_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::FormControl(control) = &repl.replaced_type {
+        if matches!(control.control, FormControlKind::Checkbox { .. }) {
+          return Some(control);
+        }
+      }
+    }
+    node.children.iter().find_map(find_checkbox_control)
+  }
+
+  let control = find_checkbox_control(&box_tree.root).expect("expected checkbox form control");
+  let FormControlKind::Checkbox { checked, .. } = &control.control else {
+    panic!("expected checkbox form control kind");
+  };
+  assert!(!*checked, "expected form state override to clear checkedness");
+}
+
+#[test]
+fn form_state_overrides_select_selected_options() {
+  use rustc_hash::FxHashSet;
+
+  let html =
+    "<html><body><select><option value=\"one\">One</option><option value=\"two\">Two</option></select></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+
+  fn find_select_id(node: &StyledNode) -> Option<usize> {
+    if node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+    {
+      return Some(node.node_id);
+    }
+    node.children.iter().find_map(find_select_id)
+  }
+
+  fn collect_option_ids(node: &StyledNode, out: &mut Vec<usize>) {
+    if node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+    {
+      out.push(node.node_id);
+    }
+    for child in &node.children {
+      collect_option_ids(child, out);
+    }
+  }
+
+  let select_id = find_select_id(&styled).expect("expected select element in styled tree");
+  let mut option_ids = Vec::new();
+  collect_option_ids(&styled, &mut option_ids);
+  assert_eq!(option_ids.len(), 2, "expected two <option> elements");
+  let option_one_id = option_ids[0];
+  let option_two_id = option_ids[1];
+
+  let mut selected = FxHashSet::default();
+  selected.insert(option_two_id);
+  let mut interaction_state = InteractionState::default();
+  interaction_state
+    .form_state
+    .select_selected
+    .insert(select_id, selected);
+
+  let box_tree = generate_box_tree_with_options_and_interaction_state(
+    &styled,
+    &BoxGenerationOptions::default(),
+    Some(&interaction_state),
+  )
+  .expect("box generation failed");
+
+  fn find_select_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::FormControl(control) = &repl.replaced_type {
+        if matches!(control.control, FormControlKind::Select(_)) {
+          return Some(control);
+        }
+      }
+    }
+    node.children.iter().find_map(find_select_control)
+  }
+
+  let control = find_select_control(&box_tree.root).expect("expected select form control");
+  let FormControlKind::Select(select) = &control.control else {
+    panic!("expected select form control kind");
+  };
+  assert_eq!(select_selected_value(select), Some("two"));
+
+  assert!(
+    select
+      .items
+      .iter()
+      .any(|item| matches!(item, SelectItem::Option { node_id, selected: false, .. } if *node_id == option_one_id)),
+    "expected first option to be deselected"
+  );
+  assert!(
+    select
+      .items
+      .iter()
+      .any(|item| matches!(item, SelectItem::Option { node_id, selected: true, .. } if *node_id == option_two_id)),
+    "expected second option to be selected"
+  );
+}
+
+#[test]
 fn progress_and_meter_generate_form_control_replaced_boxes() {
   let html = "<html><body>
     <progress></progress>

@@ -7015,12 +7015,47 @@ fn create_form_control_replaced(
       focus_visible = focused && state.focus_visible;
     }
   }
-  let textarea_value = tag.eq_ignore_ascii_case("textarea").then(|| {
-    crate::dom::textarea_current_value_from_text_content(&styled.node, collect_text_content(styled))
-  });
+  let textarea_value = if tag.eq_ignore_ascii_case("textarea") {
+    if let Some(value) = interaction_state.and_then(|state| state.form_state.value_for(styled.node_id))
+    {
+      Some(value.to_string())
+    } else {
+      Some(crate::dom::textarea_current_value_from_text_content(
+        &styled.node,
+        collect_text_content(styled),
+      ))
+    }
+  } else {
+    None
+  };
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
-    select_control = Some(build_select_control(styled));
+    let mut control = build_select_control(styled);
+    if let Some(selected_set) = interaction_state.and_then(|state| {
+      state
+        .form_state
+        .select_selected_options(styled.node_id)
+    }) {
+      let mut items = (*control.items).clone();
+      let mut selected = Vec::new();
+      for (idx, item) in items.iter_mut().enumerate() {
+        if let SelectItem::Option {
+          node_id,
+          selected: item_selected,
+          ..
+        } = item
+        {
+          let is_selected = selected_set.contains(node_id);
+          *item_selected = is_selected;
+          if is_selected {
+            selected.push(idx);
+          }
+        }
+      }
+      control.items = Arc::new(items);
+      control.selected = selected;
+    }
+    select_control = Some(control);
   }
   let element_ref = ElementRef::new(&styled.node);
   let required = element_ref.accessibility_required() && !disabled;
@@ -7159,11 +7194,14 @@ fn create_form_control_replaced(
     if input_type.eq_ignore_ascii_case("image") {
       return None;
     }
-
+ 
     let control = if input_type.eq_ignore_ascii_case("checkbox") {
+      let checked = interaction_state
+        .and_then(|state| state.form_state.checked_for(styled.node_id))
+        .unwrap_or_else(|| styled.node.get_attribute_ref("checked").is_some());
       FormControlKind::Checkbox {
         is_radio: false,
-        checked: styled.node.get_attribute_ref("checked").is_some(),
+        checked,
         indeterminate: styled
           .node
           .get_attribute_ref("indeterminate")
@@ -7176,9 +7214,12 @@ fn create_form_control_replaced(
             .unwrap_or(false),
       }
     } else if input_type.eq_ignore_ascii_case("radio") {
+      let checked = interaction_state
+        .and_then(|state| state.form_state.checked_for(styled.node_id))
+        .unwrap_or_else(|| styled.node.get_attribute_ref("checked").is_some());
       FormControlKind::Checkbox {
         is_radio: true,
-        checked: styled.node.get_attribute_ref("checked").is_some(),
+        checked,
         indeterminate: false,
       }
     } else if input_type.eq_ignore_ascii_case("button")
@@ -7236,7 +7277,10 @@ fn create_form_control_replaced(
         .get_attribute_ref("placeholder")
         .filter(|p| !p.is_empty())
         .map(|p| p.to_string());
-      let value = element_ref.accessibility_value().unwrap_or_default();
+      let value = interaction_state
+        .and_then(|state| state.form_state.value_for(styled.node_id))
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| element_ref.accessibility_value().unwrap_or_default());
 
       let kind = if input_type.eq_ignore_ascii_case("password") {
         TextControlKind::Password
