@@ -28,10 +28,10 @@ See also:
 
 **FastRender is optimized for static image rendering, not live browser use.**
 
-Current architecture:
+Current architecture (one-shot render APIs):
 - Render HTML → produce image → done
-- JavaScript may not execute at all during rendering
-- No repaints, no animations, no dynamic content
+- No author JavaScript execution (`<script>`); JS requires a tab-like runtime (see `BrowserTab`)
+- No repaints, animations, or other “over time” updates (single-frame)
 - Optimized for "screenshot a page" use case
 
 This is fundamentally wrong for a browser. Real browsers:
