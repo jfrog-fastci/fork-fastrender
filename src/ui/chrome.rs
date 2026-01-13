@@ -4201,6 +4201,7 @@ mod tests {
       "Set accent color: Red",
       "Set accent color: Gray",
       "Custom accent color",
+      "UI scale",
     ] {
       assert!(
         names.iter().any(|n| n == expected),
