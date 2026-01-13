@@ -255,6 +255,10 @@ mod logical_assignment_tests;
 #[path = "../tests/unit/private_brand_check_in_operator.rs"]
 mod private_brand_check_in_operator_tests;
 
+#[cfg(test)]
+#[path = "../tests/generators_short_circuit_and_comma.rs"]
+mod generators_short_circuit_and_comma_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;
