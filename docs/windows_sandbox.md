@@ -521,8 +521,9 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
 
 - `FASTR_LOG_SANDBOX=1`: enable verbose stderr logging for sandbox spawn decisions (AppContainer
   availability, `ERROR_ACCESS_DENIED` retries, breakaway/job assignment failures).
-  - In debug builds (`cargo test`/`cargo run` without `--release`), sandbox debug logging is enabled
-    by default; this env var is primarily to enable the same logs in release builds.
+  - In debug builds (e.g. `bash scripts/cargo_agent.sh test` / `bash scripts/cargo_agent.sh run`
+    without `--release`), sandbox debug logging is enabled by default; this env var is primarily to
+    enable the same logs in release builds.
 - `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_WINDOWS_RENDERER_SANDBOX=off`: disable Windows
   renderer sandboxing entirely (**debug only; insecure**).
   - Note: even with the token/AppContainer sandbox disabled, `spawn_sandboxed(...)` still uses the
