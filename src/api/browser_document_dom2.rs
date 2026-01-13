@@ -532,6 +532,7 @@ impl BrowserDocumentDom2 {
   pub fn ensure_layout_for_dom_queries(&mut self) -> Result<()> {
     // Layout queries should not force a re-layout when we already have an up-to-date prepared cache.
     if self.prepared.is_some() && !self.needs_layout() {
+      self.dom.clear_mutations();
       return Ok(());
     }
 
@@ -545,6 +546,7 @@ impl BrowserDocumentDom2 {
       || self.layout_dirty
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
     if !needs_layout {
+      self.dom.clear_mutations();
       return Ok(());
     }
 
@@ -667,6 +669,7 @@ impl BrowserDocumentDom2 {
     // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
     // can be retried.
     self.paint_dirty = true;
+    self.dom.clear_mutations();
     Ok(())
   }
 
@@ -1730,6 +1733,7 @@ impl BrowserDocumentDom2 {
       || self.layout_dirty
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
     if !needs_layout {
+      self.dom.clear_mutations();
       return Ok(());
     }
 
@@ -1823,6 +1827,7 @@ impl BrowserDocumentDom2 {
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.paint_dirty = true;
+    self.dom.clear_mutations();
     Ok(())
   }
 
@@ -2039,6 +2044,7 @@ impl BrowserDocumentDom2 {
     // (e.g. via JS shims using raw pointers) without forcing a re-layout when only paint is
     // outstanding.
     self.last_seen_dom_mutation_generation = dom_generation;
+    self.dom.clear_mutations();
     Ok(prepared)
   }
 
@@ -2059,6 +2065,7 @@ impl BrowserDocumentDom2 {
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation;
 
     if !needs_layout {
+      self.dom.clear_mutations();
       return Ok(());
     }
 
@@ -2146,6 +2153,7 @@ impl BrowserDocumentDom2 {
     self.dirty_structure_nodes.clear();
     self.paint_dirty = true;
 
+    self.dom.clear_mutations();
     Ok(())
   }
 
@@ -3072,6 +3080,30 @@ mod tests {
       "expected dom2↔renderer mapping"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn dom2_mutation_log_is_cleared_after_successful_render() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div id=a></div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    let node = doc.dom().get_element_by_id("a").expect("#a element");
+    doc
+      .dom_mut()
+      .set_attribute(node, "data-x", "1")
+      .expect("set_attribute");
+
+    doc.render_frame()?;
+
+    assert!(
+      doc.dom.take_mutations().is_empty(),
+      "expected dom2 mutation log to be cleared after render"
+    );
     Ok(())
   }
 
