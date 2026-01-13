@@ -346,6 +346,19 @@ cross-platform shared-memory stand-in:
   [`src/ipc/frame_pool.rs`](../src/ipc/frame_pool.rs)
 - Renderer opens/maps the same paths and validates mapping size matches the descriptor.
 
+The pool is intentionally **small** (double/triple buffering). The browser must explicitly
+**ack/release** each submitted frame once it has either:
+
+- uploaded/copied the pixels out of the shared buffer (e.g. into a GPU texture), or
+- decided to drop the frame as stale.
+
+Without an ack, the renderer must treat the buffer as **in use** and must not overwrite it. This is
+both a correctness rule (avoid tearing / use-after-free) and a flow-control rule (bounded buffering
+prevents the renderer from blocking indefinitely when the browser/UI is slow).
+
+See also: `RendererToBrowser::FrameReady { frame_seq, .. }` ↔ `BrowserToRenderer::FrameAck { frame_seq }`
+in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+
 Security invariants that must remain true (even before we migrate to `memfd`):
 
 - **Browser allocates shared buffers**; renderer should not be able to cause the browser to accept

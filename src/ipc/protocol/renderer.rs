@@ -332,6 +332,16 @@ pub enum BrowserToRenderer {
     files: Vec<FileMeta>,
   },
 
+  /// Acknowledge a previously delivered [`RendererToBrowser::FrameReady`] message.
+  ///
+  /// The browser must send this once it has either:
+  /// - uploaded/copied the frame pixels out of the attached FD, or
+  /// - decided to drop the frame without using it.
+  ///
+  /// After the ack is received, the renderer may reuse any resources associated with the frame
+  /// (shared memory segment, pooled buffer, etc).
+  FrameAck { frame_seq: u64 },
+
   /// Close a tab (drop all associated renderer-side state).
   TabClosed { tab_id: u64 },
 
@@ -367,14 +377,135 @@ pub enum RendererToBrowser {
   /// A new frame is available.
   ///
   /// The pixel buffer is not serialized; it must be supplied as a single attached FD.
+  ///
+  /// ## Flow control / shared-buffer lifetime
+  ///
+  /// The renderer must treat the attached pixel buffer (FD / shared memory mapping) as **in use**
+  /// by the browser until it receives [`BrowserToRenderer::FrameAck`] for the same `frame_seq`.
+  ///
+  /// The renderer should cap the number of un-acked frames in flight (commonly 1–2) to avoid
+  /// blocking indefinitely if the browser/UI process is slow. When saturated, it should drop
+  /// intermediate frames (keep only the latest pending repaint) rather than queueing unbounded
+  /// frames.
   FrameReady {
     tab_id: u64,
+    /// Monotonically increasing renderer-chosen sequence number for this frame.
+    ///
+    /// Uniqueness is scoped to a single browser↔renderer connection.
+    frame_seq: u64,
     frame: SharedFrameDescriptor,
     viewport_css: (u32, u32),
     dpr: f32,
     wants_ticks: bool,
     scroll_state_minimal: ScrollStateMinimal,
   },
+}
+
+/// Default maximum number of un-acked frames a renderer should allow in-flight.
+///
+/// A value of `1` is simplest (strictly one frame at a time). `2` allows basic double-buffering
+/// without letting a slow browser/UI backlog the renderer indefinitely.
+pub const DEFAULT_MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFlowControlError {
+  MaxInFlightZero,
+  AckForUnknownFrame { frame_seq: u64 },
+}
+
+/// Outcome of attempting to send a new frame while enforcing an in-flight limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameSendDecision {
+  /// The frame may be sent now with the provided `frame_seq`.
+  Send { frame_seq: u64 },
+  /// The frame should be dropped (coalesced).
+  ///
+  /// Callers typically mark themselves "dirty" so they will render/send the latest frame once an
+  /// ack arrives and capacity is available.
+  Drop,
+}
+
+/// Minimal in-memory helper for renderer-side frame flow control.
+///
+/// This struct tracks:
+/// - which `frame_seq` values are currently in flight, and
+/// - whether at least one frame was dropped while saturated (meaning we should send another frame
+///   once capacity is available).
+///
+/// It intentionally does **not** store frame contents; it is suitable for driving either:
+/// - "render then try to send" pipelines, or
+/// - "check capacity before rendering" pipelines.
+#[derive(Debug, Clone)]
+pub struct FrameInFlightCounter {
+  max_in_flight: usize,
+  next_seq: u64,
+  in_flight: Vec<u64>,
+  pending: bool,
+}
+
+impl FrameInFlightCounter {
+  pub fn new(max_in_flight: usize) -> Result<Self, FrameFlowControlError> {
+    if max_in_flight == 0 {
+      return Err(FrameFlowControlError::MaxInFlightZero);
+    }
+    Ok(Self {
+      max_in_flight,
+      next_seq: 1,
+      in_flight: Vec::with_capacity(max_in_flight),
+      pending: false,
+    })
+  }
+
+  pub fn max_in_flight(&self) -> usize {
+    self.max_in_flight
+  }
+
+  pub fn in_flight_len(&self) -> usize {
+    self.in_flight.len()
+  }
+
+  pub fn has_pending(&self) -> bool {
+    self.pending
+  }
+
+  fn alloc_seq(&mut self) -> u64 {
+    // `0` is reserved as an "invalid" sentinel.
+    loop {
+      let seq = self.next_seq;
+      self.next_seq = self.next_seq.wrapping_add(1);
+      if seq != 0 {
+        return seq;
+      }
+    }
+  }
+
+  /// Called when the renderer has a new frame ready and wants to send it.
+  pub fn on_frame_ready(&mut self) -> FrameSendDecision {
+    if self.in_flight.len() >= self.max_in_flight {
+      self.pending = true;
+      return FrameSendDecision::Drop;
+    }
+
+    let seq = self.alloc_seq();
+    self.in_flight.push(seq);
+    self.pending = false;
+    FrameSendDecision::Send { frame_seq: seq }
+  }
+
+  /// Called when the browser acks a previously received `frame_seq`.
+  ///
+  /// Returns `Ok(true)` when:
+  /// - at least one frame was dropped while saturated (`pending == true`), and
+  /// - there is now capacity to send another frame.
+  ///
+  /// Callers can use this as a cheap "wake up the render loop" signal.
+  pub fn on_frame_acked(&mut self, frame_seq: u64) -> Result<bool, FrameFlowControlError> {
+    let Some(pos) = self.in_flight.iter().position(|&s| s == frame_seq) else {
+      return Err(FrameFlowControlError::AckForUnknownFrame { frame_seq });
+    };
+    self.in_flight.swap_remove(pos);
+    Ok(self.pending && self.in_flight.len() < self.max_in_flight)
+  }
 }
 
 impl RendererToBrowser {
@@ -388,7 +519,7 @@ impl RendererToBrowser {
 }
 
 #[cfg(test)]
-mod tests {
+mod frame_flow_control {
   use super::*;
   use bincode::Options;
 
@@ -407,6 +538,9 @@ mod tests {
       version: RENDERER_PROTOCOL_VERSION,
       capabilities: 0x1234,
     };
+    assert_eq!(msg, roundtrip(&msg));
+
+    let msg = BrowserToRenderer::FrameAck { frame_seq: 123 };
     assert_eq!(msg, roundtrip(&msg));
 
     let msg = BrowserToRenderer::Navigate {
@@ -452,6 +586,7 @@ mod tests {
 
     let msg = RendererToBrowser::FrameReady {
       tab_id: 7,
+      frame_seq: 1,
       frame: SharedFrameDescriptor::new_rgba8(800, 600),
       viewport_css: (800, 600),
       dpr: 2.0,
@@ -525,6 +660,7 @@ mod tests {
         key: 0,
         modifiers: 0,
       },
+      BrowserToRenderer::FrameAck { frame_seq: 9 },
       BrowserToRenderer::TabClosed { tab_id: 1 },
       BrowserToRenderer::Shutdown,
     ];
@@ -567,6 +703,7 @@ mod tests {
       (
         RendererToBrowser::FrameReady {
           tab_id: 1,
+          frame_seq: 1,
           frame: SharedFrameDescriptor::new_rgba8(1, 1),
           viewport_css: (1, 1),
           dpr: 1.0,
@@ -601,6 +738,39 @@ mod tests {
     let err = bincode_options().deserialize::<UrlString>(&bytes).unwrap_err();
     let formatted = format!("{err:?}");
     assert!(!formatted.is_empty());
+  }
+
+  #[test]
+  fn frame_in_flight_counter_coalesces_and_wakes_on_ack() {
+    let mut counter = FrameInFlightCounter::new(1).unwrap();
+    assert_eq!(counter.max_in_flight(), 1);
+    assert_eq!(counter.in_flight_len(), 0);
+    assert!(!counter.has_pending());
+
+    let first = counter.on_frame_ready();
+    assert_eq!(first, FrameSendDecision::Send { frame_seq: 1 });
+    assert_eq!(counter.in_flight_len(), 1);
+
+    let dropped = counter.on_frame_ready();
+    assert_eq!(dropped, FrameSendDecision::Drop);
+    assert!(counter.has_pending());
+
+    let err = counter.on_frame_acked(999).unwrap_err();
+    assert_eq!(
+      err,
+      FrameFlowControlError::AckForUnknownFrame { frame_seq: 999 }
+    );
+
+    // Acking the in-flight frame frees capacity; since we dropped at least one frame, we should be
+    // woken up to send a fresh one.
+    assert_eq!(counter.on_frame_acked(1).unwrap(), true);
+    assert_eq!(counter.in_flight_len(), 0);
+    assert!(counter.has_pending(), "pending is cleared only once we send again");
+
+    let second = counter.on_frame_ready();
+    assert_eq!(second, FrameSendDecision::Send { frame_seq: 2 });
+    assert_eq!(counter.in_flight_len(), 1);
+    assert!(!counter.has_pending());
   }
 }
 

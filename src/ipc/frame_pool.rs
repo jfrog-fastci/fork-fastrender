@@ -1,7 +1,12 @@
 //! Shared-memory frame buffer pool management for multiprocess rendering.
 //!
 //! This module is designed to be reused by both the browser process (frame buffer allocation +
-//! mapping) and the renderer process (buffer acquisition + release/ack tracking).
+//! mapping) and the renderer process (buffer acquisition + release gated by browser acks).
+//!
+//! In the multiprocess architecture, a rendered frame buffer must not be reused/overwritten by the
+//! renderer until the browser has finished uploading/copying (or explicitly dropping) the frame.
+//! The browser signals that via an explicit acknowledgement message (e.g.
+//! `ipc::protocol::renderer::BrowserToRenderer::FrameAck { frame_seq }`).
 
 use crate::ipc::IpcError;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
