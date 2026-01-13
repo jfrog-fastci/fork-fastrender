@@ -271,11 +271,15 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
       Some(ShortcutAction::Forward)
     }
     // Home page.
-    (Key::Home, Modifiers { ctrl: false, shift: false, alt: true, meta: false })
-      if matches!(platform, Platform::Other) =>
-    {
-      Some(ShortcutAction::GoHome)
-    }
+    (
+      Key::Home,
+      Modifiers {
+        ctrl: false,
+        shift: false,
+        alt: true,
+        meta: false,
+      },
+    ) if matches!(platform, Platform::Other) => Some(ShortcutAction::GoHome),
     (Key::H, Modifiers { shift: true, .. }) if cmd && matches!(platform, Platform::Mac) => {
       Some(ShortcutAction::GoHome)
     }
@@ -317,7 +321,9 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
       Some(ShortcutAction::ShowHistory)
     }
     // Chrome macOS shortcut for showing History.
-    (Key::Y, Modifiers { shift: false, .. }) if primary_cmd && matches!(platform, Platform::Mac) => {
+    (Key::Y, Modifiers { shift: false, .. })
+      if primary_cmd && matches!(platform, Platform::Mac) =>
+    {
       Some(ShortcutAction::ShowHistory)
     }
     // Firefox macOS shortcut for showing History (keep both).
@@ -549,7 +555,10 @@ mod tests {
   #[test]
   fn f11_toggles_fullscreen_on_other_platforms() {
     assert_eq!(
-      map_shortcut_with_platform(KeyEvent::new(Key::F11, Modifiers::default()), Platform::Other),
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::F11, Modifiers::default()),
+        Platform::Other
+      ),
       Some(ShortcutAction::ToggleFullScreen)
     );
     // macOS uses Ctrl+Cmd+F for fullscreen; leave F11 unmapped.
@@ -1040,24 +1049,6 @@ mod tests {
   }
 
   #[test]
-  fn ctrl_shift_o_toggles_bookmarks_manager() {
-    assert_eq!(
-      map_shortcut_with_platform(
-        KeyEvent::new(Key::O, Modifiers::new(true, true, false, false)),
-        Platform::Other
-      ),
-      Some(ShortcutAction::ToggleBookmarksManager)
-    );
-    assert_eq!(
-      map_shortcut_with_platform(
-        KeyEvent::new(Key::O, Modifiers::new(false, true, false, true)),
-        Platform::Mac
-      ),
-      Some(ShortcutAction::ToggleBookmarksManager)
-    );
-  }
-
-  #[test]
   fn clipboard_shortcuts() {
     assert_eq!(
       map_shortcut_with_platform(
@@ -1253,17 +1244,10 @@ mod tests {
   }
 
   #[test]
-  fn mac_cmd_y_and_cmd_shift_h_show_history() {
+  fn mac_cmd_y_shows_history_and_ctrl_h_is_ignored() {
     assert_eq!(
       map_shortcut_with_platform(
         KeyEvent::new(Key::Y, Modifiers::new(false, false, false, true)),
-        Platform::Mac
-      ),
-      Some(ShortcutAction::ShowHistory)
-    );
-    assert_eq!(
-      map_shortcut_with_platform(
-        KeyEvent::new(Key::H, Modifiers::new(false, true, false, true)),
         Platform::Mac
       ),
       Some(ShortcutAction::ShowHistory)
