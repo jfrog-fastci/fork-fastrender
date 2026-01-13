@@ -3239,10 +3239,15 @@ impl BrowserRuntime {
 
     tab.scroll_state = next_scroll;
     doc.set_scroll_state(tab.scroll_state.clone());
+    tab.sync_js_scroll_state();
+    tab
+      .history
+      .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
     let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
       tab_id,
       scroll: tab.scroll_state.clone(),
     });
+    tab.last_reported_scroll_state = tab.scroll_state.clone();
 
     tab.cancel.bump_paint();
     tab.needs_repaint = true;
