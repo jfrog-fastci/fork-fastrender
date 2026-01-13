@@ -2270,6 +2270,93 @@ fn nested_column_subgrid_respects_inherited_axes_overrides() {
 }
 
 #[test]
+fn nested_subgrid_autoplacement_inherits_parent_tracks_for_descendants() {
+  // Regression test for WPT `css/subgrid/subgrid-nested-writing-mode-001`:
+  // A nested chain `container -> outer subgrid -> inner subgrid` where both subgrids are
+  // auto-placed into the first column/row should still allow descendants to use the parent's
+  // column tracks (and gap) instead of being clamped into a 1-track explicit grid.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(28.0)),
+    GridTrack::Length(Length::px(42.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.grid_column_gap = Length::px(5.0);
+  parent_style.width = Some(Length::px(75.0));
+
+  let mut outer_subgrid_style = ComputedStyle::default();
+  outer_subgrid_style.display = Display::Grid;
+  outer_subgrid_style.writing_mode = WritingMode::VerticalRl;
+  outer_subgrid_style.grid_column_subgrid = true;
+  outer_subgrid_style.grid_row_subgrid = true;
+  // Intentionally leave placement fully automatic (no grid_column_start/end).
+
+  let mut inner_subgrid_style = ComputedStyle::default();
+  inner_subgrid_style.display = Display::Grid;
+  inner_subgrid_style.writing_mode = WritingMode::VerticalRl;
+  inner_subgrid_style.grid_column_subgrid = true;
+  inner_subgrid_style.grid_row_subgrid = true;
+
+  let mut first_child = ComputedStyle::default();
+  first_child.display = Display::Block;
+  first_child.grid_column_start = 1;
+  first_child.grid_column_end = 2;
+  first_child.height = Some(Length::px(12.0));
+
+  let mut second_child = ComputedStyle::default();
+  second_child.display = Display::Block;
+  second_child.grid_column_start = 2;
+  second_child.grid_column_end = 3;
+  second_child.height = Some(Length::px(12.0));
+
+  let child1 = BoxNode::new_block(Arc::new(first_child), FormattingContextType::Block, vec![]);
+  let child2 = BoxNode::new_block(Arc::new(second_child), FormattingContextType::Block, vec![]);
+
+  let inner_subgrid = BoxNode::new_block(
+    Arc::new(inner_subgrid_style),
+    FormattingContextType::Grid,
+    vec![child1, child2],
+  );
+
+  let outer_subgrid = BoxNode::new_block(
+    Arc::new(outer_subgrid_style),
+    FormattingContextType::Grid,
+    vec![inner_subgrid],
+  );
+
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer_subgrid],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let outer_fragment = &fragment.children[0];
+  let inner_fragment = &outer_fragment.children[0];
+  assert_eq!(inner_fragment.children.len(), 2);
+
+  let first = &inner_fragment.children[0];
+  let second = &inner_fragment.children[1];
+  assert_approx(first.bounds.x(), 0.0, "first track starts at origin");
+  assert_approx(first.bounds.width(), 28.0, "first track inherits parent sizing");
+  assert_approx(
+    second.bounds.x(),
+    33.0,
+    "gap and first track size carry through nested subgrid",
+  );
+  assert_approx(
+    second.bounds.width(),
+    42.0,
+    "second track inherits parent sizing",
+  );
+}
+
+#[test]
 fn subgrid_extends_named_lines() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;

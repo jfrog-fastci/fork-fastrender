@@ -1086,6 +1086,20 @@ fn record_subgrid_overrides<
   // child's local columns inherit from the parent's rows.
 
   for item in items.iter().filter(|item| !item.is_virtual) {
+    // Some WPT cases (e.g. nested subgrids with a writing-mode mismatch at the parent boundary)
+    // expect that a subgrid with fully-automatic placement can still see the full set of parent
+    // tracks, even when it happens to be auto-placed into a 1-track area.
+    //
+    // Taffy's core subgrid model normally slices the inherited tracks to the grid item's used
+    // span, which can result in clamping (`grid-column: 2` collapses back into column 1) and loss
+    // of inherited gaps when the used span is 1.
+    //
+    // When a subgrid container's placement is fully automatic on an axis (both edges `auto`) and
+    // the resolved span is 1, extend the inherited track slice to the end of the parent grid in
+    // that axis. This preserves the parent track definitions (and gap) for descendants without
+    // affecting the subgrid container's own placement in the parent.
+    let child_item_style_owned = tree.clone_grid_child_style(item.node);
+    let child_item_style_ref: &Style<_> = &child_item_style_owned;
     let child_style_owned = tree.clone_grid_container_style(item.node);
     let child_style_ref: &Style<_> = &child_style_owned;
     let subgrid_rows = child_style_ref.is_row_subgrid();
@@ -1104,18 +1118,13 @@ fn record_subgrid_overrides<
 
     let mut rows_override = None;
     let mut cols_override = None;
-
     if subgrid_rows {
       // Child rows inherit from parent rows unless the axes are swapped between parent/child, in
       // which case child rows inherit from parent columns.
       let uses_parent_rows = !swap_axes;
-      let can_record = if uses_parent_rows {
-        record_rows
-      } else {
-        record_columns
-      };
+      let can_record = if uses_parent_rows { record_rows } else { record_columns };
       if can_record {
-        let (span_start, span, axis, tracks, parent_names) = if uses_parent_rows {
+        let (span_start, mut span, axis, tracks, parent_names) = if uses_parent_rows {
           (item.row.start, item.row.span(), AbstractAxis::Block, rows, parent_row_names)
         } else {
           (
@@ -1127,15 +1136,40 @@ fn record_subgrid_overrides<
           )
         };
 
-        let mut track_sizes = Vec::with_capacity(span as usize);
+        let mut track_range = item.track_range_excluding_lines(axis);
+        if span == 1 {
+          let fully_auto = match axis {
+            AbstractAxis::Inline => {
+              matches!(child_item_style_ref.grid_column.start, crate::style::GridPlacement::Auto)
+                && matches!(child_item_style_ref.grid_column.end, crate::style::GridPlacement::Auto)
+            }
+            AbstractAxis::Block => {
+              matches!(child_item_style_ref.grid_row.start, crate::style::GridPlacement::Auto)
+                && matches!(child_item_style_ref.grid_row.end, crate::style::GridPlacement::Auto)
+            }
+          };
+          if fully_auto {
+            let start_index = match axis {
+              AbstractAxis::Inline => item.column_indexes.start as usize,
+              AbstractAxis::Block => item.row_indexes.start as usize,
+            };
+            let end_index = tracks.len().saturating_sub(1);
+            if start_index + 1 < end_index {
+              track_range = (start_index + 1)..end_index;
+            }
+          }
+        }
+
+        let mut track_sizes: Vec<f32> = Vec::new();
         let mut gap = 0.0;
-        for track in tracks[item.track_range_excluding_lines(axis)].iter() {
+        for track in tracks[track_range].iter() {
           if track.kind == GridTrackKind::Track {
             track_sizes.push(track.base_size);
           } else if gap == 0.0 {
             gap = track.base_size;
           }
         }
+        span = (track_sizes.len().min(u16::MAX as usize)) as u16;
         let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Block);
         let mut extra = inherited_area_line_names(span, span_start, parent_template_areas, axis);
         merge_line_names(&mut extra, &child_extra);
@@ -1158,7 +1192,7 @@ fn record_subgrid_overrides<
         record_rows
       };
       if can_record {
-        let (span_start, span, axis, tracks, parent_names) = if uses_parent_columns {
+        let (span_start, mut span, axis, tracks, parent_names) = if uses_parent_columns {
           (
             item.column.start,
             item.column.span(),
@@ -1170,15 +1204,40 @@ fn record_subgrid_overrides<
           (item.row.start, item.row.span(), AbstractAxis::Block, rows, parent_row_names)
         };
 
-        let mut track_sizes = Vec::with_capacity(span as usize);
+        let mut track_range = item.track_range_excluding_lines(axis);
+        if span == 1 {
+          let fully_auto = match axis {
+            AbstractAxis::Inline => {
+              matches!(child_item_style_ref.grid_column.start, crate::style::GridPlacement::Auto)
+                && matches!(child_item_style_ref.grid_column.end, crate::style::GridPlacement::Auto)
+            }
+            AbstractAxis::Block => {
+              matches!(child_item_style_ref.grid_row.start, crate::style::GridPlacement::Auto)
+                && matches!(child_item_style_ref.grid_row.end, crate::style::GridPlacement::Auto)
+            }
+          };
+          if fully_auto {
+            let start_index = match axis {
+              AbstractAxis::Inline => item.column_indexes.start as usize,
+              AbstractAxis::Block => item.row_indexes.start as usize,
+            };
+            let end_index = tracks.len().saturating_sub(1);
+            if start_index + 1 < end_index {
+              track_range = (start_index + 1)..end_index;
+            }
+          }
+        }
+
+        let mut track_sizes: Vec<f32> = Vec::new();
         let mut gap = 0.0;
-        for track in tracks[item.track_range_excluding_lines(axis)].iter() {
+        for track in tracks[track_range].iter() {
           if track.kind == GridTrackKind::Track {
             track_sizes.push(track.base_size);
           } else if gap == 0.0 {
             gap = track.base_size;
           }
         }
+        span = (track_sizes.len().min(u16::MAX as usize)) as u16;
         let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Inline);
         let mut extra = inherited_area_line_names(span, span_start, parent_template_areas, axis);
         merge_line_names(&mut extra, &child_extra);
