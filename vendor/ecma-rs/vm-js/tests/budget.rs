@@ -227,15 +227,30 @@ fn vm_reset_interrupt_clears_internal_but_not_external_interrupt_flag() {
   });
   vm.set_budget(Budget::unlimited(1));
 
+  // Internal-only interrupt triggers `Interrupted`.
   internal.store(true, Ordering::Relaxed);
-  external.store(true, Ordering::Relaxed);
-
+  assert!(!external.load(Ordering::Relaxed));
   let err = vm.tick().unwrap_err();
   match err {
     VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::Interrupted),
     other => panic!("expected termination, got {other:?}"),
   }
 
+  // `reset_interrupt` clears only the internal flag.
+  vm.reset_interrupt();
+  assert!(!internal.load(Ordering::Relaxed));
+  assert!(!external.load(Ordering::Relaxed));
+  assert!(vm.tick().is_ok());
+
+  // External-only interrupt also triggers `Interrupted`.
+  external.store(true, Ordering::Relaxed);
+  let err = vm.tick().unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::Interrupted),
+    other => panic!("expected termination, got {other:?}"),
+  }
+
+  // And `reset_interrupt` must not clear the external flag.
   vm.reset_interrupt();
   assert!(!internal.load(Ordering::Relaxed));
   assert!(external.load(Ordering::Relaxed));

@@ -43,7 +43,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -2509,13 +2509,7 @@ impl Vm {
 
     self.budget.ticks = self.budget.ticks.wrapping_add(1);
 
-    if self.interrupt.is_interrupted()
-      || self
-        .options
-        .external_interrupt_flag
-        .as_ref()
-        .is_some_and(|flag| flag.load(Ordering::Relaxed))
-    {
+    if self.interrupt.is_interrupted() {
       return Err(self.terminate(TerminationReason::Interrupted));
     }
 
