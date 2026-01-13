@@ -12305,6 +12305,44 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     })
   }
 
+  fn with_cached_resource<T>(
+    &self,
+    key: &CacheKey,
+    request: Option<FetchRequest<'_>>,
+    op: impl FnOnce(&FetchedResource) -> T,
+  ) -> Option<T> {
+    self.state.lock().ok().and_then(|mut state| {
+      let base_request = request.unwrap_or_else(|| FetchRequest::new(&key.url, key.kind.into()));
+      let canonical = self.resolve_alias_locked(&mut state, key, base_request);
+      let bucket = match state.lru.get(&canonical) {
+        Some(bucket) => bucket,
+        None => {
+          if &canonical != key {
+            let request_sig = inflight_signature_for_request(&self.inner, base_request);
+            Self::remove_alias_mapping_locked(&mut state, key, &request_sig);
+          }
+          return None;
+        }
+      };
+
+      let request = FetchRequest {
+        url: &canonical.url,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode: base_request.credentials_mode,
+      };
+
+      let vary_key = compute_vary_key_for_request(&self.inner, request, bucket.vary.as_deref())?;
+      let entry = bucket.entries.get(&vary_key)?;
+      match &entry.value {
+        CacheValue::Resource(res) => Some(op(res)),
+        CacheValue::Error(_) => None,
+      }
+    })
+  }
+
   #[cfg(feature = "disk_cache")]
   pub(crate) fn cached_snapshot(
     &self,
@@ -12501,6 +12539,26 @@ fn merge_not_modified_metadata(cached: &mut FetchedResource, res304: &FetchedRes
       }
       None => cached.response_headers = Some(headers_304.clone()),
     }
+  }
+}
+
+fn clone_fetched_resource_with_bytes(template: &FetchedResource, bytes: Vec<u8>) -> FetchedResource {
+  FetchedResource {
+    bytes,
+    content_type: template.content_type.clone(),
+    nosniff: template.nosniff,
+    content_encoding: template.content_encoding.clone(),
+    status: template.status,
+    etag: template.etag.clone(),
+    last_modified: template.last_modified.clone(),
+    access_control_allow_origin: template.access_control_allow_origin.clone(),
+    timing_allow_origin: template.timing_allow_origin.clone(),
+    vary: template.vary.clone(),
+    response_referrer_policy: template.response_referrer_policy,
+    access_control_allow_credentials: template.access_control_allow_credentials,
+    final_url: template.final_url.clone(),
+    cache_policy: template.cache_policy.clone(),
+    response_headers: template.response_headers.clone(),
   }
 }
 
@@ -13224,16 +13282,16 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
     }
 
     let key = CacheKey::new(kind, url.to_string());
-    if let Some(snapshot) = self.cached_entry(&key, None) {
-      if let CacheValue::Resource(mut res) = snapshot.value {
-        if res.bytes.len() > max_bytes {
-          res.bytes.truncate(max_bytes);
-        }
-        record_cache_fresh_hit();
-        record_resource_cache_bytes(res.bytes.len());
-        reserve_policy_bytes(&self.policy, &res)?;
-        return Ok(res);
-      }
+    if let Some(res) = self.with_cached_resource(&key, None, |cached| {
+      let prefix_len = cached.bytes.len().min(max_bytes);
+      let mut bytes = Vec::with_capacity(prefix_len);
+      bytes.extend_from_slice(&cached.bytes[..prefix_len]);
+      clone_fetched_resource_with_bytes(cached, bytes)
+    }) {
+      record_cache_fresh_hit();
+      record_resource_cache_bytes(res.bytes.len());
+      reserve_policy_bytes(&self.policy, &res)?;
+      return Ok(res);
     }
 
     self.inner.fetch_partial_with_context(kind, url, max_bytes)
@@ -13256,16 +13314,16 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       cors_cache_partition_key(&req),
       CacheCredentialsPartition::for_request(&req),
     );
-    if let Some(snapshot) = self.cached_entry(&key, Some(req)) {
-      if let CacheValue::Resource(mut res) = snapshot.value {
-        if res.bytes.len() > max_bytes {
-          res.bytes.truncate(max_bytes);
-        }
-        record_cache_fresh_hit();
-        record_resource_cache_bytes(res.bytes.len());
-        reserve_policy_bytes(&self.policy, &res)?;
-        return Ok(res);
-      }
+    if let Some(res) = self.with_cached_resource(&key, Some(req), |cached| {
+      let prefix_len = cached.bytes.len().min(max_bytes);
+      let mut bytes = Vec::with_capacity(prefix_len);
+      bytes.extend_from_slice(&cached.bytes[..prefix_len]);
+      clone_fetched_resource_with_bytes(cached, bytes)
+    }) {
+      record_cache_fresh_hit();
+      record_resource_cache_bytes(res.bytes.len());
+      reserve_policy_bytes(&self.policy, &res)?;
+      return Ok(res);
     }
 
     self.inner.fetch_partial_with_request(req, max_bytes)
@@ -13301,57 +13359,54 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(snapshot) = self.cached_entry(&key, Some(req)) {
-      if let CacheValue::Resource(mut res) = snapshot.value {
-        if max_bytes == 0 {
-          res.bytes.clear();
-          record_cache_fresh_hit();
-          record_resource_cache_bytes(res.bytes.len());
-          reserve_policy_bytes(&self.policy, &res)?;
-          return Ok(res);
-        }
-
-        // Clamp the requested end so we never return more than `max_bytes`.
-        let capped_end = {
-          let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
-          end.min(cap_end)
-        };
-
-        // Range semantics when serving from cached full responses:
-        // - Clamp end to the last available byte
-        // - Return an error (instead of panicking) when the start is out-of-bounds
-        let start_idx = usize::try_from(start).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            url,
-            format!("byte range start {start} is too large to slice in memory"),
-          ))
-        })?;
-
-        if start_idx >= res.bytes.len() {
-          return Err(Error::Resource(ResourceError::new(
-            url,
-            format!(
-              "byte range start {start} is beyond end of cached response body (len={})",
-              res.bytes.len()
-            ),
-          )));
-        }
-
-        let end_idx = usize::try_from(capped_end).map_err(|_| {
-          Error::Resource(ResourceError::new(
-            url,
-            format!("byte range end {capped_end} is too large to slice in memory"),
-          ))
-        })?;
-        let available_end = res.bytes.len().saturating_sub(1);
-        let end_idx = end_idx.min(available_end);
-
-        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
-        record_cache_fresh_hit();
-        record_resource_cache_bytes(res.bytes.len());
-        reserve_policy_bytes(&self.policy, &res)?;
-        return Ok(res);
+    if let Some(result) = self.with_cached_resource(&key, Some(req), |cached| {
+      if max_bytes == 0 {
+        return Ok(clone_fetched_resource_with_bytes(cached, Vec::new()));
       }
+
+      // Clamp the requested end so we never return more than `max_bytes`.
+      let capped_end = {
+        let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+        end.min(cap_end)
+      };
+
+      // Range semantics when serving from cached full responses:
+      // - Clamp end to the last available byte
+      // - Return an error (instead of panicking) when the start is out-of-bounds
+      let start_idx = usize::try_from(start).map_err(|_| {
+        Error::Resource(ResourceError::new(
+          url,
+          format!("byte range start {start} is too large to slice in memory"),
+        ))
+      })?;
+
+      if start_idx >= cached.bytes.len() {
+        return Err(Error::Resource(ResourceError::new(
+          url,
+          format!(
+            "byte range start {start} is beyond end of cached response body (len={})",
+            cached.bytes.len()
+          ),
+        )));
+      }
+
+      let end_idx = usize::try_from(capped_end).map_err(|_| {
+        Error::Resource(ResourceError::new(
+          url,
+          format!("byte range end {capped_end} is too large to slice in memory"),
+        ))
+      })?;
+      let available_end = cached.bytes.len().saturating_sub(1);
+      let end_idx = end_idx.min(available_end);
+
+      let bytes = cached.bytes[start_idx..=end_idx].to_vec();
+      Ok(clone_fetched_resource_with_bytes(cached, bytes))
+    }) {
+      let res = result?;
+      record_cache_fresh_hit();
+      record_resource_cache_bytes(res.bytes.len());
+      reserve_policy_bytes(&self.policy, &res)?;
+      return Ok(res);
     }
 
     // Critical safety: never store range responses into the normal cache. Range responses are not
@@ -25160,6 +25215,161 @@ mod tests {
         "expected range fetch from a different origin to call inner fetcher when CORS enforcement is enabled"
       );
     });
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_partial_with_request_cache_hit_only_copies_requested_prefix() {
+    #[derive(Clone)]
+    struct LargeBodyFetcher {
+      full_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for LargeBodyFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to call fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let mut bytes = vec![0u8; 1024 * 1024];
+        for (idx, b) in bytes.iter_mut().enumerate() {
+          *b = (idx % 256) as u8;
+        }
+        let mut res = FetchedResource::new(bytes, Some("application/octet-stream".to_string()));
+        res.status = Some(200);
+        res.nosniff = true;
+        res.etag = Some("test-etag".to_string());
+        res.final_url = Some(req.url.to_string());
+        res.response_headers = Some(vec![("X-Test".to_string(), "1".to_string())]);
+        Ok(res)
+      }
+
+      fn fetch_partial_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("expected partial fetch to be served from the cache");
+      }
+    }
+
+    let full_calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(LargeBodyFetcher {
+      full_calls: Arc::clone(&full_calls),
+    });
+
+    let url = "http://example.com/large.bin";
+    let req = FetchRequest::new(url, FetchDestination::Fetch);
+
+    // Seed the cache with a full body.
+    let seeded = cache.fetch_with_request(req).expect("seed full body");
+    assert_eq!(seeded.bytes.len(), 1024 * 1024);
+    assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+
+    // Now fetch a small prefix; we should not clone+truncate the 1MiB Vec.
+    let res = cache
+      .fetch_partial_with_request(req, 16)
+      .expect("cached prefix");
+    assert_eq!(res.bytes.len(), 16);
+    assert_eq!(res.bytes, (0u8..16u8).collect::<Vec<_>>());
+    assert!(
+      res.bytes.capacity() <= 64,
+      "expected cached partial hit to allocate a small Vec, got capacity={}",
+      res.bytes.capacity()
+    );
+
+    // Metadata should be preserved from the cached full resource.
+    assert_eq!(res.content_type.as_deref(), Some("application/octet-stream"));
+    assert!(res.nosniff);
+    assert_eq!(res.status, Some(200));
+    assert_eq!(res.etag.as_deref(), Some("test-etag"));
+    assert_eq!(res.final_url.as_deref(), Some(url));
+    assert_eq!(
+      res.response_headers
+        .as_ref()
+        .expect("headers")
+        .iter()
+        .find(|(name, _)| name == "X-Test")
+        .map(|(_, value)| value.as_str()),
+      Some("1")
+    );
+
+    assert_eq!(
+      full_calls.load(Ordering::SeqCst),
+      1,
+      "expected cached prefix fetch to avoid calling the inner fetcher"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_with_request_cache_hit_only_copies_requested_slice() {
+    #[derive(Clone)]
+    struct LargeBodyFetcher {
+      full_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for LargeBodyFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to call fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let mut bytes = vec![0u8; 1024 * 1024];
+        for (idx, b) in bytes.iter_mut().enumerate() {
+          *b = (idx % 256) as u8;
+        }
+        let mut res = FetchedResource::new(bytes, Some("application/octet-stream".to_string()));
+        res.status = Some(200);
+        res.etag = Some("test-etag".to_string());
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        _req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        panic!("expected range fetch to be served from the cache");
+      }
+    }
+
+    let full_calls = Arc::new(AtomicUsize::new(0));
+    let cache = CachingFetcher::new(LargeBodyFetcher {
+      full_calls: Arc::clone(&full_calls),
+    });
+
+    let url = "http://example.com/large.bin";
+    let req = FetchRequest::new(url, FetchDestination::Fetch);
+
+    // Seed the cache with a full body.
+    cache.fetch_with_request(req).expect("seed full body");
+    assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+
+    let res = cache
+      .fetch_range_with_request(req, 100..=115, 16)
+      .expect("cached range");
+    assert_eq!(res.bytes.len(), 16);
+    assert_eq!(
+      res.bytes,
+      (100u8..116u8).collect::<Vec<_>>(),
+      "unexpected cached range bytes"
+    );
+    assert!(
+      res.bytes.capacity() <= 64,
+      "expected cached range hit to allocate a small Vec, got capacity={}",
+      res.bytes.capacity()
+    );
+    assert_eq!(res.status, Some(200));
+    assert_eq!(res.etag.as_deref(), Some("test-etag"));
+    assert_eq!(res.final_url.as_deref(), Some(url));
+    assert_eq!(
+      full_calls.load(Ordering::SeqCst),
+      1,
+      "expected cached range fetch to avoid calling the inner fetcher"
+    );
   }
 
   #[test]
