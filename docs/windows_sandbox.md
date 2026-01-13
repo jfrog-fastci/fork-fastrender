@@ -75,6 +75,7 @@ Code map (repo reality):
     - AppContainer-only convenience spawner (`win_sandbox::RendererSandbox`)
       - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
       - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
+      - Inherits the parent process environment by default (no environment sanitization).
       - Attempts to remove the broad `ALL APPLICATION PACKAGES` group (SID `S-1-15-2-1`) from the
         AppContainer token via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (best-effort /
         retried without on unsupported Windows builds).
