@@ -60,6 +60,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
   so the `../../...` paths above are relative to that directory.
 - Note: `CARGO_TARGET_DIR=../../target` keeps build artifacts under the repo-root `target/` (avoids
   creating `vendor/ecma-rs/target/`).
+- Note: If you hit an OS-level stack overflow while running the full suite, try increasing the
+  process stack limit via `LIMIT_STACK=64M` (consumed by `scripts/run_limited.sh`).
 
 ## Overall
 
