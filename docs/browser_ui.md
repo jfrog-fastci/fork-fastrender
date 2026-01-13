@@ -329,8 +329,8 @@ there is dedicated tooling beyond the renderer’s `FASTR_RENDER_TIMINGS` / trac
     to) open a real window/GPU-backed swapchain.
 - `browser_perf_log_summary` summarizes a captured perf log into p50/p95/max numbers.
 - `scripts/capture_browser_perf_log.sh` wraps an interactive windowed run (under `run_limited`) and
-  writes the JSONL stream to a file via `FASTR_PERF_LOG_OUT`; pass `--summary` to run
-  `browser_perf_log_summary` automatically.
+  tees the JSONL stdout stream to a file; pass `--summary` to run `browser_perf_log_summary`
+  automatically (summary output is written to stderr so stdout stays JSONL-only).
 - `scripts/profile_browser_samply.sh` records an interactive Linux CPU profile (Samply) for the
   windowed browser UI.
 

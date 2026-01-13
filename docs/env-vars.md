@@ -235,8 +235,8 @@ scroll/resize smoothness, and input latency). See [`docs/perf-logging.md#browser
 and [`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md) for how to
 interpret the metrics.
 
-For an interactive capture helper (sets `FASTR_PERF_LOG=1`, runs under `run_limited`, and writes the
-JSONL stream to a file via `FASTR_PERF_LOG_OUT`), see
+For an interactive capture helper (sets `FASTR_PERF_LOG=1`, runs under `run_limited`, and tees the
+JSONL stdout stream to a file), see
 [`scripts/capture_browser_perf_log.sh`](../scripts/capture_browser_perf_log.sh).
 
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
