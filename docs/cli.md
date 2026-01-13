@@ -604,7 +604,7 @@ bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --releas
     - `bundle_page render` is offline and ignores `FASTR_HTTP_*` env vars (it uses the bundle contents only).
 - Security: `--same-origin-subresources` (plus optional `--allow-subresource-origin`) applies both when capturing and replaying bundles to keep cross-origin assets out of offline artifacts. It does not block cross-origin iframe/embed document navigation.
 - Convert bundles to offline fixtures for the `pages_regression` harness: `bash scripts/cargo_agent.sh xtask import-page-fixture <bundle> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run --include-media]`.
-  - By default, media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty placeholder files so fixtures stay small/offline-safe.
+  - By default, media sources (`<video src>`, `<audio src>`, `<source src>`, `<track src>`) are rewritten to deterministic empty `assets/missing_<hash>.<ext>` placeholder files so fixtures stay small/offline-safe.
   - Pass `--include-media` to vendor playable media, subject to size budgets (`--media-max-bytes` default **5 MiB**, `--media-max-file-bytes` default **2 MiB**; set either to `0` to disable).
   - All HTML/CSS references are rewritten to hashed files under `assets/`, and the importer fails if any network URLs would remain.
   - Media asset provenance/licensing + regeneration guidance: [`tests/pages/fixtures/assets/media/README.md`](../tests/pages/fixtures/assets/media/README.md).
