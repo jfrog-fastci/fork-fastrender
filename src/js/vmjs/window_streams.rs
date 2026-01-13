@@ -4599,7 +4599,14 @@ fn reader_read_native(
             None,
           ));
         };
-        stream_state.buffered_string_len = stream_state.buffered_string_len.saturating_sub(chunk.len());
+        if chunk.len() > stream_state.buffered_string_len {
+          stream_state.buffered_string_len = 0;
+          return Ok((
+            ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+            None,
+          ));
+        }
+        stream_state.buffered_string_len -= chunk.len();
 
         if stream_state.close_requested && stream_state.strings.is_empty() {
           stream_state.state = StreamLifecycleState::Closed;
@@ -5170,7 +5177,18 @@ fn enqueue_string_into_readable_stream(
         Vec::new(),
       ));
     };
-    stream_state.buffered_string_len = stream_state.buffered_string_len.saturating_sub(chunk.len());
+    if chunk.len() > stream_state.buffered_string_len {
+      stream_state.buffered_string_len = 0;
+      return Ok((
+        Some(PendingReadSettle {
+          reader: pending_reader,
+          roots: pending_roots,
+          outcome: ReadOutcome::Error("ReadableStream internal queue invariant violated".to_string()),
+        }),
+        Vec::new(),
+      ));
+    }
+    stream_state.buffered_string_len -= chunk.len();
 
     Ok((
       Some(PendingReadSettle {
