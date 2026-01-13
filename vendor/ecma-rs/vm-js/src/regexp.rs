@@ -1806,6 +1806,17 @@ impl RegExpProgram {
             clear_to_slot,
           } => {
             let id = *id;
+            // Reset this quantifier's runtime state when entering from outside its own loop (i.e.
+            // not from the `RepeatEnd { start }` jump). This prevents nested quantifiers from
+            // leaking their `count`/`last_pos` across outer iterations.
+            let is_continuation = state.repeat_from_end_pc == Some(state.pc);
+            state.repeat_from_end_pc = None;
+            if !is_continuation {
+              if let Some(rep) = state.repeats.get_mut(id) {
+                rep.count = 0;
+                rep.last_pos = UNSET;
+              }
+            }
             let Some(rep) = state.repeats.get(id).copied() else {
               break;
             };
@@ -1870,6 +1881,7 @@ impl RegExpProgram {
           }
           Inst::RepeatEnd { start } => {
             state.pc = *start;
+            state.repeat_from_end_pc = Some(*start);
           }
           Inst::RepeatReset { id } => {
             let Some(rep) = state.repeats.get_mut(*id) else {
@@ -2084,6 +2096,14 @@ struct ExecState<'a> {
   captures_mem: RegExpExecMemoryToken<'a>,
   repeats: Vec<RepeatRuntime>,
   repeats_mem: RegExpExecMemoryToken<'a>,
+  /// Marker used to distinguish entering a `RepeatStart` from its corresponding `RepeatEnd`
+  /// (continuation of the same quantifier loop) vs entering it "fresh" from some outer control
+  /// flow (e.g. an enclosing quantifier iteration).
+  ///
+  /// Without this, nested quantifiers can leak their `RepeatRuntime` state across outer iterations
+  /// (e.g. `(?<=((?:b\\d{2})+))`), causing inner `RepeatStart` counts to be reused and short-circuit
+  /// subsequent iterations.
+  repeat_from_end_pc: Option<usize>,
 }
 
 impl<'a> ExecState<'a> {
@@ -2137,6 +2157,7 @@ impl<'a> ExecState<'a> {
       captures_mem,
       repeats,
       repeats_mem,
+      repeat_from_end_pc: None,
     })
   }
 
@@ -2173,6 +2194,7 @@ impl<'a> ExecState<'a> {
       captures_mem,
       repeats,
       repeats_mem,
+      repeat_from_end_pc: self.repeat_from_end_pc,
     })
   }
 
@@ -4065,6 +4087,20 @@ impl<'a> Parser<'a> {
     }
 
     // Range: ClassSetCharacter '-' ClassSetCharacter
+    //
+    // In UnicodeSets mode we must treat a UTF-16 surrogate pair literal as a single class-set
+    // character (a single non-BMP code point). If we parsed the high/low surrogates as separate
+    // elements, `/v` matching (which runs in UnicodeMode) would never match non-BMP literals.
+    if let (Some(hi), Some(lo)) = (self.peek(), self.units.get(self.idx + 1).copied()) {
+      if is_utf16_high_surrogate(hi) && is_utf16_low_surrogate(lo) {
+        // Consume both code units and treat them as a single class element.
+        self.next();
+        self.next();
+        let mut set = UnicodeSet::new();
+        set.insert_string(ctx, &[hi, lo])?;
+        return Ok(set);
+      }
+    }
     let start = self.parse_class_set_character(ctx)?;
     if self.peek() == Some(b'-' as u16) && self.units.get(self.idx + 1).copied() != Some(b'-' as u16) {
       self.next(); // consume '-'
@@ -4117,6 +4153,16 @@ impl<'a> Parser<'a> {
         Ok(set)
       }
       Some(_) => {
+        // Same surrogate-pair handling as `parse_class_union_item`.
+        if let (Some(hi), Some(lo)) = (self.peek(), self.units.get(self.idx + 1).copied()) {
+          if is_utf16_high_surrogate(hi) && is_utf16_low_surrogate(lo) {
+            self.next();
+            self.next();
+            let mut set = UnicodeSet::new();
+            set.insert_string(ctx, &[hi, lo])?;
+            return Ok(set);
+          }
+        }
         let ch = self.parse_class_set_character(ctx)?;
         let mut set = UnicodeSet::new();
         let mut buf = [0u16; 2];
