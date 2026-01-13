@@ -7,8 +7,28 @@ fn subgrid_line_names_accepts_specified_grammar() {
     Some(Vec::<Vec<String>>::new())
   );
   assert_eq!(
+    parse_subgrid_line_names("/*comment*/subgrid"),
+    Some(Vec::<Vec<String>>::new())
+  );
+  assert_eq!(
+    parse_subgrid_line_names("subgrid/*comment*/"),
+    Some(Vec::<Vec<String>>::new())
+  );
+  assert_eq!(
     parse_subgrid_line_names("subgrid [a] [b]"),
     Some(vec![vec!["a".to_string()], vec!["b".to_string()]])
+  );
+  assert_eq!(
+    parse_subgrid_line_names("subgrid [a]/*comment*/[b]"),
+    Some(vec![vec!["a".to_string()], vec!["b".to_string()]])
+  );
+  assert_eq!(
+    parse_subgrid_line_names("subgrid/*comment*/[a]"),
+    Some(vec![vec!["a".to_string()]])
+  );
+  assert_eq!(
+    parse_subgrid_line_names("subgrid [a/*comment*/b]"),
+    Some(vec![vec!["a".to_string(), "b".to_string()]])
   );
   assert_eq!(
     parse_subgrid_line_names("subgrid []"),

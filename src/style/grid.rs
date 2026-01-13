@@ -1036,12 +1036,28 @@ impl<'a> TrackListParser<'a> {
   }
 
   fn skip_whitespace(&mut self) {
-    while let Some(ch) = self.peek_char() {
-      if is_css_ascii_whitespace(ch) {
-        self.advance_char();
-      } else {
+    loop {
+      while let Some(ch) = self.peek_char() {
+        if is_css_ascii_whitespace(ch) {
+          self.advance_char();
+        } else {
+          break;
+        }
+      }
+
+      // CSS comments act like whitespace at token boundaries.
+      let rem = self.remaining();
+      if rem.as_bytes().starts_with(b"/*") {
+        if let Some(end) = rem.find("*/") {
+          self.pos = self.pos.saturating_add(end + "*/".len());
+          continue;
+        }
+        // Unterminated comment: treat as whitespace to EOF.
+        self.pos = self.input.len();
         break;
       }
+
+      break;
     }
   }
 
@@ -1098,9 +1114,29 @@ impl<'a> TrackListParser<'a> {
     let close_idx = after_open.find(']')?;
     let names_raw = after_open.get(..close_idx)?;
 
-    let names = split_ascii_whitespace(names_raw)
-      .map(|n| n.to_string())
-      .collect::<Vec<_>>();
+    let names = if names_raw.contains("/*") {
+      let mut stripped = String::with_capacity(names_raw.len());
+      let mut idx = 0usize;
+      while let Some(rel_start) = names_raw.get(idx..).and_then(|s| s.find("/*")) {
+        let start = idx + rel_start;
+        stripped.push_str(names_raw.get(idx..start).unwrap_or(""));
+        stripped.push(' ');
+        let after_start = start + "/*".len();
+        let Some(rel_end) = names_raw.get(after_start..).and_then(|s| s.find("*/")) else {
+          idx = names_raw.len();
+          break;
+        };
+        idx = after_start + rel_end + "*/".len();
+      }
+      stripped.push_str(names_raw.get(idx..).unwrap_or(""));
+      split_ascii_whitespace(&stripped)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+    } else {
+      split_ascii_whitespace(names_raw)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+    };
 
     // Advance past `[ ... ]`.
     self.pos = self
@@ -1153,6 +1189,7 @@ impl<'a> TrackListParser<'a> {
       return None;
     }
 
+    let bytes = rem.as_bytes();
     let mut depth: usize = 0;
     let mut end: Option<(usize, bool, usize)> = None;
     // bool: true if we should consume the delimiter, false if we should leave it (e.g. '[')
@@ -1163,6 +1200,16 @@ impl<'a> TrackListParser<'a> {
         ')' => depth = depth.saturating_sub(1),
         '[' if depth == 0 => {
           end = Some((idx, false, '['.len_utf8()));
+          break;
+        }
+        '/' if depth == 0 && bytes.get(idx + 1) == Some(&b'*') => {
+          // Treat comments as top-level whitespace separators.
+          let mut j = idx + 2;
+          while j + 1 < bytes.len() && !(bytes[j] == b'*' && bytes[j + 1] == b'/') {
+            j += 1;
+          }
+          let comment_end = if j + 1 < bytes.len() { j + 2 } else { bytes.len() };
+          end = Some((idx, true, comment_end.saturating_sub(idx)));
           break;
         }
         _ if is_css_ascii_whitespace(ch) && depth == 0 => {
