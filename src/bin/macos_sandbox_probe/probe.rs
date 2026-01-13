@@ -78,12 +78,22 @@ mod macos {
 
     let mut unexpected_success = false;
 
-    // Treat `pure-computation` as informational (we don't assert that specific operations must be
-    // denied), so running the probe under the strict built-in profile still exits 0.
-    let expect_denied_read = matches!(args.mode, SandboxMode::Strict | SandboxMode::Relaxed);
-    let expect_denied_write = matches!(args.mode, SandboxMode::Strict);
-    let expect_denied_connect = matches!(args.mode, SandboxMode::Strict | SandboxMode::Relaxed);
-    let expect_denied_unix_listener = matches!(args.mode, SandboxMode::Strict);
+    let expect_denied_read = matches!(
+      args.mode,
+      SandboxMode::Strict | SandboxMode::Relaxed | SandboxMode::PureComputation
+    );
+    let expect_denied_write = matches!(
+      args.mode,
+      SandboxMode::Strict | SandboxMode::PureComputation
+    );
+    let expect_denied_connect = matches!(
+      args.mode,
+      SandboxMode::Strict | SandboxMode::Relaxed | SandboxMode::PureComputation
+    );
+    let expect_denied_unix_listener = matches!(
+      args.mode,
+      SandboxMode::Strict | SandboxMode::PureComputation
+    );
 
     let read_result = probe_read_passwd();
     unexpected_success |= report_action("read /etc/passwd", read_result, expect_denied_read);
