@@ -326,7 +326,22 @@ fn windows_unc_path_to_file_url(input: &str) -> Option<String> {
 }
 
 pub(crate) fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+  // This is a hot helper for omnibox/search-suggest paths. Implement it with byte scanning instead
+  // of `trim_matches` to avoid per-char closure overhead.
+  //
+  // Note: this intentionally matches the HTML definition of ASCII whitespace (and mirrors the
+  // previous `trim_matches` implementation).
+  let bytes = value.as_bytes();
+  let mut start = 0usize;
+  let mut end = bytes.len();
+  while start < end && matches!(bytes[start], b'\t' | b'\n' | b'\x0C' | b'\r' | b' ') {
+    start += 1;
+  }
+  while end > start && matches!(bytes[end - 1], b'\t' | b'\n' | b'\x0C' | b'\r' | b' ') {
+    end -= 1;
+  }
+  // `start`/`end` only move over ASCII bytes (1-byte UTF-8 chars), so slicing is safe.
+  &value[start..end]
 }
 
 fn omnibox_input_looks_like_url_trimmed(input: &str) -> bool {
@@ -374,7 +389,7 @@ fn omnibox_input_looks_like_url_trimmed(input: &str) -> bool {
   }
 
   // Finally, treat bare IPv6 literals as URLs.
-  parse_ip_literal(input).is_some()
+  parse_ip_literal_trimmed(input).is_some()
 }
 
 /// Heuristic for deciding whether a user-typed omnibox string should be treated as a URL
@@ -387,9 +402,9 @@ fn omnibox_input_looks_like_url_trimmed(input: &str) -> bool {
 /// - If input begins with `about:` (case-insensitive) → URL
 /// - If input looks like a filesystem path → URL
 /// - If input is `localhost` (case-insensitive) → URL
-/// - If input parses as an IPv4/IPv6 literal → URL
+/// - If input contains a dot (`.`) → URL (domain-like input or IPv4 literal)
 /// - If input looks like `host:port` (without scheme) → URL
-/// - If input contains a dot (`.`) → URL
+/// - If input parses as an IPv6 literal → URL
 /// - Otherwise → Search
 pub fn omnibox_input_looks_like_url(input: &str) -> bool {
   omnibox_input_looks_like_url_trimmed(trim_ascii_whitespace(input))
@@ -440,7 +455,7 @@ pub fn resolve_omnibox_input_with_search_template(
     });
   }
 
-  if let Some(ip) = parse_ip_literal(input) {
+  if let Some(ip) = parse_ip_literal_trimmed(input) {
     return Ok(OmniboxInputResolution::Url {
       url: https_url_from_ip_literal(ip)?,
     });
@@ -468,8 +483,7 @@ pub fn search_url_for_query(query: &str, template: &str) -> Result<String, Strin
     .map_err(|err| err.to_string())
 }
 
-fn parse_ip_literal(input: &str) -> Option<IpAddr> {
-  let trimmed = trim_ascii_whitespace(input);
+fn parse_ip_literal_trimmed(trimmed: &str) -> Option<IpAddr> {
   if trimmed.is_empty() {
     return None;
   }
@@ -479,6 +493,10 @@ fn parse_ip_literal(input: &str) -> Option<IpAddr> {
     .and_then(|s| s.strip_suffix(']'))
     .unwrap_or(trimmed);
   IpAddr::from_str(candidate).ok()
+}
+
+fn parse_ip_literal(input: &str) -> Option<IpAddr> {
+  parse_ip_literal_trimmed(trim_ascii_whitespace(input))
 }
 
 fn looks_like_bracketed_ipv6_host_port_without_scheme(input: &str) -> bool {
@@ -522,7 +540,7 @@ fn has_explicit_scheme(input: &str) -> bool {
   // handled like normal URLs in an omnibox.
   if looks_like_host_port_without_scheme(input)
     || looks_like_bracketed_ipv6_host_port_without_scheme(input)
-    || parse_ip_literal(input).is_some()
+    || parse_ip_literal_trimmed(input).is_some()
     || looks_like_file_path(input)
   {
     return false;
