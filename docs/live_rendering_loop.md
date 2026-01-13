@@ -94,7 +94,7 @@ drains microtasks queued by rAF before rendering. It does **not** enforce a wall
 by itself; the embedder is expected to call `tick_frame()` on its chosen frame schedule (see the
 live-loop discussion below for wake/sleep strategy).
 
-### 3) `BrowserTab::run_until_stable(...)` (drains tasks + rAF + renders until convergence)
+### 3) `BrowserTab::run_until_stable(...)` (drains runnable event-loop work + rAF + renders until convergence)
 
 `run_until_stable(max_frames)` is a deterministic “settle the world” helper:
 
