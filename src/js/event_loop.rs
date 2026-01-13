@@ -398,6 +398,12 @@ struct IdleCallbackState<Host: 'static> {
 
 pub struct EventLoop<Host: 'static> {
   clock: Arc<dyn Clock>,
+  /// Monotonic timestamp origin used for `requestAnimationFrame` callback timestamps.
+  ///
+  /// The HTML spec defines rAF timestamps relative to a per-document time origin. FastRender's
+  /// `Clock` can be long-lived across navigations, so we store a separate origin that is reset on
+  /// navigation to ensure rAF timestamps start near 0ms for each new document.
+  raf_time_origin: Duration,
   default_deadline_stage: RenderStage,
   queue_limits: QueueLimits,
   trace: TraceHandle,
@@ -444,6 +450,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
     let queue_limits = QueueLimits::default();
     Self {
       clock: Arc::new(RealClock::default()),
+      raf_time_origin: Duration::ZERO,
       default_deadline_stage: RenderStage::Script,
       queue_limits,
       trace: TraceHandle::default(),
@@ -590,6 +597,9 @@ impl<Host: 'static> EventLoop<Host> {
     self.external_task_queue.close();
 
     let clock = Arc::clone(&self.clock);
+    // rAF timestamps should restart per-document/navigation instead of using the long-lived clock
+    // origin.
+    let raf_time_origin = clock.now();
     let hooks = self.microtask_checkpoint_hooks.clone();
     let default_deadline_stage = self.default_deadline_stage;
     let currently_running_task = self.currently_running_task;
@@ -599,6 +609,7 @@ impl<Host: 'static> EventLoop<Host> {
     new_event_loop.set_default_deadline_stage(default_deadline_stage);
     new_event_loop.microtask_checkpoint_hooks = hooks;
     new_event_loop.currently_running_task = currently_running_task;
+    new_event_loop.raf_time_origin = raf_time_origin;
     new_event_loop.set_external_wake_callback(wake_callback);
     *self = new_event_loop;
   }
@@ -1884,7 +1895,8 @@ impl<Host: 'static> EventLoop<Host> {
     let mut trace_span = self.trace.span("js.animation_frame.run", "js");
     trace_span.arg_u64("queued_at_start", queued_at_start as u64);
     let mut queue = std::mem::take(&mut self.animation_frame_queue);
-    let timestamp = duration_to_ms_f64(self.now());
+    let now = self.now();
+    let timestamp = duration_to_ms_f64(now.saturating_sub(self.raf_time_origin));
 
     let previous_running_task = self.currently_running_task;
     self.currently_running_task = Some(RunningTask {
@@ -5191,6 +5203,46 @@ mod tests {
       RunAnimationFrameOutcome::Idle
     );
     assert_eq!(host.log, vec!["microtask"]);
+    Ok(())
+  }
+
+  #[test]
+  fn animation_frame_timestamp_resets_on_navigation() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      observed: Vec<f64>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    clock.advance(Duration::from_millis(100));
+    event_loop.request_animation_frame(|host, _event_loop, ts| {
+      host.observed.push(ts);
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+    assert_eq!(host.observed, vec![100.0]);
+
+    clock.advance(Duration::from_millis(100));
+    event_loop.reset_for_navigation(TraceHandle::default(), event_loop.queue_limits());
+
+    event_loop.request_animation_frame(|host, _event_loop, ts| {
+      host.observed.push(ts);
+      Ok(())
+    })?;
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+
+    assert_eq!(host.observed, vec![100.0, 0.0]);
     Ok(())
   }
 
