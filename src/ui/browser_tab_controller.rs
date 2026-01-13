@@ -1294,9 +1294,8 @@ impl BrowserTabController {
       found
     }?;
 
-    let fragment_tree_scrolled = prepared.fragment_tree_for_geometry(&self.scroll_state);
-    let page_rect =
-      crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
+    let geom_tree = prepared.fragment_tree_for_geometry(&self.scroll_state);
+    let page_rect = crate::interaction::absolute_bounds_for_box_id(&geom_tree, select_box_id)?;
 
     // Convert page-space bounds (includes scroll) to viewport-local coords for UI positioning.
     Some(page_rect.translate(Point::new(

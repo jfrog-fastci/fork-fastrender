@@ -1825,7 +1825,7 @@ fn apply_original_fragment_to_final_url(original_url: &str, final_url: &str) -> 
 
 fn styled_node_anchor_css(
   box_tree: &crate::BoxTree,
-  fragment_tree: &crate::FragmentTree,
+  geom_tree: &crate::FragmentTree,
   scroll_state: &ScrollState,
   styled_node_id: usize,
 ) -> Option<Rect> {
@@ -1848,8 +1848,9 @@ fn styled_node_anchor_css(
     found?
   };
 
-  // FragmentTree: compute absolute page-space bounds for the box.
-  let page_rect = crate::interaction::absolute_bounds_for_box_id(fragment_tree, box_id)?;
+  // FragmentTree: compute absolute page-space bounds for the box using a geometry tree that mirrors
+  // paint-time transforms (element scroll offsets + sticky positioning).
+  let page_rect = crate::interaction::absolute_bounds_for_box_id(geom_tree, box_id)?;
 
   // Convert page-space bounds to viewport-local coords for UI positioning.
   Some(page_rect.translate(Point::new(
@@ -1860,11 +1861,11 @@ fn styled_node_anchor_css(
 
 fn select_anchor_css(
   box_tree: &crate::BoxTree,
-  fragment_tree: &crate::FragmentTree,
+  geom_tree: &crate::FragmentTree,
   scroll_state: &ScrollState,
   select_node_id: usize,
 ) -> Option<Rect> {
-  styled_node_anchor_css(box_tree, fragment_tree, scroll_state, select_node_id)
+  styled_node_anchor_css(box_tree, geom_tree, scroll_state, select_node_id)
 }
 
 fn compute_page_accessibility_snapshot(
@@ -5891,7 +5892,6 @@ impl BrowserRuntime {
     let (
       dom_changed,
       action,
-      anchor_css,
       picker_value,
       scroll_changed,
       mouseup_target,
@@ -5909,7 +5909,6 @@ impl BrowserRuntime {
       let (
         dom_changed,
         action,
-        anchor_css,
         picker_value,
         focus_scroll,
         mouseup_target,
@@ -5958,27 +5957,6 @@ impl BrowserRuntime {
               .and_then(|node| node.get_attribute_ref("id"))
               .map(|id| id.to_string())
           })
-        };
-
-        let anchor_css = match &action {
-          InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
-            select_anchor_css(box_tree, hit_tree, &scroll_snapshot, *select_node_id)
-          }
-          InteractionAction::OpenDateTimePicker { input_node_id, .. }
-          | InteractionAction::OpenColorPicker { input_node_id }
-          | InteractionAction::OpenFilePicker { input_node_id, .. } => styled_node_anchor_css(
-            box_tree,
-            hit_tree,
-            &scroll_snapshot,
-            *input_node_id,
-          ),
-          InteractionAction::OpenMediaControls { media_node_id, .. } => styled_node_anchor_css(
-            box_tree,
-            fragment_tree,
-            &scroll_snapshot,
-            *media_node_id,
-          ),
-          _ => None,
         };
 
         let picker_value = match &action {
@@ -6038,7 +6016,6 @@ impl BrowserRuntime {
           (
             dom_changed,
             action,
-            anchor_css,
             picker_value,
             focus_scroll,
             mouseup_target,
@@ -6070,7 +6047,6 @@ impl BrowserRuntime {
       (
         dom_changed,
         action,
-        anchor_css,
         picker_value,
         scroll_changed,
         mouseup_target,
@@ -6558,7 +6534,19 @@ impl BrowserRuntime {
         // Prefer anchoring the dropdown to the `<select>` control's box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let anchor_css = anchor_css
+        let anchor_css = tab
+          .document
+          .as_ref()
+          .and_then(|doc| doc.prepared())
+          .and_then(|prepared| {
+            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            select_anchor_css(
+              prepared.box_tree(),
+              &geom_tree,
+              &scroll_snapshot,
+              select_node_id,
+            )
+          })
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
         let _ = self.ui_tx.send(WorkerToUi::SelectDropdownOpened {
@@ -6575,7 +6563,19 @@ impl BrowserRuntime {
         // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let anchor_css = anchor_css
+        let anchor_css = tab
+          .document
+          .as_ref()
+          .and_then(|doc| doc.prepared())
+          .and_then(|prepared| {
+            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            styled_node_anchor_css(
+              prepared.box_tree(),
+              &geom_tree,
+              &scroll_snapshot,
+              input_node_id,
+            )
+          })
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
 
@@ -6596,7 +6596,19 @@ impl BrowserRuntime {
         // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let anchor_css = anchor_css
+        let anchor_css = tab
+          .document
+          .as_ref()
+          .and_then(|doc| doc.prepared())
+          .and_then(|prepared| {
+            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            styled_node_anchor_css(
+              prepared.box_tree(),
+              &geom_tree,
+              &scroll_snapshot,
+              input_node_id,
+            )
+          })
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
 
@@ -6620,7 +6632,19 @@ impl BrowserRuntime {
         // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let anchor_css = anchor_css
+        let anchor_css = tab
+          .document
+          .as_ref()
+          .and_then(|doc| doc.prepared())
+          .and_then(|prepared| {
+            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            styled_node_anchor_css(
+              prepared.box_tree(),
+              &geom_tree,
+              &scroll_snapshot,
+              input_node_id,
+            )
+          })
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
 
@@ -6639,7 +6663,19 @@ impl BrowserRuntime {
         // Prefer anchoring the overlay to the `<video>`/`<audio>` box, falling back to the cursor
         // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let anchor_css = anchor_css
+        let anchor_css = tab
+          .document
+          .as_ref()
+          .and_then(|doc| doc.prepared())
+          .and_then(|prepared| {
+            let geom_tree = prepared.fragment_tree_for_geometry(&scroll_snapshot);
+            styled_node_anchor_css(
+              prepared.box_tree(),
+              &geom_tree,
+              &scroll_snapshot,
+              media_node_id,
+            )
+          })
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
 
