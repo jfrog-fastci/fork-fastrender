@@ -3123,6 +3123,35 @@ mod tests {
       other => panic!("expected syntax error, got {other:?}"),
     }
   }
+
+  #[test]
+  fn regexp_v_flag_is_accepted_by_regexp_literals_and_constructor() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // RegExp literal with `/v`.
+    assert!(eval_bool(&mut rt, r#"(/a/v.test("a"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = /a/v; return r.unicode === false && r.unicodeSets === true && r.flags === "v"; })()"#,
+    )?);
+
+    // RegExp constructor with `v`.
+    assert!(eval_bool(&mut rt, r#"(new RegExp("a", "v").test("a"))"#)?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = new RegExp("a", "v"); return r.unicode === false && r.unicodeSets === true && r.flags === "v"; })()"#,
+    )?);
+
+    // `u` and `v` are mutually exclusive.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a", "uv"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid flags supplied to RegExp constructor"; } })()"#,
+    )?);
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]

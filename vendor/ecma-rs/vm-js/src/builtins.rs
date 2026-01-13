@@ -13453,8 +13453,13 @@ pub fn regexp_prototype_to_string(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   // https://tc39.es/ecma262/#sec-regexp.prototype.tostring
+  let Value::Object(r) = this else {
+    return Err(VmError::TypeError(
+      "RegExp.prototype.toString called on non-object",
+    ));
+  };
+
   let mut scope = scope.reborrow();
-  let r = require_object(this)?;
   scope.push_root(Value::Object(r))?;
 
   let source_key = string_key(&mut scope, "source")?;
