@@ -6021,6 +6021,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // no longer need a UI-thread snapshot send scheduler.
   let mut history_autosave_send_scheduler =
     fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_secs(1));
+  // Throttle expensive about-page bookmark snapshot rebuilds. The snapshot is only used for
+  // `about:` pages, but rebuilding it requires traversing the entire bookmark tree.
+  let mut bookmarks_about_snapshot_scheduler =
+    fastrender::ui::AutosaveSendScheduler::new(std::time::Duration::from_millis(250));
 
   let wgpu_init = {
     let cli_backends = cli.wgpu_backends.as_deref().map(|backends| {
@@ -7769,10 +7773,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      // Refresh about-page snapshots once per batch of deltas (or full sync), not per mutation.
-      fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
-        &global_bookmarks,
-      );
+      // About-page bookmark snapshot rebuild is throttled below to avoid repeatedly traversing the
+      // full tree during rapid edits (drag/drop reorder, folder edits, etc).
+      bookmarks_about_snapshot_scheduler.mark_dirty();
 
       for (id, win) in windows.iter_mut() {
         let is_source_window = *id == source_window_id;
@@ -7818,27 +7821,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .as_deref()
           .is_some_and(|url| win.app.bookmarks.contains_url(url));
         let star_state_changed = star_state_before != star_state_after;
-
-        let about_bookmarks_visible = win
-          .app
-          .browser_state
-          .active_tab()
-          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
-          .is_some_and(|url| {
-            let base = url
-              .trim()
-              .split(|c| matches!(c, '?' | '#'))
-              .next()
-              .unwrap_or(url);
-            base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
-              || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
-          });
-        if about_bookmarks_visible {
-          if let Some(active_tab) = win.app.browser_state.active_tab_id() {
-            win.app.trusted_about_rendered_urls.remove(&active_tab);
-            win.app.trusted_about_prepared.remove(&active_tab);
-          }
-        }
 
         if omnibox_has_bookmark_suggestions {
           let input = win.app.browser_state.chrome.address_bar_text.as_str();
@@ -7886,8 +7868,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           || is_active_window
           || win.app.bookmarks_panel_open
           || star_state_changed
-          || omnibox_has_bookmark_suggestions
-          || about_bookmarks_visible;
+          || omnibox_has_bookmark_suggestions;
         if needs_redraw_due_to_bookmarks && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
@@ -8089,6 +8070,44 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Flush a debounced session snapshot if it is due.
     let now = std::time::Instant::now();
+
+    // Flush a throttled about-page bookmark snapshot rebuild if it is due. This keeps `about:newtab`
+    // and `about:bookmarks` reasonably fresh without rebuilding the snapshot on every bookmark
+    // mutation batch.
+    if bookmarks_about_snapshot_scheduler.take_if_due(now) {
+      fastrender::ui::about_pages::sync_about_page_snapshot_bookmarks_from_bookmark_store(
+        &global_bookmarks,
+      );
+
+      // If any window is currently showing an about-page that depends on bookmark snapshots,
+      // invalidate its cached render so the next redraw re-renders with the updated snapshot.
+      for win in windows.values_mut() {
+        let about_bookmarks_visible = win
+          .app
+          .browser_state
+          .active_tab()
+          .and_then(|tab| tab.current_url.as_deref().or(tab.committed_url.as_deref()))
+          .is_some_and(|url| {
+            let base = url
+              .trim()
+              .split(|c| matches!(c, '?' | '#'))
+              .next()
+              .unwrap_or(url);
+            base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
+              || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
+          });
+        if about_bookmarks_visible {
+          if let Some(active_tab) = win.app.browser_state.active_tab_id() {
+            win.app.trusted_about_rendered_urls.remove(&active_tab);
+            win.app.trusted_about_prepared.remove(&active_tab);
+            if !(win.app.window_occluded || win.app.window_minimized) {
+              win.app.window.request_redraw();
+            }
+          }
+        }
+      }
+    }
+
     let session_snapshot_due =
       session_save_scheduler.should_flush(now) && session_save_scheduler.take_pending();
     let window_state_snapshot_due = window_state_autosave_due;
@@ -8143,6 +8162,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             None => deadline,
           });
         }
+      }
+    }
+    for deadline in [bookmarks_about_snapshot_scheduler.next_deadline(now)] {
+      if let Some(deadline) = deadline {
+        next_deadline = Some(match next_deadline {
+          Some(existing) => existing.min(deadline),
+          None => deadline,
+        });
       }
     }
     if let Some(deadline) = cpu_sampler.next_deadline() {
