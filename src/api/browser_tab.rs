@@ -6634,25 +6634,6 @@ impl BrowserTab {
     Ok(handled)
   }
 
-  /// Convenience wrapper for `perform_selection_action` that accepts an AccessKit [`accesskit::Action`].
-  ///
-  /// This is only available when the optional desktop browser UI stack is enabled.
-  #[cfg(feature = "browser_ui")]
-  pub fn perform_accesskit_selection_action(
-    &mut self,
-    target: NodeId,
-    action: accesskit::Action,
-  ) -> Result<bool> {
-    use accesskit::Action;
-    match action {
-      Action::SetSelection => self.perform_selection_action(target, SelectionAction::SetSelection),
-      Action::AddToSelection => self.perform_selection_action(target, SelectionAction::AddToSelection),
-      Action::RemoveFromSelection => self.perform_selection_action(target, SelectionAction::RemoveFromSelection),
-      Action::Click => self.perform_selection_action(target, SelectionAction::SetSelection),
-      _ => Ok(false),
-    }
-  }
-
   /// Route an AccessKit accessibility action to a DOM mutation/event.
   ///
   /// Currently this supports disclosure-style expand/collapse semantics for:
@@ -6786,7 +6767,6 @@ impl BrowserTab {
     let raw = NonZeroU128::new(preorder as u128)?;
     Some(AccessKitNodeId(raw))
   }
-
   /// Simulate a user click on `node_id` and return the resolved navigation target URL if the
   /// element's default click action should navigate.
   ///
