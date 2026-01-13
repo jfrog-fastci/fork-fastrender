@@ -3236,6 +3236,7 @@ name = "libvpx-sys-bundled"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "matroska-demuxer",
 ]
 
 [[package]]

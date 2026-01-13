@@ -11,3 +11,6 @@ readme = "README.md"
 
 [dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+matroska-demuxer = "0.7"

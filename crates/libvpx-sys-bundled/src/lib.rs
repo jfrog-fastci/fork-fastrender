@@ -117,16 +117,23 @@ pub const VPX_CS_BT_2020: ::libc::c_uint = 5;
 pub const VPX_CS_RESERVED: ::libc::c_uint = 6;
 pub const VPX_CS_SRGB: ::libc::c_uint = 7;
 pub type vpx_color_space_t = Enum_vpx_color_space;
+pub type Enum_vpx_color_range = ::libc::c_uint;
+pub const VPX_CR_STUDIO_RANGE: ::libc::c_uint = 0;
+pub const VPX_CR_FULL_RANGE: ::libc::c_uint = 1;
+pub type vpx_color_range_t = Enum_vpx_color_range;
 #[repr(C)]
 #[derive(Copy)]
 pub struct Struct_vpx_image {
     pub fmt: vpx_img_fmt_t,
     pub cs: vpx_color_space_t,
+    pub range: vpx_color_range_t,
     pub w: ::libc::c_uint,
     pub h: ::libc::c_uint,
     pub bit_depth: ::libc::c_uint,
     pub d_w: ::libc::c_uint,
     pub d_h: ::libc::c_uint,
+    pub r_w: ::libc::c_uint,
+    pub r_h: ::libc::c_uint,
     pub x_chroma_shift: ::libc::c_uint,
     pub y_chroma_shift: ::libc::c_uint,
     pub planes: [*mut ::libc::c_uchar; 4usize],
