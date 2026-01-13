@@ -664,6 +664,37 @@ pub struct InteractionState {
 }
 
 impl InteractionState {
+  /// Set (or clear) the currently focused element, marking the cached CSS hash dirty on change.
+  pub fn set_focused(&mut self, focused: Option<usize>) {
+    if self.focused == focused {
+      return;
+    }
+    self.focused = focused;
+    self.mark_css_hash_dirty();
+  }
+
+  /// Mutably access the currently focused element, marking the cached CSS hash dirty.
+  pub fn focused_mut(&mut self) -> &mut Option<usize> {
+    self.mark_css_hash_dirty();
+    &mut self.focused
+  }
+
+  /// Set whether the focused element should match `:focus-visible`, marking the cached CSS hash
+  /// dirty on change.
+  pub fn set_focus_visible(&mut self, focus_visible: bool) {
+    if self.focus_visible == focus_visible {
+      return;
+    }
+    self.focus_visible = focus_visible;
+    self.mark_css_hash_dirty();
+  }
+
+  /// Mutably access the `:focus-visible` flag, marking the cached CSS hash dirty.
+  pub fn focus_visible_mut(&mut self) -> &mut bool {
+    self.mark_css_hash_dirty();
+    &mut self.focus_visible
+  }
+
   #[inline]
   pub fn focus_chain(&self) -> &[usize] {
     &self.focus_chain

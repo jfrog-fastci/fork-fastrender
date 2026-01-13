@@ -4737,14 +4737,14 @@ mod tests {
       .expect("preorder id");
 
     let mut state_end = InteractionState::default();
-    state_end.focused = Some(input_preorder);
+    state_end.set_focused(Some(input_preorder));
     state_end.set_focus_chain(vec![input_preorder]);
-    state_end.text_edit = Some(crate::interaction::state::TextEditPaintState {
+    state_end.set_text_edit(Some(crate::interaction::state::TextEditPaintState {
       node_id: input_preorder,
       caret: 10,
       caret_affinity: CaretAffinity::Downstream,
       selection: None,
-    });
+    }));
     doc.set_interaction_state(Some(state_end.clone()));
 
     let pixmap_end = doc

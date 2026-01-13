@@ -1728,14 +1728,14 @@ mod tests {
       .expect("expected to find <input> preorder id");
 
     let mut state_end = InteractionState::default();
-    state_end.focused = Some(input_id);
+    state_end.set_focused(Some(input_id));
     state_end.set_focus_chain(vec![input_id]);
-    state_end.text_edit = Some(crate::interaction::state::TextEditPaintState {
+    state_end.set_text_edit(Some(crate::interaction::state::TextEditPaintState {
       node_id: input_id,
       caret: 10,
       caret_affinity: CaretAffinity::Downstream,
       selection: None,
-    });
+    }));
 
     let frame_end =
       document.render_frame_with_scroll_state_and_interaction_state(Some(&state_end))?;
