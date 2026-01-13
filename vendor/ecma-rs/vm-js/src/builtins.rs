@@ -29566,6 +29566,168 @@ mod async_generator_function_constructor_tests {
 }
 
 #[cfg(test)]
+mod async_generator_unit_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    // Async generator tests allocate Promise/job machinery; use a slightly larger heap than the
+    // minimal 1MiB used by some unit tests to avoid spurious OOMs as builtin surface area grows.
+    let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  fn is_unimplemented_async_generator_error(err: &VmError) -> bool {
+    matches!(err, VmError::Unimplemented(msg) if msg.contains("async generator functions"))
+  }
+
+  fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
+    match rt.exec_script(
+      r#"
+        async function* __ag_support() { yield 1; }
+        __ag_support().next();
+      "#,
+    ) {
+      Ok(_) => {
+        // Avoid leaking Promise jobs into subsequent assertions within the same runtime.
+        rt.teardown_microtasks();
+        Ok(true)
+      }
+      Err(err) if is_unimplemented_async_generator_error(&err) => Ok(false),
+      Err(err) => Err(err),
+    }
+  }
+
+  fn perform_microtask_checkpoint(rt: &mut JsRuntime) -> Result<(), VmError> {
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    assert!(
+      rt.vm.microtask_queue().is_empty(),
+      "expected microtask queue to be empty after checkpoint"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn next_returns_intrinsic_promise() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let result: Result<(), VmError> = (|| {
+      if !feature_detect_async_generators(&mut rt)? {
+        return Ok(());
+      }
+      let v = rt.exec_script(
+        r#"
+          (function () {
+            var P0 = Promise;
+            Promise = function FakePromise(executor) { throw "should not be called"; };
+
+            async function* g() { yield 1; }
+            var p = g().next();
+
+            // `AsyncGenerator.prototype.next` must use `NewPromiseCapability(%Promise%)`, not the
+            // mutable global `Promise` binding.
+            return Object.getPrototypeOf(p) === P0.prototype;
+          })()
+        "#,
+      )?;
+      assert_eq!(v, Value::Bool(true));
+      // Run the `next()` job to avoid leaking queued microtasks.
+      perform_microtask_checkpoint(&mut rt)?;
+      Ok(())
+    })();
+    rt.teardown_microtasks();
+    result
+  }
+
+  #[test]
+  fn next_promise_resolves_to_value_done() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let result: Result<(), VmError> = (|| {
+      if !feature_detect_async_generators(&mut rt)? {
+        return Ok(());
+      }
+      rt.exec_script(
+        r#"
+          var got = undefined;
+          async function* g() { yield 1; }
+          g().next().then(function (r) { got = [r.value, r.done]; });
+        "#,
+      )?;
+
+      perform_microtask_checkpoint(&mut rt)?;
+
+      let v = rt.exec_script("got && got[0] === 1 && got[1] === false")?;
+      assert_eq!(v, Value::Bool(true));
+      Ok(())
+    })();
+    rt.teardown_microtasks();
+    result
+  }
+
+  #[test]
+  fn throw_on_suspended_start_rejects_without_executing_body() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let result: Result<(), VmError> = (|| {
+      if !feature_detect_async_generators(&mut rt)? {
+        return Ok(());
+      }
+      rt.exec_script(
+        r#"
+          var started = false;
+          var rejected = false;
+          var reason = undefined;
+
+          async function* g() { started = true; yield 1; }
+          var it = g();
+          it.throw(123).then(
+            function () { rejected = false; },
+            function (e) { rejected = true; reason = e; }
+          );
+        "#,
+      )?;
+
+      perform_microtask_checkpoint(&mut rt)?;
+
+      let v = rt.exec_script("rejected === true && reason === 123 && started === false")?;
+      assert_eq!(v, Value::Bool(true));
+      Ok(())
+    })();
+    rt.teardown_microtasks();
+    result
+  }
+
+  #[test]
+  fn return_on_completed_awaits_and_fulfills_done_true() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let result: Result<(), VmError> = (|| {
+      if !feature_detect_async_generators(&mut rt)? {
+        return Ok(());
+      }
+      rt.exec_script(
+        r#"
+          var ret = undefined;
+
+          async function* g() {}
+          var it = g();
+
+          // Complete the generator, then call `.return()` with a Promise that must be awaited.
+          it.next().then(function () {
+            it.return(Promise.resolve(7)).then(function (r) { ret = [r.value, r.done]; });
+          });
+        "#,
+      )?;
+
+      perform_microtask_checkpoint(&mut rt)?;
+
+      let v = rt.exec_script("ret && ret[0] === 7 && ret[1] === true")?;
+      assert_eq!(v, Value::Bool(true));
+      Ok(())
+    })();
+    rt.teardown_microtasks();
+    result
+  }
+}
+
+#[cfg(test)]
 mod dynamic_function_constructor_body_empty_tests {
   use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
