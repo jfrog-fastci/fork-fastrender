@@ -85,6 +85,10 @@ content realms.
 See [`docs/chrome_js_bridge.md`](chrome_js_bridge.md) for the API surface and its capability-based
 installation model.
 
+Renderer-chrome also introduces privileged internal URL schemes (`chrome://` for built-in assets and
+`chrome-action:` for browser actions). These schemes must be rejected in untrusted renderer/content
+contexts; see [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md).
+
 ### Trust boundary statement
 
 **All messages from renderer → browser are untrusted.**

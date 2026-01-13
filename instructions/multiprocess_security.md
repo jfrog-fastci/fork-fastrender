@@ -97,6 +97,11 @@ If/when renderer-chrome lands (chrome UI rendered by FastRender inside the brows
 trusted chrome document may use a privileged JS bridge (`globalThis.chrome`). The canonical API
 surface + trust boundary is documented in [`docs/chrome_js_bridge.md`](../docs/chrome_js_bridge.md).
 
+Renderer-chrome also relies on privileged internal URL schemes (`chrome://` assets and
+`chrome-action:` actions). These are reserved for the trusted browser-process chrome renderer and
+must never be enabled for untrusted content; see
+[`docs/renderer_chrome_schemes.md`](../docs/renderer_chrome_schemes.md).
+
 ### Site isolation
 
 Beyond process-per-tab, consider site isolation:
