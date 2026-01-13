@@ -51,7 +51,7 @@ mod job;
 pub use job::Job;
 
 #[cfg(windows)]
-mod restricted_token;
+pub mod restricted_token;
 #[cfg(windows)]
 pub use restricted_token::RestrictedToken;
 
@@ -360,7 +360,7 @@ pub mod mitigations;
 mod spawn;
 
 #[cfg(windows)]
-pub use spawn::{spawn_sandboxed, SandboxedChild};
+pub use spawn::{spawn_sandboxed, ChildProcess, SandboxRequest, SpawnConfig};
 
 pub mod support;
 pub use support::{is_appcontainer_supported, is_nested_job_supported, SandboxSupport};
@@ -414,10 +414,10 @@ fn allow_unsandboxed_renderer() -> bool {
 #[cfg(test)]
 mod tests {
   #[cfg(windows)]
-  use std::{env, time::Duration};
+  use std::{env, ffi::OsString, time::Duration};
 
   #[cfg(windows)]
-  use crate::{mitigations, spawn_sandboxed};
+  use crate::{mitigations, spawn_sandboxed, SandboxRequest, SpawnConfig};
 
   // This is a helper entrypoint that runs inside the sandboxed child process.
   //
@@ -437,10 +437,18 @@ mod tests {
     let exe = env::current_exe().unwrap();
 
     let test_name = "tests::verify_child_renderer_mitigations";
-    let args = ["--ignored", "--exact", test_name];
+    let args: Vec<OsString> = vec![
+      OsString::from("--ignored"),
+      OsString::from("--exact"),
+      OsString::from(test_name),
+    ];
 
-    let mut child =
-      spawn_sandboxed(&exe, &args, mitigations::renderer_mitigation_policy()).unwrap();
+    let mut cfg = SpawnConfig::new(exe);
+    cfg.args = args;
+    cfg.sandbox = SandboxRequest::None;
+    cfg.mitigation_policy = mitigations::renderer_mitigation_policy();
+
+    let mut child = spawn_sandboxed(&cfg).unwrap();
 
     let exit_code = child
       .wait(Duration::from_secs(30))

@@ -276,7 +276,7 @@ mod tests {
   use std::ffi::c_void;
 
   type BOOL = i32;
-  type HANDLE = isize;
+  type HANDLE = *mut c_void;
   type DWORD = u32;
 
   const TOKEN_QUERY: DWORD = 0x0008;
@@ -303,14 +303,14 @@ mod tests {
     fn GetLastError() -> DWORD;
   }
 
-  const INVALID_HANDLE_VALUE: HANDLE = -1isize;
+  const INVALID_HANDLE_VALUE: HANDLE = (-1isize) as HANDLE;
 
   struct OwnedHandle(HANDLE);
 
   impl Drop for OwnedHandle {
     fn drop(&mut self) {
       unsafe {
-        if self.0 != 0 && self.0 != INVALID_HANDLE_VALUE {
+        if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
           CloseHandle(self.0);
         }
       }
@@ -319,7 +319,7 @@ mod tests {
 
   fn current_process_is_appcontainer() -> Result<bool> {
     unsafe {
-      let mut token: HANDLE = 0;
+      let mut token: HANDLE = std::ptr::null_mut();
       if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
         return Err(WinSandboxError::from_code("OpenProcessToken", GetLastError()));
       }
