@@ -985,6 +985,29 @@ fn compiled_computed_member_assignment_key_evaluates_before_nullish_base_error()
 }
 
 #[test]
+fn compiled_member_assignment_to_nullish_base_does_not_evaluate_rhs() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // In `null[expr] = rhs`, `expr` is evaluated before the nullish base error, but the RHS is not
+  // evaluated because the member reference evaluation throws before reaching RHS evaluation.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let ok = 0;
+      function rhs() { ok = 2; return 0; }
+      try { null[(ok = 1, 'x')] = rhs(); } catch(e) {}
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_simple_assignment_evaluates_member_lhs_before_rhs() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());

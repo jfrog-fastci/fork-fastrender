@@ -3744,6 +3744,12 @@ impl<'vm> HirEvaluator<'vm> {
                 let key = self.eval_object_key(&mut scope, body, &member.property)?;
                 root_property_key(&mut scope, key)?;
 
+                // `AssignmentExpression : LeftHandSideExpression = AssignmentExpression` evaluates
+                // the LHS reference (including `RequireObjectCoercible` for member bases) before
+                // evaluating the RHS. This ensures `null[key()] = rhs()` runs `key()` but does not
+                // evaluate `rhs()`.
+                crate::spec_ops::require_object_coercible(base)?;
+
                 // Evaluate RHS after LHS reference evaluation.
                 let v = self.eval_expr(&mut scope, body, value)?;
                 scope.push_root(v)?;
