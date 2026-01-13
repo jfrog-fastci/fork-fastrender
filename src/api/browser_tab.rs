@@ -2979,12 +2979,9 @@ impl BrowserTabHost {
     }
     // Dynamic scripts are marked "already started" at preparation time (DOM insertion steps /
     // attribute mutation steps) so subsequent insertion attempts short-circuit.
-    self.mutate_dom(|dom| {
-      dom
-        .set_script_already_started(node_id, true)
-        .expect("set_script_already_started should succeed for <script>"); // fastrender-allow-unwrap
-      ((), false)
-    });
+    self
+      .mutate_dom(|dom| (dom.set_script_already_started(node_id, true), false))
+      .map_err(|err| Error::Other(err.to_string()))?;
     self.scripts.insert(
       discovered.id,
       ScriptEntry {
@@ -9049,6 +9046,85 @@ mod tests {
       "expected vm-js insertion steps to bypass full dynamic script discovery scans",
     );
  
+    Ok(())
+  }
+
+  #[test]
+  fn dynamic_script_prepare_does_not_bump_dom_mutation_generation_for_script_already_started(
+  ) -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let (mut host, mut event_loop) = build_host("<!doctype html><html><body></body></html>", log)?;
+    host.document.set_viewport(1, 1);
+
+    let script = host.mutate_dom(|dom| {
+      let script = dom.create_element("script", "");
+      dom
+        .set_attribute(script, "src", "https://example.com/dyn.js")
+        .expect("set_attribute");
+      let body = dom.body().expect("expected a <body> element");
+      dom.append_child(body, script).expect("append_child");
+      (script, true)
+    });
+
+    // Render once so the dom2-backed renderer has an up-to-date `last_seen_dom_mutation_generation`.
+    host.document.render_frame()?;
+    assert!(
+      !host.document.is_dirty(),
+      "expected document to be clean after first render"
+    );
+    assert!(host.document.render_if_needed()?.is_none());
+
+    assert!(
+      !host.dom().node(script).script_already_started,
+      "expected dynamic script to start with script_already_started=false"
+    );
+
+    let generation_before = host.document.dom_mutation_generation();
+
+    // Build a spec that matches the inserted dynamic script but avoids any script execution (the
+    // fetch task is queued and not run in this test).
+    let spec = ScriptElementSpec {
+      base_url: host.base_url.clone(),
+      src: Some("https://example.com/dyn.js".to_string()),
+      src_attr_present: true,
+      inline_text: String::new(),
+      async_attr: false,
+      force_async: host.dom().node(script).script_force_async,
+      defer_attr: false,
+      nomodule_attr: false,
+      crossorigin: None,
+      integrity_attr_present: false,
+      integrity: None,
+      referrer_policy: None,
+      fetch_priority: None,
+      parser_inserted: false,
+      node_id: Some(script),
+      script_type: ScriptType::Classic,
+    };
+
+    host.register_and_schedule_dynamic_script(
+      script,
+      spec.clone(),
+      spec.base_url.clone(),
+      &mut event_loop,
+    )?;
+
+    let generation_after = host.document.dom_mutation_generation();
+    assert_eq!(
+      generation_after, generation_before,
+      "script_already_started internal slot updates should not bump dom2::Document::mutation_generation"
+    );
+    assert!(
+      host.dom().node(script).script_already_started,
+      "expected dynamic script preparation to mark script_already_started=true"
+    );
+
+    // Ensure the dom2-backed renderer does not treat the internal-slot update as a real DOM change.
+    assert!(
+      !host.document.is_dirty(),
+      "expected document to remain clean after script_already_started update"
+    );
+    assert!(host.document.render_if_needed()?.is_none());
     Ok(())
   }
 
