@@ -46,6 +46,10 @@ const ENV_BROWSER_MAX_PENDING_FRAME_BYTES: &str = "FASTR_BROWSER_MAX_PENDING_FRA
 #[cfg(feature = "browser_ui")]
 const DEFAULT_BROWSER_MAX_PENDING_FRAME_BYTES: u64 = 512 * 1024 * 1024;
 
+// Opt-in perf logging for UI-level performance investigations (e.g. allocation churn).
+#[cfg(feature = "browser_ui")]
+const ENV_PERF_LOG: &str = "FASTR_PERF_LOG";
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -5109,6 +5113,17 @@ struct App {
   /// the rendered page has focus. On some platforms/egui versions, egui-winit may still emit a
   /// `Paste` event for the same keypress; this flag avoids double-pasting.
   suppress_paste_events: bool,
+  /// Scratch buffer for extracting `egui::Event::MouseWheel` payloads from `RawInput`.
+  ///
+  /// PERF: `RawInput::events` is scanned every frame; reusing this buffer avoids per-frame `Vec`
+  /// allocations for the common "no wheel events" case.
+  wheel_events_buf: Vec<(egui::MouseWheelUnit, egui::Vec2)>,
+  /// Scratch buffer for extracting `egui::Event::Paste` payloads from `RawInput`.
+  ///
+  /// PERF: Reused across frames so that frames without paste input don't allocate.
+  paste_events_buf: Vec<String>,
+  /// Enable lightweight perf logging controlled by `FASTR_PERF_LOG=1`.
+  perf_log_enabled: bool,
 
   window_focused: bool,
   window_occluded: bool,
@@ -5656,6 +5671,7 @@ impl App {
       );
     }
     let window_id = window.id();
+    let perf_log_enabled = parse_env_bool(std::env::var(ENV_PERF_LOG).ok().as_deref());
 
     let mut browser_state = fastrender::ui::BrowserAppState::new();
     browser_state.history = history;
@@ -5758,6 +5774,9 @@ impl App {
       resize_dpr_scale: resize_dpr_scale_from_env(),
       modifiers: winit::event::ModifiersState::default(),
       suppress_paste_events: false,
+      wheel_events_buf: Vec::with_capacity(8),
+      paste_events_buf: Vec::with_capacity(2),
+      perf_log_enabled,
       window_focused: true,
       window_occluded: false,
       window_minimized: size.width == 0 || size.height == 0,
@@ -13181,15 +13200,26 @@ impl App {
     self.window_fullscreen = self.window.fullscreen().is_some();
     let mut session_dirty = false;
 
-    let (wheel_events, paste_events) = {
+    {
       let _span = self.trace.span("egui.begin_frame", "ui.frame");
-      let (raw_input, wheel_events, paste_events) = {
+      let raw_input = {
         let mut raw = self.egui_state.take_egui_input(&self.window);
         raw.pixels_per_point = Some(self.pixels_per_point);
-        let wheel_events = raw
-          .events
-          .iter()
-          .filter_map(|event| match event {
+
+        // PERF: Avoid per-frame allocation churn by extracting wheel/paste events into reusable
+        // buffers instead of collecting into new `Vec`s every frame. The common case (no wheel/paste)
+        // should be allocation-free for this path.
+        //
+        // Validation:
+        // - Run with `FASTR_PERF_LOG=1` and scroll/paste; a log line is printed only when either
+        //   buffer grows (heap alloc).
+        // - For full allocation profiling, see `docs/profiling-linux.md` ("heaptrack").
+        let wheel_cap_before = self.wheel_events_buf.capacity();
+        let paste_cap_before = self.paste_events_buf.capacity();
+        self.wheel_events_buf.clear();
+        self.paste_events_buf.clear();
+        for event in raw.events.iter() {
+          match event {
             egui::Event::MouseWheel {
               unit,
               delta,
@@ -13197,29 +13227,34 @@ impl App {
             } => {
               // Ctrl/Cmd+wheel is treated as zoom (handled in `ui::chrome_ui`), so do not forward it
               // to the page scroll pipeline.
-              if modifiers.command {
-                None
-              } else {
-                Some((*unit, *delta))
+              if !modifiers.command {
+                self.wheel_events_buf.push((*unit, *delta));
               }
             }
-            _ => None,
-          })
-          .collect::<Vec<_>>();
-        let paste_events = raw
-          .events
-          .iter()
-          .filter_map(|event| match event {
-            egui::Event::Paste(text) => Some(text.clone()),
-            _ => None,
-          })
-          .collect::<Vec<_>>();
-        (raw, wheel_events, paste_events)
+            egui::Event::Paste(text) => {
+              self.paste_events_buf.push(text.clone());
+            }
+            _ => {}
+          }
+        }
+        if self.perf_log_enabled {
+          let wheel_cap_after = self.wheel_events_buf.capacity();
+          let paste_cap_after = self.paste_events_buf.capacity();
+          if wheel_cap_after > wheel_cap_before || paste_cap_after > paste_cap_before {
+            eprintln!(
+              "[{ENV_PERF_LOG}] egui scratch buffers grew: wheel {wheel_cap_before}→{wheel_cap_after}, paste {paste_cap_before}→{paste_cap_after} (raw.events={}, wheel={}, paste={})",
+              raw.events.len(),
+              self.wheel_events_buf.len(),
+              self.paste_events_buf.len(),
+            );
+          }
+        }
+
+        raw
       };
 
       self.egui_ctx.begin_frame(raw_input);
-      (wheel_events, paste_events)
-    };
+    }
 
     let ctx = self.egui_ctx.clone();
     fastrender::ui::motion::UiMotion::set_ctx_reduced_motion(
@@ -13471,19 +13506,28 @@ impl App {
     // Cache egui text focus state into our backend-agnostic focus model before routing any keyboard
     // derived events (paste/menu commands/etc).
     self.refresh_chrome_text_focus_from_egui(&ctx);
- 
+  
     let suppress_paste_events = std::mem::take(&mut self.suppress_paste_events);
     if should_forward_paste_events_to_page(
       self.page_has_focus,
       self.chrome_has_text_focus,
       suppress_paste_events,
-    ) && !paste_events.is_empty()
+    ) && !self.paste_events_buf.is_empty()
     {
       if let Some(tab_id) = self.browser_state.active_tab_id() {
-        for text in paste_events {
+        // Move the buffer out so we can call `send_worker_msg` while iterating.
+        let mut paste_events = std::mem::take(&mut self.paste_events_buf);
+        for text in paste_events.drain(..) {
           self.send_worker_msg(fastrender::ui::UiToWorker::Paste { tab_id, text });
         }
+        // Reuse the allocation next frame.
+        self.paste_events_buf = paste_events;
+      } else {
+        self.paste_events_buf.clear();
       }
+    } else {
+      // Drop any collected paste copies eagerly; they'll be re-collected next frame if needed.
+      self.paste_events_buf.clear();
     }
 
     // ---------------------------------------------------------------------------
@@ -13690,7 +13734,7 @@ impl App {
       // Best-effort popup UX: when a native wheel scroll happens outside an open picker/dropdown,
       // close it (matching typical browser behaviour).
       let mut wheel_blocked_by_popup = false;
-      if !wheel_events.is_empty() && !self.clear_browsing_data_dialog_open {
+      if !self.wheel_events_buf.is_empty() && !self.clear_browsing_data_dialog_open {
         if let Some(pos_points) = ctx.input(|i| i.pointer.hover_pos()) {
           if self.open_select_dropdown.is_some() {
             if self
@@ -13882,7 +13926,7 @@ impl App {
 
             // If a wheel scroll is happening this frame, register it before drawing so scrollbars
             // become visible immediately (even if this is a single-tick wheel scroll).
-            if !wheel_events.is_empty()
+            if !self.wheel_events_buf.is_empty()
               && !wheel_blocked_by_popup
               && response.hovered()
               && !self.clear_browsing_data_dialog_open
@@ -13893,7 +13937,7 @@ impl App {
                   .is_some_and(|pos| self.cursor_over_egui_overlay(pos));
               if !cursor_over_overlay {
                 let mut delta_css = (0.0, 0.0);
-                for (unit, delta) in &wheel_events {
+                for (unit, delta) in &self.wheel_events_buf {
                   let Some((dx, dy)) = mapping
                     .wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
                   else {
