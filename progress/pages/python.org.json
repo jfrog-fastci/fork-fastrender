@@ -14,7 +14,7 @@
     "layout": 24.996382352941175,
     "paint": 29.99565882352941
   },
-  "notes": "",
+  "notes": "Visually matches Chrome; the high diff_percent at tolerance=0 appears dominated by text rasterization/anti-aliasing differences (lots of small per-pixel deltas across the page) rather than missing layout/paint primitives.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 343820,
