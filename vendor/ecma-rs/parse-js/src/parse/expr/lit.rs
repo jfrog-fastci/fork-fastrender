@@ -733,11 +733,12 @@ fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
   Ok(())
 }
 
-fn count_regex_capturing_groups(pattern: &str, unicode_sets_mode: bool) -> usize {
+fn regex_capture_info(pattern: &str, unicode_sets_mode: bool) -> (usize, bool) {
   let bytes = pattern.as_bytes();
   let mut i = 0usize;
   let mut charset_depth = 0usize;
   let mut count = 0usize;
+  let mut has_named_groups = false;
   while i < pattern.len() {
     let ch = pattern[i..].chars().next().unwrap();
     if ch == '\\' {
@@ -771,7 +772,10 @@ fn count_regex_capturing_groups(pattern: &str, unicode_sets_mode: bool) -> usize
         if i + 2 < bytes.len() && bytes[i + 2] == b'<' && i + 3 < bytes.len() {
           match bytes[i + 3] {
             b'=' | b'!' => {}
-            _ => count += 1,
+            _ => {
+              count += 1;
+              has_named_groups = true;
+            }
           }
         }
       } else {
@@ -780,7 +784,7 @@ fn count_regex_capturing_groups(pattern: &str, unicode_sets_mode: bool) -> usize
     }
     i += ch.len_utf8();
   }
-  count
+  (count, has_named_groups)
 }
 
 fn regex_is_other_id_start(c: char) -> bool {
@@ -1098,6 +1102,7 @@ fn validate_regex_pattern(
   base_offset: usize,
   unicode_mode: bool,
   unicode_sets_mode: bool,
+  has_named_groups: bool,
   capture_groups: usize,
 ) -> Result<(), RegexError> {
   let bytes = pattern.as_bytes();
@@ -1942,6 +1947,69 @@ fn validate_regex_pattern(
         continue;
       }
 
+      if esc == 'k' {
+        let after_k = i + esc_len;
+        let should_treat_k_as_named_ref = unicode_mode || has_named_groups;
+        if should_treat_k_as_named_ref {
+          if in_charset {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: after_k.saturating_sub(escape_start),
+            });
+          }
+          if after_k >= pattern.len() || !pattern[after_k..].starts_with('<') {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: after_k.saturating_sub(escape_start),
+            });
+          }
+          let after_angle = after_k + '<'.len_utf8();
+          let Some(end_rel) = pattern[after_angle..].find('>') else {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: pattern.len().saturating_sub(escape_start),
+            });
+          };
+          if end_rel == 0 {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + escape_start,
+              len: after_angle + '>'.len_utf8() - escape_start,
+            });
+          }
+
+          // If the name contains only literal characters (no escape sequences), perform a basic
+          // identifier-like check so obviously invalid group names are rejected at parse time.
+          let name = &pattern[after_angle..after_angle + end_rel];
+          if !name.contains('\\') {
+            let mut chars = name.chars();
+            let Some(first) = chars.next() else {
+              // The empty name case is already handled above.
+              unreachable!();
+            };
+            let valid_start =
+              first == '$' || first == '_' || unicode_ident::is_xid_start(first);
+            let valid_continue = |c: char| c == '$' || c == '_' || unicode_ident::is_xid_continue(c);
+            if !valid_start || !chars.all(valid_continue) {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: after_angle + end_rel + '>'.len_utf8() - escape_start,
+              });
+            }
+          }
+
+          // Skip until the end of the `\k<name>` sequence.
+          i = after_angle + end_rel + '>'.len_utf8();
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+          continue;
+        }
+      }
+
       if !in_charset && esc.is_ascii_digit() {
         if esc == '0' {
           let after = i + esc_len;
@@ -2379,12 +2447,13 @@ fn validate_regex_literal(raw: &str) -> Result<(), RegexError> {
       let unicode_mode = flags.as_bytes().iter().any(|b| *b == b'u' || *b == b'v');
       let unicode_sets_mode = flags.as_bytes().iter().any(|b| *b == b'v');
       let pattern = &raw['/'.len_utf8()..offset];
-      let capture_groups = count_regex_capturing_groups(pattern, unicode_sets_mode);
+      let (capture_groups, has_named_groups) = regex_capture_info(pattern, unicode_sets_mode);
       validate_regex_pattern(
         pattern,
         '/'.len_utf8(),
         unicode_mode,
         unicode_sets_mode,
+        has_named_groups,
         capture_groups,
       )?;
       return Ok(());

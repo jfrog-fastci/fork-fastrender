@@ -11,6 +11,33 @@ fn duplicate_regex_flags_are_rejected() {
 }
 
 #[test]
+fn regex_unterminated_named_backreference_is_rejected() {
+  let err = parse("/\\k</u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_empty_named_backreference_is_rejected() {
+  let err = parse("/\\k<>/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
+fn regex_invalid_unicode_escape_in_charset_is_rejected() {
+  let err = parse("/[\\u{}]/u").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
+}
+
+#[test]
 fn invalid_string_escape_reports_error() {
   let err = parse("\"\\u{110000}\"").unwrap_err();
   assert_eq!(err.typ, SyntaxErrorType::InvalidCharacterEscape);
