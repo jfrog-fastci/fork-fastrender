@@ -781,7 +781,7 @@ impl Document {
       return;
     }
 
-    let last_descendant = self.traversal_last_inclusive_descendant(to_be_removed);
+    let last_descendant = self.tree_last_inclusive_descendant(to_be_removed);
     let mut updates: Vec<(NodeIteratorId, NodeId, bool)> = Vec::new();
 
     for (&id, state) in &self.node_iterators {
@@ -789,23 +789,23 @@ impl Document {
         continue;
       }
 
-      if !self.traversal_is_inclusive_descendant(to_be_removed, state.reference) {
+      if !self.is_tree_inclusive_ancestor(to_be_removed, state.reference) {
         continue;
       }
 
       let mut pointer_before_reference = state.pointer_before_reference;
       if pointer_before_reference {
-        if let Some(next) = self.traversal_following_in_subtree(state.root, last_descendant) {
+        if let Some(next) = self.tree_following_in_subtree(state.root, last_descendant) {
           updates.push((id, next, pointer_before_reference));
           continue;
         }
         pointer_before_reference = false;
       }
 
-      let reference = if let Some(previous_sibling) = self.traversal_previous_sibling(to_be_removed) {
-        self.traversal_last_inclusive_descendant(previous_sibling)
+      let reference = if let Some(previous_sibling) = self.tree_previous_sibling(to_be_removed) {
+        self.tree_last_inclusive_descendant(previous_sibling)
       } else {
-        self.traversal_parent_node(to_be_removed).unwrap_or(state.root)
+        self.tree_parent_node(to_be_removed).unwrap_or(state.root)
       };
 
       updates.push((id, reference, pointer_before_reference));

@@ -200,3 +200,74 @@ fn node_iterator_pre_remove_skips_inert_template_descendants_when_finding_preced
     Some(false)
   );
 }
+
+#[test]
+fn node_iterator_pre_remove_skips_shadow_root_internal_child() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  let root = doc.root();
+  let host = doc.create_element("div", "");
+  doc.append_child(root, host).unwrap();
+
+  let shadow_root = doc
+    .attach_shadow_root(
+      host,
+      ShadowRootMode::Open,
+      /* clonable */ false,
+      /* serializable */ false,
+      /* delegates_focus */ false,
+      SlotAssignmentMode::Named,
+    )
+    .unwrap();
+  let shadow_child = doc.create_element("span", "");
+  doc.append_child(shadow_root, shadow_child).unwrap();
+
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  doc.append_child(host, a).unwrap();
+  doc.append_child(a, b).unwrap();
+
+  let iter = doc.create_node_iterator(host);
+  doc.set_node_iterator_reference_and_pointer(iter, b, true);
+
+  // Removing the last light-DOM child should update the iterator to point to the host element,
+  // *not* into the host's internal ShadowRoot subtree.
+  doc.remove_child(host, a).unwrap();
+
+  assert_eq!(doc.node_iterator_reference(iter), Some(host));
+  assert_eq!(doc.node_iterator_pointer_before_reference(iter), Some(false));
+}
+
+#[test]
+fn node_iterator_pre_remove_treats_template_as_leaf() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+
+  let root = doc.root();
+  let container = doc.create_element("div", "");
+  doc.append_child(root, container).unwrap();
+
+  let template = doc.create_element("template", "");
+  doc.append_child(container, template).unwrap();
+
+  // Populate inert `<template>` contents. These nodes are stored in `Node::children`, but must not
+  // be considered part of the DOM tree traversal used by NodeIterator/TreeWalker.
+  let inert_child = doc.create_element("span", "");
+  let inert_grandchild = doc.create_element("b", "");
+  doc.append_child(template, inert_child).unwrap();
+  doc.append_child(inert_child, inert_grandchild).unwrap();
+
+  let d = doc.create_element("d", "");
+  let e = doc.create_element("e", "");
+  doc.append_child(container, d).unwrap();
+  doc.append_child(d, e).unwrap();
+
+  let iter = doc.create_node_iterator(container);
+  doc.set_node_iterator_reference_and_pointer(iter, e, true);
+
+  // Removing the last node after a `<template>` should update the iterator to reference the
+  // `<template>` element itself (as the preceding node), and not one of its inert descendants.
+  doc.remove_child(container, d).unwrap();
+
+  assert_eq!(doc.node_iterator_reference(iter), Some(template));
+  assert_eq!(doc.node_iterator_pointer_before_reference(iter), Some(false));
+}
