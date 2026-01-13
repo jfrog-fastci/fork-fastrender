@@ -246,6 +246,8 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 ### HUD / debug overlays
 
 - `FASTR_BROWSER_HUD=1` shows an in-app HUD overlay with browser/debug metrics.
+- `FASTR_BROWSER_LOG_SURFACE_CONFIGURE=1` logs `wgpu::Surface::configure` calls to stderr (useful
+  when debugging interactive resize performance; swapchain reconfiguration should be coalesced).
 - Debug log UI:
   - In **debug** builds it is enabled by default.
   - In **release** builds it is disabled by default:
