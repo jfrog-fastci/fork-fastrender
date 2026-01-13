@@ -12,7 +12,7 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
   --manifest ../../tests/js/test262_manifest.toml \
   --timeout-secs 10 \
   --jobs 4 \
-  --report-path ../../target/js/test262.json \
+  --report-path ../../target/js/test262_curated_now.json \
   --fail-on none
 ```
 
@@ -55,7 +55,7 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
     --fail-on none
   ```
 
-- JSON report (not committed): `target/js/test262.json`
+- JSON report (not committed): `target/js/test262_curated_now.json`
 - Note: `scripts/cargo_agent.sh` runs the vendored `test262-semantic` workspace from `vendor/ecma-rs/`,
   so the `../../...` paths above are relative to that directory.
 - Note: `CARGO_TARGET_DIR=../../target` keeps build artifacts under the repo-root `target/` (avoids
@@ -71,8 +71,8 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 15689 (90.59%) |
-| Mismatched upstream expected | 1629 (9.41%) |
+| Matched upstream expected | 15701 (90.66%) |
+| Mismatched upstream expected | 1617 (9.34%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 672 |
@@ -81,8 +81,8 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15649 |
-| failed | 1629 |
+| passed | 15661 |
+| failed | 1617 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -101,8 +101,8 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
 | --- | ---: |
 | PASS | 8028 |
 | FAIL (unexpected) | 672 |
-| XFAIL | 957 |
-| XPASS | 7621 |
+| XFAIL | 945 |
+| XPASS | 7633 |
 | SKIP | 40 |
 
 ## Breakdown by major area
@@ -110,17 +110,17 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | built-ins | 7185 | 6753 | 432 | 6.01% | 6237 | 6 | 426 | 476 | 40 |
-| language | 10128 | 8931 | 1197 | 11.82% | 1786 | 666 | 531 | 7145 | 0 |
+| language | 10128 | 8943 | 1185 | 11.70% | 1786 | 666 | 519 | 7157 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 1086 | 15.17% | 754 | 666 | 420 | 5321 | 0 |
+| `language/statements` | 7161 | 1078 | 15.05% | 754 | 666 | 412 | 5329 | 0 |
 | `built-ins/Set` | 764 | 306 | 40.05% | 388 | 2 | 304 | 70 | 0 |
 | `built-ins/Object` | 1692 | 110 | 6.50% | 1330 | 2 | 108 | 252 | 0 |
-| `language/expressions` | 2337 | 103 | 4.41% | 1032 | 0 | 103 | 1202 | 0 |
+| `language/expressions` | 2337 | 99 | 4.24% | 1032 | 0 | 99 | 1206 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `language/directive-prologue` | 62 | 6 | 9.68% | 0 | 0 | 6 | 56 | 0 |
 | `built-ins/Map` | 405 | 4 | 0.99% | 401 | 2 | 2 | 0 | 0 |
@@ -133,9 +133,9 @@ CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/car
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 1029 (63.17%)
-- VmError::Unimplemented: 577 (35.42%)
-- termination: 23 (1.41%)
+- exception/other: 1026 (63.45%)
+- VmError::Unimplemented: 568 (35.13%)
+- termination: 23 (1.42%)
 
 ### Top 20
 
@@ -172,7 +172,7 @@ _None._
 
 At least 50 mismatched cases, grouped by the largest mismatch buckets.
 
-### `language/statements` (10 shown / 1086 mismatches)
+### `language/statements` (10 shown / 1078 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
@@ -180,10 +180,10 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 - `language/statements/async-function/dflt-params-ref-later.js#strict`: `Cannot access 'y' before initialization`
 - `language/statements/async-function/dflt-params-ref-self.js#non_strict`: `Cannot access 'x' before initialization`
 - `language/statements/async-function/dflt-params-ref-self.js#strict`: `Cannot access 'x' before initialization`
-- `language/statements/async-function/early-errors-declaration-formals-body-duplicate.js#non_strict`: `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>`
-- `language/statements/async-function/early-errors-declaration-formals-body-duplicate.js#strict`: `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>`
 - `language/statements/async-function/eval-var-scope-syntax-err.js#non_strict`: `null`
 - `language/statements/async-function/evaluation-default-that-throws.js#non_strict`: `value is not callable`
+- `language/statements/async-function/evaluation-default-that-throws.js#strict`: `value is not callable`
+- `language/statements/async-function/evaluation-mapped-arguments.js#non_strict`: `Expected SameValue(«1», «2») to be true`
 
 ### `built-ins/Set` (10 shown / 306 mismatches)
 
@@ -211,18 +211,18 @@ At least 50 mismatched cases, grouped by the largest mismatch buckets.
 - `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js#non_strict`: `Cannot convert undefined or null to object`
 - `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js#strict`: `Cannot convert undefined or null to object`
 
-### `language/expressions` (10 shown / 103 mismatches)
+### `language/expressions` (10 shown / 99 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `execution terminated: stack overflow`
 - `language/expressions/in/private-field-presence-accessor.js#non_strict`: `Expected SameValue(«false», «true») to be true`
 - `language/expressions/in/private-field-presence-accessor.js#strict`: `Expected SameValue(«false», «true») to be true`
-- `language/expressions/in/private-field-presence-field.js#non_strict`: `unimplemented: private instance fields`
-- `language/expressions/in/private-field-presence-field.js#strict`: `unimplemented: private instance fields`
 - `language/expressions/in/private-field-presence-method.js#non_strict`: `Expected SameValue(«false», «true») to be true`
 - `language/expressions/in/private-field-presence-method.js#strict`: `Expected SameValue(«false», «true») to be true`
-- `language/expressions/in/private-field-rhs-non-object.js#non_strict`: `unimplemented: private instance fields`
-- `language/expressions/in/private-field-rhs-non-object.js#strict`: `unimplemented: private instance fields`
 - `language/expressions/logical-and/tco-right.js#strict`: `execution terminated: stack overflow`
+- `language/expressions/logical-or/tco-right.js#strict`: `execution terminated: stack overflow`
+- `language/expressions/member-expression/computed-reference-null-or-undefined.js#non_strict`: `Expected a TypeError but got a Test262Error`
+- `language/expressions/member-expression/computed-reference-null-or-undefined.js#strict`: `Expected a TypeError but got a Test262Error`
+- `language/expressions/new/non-ctor-err-realm.js#non_strict`: `production including Arguments Expected a TypeError but got a different error constructor with the same name`
 
 ### `built-ins/Array` (6 shown / 6 mismatches)
 
