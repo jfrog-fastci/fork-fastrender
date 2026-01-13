@@ -511,7 +511,10 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
   if input.is_empty() || limit == 0 {
     return Vec::new();
   }
-  let tokens_lower = tokenize_lower(input);
+  // Lowercase once and keep tokens as slices into the lowercased buffer so we don't allocate a
+  // separate `String` per token on the hot per-keystroke path.
+  let input_lower = input.to_ascii_lowercase();
+  let tokens_lower = tokenize_lower(&input_lower);
   if tokens_lower.is_empty() {
     return Vec::new();
   }
@@ -602,7 +605,7 @@ fn score_suggestion(
   ctx: &OmniboxContext<'_>,
   now: SystemTime,
   suggestion: &OmniboxSuggestion,
-  tokens_lower: &[String],
+  tokens_lower: &[&str],
 ) -> Option<i64> {
   let base = match suggestion.source {
     OmniboxSuggestionSource::Primary => 1_000_000,
@@ -634,7 +637,7 @@ fn score_suggestion(
   let mut match_total = 0i64;
   let parsed_url = suggestion.url.as_deref().and_then(parse_http_url_for_scoring);
 
-  for token_lower in tokens_lower {
+  for &token_lower in tokens_lower {
     let mut best_token_match = None::<i64>;
 
     if let Some(url) = suggestion.url.as_deref() {
@@ -994,11 +997,12 @@ fn suggestion_sort_key(s: &OmniboxSuggestion) -> SuggestionSortKey {
   }
 }
 
-fn tokenize_lower(input: &str) -> Vec<String> {
-  input
+fn tokenize_lower<'a>(input_lower: &'a str) -> Vec<&'a str> {
+  // `split_whitespace` never yields empty tokens, but keep the filter for paranoia since this
+  // function is used on hot UI paths.
+  input_lower
     .split_whitespace()
     .filter(|t| !t.is_empty())
-    .map(|t| t.to_ascii_lowercase())
     .collect()
 }
 

@@ -247,18 +247,19 @@ impl VisitedUrlStore {
       return Vec::new();
     }
 
-    let tokens_lower: Vec<String> = query
+    // Lowercase once so we can use the fast ASCII-only matcher (non-ASCII bytes compare exactly).
+    let query_lower = query.to_ascii_lowercase();
+    let tokens: Vec<&str> = query_lower
       .split_whitespace()
       .filter(|t| !t.is_empty())
-      .map(|t| t.to_ascii_lowercase())
       .collect();
-    if tokens_lower.is_empty() {
+    if tokens.is_empty() {
       return self.iter_recent().take(limit).collect();
     }
 
     let mut out = Vec::with_capacity(limit.min(self.len()));
     'records: for record in self.iter_recent() {
-      for token_lower in &tokens_lower {
+      for token_lower in &tokens {
         let in_url = contains_ascii_case_insensitive(&record.url, token_lower);
         let in_title = record
           .title
