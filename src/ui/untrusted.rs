@@ -3,7 +3,7 @@
 //! The UI treats all [`crate::ui::messages::WorkerToUi`] payloads as untrusted. Do not store or
 //! display raw worker strings without first applying the helpers in this module.
 
-use crate::ui::protocol_limits::MAX_URL_BYTES;
+use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_URL_BYTES};
 
 /// Clamp an untrusted string to `max_bytes` in UTF-8 without splitting code points.
 ///
@@ -85,6 +85,25 @@ pub fn validate_untrusted_navigation_url(url: &str) -> Result<String, String> {
   Ok(sanitized)
 }
 
+/// Validate that an untrusted RGBA8 favicon buffer has a sane shape and byte length.
+///
+/// Returns `true` when:
+/// - `width` and `height` are non-zero,
+/// - `rgba_len == width * height * 4` (with checked arithmetic),
+/// - and the payload fits within [`MAX_FAVICON_BYTES`].
+pub fn validate_untrusted_favicon_rgba(rgba_len: usize, width: u32, height: u32) -> bool {
+  if width == 0 || height == 0 {
+    return false;
+  }
+  let expected = (width as usize)
+    .checked_mul(height as usize)
+    .and_then(|px| px.checked_mul(4));
+  match expected {
+    Some(expected) => expected == rgba_len && expected <= MAX_FAVICON_BYTES,
+    None => false,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -111,6 +130,12 @@ mod tests {
   #[test]
   fn validate_untrusted_navigation_url_rejects_javascript() {
     assert!(validate_untrusted_navigation_url("javascript:alert(1)").is_err());
+  }
+
+  #[test]
+  fn validate_untrusted_favicon_rgba_rejects_mismatched_len() {
+    assert!(!validate_untrusted_favicon_rgba(3, 2, 2));
+    assert!(validate_untrusted_favicon_rgba(2 * 2 * 4, 2, 2));
   }
 
   #[test]

@@ -11,7 +11,9 @@ use crate::ui::protocol_limits::{
   MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
   MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
 };
-use crate::ui::untrusted::{sanitize_untrusted_text, validate_untrusted_navigation_url};
+use crate::ui::untrusted::{
+  sanitize_untrusted_text, validate_untrusted_favicon_rgba, validate_untrusted_navigation_url,
+};
 use crate::ui::{
   resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistoryStore,
   OmniboxSuggestion, VisitedUrlStore,
@@ -1974,18 +1976,20 @@ impl BrowserAppState {
         width,
         height,
       } => {
-        if let Some(tab) = self.tab_mut(tab_id) {
-          tab.favicon_meta = Some(FaviconMeta {
-            size_px: (width, height),
+        if validate_untrusted_favicon_rgba(rgba.len(), width, height) {
+          if let Some(tab) = self.tab_mut(tab_id) {
+            tab.favicon_meta = Some(FaviconMeta {
+              size_px: (width, height),
+            });
+          }
+          update.request_redraw = true;
+          update.favicon_ready = Some(FaviconReadyUpdate {
+            tab_id,
+            rgba,
+            width,
+            height,
           });
         }
-        update.request_redraw = true;
-        update.favicon_ready = Some(FaviconReadyUpdate {
-          tab_id,
-          rgba,
-          width,
-          height,
-        });
       }
       WorkerToUi::RequestOpenInNewTab { .. } | WorkerToUi::RequestOpenInNewTabRequest { .. } => {
         // The UI owns tab identifiers; front-ends are expected to handle this message directly by
