@@ -6058,6 +6058,22 @@ fn url_ends_with_svgz(url: &str) -> bool {
     .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".svgz"))
 }
 
+fn url_looks_like_gif(url: &str) -> bool {
+  let trimmed = trim_ascii_whitespace(url);
+  let lower = trimmed.to_ascii_lowercase();
+  if let Some(rest) = lower.strip_prefix("data:") {
+    return rest.starts_with("image/gif");
+  }
+  if let Ok(parsed) = Url::parse(trimmed) {
+    return parsed.path().to_ascii_lowercase().ends_with(".gif");
+  }
+  let without_query = trimmed
+    .split(|ch| ch == '?' || ch == '#')
+    .next()
+    .unwrap_or(trimmed);
+  without_query.to_ascii_lowercase().ends_with(".gif")
+}
+
 fn svg_text_looks_like_markup(text: &str) -> bool {
   let without_bom = text.strip_prefix('\u{feff}').unwrap_or(text);
   let trimmed = trim_ascii_whitespace_start(without_bom);
@@ -6552,6 +6568,234 @@ impl ProbeInFlight {
   }
 }
 
+#[derive(Debug, Clone)]
+struct GifTiming {
+  delays_ms: Vec<u32>,
+  total_ms: u64,
+  loop_count: Option<u16>,
+}
+
+impl GifTiming {
+  fn parse(bytes: &[u8]) -> Option<Self> {
+    const MAX_GIF_TIMING_FRAMES: usize = 4096;
+
+    if bytes.len() < 13 {
+      return None;
+    }
+    let header = bytes.get(0..6)?;
+    if header != b"GIF87a" && header != b"GIF89a" {
+      return None;
+    }
+
+    // Logical Screen Descriptor starts at byte 6.
+    let packed = *bytes.get(10)?;
+    let mut offset = 13usize;
+
+    // Skip global color table if present.
+    if packed & 0x80 != 0 {
+      let table_bits = (packed & 0x07) as usize;
+      let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
+      let table_bytes = 3usize.checked_mul(entries)?;
+      offset = offset.checked_add(table_bytes)?;
+      if offset > bytes.len() {
+        return None;
+      }
+    }
+
+    let mut delays_ms = Vec::new();
+    let mut total_ms: u64 = 0;
+    let mut loop_count: Option<u16> = None;
+    let mut pending_delay: Option<u16> = None;
+
+    while offset < bytes.len() {
+      match *bytes.get(offset)? {
+        0x3B => break, // trailer
+        0x21 => {
+          // Extension introducer.
+          let label = *bytes.get(offset + 1)?;
+          offset = offset.checked_add(2)?;
+          match label {
+            0xF9 => {
+              // Graphics Control Extension.
+              let block_size = *bytes.get(offset)? as usize;
+              offset = offset.checked_add(1)?;
+              let end = offset.checked_add(block_size)?;
+              if end > bytes.len() {
+                return None;
+              }
+              if block_size >= 4 {
+                let delay_bytes: [u8; 2] = bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
+                pending_delay = Some(u16::from_le_bytes(delay_bytes));
+              }
+              offset = end;
+              if *bytes.get(offset)? != 0x00 {
+                return None;
+              }
+              offset = offset.checked_add(1)?;
+            }
+            0xFF => {
+              // Application Extension. Track Netscape loop count when present.
+              let block_size = *bytes.get(offset)? as usize;
+              offset = offset.checked_add(1)?;
+              let end = offset.checked_add(block_size)?;
+              if end > bytes.len() {
+                return None;
+              }
+              let ident = bytes.get(offset..end)?;
+              offset = end;
+
+              loop {
+                let size = *bytes.get(offset)? as usize;
+                offset = offset.checked_add(1)?;
+                if size == 0 {
+                  break;
+                }
+                let payload_end = offset.checked_add(size)?;
+                if payload_end > bytes.len() {
+                  return None;
+                }
+                if loop_count.is_none()
+                  && (ident == b"NETSCAPE2.0" || ident == b"ANIMEXTS1.0")
+                  && size >= 3
+                  && bytes.get(offset) == Some(&0x01)
+                {
+                  let loop_bytes: [u8; 2] = bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
+                  loop_count = Some(u16::from_le_bytes(loop_bytes));
+                }
+                offset = payload_end;
+              }
+            }
+            _ => {
+              // Skip data sub-blocks.
+              loop {
+                let size = *bytes.get(offset)? as usize;
+                offset = offset.checked_add(1)?;
+                if size == 0 {
+                  break;
+                }
+                offset = offset.checked_add(size)?;
+                if offset > bytes.len() {
+                  return None;
+                }
+              }
+            }
+          }
+        }
+        0x2C => {
+          // Image descriptor.
+          let desc_end = offset.checked_add(10)?;
+          if desc_end > bytes.len() {
+            return None;
+          }
+          let packed = *bytes.get(offset + 9)?;
+          offset = desc_end;
+          if packed & 0x80 != 0 {
+            let table_bits = (packed & 0x07) as usize;
+            let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
+            let table_bytes = 3usize.checked_mul(entries)?;
+            offset = offset.checked_add(table_bytes)?;
+            if offset > bytes.len() {
+              return None;
+            }
+          }
+
+          // LZW minimum code size.
+          offset = offset.checked_add(1)?;
+          if offset > bytes.len() {
+            return None;
+          }
+
+          // Image data sub-blocks.
+          loop {
+            let size = *bytes.get(offset)? as usize;
+            offset = offset.checked_add(1)?;
+            if size == 0 {
+              break;
+            }
+            offset = offset.checked_add(size)?;
+            if offset > bytes.len() {
+              return None;
+            }
+          }
+
+          if delays_ms.len() >= MAX_GIF_TIMING_FRAMES {
+            return None;
+          }
+
+          let delay_cs = pending_delay.take().unwrap_or(0).max(1);
+          let delay_ms_u64 = u64::from(delay_cs) * 10;
+          total_ms = total_ms.saturating_add(delay_ms_u64);
+          delays_ms.push(delay_ms_u64.min(u64::from(u32::MAX)) as u32);
+        }
+        _ => return None,
+      }
+    }
+
+    if delays_ms.is_empty() {
+      return None;
+    }
+
+    Some(Self {
+      delays_ms,
+      total_ms,
+      loop_count,
+    })
+  }
+
+  fn frame_index_for_time_ms(&self, time_ms: f32) -> usize {
+    if self.delays_ms.len() <= 1 || self.total_ms == 0 {
+      return 0;
+    }
+
+    let mut t_ms = if time_ms.is_finite() {
+      time_ms.max(0.0) as f64
+    } else {
+      0.0
+    };
+    let total_ms_f64 = self.total_ms as f64;
+
+    match self.loop_count {
+      Some(0) => {
+        // 0 = loop forever (Netscape extension semantics).
+        t_ms = t_ms % total_ms_f64;
+      }
+      Some(count) => {
+        // A positive loop count indicates how many times the animation should play in total.
+        let play_ms = total_ms_f64 * (count as f64);
+        if t_ms >= play_ms {
+          t_ms = total_ms_f64 - f64::EPSILON;
+        } else {
+          t_ms = t_ms % total_ms_f64;
+        }
+      }
+      None => {
+        // No loop extension → play once.
+        if t_ms >= total_ms_f64 {
+          t_ms = total_ms_f64 - f64::EPSILON;
+        }
+      }
+    }
+
+    let mut remaining = t_ms;
+    let mut idx = self.delays_ms.len().saturating_sub(1);
+    for (i, delay) in self.delays_ms.iter().enumerate() {
+      let delay = *delay as f64;
+      if remaining < delay {
+        idx = i;
+        break;
+      }
+      remaining -= delay;
+    }
+    idx
+  }
+}
+
+#[derive(Debug, Clone)]
+enum GifTimingCacheValue {
+  Timing(Arc<GifTiming>),
+  NotGif,
+}
+
 /// Cache for loaded images
 ///
 /// `ImageCache` provides in-memory caching of decoded images, with support for
@@ -6588,6 +6832,8 @@ pub struct ImageCache {
   meta_cache: Arc<Mutex<SizedLruCache<String, Arc<CachedImageMetadata>>>>,
   /// Raw resources captured during metadata probes to avoid duplicate fetches between layout and paint.
   raw_cache: Arc<Mutex<SizedLruCache<String, Arc<FetchedResource>>>>,
+  /// Parsed GIF timing metadata keyed by the cache key without animation suffixes.
+  gif_timing_cache: Arc<Mutex<SizedLruCache<String, GifTimingCacheValue>>>,
   /// In-flight probes keyed by resolved URL to de-duplicate concurrent metadata loads.
   meta_in_flight: Arc<Mutex<HashMap<String, Arc<ProbeInFlight>>>>,
   /// In-memory cache of preprocessed SVG markup (external `<use>`, `<image>`, ...).
@@ -6894,6 +7140,10 @@ impl ImageCache {
         config.max_raw_cached_items,
         config.max_raw_cached_bytes,
       ))),
+      gif_timing_cache: Arc::new(Mutex::new(SizedLruCache::new(
+        config.max_cached_metadata_items,
+        config.max_cached_metadata_bytes,
+      ))),
       meta_in_flight: Arc::new(Mutex::new(HashMap::new())),
       svg_preprocess_cache: Arc::new(Mutex::new(SizedLruCache::new(
         config.max_cached_svg_preprocess_items,
@@ -7092,12 +7342,125 @@ impl ImageCache {
 
     if let Some(time_ms) = self.animation_time_ms {
       if url_looks_like_gif(resolved_url) {
-        key.push_str("@@animation_time_ms=");
-        key.push_str(&format!("{:08x}", f32_to_canonical_bits(time_ms)));
+        match self.get_cached_gif_timing(&key) {
+          Some(GifTimingCacheValue::Timing(timing)) => {
+            if timing.delays_ms.len() > 1 {
+              let frame_idx = timing.frame_index_for_time_ms(time_ms);
+              key.push_str("@@gif_frame=");
+              key.push_str(&frame_idx.to_string());
+            }
+          }
+          Some(GifTimingCacheValue::NotGif) => {}
+          None => {
+            key.push_str("@@animation_time_ms=");
+            key.push_str(&format!("{:08x}", f32_to_canonical_bits(time_ms)));
+          }
+        }
       }
     }
 
     key
+  }
+
+  fn get_cached_gif_timing(&self, cache_key_without_animation: &str) -> Option<GifTimingCacheValue> {
+    self
+      .gif_timing_cache
+      .lock()
+      .ok()
+      .and_then(|mut cache| cache.get_cloned(cache_key_without_animation))
+  }
+
+  fn put_cached_gif_timing(&self, cache_key_without_animation: &str, value: GifTimingCacheValue) {
+    if let Ok(mut cache) = self.gif_timing_cache.lock() {
+      let key = cache_key_without_animation.to_string();
+      let bytes = Self::estimate_gif_timing_cache_entry_bytes(&key, &value);
+      cache.insert(key, value, bytes);
+    }
+  }
+
+  fn estimate_gif_timing_cache_entry_bytes(key: &str, value: &GifTimingCacheValue) -> usize {
+    let mut bytes = key.len().saturating_add(std::mem::size_of_val(value));
+    match value {
+      GifTimingCacheValue::Timing(timing) => {
+        bytes = bytes.saturating_add(std::mem::size_of::<GifTiming>());
+        bytes = bytes.saturating_add(
+          timing
+            .delays_ms
+            .len()
+            .saturating_mul(std::mem::size_of::<u32>()),
+        );
+      }
+      GifTimingCacheValue::NotGif => {}
+    }
+    bytes
+  }
+
+  fn cache_key_without_animation_suffix(cache_key: &str) -> &str {
+    if let Some((base, frame)) = cache_key.rsplit_once("@@gif_frame=") {
+      if !frame.is_empty() && frame.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+        return base;
+      }
+    }
+    if let Some((base, bits)) = cache_key.rsplit_once("@@animation_time_ms=") {
+      if bits.len() == 8 && bits.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
+        return base;
+      }
+    }
+    cache_key
+  }
+
+  fn canonical_cache_key_for_bytes(&self, cache_key: &str, resolved_url: &str, bytes: &[u8]) -> String {
+    let cache_key_without_animation = Self::cache_key_without_animation_suffix(cache_key);
+    let Some(time_ms) = self.animation_time_ms else {
+      return cache_key_without_animation.to_string();
+    };
+    if !url_looks_like_gif(resolved_url) {
+      return cache_key_without_animation.to_string();
+    }
+
+    match self.get_cached_gif_timing(cache_key_without_animation) {
+      Some(GifTimingCacheValue::Timing(timing)) => {
+        if timing.delays_ms.len() <= 1 {
+          return cache_key_without_animation.to_string();
+        }
+        let frame_idx = timing.frame_index_for_time_ms(time_ms);
+        let mut key = cache_key_without_animation.to_string();
+        key.push_str("@@gif_frame=");
+        key.push_str(&frame_idx.to_string());
+        key
+      }
+      Some(GifTimingCacheValue::NotGif) => cache_key_without_animation.to_string(),
+      None => match GifTiming::parse(bytes) {
+        Some(timing) => {
+          if timing.delays_ms.len() <= 1 {
+            self.put_cached_gif_timing(cache_key_without_animation, GifTimingCacheValue::NotGif);
+            return cache_key_without_animation.to_string();
+          }
+          let timing = Arc::new(timing);
+          let frame_idx = timing.frame_index_for_time_ms(time_ms);
+          self.put_cached_gif_timing(
+            cache_key_without_animation,
+            GifTimingCacheValue::Timing(Arc::clone(&timing)),
+          );
+          let mut key = cache_key_without_animation.to_string();
+          key.push_str("@@gif_frame=");
+          key.push_str(&frame_idx.to_string());
+          key
+        }
+        None => {
+          self.put_cached_gif_timing(cache_key_without_animation, GifTimingCacheValue::NotGif);
+          cache_key_without_animation.to_string()
+        }
+      },
+    }
+  }
+
+  fn canonical_cache_key_for_placeholder(&self, cache_key: &str, resolved_url: &str) -> String {
+    let cache_key_without_animation = Self::cache_key_without_animation_suffix(cache_key);
+    if self.animation_time_ms.is_some() && url_looks_like_gif(resolved_url) {
+      self.put_cached_gif_timing(cache_key_without_animation, GifTimingCacheValue::NotGif);
+    }
+    cache_key_without_animation.to_string()
   }
 
   /// Load an image from a URL or file path
@@ -8779,7 +9142,8 @@ impl ImageCache {
       Ok(res) => res,
       Err(err) => {
         if is_empty_body_error_for_image(&err) {
-          return Ok(self.cache_placeholder_image(cache_key));
+          let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+          return Ok(self.cache_placeholder_image(&placeholder_key));
         }
         self.record_image_error(resolved_url, &err);
         return Err(err);
@@ -8792,7 +9156,8 @@ impl ImageCache {
     if crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
       || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
     {
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     if let Some(ctx) = &self.resource_context {
       let policy_url = resource.final_url.as_deref().unwrap_or(resolved_url);
@@ -8809,7 +9174,8 @@ impl ImageCache {
       // Treat empty bodies the same as `about:` URL placeholders: callers (notably the painters)
       // rely on `ImageCache::is_placeholder_image` to detect missing images and render UA fallback
       // UI for `<img>` elements.
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     if should_substitute_markup_payload_for_image(
       resolved_url,
@@ -8818,7 +9184,8 @@ impl ImageCache {
       &resource.bytes,
     ) {
       self.record_invalid_image(resolved_url);
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     if let Err(err) = ensure_http_success(&resource, resolved_url)
       .and_then(|()| ensure_image_mime_sane(&resource, resolved_url))
@@ -8860,7 +9227,8 @@ impl ImageCache {
       }
     };
     if Self::should_map_decoded_image_to_placeholder(&resource, &img, has_alpha, is_vector) {
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     let decode_ms_value = decode_timer.elapsed().as_secs_f64() * 1000.0;
     let decode_ms = decode_start.map(|_| decode_ms_value);
@@ -8890,7 +9258,8 @@ impl ImageCache {
       svg_has_intrinsic_size,
     });
 
-    self.insert_cached_image(cache_key, Arc::clone(&img_arc));
+    let canonical_key = self.canonical_cache_key_for_bytes(cache_key, resolved_url, &resource.bytes);
+    self.insert_cached_image(&canonical_key, Arc::clone(&img_arc));
 
     if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
       let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -8931,10 +9300,12 @@ impl ImageCache {
     // used for `about:` URLs so callers can detect it (e.g. painters may want to render a "broken
     // image" UI for `<img>` while keeping CSS background images transparent).
     if resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes() {
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     if resource.bytes.is_empty() {
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     // `ResourceFetcher` implementations (notably the offline fixture tooling) may substitute missing
     // image responses with a deterministic 1×1 transparent PNG. This is a "missing image" sentinel
@@ -8943,7 +9314,8 @@ impl ImageCache {
     if crate::resource::content_type_is_offline_placeholder_png(resource.content_type.as_deref())
       || resource.bytes.as_slice() == crate::resource::offline_placeholder_png_bytes()
     {
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     if should_substitute_markup_payload_for_image(
       resolved_url,
@@ -8952,7 +9324,8 @@ impl ImageCache {
       &resource.bytes,
     ) {
       self.record_invalid_image(resolved_url);
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     if let Err(err) = self.enforce_image_cors(resolved_url, resource, crossorigin) {
       self.record_image_error(resolved_url, &err);
@@ -8981,7 +9354,8 @@ impl ImageCache {
       })
     }?;
     if Self::should_map_decoded_image_to_placeholder(resource, &img, has_alpha, is_vector) {
-      return Ok(self.cache_placeholder_image(cache_key));
+      let placeholder_key = self.canonical_cache_key_for_placeholder(cache_key, resolved_url);
+      return Ok(self.cache_placeholder_image(&placeholder_key));
     }
     let decode_ms_value = decode_timer.elapsed().as_secs_f64() * 1000.0;
     let decode_ms = decode_start.map(|_| decode_ms_value);
@@ -9011,7 +9385,8 @@ impl ImageCache {
       svg_has_intrinsic_size,
     });
 
-    self.insert_cached_image(cache_key, Arc::clone(&img_arc));
+    let canonical_key = self.canonical_cache_key_for_bytes(cache_key, resolved_url, &resource.bytes);
+    self.insert_cached_image(&canonical_key, Arc::clone(&img_arc));
 
     if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
       let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -10596,220 +10971,13 @@ impl ImageCache {
     url: &str,
     time_ms: f32,
   ) -> Result<(DynamicImage, bool)> {
-    #[derive(Debug, Default)]
-    struct GifTiming {
-      delays_cs: Vec<u16>,
-      loop_count: Option<u16>,
-    }
-
-    fn parse_gif_timing(bytes: &[u8]) -> Option<GifTiming> {
-      if bytes.len() < 13 {
-        return None;
-      }
-      let header = bytes.get(0..6)?;
-      if header != b"GIF87a" && header != b"GIF89a" {
-        return None;
-      }
-
-      // Logical Screen Descriptor starts at byte 6.
-      let packed = *bytes.get(10)?;
-      let mut offset = 13usize;
-
-      // Skip global color table if present.
-      if packed & 0x80 != 0 {
-        let table_bits = (packed & 0x07) as usize;
-        let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
-        let table_bytes = 3usize.checked_mul(entries)?;
-        offset = offset.checked_add(table_bytes)?;
-        if offset > bytes.len() {
-          return None;
-        }
-      }
-
-      let mut out = GifTiming::default();
-      let mut pending_delay: Option<u16> = None;
-
-      while offset < bytes.len() {
-        match *bytes.get(offset)? {
-          0x3B => break, // trailer
-          0x21 => {
-            // Extension introducer.
-            let label = *bytes.get(offset + 1)?;
-            offset = offset.checked_add(2)?;
-            match label {
-              0xF9 => {
-                // Graphics Control Extension.
-                let block_size = *bytes.get(offset)? as usize;
-                offset = offset.checked_add(1)?;
-                let end = offset.checked_add(block_size)?;
-                if end > bytes.len() {
-                  return None;
-                }
-                if block_size >= 4 {
-                  let delay_bytes: [u8; 2] = bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
-                  pending_delay = Some(u16::from_le_bytes(delay_bytes));
-                }
-                offset = end;
-                if *bytes.get(offset)? != 0x00 {
-                  return None;
-                }
-                offset = offset.checked_add(1)?;
-              }
-              0xFF => {
-                // Application Extension. Track Netscape loop count when present.
-                let block_size = *bytes.get(offset)? as usize;
-                offset = offset.checked_add(1)?;
-                let end = offset.checked_add(block_size)?;
-                if end > bytes.len() {
-                  return None;
-                }
-                let ident = bytes.get(offset..end)?;
-                offset = end;
-
-                loop {
-                  let size = *bytes.get(offset)? as usize;
-                  offset = offset.checked_add(1)?;
-                  if size == 0 {
-                    break;
-                  }
-                  let payload_end = offset.checked_add(size)?;
-                  if payload_end > bytes.len() {
-                    return None;
-                  }
-                  if out.loop_count.is_none()
-                    && (ident == b"NETSCAPE2.0" || ident == b"ANIMEXTS1.0")
-                    && size >= 3
-                    && bytes.get(offset) == Some(&0x01)
-                  {
-                    let loop_bytes: [u8; 2] = bytes.get(offset + 1..offset + 3)?.try_into().ok()?;
-                    out.loop_count = Some(u16::from_le_bytes(loop_bytes));
-                  }
-                  offset = payload_end;
-                }
-              }
-              _ => {
-                // Skip data sub-blocks.
-                loop {
-                  let size = *bytes.get(offset)? as usize;
-                  offset = offset.checked_add(1)?;
-                  if size == 0 {
-                    break;
-                  }
-                  offset = offset.checked_add(size)?;
-                  if offset > bytes.len() {
-                    return None;
-                  }
-                }
-              }
-            }
-          }
-          0x2C => {
-            // Image descriptor.
-            let desc_end = offset.checked_add(10)?;
-            if desc_end > bytes.len() {
-              return None;
-            }
-            let packed = *bytes.get(offset + 9)?;
-            offset = desc_end;
-            if packed & 0x80 != 0 {
-              let table_bits = (packed & 0x07) as usize;
-              let entries = 1usize.checked_shl((table_bits + 1) as u32)?;
-              let table_bytes = 3usize.checked_mul(entries)?;
-              offset = offset.checked_add(table_bytes)?;
-              if offset > bytes.len() {
-                return None;
-              }
-            }
-
-            // LZW minimum code size.
-            offset = offset.checked_add(1)?;
-            if offset > bytes.len() {
-              return None;
-            }
-
-            // Image data sub-blocks.
-            loop {
-              let size = *bytes.get(offset)? as usize;
-              offset = offset.checked_add(1)?;
-              if size == 0 {
-                break;
-              }
-              offset = offset.checked_add(size)?;
-              if offset > bytes.len() {
-                return None;
-              }
-            }
-
-            out.delays_cs.push(pending_delay.take().unwrap_or(0));
-          }
-          _ => return None,
-        }
-      }
-
-      if out.delays_cs.is_empty() {
-        None
-      } else {
-        Some(out)
-      }
-    }
-
-    let timing = parse_gif_timing(bytes).ok_or_else(|| {
+    let timing = GifTiming::parse(bytes).ok_or_else(|| {
       Error::Image(ImageError::DecodeFailed {
         url: url.to_string(),
         reason: "Unable to parse GIF animation metadata".to_string(),
       })
     })?;
-
-    let delays_ms: Vec<u64> = timing
-      .delays_cs
-      .iter()
-      .map(|delay_cs| u64::from((*delay_cs).max(1)) * 10)
-      .collect();
-    let total_ms: u64 = delays_ms.iter().sum();
-    let mut t_ms = if time_ms.is_finite() {
-      time_ms.max(0.0) as f64
-    } else {
-      0.0
-    };
-
-    let selected_frame = if delays_ms.len() == 1 || total_ms == 0 {
-      0usize
-    } else {
-      let total_ms_f64 = total_ms as f64;
-      match timing.loop_count {
-        Some(0) => {
-          // 0 = loop forever (Netscape extension semantics).
-          t_ms = t_ms % total_ms_f64;
-        }
-        Some(count) => {
-          // A positive loop count indicates how many times the animation should play in total.
-          let play_ms = total_ms_f64 * (count as f64);
-          if t_ms >= play_ms {
-            t_ms = total_ms_f64 - f64::EPSILON;
-          } else {
-            t_ms = t_ms % total_ms_f64;
-          }
-        }
-        None => {
-          // No loop extension → play once.
-          if t_ms >= total_ms_f64 {
-            t_ms = total_ms_f64 - f64::EPSILON;
-          }
-        }
-      }
-
-      let mut remaining = t_ms;
-      let mut idx = delays_ms.len().saturating_sub(1);
-      for (i, delay) in delays_ms.iter().enumerate() {
-        let delay = *delay as f64;
-        if remaining < delay {
-          idx = i;
-          break;
-        }
-        remaining -= delay;
-      }
-      idx
-    };
+    let selected_frame = timing.frame_index_for_time_ms(time_ms);
 
     let decode_frame = || -> std::result::Result<DynamicImage, image::ImageError> {
       let decoder = image::codecs::gif::GifDecoder::new(DeadlineCursor::new(bytes))?;
@@ -12725,6 +12893,7 @@ impl Clone for ImageCache {
       in_flight: Arc::clone(&self.in_flight),
       meta_cache: Arc::clone(&self.meta_cache),
       raw_cache: Arc::clone(&self.raw_cache),
+      gif_timing_cache: Arc::clone(&self.gif_timing_cache),
       meta_in_flight: Arc::clone(&self.meta_in_flight),
       svg_preprocess_cache: Arc::clone(&self.svg_preprocess_cache),
       svg_subresource_cache: Arc::clone(&self.svg_subresource_cache),
@@ -13644,6 +13813,108 @@ mod tests_inline {
     cache.set_animation_time_ms(Some(250.0));
     let img2 = cache.load(&url).expect("gif frame at t=250 should decode");
     assert_eq!(img2.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
+  }
+
+  #[test]
+  fn gif_animation_time_cache_reuses_frames_by_index() {
+    fn insert_netscape_loop_extension(bytes: &mut Vec<u8>, loop_count: u16) {
+      // Insert the extension immediately after the global color table.
+      if bytes.len() < 13 {
+        return;
+      }
+      let packed = bytes[10];
+      let mut offset = 13usize;
+      if packed & 0x80 != 0 {
+        let table_bits = (packed & 0x07) as usize;
+        let entries = 1usize << (table_bits + 1);
+        offset = offset.saturating_add(3usize.saturating_mul(entries));
+      }
+      if offset > bytes.len() {
+        return;
+      }
+
+      let extension = [
+        0x21,
+        0xFF,
+        0x0B,
+        b'N',
+        b'E',
+        b'T',
+        b'S',
+        b'C',
+        b'A',
+        b'P',
+        b'E',
+        b'2',
+        b'.',
+        b'0',
+        0x03,
+        0x01,
+        (loop_count & 0xFF) as u8,
+        (loop_count >> 8) as u8,
+        0x00,
+      ];
+      bytes.splice(offset..offset, extension);
+    }
+    let mut bytes = Vec::new();
+    {
+      let red = RgbaImage::from_pixel(1, 1, ImageRgba([255, 0, 0, 255]));
+      let blue = RgbaImage::from_pixel(1, 1, ImageRgba([0, 0, 255, 255]));
+      let delay = Delay::from_numer_denom_ms(100, 1);
+
+      let mut encoder = GifEncoder::new(&mut bytes);
+      encoder
+        .encode_frame(Frame::from_parts(red, 0, 0, delay))
+        .expect("encode gif frame 0");
+      encoder
+        .encode_frame(Frame::from_parts(blue, 0, 0, delay))
+        .expect("encode gif frame 1");
+    }
+    insert_netscape_loop_extension(&mut bytes, 0);
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let url = format!("data:image/gif;base64,{encoded}");
+
+    let mut cache = ImageCache::new();
+
+    cache.set_animation_time_ms(Some(0.0));
+    let img0 = cache.load(&url).expect("gif frame at t=0 should decode");
+    assert_eq!(img0.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
+    let len_after_first = cache
+      .cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .len();
+
+    // Different times within the same frame interval should map to the same cache entry.
+    cache.set_animation_time_ms(Some(50.0));
+    let img0b = cache.load(&url).expect("gif frame at t=50 should decode");
+    assert_eq!(img0b.image.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
+    assert!(
+      Arc::ptr_eq(&img0, &img0b),
+      "expected frame reuse for same selected frame index"
+    );
+    let len_after_second = cache
+      .cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .len();
+    assert_eq!(len_after_second, len_after_first);
+
+    // Times that select a different frame should produce a separate cached image.
+    cache.set_animation_time_ms(Some(150.0));
+    let img1 = cache.load(&url).expect("gif frame at t=150 should decode");
+    assert_eq!(img1.image.to_rgba8().get_pixel(0, 0).0, [0, 0, 255, 255]);
+    assert!(
+      !Arc::ptr_eq(&img0, &img1),
+      "expected different cached image for different selected frame index"
+    );
+    let len_after_third = cache
+      .cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .len();
+    assert_eq!(len_after_third, len_after_first + 1);
   }
 
   #[test]
