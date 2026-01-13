@@ -174,7 +174,7 @@ unsafe fn get_userenv_proc<T>(
   if proc.is_null() {
     return Err(AppContainerApiLoadError::MissingSymbol {
       symbol,
-      source: io::Error::last_os_error(),
+      source: io::Error::new(io::ErrorKind::NotFound, "GetProcAddress returned NULL"),
     });
   }
 

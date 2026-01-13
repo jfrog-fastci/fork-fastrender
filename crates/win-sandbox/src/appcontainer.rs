@@ -3,7 +3,7 @@ use crate::{OwnedSid, Result, WinSandboxError};
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
+use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE, ERROR_PROC_NOT_FOUND};
 use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 type HRESULT = i32;
@@ -29,22 +29,25 @@ fn wide_null(arg: &'static str, s: &str) -> Result<Vec<u16>> {
 // -----------------------------------------------------------------------------
 // userenv.dll dynamic loader
 // -----------------------------------------------------------------------------
+//
+// AppContainer profile management APIs are not present on older Windows releases. If we link them
+// directly, the loader can fail the entire process at startup due to a missing entrypoint. Resolve
+// the functions dynamically so callers can gracefully fall back to a weaker sandbox.
 
 #[derive(Debug)]
 struct UserenvApis {
-  // Keep the backing module loaded for the lifetime of the process. The function
-  // pointers below are only valid while `userenv.dll` remains loaded.
+  // Keep the backing module loaded for the lifetime of the process. The function pointers below are
+  // only valid while `userenv.dll` remains loaded.
   _module: HMODULE,
   create_app_container_profile: CreateAppContainerProfileFn,
   derive_app_container_sid_from_app_container_name: DeriveAppContainerSidFromAppContainerNameFn,
 }
 
-// `HMODULE` is an opaque handle. It is safe to share this struct across threads
-// because we never dereference the module handle; it's only kept alive to
-// maintain the DLL reference count, and the function pointers are immutable.
+// `HMODULE` is an opaque handle. It is safe to share this struct across threads because we never
+// dereference the module handle; it's only kept alive to maintain the DLL reference count, and the
+// function pointers are immutable.
 unsafe impl Send for UserenvApis {}
 unsafe impl Sync for UserenvApis {}
-
 #[derive(Debug)]
 enum UserenvAvailability {
   Supported(UserenvApis),
@@ -72,7 +75,7 @@ impl UserenvApis {
   unsafe fn load() -> Result<Self> {
     let dll_w = wide_null("dll_name", "userenv.dll")?;
     let module = LoadLibraryW(dll_w.as_ptr());
-    if module.is_null() {
+    if module == 0 as HMODULE {
       return Err(WinSandboxError::last("LoadLibraryW(userenv.dll)"));
     }
 
@@ -114,14 +117,11 @@ unsafe fn get_proc<T>(module: HMODULE, symbol: &'static [u8], func: &'static str
   let proc = GetProcAddress(module, symbol.as_ptr());
   match proc {
     Some(proc) => {
-      // SAFETY: The caller is responsible for ensuring `T` matches the actual
-      // exported symbol's signature.
+      // SAFETY: The caller is responsible for ensuring `T` matches the actual exported symbol's
+      // signature.
       Ok(std::mem::transmute_copy(&proc))
     }
-    None => Err(WinSandboxError::from_code(
-      func,
-      windows_sys::Win32::Foundation::ERROR_PROC_NOT_FOUND,
-    )),
+    None => Err(WinSandboxError::from_code(func, ERROR_PROC_NOT_FOUND)),
   }
 }
 
@@ -212,9 +212,8 @@ pub fn derive_appcontainer_sid(name: &str) -> Result<OwnedSid> {
 
   // SAFETY: Win32 FFI call.
   let mut sid: *mut c_void = std::ptr::null_mut();
-  let hr = unsafe {
-    (apis.derive_app_container_sid_from_app_container_name)(name_w.as_ptr(), &mut sid)
-  };
+  let hr =
+    unsafe { (apis.derive_app_container_sid_from_app_container_name)(name_w.as_ptr(), &mut sid) };
   if hr < 0 {
     if !sid.is_null() {
       // SAFETY: AppContainer SIDs are freed with FreeSid.
@@ -238,7 +237,7 @@ pub fn derive_appcontainer_sid(name: &str) -> Result<OwnedSid> {
 }
 
 #[repr(C)]
-struct SID_AND_ATTRIBUTES {
+struct SidAndAttributes {
   sid: *mut c_void,
   attributes: u32,
 }
@@ -247,14 +246,13 @@ type CreateAppContainerProfileFn = unsafe extern "system" fn(
   *const u16,
   *const u16,
   *const u16,
-  *const SID_AND_ATTRIBUTES,
+  *const SidAndAttributes,
   u32,
   *mut *mut c_void,
 ) -> HRESULT;
 
 type DeriveAppContainerSidFromAppContainerNameFn =
   unsafe extern "system" fn(*const u16, *mut *mut c_void) -> HRESULT;
-
 #[cfg(test)]
 mod tests {
   use super::*;
