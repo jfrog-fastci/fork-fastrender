@@ -1906,6 +1906,65 @@ mod websocket_ipc_tests {
   }
 
   #[test]
+  fn shutdown_renderer_releases_global_connection_capacity() {
+    let limits = NetworkWebSocketManagerLimits {
+      max_active_per_renderer: 10,
+      max_active_total: 1,
+    };
+    let mut mgr = NetworkWebSocketManager::new_with_limits(limits);
+    let r1 = RendererId(1);
+    let r2 = RendererId(2);
+ 
+    assert!(mgr
+      .handle_command(
+        r1,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(1),
+          url: "ws://example.invalid/1".to_string(),
+        },
+      )
+      .is_empty());
+    assert_eq!(mgr.connection_count_for_test(r1), 1);
+ 
+    let rejected = mgr.handle_command(
+      r2,
+      WebSocketCommand::Connect {
+        conn_id: WebSocketConnId(2),
+        url: "ws://example.invalid/2".to_string(),
+      },
+    );
+    assert_eq!(
+      rejected,
+      vec![
+        WebSocketEvent::Error {
+          conn_id: WebSocketConnId(2),
+          kind: WebSocketErrorKind::GlobalLimitExceeded
+        },
+        WebSocketEvent::Close {
+          conn_id: WebSocketConnId(2)
+        }
+      ]
+    );
+ 
+    // Renderer disconnects/crashes: the network process should drop all its WebSockets and release
+    // global capacity so other renderers can connect.
+    let dropped = mgr.shutdown_renderer(r1);
+    assert_eq!(dropped, vec![WebSocketEvent::Close { conn_id: WebSocketConnId(1) }]);
+    assert_eq!(mgr.connection_count_for_test(r1), 0);
+ 
+    assert!(mgr
+      .handle_command(
+        r2,
+        WebSocketCommand::Connect {
+          conn_id: WebSocketConnId(3),
+          url: "ws://example.invalid/3".to_string(),
+        },
+      )
+      .is_empty());
+    assert_eq!(mgr.connection_count_for_test(r2), 1);
+  }
+
+  #[test]
   fn per_renderer_connection_cap_rejects_and_releases_on_close() {
     let limits = NetworkWebSocketManagerLimits {
       max_active_per_renderer: 2,

@@ -321,6 +321,12 @@ Design constraints:
 - The renderer must not be able to bypass origin/policy checks by constructing a raw socket.
 - The network process must apply appropriate bounds (frame sizes, message queue limits) and should
   surface backpressure to avoid unbounded memory growth.
+- The network process must enforce **hard caps** on concurrently-active connections so a compromised
+  renderer cannot exhaust network-process resources by opening unbounded WebSockets.
+  - See `crates/fastrender-ipc/src/lib.rs` (`NetworkWebSocketManagerLimits`).
+  - Default limits: **256 active WebSockets per renderer**, and **4096 total** across all renderers.
+  - Over-limit `Connect` is rejected deterministically (`Error` + `Close`) without spawning per-socket
+    work.
 
 Code pointers:
 
