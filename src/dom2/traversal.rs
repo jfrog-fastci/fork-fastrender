@@ -368,6 +368,189 @@ impl Document {
     current
   }
 
+  /// Returns the parent node for DOM tree traversal as used by JS-visible iterators (NodeIterator /
+  /// TreeWalker) and related DOM algorithms.
+  ///
+  /// This differs from [`Document::parent_node`] because `dom2`'s internal tree representation
+  /// includes:
+  /// - `ShadowRoot` nodes as children of their host elements, and
+  /// - `<template>` contents as children of the `<template>` element with `inert_subtree=true`.
+  ///
+  /// In the DOM Standard's *tree*:
+  /// - `ShadowRoot` is the root of a separate node tree and does not have a parent node, and
+  /// - template contents are in a separate `DocumentFragment` and are not descendants of the
+  ///   `<template>` element.
+  ///
+  /// For traversal semantics we therefore treat:
+  /// - `ShadowRoot` nodes as having no parent, and
+  /// - nodes whose parent has `inert_subtree=true` as disconnected (no parent).
+  pub(super) fn traversal_parent_node(&self, node: NodeId) -> Option<NodeId> {
+    if !self.contains_node(node) {
+      return None;
+    }
+
+    // `ShadowRoot` nodes are roots of their own node trees; they are not children of their hosts.
+    if self.is_shadow_root(node) {
+      return None;
+    }
+
+    let parent = self.parent_node(node)?;
+
+    // Template contents are represented as children of the `<template>` element with
+    // `inert_subtree=true`. Those descendants must behave as disconnected for traversal.
+    if self.node(parent).inert_subtree {
+      return None;
+    }
+
+    Some(parent)
+  }
+
+  /// Returns the first child for DOM tree traversal (skipping shadow roots and inert subtrees).
+  fn traversal_first_child(&self, node: NodeId) -> Option<NodeId> {
+    let node_ref = self.get_node(node)?;
+    if node_ref.inert_subtree {
+      return None;
+    }
+    node_ref
+      .children
+      .iter()
+      .copied()
+      .find(|&child| self.contains_node(child) && self.traversal_parent_node(child) == Some(node))
+  }
+
+  /// Returns the last child for DOM tree traversal (skipping shadow roots and inert subtrees).
+  fn traversal_last_child(&self, node: NodeId) -> Option<NodeId> {
+    let node_ref = self.get_node(node)?;
+    if node_ref.inert_subtree {
+      return None;
+    }
+    node_ref
+      .children
+      .iter()
+      .rev()
+      .copied()
+      .find(|&child| self.contains_node(child) && self.traversal_parent_node(child) == Some(node))
+  }
+
+  pub(super) fn traversal_previous_sibling(&self, node: NodeId) -> Option<NodeId> {
+    let parent = self.traversal_parent_node(node)?;
+    let parent_node = self.get_node(parent)?;
+    let pos = parent_node.children.iter().position(|&c| c == node)?;
+    parent_node
+      .children
+      .iter()
+      .take(pos)
+      .rev()
+      .copied()
+      .find(|&sib| self.traversal_parent_node(sib) == Some(parent))
+  }
+
+  fn traversal_next_sibling(&self, node: NodeId) -> Option<NodeId> {
+    let parent = self.traversal_parent_node(node)?;
+    let parent_node = self.get_node(parent)?;
+    let pos = parent_node.children.iter().position(|&c| c == node)?;
+    parent_node
+      .children
+      .iter()
+      .skip(pos + 1)
+      .copied()
+      .find(|&sib| self.traversal_parent_node(sib) == Some(parent))
+  }
+
+  /// Returns the last inclusive descendant in DOM tree order as used by JS-visible iterators.
+  ///
+  /// Unlike [`Document::last_inclusive_descendant`], this:
+  /// - does not descend into nodes with `inert_subtree=true` (e.g. `<template>`), and
+  /// - does not traverse into `ShadowRoot` subtrees when the entry point is in the light DOM.
+  pub(super) fn traversal_last_inclusive_descendant(&self, node: NodeId) -> NodeId {
+    if !self.contains_node(node) {
+      return node;
+    }
+
+    let mut current = node;
+    // Defensive bound against accidental cycles.
+    for _ in 0..=self.nodes.len() {
+      let Some(last_child) = self.traversal_last_child(current) else {
+        break;
+      };
+      current = last_child;
+    }
+    current
+  }
+
+  pub(super) fn traversal_is_inclusive_descendant(&self, root: NodeId, node: NodeId) -> bool {
+    if !self.contains_node(root) || !self.contains_node(node) {
+      return false;
+    }
+
+    let mut current = Some(node);
+    for _ in 0..=self.nodes.len() {
+      let Some(id) = current else {
+        break;
+      };
+      if id == root {
+        return true;
+      }
+      current = self.traversal_parent_node(id);
+    }
+    false
+  }
+
+  /// Returns the node following `node` in DOM tree order within the subtree rooted at `root`.
+  ///
+  /// This matches WHATWG DOM's "following node" concept for NodeIterator/TreeWalker traversal:
+  /// - Shadow roots are not part of their host's light DOM tree.
+  /// - Inert subtrees (`inert_subtree=true`, currently `<template>` contents) are not traversed.
+  pub(super) fn traversal_following_in_subtree(
+    &self,
+    root: NodeId,
+    node: NodeId,
+  ) -> Option<NodeId> {
+    if !self.traversal_is_inclusive_descendant(root, node) {
+      return None;
+    }
+
+    if let Some(first_child) = self.traversal_first_child(node) {
+      return Some(first_child);
+    }
+
+    let mut current = node;
+    for _ in 0..=self.nodes.len() {
+      if current == root {
+        return None;
+      }
+      if let Some(next_sibling) = self.traversal_next_sibling(current) {
+        return Some(next_sibling);
+      }
+      current = self.traversal_parent_node(current)?;
+    }
+
+    None
+  }
+
+  /// Returns the node preceding `node` in DOM tree order within the subtree rooted at `root`.
+  ///
+  /// See [`Document::traversal_following_in_subtree`] for traversal semantics.
+  #[allow(dead_code)]
+  pub(super) fn traversal_preceding_in_subtree(
+    &self,
+    root: NodeId,
+    node: NodeId,
+  ) -> Option<NodeId> {
+    if root == node {
+      return None;
+    }
+    if !self.traversal_is_inclusive_descendant(root, node) {
+      return None;
+    }
+
+    if let Some(previous_sibling) = self.traversal_previous_sibling(node) {
+      return Some(self.traversal_last_inclusive_descendant(previous_sibling));
+    }
+
+    self.traversal_parent_node(node)
+  }
+
   pub fn following_in_subtree(&self, root: NodeId, node: NodeId) -> Option<NodeId> {
     if !self.contains_node(root) || !self.contains_node(node) {
       return None;
