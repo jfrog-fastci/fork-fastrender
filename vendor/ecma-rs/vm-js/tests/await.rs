@@ -43,8 +43,11 @@ impl VmHostHooks for RecordingHost {
     self.queue.push_back(job);
   }
 
-  fn host_make_job_callback(&mut self, callback: vm_js::GcObject) -> JobCallback {
-    JobCallback::new(callback)
+  fn host_make_job_callback_fallible(
+    &mut self,
+    callback: vm_js::GcObject,
+  ) -> Result<JobCallback, VmError> {
+    JobCallback::try_new(callback)
   }
 
   fn host_call_job_callback(

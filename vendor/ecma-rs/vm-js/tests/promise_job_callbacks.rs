@@ -72,10 +72,10 @@ impl VmHostHooks for TestHost {
     // Not used by these tests; we run jobs directly.
   }
 
-  fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
+  fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
     let id = u32::try_from(self.made.len()).expect("too many callbacks for test");
     self.made.push(callback);
-    JobCallback::new_with_data(callback, TestJobCallbackData { id })
+    JobCallback::try_new_with_data(callback, TestJobCallbackData { id })
   }
 
   fn host_call_job_callback(
@@ -87,7 +87,7 @@ impl VmHostHooks for TestHost {
   ) -> Result<Value, VmError> {
     let data = callback
       .downcast_ref::<TestJobCallbackData>()
-      .expect("job callback should have been created by TestHost::host_make_job_callback");
+      .expect("job callback should have been created by TestHost::host_make_job_callback_fallible");
     let callback_obj = callback.callback();
     assert_eq!(
       self.made[data.id as usize], callback_obj,
@@ -184,8 +184,8 @@ struct ThrowingHost;
 impl VmHostHooks for ThrowingHost {
   fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<vm_js::RealmId>) {}
 
-  fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
-    JobCallback::new(callback)
+  fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+    JobCallback::try_new(callback)
   }
 
   fn host_call_job_callback(

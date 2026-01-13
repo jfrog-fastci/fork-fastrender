@@ -31,8 +31,11 @@ use crate::{
 };
 use crate::{HostDefined, ModuleLoadPayload, ModuleReferrer, ModuleRequest};
 use std::any::Any;
+use std::alloc::{alloc, Layout};
 use std::fmt;
+use std::ptr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 
 /// Host-provided state passed to native call/construct handlers.
@@ -341,6 +344,34 @@ impl Drop for Job {
 #[derive(Clone)]
 pub struct JobCallback(Arc<JobCallbackInner>);
 
+// SAFETY: This mirrors the allocation layout used by `std::sync::Arc`: refcounts followed by the
+// payload. We use this only so we can allocate an `Arc<T>` fallibly (returning `VmError::OutOfMemory`
+// instead of aborting the process via the global allocator's OOM handler).
+#[repr(C)]
+struct ArcInner<T> {
+  strong: AtomicUsize,
+  weak: AtomicUsize,
+  data: T,
+}
+
+fn arc_try_new<T>(value: T) -> Result<Arc<T>, VmError> {
+  let layout = Layout::new::<ArcInner<T>>();
+  // SAFETY: We allocate enough space for `ArcInner<T>` and initialise all fields before converting
+  // it into an `Arc<T>` via `Arc::from_raw`.
+  unsafe {
+    let raw = alloc(layout) as *mut ArcInner<T>;
+    if raw.is_null() {
+      return Err(VmError::OutOfMemory);
+    }
+    // `Arc::new` initialises both counts to 1 (the implicit weak count).
+    ptr::addr_of_mut!((*raw).strong).write(AtomicUsize::new(1));
+    ptr::addr_of_mut!((*raw).weak).write(AtomicUsize::new(1));
+    ptr::addr_of_mut!((*raw).data).write(value);
+
+    Ok(Arc::from_raw(ptr::addr_of!((*raw).data)))
+  }
+}
+
 struct JobCallbackInner {
   callback: GcObject,
   realm: Option<RealmId>,
@@ -349,24 +380,57 @@ struct JobCallbackInner {
 }
 
 impl JobCallback {
-  /// Create a new `JobCallback` with no extra host-defined metadata.
-  pub fn new(callback: GcObject) -> Self {
-    Self::new_in_realm(callback, None)
+  /// Fallible constructor for a `JobCallback` with no extra host-defined metadata.
+  pub fn try_new(callback: GcObject) -> Result<Self, VmError> {
+    Self::try_new_in_realm(callback, None)
   }
 
-  /// Create a new `JobCallback` associated with an opaque realm identifier.
-  pub fn new_in_realm(callback: GcObject, realm: Option<RealmId>) -> Self {
-    Self(Arc::new(JobCallbackInner {
+  /// Fallible constructor for a `JobCallback` associated with an opaque realm identifier.
+  pub fn try_new_in_realm(callback: GcObject, realm: Option<RealmId>) -> Result<Self, VmError> {
+    Ok(Self(arc_try_new(JobCallbackInner {
       callback,
       realm,
       host_defined: None,
       rooted: Mutex::new(None),
-    }))
+    })?))
+  }
+
+  /// Fallible constructor for a `JobCallback` with host-defined metadata.
+  pub fn try_new_with_data<T: Any + Send + Sync>(callback: GcObject, data: T) -> Result<Self, VmError> {
+    Self::try_new_with_data_in_realm(callback, data, None)
+  }
+
+  /// Fallible constructor for a `JobCallback` with host-defined metadata, associated with an
+  /// opaque realm identifier.
+  pub fn try_new_with_data_in_realm<T: Any + Send + Sync>(
+    callback: GcObject,
+    data: T,
+    realm: Option<RealmId>,
+  ) -> Result<Self, VmError> {
+    let host_defined: Arc<dyn Any + Send + Sync> = arc_try_new(data)?;
+    Ok(Self(arc_try_new(JobCallbackInner {
+      callback,
+      realm,
+      host_defined: Some(host_defined),
+      rooted: Mutex::new(None),
+    })?))
+  }
+
+  /// Create a new `JobCallback` with no extra host-defined metadata.
+  pub fn new(callback: GcObject) -> Self {
+    Self::try_new_in_realm(callback, None)
+      .unwrap_or_else(|_| panic!("JobCallback::new: out of memory"))
+  }
+
+  /// Create a new `JobCallback` associated with an opaque realm identifier.
+  pub fn new_in_realm(callback: GcObject, realm: Option<RealmId>) -> Self {
+    Self::try_new_in_realm(callback, realm).unwrap_or_else(|_| panic!("JobCallback::new: out of memory"))
   }
 
   /// Create a new `JobCallback` with host-defined metadata.
   pub fn new_with_data<T: Any + Send + Sync>(callback: GcObject, data: T) -> Self {
-    Self::new_with_data_in_realm(callback, data, None)
+    Self::try_new_with_data_in_realm(callback, data, None)
+      .unwrap_or_else(|_| panic!("JobCallback::new_with_data: out of memory"))
   }
 
   /// Create a new `JobCallback` with host-defined metadata, associated with an opaque realm
@@ -376,12 +440,8 @@ impl JobCallback {
     data: T,
     realm: Option<RealmId>,
   ) -> Self {
-    Self(Arc::new(JobCallbackInner {
-      callback,
-      realm,
-      host_defined: Some(Arc::new(data)),
-      rooted: Mutex::new(None),
-    }))
+    Self::try_new_with_data_in_realm(callback, data, realm)
+      .unwrap_or_else(|_| panic!("JobCallback::new_with_data_in_realm: out of memory"))
   }
 
   /// Returns the callback object captured by this record.
@@ -681,8 +741,21 @@ pub trait VmHostHooks {
   /// If the callback object must stay alive until some future task/microtask runs, the embedding
   /// MUST keep it alive itself (for example by rooting it as part of the queued [`Job`] via
   /// [`Job::add_root`], or by using [`crate::Heap::add_root`]).
+  fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+    JobCallback::try_new(callback)
+  }
+
+  /// Creates a host-defined [`JobCallback`] record.
+  ///
+  /// This is the infallible legacy form of [`VmHostHooks::host_make_job_callback_fallible`].
+  ///
+  /// Embeddings should prefer overriding the fallible hook and only override this method for
+  /// backwards compatibility.
   fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
-    JobCallback::new(callback)
+    match self.host_make_job_callback_fallible(callback) {
+      Ok(cb) => cb,
+      Err(_) => panic!("VmHostHooks::host_make_job_callback: out of memory"),
+    }
   }
 
   /// Calls a host-defined [`JobCallback`] record.
@@ -753,6 +826,10 @@ pub trait VmHostHooks {
 
       fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
         self.0.as_any_mut()
+      }
+
+      fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+        self.0.host_make_job_callback_fallible(callback)
       }
 
       fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
@@ -943,6 +1020,10 @@ pub trait VmHostHooks {
         self.0.as_any_mut()
       }
 
+      fn host_make_job_callback_fallible(&mut self, callback: GcObject) -> Result<JobCallback, VmError> {
+        self.0.host_make_job_callback_fallible(callback)
+      }
+
       fn host_make_job_callback(&mut self, callback: GcObject) -> JobCallback {
         self.0.host_make_job_callback(callback)
       }
@@ -999,5 +1080,33 @@ pub trait VmHostHooks {
       Err(VmError::Unimplemented("HostLoadImportedModule")),
     )?;
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod oom_tests {
+  use super::*;
+  use crate::test_alloc::FailNextMatchingAllocGuard;
+
+  const JOB_CALLBACK_ARC_INNER_SIZE: usize = std::mem::size_of::<ArcInner<JobCallbackInner>>();
+  const JOB_CALLBACK_ARC_INNER_ALIGN: usize = std::mem::align_of::<ArcInner<JobCallbackInner>>();
+
+  #[test]
+  fn host_make_job_callback_fallible_returns_out_of_memory_on_arc_alloc_failure() {
+    struct Host;
+
+    impl VmHostHooks for Host {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+      }
+    }
+
+    let mut host = Host;
+    let callback = GcObject(crate::HeapId(0));
+    let _guard = FailNextMatchingAllocGuard::new(JOB_CALLBACK_ARC_INNER_SIZE, JOB_CALLBACK_ARC_INNER_ALIGN);
+
+    let err = host
+      .host_make_job_callback_fallible(callback)
+      .expect_err("expected OOM error");
+    assert!(matches!(err, VmError::OutOfMemory));
   }
 }

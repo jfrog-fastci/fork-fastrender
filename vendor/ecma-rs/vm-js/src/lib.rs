@@ -188,6 +188,9 @@ mod value;
 mod vm;
 
 #[cfg(test)]
+mod test_alloc;
+
+#[cfg(test)]
 mod regexp_unicode_property_strings_tests;
 
 // Unit tests that need access to crate-private internals live in `../tests/unit/` and are pulled

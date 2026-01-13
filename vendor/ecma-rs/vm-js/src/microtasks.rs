@@ -147,6 +147,7 @@ impl MicrotaskQueue {
 mod tests {
   use super::*;
 
+  use crate::test_alloc::FailAllocsGuard;
   use crate::Heap;
   use crate::HeapLimits;
   use crate::Job;
@@ -157,57 +158,6 @@ mod tests {
   use crate::VmHostHooks;
   use crate::VmJobContext;
   use crate::WeakGcObject;
-  use std::alloc::{GlobalAlloc, Layout, System};
-  use std::cell::Cell;
-
-  thread_local! {
-    static FAIL_ALLOC: Cell<bool> = Cell::new(false);
-  }
-
-  struct FailingAlloc;
-
-  #[global_allocator]
-  static GLOBAL_ALLOCATOR: FailingAlloc = FailingAlloc;
-
-  unsafe impl GlobalAlloc for FailingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-      if FAIL_ALLOC.with(|f| f.get()) {
-        return std::ptr::null_mut();
-      }
-      System.alloc(layout)
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-      if FAIL_ALLOC.with(|f| f.get()) {
-        return std::ptr::null_mut();
-      }
-      System.alloc_zeroed(layout)
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-      if FAIL_ALLOC.with(|f| f.get()) {
-        return std::ptr::null_mut();
-      }
-      System.realloc(ptr, layout, new_size)
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-      System.dealloc(ptr, layout)
-    }
-  }
-
-  struct FailAllocGuard;
-  impl FailAllocGuard {
-    fn new() -> Self {
-      FAIL_ALLOC.with(|f| f.set(true));
-      Self
-    }
-  }
-  impl Drop for FailAllocGuard {
-    fn drop(&mut self) {
-      FAIL_ALLOC.with(|f| f.set(false));
-    }
-  }
 
   struct TestContext {
     heap: Heap,
@@ -278,7 +228,7 @@ mod tests {
     assert_eq!(weak.upgrade(&ctx.heap), Some(obj));
 
     // Simulate allocator OOM right before the checkpoint attempts to collect errors.
-    let _guard = FailAllocGuard::new();
+    let _guard = FailAllocsGuard::new();
     let errors = queue.perform_microtask_checkpoint(&mut ctx);
     drop(_guard);
 

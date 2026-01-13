@@ -6313,7 +6313,7 @@ fn resolve_promise(
   let (resolve, reject) = create_promise_resolving_functions(vm, scope, promise)?;
 
   // Enqueue PromiseResolveThenableJob(promise, thenable, then).
-  let then_job_callback = hooks.host_make_job_callback(then_obj);
+  let then_job_callback = hooks.host_make_job_callback_fallible(then_obj)?;
 
   let callback_obj = then_job_callback.callback_object();
   let realm = then_job_callback
@@ -6636,13 +6636,13 @@ pub(crate) fn perform_promise_then_with_capability(
   // Normalize handlers: use "empty" when not callable.
   let on_fulfilled = match on_fulfilled {
     Value::Object(obj) if scope.heap().is_callable(Value::Object(obj))? => {
-      Some(hooks.host_make_job_callback(obj))
+      Some(hooks.host_make_job_callback_fallible(obj)?)
     }
     _ => None,
   };
   let on_rejected = match on_rejected {
     Value::Object(obj) if scope.heap().is_callable(Value::Object(obj))? => {
-      Some(hooks.host_make_job_callback(obj))
+      Some(hooks.host_make_job_callback_fallible(obj)?)
     }
     _ => None,
   };
@@ -6796,12 +6796,12 @@ pub(crate) fn perform_promise_then_no_capability(
   let fulfill_reaction = PromiseReaction {
     capability: None,
     type_: PromiseReactionType::Fulfill,
-    handler: Some(host.host_make_job_callback(on_fulfilled_obj)),
+    handler: Some(host.host_make_job_callback_fallible(on_fulfilled_obj)?),
   };
   let reject_reaction = PromiseReaction {
     capability: None,
     type_: PromiseReactionType::Reject,
-    handler: Some(host.host_make_job_callback(on_rejected_obj)),
+    handler: Some(host.host_make_job_callback_fallible(on_rejected_obj)?),
   };
 
   let current_realm = vm.current_realm();

@@ -4,6 +4,7 @@
 //! needed to model *job scheduling* and the HTML integration points:
 //!
 //! - [`VmHostHooks::host_make_job_callback`] (HTML: `HostMakeJobCallback`)
+//! - [`VmHostHooks::host_make_job_callback_fallible`] (fallible host hook)
 //! - [`VmHostHooks::host_call_job_callback`] (HTML: `HostCallJobCallback`)
 //!
 //! In addition to job-scheduling scaffolding, it defines **GC-traceable, spec-shaped record types**
@@ -121,7 +122,8 @@ fn is_callable(heap: &Heap, value: Value) -> Result<Option<GcObject>, VmError> {
 /// Implements the "handler normalization" part of ECMA-262's `PerformPromiseThen`.
 ///
 /// When `on_fulfilled` / `on_rejected` are callable, this captures them into host-defined
-/// [`JobCallback`] records using [`VmHostHooks::host_make_job_callback`], per the ECMA-262 + HTML
+/// [`JobCallback`] records using [`VmHostHooks::host_make_job_callback_fallible`], per the
+/// ECMA-262 + HTML
 /// integration requirements.
 pub fn normalize_promise_then_handlers(
   host: &mut dyn VmHostHooks,
@@ -129,10 +131,14 @@ pub fn normalize_promise_then_handlers(
   on_fulfilled: Value,
   on_rejected: Value,
 ) -> Result<(PromiseReactionRecord, PromiseReactionRecord), VmError> {
-  let on_fulfilled = is_callable(heap, on_fulfilled)?
-    .map(|cb| host.host_make_job_callback(cb));
-  let on_rejected = is_callable(heap, on_rejected)?
-    .map(|cb| host.host_make_job_callback(cb));
+  let on_fulfilled = match is_callable(heap, on_fulfilled)? {
+    Some(cb) => Some(host.host_make_job_callback_fallible(cb)?),
+    None => None,
+  };
+  let on_rejected = match is_callable(heap, on_rejected)? {
+    Some(cb) => Some(host.host_make_job_callback_fallible(cb)?),
+    None => None,
+  };
 
   Ok((
     PromiseReactionRecord {
@@ -163,7 +169,7 @@ pub fn create_promise_resolve_thenable_job(
     return Ok(None);
   };
 
-  let then_job_callback = host.host_make_job_callback(then_action);
+  let then_job_callback = host.host_make_job_callback_fallible(then_action)?;
   Ok(Some(new_promise_resolve_thenable_job(
     heap,
     thenable,

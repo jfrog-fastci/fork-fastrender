@@ -6239,7 +6239,9 @@ mod tests {
       scope.push_root(Value::Object(argument)).unwrap();
       argument_obj = Some(argument);
 
-      let job_callback = hooks.host_make_job_callback(callback);
+      let job_callback = hooks
+        .host_make_job_callback_fallible(callback)
+        .expect("host_make_job_callback_fallible");
       let fulfill_reaction = vm_js::PromiseReactionRecord {
         reaction_type: vm_js::PromiseReactionType::Fulfill,
         handler: Some(job_callback),
