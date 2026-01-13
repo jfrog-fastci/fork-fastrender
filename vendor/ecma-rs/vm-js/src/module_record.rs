@@ -1,4 +1,3 @@
-use crate::code::CompiledScript;
 use crate::execution_context::ModuleId;
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::module_graph::ModuleGraph;
@@ -6,6 +5,7 @@ use crate::ImportAttribute;
 use crate::LoadedModuleRequest;
 use crate::ModuleRequest;
 use crate::SourceText;
+use crate::CompiledScript;
 use crate::{
   EnvRootId, ExternalMemoryToken, GcObject, Heap, PromiseCapability, RealmId, RootId, Scope, Value, Vm, VmError,
 };

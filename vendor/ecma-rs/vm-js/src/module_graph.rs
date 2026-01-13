@@ -1884,7 +1884,9 @@ impl ModuleGraph {
         let has_tla = self.modules[idx].has_tla;
         let compiled = self.modules[idx].compiled.clone();
         match compiled {
-          Some(script) if !script.requires_ast_fallback && !has_tla => {
+          Some(script)
+            if !script.requires_ast_fallback && !script.contains_async_generators && !has_tla =>
+          {
             instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, script)?;
           }
           _ => {
@@ -2716,7 +2718,7 @@ impl ModuleGraph {
         // - the compiled executor (HIR), if present and safe, or
         // - the AST interpreter (fallback).
         if let Some(compiled) = compiled.clone() {
-          if !compiled.requires_ast_fallback {
+          if !compiled.contains_async_generators && !compiled.requires_ast_fallback {
             match crate::hir_exec::run_compiled_module(
               vm,
               scope,
@@ -3176,7 +3178,9 @@ impl ModuleGraph {
       let compiled = self.modules[idx].compiled.clone();
       let has_tla = self.modules[idx].has_tla;
       match compiled {
-        Some(script) if !script.requires_ast_fallback && !has_tla => {
+        Some(script)
+          if !script.requires_ast_fallback && !script.contains_async_generators && !has_tla =>
+        {
           crate::hir_exec::run_compiled_module(
             vm,
             scope,

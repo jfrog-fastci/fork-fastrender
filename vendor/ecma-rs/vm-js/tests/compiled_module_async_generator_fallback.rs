@@ -1,0 +1,259 @@
+use vm_js::{
+  CompiledScript, Heap, HeapLimits, JsRuntime, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm,
+  RootId, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, VmOptions,
+};
+
+fn new_vm_heap_realm() -> Result<(Vm, Heap, Realm), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  // Module evaluation/linking tests exercise fairly allocation-heavy paths (parsing, instantiation,
+  // namespace creation). Keep the heap small to catch leaks, but not so small that minor engine
+  // changes trip spurious OOM failures.
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let realm = Realm::new(&mut vm, &mut heap)?;
+  Ok((vm, heap, realm))
+}
+
+fn obj_get(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  obj: vm_js::GcObject,
+  name: &str,
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+  let key_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(key_s))?;
+  let key = PropertyKey::from_string(key_s);
+  scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))
+}
+
+struct JobCtx<'a> {
+  vm: &'a mut Vm,
+  host: &'a mut dyn VmHost,
+  heap: &'a mut Heap,
+}
+
+impl VmJobContext for JobCtx<'_> {
+  fn call(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut scope = self.heap.scope();
+    self
+      .vm
+      .call_with_host_and_hooks(&mut *self.host, &mut scope, hooks, callee, this, args)
+  }
+
+  fn construct(
+    &mut self,
+    hooks: &mut dyn VmHostHooks,
+    callee: Value,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut scope = self.heap.scope();
+    self.vm.construct_with_host_and_hooks(
+      &mut *self.host,
+      &mut scope,
+      hooks,
+      callee,
+      args,
+      new_target,
+    )
+  }
+
+  fn add_root(&mut self, value: Value) -> Result<RootId, VmError> {
+    self.heap.add_root(value)
+  }
+
+  fn remove_root(&mut self, id: RootId) {
+    self.heap.remove_root(id)
+  }
+}
+
+fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+  match err {
+    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
+    _ => {}
+  }
+
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
+  };
+  let Value::Object(err_obj) = thrown else {
+    return Ok(false);
+  };
+
+  let intr = rt.realm().intrinsics();
+  let proto = rt.heap().object_prototype(err_obj)?;
+  if proto != Some(intr.error_prototype()) && proto != Some(intr.syntax_error_prototype()) {
+    return Ok(false);
+  }
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let Some(Value::String(message_s)) = scope.heap().object_get_own_data_property_value(err_obj, &message_key)? else {
+    return Ok(false);
+  };
+
+  let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
+  Ok(message.contains("async generator functions"))
+}
+
+fn async_generators_supported() -> Result<bool, VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  match rt.exec_script(
+    r#"
+      async function* __ag_support() { yield 1; }
+      __ag_support().next();
+    "#,
+  ) {
+    Ok(_) => {
+      rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+      Ok(true)
+    }
+    Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => Ok(false),
+    Err(err) => Err(err),
+  }
+}
+
+#[test]
+fn compiled_modules_fall_back_to_ast_for_async_generators() -> Result<(), VmError> {
+  if !async_generators_supported()? {
+    return Ok(());
+  }
+
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  let mut graph = ModuleGraph::new();
+
+  // Module `a` contains an async generator. The compiled (HIR) executor does not support executing
+  // async generator bodies, so compiled-module evaluation must fall back to the AST interpreter
+  // path.
+  let compiled_a = CompiledScript::compile_module(
+    &mut heap,
+    "a.js",
+    r#"
+      export async function* gen() { yield 1; }
+    "#,
+  )?;
+  let mut record_a = SourceTextModuleRecord::parse_source(compiled_a.source.clone())?;
+  record_a.compiled = Some(compiled_a);
+  // Drop the AST to ensure the fallback path parses on demand from `record.source`.
+  record_a.ast = None;
+  let a = graph.add_module_with_specifier("a.js", record_a)?;
+
+  // Module `b` is compiled and imports `a.gen`, then calls `.next()` to produce a Promise.
+  let compiled_b = CompiledScript::compile_module(
+    &mut heap,
+    "b.js",
+    r#"
+      import { gen } from "a.js";
+      export const p = gen().next();
+    "#,
+  )?;
+  let mut record_b = SourceTextModuleRecord::parse_source(compiled_b.source.clone())?;
+  record_b.compiled = Some(compiled_b);
+  // Drop the AST to ensure module evaluation actually runs through the compiled-module path.
+  record_b.ast = None;
+  let b = graph.add_module_with_specifier("b.js", record_b)?;
+
+  graph.link_all_by_specifier();
+
+  // Link (instantiate) before evaluating so we can assert which instantiation path each module took.
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+
+  // Ensure we took the intended code paths during instantiation:
+  // - `a` must parse an AST (async-generator fallback),
+  // - `b` should not require an AST (compiled path).
+  assert!(
+    graph.module(a).ast.is_some(),
+    "expected async-generator module to fall back to AST and parse on demand"
+  );
+  assert!(
+    graph.module(b).ast.is_none(),
+    "expected compiled module without async generators to avoid AST parsing"
+  );
+
+  let eval_promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    b,
+    &mut host,
+    &mut hooks,
+  )?;
+
+  // Module evaluation itself should complete synchronously (it only creates a Promise via `.next()`).
+  let promise_obj = {
+    let mut scope = heap.scope();
+    scope.push_root(eval_promise)?;
+    let Value::Object(eval_promise_obj) = eval_promise else {
+      panic!("ModuleGraph::evaluate should return a Promise object");
+    };
+    assert_eq!(
+      scope.heap().promise_state(eval_promise_obj)?,
+      PromiseState::Fulfilled,
+      "module evaluation promise should fulfill"
+    );
+
+    // Extract the exported Promise (`b.p`).
+    let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+    let p = obj_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "p")?;
+    let Value::Object(promise_obj) = p else {
+      panic!("expected b.p to be a Promise object");
+    };
+    scope.push_root(Value::Object(promise_obj))?;
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+    promise_obj
+  };
+
+  // Module `b` should still not have required parsing/retaining an AST during evaluation.
+  assert!(graph.module(b).ast.is_none());
+
+  // Drive a microtask checkpoint to settle the `.next()` Promise.
+  let errors = hooks.perform_microtask_checkpoint(&mut JobCtx {
+    vm: &mut vm,
+    host: &mut host,
+    heap: &mut heap,
+  });
+  if !errors.is_empty() {
+    panic!("microtask checkpoint errors: {errors:?}");
+  }
+
+  let mut scope = heap.scope();
+  scope.push_root(Value::Object(promise_obj))?;
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let Some(result) = scope.heap().promise_result(promise_obj)? else {
+    panic!("expected fulfilled promise to have a result");
+  };
+  let Value::Object(result_obj) = result else {
+    panic!("expected async generator .next() to fulfill with an object, got {result:?}");
+  };
+
+  assert_eq!(
+    obj_get(&mut vm, &mut host, &mut hooks, &mut scope, result_obj, "value")?,
+    Value::Number(1.0)
+  );
+  assert_eq!(
+    obj_get(&mut vm, &mut host, &mut hooks, &mut scope, result_obj, "done")?,
+    Value::Bool(false)
+  );
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
