@@ -3605,6 +3605,12 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   container_style.grid_template_rows = vec![GridTrack::Auto];
   container_style.grid_column_gap = Length::px(5.0);
   container_style.grid_column_gap_is_normal = false;
+  // Style parsing normally materializes a (tracks + 1)-length line-name vector even when no names
+  // are authored. Nested-subgrid auto-span relies on the parent line count being available through
+  // this vector when the immediate parent is itself a subgrid (and thus has no explicit track
+  // list).
+  container_style.grid_column_line_names = vec![Vec::new(), Vec::new(), Vec::new()];
+  container_style.grid_row_line_names = vec![Vec::new(), Vec::new()];
   container_style.width = Some(Length::px(75.0));
   container_style.padding_left = Length::px(4.0);
   container_style.padding_right = Length::px(4.0);
@@ -3671,11 +3677,12 @@ fn nested_subgrids_with_writing_mode_inherit_parent_tracks_for_auto_span() {
   let a_fragment = &inner_fragment.children[0];
   let b_fragment = &inner_fragment.children[1];
 
-  let a_x = a_fragment.bounds.x() - inner_fragment.bounds.x();
-  let b_x = b_fragment.bounds.x() - inner_fragment.bounds.x();
-
-  assert_approx(a_x, 0.0, "first item starts in column 1");
+  assert_approx(a_fragment.bounds.x(), 0.0, "first item starts in column 1");
   assert_approx(a_fragment.bounds.width(), 28.0, "first column width");
-  assert_approx(b_x, 33.0, "second item starts in column 2 (+ gap)");
+  assert_approx(
+    b_fragment.bounds.x(),
+    33.0,
+    "second item starts in column 2 (+ gap)",
+  );
   assert_approx(b_fragment.bounds.width(), 42.0, "second column width");
 }
