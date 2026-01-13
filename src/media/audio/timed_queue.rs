@@ -23,6 +23,17 @@ pub struct ReadResult {
   pub frames_silence: usize,
 }
 
+/// Result of a [`TimedAudioQueue::pop_into`] call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PopResult {
+  /// Frames of real audio copied into the output buffer.
+  pub audio_frames: u64,
+  /// Frames of silence inserted into the output buffer.
+  pub silence_frames: u64,
+  /// Frames dropped from the queue due to late packets / overlaps during this pop.
+  pub dropped_frames: u64,
+}
+
 #[derive(Debug)]
 struct Segment {
   start_frame: u64,
@@ -37,13 +48,24 @@ impl Segment {
   }
 
   fn end_frame(&self, channels: usize) -> u64 {
-    self.start_frame + self.remaining_frames(channels)
+    self
+      .start_frame
+      .saturating_add(self.remaining_frames(channels))
   }
 
-  fn trim_prefix_frames(&mut self, frames: u64, channels: usize) {
-    let skip_samples = frames as usize * channels;
+  fn trim_prefix_frames(&mut self, frames: u64, channels: usize) -> u64 {
+    if frames == 0 || channels == 0 {
+      return 0;
+    }
+    let available = self.remaining_frames(channels);
+    if available == 0 {
+      return 0;
+    }
+    let to_trim = frames.min(available);
+    let skip_samples = (to_trim as usize).saturating_mul(channels);
     self.offset_samples = self.offset_samples.saturating_add(skip_samples);
-    self.start_frame = self.start_frame.saturating_add(frames);
+    self.start_frame = self.start_frame.saturating_add(to_trim);
+    to_trim
   }
 }
 
@@ -54,6 +76,8 @@ pub struct TimedAudioQueue {
   max_buffered_frames: u64,
   segments: VecDeque<Segment>,
   cursor_frame: Option<u64>,
+  inserted_silence_frames: u64,
+  dropped_frames: u64,
 }
 
 impl TimedAudioQueue {
@@ -80,7 +104,17 @@ impl TimedAudioQueue {
       max_buffered_frames,
       segments: VecDeque::new(),
       cursor_frame: None,
+      inserted_silence_frames: 0,
+      dropped_frames: 0,
     }
+  }
+
+  /// Convenience constructor with an unbounded internal buffer (no backpressure).
+  ///
+  /// Equivalent to `TimedAudioQueue::new(channels, sample_rate, Duration::ZERO)`.
+  #[must_use]
+  pub fn new_unbounded(channels: u16, sample_rate: u32) -> Self {
+    Self::new(channels, sample_rate, Duration::ZERO)
   }
 
   pub fn channels(&self) -> u16 {
@@ -91,6 +125,16 @@ impl TimedAudioQueue {
     self.sample_rate
   }
 
+  #[must_use]
+  pub fn inserted_silence_frames(&self) -> u64 {
+    self.inserted_silence_frames
+  }
+
+  #[must_use]
+  pub fn dropped_frames(&self) -> u64 {
+    self.dropped_frames
+  }
+
   pub fn buffered_frames(&self) -> u64 {
     let channels = self.channels as usize;
     self
@@ -98,6 +142,18 @@ impl TimedAudioQueue {
       .iter()
       .map(|segment| segment.remaining_frames(channels))
       .sum()
+  }
+
+  /// Push a packet (interleaved f32 PCM) at the given PTS.
+  ///
+  /// This is a convenience wrapper around [`Self::push_segment`].
+  pub fn push_packet(&mut self, start_pts: Duration, samples: &[f32]) -> Result<(), PushError> {
+    self.push_segment(TimedAudioSegment {
+      start_pts: start_pts,
+      samples: samples.to_vec(),
+      channels: self.channels,
+      sample_rate: self.sample_rate,
+    })
   }
 
   pub fn reset_cursor(&mut self, target_pts: Duration) {
@@ -113,6 +169,8 @@ impl TimedAudioQueue {
   pub fn clear(&mut self) {
     self.cursor_frame = None;
     self.segments.clear();
+    self.inserted_silence_frames = 0;
+    self.dropped_frames = 0;
   }
 
   pub fn push_segment(&mut self, segment: TimedAudioSegment) -> Result<(), PushError> {
@@ -141,11 +199,13 @@ impl TimedAudioQueue {
     let cursor_frame = self.cursor_frame.unwrap_or(0);
     if self.cursor_frame.is_some() {
       if end_frame <= cursor_frame {
+        self.dropped_frames = self.dropped_frames.saturating_add(frames);
         return Ok(());
       }
       if start_frame < cursor_frame {
         let skip_frames = cursor_frame - start_frame;
-        internal.trim_prefix_frames(skip_frames, channels);
+        let trimmed = internal.trim_prefix_frames(skip_frames, channels);
+        self.dropped_frames = self.dropped_frames.saturating_add(trimmed);
       }
     }
 
@@ -164,9 +224,13 @@ impl TimedAudioQueue {
       if internal.start_frame < prev_end {
         let overlap = prev_end - internal.start_frame;
         if overlap >= internal.remaining_frames(channels) {
+          self.dropped_frames = self
+            .dropped_frames
+            .saturating_add(internal.remaining_frames(channels));
           return Ok(());
         }
-        internal.trim_prefix_frames(overlap, channels);
+        let trimmed = internal.trim_prefix_frames(overlap, channels);
+        self.dropped_frames = self.dropped_frames.saturating_add(trimmed);
       }
     }
 
@@ -202,6 +266,33 @@ impl TimedAudioQueue {
     self.segments.insert(insert_idx, internal);
     self.normalize();
     Ok(())
+  }
+
+  /// Pop interleaved samples aligned to `target_pts` into `out`.
+  ///
+  /// This is a convenience wrapper around [`Self::read_into`] that derives the requested frame
+  /// count from `out.len()` and reports per-call statistics, while also updating the queue's
+  /// cumulative `inserted_silence_frames` / `dropped_frames` counters.
+  pub fn pop_into(&mut self, target_pts: Duration, out: &mut [f32]) -> PopResult {
+    let channels = self.channels as usize;
+    if channels == 0 {
+      return PopResult::default();
+    }
+    let frames = out.len() / channels;
+    if frames == 0 {
+      out.fill(0.0);
+      return PopResult::default();
+    }
+
+    let dropped_before = self.dropped_frames;
+    let res = self.read_into(out, target_pts, frames);
+    let dropped_now = self.dropped_frames.saturating_sub(dropped_before);
+
+    PopResult {
+      audio_frames: res.frames_audio as u64,
+      silence_frames: res.frames_silence as u64,
+      dropped_frames: dropped_now,
+    }
   }
 
   pub fn read_into(&mut self, out: &mut [f32], target_pts: Duration, frames: usize) -> ReadResult {
@@ -271,13 +362,17 @@ impl TimedAudioQueue {
       };
 
       if front.end_frame(channels) <= cur_frame {
+        self.dropped_frames = self
+          .dropped_frames
+          .saturating_add(front.remaining_frames(channels));
         self.segments.pop_front();
         continue;
       }
 
       if front.start_frame < cur_frame {
         let overlap = cur_frame - front.start_frame;
-        front.trim_prefix_frames(overlap, channels);
+        let trimmed = front.trim_prefix_frames(overlap, channels);
+        self.dropped_frames = self.dropped_frames.saturating_add(trimmed);
         if front.remaining_frames(channels) == 0 {
           self.segments.pop_front();
         }
@@ -302,7 +397,7 @@ impl TimedAudioQueue {
       write_samples += sample_count;
       frames_audio += to_copy_frames;
       cur_frame = cur_frame.saturating_add(to_copy_frames as u64);
-      front.trim_prefix_frames(to_copy_frames as u64, channels);
+      let _ = front.trim_prefix_frames(to_copy_frames as u64, channels);
       if front.remaining_frames(channels) == 0 {
         self.segments.pop_front();
       }
@@ -312,6 +407,9 @@ impl TimedAudioQueue {
     self.prune_before_frame(end_frame);
 
     let frames_silence = frames.saturating_sub(frames_audio);
+    self.inserted_silence_frames = self
+      .inserted_silence_frames
+      .saturating_add(frames_silence as u64);
     ReadResult {
       frames,
       frames_audio,
@@ -327,13 +425,17 @@ impl TimedAudioQueue {
       };
 
       if front.end_frame(channels) <= frame {
+        self.dropped_frames = self
+          .dropped_frames
+          .saturating_add(front.remaining_frames(channels));
         self.segments.pop_front();
         continue;
       }
 
       if front.start_frame < frame {
         let skip = frame - front.start_frame;
-        front.trim_prefix_frames(skip, channels);
+        let trimmed = front.trim_prefix_frames(skip, channels);
+        self.dropped_frames = self.dropped_frames.saturating_add(trimmed);
         if front.remaining_frames(channels) == 0 {
           self.segments.pop_front();
           continue;
@@ -363,9 +465,11 @@ impl TimedAudioQueue {
         if seg.start_frame < last_end {
           let overlap = last_end - seg.start_frame;
           if overlap >= seg.remaining_frames(channels) {
+            self.dropped_frames = self.dropped_frames.saturating_add(seg.remaining_frames(channels));
             continue;
           }
-          seg.trim_prefix_frames(overlap, channels);
+          let trimmed = seg.trim_prefix_frames(overlap, channels);
+          self.dropped_frames = self.dropped_frames.saturating_add(trimmed);
         }
 
         if last.end_frame(channels) == seg.start_frame
@@ -475,6 +579,52 @@ mod tests {
     let mut out = vec![0.0; 6];
     q.read_into(&mut out, Duration::ZERO, 6);
     assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0, 7.0, 8.0]);
+  }
+
+  #[test]
+  fn timed_audio_queue_exact_alignment() {
+    let mut q = TimedAudioQueue::new(2, 10, Duration::from_secs(10));
+    let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+    q.push_packet(Duration::ZERO, &samples).unwrap();
+
+    let mut out = vec![0.0; samples.len()];
+    q.pop_into(Duration::ZERO, &mut out);
+
+    assert_eq!(out, samples);
+    assert_eq!(q.inserted_silence_frames(), 0);
+    assert_eq!(q.dropped_frames(), 0);
+  }
+
+  #[test]
+  fn timed_audio_queue_gap_insertion() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    q.push_packet(Duration::from_secs(1), &[1.0, 2.0, 3.0])
+      .unwrap();
+
+    // Request 1s (10 frames) of silence + 3 frames of audio.
+    let mut out = vec![0.0; 13];
+    q.pop_into(Duration::ZERO, &mut out);
+
+    assert_eq!(out[..10], [0.0; 10]);
+    assert_eq!(out[10..], [1.0, 2.0, 3.0]);
+    assert_eq!(q.inserted_silence_frames(), 10);
+    assert_eq!(q.dropped_frames(), 0);
+  }
+
+  #[test]
+  fn timed_audio_queue_overlap_drops() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    q.push_packet(Duration::ZERO, &[1.0, 2.0, 3.0, 4.0, 5.0])
+      .unwrap(); // frames 0..5
+    q.push_packet(Duration::from_millis(300), &[10.0, 11.0, 12.0, 13.0])
+      .unwrap(); // frames 3..7 (overlaps 3..5)
+
+    let mut out = vec![0.0; 7];
+    q.pop_into(Duration::ZERO, &mut out);
+
+    assert_eq!(out, [1.0, 2.0, 3.0, 4.0, 5.0, 12.0, 13.0]);
+    assert_eq!(q.inserted_silence_frames(), 0);
+    assert_eq!(q.dropped_frames(), 2);
   }
 
   #[test]
