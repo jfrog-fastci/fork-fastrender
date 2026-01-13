@@ -437,6 +437,12 @@ pub struct AppUpdate {
   /// The windowed browser uses these to synchronize history across windows without cloning the
   /// entire history store on every navigation.
   pub history_deltas: Vec<HistoryVisitDelta>,
+  /// Whether any tab's viewport scroll offset changed.
+  ///
+  /// The persisted session snapshot includes per-tab `scroll_css` offsets so crash recovery can
+  /// restore the user near where they were. Windowed UI front-ends are expected to throttle session
+  /// autosaves based on this flag rather than saving on every scroll/frame.
+  pub scroll_session_dirty: bool,
   /// Recommended full window title for the host window.
   pub set_window_title: Option<String>,
   /// A new pixmap is ready for upload; the state model does not store pixel buffers.
@@ -2815,6 +2821,7 @@ impl BrowserAppState {
         let scroll_state = protocol_limits::sanitize_worker_scroll_state(scroll_state);
         let mut scroll_metrics = protocol_limits::sanitize_worker_scroll_metrics(scroll_metrics);
         scroll_metrics.viewport_css = viewport_css;
+        let new_viewport = scroll_state.viewport;
         let pixmap_px = (pixmap.width(), pixmap.height());
 
         // The renderer process is treated as untrusted in multiprocess builds. Validate payload
@@ -2849,14 +2856,13 @@ impl BrowserAppState {
           pix_w.abs_diff(expected_w) <= tolerance_px && pix_h.abs_diff(expected_h) <= tolerance_px;
 
         if pixmap_nonzero && pixmap_within_limits && viewport_nonzero && dims_match {
-          let mut scroll_viewport_changed_for_session = false;
           if let Some(tab) = self.tab_mut(tab_id) {
             if tab.crashed {
               tab.crashed = false;
               tab.crash_reason = None;
               tab.error = None;
             }
-            scroll_viewport_changed_for_session = tab.scroll_state.viewport != scroll_state.viewport;
+            let prev_viewport = tab.scroll_state.viewport;
             tab.scroll_state = scroll_state.clone();
             tab.rendered_scroll_state = scroll_state;
             tab.scroll_metrics = Some(scroll_metrics);
@@ -2866,6 +2872,9 @@ impl BrowserAppState {
               dpr,
               next_tick,
             });
+            if prev_viewport != new_viewport {
+              update.scroll_session_dirty = true;
+            }
 
             // Only the active tab's page content is visible, so only its frames should trigger a
             // UI redraw. Background tabs still emit `frame_ready` so front-ends can coalesce/defer
@@ -2877,9 +2886,6 @@ impl BrowserAppState {
               viewport_css,
               dpr,
             });
-          }
-          if scroll_viewport_changed_for_session {
-            self.bump_session_revision();
           }
         }
       }
@@ -3237,16 +3243,16 @@ impl BrowserAppState {
       }
       WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         let scroll = protocol_limits::sanitize_worker_scroll_state(scroll);
-        let mut viewport_changed_for_session = false;
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.scroll_state != scroll {
-            viewport_changed_for_session = tab.scroll_state.viewport != scroll.viewport;
+            let prev_viewport = tab.scroll_state.viewport;
+            let new_viewport = scroll.viewport;
             tab.scroll_state = scroll;
+            if prev_viewport != new_viewport {
+              update.scroll_session_dirty = true;
+            }
             update.request_redraw = true;
           }
-        }
-        if viewport_changed_for_session {
-          self.bump_session_revision();
         }
       }
       WorkerToUi::LoadingState { tab_id, loading } => {

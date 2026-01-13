@@ -7893,9 +7893,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       return;
     }
 
-    let request_autosave = |windows: &HashMap<WindowId, BrowserWindow>,
-                            window_order: &[WindowId],
-                            active_window_id: Option<WindowId>| {
+    let mut autosave_requested_this_event = false;
+    let mut request_autosave = |windows: &HashMap<WindowId, BrowserWindow>,
+                                window_order: &[WindowId],
+                                active_window_id: Option<WindowId>| {
+      autosave_requested_this_event = true;
       let active_window_index = active_window_id
         .and_then(|id| window_order.iter().position(|other| *other == id))
         .unwrap_or(0)
@@ -9563,13 +9565,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Drive periodic worker ticks for documents with time-based effects and keep the event loop
     // armed for the next pending deadline (worker ticks, worker redraw coalescing, viewport
     // throttling, egui repaint scheduling, session autosave).
+    let mut scroll_autosave_due = false;
     for win in windows.values_mut() {
-      win
-        .app
-        .drive_periodic_tasks_and_update_control_flow(control_flow);
+      scroll_autosave_due |= win.app.drive_periodic_tasks_and_update_control_flow(control_flow);
       if let Some(perf_log) = win.worker_perf_log.as_mut() {
         perf_log.drive(now, control_flow);
       }
+    }
+
+    if scroll_autosave_due && !autosave_requested_this_event {
+      // We're about to persist the latest session snapshot; clear any pending debounces so we don't
+      // immediately clone+save again.
+      pending_window_state_autosave_deadline = None;
+      window_state_autosave_due = false;
+      let _ = session_save_scheduler.take_pending();
+      request_autosave(&windows, &window_order, active_window_id);
     }
 
     // Process-wide CPU usage sampling (1Hz) for idle CPU diagnostics.
@@ -13058,6 +13068,11 @@ struct App {
   /// When restoring a session we only know the persisted scroll offset; applying it must wait until
   /// the tab has a known viewport (after the first `ViewportChanged` for this window/tab).
   pending_scroll_restores: std::collections::HashMap<fastrender::ui::TabId, (f32, f32)>,
+  /// Throttled scroll-position autosave state used for crash recovery.
+  ///
+  /// The session snapshot stores per-tab `scroll_css`; this throttle ensures we periodically
+  /// persist scroll while browsing without rebuilding the session snapshot on every scroll update.
+  scroll_autosave: fastrender::ui::scroll_autosave::ScrollAutosaveThrottle,
   /// Latest frames coalesced in the worker→UI bridge thread.
   ///
   /// This keeps the bridge from queueing an unbounded number of multi-megabyte pixmaps when the UI
@@ -14126,6 +14141,7 @@ impl App {
       closing_tab_favicons: std::collections::VecDeque::new(),
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
+      scroll_autosave: fastrender::ui::scroll_autosave::ScrollAutosaveThrottle::default(),
       frame_ready_bridge_coalescer,
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       max_pending_frame_bytes: max_pending_frame_bytes_from_env(),
@@ -14334,6 +14350,10 @@ impl App {
       let tab_id = entry.tab_id;
       let is_active = tab_id == active_tab_id;
 
+      let baseline_scroll_css = entry.tab.scroll_css.unwrap_or((0.0, 0.0));
+      self
+        .scroll_autosave
+        .set_tab_baseline_scroll_css(tab_id, baseline_scroll_css);
       if let Some(scroll_css) = entry.tab.scroll_css {
         self.pending_scroll_restores.insert(tab_id, scroll_css);
       }
@@ -14677,7 +14697,7 @@ impl App {
   fn drive_periodic_tasks_and_update_control_flow(
     &mut self,
     control_flow: &mut winit::event_loop::ControlFlow,
-  ) {
+  ) -> bool {
     // In a multi-window event loop, this should be called for every live window/app after handling
     // the current event so that:
     // - worker ticks are driven even when a given window is otherwise idle, and
@@ -14692,7 +14712,20 @@ impl App {
     self.drive_touch_long_press();
     self.drive_resize_redraw();
     self.drive_worker_redraw();
+    let scroll_autosave_due = self.drive_scroll_autosave();
     self.update_control_flow_for_animation_ticks(control_flow);
+    scroll_autosave_due
+  }
+
+  fn drive_scroll_autosave(&mut self) -> bool {
+    let now = std::time::Instant::now();
+    let tabs = &self.browser_state.tabs;
+    self.scroll_autosave.tick(now, || {
+      tabs.iter().map(|tab| {
+        let vp = tab.scroll_state.viewport;
+        (tab.id, (vp.x, vp.y))
+      })
+    })
   }
 
   fn drive_animation_tick(&mut self) {
@@ -15071,6 +15104,14 @@ impl App {
       deadline = Some(match deadline {
         Some(existing) => existing.min(vp_deadline),
         None => vp_deadline,
+      });
+    }
+
+    // Scroll-position session autosave throttle (periodic while scrolling + idle debounce).
+    if let Some(scroll_deadline) = self.scroll_autosave.next_deadline() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(scroll_deadline),
+        None => scroll_deadline,
       });
     }
 
@@ -17779,6 +17820,11 @@ impl App {
     let sync_open_tabs_snapshot =
       matches!(&msg, fastrender::ui::WorkerToUi::NavigationCommitted { .. });
     let mut update = self.browser_state.apply_worker_msg(msg);
+    if update.scroll_session_dirty {
+      self
+        .scroll_autosave
+        .observe_scroll_change(std::time::Instant::now());
+    }
     if sync_open_tabs_snapshot {
       self.sync_about_open_tabs_snapshot();
     }

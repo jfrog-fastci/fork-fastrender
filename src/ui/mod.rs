@@ -94,6 +94,10 @@ pub mod multiprocess;
 pub mod shutdown_join_tracker;
 pub mod startup_notifications;
 
+// Scroll-position autosave throttling is used only by the windowed browser UI, but keep it
+// available under `cfg(test)` so the helper can be unit-tested without enabling `browser_ui`.
+#[cfg(any(test, feature = "browser_ui"))]
+pub mod scroll_autosave;
 mod tab_accessible_label;
 pub use tab_accessible_label::TabAccessibleLabelCache;
 
