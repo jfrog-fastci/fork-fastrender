@@ -9063,6 +9063,26 @@ impl<'a> Evaluator<'a> {
         self.eval_update_expression(scope, &expr.argument, -1, false)
       }
       OperatorName::Delete => match &*expr.argument.stx {
+        Expr::Member(member) if matches!(&*member.stx.left.stx, Expr::Super(_)) => Err(
+          // ECMA-262 `Evaluation` for the `delete` operator explicitly rejects Super References.
+          //
+          // This must be a runtime error (not a syntax error), and it applies to both instance and
+          // static `super` property references.
+          throw_reference_error(self.vm, scope, "Cannot delete a super property")?,
+        ),
+        Expr::ComputedMember(member) if matches!(&*member.stx.object.stx, Expr::Super(_)) => {
+          // Ensure the computed key expression is evaluated (including `ToPropertyKey`
+          // coercion) before throwing, per `super[expr]` evaluation semantics.
+          let mut del_scope = scope.reborrow();
+          let member_value = self.eval_expr(&mut del_scope, &member.stx.member)?;
+          del_scope.push_root(member_value)?;
+          let _ = self.to_property_key_operator(&mut del_scope, member_value)?;
+          Err(throw_reference_error(
+            self.vm,
+            &mut del_scope,
+            "Cannot delete a super property",
+          )?)
+        }
         Expr::Id(id) => {
           if self.strict {
             return Err(syntax_error(
