@@ -17,9 +17,9 @@
 
 /// Maximum bytes allowed for a clipboard text payload crossing the UI↔worker boundary.
 ///
-/// This is a conservative hard cap intended to prevent untrusted senders from forcing large
-/// allocations in the receiver.
-pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 1 * 1024 * 1024; // 1 MiB
+/// This constant is the canonical clipboard size limit for the UI↔worker protocol, re-exported from
+/// [`crate::ui::protocol_limits`].
+pub use crate::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
 
 fn utf8_truncate_boundary(text: &str, max_bytes: usize) -> usize {
   if text.len() <= max_bytes {
@@ -58,6 +58,9 @@ pub fn clamp_clipboard_text_in_place(text: &mut String) -> bool {
   let idx = utf8_truncate_boundary(text, MAX_CLIPBOARD_TEXT_BYTES);
   if idx < text.len() {
     text.truncate(idx);
+    // Drop attacker-controlled excess capacity eagerly so callers don't retain huge allocations when
+    // truncating OS clipboard contents or compromised renderer payloads.
+    text.shrink_to_fit();
     true
   } else {
     false

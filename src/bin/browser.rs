@@ -9999,18 +9999,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         request_redraw = true;
       }
     }
-
-    if let fastrender::ui::WorkerToUi::SetClipboardText { tab_id: _, text } = &msg {
-      // Defer OS clipboard writes to the next egui frame so we can use egui-winit's platform output
-      // plumbing.
-      //
-      // Security: the renderer is untrusted. Clamp the payload before copying it so a compromised
-      // renderer cannot force the browser process to allocate unbounded memory via `SetClipboardText`.
-      let text = fastrender::ui::clipboard::clamp_clipboard_text(text);
-      self.pending_clipboard_text = Some(text.to_string());
-      request_redraw = true;
-    }
-
     let update = self.browser_state.apply_worker_msg(msg);
     history_changed |= update.history_changed;
 
