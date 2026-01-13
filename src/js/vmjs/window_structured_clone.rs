@@ -2918,6 +2918,12 @@ mod tests {
       "matchMedia('(min-width: 1px)')",
       "crypto",
       "performance",
+      // Encoding API objects are HostSlots-branded platform objects.
+      // Ensure future structuredClone refactors don't accidentally treat them as plain objects.
+      "new TextEncoder()",
+      "new TextDecoder()",
+      "new TextEncoderStream()",
+      "new TextDecoderStream()",
     ] {
       let script = format!("try {{ structuredClone({expr}); 'no' }} catch (e) {{ e.name }}");
       let v = realm.exec_script(&script)?;
