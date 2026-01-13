@@ -34,6 +34,9 @@ const BPF_RET_K: u16 = BPF_RET | BPF_K;
 // Offsets into `struct seccomp_data` (from `linux/seccomp.h`).
 const SECCOMP_DATA_NR_OFFSET: u32 = 0;
 const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
+// `args` starts immediately after the 64-bit instruction pointer.
+// See `struct seccomp_data` in the kernel: `nr` (u32), `arch` (u32), `ip` (u64), `args[6]` (u64).
+const SECCOMP_DATA_ARG0_OFFSET: u32 = 16;
 
 // `AUDIT_ARCH_*` constants are defined in `linux/audit.h`. `libc` does not expose them
 // consistently across targets, so we define the minimal set we need here.
@@ -86,6 +89,21 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
   // Load syscall number into the accumulator.
   filter.push(bpf_stmt(BPF_LD_W_ABS, SECCOMP_DATA_NR_OFFSET));
 
+  // `socket(2)` is the main surface for network access, but renderer IPC may need Unix-domain
+  // sockets. Allow `socket(AF_UNIX, ...)` while denying AF_INET/AF_INET6/etc with EPERM.
+  //
+  // This must run before the generic denylist/allowlist rules because it inspects syscall args.
+  filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::SYS_socket as u32, 0, 4));
+  // args[0] = `domain` (lower 32-bits).
+  filter.push(bpf_stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARG0_OFFSET));
+  // If domain == AF_UNIX: allow; otherwise: EPERM.
+  filter.push(bpf_jump(BPF_JMP_JEQ_K, libc::AF_UNIX as u32, 1, 0));
+  filter.push(bpf_stmt(
+    BPF_RET_K,
+    SECCOMP_RET_ERRNO | (libc::EPERM as u32),
+  ));
+  filter.push(bpf_stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+
   // Explicit denylist: return EPERM (tests assert this) rather than killing the process.
   let deny = [
     // Filesystem access.
@@ -97,7 +115,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_execve,
     libc::SYS_execveat,
     // Network / sockets.
-    libc::SYS_socket,
     libc::SYS_connect,
     libc::SYS_bind,
     libc::SYS_listen,
