@@ -7946,6 +7946,54 @@ mod tests {
   }
 
   #[test]
+  fn address_bar_paste_replaces_selection_and_opens_omnibox() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    // Frame 1: focus the address bar so it is ready to accept input.
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    let address_bar_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
+    assert!(
+      app.chrome.address_bar_has_focus,
+      "expected address bar to have focus"
+    );
+    assert!(
+      app.chrome.address_bar_editing,
+      "expected address bar to be in editing mode"
+    );
+
+    // Ensure the existing URL is selected so Paste should replace it (not append/insert).
+    let end = app.chrome.address_bar_text.chars().count();
+    let mut state = egui::text_edit::TextEditState::load(&ctx, address_bar_id).unwrap_or_default();
+    state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+      egui::text::CCursor::new(0),
+      egui::text::CCursor::new(end),
+    )));
+    state.store(&ctx, address_bar_id);
+    assert_address_bar_select_all(&ctx, address_bar_id, end);
+
+    // Frame 2: paste should replace the selection and count as user input (open omnibox).
+    begin_frame(&ctx, vec![egui::Event::Paste("example.com".to_string())]);
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert_eq!(app.chrome.address_bar_text, "example.com");
+    assert!(
+      app.chrome.omnibox.open,
+      "expected omnibox suggestions to open after pasting into the address bar"
+    );
+  }
+
+  #[test]
   fn address_bar_display_mode_enter_enters_editing_and_selects_all() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
