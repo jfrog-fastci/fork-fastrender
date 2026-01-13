@@ -33,9 +33,16 @@ mod linux {
         CString::new(dir_path.as_os_str().as_bytes()).expect("dir path must be a C string");
 
       match fastrender::sandbox::apply_renderer_seccomp_denylist() {
-        Ok(fastrender::sandbox::SandboxStatus::Applied)
-        | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
-        Ok(fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported) => return,
+        Ok(
+          fastrender::sandbox::SandboxStatus::Applied
+          | fastrender::sandbox::SandboxStatus::AppliedWithoutTsync,
+        ) => {}
+        Ok(
+          fastrender::sandbox::SandboxStatus::DisabledByEnv
+          | fastrender::sandbox::SandboxStatus::DisabledByConfig
+          | fastrender::sandbox::SandboxStatus::ReportOnly
+          | fastrender::sandbox::SandboxStatus::Unsupported,
+        ) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
             return;

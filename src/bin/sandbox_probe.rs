@@ -320,9 +320,11 @@ mod enabled {
         Ok(sandbox::SandboxStatus::Unsupported) => {
           return Err("seccomp sandbox unsupported".to_string());
         }
-        Ok(sandbox::SandboxStatus::Disabled) => {
-          return Err("seccomp sandbox reported disabled".to_string());
-        }
+        Ok(
+          sandbox::SandboxStatus::DisabledByEnv
+          | sandbox::SandboxStatus::DisabledByConfig
+          | sandbox::SandboxStatus::ReportOnly,
+        ) => return Err("seccomp sandbox reported disabled".to_string()),
         Err(err) => return Err(err.to_string()),
       }
     } else {

@@ -147,11 +147,16 @@ fn linux_seccomp_blocks_ptrace_and_unshare() {
 
   if std::env::var_os(CHILD_ENV).is_some() {
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {
-      Ok(fastrender::sandbox::SandboxStatus::Applied)
-      | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
-      Ok(fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported) => {
-        return;
-      }
+      Ok(
+        fastrender::sandbox::SandboxStatus::Applied
+          | fastrender::sandbox::SandboxStatus::AppliedWithoutTsync,
+      ) => {}
+      Ok(
+        fastrender::sandbox::SandboxStatus::DisabledByEnv
+          | fastrender::sandbox::SandboxStatus::DisabledByConfig
+          | fastrender::sandbox::SandboxStatus::ReportOnly
+          | fastrender::sandbox::SandboxStatus::Unsupported,
+      ) => return,
       Err(err) => {
         if is_seccomp_unsupported_error(&err) {
           return;

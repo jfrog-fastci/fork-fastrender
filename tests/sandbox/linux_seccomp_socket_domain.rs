@@ -23,15 +23,21 @@ fn socket_domain_filter_allows_unix_denies_inet() {
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     match fastrender::sandbox::apply_renderer_sandbox(fastrender::sandbox::RendererSandboxConfig {
+      // This test asserts the "allow AF_UNIX, deny AF_INET" policy.
       network_policy: fastrender::sandbox::NetworkPolicy::AllowUnixSocketsOnly,
-      ..Default::default()
+      // Avoid closing unrelated fds in the libtest child process; this test focuses on seccomp.
+      close_extra_fds: false,
+      ..fastrender::sandbox::RendererSandboxConfig::default()
     }) {
       Ok(
         fastrender::sandbox::SandboxStatus::Applied
         | fastrender::sandbox::SandboxStatus::AppliedWithoutTsync,
       ) => {}
       Ok(
-        fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
+        fastrender::sandbox::SandboxStatus::DisabledByEnv
+        | fastrender::sandbox::SandboxStatus::DisabledByConfig
+        | fastrender::sandbox::SandboxStatus::ReportOnly
+        | fastrender::sandbox::SandboxStatus::Unsupported,
       ) => return,
       Err(err) => {
         if is_seccomp_unsupported_error(&err) {

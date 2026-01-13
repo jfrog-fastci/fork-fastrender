@@ -34,10 +34,15 @@ fn seccomp_denies_getdents64_on_inherited_dir_fd() {
     let dir_fd = dir.as_raw_fd();
 
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {
-      Ok(fastrender::sandbox::SandboxStatus::Applied)
-      | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
       Ok(
-        fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
+        fastrender::sandbox::SandboxStatus::Applied
+        | fastrender::sandbox::SandboxStatus::AppliedWithoutTsync,
+      ) => {}
+      Ok(
+        fastrender::sandbox::SandboxStatus::DisabledByEnv
+          | fastrender::sandbox::SandboxStatus::DisabledByConfig
+          | fastrender::sandbox::SandboxStatus::ReportOnly
+          | fastrender::sandbox::SandboxStatus::Unsupported,
       ) => return,
       Err(err) => {
         if is_seccomp_unsupported_error(&err) {

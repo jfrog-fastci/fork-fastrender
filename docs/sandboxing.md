@@ -12,6 +12,8 @@ and the practical debugging knobs.
   intended to be reused by the future renderer *process* model.
   - Windows: [`src/sandbox/windows.rs`](../src/sandbox/windows.rs) exposes a `spawn_sandboxed(...)`
     helper that applies AppContainer/restricted-token sandboxing plus a Job Object.
+- Policy knobs and status reporting are surfaced via `RendererSandboxConfig` / `SandboxStatus` in
+  [`src/sandbox/mod.rs`](../src/sandbox/mod.rs).
 
 Related docs (other platforms / tooling):
 

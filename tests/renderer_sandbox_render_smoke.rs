@@ -22,8 +22,8 @@ fn sandboxed_minimal_offline_render_succeeds() {
   let exe = std::env::current_exe().expect("resolve current test executable");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
-    // Keep libtest from spawning a large worker thread pool (the sandbox is process-global and
-    // should ideally be applied before any background threads start).
+    // Avoid a large libtest threadpool: the sandbox applies to all threads when TSYNC is supported,
+    // and when TSYNC is unavailable we must avoid spawning additional threads before sandboxing.
     .env("RUST_TEST_THREADS", "1")
     .arg("--test-threads=1")
     // Run only this test in the child process. The renderer sandbox is process-global, so we must
@@ -60,10 +60,17 @@ fn sandboxed_child_entrypoint() {
   sandbox_config.landlock = fastrender::sandbox::RendererLandlockPolicy::RestrictWrites;
   let sandbox_status = fastrender::sandbox::apply_renderer_sandbox(sandbox_config);
   match sandbox_status {
-    Ok(fastrender::sandbox::SandboxStatus::Applied)
-    | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
-    Ok(fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported) => {
-      eprintln!("skipping: renderer sandbox unsupported on this platform");
+    Ok(
+      fastrender::sandbox::SandboxStatus::Applied
+      | fastrender::sandbox::SandboxStatus::AppliedWithoutTsync,
+    ) => {}
+    Ok(
+      fastrender::sandbox::SandboxStatus::DisabledByEnv
+      | fastrender::sandbox::SandboxStatus::DisabledByConfig
+      | fastrender::sandbox::SandboxStatus::ReportOnly
+      | fastrender::sandbox::SandboxStatus::Unsupported,
+    ) => {
+      eprintln!("skipping: renderer sandbox disabled/unsupported");
       return;
     }
     Err(err) => {

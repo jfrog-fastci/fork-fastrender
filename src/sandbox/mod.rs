@@ -4,6 +4,10 @@
 //! architecture. The sandbox should be applied **as early as possible during renderer startup**,
 //! and critically **before any thread pools spawn**.
 //!
+//! Minimum supported kernels (Linux):
+//! - `seccomp-bpf`: Linux ≥ 3.5 (TSYNC may be rejected with `EINVAL` on older kernels)
+//! - `Landlock`: Linux ≥ 5.13 (best-effort; treated as unsupported when unavailable)
+//!
 //! ## Platform implementations
 //!
 //! - **Linux**: `seccomp-bpf` with `SECCOMP_FILTER_FLAG_TSYNC` when supported to ensure the filter
@@ -45,8 +49,49 @@
 //! internal `CLOEXEC` pipes used for reporting `exec(2)` failures. Closing those fds inside
 //! `pre_exec` can cause the child to abort when `exec` fails. Only use `close_fds_except` if you
 //! control the full spawn path and know exactly which internal fds must remain open.
+//!
+//! ## Developer debugging escape hatch
+//!
+//! Setting [`ENV_DISABLE_RENDERER_SANDBOX`] to a truthy value disables sandbox installation and
+//! returns [`SandboxStatus::DisabledByEnv`]. This is intended for local debugging/bisects only.
 
+use std::ffi::OsStr;
 use std::io;
+
+/// Environment variable that disables renderer sandboxing entirely.
+///
+/// This is intended for **developer debugging only** (e.g. to attach debuggers/profilers, or to
+/// bisect sandbox-related failures). Production deployments should not set this.
+pub const ENV_DISABLE_RENDERER_SANDBOX: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
+
+/// Returns true if [`ENV_DISABLE_RENDERER_SANDBOX`] is set to a truthy value.
+///
+/// Truthiness matches the semantics used by other `FASTR_*` flags in this repository:
+/// - falsy: unset, empty, whitespace, `0`, `false`, `no`, `off` (case-insensitive)
+/// - truthy: any other non-empty value
+pub fn disable_renderer_sandbox_from_env_value(value: Option<&OsStr>) -> bool {
+  let Some(value) = value else {
+    return false;
+  };
+  if value.is_empty() {
+    return false;
+  }
+  let value = value.to_string_lossy();
+  let trimmed = value.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+  !matches!(
+    trimmed.to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
+}
+
+/// Reads [`ENV_DISABLE_RENDERER_SANDBOX`] from the process environment.
+pub fn disable_renderer_sandbox_from_env() -> bool {
+  let value = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+  disable_renderer_sandbox_from_env_value(value.as_deref())
+}
 
 pub mod config;
 
@@ -72,7 +117,12 @@ pub mod linux_namespaces;
 pub mod macos;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
-  Disabled,
+  /// Sandboxing was not applied because sandboxing was disabled via configuration/environment.
+  DisabledByEnv,
+  /// Sandboxing was not applied because all sandbox layers were disabled via config.
+  DisabledByConfig,
+  /// Sandboxing was skipped because `report_only` was enabled.
+  ReportOnly,
   /// Sandbox was applied successfully (including cross-thread synchronization when available).
   Applied,
   /// Sandbox was applied, but without `SECCOMP_FILTER_FLAG_TSYNC`.
@@ -217,6 +267,30 @@ pub enum RendererSeccompPolicy {
 
 #[derive(Debug, Clone, Copy)]
 pub struct RendererSandboxConfig {
+  /// Enable a seccomp syscall filter.
+  ///
+  /// Default: enabled on Linux, disabled elsewhere.
+  pub enable_seccomp: bool,
+
+  /// Enable Landlock-based filesystem sandboxing (Linux-only).
+  ///
+  /// Default: enabled on Linux (best-effort; treated as unsupported on older kernels).
+  pub enable_landlock: bool,
+
+  /// Close unexpected inherited file descriptors.
+  ///
+  /// Note: FastRender primarily expects callers to use [`close_fds_except`] at **spawn** time to
+  /// preserve stdio + known IPC endpoints. This flag exists to make the expectation explicit for
+  /// future renderer process entrypoints.
+  ///
+  /// Default: enabled.
+  pub close_extra_fds: bool,
+
+  /// Debug mode: report sandbox decisions without enforcing them.
+  ///
+  /// Default: disabled.
+  pub report_only: bool,
+
   pub network_policy: NetworkPolicy,
   pub linux_namespaces: linux_namespaces::LinuxNamespacesConfig,
   /// Address space ceiling (RLIMIT_AS) in bytes. `None` disables the limit.
@@ -249,6 +323,10 @@ pub struct RendererSandboxConfig {
 impl Default for RendererSandboxConfig {
   fn default() -> Self {
     Self {
+      enable_seccomp: cfg!(target_os = "linux"),
+      enable_landlock: cfg!(target_os = "linux"),
+      close_extra_fds: true,
+      report_only: false,
       network_policy: NetworkPolicy::DenyAllSockets,
       linux_namespaces: linux_namespaces::LinuxNamespacesConfig::default(),
       address_space_limit_bytes: None,
@@ -342,6 +420,12 @@ pub enum SandboxError {
   #[error("sandboxing is not supported on this platform")]
   UnsupportedPlatform,
 
+  #[error("failed to close unexpected file descriptors during sandbox setup")]
+  CloseExtraFdsFailed {
+    #[source]
+    source: io::Error,
+  },
+
   #[cfg(target_os = "linux")]
   #[error("failed to apply Landlock sandbox")]
   LandlockFailed {
@@ -430,20 +514,50 @@ pub enum SandboxError {
   MacosSeatbeltInitFailed { profile: String, errorbuf: String },
 }
 
+fn preflight_status(config: &RendererSandboxConfig, disable_env: Option<&OsStr>) -> Option<SandboxStatus> {
+  if disable_renderer_sandbox_from_env_value(disable_env) {
+    return Some(SandboxStatus::DisabledByEnv);
+  }
+
+  let any_enabled = config.enable_seccomp
+    || config.enable_landlock
+    || config.close_extra_fds
+    || config.linux_namespaces.enabled
+    || config.core_limit_bytes.is_some()
+    || config.nofile_limit.is_some()
+    || config.nproc_limit.is_some();
+  if !any_enabled {
+    return Some(SandboxStatus::DisabledByConfig);
+  }
+
+  if config.report_only {
+    return Some(SandboxStatus::ReportOnly);
+  }
+
+  None
+}
+
 /// Parse `FASTR_RENDERER_*` environment variables and apply the renderer sandbox when enabled.
 ///
 /// This is intended to be called very early in renderer process startup (before spawning threads
 /// or initializing libraries that might attempt privileged operations).
 pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxError> {
   // Ensure the cross-platform debug escape hatch behaves consistently even when callers use the
-  // higher-level `FASTR_RENDERER_*` env parsing below. When this is set, return `Disabled` so
+  // higher-level `FASTR_RENDERER_*` env parsing below. When this is set, return `DisabledByEnv` so
   // callers don't mistake a "no-op apply" for an installed sandbox.
   #[cfg(target_os = "macos")]
   {
     if macos_renderer_sandbox_disabled_via_env() {
       // Reuse the macOS module's one-time warning so insecure runs are not silent.
       let _ = macos::apply_strict_sandbox();
-      return Ok(SandboxStatus::Disabled);
+      return Ok(SandboxStatus::DisabledByEnv);
+    }
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    if disable_renderer_sandbox_from_env() {
+      return Ok(SandboxStatus::DisabledByEnv);
     }
   }
 
@@ -461,7 +575,7 @@ pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxE
   };
 
   if !config.enabled {
-    return Ok(SandboxStatus::Disabled);
+    return Ok(SandboxStatus::DisabledByEnv);
   }
 
   #[cfg(target_os = "macos")]
@@ -567,6 +681,18 @@ pub fn apply_renderer_sandbox(
 pub fn apply_renderer_sandbox_with_report(
   config: RendererSandboxConfig,
 ) -> Result<(SandboxStatus, RendererSandboxReport), SandboxError> {
+  let disable_env = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+  apply_renderer_sandbox_inner(config, disable_env.as_deref())
+}
+
+fn apply_renderer_sandbox_inner(
+  config: RendererSandboxConfig,
+  disable_env: Option<&OsStr>,
+) -> Result<(SandboxStatus, RendererSandboxReport), SandboxError> {
+  if let Some(status) = preflight_status(&config, disable_env) {
+    return Ok((status, RendererSandboxReport::default()));
+  }
+
   let mut report = RendererSandboxReport::default();
 
   #[cfg(target_os = "linux")]
@@ -585,22 +711,37 @@ pub fn apply_renderer_sandbox_with_report(
 
     linux_hardening::apply_linux_hardening(&config, &mut report);
 
-    match config.landlock {
-      RendererLandlockPolicy::Disabled => {}
-      RendererLandlockPolicy::RestrictWrites => {
-        // Best-effort Landlock: deny filesystem writes while allowing reads (so pre-opened read-only
-        // FDs, dynamic linking, etc. remain usable). If unsupported, we still apply seccomp.
-        match linux_landlock::apply_restrict_writes() {
-          Ok(linux_landlock::LandlockStatus::Applied { .. }) => {}
-          Ok(linux_landlock::LandlockStatus::Unsupported { .. }) => {}
-          Err(source) => return Err(SandboxError::LandlockFailed { source }),
+    if config.close_extra_fds {
+      // Close unexpected inherited fds while keeping stdio and the inherited IPC socket.
+      //
+      // The multiprocess IPC bootstrap helper (`ipc::bootstrap::spawn_child_with_ipc`) duplicates
+      // the IPC endpoint to FD 3 before exec. Preserve it by default.
+      close_fds_except(&[0, 1, 2, 3]).map_err(|source| SandboxError::CloseExtraFdsFailed { source })?;
+    }
+
+    if config.enable_landlock {
+      match config.landlock {
+        RendererLandlockPolicy::Disabled => {}
+        RendererLandlockPolicy::RestrictWrites => {
+          // Best-effort Landlock: deny filesystem writes while allowing reads (so pre-opened
+          // read-only FDs, dynamic linking, etc. remain usable). If unsupported, we still apply
+          // seccomp.
+          match linux_landlock::apply_restrict_writes() {
+            Ok(linux_landlock::LandlockStatus::Applied { .. }) => {}
+            Ok(linux_landlock::LandlockStatus::Unsupported { .. }) => {}
+            Err(source) => return Err(SandboxError::LandlockFailed { source }),
+          }
         }
       }
     }
 
-    let status = match config.seccomp {
-      RendererSeccompPolicy::Disabled => SandboxStatus::Applied,
-      RendererSeccompPolicy::RendererDefault => linux_seccomp::apply_renderer_sandbox_linux(config)?,
+    let status = if config.enable_seccomp {
+      match config.seccomp {
+        RendererSeccompPolicy::Disabled => SandboxStatus::Applied,
+        RendererSeccompPolicy::RendererDefault => linux_seccomp::apply_renderer_sandbox_linux(config)?,
+      }
+    } else {
+      SandboxStatus::Applied
     };
     return Ok((status, report));
   }
@@ -617,7 +758,17 @@ pub fn apply_renderer_sandbox_with_report(
 /// This is primarily useful for unit tests and early bring-up of renderer processes where only
 /// syscall filtering is desired.
 pub fn apply_renderer_seccomp_denylist() -> Result<SandboxStatus, SandboxError> {
-  Ok(apply_renderer_seccomp_denylist_with_report(RendererSandboxConfig::default())?.0)
+  Ok(
+    apply_renderer_seccomp_denylist_with_report(RendererSandboxConfig {
+      enable_seccomp: true,
+      enable_landlock: false,
+      close_extra_fds: false,
+      report_only: false,
+      network_policy: NetworkPolicy::DenyAllSockets,
+      ..RendererSandboxConfig::default()
+    })?
+    .0,
+  )
 }
 
 /// Applies the Linux renderer seccomp denylist without additional sandbox layers, returning a
@@ -625,6 +776,17 @@ pub fn apply_renderer_seccomp_denylist() -> Result<SandboxStatus, SandboxError> 
 pub fn apply_renderer_seccomp_denylist_with_report(
   config: RendererSandboxConfig,
 ) -> Result<(SandboxStatus, RendererSandboxReport), SandboxError> {
+  let disable_env = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+  if disable_renderer_sandbox_from_env_value(disable_env.as_deref()) {
+    return Ok((SandboxStatus::DisabledByEnv, RendererSandboxReport::default()));
+  }
+  if config.report_only {
+    return Ok((SandboxStatus::ReportOnly, RendererSandboxReport::default()));
+  }
+  if !config.enable_seccomp {
+    return Ok((SandboxStatus::DisabledByConfig, RendererSandboxReport::default()));
+  }
+
   let mut report = RendererSandboxReport::default();
 
   #[cfg(target_os = "linux")]
@@ -638,6 +800,78 @@ pub fn apply_renderer_seccomp_denylist_with_report(
   {
     let _ = config;
     Ok((SandboxStatus::Unsupported, report))
+  }
+}
+
+#[cfg(test)]
+mod env_override_tests {
+  use super::*;
+
+  #[test]
+  fn disable_renderer_sandbox_env_parsing() {
+    assert!(!disable_renderer_sandbox_from_env_value(None));
+    assert!(!disable_renderer_sandbox_from_env_value(Some(OsStr::new(""))));
+    assert!(!disable_renderer_sandbox_from_env_value(Some(OsStr::new("  "))));
+    assert!(!disable_renderer_sandbox_from_env_value(Some(OsStr::new("0"))));
+    assert!(!disable_renderer_sandbox_from_env_value(Some(OsStr::new("false"))));
+    assert!(!disable_renderer_sandbox_from_env_value(Some(OsStr::new("off"))));
+    assert!(disable_renderer_sandbox_from_env_value(Some(OsStr::new("1"))));
+    assert!(disable_renderer_sandbox_from_env_value(Some(OsStr::new("true"))));
+    assert!(disable_renderer_sandbox_from_env_value(Some(OsStr::new("yes"))));
+    assert!(disable_renderer_sandbox_from_env_value(Some(OsStr::new("anything"))));
+  }
+
+  #[test]
+  fn apply_renderer_sandbox_returns_disabled_by_env() {
+    let config = RendererSandboxConfig::default();
+    let (status, _report) =
+      apply_renderer_sandbox_inner(config, Some(OsStr::new("1"))).expect("status result");
+    assert_eq!(status, SandboxStatus::DisabledByEnv);
+  }
+
+  #[test]
+  fn apply_renderer_sandbox_returns_disabled_by_config() {
+    let (status, _report) = apply_renderer_sandbox_inner(
+      RendererSandboxConfig {
+        enable_seccomp: false,
+        enable_landlock: false,
+        close_extra_fds: false,
+        report_only: false,
+        network_policy: NetworkPolicy::DenyAllSockets,
+        ..RendererSandboxConfig::default()
+      },
+      None,
+    )
+    .expect("status result");
+    assert_eq!(status, SandboxStatus::DisabledByConfig);
+  }
+
+  #[test]
+  fn apply_renderer_sandbox_returns_report_only() {
+    let mut config = RendererSandboxConfig::default();
+    config.report_only = true;
+    let (status, _report) = apply_renderer_sandbox_inner(config, None).expect("status result");
+    assert_eq!(status, SandboxStatus::ReportOnly);
+  }
+
+  #[test]
+  fn default_config_matches_platform_expectations() {
+    let config = RendererSandboxConfig::default();
+    assert!(config.close_extra_fds);
+    assert!(!config.report_only);
+    assert_eq!(config.network_policy, NetworkPolicy::DenyAllSockets);
+
+    #[cfg(target_os = "linux")]
+    {
+      assert!(config.enable_seccomp);
+      assert!(config.enable_landlock);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+      assert!(!config.enable_seccomp);
+      assert!(!config.enable_landlock);
+    }
   }
 }
 
@@ -959,8 +1193,15 @@ mod tests {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
       match apply_renderer_seccomp_denylist() {
-        Ok(SandboxStatus::Applied) | Ok(SandboxStatus::AppliedWithoutTsync) => {}
-        Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
+        Ok(
+          SandboxStatus::Applied | SandboxStatus::AppliedWithoutTsync,
+        ) => {}
+        Ok(
+          SandboxStatus::DisabledByEnv
+          | SandboxStatus::DisabledByConfig
+          | SandboxStatus::ReportOnly
+          | SandboxStatus::Unsupported,
+        ) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
             return;
@@ -1043,10 +1284,17 @@ mod tests {
     if is_child {
       match linux_seccomp::apply_renderer_sandbox_linux(RendererSandboxConfig {
         network_policy: NetworkPolicy::AllowUnixSocketsOnly,
-        ..Default::default()
+        ..RendererSandboxConfig::default()
       }) {
-        Ok(SandboxStatus::Applied) | Ok(SandboxStatus::AppliedWithoutTsync) => {}
-        Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
+        Ok(
+          SandboxStatus::Applied | SandboxStatus::AppliedWithoutTsync,
+        ) => {}
+        Ok(
+          SandboxStatus::DisabledByEnv
+          | SandboxStatus::DisabledByConfig
+          | SandboxStatus::ReportOnly
+          | SandboxStatus::Unsupported,
+        ) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
             return;

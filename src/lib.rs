@@ -337,6 +337,8 @@ pub use compat::CompatProfile;
 pub use debug::inspect::{InspectQuery, InspectionSnapshot};
 pub use render_control::CancelCallback;
 pub use site_isolation::SiteKey;
+// Renderer sandboxing (multiprocess security workstream).
+pub use sandbox::{RendererSandboxConfig, SandboxStatus, ENV_DISABLE_RENDERER_SANDBOX};
 // CSS
 pub use css::parser::parse_stylesheet_with_errors;
 pub use css::types::CssParseError;
