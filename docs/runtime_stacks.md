@@ -20,7 +20,7 @@ All types below are exported as `fastrender::api::*` and also re-exported at the
 - **Headless screenshots with JS / author scripts:** `api::BrowserTab` + `run_until_stable(...)` +
   `render_frame()`.
 - **Interactive/live rendering loop:** `api::BrowserTab` driven via repeated `tick_frame()` calls
-  (see [`docs/live_rendering_loop.md`](live_rendering_loop.md)).
+  (see [`docs/live_rendering_loop.md`](live_rendering_loop.md) for how rAF/timers fit in).
 - **Legacy JS host harness (manual script execution, no HTML script scheduler):**
   `api::BrowserDocumentJs`.
 
@@ -143,7 +143,8 @@ fn main() -> Result<()> {
 
 For interactive/live rendering (a tab that never “finishes”), the core integration is a **tick loop**:
 
-- run some amount of event-loop work (tasks/microtasks/animation frame callbacks),
+- run some amount of event-loop work (tasks + microtasks; `requestAnimationFrame` is driven
+  separately),
 - if the document became dirty, render and display the new frame,
 - repeat, driven by your outer UI loop (vsync, timers, network wakeups, input events).
 
@@ -152,6 +153,10 @@ In the public API this maps to:
 - `BrowserTab::tick_frame()` — run at most one task turn (or a microtask checkpoint) and return a
   freshly rendered `Pixmap` *only if* something invalidated rendering.
 - `BrowserTab::run_until_stable(...)` — a bounded helper for “drive until idle + rendered”.
+
+Note: today `tick_frame()` does **not** run `requestAnimationFrame` callbacks; use
+`run_until_stable(...)` (bounded, converge-to-stable) or the lower-level event loop APIs described in
+[`docs/live_rendering_loop.md`](live_rendering_loop.md) when you need rAF turns.
 
 Conceptually:
 
