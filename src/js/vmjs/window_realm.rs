@@ -27839,6 +27839,354 @@ fn processing_instruction_data_set_native(
   Ok(Value::Undefined)
 }
 
+#[inline]
+fn utf16_code_unit_len(s: &str) -> usize {
+  // DOM character-data offsets are defined in UTF-16 code units, matching JavaScript string indices.
+  s.chars().map(|ch| ch.len_utf16()).sum()
+}
+
+#[inline]
+fn webidl_to_uint32(scope: &mut Scope<'_>, value: Value) -> Result<u32, VmError> {
+  let n = scope.heap_mut().to_number(value)?;
+  if !n.is_finite() || n == 0.0 {
+    return Ok(0);
+  }
+  // ECMA-262 `ToUint32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  Ok(int as u32)
+}
+
+fn character_data_length_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+  if handle.node_id.index() >= dom.nodes_len() {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let len = match &dom.node(handle.node_id).kind {
+    NodeKind::Text { content } => utf16_code_unit_len(content),
+    NodeKind::Comment { content } => utf16_code_unit_len(content),
+    NodeKind::ProcessingInstruction { data, .. } => utf16_code_unit_len(data),
+    _ => return Err(VmError::TypeError("Illegal invocation")),
+  };
+
+  Ok(Value::Number(len as f64))
+}
+
+fn character_data_append_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      if handle.node_id.index() >= dom.nodes_len() {
+        return (Err(VmError::TypeError("Illegal invocation")), false);
+      }
+      let (offset, is_text_node) = match &dom.node(handle.node_id).kind {
+        NodeKind::Text { content } => (utf16_code_unit_len(content), true),
+        NodeKind::Comment { content } => (utf16_code_unit_len(content), false),
+        NodeKind::ProcessingInstruction { data, .. } => (utf16_code_unit_len(data), false),
+        _ => return (Err(VmError::TypeError("Illegal invocation")), false),
+      };
+
+      match dom.replace_data(handle.node_id, offset, 0, &data) {
+        Ok(changed) => {
+          let needs = dom.take_mutation_observer_microtask_needed();
+          (Ok(needs), is_text_node && changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if handle.node_id.index() >= dom.nodes_len() {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    let offset = match &dom.node(handle.node_id).kind {
+      NodeKind::Text { content } => utf16_code_unit_len(content),
+      NodeKind::Comment { content } => utf16_code_unit_len(content),
+      NodeKind::ProcessingInstruction { data, .. } => utf16_code_unit_len(data),
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    };
+    if let Err(err) = dom.replace_data(handle.node_id, offset, 0, &data) {
+      let exc = make_dom_exception(scope, err.code(), "")?;
+      return Err(VmError::Throw(exc));
+    }
+    dom.take_mutation_observer_microtask_needed()
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn character_data_insert_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+
+  let data_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      if handle.node_id.index() >= dom.nodes_len() {
+        return (Err(VmError::TypeError("Illegal invocation")), false);
+      }
+      let is_text_node = match &dom.node(handle.node_id).kind {
+        NodeKind::Text { .. } => true,
+        NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => false,
+        _ => return (Err(VmError::TypeError("Illegal invocation")), false),
+      };
+
+      match dom.replace_data(handle.node_id, offset, 0, &data) {
+        Ok(changed) => {
+          let needs = dom.take_mutation_observer_microtask_needed();
+          (Ok(needs), is_text_node && changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if handle.node_id.index() >= dom.nodes_len() {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    match &dom.node(handle.node_id).kind {
+      NodeKind::Text { .. } | NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => {}
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    }
+    if let Err(err) = dom.replace_data(handle.node_id, offset, 0, &data) {
+      let exc = make_dom_exception(scope, err.code(), "")?;
+      return Err(VmError::Throw(exc));
+    }
+    dom.take_mutation_observer_microtask_needed()
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn character_data_delete_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+
+  let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let count = webidl_to_uint32(scope, count_value)? as usize;
+
+  let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      if handle.node_id.index() >= dom.nodes_len() {
+        return (Err(VmError::TypeError("Illegal invocation")), false);
+      }
+      let is_text_node = match &dom.node(handle.node_id).kind {
+        NodeKind::Text { .. } => true,
+        NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => false,
+        _ => return (Err(VmError::TypeError("Illegal invocation")), false),
+      };
+
+      match dom.replace_data(handle.node_id, offset, count, "") {
+        Ok(changed) => {
+          let needs = dom.take_mutation_observer_microtask_needed();
+          (Ok(needs), is_text_node && changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if handle.node_id.index() >= dom.nodes_len() {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    match &dom.node(handle.node_id).kind {
+      NodeKind::Text { .. } | NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => {}
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    }
+    if let Err(err) = dom.replace_data(handle.node_id, offset, count, "") {
+      let exc = make_dom_exception(scope, err.code(), "")?;
+      return Err(VmError::Throw(exc));
+    }
+    dom.take_mutation_observer_microtask_needed()
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
+fn character_data_replace_data_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let offset_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(scope, offset_value)? as usize;
+
+  let count_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let count = webidl_to_uint32(scope, count_value)? as usize;
+
+  let data_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let needs_microtask = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      if handle.node_id.index() >= dom.nodes_len() {
+        return (Err(VmError::TypeError("Illegal invocation")), false);
+      }
+      let is_text_node = match &dom.node(handle.node_id).kind {
+        NodeKind::Text { .. } => true,
+        NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => false,
+        _ => return (Err(VmError::TypeError("Illegal invocation")), false),
+      };
+
+      match dom.replace_data(handle.node_id, offset, count, &data) {
+        Ok(changed) => {
+          let needs = dom.take_mutation_observer_microtask_needed();
+          (Ok(needs), is_text_node && changed)
+        }
+        Err(err) => {
+          let exc = match make_dom_exception(scope, err.code(), "") {
+            Ok(v) => VmError::Throw(v),
+            Err(e) => e,
+          };
+          (Err(exc), false)
+        }
+      }
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))??
+  } else {
+    let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+    if handle.node_id.index() >= dom.nodes_len() {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+    match &dom.node(handle.node_id).kind {
+      NodeKind::Text { .. } | NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } => {}
+      _ => return Err(VmError::TypeError("Illegal invocation")),
+    }
+    if let Err(err) = dom.replace_data(handle.node_id, offset, count, &data) {
+      let exc = make_dom_exception(scope, err.code(), "")?;
+      return Err(VmError::Throw(exc));
+    }
+    dom.take_mutation_observer_microtask_needed()
+  };
+
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+  Ok(Value::Undefined)
+}
+
 fn element_tag_name_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -39835,6 +40183,123 @@ fn init_window_globals(
         },
       },
     )?;
+
+    // --- CharacterData: length / appendData / insertData / deleteData / replaceData -------------
+
+    let character_data_length_get_call_id = vm.register_native_call(character_data_length_get_native)?;
+    let character_data_length_get_name = scope.alloc_string("get length")?;
+    scope.push_root(Value::String(character_data_length_get_name))?;
+    let character_data_length_get_func = scope.alloc_native_function(
+      character_data_length_get_call_id,
+      None,
+      character_data_length_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      character_data_length_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(character_data_length_get_func))?;
+    let character_data_length_key = alloc_key(&mut scope, "length")?;
+    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+      scope.define_property(
+        proto,
+        character_data_length_key,
+        idl_attribute_desc(Value::Object(character_data_length_get_func), Value::Undefined),
+      )?;
+    }
+
+    let character_data_append_data_call_id = vm.register_native_call(character_data_append_data_native)?;
+    let character_data_append_data_name = scope.alloc_string("appendData")?;
+    scope.push_root(Value::String(character_data_append_data_name))?;
+    let character_data_append_data_func = scope.alloc_native_function(
+      character_data_append_data_call_id,
+      None,
+      character_data_append_data_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      character_data_append_data_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(character_data_append_data_func))?;
+    let character_data_append_data_key = alloc_key(&mut scope, "appendData")?;
+    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+      scope.define_property(
+        proto,
+        character_data_append_data_key,
+        data_desc(Value::Object(character_data_append_data_func)),
+      )?;
+    }
+
+    let character_data_insert_data_call_id = vm.register_native_call(character_data_insert_data_native)?;
+    let character_data_insert_data_name = scope.alloc_string("insertData")?;
+    scope.push_root(Value::String(character_data_insert_data_name))?;
+    let character_data_insert_data_func = scope.alloc_native_function(
+      character_data_insert_data_call_id,
+      None,
+      character_data_insert_data_name,
+      2,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      character_data_insert_data_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(character_data_insert_data_func))?;
+    let character_data_insert_data_key = alloc_key(&mut scope, "insertData")?;
+    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+      scope.define_property(
+        proto,
+        character_data_insert_data_key,
+        data_desc(Value::Object(character_data_insert_data_func)),
+      )?;
+    }
+
+    let character_data_delete_data_call_id = vm.register_native_call(character_data_delete_data_native)?;
+    let character_data_delete_data_name = scope.alloc_string("deleteData")?;
+    scope.push_root(Value::String(character_data_delete_data_name))?;
+    let character_data_delete_data_func = scope.alloc_native_function(
+      character_data_delete_data_call_id,
+      None,
+      character_data_delete_data_name,
+      2,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      character_data_delete_data_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(character_data_delete_data_func))?;
+    let character_data_delete_data_key = alloc_key(&mut scope, "deleteData")?;
+    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+      scope.define_property(
+        proto,
+        character_data_delete_data_key,
+        data_desc(Value::Object(character_data_delete_data_func)),
+      )?;
+    }
+
+    let character_data_replace_data_call_id = vm.register_native_call(character_data_replace_data_native)?;
+    let character_data_replace_data_name = scope.alloc_string("replaceData")?;
+    scope.push_root(Value::String(character_data_replace_data_name))?;
+    let character_data_replace_data_func = scope.alloc_native_function(
+      character_data_replace_data_call_id,
+      None,
+      character_data_replace_data_name,
+      3,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      character_data_replace_data_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(character_data_replace_data_func))?;
+    let character_data_replace_data_key = alloc_key(&mut scope, "replaceData")?;
+    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+      scope.define_property(
+        proto,
+        character_data_replace_data_key,
+        data_desc(Value::Object(character_data_replace_data_func)),
+      )?;
+    }
   }
 
   // MutationObserver constructor + prototype.
