@@ -107,6 +107,13 @@ Why `SOCK_SEQPACKET`:
 If a platform can’t use `SOCK_SEQPACKET`, a `SOCK_STREAM` fallback is allowed, **but** it must use
 the explicit framing rules in the next section and must continue to enforce the same size/FD limits.
 
+Repo reality:
+
+- `src/ipc/frame_slots.rs` contains a Linux-only, test-oriented `UnixSeqpacket` wrapper plus a
+  reference “browser allocates SHM slots once; subsequent messages are control-only” design.
+  It’s a good place to look for hardening patterns (exact message lengths, FD count checks,
+  `MSG_TRUNC`/`MSG_CTRUNC` handling, `MSG_CMSG_CLOEXEC`).
+
 ---
 
 ## Message framing + max message size (hard limit)
