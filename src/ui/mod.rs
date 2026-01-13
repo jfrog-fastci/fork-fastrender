@@ -7,6 +7,7 @@ pub mod chrome_assets;
 pub mod bookmarks;
 pub mod browser_app;
 pub mod browser_limits;
+pub mod renderer_ipc;
 pub mod browser_tab_controller;
 pub mod chrome_action;
 pub mod chrome_action_url;
@@ -226,6 +227,7 @@ pub use browser_app::{
   LatestFrameMeta, OpenDatalistUpdate, OpenSelectDropdownUpdate, RemoteSearchSuggestCache,
   TabGroupColor, TabGroupId, TabGroupState,
 };
+pub use renderer_ipc::{FrameReadyLimits, FrameReadyViolation};
 pub use global_history::{
   ClearBrowsingDataRange, GlobalHistoryEntry, GlobalHistorySearcher, GlobalHistoryStore,
   DEFAULT_GLOBAL_HISTORY_CAPACITY,

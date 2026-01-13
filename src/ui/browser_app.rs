@@ -1,6 +1,5 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
-use crate::multiprocess::SiteKey;
 use crate::ui::about_pages;
 use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_limits::BrowserLimits;
@@ -17,6 +16,9 @@ use crate::ui::protocol_limits::{
 use crate::ui::untrusted::{
   sanitize_untrusted_select_control, sanitize_untrusted_text, validate_untrusted_favicon_rgba,
   validate_untrusted_navigation_url,
+};
+use crate::ui::renderer_ipc::{
+  validate_rendered_frame_ready, FrameReadyLimits, FrameReadyViolation,
 };
 use crate::ui::{
   resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistorySearcher,
@@ -433,7 +435,7 @@ pub struct BrowserTabState {
   /// Renderer process assignment is owned by the browser process manager; newly created tabs start
   /// unassigned and are expected to be assigned later.
   pub renderer_process: Option<RendererProcessId>,
-  /// Optional site key recorded alongside renderer process assignment.
+  /// Best-effort site isolation key snapshot derived from the latest navigation URL.
   ///
   /// This is primarily for debugging and future site isolation policies.
   pub site_key: Option<SiteKey>,
@@ -448,8 +450,6 @@ pub struct BrowserTabState {
   /// The UI thread can bump these counters (without blocking on the worker) to cancel in-flight
   /// navigation/paint work.
   pub cancel: CancelGens,
-  /// Best-effort site isolation key snapshot derived from the latest navigation URL.
-  pub site_key: Option<SiteKey>,
   /// URL shown in the address bar when this tab is active.
   ///
   /// This is driven by worker navigation events (e.g. [`WorkerToUi::NavigationCommitted`]), along
@@ -478,7 +478,11 @@ pub struct BrowserTabState {
   /// also updated when the UI initiates a new navigation so the watchdog timeout starts from the
   /// user action even if the worker never responds.
   pub last_worker_msg_at: SystemTime,
+  /// True if the renderer for this tab was terminated/detached due to a protocol violation.
+  pub renderer_crashed: bool,
   pub error: Option<String>,
+  /// Protocol violation recorded when `renderer_crashed` is set.
+  pub renderer_protocol_violation: Option<FrameReadyViolation>,
   /// Optional non-fatal warning for this tab (e.g. viewport clamping).
   pub warning: Option<String>,
   /// Last stage heartbeat received from the worker (debug; may regress if heartbeats arrive
@@ -515,11 +519,10 @@ impl BrowserTabState {
     Self {
       id: tab_id,
       renderer_process: None,
-      site_key: None,
+      site_key,
       pinned: false,
       group: None,
       cancel: CancelGens::new(),
-      site_key,
       current_url: Some(initial_url),
       committed_url: Some(committed_url),
       title: None,
@@ -527,7 +530,9 @@ impl BrowserTabState {
       loading: false,
       unresponsive: false,
       last_worker_msg_at: SystemTime::UNIX_EPOCH,
+      renderer_crashed: false,
       error: None,
+      renderer_protocol_violation: None,
       warning: None,
       stage: None,
       load_stage: None,
@@ -2057,6 +2062,30 @@ impl BrowserAppState {
 
     match msg {
       WorkerToUi::FrameReady { tab_id, frame } => {
+        // If we've already flagged this tab's renderer as crashed/misbehaving, drop any further
+        // frame deliveries. (In a multiprocess architecture the browser would have terminated the
+        // renderer process already; this keeps the UI model robust even if messages keep arriving.)
+        if self.tab(tab_id).is_some_and(|tab| tab.renderer_crashed) {
+          return update;
+        }
+
+        // Treat renderer output as untrusted: validate frame dimensions + buffer size before we
+        // store the pixmap or attempt GPU uploads.
+        let limits = FrameReadyLimits::from_env();
+        if let Err(violation) = validate_rendered_frame_ready(&frame, &limits) {
+          if let Some(tab) = self.tab_mut(tab_id) {
+            tab.renderer_crashed = true;
+            tab.renderer_protocol_violation = Some(violation.clone());
+            tab.loading = false;
+            tab.error = Some(format!("Renderer protocol violation: {violation}"));
+            tab.stage = None;
+            tab.clear_load_progress();
+          }
+          // Request a redraw so any crash/error indicator is visible immediately.
+          update.request_redraw = true;
+          return update;
+        }
+
         let RenderedFrame {
           pixmap,
           viewport_css,
@@ -3767,6 +3796,101 @@ mod browser_app_tests {
 
   // Note: scroll restoration is worker-owned (see `ui::render_worker`), so the windowed UI state
   // model has no pending scroll restore bookkeeping to unit test here.
+}
+
+#[cfg(test)]
+mod renderer_ipc_violation_tests {
+  use super::*;
+  use crate::debug::runtime::RuntimeToggles;
+  use crate::ui::browser_limits;
+  use crate::ui::renderer_ipc::FrameReadyViolation;
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  fn make_frame(pixmap_px: (u32, u32), viewport_css: (u32, u32), dpr: f32) -> RenderedFrame {
+    RenderedFrame {
+      pixmap: tiny_skia::Pixmap::new(pixmap_px.0, pixmap_px.1).expect("pixmap"),
+      viewport_css,
+      dpr,
+      scroll_state: ScrollState::default(),
+      scroll_metrics: ScrollMetrics {
+        viewport_css,
+        scroll_css: (0.0, 0.0),
+        bounds_css: crate::scroll::ScrollBounds {
+          min_x: 0.0,
+          min_y: 0.0,
+          max_x: 0.0,
+          max_y: 0.0,
+        },
+        content_css: (viewport_css.0 as f32, viewport_css.1 as f32),
+      },
+      wants_ticks: false,
+    }
+  }
+
+  #[test]
+  fn frame_ready_size_mismatch_marks_tab_crashed() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().expect("active tab");
+
+    // viewport_css=10x10, dpr=1.0 implies an expected pixmap of 10x10, but the renderer reports
+    // 20x20.
+    let frame = make_frame((20, 20), (10, 10), 1.0);
+    let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id, frame });
+
+    assert!(
+      update.frame_ready.is_none(),
+      "expected invalid frame to be dropped"
+    );
+    assert!(update.request_redraw, "expected UI to redraw after crash");
+
+    let tab = app.tab(tab_id).expect("tab state");
+    assert!(tab.renderer_crashed, "expected tab to be marked crashed");
+    assert!(
+      matches!(
+        tab.renderer_protocol_violation,
+        Some(FrameReadyViolation::ExpectedDimensionsMismatch { .. })
+      ),
+      "expected ExpectedDimensionsMismatch, got {:?}",
+      tab.renderer_protocol_violation
+    );
+  }
+
+  #[test]
+  fn frame_ready_exceeding_max_pixels_marks_tab_crashed() {
+    let toggles = RuntimeToggles::from_map(HashMap::from([
+      // Keep the limit tiny so this test doesn't allocate a huge pixmap.
+      (
+        browser_limits::ENV_MAX_PIXELS.to_string(),
+        "100".to_string(),
+      ),
+      (
+        browser_limits::ENV_MAX_DIM_PX.to_string(),
+        "2048".to_string(),
+      ),
+    ]));
+
+    crate::debug::runtime::with_thread_runtime_toggles(Arc::new(toggles), || {
+      let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+      let tab_id = app.active_tab_id().expect("active tab");
+
+      // 11*10 = 110 pixels > max_pixels=100.
+      let frame = make_frame((11, 10), (11, 10), 1.0);
+      let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id, frame });
+
+      assert!(update.frame_ready.is_none(), "expected frame to be dropped");
+      let tab = app.tab(tab_id).expect("tab state");
+      assert!(tab.renderer_crashed, "expected tab to be marked crashed");
+      assert!(
+        matches!(
+          tab.renderer_protocol_violation,
+          Some(FrameReadyViolation::TooManyPixels { .. })
+        ),
+        "expected TooManyPixels, got {:?}",
+        tab.renderer_protocol_violation
+      );
+    });
+  }
 }
 
 #[cfg(test)]
