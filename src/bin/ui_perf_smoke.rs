@@ -1,7 +1,8 @@
 use clap::{ArgAction, Parser};
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
-  KeyAction, NavigationReason, PointerButton, PointerModifiers, TabId, UiToWorker, WorkerToUi,
+  KeyAction, NavigationReason, PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker,
+  WorkerToUi,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +32,9 @@ const RESIZE_SAMPLES: usize = 20;
 
 const INPUT_WARMUP: usize = 3;
 const INPUT_CYCLES: usize = 20;
+
+const TAB_SWITCH_WARMUP: usize = 5;
+const TAB_SWITCH_SAMPLES: usize = 40;
 
 #[derive(Parser)]
 #[command(about = "Headless browser UI responsiveness harness (scroll/resize/input latency)")]
@@ -497,6 +501,7 @@ fn selected_scenarios(only: Option<&[String]>) -> Result<Vec<String>, Box<dyn st
     "scroll_fixture",
     "resize_fixture",
     "input_text",
+    "tab_switch",
   ];
 
   match only {
@@ -546,6 +551,7 @@ fn run_named_scenario(
     "scroll_fixture" => run_scroll_fixture(tx, rx, run_config, verbose),
     "resize_fixture" => run_resize_fixture(tx, rx, run_config, verbose),
     "input_text" => run_input_text_fixture(tx, rx, run_config, verbose),
+    "tab_switch" => run_tab_switch(tx, rx, run_config, verbose),
     other => ScenarioSummary {
       name: other.to_string(),
       url: String::new(),
@@ -1018,6 +1024,126 @@ fn run_input_text_fixture(
   }
 
   let _ = tx.send(UiToWorker::CloseTab { tab_id });
+  summary
+}
+
+fn run_tab_switch(
+  tx: &Sender<UiToWorker>,
+  rx: &Receiver<WorkerToUi>,
+  run_config: &RunConfig,
+  verbose: bool,
+) -> ScenarioSummary {
+  let viewport_css = DEFAULT_VIEWPORT_CSS;
+  let dpr = DEFAULT_DPR;
+  let tab_a = TabId::new();
+  let tab_b = TabId::new();
+
+  let tab_a_url = if fastrender::ui::about_pages::html_for_about_url("about:test-layout-stress")
+    .is_some()
+  {
+    "about:test-layout-stress".to_string()
+  } else {
+    fastrender::ui::about_pages::ABOUT_TEST_HEAVY.to_string()
+  };
+  let tab_b_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+
+  let mut summary = ScenarioSummary {
+    name: "tab_switch".to_string(),
+    url: format!("{tab_a_url} | {tab_b_url}"),
+    viewport_css,
+    dpr,
+    status: ScenarioStatus::Ok,
+    error: None,
+    samples_ms: Vec::new(),
+    metrics_ms: BTreeMap::new(),
+  };
+
+  // Create tabs sequentially and wait for their first frames so the sampling loop measures tab
+  // switching + repainting instead of initial navigation warmup work.
+  if let Err(err) = create_and_navigate_tab(tx, tab_a, viewport_css, dpr, &tab_a_url) {
+    summary.status = ScenarioStatus::Error;
+    summary.error = Some(err.to_string());
+    return summary;
+  }
+  if let Err(err) = wait_for_frame(rx, tab_a, ACTION_TIMEOUT) {
+    summary.status = err.status;
+    summary.error = Some(err.message);
+    let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_a });
+    return summary;
+  }
+
+  if let Err(err) = create_and_navigate_tab(tx, tab_b, viewport_css, dpr, &tab_b_url) {
+    summary.status = ScenarioStatus::Error;
+    summary.error = Some(err.to_string());
+    let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_a });
+    return summary;
+  }
+  if let Err(err) = wait_for_frame(rx, tab_b, ACTION_TIMEOUT) {
+    summary.status = err.status;
+    summary.error = Some(err.message);
+    let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_a });
+    let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_b });
+    return summary;
+  }
+
+  // Establish a deterministic starting point.
+  let _ = tx.send(UiToWorker::SetActiveTab { tab_id: tab_a });
+
+  let warmup = TAB_SWITCH_WARMUP + run_config.warmup;
+  let samples = run_config.iterations.unwrap_or(TAB_SWITCH_SAMPLES);
+
+  let mut active = tab_a;
+  let mut measured = Vec::new();
+
+  for i in 0..(warmup + samples) {
+    let next = if active == tab_a { tab_b } else { tab_a };
+    let start = Instant::now();
+
+    if let Err(err) = tx.send(UiToWorker::SetActiveTab { tab_id: next }) {
+      summary.status = ScenarioStatus::Error;
+      summary.error = Some(format!("failed to send SetActiveTab: {err}"));
+      break;
+    }
+    if let Err(err) = tx.send(UiToWorker::RequestRepaint {
+      tab_id: next,
+      reason: RepaintReason::Explicit,
+    }) {
+      summary.status = ScenarioStatus::Error;
+      summary.error = Some(format!("failed to send RequestRepaint: {err}"));
+      break;
+    }
+
+    match wait_for_frame(rx, next, ACTION_TIMEOUT) {
+      Ok(_frame) => {
+        let dt_ms = round_ms(start.elapsed().as_secs_f64() * 1000.0);
+        if i >= warmup {
+          measured.push(dt_ms);
+        }
+        if verbose {
+          eprintln!("tab_switch: {} -> {} dt={:.3}ms", active.0, next.0, dt_ms);
+        }
+      }
+      Err(err) => {
+        summary.status = err.status;
+        summary.error = Some(err.message);
+        break;
+      }
+    }
+
+    active = next;
+  }
+
+  if summary.status == ScenarioStatus::Ok {
+    summary.samples_ms = measured.clone();
+    summary.metrics_ms = latency_metrics("tab_switch_latency", &measured);
+    let total_ms = measured.iter().sum::<f64>();
+    summary
+      .metrics_ms
+      .insert("tab_switch_latency_total_ms".to_string(), round_ms(total_ms));
+  }
+
+  let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_a });
+  let _ = tx.send(UiToWorker::CloseTab { tab_id: tab_b });
   summary
 }
 
