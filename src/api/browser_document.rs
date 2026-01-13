@@ -1862,6 +1862,9 @@ mod tests {
 
     let mut selected_state = base_state.clone();
     selected_state.document_selection = Some(crate::interaction::state::DocumentSelectionState::All);
+    // `BrowserDocument` uses cached interaction digests for render invalidation. When mutating an
+    // `InteractionState` directly (outside `InteractionEngine`), mark the appropriate digest dirty.
+    selected_state.mark_paint_hash_dirty();
 
     let (frame1, stages) = capture_stages_with_output(|| {
       document
@@ -1930,6 +1933,7 @@ mod tests {
     if let Some(edit) = state_start.text_edit.as_mut() {
       edit.caret = 0;
     }
+    state_start.mark_paint_hash_dirty();
 
     let (frame_start, stages) = capture_stages_with_output(|| {
       document
