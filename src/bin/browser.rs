@@ -919,6 +919,45 @@ mod worker_msg_queue_tests {
     );
     assert_eq!(backlog.len(), 1);
   }
+
+  #[test]
+  fn worker_wake_pending_clears_when_queue_fully_drained() {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let queue = WorkerMsgQueue::new();
+    let pusher = queue.pusher();
+    let worker_wake_pending = AtomicBool::new(true);
+    let mut backlog: VecDeque<fastrender::ui::WorkerToUi> = VecDeque::new();
+
+    // A worker message is already queued when the UI begins draining.
+    pusher
+      .push(fastrender::ui::WorkerToUi::DebugLog {
+        tab_id: fastrender::ui::TabId(1),
+        line: "hello".to_string(),
+      })
+      .expect("queue should accept message");
+
+    backlog = queue.drain();
+    assert_eq!(backlog.len(), 1);
+    backlog.pop_front();
+    assert!(backlog.is_empty());
+
+    // Clearing the wake flag after draining should leave it unset when no messages arrived during
+    // the drain window, avoiding an unnecessary follow-up wake.
+    worker_wake_pending.store(false, Ordering::Release);
+    let mut drained = queue.drain();
+    backlog.append(&mut drained);
+    if !backlog.is_empty() {
+      worker_wake_pending.store(true, Ordering::Release);
+    }
+
+    assert!(
+      !worker_wake_pending.load(Ordering::Acquire),
+      "expected wake flag to stay cleared when fully drained"
+    );
+    assert!(backlog.is_empty());
+  }
 }
 
 /// UI-side scroll coalescing for high-frequency wheel/scrollbar events.
