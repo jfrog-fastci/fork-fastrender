@@ -421,6 +421,31 @@ This mirrors how the single-process renderer currently treats iframes as “rend
 as replaced content” (see `src/paint/iframe.rs`), but with the critical difference that the *pixels*
 come from a different process.
 
+### 4.2.1 Trust boundary: validating subframe embedding data
+
+In a multiprocess model, the **embedder renderer process is untrusted**, so any “subframe embed”
+data it produces (explicit `DrawSubframe(FrameId)` items, `SubframeInfo` lists, etc.) must be
+treated as attacker-controlled.
+
+**Rules (normative):**
+
+- The browser compositor must validate that every referenced `FrameId` is a **real child** of the
+  embedder frame in the browser-owned `FrameTree` (preferably a *direct* child).
+  - If a renderer references an unknown/unrelated `FrameId`, the browser must ignore the embed and
+    may treat it as a protocol violation (kill the renderer / mark the tab crashed).
+- Geometry and effect data must be **bounded and finite**:
+  - transforms must contain only finite numbers,
+  - clip stacks must have a hard maximum depth,
+  - rectangles/sizes must be clamped to reasonable limits (see §5.3),
+  - the number of embedded subframes per frame must be capped (frame-tree limits, §5.1).
+- The browser must treat embedder-provided ordering keys (`z_index`, stacking keys, etc.) as
+  *relative ordering hints* only; the compositor is responsible for enforcing correct paint order
+  rules and preventing pathological ordering values from causing resource abuse.
+
+Rationale:
+- Without validation, a compromised renderer could attempt to embed a frame it does not own (UI
+  spoofing / confusion) or provide degenerate geometry that DoS’es the compositor.
+
 ### 4.3 Current limitation: stacking-order assumptions (MVP compositor)
 
 An initial multiprocess implementation often starts with a simple compositor:
