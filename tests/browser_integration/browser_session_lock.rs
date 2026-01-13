@@ -9,8 +9,9 @@ fn browser_refuses_to_start_when_session_file_is_locked() {
   let dir = tempfile::tempdir().expect("temp dir");
   let session_path = dir.path().join("session.json");
 
-  let _lock = fastrender::ui::session::acquire_session_lock(&session_path)
-    .expect("acquire session lock in test process");
+  let _lock: fastrender::ui::session::SessionFileLock =
+    fastrender::ui::session::acquire_session_lock(&session_path)
+      .expect("acquire session lock in test process");
 
   let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/run_limited.sh");
   let output = Command::new("bash")
@@ -41,7 +42,7 @@ fn browser_refuses_to_start_when_session_file_is_locked() {
   );
 
   assert!(
-    stderr.contains("refusing to start"),
+    stderr.contains("refusing to start: session file"),
     "expected browser to refuse startup when session is locked; stderr:\n{stderr}\nstdout:\n{stdout}"
   );
   assert!(

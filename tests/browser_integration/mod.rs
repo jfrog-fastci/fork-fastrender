@@ -18,7 +18,7 @@ mod browser_session_backup_restore;
 mod browser_session_restore;
 mod browser_session_unclean_restore;
 mod browser_session_multi_window_restore;
-mod browser_session_lock_enforced;
+mod browser_session_lock;
 mod browser_session_lock_cli_enforced;
 mod browser_session_scroll_restore;
 mod browser_tab_fetcher_injection;
