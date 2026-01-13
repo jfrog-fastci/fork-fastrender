@@ -529,6 +529,91 @@ fn compiled_template_literal_concatenates() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_template_literal_interpolates_expression() -> Result<(), VmError> {
+  // Force frequent GC to ensure template string construction roots intermediate values correctly.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(x) {
+        return `a${x}c`;
+      }
+      f(1)
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  let actual = rt.heap().get_string(s)?.to_utf8_lossy();
+  assert_eq!(actual, "a1c");
+  Ok(())
+}
+
+#[test]
+fn compiled_template_literal_coerces_null_and_undefined() -> Result<(), VmError> {
+  // Force frequent GC to ensure template string construction roots intermediate values correctly.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        return `${null}${undefined}`;
+      }
+      f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  let actual = rt.heap().get_string(s)?.to_utf8_lossy();
+  assert_eq!(actual, "nullundefined");
+  Ok(())
+}
+
+#[test]
+fn compiled_unary_minus_bigint() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return -1n;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  let expected = scope.alloc_bigint_from_i128(-1)?;
+  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_unary_plus_coerces_object() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
@@ -562,38 +647,6 @@ fn compiled_unary_plus_coerces_object() -> Result<(), VmError> {
 
   // Avoid leaking persistent roots (and tripping the Realm drop assertion).
   realm.teardown(&mut heap);
-  Ok(())
-}
-
-#[test]
-fn compiled_unary_minus_bigint() -> Result<(), VmError> {
-  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-  let script = CompiledScript::compile_script(
-    &mut heap,
-    "test.js",
-    r#"
-      function f() {
-        return -1n;
-      }
-    "#,
-  )?;
-  let f_body = find_function_body(&script, "f");
-  let mut vm = Vm::new(VmOptions::default());
-
-  let mut scope = heap.scope();
-  let name = scope.alloc_string("f")?;
-  let f = scope.alloc_user_function(
-    CompiledFunctionRef {
-      script: script.clone(),
-      body: f_body,
-    },
-    name,
-    0,
-  )?;
-
-  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
-  let expected = scope.alloc_bigint_from_i128(-1)?;
-  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
   Ok(())
 }
 
