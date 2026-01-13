@@ -155,6 +155,38 @@ fn compiled_bigint_literal_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_unary_minus_executes() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return -1n;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  let expected = scope.alloc_bigint_from_i128(-1)?;
+  assert!(result.same_value(Value::BigInt(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
 fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

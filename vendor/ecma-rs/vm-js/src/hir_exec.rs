@@ -2614,10 +2614,22 @@ impl<'vm> HirEvaluator<'vm> {
         ))
       }
       hir_js::UnaryOp::Minus => {
+        // Unary `-` uses `ToNumeric` (BigInt support).
         let v = self.eval_expr(scope, body, expr)?;
-        Ok(Value::Number(
-          -scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, v)?,
-        ))
+        let mut neg_scope = scope.reborrow();
+        neg_scope.push_root(v)?;
+        let num = self.to_numeric(&mut neg_scope, v)?;
+        Ok(match num {
+          NumericValue::Number(n) => Value::Number(-n),
+          NumericValue::BigInt(b) => {
+            let out = {
+              let bi = neg_scope.heap().get_bigint(b)?;
+              bi.neg()?
+            };
+            let out = neg_scope.alloc_bigint(out)?;
+            Value::BigInt(out)
+          }
+        })
       }
       hir_js::UnaryOp::Typeof => {
         // Special-case `typeof unboundIdentifier` so it evaluates to `"undefined"` without
