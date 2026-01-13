@@ -148,7 +148,7 @@ fn trim_css_whitespace(value: &str) -> &str {
   value.trim_matches(is_css_whitespace_char)
 }
 
-fn value_has_unbalanced_delimiters(value: &str) -> bool {
+pub(crate) fn value_has_unbalanced_delimiters(value: &str) -> bool {
   // `cssparser` will often treat EOF as implicitly closing open blocks/functions. Browsers do not
   // apply var()/if()/attr() substitution when the authored value contains unterminated blocks (e.g.
   // `fill: var(--c;`), so we reject such values up-front to match CSS syntax validity.

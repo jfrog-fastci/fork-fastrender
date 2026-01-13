@@ -9834,6 +9834,22 @@ fn apply_declaration_with_base_internal_with_order(
     other => other,
   };
 
+  // CSS substitution functions (`var()`/`if()`/`attr()`/`toggle()`) are resolved at computed-value
+  // time. However, declarations whose authored token stream is syntactically invalid (e.g. an
+  // unterminated `var(` block) are dropped by browsers during parsing and must not win the cascade.
+  //
+  // `cssparser` is liberal and will often treat EOF as implicitly closing open blocks; the var()
+  // resolver detects such cases via `value_has_unbalanced_delimiters`. When we hit those, treat the
+  // declaration as parse-time invalid and ignore it entirely (do not apply it and do not record it
+  // as var-dependent).
+  if decl.contains_var {
+    if let PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) = &decl.value {
+      if crate::style::var_resolution::value_has_unbalanced_delimiters(raw) {
+        return;
+      }
+    }
+  }
+
   if record_var_dependent_declarations {
     fn value_contains_current_color(value: &PropertyValue) -> bool {
       match value {
