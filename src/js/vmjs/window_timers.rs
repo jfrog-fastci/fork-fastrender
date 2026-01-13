@@ -2549,7 +2549,7 @@ fn make_idle_deadline_object(
       Err(VmError::PropertyNotData) => Ok(None),
       Err(err) => Err(err),
     }
-  }
+  };
   let idle_deadline_ctor_key = alloc_key(&mut scope, "IdleDeadline")?;
   let idle_deadline_ctor = own_data_value(scope.heap(), global_obj, &idle_deadline_ctor_key)?
     .and_then(|v| match v {
