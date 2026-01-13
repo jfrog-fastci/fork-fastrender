@@ -384,6 +384,29 @@ where
     }
   }
 
+  /// Destroy and detach all current children of `frame_id`, leaving the frame itself intact.
+  ///
+  /// This is used when a frame navigates: per browser semantics, a navigation replaces the document
+  /// and therefore tears down any existing descendant browsing contexts.
+  fn destroy_frame_children(&mut self, frame_id: FrameId) {
+    let children: Vec<(SubframeId, FrameId)> = self
+      .frame_tree
+      .frame(frame_id)
+      .map(|node| {
+        node
+          .children_by_subframe
+          .iter()
+          .map(|(&subframe_id, &child_frame_id)| (subframe_id, child_frame_id))
+          .collect()
+      })
+      .unwrap_or_default();
+
+    for (subframe_id, child_frame_id) in children {
+      let _ = self.frame_tree.detach_child(frame_id, subframe_id);
+      self.destroy_frame_subtree(child_frame_id);
+    }
+  }
+
   pub fn create_root_frame(&mut self, url: &str) -> FrameId {
     let site = site_key_for_navigation(url, None, false);
     let process_id = self.processes.get_or_spawn(site.clone());
@@ -497,20 +520,20 @@ where
         .frame(parent_frame_id)
         .and_then(|node| node.child_frame_id(subframe.id));
 
-      if let Some(child_frame_id) = existing_child_frame_id {
-        // Existing child frame: update geometry and handle potential process changes.
-        let (current_process, needs_nav, old_rect, existing_site) = self
-          .frame_tree
-          .frame(child_frame_id)
-          .map(|node| {
-            (
-              node.process_id,
-              node.url.as_str() != subframe.url || node.force_opaque_origin != subframe.force_opaque_origin,
-              node.embedding.as_ref().map(|e| (e.rect, e.parent_dpr)),
-              node.site.clone(),
-            )
-          })
-          .unwrap_or((parent_process_id, true, None, parent_site.clone()));
+        if let Some(child_frame_id) = existing_child_frame_id {
+          // Existing child frame: update geometry and handle potential process changes.
+          let (current_process, needs_nav, old_rect, existing_site) = self
+            .frame_tree
+            .frame(child_frame_id)
+            .map(|node| {
+              (
+                node.process_id,
+                node.url.as_str() != subframe.url || node.force_opaque_origin != subframe.force_opaque_origin,
+                node.embedding.as_ref().map(|e| (e.rect, e.parent_dpr)),
+                node.site.clone(),
+              )
+            })
+            .unwrap_or((parent_process_id, true, None, parent_site.clone()));
 
         let child_site = if needs_nav {
           site_key_for_navigation(&subframe.url, Some(&parent_site), subframe.force_opaque_origin)
@@ -536,6 +559,12 @@ where
           Some(parent_process_id)
         };
         let needs_process_change = desired_existing_process != Some(current_process);
+
+        if needs_nav || needs_process_change {
+          // Navigations (including sandbox/opaque-origin toggles that imply an origin change) replace
+          // the document, so any existing descendant frame tree must be torn down.
+          self.destroy_frame_children(child_frame_id);
+        }
 
         // Update stored geometry.
         if let Some(child_node) = self.frame_tree.frame_mut(child_frame_id) {
@@ -1371,6 +1400,99 @@ mod tests {
         .expect("child still exists")
         .process_id,
       parent_process
+    );
+  }
+
+  #[test]
+  fn navigating_child_frame_clears_existing_descendant_subframes() {
+    let log: Arc<Mutex<HashMap<RendererProcessId, Vec<BrowserToRendererFrame>>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let terminate_count = Arc::new(AtomicUsize::new(0));
+
+    let spawner = FakeSpawner::new(Arc::clone(&log), Arc::clone(&terminate_count));
+    let processes = RendererProcessRegistry::new(spawner);
+    let mut browser = SubframesController::new(processes);
+    browser.set_max_subframes_per_parent(8);
+
+    let root = browser.create_root_frame("https://parent.test/");
+
+    // Discover a cross-origin iframe so it is isolated into its own process.
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![test_subframe(1, "https://child.test/", 10.0, 10.0)],
+    });
+
+    let child_frame = browser
+      .frame_tree
+      .frame(root)
+      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .expect("child frame exists");
+
+    // Now have the child frame report its own cross-origin iframe.
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: child_frame,
+      parent_dpr: 1.0,
+      subframes: vec![test_subframe(2, "https://grandchild.test/", 5.0, 6.0)],
+    });
+
+    let grandchild_frame = browser
+      .frame_tree
+      .frame(child_frame)
+      .and_then(|n| n.child_frame_id(SubframeId::new(2)))
+      .expect("grandchild frame exists");
+    let grandchild_process = browser
+      .frame_tree
+      .frame(grandchild_frame)
+      .expect("grandchild node exists")
+      .process_id;
+
+    assert_eq!(
+      browser.processes.process_count(),
+      3,
+      "expected parent + child + grandchild processes before navigation"
+    );
+
+    // Navigate the child frame within the same site (path-only change). This should clear the
+    // grandchild subtree immediately even before the new document reports its own subframes.
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![test_subframe(1, "https://child.test/other", 10.0, 10.0)],
+    });
+
+    assert!(
+      browser.frame_tree.frame(grandchild_frame).is_none(),
+      "expected grandchild frame to be removed from the browser frame tree on navigation"
+    );
+    assert_eq!(
+      browser
+        .frame_tree
+        .frame(child_frame)
+        .expect("child frame still exists")
+        .child_count(),
+      0,
+      "expected child frame to have no remaining subframes after navigation"
+    );
+
+    assert_eq!(
+      browser.processes.process_count(),
+      2,
+      "expected the grandchild process to be released after navigation"
+    );
+    assert_eq!(
+      terminate_count.load(Ordering::Relaxed),
+      1,
+      "expected the grandchild process to be terminated"
+    );
+
+    let msgs = logged_msgs(&log, grandchild_process);
+    assert!(
+      msgs.iter().any(|msg| matches!(
+        msg,
+        BrowserToRendererFrame::DestroyFrame { frame_id } if *frame_id == grandchild_frame
+      )),
+      "expected DestroyFrame for grandchild on navigation, got {msgs:?}"
     );
   }
 
