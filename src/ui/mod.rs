@@ -71,6 +71,9 @@ pub mod downloads_panel;
 #[cfg(feature = "browser_ui")]
 pub mod clear_browsing_data_dialog;
 
+#[cfg(feature = "browser_ui")]
+pub mod panels;
+
 // `menu_bar` depends on egui and is only used by the windowed browser UI.
 #[cfg(feature = "browser_ui")]
 pub mod menu_bar;
