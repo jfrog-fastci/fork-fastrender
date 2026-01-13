@@ -836,6 +836,15 @@ impl<'a> Parser<'a> {
           "for-of loop left-hand side cannot start with `let`",
         )));
       }
+      // In strict ECMAScript, `for-of` does not allow a left-hand-side expression that starts
+      // with `async` when followed by `of` (a spec grammar lookahead restriction).
+      //
+      // Note: this restriction does *not* apply to `for await ( ... of ... )`.
+      if !await_ && t0.typ == TT::KeywordAsync && t1.typ == TT::KeywordOf {
+        return Err(t0.error(SyntaxErrorType::ExpectedSyntax(
+          "for-of loop left-hand side cannot start with `async of`",
+        )));
+      }
       let lhs = p.for_in_of_lhs(header_ctx)?;
       p.require(TT::KeywordOf)?;
       let rhs = p.expr(header_ctx, [TT::ParenthesisClose])?;
