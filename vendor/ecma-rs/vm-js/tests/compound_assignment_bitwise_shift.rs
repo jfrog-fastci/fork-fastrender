@@ -1,4 +1,4 @@
-use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -6,16 +6,10 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
-fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
-  let script = CompiledScript::compile_script(rt.heap_mut(), "<inline>", source)?;
-  rt.exec_compiled_script(script)
-}
-
 #[test]
 fn compound_assignment_bitwise_shift_number_ops() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       let ok = true;
       { let x = 5; x &= 3; ok = ok && (x === 1); }
@@ -34,8 +28,7 @@ fn compound_assignment_bitwise_shift_number_ops() -> Result<(), VmError> {
 #[test]
 fn compound_assignment_bitwise_shift_bigint_ops() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       let ok = true;
       { let x = 5n; x &= 3n; ok = ok && (x === 1n); }
@@ -58,8 +51,7 @@ fn compound_assignment_bitwise_shift_bigint_ops() -> Result<(), VmError> {
 #[test]
 fn compound_assignment_bitwise_shift_bigint_unsigned_right_shift_throws() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       let ok = false;
       let x = 1n;
@@ -78,8 +70,7 @@ fn compound_assignment_bitwise_shift_bigint_unsigned_right_shift_throws() -> Res
 #[test]
 fn compound_assignment_bitwise_shift_bigint_number_mixing_throws() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       function throwsTypeError(f) {
         try { f(); return false; } catch (e) { return e.name === "TypeError"; }
@@ -115,8 +106,7 @@ fn compound_assignment_bitwise_shift_bigint_number_mixing_throws() -> Result<(),
 #[test]
 fn compound_assignment_bitwise_shift_reference_evaluation_order() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  let value = exec_compiled(
-    &mut rt,
+  let value = rt.exec_script(
     r#"
       let log = [];
       let o = {};
