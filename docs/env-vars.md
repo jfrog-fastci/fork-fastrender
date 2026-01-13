@@ -79,6 +79,8 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
     - The Windows spawn helper also still applies environment sanitization by default (no secret env
       inheritance; `TEMP`/`TMP` override). Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` if you need the
       child to inherit the full parent environment for debugging.
+    - The Windows spawn helper also still attempts to apply process mitigation policies by default.
+      Set `FASTR_DISABLE_WIN_MITIGATIONS=1` to disable that layer (debug/compatibility).
 - `FASTR_ALLOW_UNSANDBOXED_RENDERER=0|1` – **Windows-only**: opt in to running the renderer without the full Windows sandbox when required primitives are missing or sandbox startup fails.
   - Default: disabled (sandbox failures return an error; no silent downgrade).
   - `crates/win-sandbox`: used by `RendererSandboxMode::new_default()` to avoid silently disabling

@@ -111,6 +111,10 @@ Note: the spawn helper still uses environment sanitization by default (no secret
 `TEMP`/`TMP` override). If you need the child to inherit the full parent environment for debugging,
 set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` (debug only).
 
+Note: the spawn helper still applies handle inheritance allowlisting (and best-effort process
+mitigation policies) by default even when token/AppContainer sandboxing is disabled. Use
+`FASTR_DISABLE_WIN_MITIGATIONS=1` to disable mitigations if needed for debugging/compatibility.
+
 ### Verbose sandbox spawn logs
 
 Set `FASTR_LOG_SANDBOX=1` to enable verbose Windows sandbox spawn logs (useful for debugging

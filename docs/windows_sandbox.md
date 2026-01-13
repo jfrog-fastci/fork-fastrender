@@ -544,6 +544,8 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
   - Note: Windows spawn-time environment sanitization still applies by default (including the
     sandbox-accessible `TEMP`/`TMP` override). Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` if you need
     the child to inherit the full parent environment for debugging.
+  - Note: process mitigation policies are still applied by default (best-effort). Set
+    `FASTR_DISABLE_WIN_MITIGATIONS=1` to disable mitigations for debugging/compatibility.
 - `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`: opt into inheriting the full parent environment for the
   sandboxed child.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block (so secrets from the

@@ -150,6 +150,9 @@ Windows note: even when token/AppContainer sandboxing is disabled, the Windows s
 builds a sanitized environment block by default (no secret env inheritance; `TEMP`/`TMP` override).
 Set `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1` if you need the child to inherit the full parent
 environment (debug only).
+Windows note: the spawn helper also still uses the handle inheritance allowlist and still attempts
+to apply process mitigation policies by default (best-effort). Use `FASTR_DISABLE_WIN_MITIGATIONS=1`
+to disable mitigations for debugging/compatibility.
 
 To debug why AppContainer/restricted-token spawning is failing, enable verbose sandbox logs:
 
