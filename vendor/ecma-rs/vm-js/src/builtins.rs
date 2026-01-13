@@ -28067,6 +28067,57 @@ mod array_at_tests {
 }
 
 #[cfg(test)]
+mod string_case_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn string_prototype_case_and_locale_compare_require_object_coercible() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          function throwsTypeError(thunk) {
+            try {
+              thunk();
+              return false;
+            } catch (e) {
+              return e instanceof TypeError;
+            }
+          }
+
+          return (
+            throwsTypeError(function () { String.prototype.toLowerCase.call(null); }) &&
+            throwsTypeError(function () { String.prototype.toLowerCase.call(undefined); }) &&
+            throwsTypeError(function () { String.prototype.toUpperCase.call(null); }) &&
+            throwsTypeError(function () { String.prototype.toUpperCase.call(undefined); }) &&
+            throwsTypeError(function () { String.prototype.toLocaleLowerCase.call(null); }) &&
+            throwsTypeError(function () { String.prototype.toLocaleUpperCase.call(undefined); }) &&
+            throwsTypeError(function () { String.prototype.localeCompare.call(null, "a"); }) &&
+
+            "A".toLowerCase() === "a" &&
+            "a".toUpperCase() === "A" &&
+            // Locale argument should be ignored without Intl support.
+            "a".toLocaleUpperCase("tr") === "A" &&
+
+            "a".localeCompare("a") === 0 &&
+            "a".localeCompare("b") < 0 &&
+            "b".localeCompare("a") > 0
+          );
+        })()
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod regexp_unicode_sets_tests {
   use crate::property::PropertyKind;
   use crate::{GcObject, Heap, HeapLimits, JsRuntime, PropertyKey, Realm, Value, Vm, VmError, VmOptions};
