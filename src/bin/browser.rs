@@ -18,6 +18,22 @@ const ENV_BROWSER_DEBUG_LOG: &str = "FASTR_BROWSER_DEBUG_LOG";
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_SHOW_MENU_BAR: &str = "FASTR_BROWSER_SHOW_MENU_BAR";
 
+// Experimental renderer-chrome toggle (render browser chrome via FastRender HTML/CSS).
+//
+// Manual smoke test (macOS VoiceOver / Windows Narrator / Linux Orca):
+// 1) Build + run the browser UI:
+//      bash scripts/run_limited.sh --as 64G -- \
+//        bash scripts/cargo_agent.sh run --features browser_ui --bin browser
+// 2) Enable FastRender chrome (once implemented) + accessibility adapter:
+//      FASTR_BROWSER_RENDERER_CHROME=1 .../browser
+// 3) With a screen reader running, focus the browser window and verify it exposes an accessibility
+//    tree (at minimum: AccessKit updates should be produced without panics).
+//
+// Note: Today the windowed browser chrome is still egui-based by default; the FastRender chrome
+// implementation is a work-in-progress under `instructions/renderer_chrome.md`.
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_RENDERER_CHROME: &str = "FASTR_BROWSER_RENDERER_CHROME";
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -36,6 +52,11 @@ fn parse_env_bool(raw: Option<&str>) -> bool {
 #[cfg(any(test, feature = "browser_ui"))]
 fn should_show_debug_log_ui(debug_build: bool, env_value: Option<&str>) -> bool {
   debug_build || parse_env_bool(env_value)
+}
+
+#[cfg(feature = "browser_ui")]
+fn renderer_chrome_enabled_from_env() -> bool {
+  parse_env_bool(std::env::var(ENV_BROWSER_RENDERER_CHROME).ok().as_deref())
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -476,6 +497,14 @@ mod open_typed_in_new_tab_tests {
   }
 }
 
+#[cfg(all(test, feature = "browser_ui"))]
+mod browser_accesskit_adapter_compile_tests {
+  #[test]
+  fn browser_links_accesskit_winit_adapter_when_browser_ui_enabled() {
+    let _ = std::any::TypeId::of::<accesskit_winit::Adapter>();
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 use arboard::Clipboard;
 #[cfg(feature = "browser_ui")]
@@ -490,6 +519,21 @@ enum UserEvent {
     from_id: winit::window::WindowId,
     window: fastrender::ui::BrowserSessionWindow,
   },
+  /// An accessibility action request (e.g. "activate" or "focus") dispatched by the OS via AccessKit.
+  AccessKitAction {
+    window_id: winit::window::WindowId,
+    request: accesskit::ActionRequest,
+  },
+}
+
+#[cfg(feature = "browser_ui")]
+impl From<accesskit_winit::ActionRequestEvent> for UserEvent {
+  fn from(event: accesskit_winit::ActionRequestEvent) -> Self {
+    UserEvent::AccessKitAction {
+      window_id: event.window_id,
+      request: event.request,
+    }
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -1980,6 +2024,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           request_autosave(&windows, &window_order, active_window_id);
         }
       }
+      Event::UserEvent(UserEvent::AccessKitAction { window_id, request }) => {
+        if let Some(win) = windows.get_mut(&window_id) {
+          win.app.handle_accesskit_action_request(request);
+          win.app.window.request_redraw();
+        }
+      }
       Event::UserEvent(UserEvent::RequestNewWindow(from_id)) => {
         let inherit_size = windows.get(&from_id).map(|win| win.app.window.inner_size());
         let inherit_pos = windows.get(&from_id).and_then(|win| {
@@ -3230,10 +3280,68 @@ struct ClosingTabFavicon {
 }
 
 #[cfg(feature = "browser_ui")]
+struct ChromeAccessKit {
+  adapter: accesskit_winit::Adapter,
+}
+
+#[cfg(feature = "browser_ui")]
+impl ChromeAccessKit {
+  fn new(
+    window: &winit::window::Window,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+  ) -> Self {
+    let adapter = accesskit_winit::Adapter::new(
+      window,
+      || {
+        use std::num::NonZeroU128;
+
+        // Initial tree shown when accessibility is first activated. The chrome tree is updated
+        // continuously during rendering via `Adapter::update_if_active`.
+        let mut classes = accesskit::NodeClassSet::new();
+        let root_id = accesskit::NodeId(NonZeroU128::new(1).unwrap());
+        let mut root = accesskit::NodeBuilder::new(accesskit::Role::Window);
+        root.set_name("FastRender".to_string());
+        accesskit::TreeUpdate {
+          nodes: vec![(root_id, root.build(&mut classes))],
+          tree: Some(accesskit::Tree::new(root_id)),
+          focus: Some(root_id),
+        }
+      },
+      event_loop_proxy,
+    );
+
+    Self {
+      adapter,
+    }
+  }
+
+  fn process_window_event(
+    &mut self,
+    window: &winit::window::Window,
+    event: &winit::event::WindowEvent<'_>,
+  ) {
+    let _ = self.adapter.on_event(window, event);
+  }
+
+  fn update_if_active(&self, updater: impl FnOnce() -> accesskit::TreeUpdate) {
+    self.adapter.update_if_active(updater);
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+enum ChromeA11yBackend {
+  /// Delegate accessibility to egui/egui-winit's AccessKit integration (current default).
+  Egui,
+  /// Provide an AccessKit tree driven by a FastRender-rendered HTML/CSS chrome document.
+  FastRender(ChromeAccessKit),
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
   event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+  chrome_a11y: ChromeA11yBackend,
 
   surface: wgpu::Surface,
   device: std::sync::Arc<wgpu::Device>,
@@ -3733,6 +3841,15 @@ impl App {
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
     window.set_ime_allowed(true);
 
+    // Accessibility backend selection:
+    // - Default: egui-winit drives AccessKit for the egui-based chrome UI.
+    // - Renderer-chrome: FastRender drives its own AccessKit adapter (separate tree, separate action routing).
+    let chrome_a11y = if renderer_chrome_enabled_from_env() {
+      ChromeA11yBackend::FastRender(ChromeAccessKit::new(&window, event_loop_proxy.clone()))
+    } else {
+      ChromeA11yBackend::Egui
+    };
+
     let system_pixels_per_point = window.scale_factor() as f32;
     let ui_scale = applied_appearance.ui_scale;
     let pixels_per_point = system_pixels_per_point * ui_scale;
@@ -3836,6 +3953,7 @@ impl App {
       window,
       window_title_cache: String::new(),
       event_loop_proxy,
+      chrome_a11y,
       surface,
       device,
       queue,
@@ -8280,6 +8398,10 @@ impl App {
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
+    if let ChromeA11yBackend::FastRender(a11y) = &mut self.chrome_a11y {
+      a11y.process_window_event(&self.window, event);
+    }
+
     match event {
       WindowEvent::Occluded(occluded) => {
         self.window_occluded = *occluded;
@@ -10514,6 +10636,51 @@ impl App {
     session_dirty
   }
 
+  fn handle_accesskit_action_request(&mut self, request: accesskit::ActionRequest) {
+    // Renderer-chrome action routing lives outside egui. This is intentionally a no-op placeholder
+    // until the FastRender chrome document is wired into the windowed browser.
+    let _ = request;
+  }
+
+  fn build_chrome_accesskit_tree_update(&self) -> accesskit::TreeUpdate {
+    use std::num::NonZeroU128;
+
+    let mut classes = accesskit::NodeClassSet::new();
+
+    // Placeholder tree until renderer-chrome's real tree builder is integrated.
+    let root_id = accesskit::NodeId(NonZeroU128::new(1).unwrap());
+    let doc_id = accesskit::NodeId(NonZeroU128::new(2).unwrap());
+
+    let window_name = if self.window_title_cache.trim().is_empty() {
+      "FastRender".to_string()
+    } else {
+      self.window_title_cache.clone()
+    };
+
+    let mut root = accesskit::NodeBuilder::new(accesskit::Role::Window);
+    root.set_name(window_name);
+    root.set_children(vec![doc_id]);
+
+    let mut doc = accesskit::NodeBuilder::new(accesskit::Role::Document);
+    doc.set_name("Browser chrome".to_string());
+    doc.set_children(Vec::new());
+
+    accesskit::TreeUpdate {
+      nodes: vec![
+        (root_id, root.build(&mut classes)),
+        (doc_id, doc.build(&mut classes)),
+      ],
+      tree: Some(accesskit::Tree::new(root_id)),
+      focus: Some(doc_id),
+    }
+  }
+
+  fn update_chrome_accesskit_tree(&mut self) {
+    if let ChromeA11yBackend::FastRender(a11y) = &self.chrome_a11y {
+      a11y.update_if_active(|| self.build_chrome_accesskit_tree_update());
+    }
+  }
+
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) -> bool {
     let frame_start = if let Some(hud) = self.hud.as_mut() {
       let now = std::time::Instant::now();
@@ -11704,6 +11871,11 @@ impl App {
         hud.last_frame_cpu_ms = Some(elapsed_ms);
       }
     }
+
+    // Keep the platform accessibility tree for renderer-chrome in sync with the latest rendered
+    // chrome document state. This is a no-op when the window is using egui's AccessKit integration.
+    self.update_chrome_accesskit_tree();
+
     session_dirty |= self.browser_state.session_revision() != session_revision_before;
     session_dirty
   }
