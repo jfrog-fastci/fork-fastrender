@@ -546,7 +546,7 @@ mod tests {
       let (pid, handle) = reg
         .get_or_spawn_handle_mut(site_key.clone())
         .expect("spawned handle");
-      assert_eq!(pid, handle.id());
+      assert_eq!(pid, ProcessHandle::id(handle));
       pid
     };
 
