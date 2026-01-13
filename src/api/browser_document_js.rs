@@ -276,8 +276,14 @@ impl BrowserDocumentJs {
 
   /// Returns `true` if the event loop has any scheduled timers (including timers due in the
   /// future).
-  pub fn has_pending_timers(&mut self) -> Result<bool> {
-    Ok(self.next_timer_due_time()?.is_some())
+  pub fn has_pending_timers(&self) -> Result<bool> {
+    let event_loop = self.event_loop.as_ref().ok_or_else(|| {
+      Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      )
+    })?;
+    Ok(event_loop.has_pending_timers())
   }
 
   /// Returns the due time of the next scheduled timer, if any.
@@ -296,8 +302,7 @@ impl BrowserDocumentJs {
           .to_string(),
       )
     })?;
-    let now = event_loop.now();
-    Ok(event_loop.next_timer_due_time().map(|due| due.saturating_sub(now)))
+    Ok(event_loop.duration_until_next_timer())
   }
 
   pub fn has_pending_animation_frame_callbacks(&self) -> Result<bool> {
