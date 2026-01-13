@@ -61,6 +61,7 @@ mod flex_property_test;
 mod font_relative_units_font_size_test;
 mod font_size_absolute_keyword_test;
 mod font_size_unitless_zero_test;
+mod font_shorthand_inherit_form_controls_test;
 mod font_style_oblique_tokenization_test;
 mod font_smoothing_test;
 mod font_table_keywords_case_insensitive_test;

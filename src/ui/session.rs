@@ -2179,7 +2179,7 @@ pub fn session_path() -> PathBuf {
       .join(SESSION_FILE_NAME);
   }
 
-  PathBuf::from(format!("./{SESSION_FILE_NAME}"))
+PathBuf::from(format!("./{SESSION_FILE_NAME}"))
 }
 
 fn session_backup_path(path: &Path) -> PathBuf {

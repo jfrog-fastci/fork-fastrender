@@ -450,6 +450,7 @@ impl MediaClock for PlaybackClock {
     self.master_clock.is_started()
   }
 }
+
 fn duration_to_nanos_u64(duration: Duration) -> u64 {
   // Duration::as_nanos returns u128.
   u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
