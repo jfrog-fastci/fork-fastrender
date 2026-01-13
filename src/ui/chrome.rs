@@ -1,12 +1,13 @@
 #![cfg(feature = "browser_ui")]
 
-use crate::render_control::StageHeartbeat;
 use crate::debug::runtime::runtime_toggles;
+use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
-use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
 use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkId, BookmarkStore};
+use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
@@ -14,15 +15,17 @@ use crate::ui::omnibox::{
   build_omnibox_suggestions_default_limit, OmniboxAction, OmniboxContext, OmniboxSearchSource,
   OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource,
 };
-use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
-use crate::ui::url::{resolve_omnibox_input, search_url_for_query, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE};
+use crate::ui::theme;
 use crate::ui::theme_parsing::{
   format_hex_color, parse_browser_accent_env, parse_hex_color, BrowserTheme as ThemeChoice,
   RgbaColor, ENV_BROWSER_ACCENT,
 };
-use crate::ui::theme;
+use crate::ui::url::{
+  resolve_omnibox_input, search_url_for_query, OmniboxInputResolution,
+  DEFAULT_SEARCH_ENGINE_TEMPLATE,
+};
 use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
@@ -167,8 +170,11 @@ fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, style: FocusRingSt
     return;
   }
 
-  ui.painter()
-    .rect_stroke(response.rect.expand(style.expand), style.rounding, style.stroke);
+  ui.painter().rect_stroke(
+    response.rect.expand(style.expand),
+    style.rounding,
+    style.stroke,
+  );
 }
 
 fn show_tooltip_on_hover_or_focus(ui: &egui::Ui, response: &egui::Response, tooltip: &str) {
@@ -287,15 +293,21 @@ fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> OmniboxSuggestionI
       OmniboxAction::Search(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Search),
       OmniboxAction::ActivateTab(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Tab),
     },
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => OmniboxSuggestionIcon::Icon(BrowserIcon::Tab),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab) => {
+      OmniboxSuggestionIcon::Icon(BrowserIcon::Tab)
+    }
     OmniboxSuggestionSource::Url(OmniboxUrlSource::About) => {
       OmniboxSuggestionIcon::Icon(BrowserIcon::Info)
     }
     OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark) => {
       OmniboxSuggestionIcon::Icon(BrowserIcon::BookmarkFilled)
     }
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => OmniboxSuggestionIcon::Icon(BrowserIcon::History),
-    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => OmniboxSuggestionIcon::Icon(BrowserIcon::History),
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab) => {
+      OmniboxSuggestionIcon::Icon(BrowserIcon::History)
+    }
+    OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited) => {
+      OmniboxSuggestionIcon::Icon(BrowserIcon::History)
+    }
     OmniboxSuggestionSource::Search(OmniboxSearchSource::RemoteSuggest) => {
       OmniboxSuggestionIcon::Icon(BrowserIcon::Search)
     }
@@ -406,7 +418,12 @@ fn tab_search_ranked_matches(query: &str, tabs: &[BrowserTabState]) -> Vec<TabSe
       .title
       .as_deref()
       .filter(|s| !s.trim().is_empty())
-      .or_else(|| tab.committed_title.as_deref().filter(|s| !s.trim().is_empty()))
+      .or_else(|| {
+        tab
+          .committed_title
+          .as_deref()
+          .filter(|s| !s.trim().is_empty())
+      })
       .unwrap_or("");
     let url = tab
       .committed_url
@@ -489,7 +506,9 @@ fn tab_search_overlay_ui(
     return;
   }
 
-  let was_open = ctx.data(|d| d.get_temp::<bool>(was_open_id)).unwrap_or(false);
+  let was_open = ctx
+    .data(|d| d.get_temp::<bool>(was_open_id))
+    .unwrap_or(false);
   ctx.data_mut(|d| {
     d.insert_temp(was_open_id, true);
   });
@@ -501,167 +520,153 @@ fn tab_search_overlay_ui(
     .interactable(app.chrome.tab_search.open);
 
   let inner = area.show(ctx, |ui| {
-      ui.set_enabled(app.chrome.tab_search.open);
-      ui.visuals_mut().override_text_color =
-        Some(with_alpha(ui.visuals().text_color(), open_opacity));
-      let mut frame = egui::Frame::popup(ui.style());
-      frame.fill = with_alpha(frame.fill, open_opacity);
-      frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
-      frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
-      let frame = frame.show(ui, |ui| {
-        ui.set_min_width(520.0);
+    ui.set_enabled(app.chrome.tab_search.open);
+    ui.visuals_mut().override_text_color =
+      Some(with_alpha(ui.visuals().text_color(), open_opacity));
+    let mut frame = egui::Frame::popup(ui.style());
+    frame.fill = with_alpha(frame.fill, open_opacity);
+    frame.stroke.color = with_alpha(frame.stroke.color, open_opacity);
+    frame.shadow.color = with_alpha(frame.shadow.color, open_opacity);
+    let frame = frame.show(ui, |ui| {
+      ui.set_min_width(520.0);
 
-        let input = ui.add(
-          egui::TextEdit::singleline(&mut app.chrome.tab_search.query)
-            .id(tab_search_input_id())
-            .desired_width(f32::INFINITY)
-            .hint_text("Search tabs…"),
-        );
-        input.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search tabs")
-        });
-        // Keep focus in the search box while the overlay is open.
-        if app.chrome.tab_search.open {
-          input.request_focus();
-        }
+      let input = ui.add(
+        egui::TextEdit::singleline(&mut app.chrome.tab_search.query)
+          .id(tab_search_input_id())
+          .desired_width(f32::INFINITY)
+          .hint_text("Search tabs…"),
+      );
+      input.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search tabs"));
+      // Keep focus in the search box while the overlay is open.
+      if app.chrome.tab_search.open {
+        input.request_focus();
+      }
 
-        let query_changed = app.chrome.tab_search.open && input.changed();
+      let query_changed = app.chrome.tab_search.open && input.changed();
 
-        ui.separator();
+      ui.separator();
 
-        let matches = tab_search_ranked_matches(&app.chrome.tab_search.query, &app.tabs);
+      let matches = tab_search_ranked_matches(&app.chrome.tab_search.query, &app.tabs);
 
-        if query_changed {
-          app.chrome.tab_search.selected = 0;
-        }
+      if query_changed {
+        app.chrome.tab_search.selected = 0;
+      }
 
-        if matches.is_empty() {
-          ui.label(egui::RichText::new("No matching tabs").italics().weak());
-          return None::<TabId>;
-        }
+      if matches.is_empty() {
+        ui.label(egui::RichText::new("No matching tabs").italics().weak());
+        return None::<TabId>;
+      }
 
-        if app.chrome.tab_search.selected >= matches.len() {
-          app.chrome.tab_search.selected = matches.len() - 1;
-        }
+      if app.chrome.tab_search.selected >= matches.len() {
+        app.chrome.tab_search.selected = matches.len() - 1;
+      }
 
-        let down = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
-        let up = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
-        if down {
-          app.chrome.tab_search.selected =
-            (app.chrome.tab_search.selected + 1).min(matches.len() - 1);
-        } else if up {
-          app.chrome.tab_search.selected = app.chrome.tab_search.selected.saturating_sub(1);
-        }
+      let down = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
+      let up = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
+      if down {
+        app.chrome.tab_search.selected =
+          (app.chrome.tab_search.selected + 1).min(matches.len() - 1);
+      } else if up {
+        app.chrome.tab_search.selected = app.chrome.tab_search.selected.saturating_sub(1);
+      }
 
-        let enter = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::Enter));
-        if enter {
-          let tab_id = matches[app.chrome.tab_search.selected].tab_id;
-          return Some(tab_id);
-        }
+      let enter = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+      if enter {
+        let tab_id = matches[app.chrome.tab_search.selected].tab_id;
+        return Some(tab_id);
+      }
 
-        let mut clicked: Option<TabId> = None;
-        egui::ScrollArea::vertical()
-          .max_height(360.0)
-          .auto_shrink([false, false])
-          .show(ui, |ui| {
-            let row_height = ui.spacing().interact_size.y.max(28.0);
-            let rounding = egui::Rounding::same(4.0);
-            let inner_margin = egui::vec2(6.0, 4.0);
-            let selected_fill = ui.visuals().selection.bg_fill;
-            let hovered_fill = {
-              // Use a subtle text-colored scrim so hover remains visible even when the theme's
-              // hovered widget fill matches the popup background.
-              let base = ui.visuals().text_color();
-              let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
-              egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
-            };
+      let mut clicked: Option<TabId> = None;
+      egui::ScrollArea::vertical()
+        .max_height(360.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+          let row_height = ui.spacing().interact_size.y.max(28.0);
+          let rounding = egui::Rounding::same(4.0);
+          let inner_margin = egui::vec2(6.0, 4.0);
+          let selected_fill = ui.visuals().selection.bg_fill;
+          let hovered_fill = {
+            // Use a subtle text-colored scrim so hover remains visible even when the theme's
+            // hovered widget fill matches the popup background.
+            let base = ui.visuals().text_color();
+            let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
+            egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
+          };
 
-            let scroll_selected_id = overlay_id.with("scroll_selected");
-            let mut scrolled_to_selected = ctx
-              .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
-              .unwrap_or(None);
-            let should_scroll_selected = opening || down || up || query_changed;
-            if should_scroll_selected {
-              scrolled_to_selected = None;
+          let scroll_selected_id = overlay_id.with("scroll_selected");
+          let mut scrolled_to_selected = ctx
+            .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+            .unwrap_or(None);
+          let should_scroll_selected = opening || down || up || query_changed;
+          if should_scroll_selected {
+            scrolled_to_selected = None;
+          }
+
+          for (idx, m) in matches.iter().enumerate() {
+            let tab = &app.tabs[m.tab_index];
+            let is_selected = idx == app.chrome.tab_search.selected;
+
+            let title = tab.display_title();
+            let secondary = tab_search_secondary_text(tab);
+
+            let row_id = egui::Id::new(("tab_search_row", tab.id));
+            let (rect, response) = ui.allocate_exact_size(
+              egui::vec2(ui.available_width().max(0.0), row_height),
+              egui::Sense::click(),
+            );
+            response.widget_info({
+              let label = title.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            });
+
+            let hover_t = motion.animate_bool(
+              ui.ctx(),
+              row_id.with("hover"),
+              response.hovered(),
+              motion.durations.hover_fade,
+            );
+            let selected_t = motion.animate_bool(
+              ui.ctx(),
+              row_id.with("selected"),
+              is_selected,
+              motion.durations.hover_fade,
+            );
+            if hover_t > 0.0 {
+              ui.painter().rect_filled(
+                rect,
+                rounding,
+                with_alpha(hovered_fill, hover_t * open_opacity),
+              );
+            }
+            if selected_t > 0.0 {
+              ui.painter().rect_filled(
+                rect,
+                rounding,
+                with_alpha(selected_fill, selected_t * open_opacity),
+              );
             }
 
-            for (idx, m) in matches.iter().enumerate() {
-              let tab = &app.tabs[m.tab_index];
-              let is_selected = idx == app.chrome.tab_search.selected;
+            // Keep the selected row visible when navigating via keyboard (or on initial open).
+            //
+            // Avoid continuously forcing the scroll position: only scroll when the selection was
+            // recently updated by keyboard input or when the overlay is first opened.
+            if is_selected && should_scroll_selected && scrolled_to_selected != Some(idx) {
+              response.scroll_to_me(Some(egui::Align::Center));
+              scrolled_to_selected = Some(idx);
+            }
 
-              let title = tab.display_title();
-              let secondary = tab_search_secondary_text(tab);
-
-              let row_id = egui::Id::new(("tab_search_row", tab.id));
-              let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width().max(0.0), row_height),
-                egui::Sense::click(),
-              );
-              response.widget_info({
-                let label = title.clone();
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-              });
-
-              let hover_t = motion.animate_bool(
-                ui.ctx(),
-                row_id.with("hover"),
-                response.hovered(),
-                motion.durations.hover_fade,
-              );
-              let selected_t = motion.animate_bool(
-                ui.ctx(),
-                row_id.with("selected"),
-                is_selected,
-                motion.durations.hover_fade,
-              );
-              if hover_t > 0.0 {
-                ui.painter().rect_filled(
-                  rect,
-                  rounding,
-                  with_alpha(hovered_fill, hover_t * open_opacity),
-                );
-              }
-              if selected_t > 0.0 {
-                ui.painter().rect_filled(
-                  rect,
-                  rounding,
-                  with_alpha(selected_fill, selected_t * open_opacity),
-                );
-              }
-
-              // Keep the selected row visible when navigating via keyboard (or on initial open).
-              //
-              // Avoid continuously forcing the scroll position: only scroll when the selection was
-              // recently updated by keyboard input or when the overlay is first opened.
-              if is_selected && should_scroll_selected && scrolled_to_selected != Some(idx) {
-                response.scroll_to_me(Some(egui::Align::Center));
-                scrolled_to_selected = Some(idx);
-              }
-
-              ui.allocate_ui_at_rect(rect.shrink2(inner_margin), |ui| {
-                ui.horizontal(|ui| {
-                  let mut drew_favicon = false;
-                  if let Some(tex_id) = favicon_for_tab(tab.id) {
-                    let uv = egui::Rect::from_min_max(
-                      egui::pos2(0.0, 0.0),
-                      egui::pos2(1.0, 1.0),
-                    );
-                    if let Some(meta) = tab.favicon_meta {
-                      let (w, h) = meta.size_px;
-                      if w > 0 && h > 0 {
-                        let height_points = 16.0;
-                        let aspect = (w as f32) / (h as f32);
-                        let width_points = (height_points * aspect).clamp(8.0, 32.0);
-                        let (_id, rect) =
-                          ui.allocate_space(egui::vec2(width_points, height_points));
-                        if ui.is_rect_visible(rect) {
-                          ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
-                        }
-                        drew_favicon = true;
-                      }
-                    }
-                    if !drew_favicon {
-                      let (_id, rect) = ui.allocate_space(egui::vec2(16.0, 16.0));
+            ui.allocate_ui_at_rect(rect.shrink2(inner_margin), |ui| {
+              ui.horizontal(|ui| {
+                let mut drew_favicon = false;
+                if let Some(tex_id) = favicon_for_tab(tab.id) {
+                  let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                  if let Some(meta) = tab.favicon_meta {
+                    let (w, h) = meta.size_px;
+                    if w > 0 && h > 0 {
+                      let height_points = 16.0;
+                      let aspect = (w as f32) / (h as f32);
+                      let width_points = (height_points * aspect).clamp(8.0, 32.0);
+                      let (_id, rect) = ui.allocate_space(egui::vec2(width_points, height_points));
                       if ui.is_rect_visible(rect) {
                         ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
                       }
@@ -669,34 +674,42 @@ fn tab_search_overlay_ui(
                     }
                   }
                   if !drew_favicon {
-                    ui.add_space(16.0);
+                    let (_id, rect) = ui.allocate_space(egui::vec2(16.0, 16.0));
+                    if ui.is_rect_visible(rect) {
+                      ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
+                    }
+                    drew_favicon = true;
                   }
+                }
+                if !drew_favicon {
+                  ui.add_space(16.0);
+                }
 
-                  ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(title).strong());
-                    ui.label(egui::RichText::new(secondary).small().weak());
-                  });
+                ui.vertical(|ui| {
+                  ui.label(egui::RichText::new(title).strong());
+                  ui.label(egui::RichText::new(secondary).small().weak());
                 });
               });
-
-              if app.chrome.tab_search.open && response.hovered() && !(down || up) {
-                app.chrome.tab_search.selected = idx;
-              }
-              if app.chrome.tab_search.open && response.clicked() {
-                clicked = Some(tab.id);
-              }
-            }
-
-            ctx.data_mut(|d| {
-              d.insert_temp(scroll_selected_id, scrolled_to_selected);
             });
+
+            if app.chrome.tab_search.open && response.hovered() && !(down || up) {
+              app.chrome.tab_search.selected = idx;
+            }
+            if app.chrome.tab_search.open && response.clicked() {
+              clicked = Some(tab.id);
+            }
+          }
+
+          ctx.data_mut(|d| {
+            d.insert_temp(scroll_selected_id, scrolled_to_selected);
           });
+        });
 
-        clicked
-      });
-
-      frame.inner
+      clicked
     });
+
+    frame.inner
+  });
   let action = inner.inner;
 
   // Click-away dismissal (common quick-switcher UX).
@@ -707,7 +720,9 @@ fn tab_search_overlay_ui(
     let overlay_rect = inner.response.rect;
     let clicked_outside = ctx.input(|i| {
       i.events.iter().any(|event| match event {
-        egui::Event::PointerButton { pos, pressed: true, .. } => !overlay_rect.contains(*pos),
+        egui::Event::PointerButton {
+          pos, pressed: true, ..
+        } => !overlay_rect.contains(*pos),
         _ => false,
       })
     });
@@ -764,9 +779,9 @@ pub fn chrome_ui_with_bookmarks(
     if let Some((min_x, min_y, max_x, max_y)) = app.chrome.tab_context_menu_rect {
       let clicked_outside = ctx.input(|i| {
         i.events.iter().any(|event| match event {
-          egui::Event::PointerButton { pos, pressed: true, .. } => {
-            pos.x < min_x || pos.x > max_x || pos.y < min_y || pos.y > max_y
-          }
+          egui::Event::PointerButton {
+            pos, pressed: true, ..
+          } => pos.x < min_x || pos.x > max_x || pos.y < min_y || pos.y > max_y,
           _ => false,
         })
       });
@@ -918,7 +933,7 @@ pub fn chrome_ui_with_bookmarks(
       forward,
       zoom_action,
     )
-    });
+  });
 
   // -----------------------------------------------------------------------------
   // Ctrl/Cmd+mouse wheel zoom
@@ -1121,7 +1136,16 @@ pub fn chrome_ui_with_bookmarks(
             t.warning.clone(),
           )
         })
-        .unwrap_or((false, false, false, None, None, zoom::DEFAULT_ZOOM, None, None));
+        .unwrap_or((
+          false,
+          false,
+          false,
+          None,
+          None,
+          zoom::DEFAULT_ZOOM,
+          None,
+          None,
+        ));
 
       let downloads = app.downloads.aggregate_progress();
       let downloads_hover = if downloads.active_count == 0 {
@@ -1143,7 +1167,10 @@ pub fn chrome_ui_with_bookmarks(
         } else {
           String::new()
         };
-        format!("Downloading…{count} {}", format_bytes(downloads.received_bytes))
+        format!(
+          "Downloading…{count} {}",
+          format_bytes(downloads.received_bytes)
+        )
       };
 
       let back_tooltip = if cfg!(target_os = "macos") {
@@ -1152,6 +1179,8 @@ pub fn chrome_ui_with_bookmarks(
         "Back (Alt+Left)"
       };
       let back_response = icon_button(ui, BrowserIcon::Back, back_tooltip, can_back);
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_back_button_id", back_response.id);
       if back_response.clicked() {
         actions.push(ChromeAction::Back);
       }
@@ -1162,16 +1191,22 @@ pub fn chrome_ui_with_bookmarks(
         "Forward (Alt+Right)"
       };
       let forward_response = icon_button(ui, BrowserIcon::Forward, forward_tooltip, can_forward);
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_forward_button_id", forward_response.id);
       if forward_response.clicked() {
         actions.push(ChromeAction::Forward);
       }
       if loading {
         let response = icon_button(ui, BrowserIcon::StopLoading, "Stop loading (Esc)", true);
+        #[cfg(test)]
+        store_test_id(ctx, "chrome_reload_stop_button_id", response.id);
         if response.clicked() {
           actions.push(ChromeAction::StopLoading);
         }
       } else {
         let response = icon_button(ui, BrowserIcon::Reload, "Reload (Ctrl/Cmd+R)", true);
+        #[cfg(test)]
+        store_test_id(ctx, "chrome_reload_stop_button_id", response.id);
         if response.clicked() {
           actions.push(ChromeAction::Reload);
         }
@@ -1188,67 +1223,73 @@ pub fn chrome_ui_with_bookmarks(
         actions.push(ChromeAction::Home);
       }
 
-       // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
-       // non-US keyboard layouts).
-       //
-       // In compact mode, keep the chrome minimal, but still surface a zoom indicator when the zoom
-       // is non-default so users can discover and reset it.
-       let zoom_non_default = (zoom_factor - zoom::DEFAULT_ZOOM).abs() > 1e-3;
-       if is_compact {
-         if zoom_non_default {
-           let percent = zoom::zoom_percent(zoom_factor);
-           let reset_zoom_label = format!("Zoom: {percent}% (reset)");
-           let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
-             MIN_CHROME_HIT_TARGET_POINTS,
-             MIN_CHROME_HIT_TARGET_POINTS,
-           ));
-           let reset_zoom_response = ui.add(reset_btn);
-           show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
-           paint_focus_ring(ui, &reset_zoom_response, focus_ring);
-           reset_zoom_response.widget_info({
-             let reset_zoom_label = reset_zoom_label.clone();
-             move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
-           });
-           if reset_zoom_response.clicked() {
-             if let Some(tab) = app.active_tab_mut() {
-               tab.zoom = zoom::zoom_reset();
-             }
-           }
-         }
-       } else {
-         let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
-         if response.clicked() {
-           if let Some(tab) = app.active_tab_mut() {
-             tab.zoom = zoom::zoom_out(tab.zoom);
-           }
-         }
-         let percent = zoom::zoom_percent(zoom_factor);
-         let reset_zoom_label = format!("Zoom: {percent}% (reset)");
-         let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
-           MIN_CHROME_HIT_TARGET_POINTS,
-           MIN_CHROME_HIT_TARGET_POINTS,
-         ));
-         let reset_zoom_response = ui.add(reset_btn);
-         show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
-         paint_focus_ring(ui, &reset_zoom_response, focus_ring);
-         reset_zoom_response.widget_info({
-           let reset_zoom_label = reset_zoom_label.clone();
-           move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
-         });
-         if reset_zoom_response.clicked() {
-           if let Some(tab) = app.active_tab_mut() {
-             tab.zoom = zoom::zoom_reset();
-           }
-         }
-         let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
-         #[cfg(test)]
-         store_test_id(ctx, "chrome_zoom_in_button_id", response.id);
-         if response.clicked() {
-           if let Some(tab) = app.active_tab_mut() {
-             tab.zoom = zoom::zoom_in(tab.zoom);
-           }
-         }
-       }
+      // Zoom controls (optional, but useful for discoverability and as a fallback on platforms with
+      // non-US keyboard layouts).
+      //
+      // In compact mode, keep the chrome minimal, but still surface a zoom indicator when the zoom
+      // is non-default so users can discover and reset it.
+      let zoom_non_default = (zoom_factor - zoom::DEFAULT_ZOOM).abs() > 1e-3;
+      if is_compact {
+        if zoom_non_default {
+          let percent = zoom::zoom_percent(zoom_factor);
+          let reset_zoom_label = format!("Zoom: {percent}% (reset)");
+          let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+            MIN_CHROME_HIT_TARGET_POINTS,
+            MIN_CHROME_HIT_TARGET_POINTS,
+          ));
+          let reset_zoom_response = ui.add(reset_btn);
+          #[cfg(test)]
+          store_test_id(ctx, "chrome_zoom_reset_button_id", reset_zoom_response.id);
+          show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
+          paint_focus_ring(ui, &reset_zoom_response, focus_ring);
+          reset_zoom_response.widget_info({
+            let reset_zoom_label = reset_zoom_label.clone();
+            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+          });
+          if reset_zoom_response.clicked() {
+            if let Some(tab) = app.active_tab_mut() {
+              tab.zoom = zoom::zoom_reset();
+            }
+          }
+        }
+      } else {
+        let response = icon_button(ui, BrowserIcon::ZoomOut, "Zoom out (Ctrl/Cmd+-)", true);
+        #[cfg(test)]
+        store_test_id(ctx, "chrome_zoom_out_button_id", response.id);
+        if response.clicked() {
+          if let Some(tab) = app.active_tab_mut() {
+            tab.zoom = zoom::zoom_out(tab.zoom);
+          }
+        }
+        let percent = zoom::zoom_percent(zoom_factor);
+        let reset_zoom_label = format!("Zoom: {percent}% (reset)");
+        let reset_btn = egui::Button::new(format!("{percent}%")).min_size(egui::vec2(
+          MIN_CHROME_HIT_TARGET_POINTS,
+          MIN_CHROME_HIT_TARGET_POINTS,
+        ));
+        let reset_zoom_response = ui.add(reset_btn);
+        #[cfg(test)]
+        store_test_id(ctx, "chrome_zoom_reset_button_id", reset_zoom_response.id);
+        show_tooltip_on_hover_or_focus(ui, &reset_zoom_response, "Reset zoom (Ctrl/Cmd+0)");
+        paint_focus_ring(ui, &reset_zoom_response, focus_ring);
+        reset_zoom_response.widget_info({
+          let reset_zoom_label = reset_zoom_label.clone();
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Button, reset_zoom_label.clone())
+        });
+        if reset_zoom_response.clicked() {
+          if let Some(tab) = app.active_tab_mut() {
+            tab.zoom = zoom::zoom_reset();
+          }
+        }
+        let response = icon_button(ui, BrowserIcon::ZoomIn, "Zoom in (Ctrl/Cmd++)", true);
+        #[cfg(test)]
+        store_test_id(ctx, "chrome_zoom_in_button_id", response.id);
+        if response.clicked() {
+          if let Some(tab) = app.active_tab_mut() {
+            tab.zoom = zoom::zoom_in(tab.zoom);
+          }
+        }
+      }
 
       // ---------------------------------------------------------------------------
       // Address bar (pill + truncation + security indicator)
@@ -1278,22 +1319,22 @@ pub fn chrome_ui_with_bookmarks(
         app.chrome.request_select_all_address_bar = true;
       }
 
-       // Capture + consume navigation keys (ArrowUp/Down/Enter/Escape) when the address bar is in
-       // text-edit mode so they don't reach the `TextEdit` (cursor movement) or bubble up to the
-       // page.
-       //
-       // NOTE: We intentionally *don't* consume keys based solely on the initial focus state:
-       // winit/egui can batch a focus change (click or Tab) and the first keystroke into the same
-       // frame, so we need to wait until after `activated_display_mode` is computed below.
-       let mut key_arrow_down = false;
-       let mut key_arrow_up = false;
-       let mut key_enter = false;
-       let mut key_escape = false;
+      // Capture + consume navigation keys (ArrowUp/Down/Enter/Escape) when the address bar is in
+      // text-edit mode so they don't reach the `TextEdit` (cursor movement) or bubble up to the
+      // page.
+      //
+      // NOTE: We intentionally *don't* consume keys based solely on the initial focus state:
+      // winit/egui can batch a focus change (click or Tab) and the first keystroke into the same
+      // frame, so we need to wait until after `activated_display_mode` is computed below.
+      let mut key_arrow_down = false;
+      let mut key_arrow_up = false;
+      let mut key_enter = false;
+      let mut key_escape = false;
 
-       // Derive the URL for display/indicator from the active tab (not from in-progress address bar
-       // edits).
-       let active_url = app
-         .active_tab()
+      // Derive the URL for display/indicator from the active tab (not from in-progress address bar
+      // edits).
+      let active_url = app
+        .active_tab()
         .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
         .unwrap_or("")
         .to_string();
@@ -1344,27 +1385,31 @@ pub fn chrome_ui_with_bookmarks(
       }
       let show_text_edit = show_text_edit_initial || activated_display_mode;
 
-       if show_text_edit {
-         ui.input_mut(|i| {
-           key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
-           key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
-           key_enter = i.consume_key(Default::default(), egui::Key::Enter);
-           key_escape = i.consume_key(Default::default(), egui::Key::Escape);
-         });
-       }
-       address_bar_rect = Some(bar_rect);
-       #[cfg(test)]
-       store_test_rect(ctx, "chrome_address_bar_rect", bar_rect);
-       if !show_text_edit {
-         // When the address bar is in display mode (non-editing), still expose a focusable element
-         // for assistive tech to activate.
+      if show_text_edit {
+        ui.input_mut(|i| {
+          key_arrow_down = i.consume_key(Default::default(), egui::Key::ArrowDown);
+          key_arrow_up = i.consume_key(Default::default(), egui::Key::ArrowUp);
+          key_enter = i.consume_key(Default::default(), egui::Key::Enter);
+          key_escape = i.consume_key(Default::default(), egui::Key::Escape);
+        });
+      }
+      address_bar_rect = Some(bar_rect);
+      #[cfg(test)]
+      store_test_rect(ctx, "chrome_address_bar_rect", bar_rect);
+      if !show_text_edit {
+        // When the address bar is in display mode (non-editing), still expose a focusable element
+        // for assistive tech to activate.
         bar_response.widget_info(|| {
           egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y::ADDRESS_BAR_LABEL)
         });
       }
 
       let bar_rounding = egui::Rounding::same(bar_rect.height() / 2.0);
-      ui.painter().rect_filled(bar_rect, bar_rounding, ui.visuals().widgets.inactive.bg_fill);
+      ui.painter().rect_filled(
+        bar_rect,
+        bar_rounding,
+        ui.visuals().widgets.inactive.bg_fill,
+      );
 
       // Build the contents inside an inset rect to get pill-like padding.
       let pad = ui.spacing().button_padding;
@@ -1373,343 +1418,144 @@ pub fn chrome_ui_with_bookmarks(
       ui.allocate_ui_at_rect(inner_rect, |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
-        // Right-to-left layout ensures the URL text doesn't consume the entire width before we get a
-        // chance to place status indicators on the right edge.
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-          // Bookmark star (optional: only available when the caller supplies a bookmarks store).
-          if let Some(bookmarks) = omnibox_bookmarks {
-            let can_toggle = !active_url.trim().is_empty();
-            let is_bookmarked = can_toggle && bookmarks.contains_url(active_url.trim());
-            let action_label = if is_bookmarked {
-              "Remove bookmark"
-            } else {
-              "Bookmark this page"
-            };
-            let tooltip = if cfg!(target_os = "macos") {
-              format!("{action_label} (Cmd+D)")
-            } else {
-              format!("{action_label} (Ctrl+D)")
-            };
-            let icon = if is_bookmarked {
-              BrowserIcon::BookmarkFilled
-            } else {
-              BrowserIcon::BookmarkOutline
-            };
-            let (_id, rect) = ui.allocate_space(egui::vec2(
-              ui.spacing().interact_size.y,
-              ui.spacing().interact_size.y,
-            ));
-            let icon_id = address_bar_id.with("bookmark");
-            let mut response = ui.interact(
-              rect,
-              icon_id,
-              if can_toggle {
-                egui::Sense::click()
-              } else {
-                egui::Sense::hover()
-              },
-            );
-            response = response.on_hover_text(tooltip.as_str());
-            response.widget_info(move || {
-              egui::WidgetInfo::labeled(egui::WidgetType::Button, action_label)
-            });
-            show_tooltip_on_focus(ui, &response, tooltip.as_str());
+        // Split into left (security icon + URL) and right (status indicators + actions) regions so
+        // Tab focus traversal follows the visual left-to-right order while preserving truncation.
+        let badge_rounding =
+          egui::Rounding::same((ui.visuals().widgets.inactive.rounding.nw * 0.4).clamp(2.0, 4.0));
+        let badge_margin = {
+          let pad = ui.spacing().button_padding;
+          egui::Margin::same((pad.y * 0.35).clamp(1.0, 3.0))
+        };
 
-            // Micro-interaction: fade a subtle hover fill in/out.
-            let highlight = can_toggle && (response.hovered() || response.has_focus());
-            let hover_t = motion.animate_bool(
-              ui.ctx(),
-              icon_id.with("hover"),
-              highlight,
-              motion.durations.hover_fade,
-            );
-            if hover_t > 0.0 {
-              let rounding = egui::Rounding::same(
-                (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
-              );
-              ui.painter().rect_filled(
-                rect,
-                rounding,
-                with_alpha(ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85), hover_t),
-              );
-            }
+        let err_msg = error.as_deref().filter(|s| !s.trim().is_empty());
+        let err_t = motion.animate_bool(
+          ctx,
+          address_bar_id.with("status_badge_error"),
+          err_msg.is_some(),
+          motion.durations.progress_fade,
+        );
 
-            let color = if is_bookmarked {
-              ui.visuals().selection.stroke.color
-            } else if highlight {
-              ui.visuals().text_color()
-            } else {
-              ui.visuals().weak_text_color()
-            };
-            paint_icon_in_rect(ui, rect, icon, ui.spacing().icon_width, color);
-            paint_focus_ring(ui, &response, focus_ring);
-            if response.clicked() {
-              actions.push(ChromeAction::ToggleBookmarkForActiveTab);
-            }
-          }
+        let warn_msg = warning.as_deref().filter(|s| !s.trim().is_empty());
+        let warn_t = motion.animate_bool(
+          ctx,
+          address_bar_id.with("status_badge_warning"),
+          warn_msg.is_some(),
+          motion.durations.progress_fade,
+        );
 
-          let badge_rounding =
-            egui::Rounding::same((ui.visuals().widgets.inactive.rounding.nw * 0.4).clamp(2.0, 4.0));
-          let badge_margin = {
-            let pad = ui.spacing().button_padding;
-            egui::Margin::same((pad.y * 0.35).clamp(1.0, 3.0))
-          };
+        let full_rect = ui.max_rect();
+        let item_spacing = ui.spacing().item_spacing.x;
+        let button_side = ui.spacing().interact_size.y;
+        let icon_side = ui.spacing().icon_width;
+        let badge_side = icon_side + badge_margin.left + badge_margin.right;
+        let mut right_items = Vec::new();
+        if downloads.active_count > 0 {
+          right_items.push(50.0);
+        }
+        // Downloads button is always visible.
+        right_items.push(button_side);
+        if loading && !is_compact {
+          let font_id = egui::TextStyle::Small.resolve(ui.style());
+          let label_width = ui.fonts(|f| {
+            f.layout_no_wrap(loading_text.clone(), font_id, ui.visuals().text_color())
+              .size()
+              .x
+          });
+          right_items.push(label_width);
+        }
+        if loading {
+          right_items.push(icon_side);
+        }
+        if warn_t > 0.0 {
+          right_items.push(badge_side);
+        }
+        if err_t > 0.0 {
+          right_items.push(badge_side);
+        }
+        if omnibox_bookmarks.is_some() {
+          right_items.push(button_side);
+        }
+        let right_width = (right_items.iter().sum::<f32>()
+          + item_spacing * (right_items.len().saturating_sub(1) as f32))
+          .min(full_rect.width());
+        let gap = if right_width > 0.0 { item_spacing } else { 0.0 };
+        let left_width = (full_rect.width() - right_width - gap).max(0.0);
+        let left_rect =
+          egui::Rect::from_min_size(full_rect.min, egui::vec2(left_width, full_rect.height()));
+        let right_rect = egui::Rect::from_min_size(
+          egui::pos2(full_rect.right() - right_width, full_rect.top()),
+          egui::vec2(right_width, full_rect.height()),
+        );
 
-          let err_msg = error.as_deref().filter(|s| !s.trim().is_empty());
-          let err_t = motion.animate_bool(
-            ctx,
-            address_bar_id.with("status_badge_error"),
-            err_msg.is_some(),
-            motion.durations.progress_fade,
-          );
-          if err_t > 0.0 {
-            let err_fg = with_alpha(ui.visuals().error_fg_color, err_t);
-            let err_bg_base = egui::Color32::from_rgba_unmultiplied(
-              ui.visuals().error_fg_color.r(),
-              ui.visuals().error_fg_color.g(),
-              ui.visuals().error_fg_color.b(),
-              40,
-            );
-            let err_bg = with_alpha(err_bg_base, err_t);
-            let a11y_label = err_msg
-              .map(|err| {
-                let first_line = err.lines().next().unwrap_or(err).trim();
-                if first_line.chars().count() > 160 {
-                  format!(
-                    "Error: {}…",
-                    first_line.chars().take(160).collect::<String>()
-                  )
-                } else {
-                  format!("Error: {first_line}")
-                }
-              })
-              // The badge can still be visible while fading out (err_msg already cleared).
-              .unwrap_or_else(|| "Error".to_string());
-            let resp = egui::Frame::none()
-              .fill(err_bg)
-              .rounding(badge_rounding)
-              .inner_margin(badge_margin)
-              .show(ui, |ui| {
-                let icon_resp =
-                  icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
-                icon_resp.widget_info({
-                  let label = a11y_label.clone();
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
-                });
-              })
-              .response;
-            if let Some(err) = err_msg {
-              let _ = resp.on_hover_text(err);
-            }
-          }
-
-          let warn_msg = warning.as_deref().filter(|s| !s.trim().is_empty());
-          let warn_t = motion.animate_bool(
-            ctx,
-            address_bar_id.with("status_badge_warning"),
-            warn_msg.is_some(),
-            motion.durations.progress_fade,
-          );
-          if warn_t > 0.0 {
-            let warn_fg = with_alpha(ui.visuals().warn_fg_color, warn_t);
-            let warn_bg_base = egui::Color32::from_rgba_unmultiplied(
-              ui.visuals().warn_fg_color.r(),
-              ui.visuals().warn_fg_color.g(),
-              ui.visuals().warn_fg_color.b(),
-              40,
-            );
-            let warn_bg = with_alpha(warn_bg_base, warn_t);
-            let a11y_label = warn_msg
-              .map(|warn| {
-                let first_line = warn.lines().next().unwrap_or(warn).trim();
-                if first_line.chars().count() > 160 {
-                  format!(
-                    "Warning: {}…",
-                    first_line.chars().take(160).collect::<String>()
-                  )
-                } else {
-                  format!("Warning: {first_line}")
-                }
-              })
-              // The badge can still be visible while fading out (warn_msg already cleared).
-              .unwrap_or_else(|| "Warning".to_string());
-            let resp = egui::Frame::none()
-              .fill(warn_bg)
-              .rounding(badge_rounding)
-              .inner_margin(badge_margin)
-              .show(ui, |ui| {
-                let icon_resp = icon_tinted(
+        ui.allocate_ui_at_rect(left_rect, |ui| {
+          ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            match indicator {
+              security_indicator::SecurityIndicator::Secure => {
+                let label = indicator.tooltip();
+                let resp = icon_tinted(
+                  ui,
+                  BrowserIcon::LockSecure,
+                  ui.spacing().icon_width,
+                  ui.visuals().text_color(),
+                )
+                .on_hover_text(label);
+                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+              }
+              security_indicator::SecurityIndicator::Insecure => {
+                let label = indicator.tooltip();
+                let resp = icon_tinted(
                   ui,
                   BrowserIcon::WarningInsecure,
                   ui.spacing().icon_width,
-                  warn_fg,
-                );
-                icon_resp.widget_info({
-                  let label = a11y_label.clone();
-                  move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
-                });
-              })
-              .response;
-            if let Some(warn) = warn_msg {
-              let _ = resp.on_hover_text(warn);
-            }
-          }
-
-          if loading {
-            let resp = spinner(ui, ui.spacing().icon_width).on_hover_text(loading_text.clone());
-            // In compact mode the spinner may be the only visible loading affordance, so expose the
-            // full loading text to screen readers (hover text is not sufficient).
-            resp.widget_info({
-              let label = loading_text.clone();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
-            });
-            if !is_compact {
-              let _ = ui
-                .add(
-                  egui::Label::new(egui::RichText::new(loading_text.clone()).small())
-                    .wrap(false)
-                    .truncate(true),
+                  ui.visuals().warn_fg_color,
                 )
-                .on_hover_text(loading_text.clone());
+                .on_hover_text(label);
+                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+              }
+              security_indicator::SecurityIndicator::Neutral => {
+                let label = indicator.tooltip();
+                let resp = icon_tinted(
+                  ui,
+                  BrowserIcon::Info,
+                  ui.spacing().icon_width,
+                  ui.visuals().weak_text_color(),
+                )
+                .on_hover_text(label);
+                resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+              }
             }
-          }
 
-          // Downloads button + progress indicator.
-          let (_id, downloads_rect) = ui.allocate_space(egui::vec2(
-            ui.spacing().interact_size.y,
-            ui.spacing().interact_size.y,
-          ));
-          let downloads_id = address_bar_id.with("downloads");
-          let downloads_resp = ui
-            .interact(downloads_rect, downloads_id, egui::Sense::click())
-            .on_hover_text(downloads_hover.clone());
-          downloads_resp.widget_info({
-            let label = downloads_hover.clone();
-            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-          });
-          show_tooltip_on_focus(ui, &downloads_resp, &downloads_hover);
+            if show_text_edit {
+              // Apply focus/selection requests *before* constructing the `TextEdit` so they take
+              // effect in the same frame.
+              if app.chrome.request_focus_address_bar {
+                ui.memory_mut(|mem| mem.request_focus(address_bar_id));
+                app.chrome.request_focus_address_bar = false;
+              }
+              if app.chrome.request_select_all_address_bar {
+                let end = app.chrome.address_bar_text.chars().count();
+                let mut state =
+                  egui::text_edit::TextEditState::load(ctx, address_bar_id).unwrap_or_default();
+                state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+                  egui::text::CCursor::new(0),
+                  egui::text::CCursor::new(end),
+                )));
+                state.store(ctx, address_bar_id);
+                app.chrome.request_select_all_address_bar = false;
+              }
 
-          // Micro-interaction: fade a subtle hover fill in/out.
-          let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
-          let hover_t = motion.animate_bool(
-            ui.ctx(),
-            downloads_id.with("hover"),
-            highlight,
-            motion.durations.hover_fade,
-          );
-          if hover_t > 0.0 {
-            let rounding = egui::Rounding::same(
-              (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
-            );
-            ui.painter().rect_filled(
-              downloads_rect,
-              rounding,
-              with_alpha(ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85), hover_t),
-            );
-          }
-
-          let downloads_icon_color = if downloads.active_count > 0 || highlight {
-            ui.visuals().text_color()
-          } else {
-            ui.visuals().weak_text_color()
-          };
-          paint_icon_in_rect(
-            ui,
-            downloads_rect,
-            BrowserIcon::Download,
-            ui.spacing().icon_width,
-            downloads_icon_color,
-          );
-
-          if downloads.active_count > 0 {
-            // Render a small count badge on the icon so multiple downloads are visible at a glance.
-            let count_text = if downloads.active_count > 99 {
-              "99+".to_string()
-            } else {
-              downloads.active_count.to_string()
-            };
-            let badge_fill = ui.visuals().selection.stroke.color;
-            let [r, g, b, _] = badge_fill.to_array();
-            let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
-            let badge_text_color = if luma > 150 {
-              egui::Color32::BLACK
-            } else {
-              egui::Color32::WHITE
-            };
-
-            let radius = (downloads_rect.height() * 0.23).clamp(6.0, 9.0);
-            let center =
-              egui::pos2(downloads_rect.right() - radius, downloads_rect.top() + radius);
-            ui.painter().circle_filled(center, radius, badge_fill);
-            ui.painter().text(
-              center,
-              egui::Align2::CENTER_CENTER,
-              count_text,
-              egui::FontId::proportional((radius * 1.3).clamp(9.0, 12.0)),
-              badge_text_color,
-            );
-          }
-
-          paint_focus_ring(ui, &downloads_resp, focus_ring);
-
-          if downloads_resp.clicked() {
-            actions.push(ChromeAction::ToggleDownloadsPanel);
-          }
-          if downloads.active_count > 0 {
-            if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
-              let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
-              ui.add(
-                egui::ProgressBar::new(frac)
-                  .desired_width(50.0)
-                  .text(""),
+              let response = ui.add(
+                egui::TextEdit::singleline(&mut app.chrome.address_bar_text)
+                  .id(address_bar_id)
+                  .desired_width(f32::INFINITY)
+                  .hint_text("Enter URL…")
+                  .frame(false),
               );
-            } else {
-              ui.add(
-                egui::ProgressBar::new(0.0)
-                  .desired_width(50.0)
-                  .animate(motion.enabled)
-                  .text(""),
-              );
-            }
-          }
-
-          if show_text_edit {
-            // Apply focus/selection requests *before* constructing the `TextEdit` so they take
-            // effect in the same frame.
-            //
-            // This avoids flaky behaviour where a click/Ctrl+L would first show the widget, then
-            // require an additional frame (and another OS event) before the actual egui focus was
-            // applied. It also ensures select-all is active before the first typed character is
-            // processed.
-            if app.chrome.request_focus_address_bar {
-              ui.memory_mut(|mem| mem.request_focus(address_bar_id));
-              app.chrome.request_focus_address_bar = false;
-            }
-            if app.chrome.request_select_all_address_bar {
-              let end = app.chrome.address_bar_text.chars().count();
-              let mut state =
-                egui::text_edit::TextEditState::load(ctx, address_bar_id).unwrap_or_default();
-              state.set_ccursor_range(Some(egui::text::CCursorRange::two(
-                egui::text::CCursor::new(0),
-                egui::text::CCursor::new(end),
-              )));
-              state.store(ctx, address_bar_id);
-              app.chrome.request_select_all_address_bar = false;
-            }
-
-            let response = ui.add(
-              egui::TextEdit::singleline(&mut app.chrome.address_bar_text)
-                .id(address_bar_id)
-                .desired_width(f32::INFINITY)
-                .hint_text("Enter URL…")
-                .frame(false),
-            );
-            response.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::ADDRESS_BAR_LABEL)
-            });
-            text_edit_response = Some(response);
-          } else {
-            if active_url.trim().is_empty() {
+              response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::ADDRESS_BAR_LABEL)
+              });
+              text_edit_response = Some(response);
+            } else if active_url.trim().is_empty() {
               ui.add(
                 egui::Label::new(
                   egui::RichText::new("Enter URL…").color(ui.visuals().weak_text_color()),
@@ -1761,43 +1607,294 @@ pub fn chrome_ui_with_bookmarks(
 
               ui.add(egui::Label::new(job).wrap(false).truncate(true));
             }
-          }
+          });
+        });
 
-          match indicator {
-            security_indicator::SecurityIndicator::Secure => {
-              let label = indicator.tooltip();
-              let resp = icon_tinted(
-                ui,
-                BrowserIcon::LockSecure,
-                ui.spacing().icon_width,
-                ui.visuals().text_color(),
-              )
-              .on_hover_text(label);
-              resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+        ui.allocate_ui_at_rect(right_rect, |ui| {
+          ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            // Downloads progress indicator (optional; shown to the left of the icon).
+            if downloads.active_count > 0 {
+              if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
+                let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+                ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""));
+              } else {
+                ui.add(
+                  egui::ProgressBar::new(0.0)
+                    .desired_width(50.0)
+                    .animate(motion.enabled)
+                    .text(""),
+                );
+              }
             }
-            security_indicator::SecurityIndicator::Insecure => {
-              let label = indicator.tooltip();
-              let resp = icon_tinted(
-                ui,
-                BrowserIcon::WarningInsecure,
-                ui.spacing().icon_width,
-                ui.visuals().warn_fg_color,
-              )
-              .on_hover_text(label);
-              resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+
+            // Downloads button.
+            let (_id, downloads_rect) = ui.allocate_space(egui::vec2(button_side, button_side));
+            let downloads_id = address_bar_id.with("downloads");
+            let downloads_resp = ui
+              .interact(downloads_rect, downloads_id, egui::Sense::click())
+              .on_hover_text(downloads_hover.clone());
+            #[cfg(test)]
+            store_test_id(ctx, "chrome_downloads_button_id", downloads_resp.id);
+            downloads_resp.widget_info({
+              let label = downloads_hover.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+            });
+            show_tooltip_on_focus(ui, &downloads_resp, &downloads_hover);
+
+            // Micro-interaction: fade a subtle hover fill in/out.
+            let highlight = downloads_resp.hovered() || downloads_resp.has_focus();
+            let hover_t = motion.animate_bool(
+              ui.ctx(),
+              downloads_id.with("hover"),
+              highlight,
+              motion.durations.hover_fade,
+            );
+            if hover_t > 0.0 {
+              let rounding = egui::Rounding::same(
+                (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
+              );
+              ui.painter().rect_filled(
+                downloads_rect,
+                rounding,
+                with_alpha(
+                  ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85),
+                  hover_t,
+                ),
+              );
             }
-            security_indicator::SecurityIndicator::Neutral => {
-              let label = indicator.tooltip();
-              let resp = icon_tinted(
-                ui,
-                BrowserIcon::Info,
-                ui.spacing().icon_width,
-                ui.visuals().weak_text_color(),
-              )
-              .on_hover_text(label);
-              resp.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label));
+
+            let downloads_icon_color = if downloads.active_count > 0 || highlight {
+              ui.visuals().text_color()
+            } else {
+              ui.visuals().weak_text_color()
+            };
+            paint_icon_in_rect(
+              ui,
+              downloads_rect,
+              BrowserIcon::Download,
+              ui.spacing().icon_width,
+              downloads_icon_color,
+            );
+
+            if downloads.active_count > 0 {
+              // Render a small count badge on the icon so multiple downloads are visible at a glance.
+              let count_text = if downloads.active_count > 99 {
+                "99+".to_string()
+              } else {
+                downloads.active_count.to_string()
+              };
+              let badge_fill = ui.visuals().selection.stroke.color;
+              let [r, g, b, _] = badge_fill.to_array();
+              let luma = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+              let badge_text_color = if luma > 150 {
+                egui::Color32::BLACK
+              } else {
+                egui::Color32::WHITE
+              };
+
+              let radius = (downloads_rect.height() * 0.23).clamp(6.0, 9.0);
+              let center = egui::pos2(
+                downloads_rect.right() - radius,
+                downloads_rect.top() + radius,
+              );
+              ui.painter().circle_filled(center, radius, badge_fill);
+              ui.painter().text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                count_text,
+                egui::FontId::proportional((radius * 1.3).clamp(9.0, 12.0)),
+                badge_text_color,
+              );
             }
-          }
+
+            paint_focus_ring(ui, &downloads_resp, focus_ring);
+
+            if downloads_resp.clicked() {
+              actions.push(ChromeAction::ToggleDownloadsPanel);
+            }
+
+            // Loading status (optional; shown to the right of downloads).
+            if loading && !is_compact {
+              let _ = ui
+                .add(
+                  egui::Label::new(egui::RichText::new(loading_text.clone()).small())
+                    .wrap(false)
+                    .truncate(true),
+                )
+                .on_hover_text(loading_text.clone());
+            }
+            if loading {
+              let resp = spinner(ui, icon_side).on_hover_text(loading_text.clone());
+              // In compact mode the spinner may be the only visible loading affordance, so expose the
+              // full loading text to screen readers (hover text is not sufficient).
+              resp.widget_info({
+                let label = loading_text.clone();
+                move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+              });
+            }
+
+            // Warning badge (optional; shown to the right of the spinner).
+            if warn_t > 0.0 {
+              let warn_fg = with_alpha(ui.visuals().warn_fg_color, warn_t);
+              let warn_bg_base = egui::Color32::from_rgba_unmultiplied(
+                ui.visuals().warn_fg_color.r(),
+                ui.visuals().warn_fg_color.g(),
+                ui.visuals().warn_fg_color.b(),
+                40,
+              );
+              let warn_bg = with_alpha(warn_bg_base, warn_t);
+              let a11y_label = warn_msg
+                .map(|warn| {
+                  let first_line = warn.lines().next().unwrap_or(warn).trim();
+                  if first_line.chars().count() > 160 {
+                    format!(
+                      "Warning: {}…",
+                      first_line.chars().take(160).collect::<String>()
+                    )
+                  } else {
+                    format!("Warning: {first_line}")
+                  }
+                })
+                // The badge can still be visible while fading out (warn_msg already cleared).
+                .unwrap_or_else(|| "Warning".to_string());
+              let resp = egui::Frame::none()
+                .fill(warn_bg)
+                .rounding(badge_rounding)
+                .inner_margin(badge_margin)
+                .show(ui, |ui| {
+                  let icon_resp = icon_tinted(
+                    ui,
+                    BrowserIcon::WarningInsecure,
+                    ui.spacing().icon_width,
+                    warn_fg,
+                  );
+                  icon_resp.widget_info({
+                    let label = a11y_label.clone();
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+                  });
+                })
+                .response;
+              if let Some(warn) = warn_msg {
+                let _ = resp.on_hover_text(warn);
+              }
+            }
+
+            // Error badge (optional; shown to the right of warning).
+            if err_t > 0.0 {
+              let err_fg = with_alpha(ui.visuals().error_fg_color, err_t);
+              let err_bg_base = egui::Color32::from_rgba_unmultiplied(
+                ui.visuals().error_fg_color.r(),
+                ui.visuals().error_fg_color.g(),
+                ui.visuals().error_fg_color.b(),
+                40,
+              );
+              let err_bg = with_alpha(err_bg_base, err_t);
+              let a11y_label = err_msg
+                .map(|err| {
+                  let first_line = err.lines().next().unwrap_or(err).trim();
+                  if first_line.chars().count() > 160 {
+                    format!(
+                      "Error: {}…",
+                      first_line.chars().take(160).collect::<String>()
+                    )
+                  } else {
+                    format!("Error: {first_line}")
+                  }
+                })
+                // The badge can still be visible while fading out (err_msg already cleared).
+                .unwrap_or_else(|| "Error".to_string());
+              let resp = egui::Frame::none()
+                .fill(err_bg)
+                .rounding(badge_rounding)
+                .inner_margin(badge_margin)
+                .show(ui, |ui| {
+                  let icon_resp =
+                    icon_tinted(ui, BrowserIcon::Error, ui.spacing().icon_width, err_fg);
+                  icon_resp.widget_info({
+                    let label = a11y_label.clone();
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+                  });
+                })
+                .response;
+              if let Some(err) = err_msg {
+                let _ = resp.on_hover_text(err);
+              }
+            }
+
+            // Bookmark star (optional: only available when the caller supplies a bookmarks store).
+            if let Some(bookmarks) = omnibox_bookmarks {
+              let can_toggle = !active_url.trim().is_empty();
+              let is_bookmarked = can_toggle && bookmarks.contains_url(active_url.trim());
+              let action_label = if is_bookmarked {
+                "Remove bookmark"
+              } else {
+                "Bookmark this page"
+              };
+              let tooltip = if cfg!(target_os = "macos") {
+                format!("{action_label} (Cmd+D)")
+              } else {
+                format!("{action_label} (Ctrl+D)")
+              };
+              let icon = if is_bookmarked {
+                BrowserIcon::BookmarkFilled
+              } else {
+                BrowserIcon::BookmarkOutline
+              };
+              let (_id, rect) = ui.allocate_space(egui::vec2(button_side, button_side));
+              let icon_id = address_bar_id.with("bookmark");
+              let mut response = ui.interact(
+                rect,
+                icon_id,
+                if can_toggle {
+                  egui::Sense::click()
+                } else {
+                  egui::Sense::hover()
+                },
+              );
+              #[cfg(test)]
+              store_test_id(ctx, "chrome_bookmark_star_id", response.id);
+              response = response.on_hover_text(tooltip.as_str());
+              response.widget_info(move || {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, action_label)
+              });
+              show_tooltip_on_focus(ui, &response, tooltip.as_str());
+
+              // Micro-interaction: fade a subtle hover fill in/out.
+              let highlight = can_toggle && (response.hovered() || response.has_focus());
+              let hover_t = motion.animate_bool(
+                ui.ctx(),
+                icon_id.with("hover"),
+                highlight,
+                motion.durations.hover_fade,
+              );
+              if hover_t > 0.0 {
+                let rounding = egui::Rounding::same(
+                  (ui.visuals().widgets.inactive.rounding.nw * 0.8).clamp(4.0, 6.0),
+                );
+                ui.painter().rect_filled(
+                  rect,
+                  rounding,
+                  with_alpha(
+                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.85),
+                    hover_t,
+                  ),
+                );
+              }
+
+              let color = if is_bookmarked {
+                ui.visuals().selection.stroke.color
+              } else if highlight {
+                ui.visuals().text_color()
+              } else {
+                ui.visuals().weak_text_color()
+              };
+              paint_icon_in_rect(ui, rect, icon, ui.spacing().icon_width, color);
+              paint_focus_ring(ui, &response, focus_ring);
+              if response.clicked() {
+                actions.push(ChromeAction::ToggleBookmarkForActiveTab);
+              }
+            }
+          });
         });
       });
 
@@ -1826,7 +1923,8 @@ pub fn chrome_ui_with_bookmarks(
       } else {
         ui.visuals().widgets.inactive.bg_stroke
       };
-      ui.painter().rect_stroke(bar_rect, bar_rounding, border_stroke);
+      ui.painter()
+        .rect_stroke(bar_rect, bar_rounding, border_stroke);
 
       let has_focus =
         bar_response.has_focus() || text_edit_response.as_ref().is_some_and(|r| r.has_focus());
@@ -1839,7 +1937,11 @@ pub fn chrome_ui_with_bookmarks(
         motion.durations.focus_ring,
       );
       if focus_t > 0.0 {
-        let alpha = if has_focus { focus_t.max(0.35) } else { focus_t };
+        let alpha = if has_focus {
+          focus_t.max(0.35)
+        } else {
+          focus_t
+        };
         let ring_color = with_alpha(focus_ring.stroke.color, alpha);
         // Keep the ring visible even when it is animating in/out (minimum 1pt stroke).
         let ring_width = (focus_ring.stroke.width - 1.0) * focus_t + 1.0;
@@ -1874,10 +1976,12 @@ pub fn chrome_ui_with_bookmarks(
             let w = track_rect.width() * progress;
             let rect = egui::Rect::from_min_max(
               track_rect.min,
-              egui::pos2((track_rect.left() + w).min(track_rect.right()), track_rect.bottom()),
+              egui::pos2(
+                (track_rect.left() + w).min(track_rect.right()),
+                track_rect.bottom(),
+              ),
             );
-            ui
-              .painter()
+            ui.painter()
               .rect_filled(rect, egui::Rounding::same(1.0), color);
           }
           Some(LoadProgressIndicator::Indeterminate) => {
@@ -1900,16 +2004,16 @@ pub fn chrome_ui_with_bookmarks(
               egui::pos2(x0, track_rect.top()),
               egui::pos2(x0 + seg_w, track_rect.bottom()),
             );
-            ui
-              .painter()
-              .with_clip_rect(track_rect)
-              .rect_filled(seg_rect, egui::Rounding::same(1.0), color);
+            ui.painter().with_clip_rect(track_rect).rect_filled(
+              seg_rect,
+              egui::Rounding::same(1.0),
+              color,
+            );
           }
           None => {
             // Fade-out path: we no longer have a progress value, but keep the line around briefly
             // so it doesn't "pop" out of existence.
-            ui
-              .painter()
+            ui.painter()
               .rect_filled(track_rect, egui::Rounding::same(1.0), color);
           }
         }
@@ -1974,7 +2078,8 @@ pub fn chrome_ui_with_bookmarks(
           };
           app.chrome.omnibox.suggestions = suggestions;
           app.chrome.omnibox.last_built_for_input = input;
-          app.chrome.omnibox.last_built_remote_fetched_at = app.chrome.remote_search_cache.fetched_at;
+          app.chrome.omnibox.last_built_remote_fetched_at =
+            app.chrome.remote_search_cache.fetched_at;
           if app.chrome.omnibox.suggestions.is_empty() {
             app.chrome.omnibox.open = false;
           }
@@ -1991,14 +2096,14 @@ pub fn chrome_ui_with_bookmarks(
             {
               let input = app.chrome.address_bar_text.clone();
               let suggestions = {
-               let ctx = OmniboxContext {
-                 open_tabs: &app.tabs,
-                 closed_tabs: &app.closed_tabs,
-                 visited: &app.visited,
-                 active_tab_id: app.active_tab_id(),
-                 bookmarks: omnibox_bookmarks,
-                 remote_search_suggest: Some(&app.chrome.remote_search_cache),
-               };
+                let ctx = OmniboxContext {
+                  open_tabs: &app.tabs,
+                  closed_tabs: &app.closed_tabs,
+                  visited: &app.visited,
+                  active_tab_id: app.active_tab_id(),
+                  bookmarks: omnibox_bookmarks,
+                  remote_search_suggest: Some(&app.chrome.remote_search_cache),
+                };
                 build_omnibox_suggestions_default_limit(&ctx, &input)
               };
               app.chrome.omnibox.suggestions = suggestions;
@@ -2027,7 +2132,8 @@ pub fn chrome_ui_with_bookmarks(
               }
             };
 
-            if app.chrome.omnibox.selected.is_none() && app.chrome.omnibox.original_input.is_none() {
+            if app.chrome.omnibox.selected.is_none() && app.chrome.omnibox.original_input.is_none()
+            {
               app.chrome.omnibox.original_input = Some(app.chrome.address_bar_text.clone());
             }
             app.chrome.omnibox.selected = Some(next);
@@ -2107,9 +2213,8 @@ pub fn chrome_ui_with_bookmarks(
             .and_then(|i| app.chrome.omnibox.suggestions.get(i))
             .map(omnibox_suggestion_accept_action);
 
-          let action = accept_action.unwrap_or_else(|| {
-            ChromeAction::NavigateTo(app.chrome.address_bar_text.clone())
-          });
+          let action = accept_action
+            .unwrap_or_else(|| ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
 
           if let ChromeAction::NavigateTo(url) = &action {
             app.chrome.address_bar_text = url.clone();
@@ -2206,7 +2311,11 @@ pub fn chrome_ui_with_bookmarks(
             }
             if menu_open {
               #[cfg(test)]
-              store_test_rect(ctx, "chrome_menu_item_toggle_bookmark_rect", toggle_bookmark.rect);
+              store_test_rect(
+                ctx,
+                "chrome_menu_item_toggle_bookmark_rect",
+                toggle_bookmark.rect,
+              );
             }
             if menu_open && toggle_bookmark.clicked() {
               actions.push(ChromeAction::ToggleBookmarkForActiveTab);
@@ -2302,8 +2411,7 @@ pub fn chrome_ui_with_bookmarks(
               .interact_pos()
               .or_else(|| i.pointer.latest_pos())
               .is_some_and(|pos| {
-                !menu_button.rect.contains(pos)
-                  && menu_rect.is_some_and(|rect| !rect.contains(pos))
+                !menu_button.rect.contains(pos) && menu_rect.is_some_and(|rect| !rect.contains(pos))
               })
         });
         if clicked_outside {
@@ -2324,6 +2432,8 @@ pub fn chrome_ui_with_bookmarks(
           icon_button(ui, BrowserIcon::Appearance, "Appearance", true)
         })
         .inner;
+      #[cfg(test)]
+      store_test_id(ctx, "chrome_appearance_button_id", appearance_response.id);
       appearance_button_rect = Some(appearance_response.rect);
       if appearance_response.clicked() {
         app.chrome.appearance_popup_open = !app.chrome.appearance_popup_open;
@@ -2358,8 +2468,7 @@ pub fn chrome_ui_with_bookmarks(
           if open_find_in_page {
             ui.memory_mut(|mem| mem.request_focus(find_id));
             let end = tab.find.query.chars().count();
-            let mut state =
-              egui::text_edit::TextEditState::load(ctx, find_id).unwrap_or_default();
+            let mut state = egui::text_edit::TextEditState::load(ctx, find_id).unwrap_or_default();
             state.set_ccursor_range(Some(egui::text::CCursorRange::two(
               egui::text::CCursor::new(0),
               egui::text::CCursor::new(end),
@@ -2392,9 +2501,8 @@ pub fn chrome_ui_with_bookmarks(
               .desired_width(220.0)
               .hint_text("Find in page…"),
           );
-          response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Find in page")
-          });
+          response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Find in page"));
 
           let match_count = tab.find.match_count;
           let active_idx = tab.find.active_match_index.map(|i| i + 1).unwrap_or(0);
@@ -2409,14 +2517,17 @@ pub fn chrome_ui_with_bookmarks(
             "Previous match (Shift+Enter)",
             prev_enabled,
           );
-          prev_resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Previous match")
-          });
+          prev_resp
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Previous match"));
           if prev_resp.clicked() {
             actions.push(ChromeAction::FindPrev(tab_id));
           }
-          let next_resp =
-            icon_button(ui, BrowserIcon::ArrowDown, "Next match (Enter)", next_enabled);
+          let next_resp = icon_button(
+            ui,
+            BrowserIcon::ArrowDown,
+            "Next match (Enter)",
+            next_enabled,
+          );
           next_resp
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Next match"));
           if next_resp.clicked() {
@@ -2432,9 +2543,8 @@ pub fn chrome_ui_with_bookmarks(
           let case_toggle = ui
             .toggle_value(&mut tab.find.case_sensitive, "Aa")
             .on_hover_text("Case sensitive");
-          case_toggle.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Case sensitive")
-          });
+          case_toggle
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Case sensitive"));
           let case_changed = case_toggle.changed();
 
           if response.changed() || case_changed {
@@ -2531,135 +2641,132 @@ pub fn chrome_ui_with_bookmarks(
           let row_height = ui.spacing().interact_size.y.max(24.0);
           let max_height = row_height * (MAX_VISIBLE_ROWS as f32);
 
-          egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
-            let scroll_selected_id = omnibox_dropdown_id.with("scroll_selected");
-            let mut scrolled_to_selected = ctx
-              .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
-              .unwrap_or(None);
-            if app.chrome.omnibox.selected.is_none() {
-              scrolled_to_selected = None;
-            }
-            for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
-              let is_selected = app.chrome.omnibox.selected == Some(idx);
-              let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), row_height),
-                egui::Sense::click(),
-              );
-              response.widget_info({
-                let label = omnibox_suggestion_a11y_label(suggestion);
-                move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-              });
-
-              let row_id = omnibox_dropdown_id.with(("row", idx));
-              let hover_t = motion.animate_bool(
-                ctx,
-                row_id.with("hover"),
-                response.hovered(),
-                motion.durations.hover_fade,
-              );
-              let selected_t = motion.animate_bool(
-                ctx,
-                row_id.with("selected"),
-                is_selected,
-                motion.durations.hover_fade,
-              );
-              if hover_t > 0.0 {
-                ui.painter().rect_filled(
-                  rect,
-                  0.0,
-                  with_alpha(
-                    ui.visuals().widgets.hovered.bg_fill,
-                    hover_t * omnibox_open_opacity,
-                  ),
+          egui::ScrollArea::vertical()
+            .max_height(max_height)
+            .show(ui, |ui| {
+              let scroll_selected_id = omnibox_dropdown_id.with("scroll_selected");
+              let mut scrolled_to_selected = ctx
+                .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+                .unwrap_or(None);
+              if app.chrome.omnibox.selected.is_none() {
+                scrolled_to_selected = None;
+              }
+              for (idx, suggestion) in app.chrome.omnibox.suggestions.iter().enumerate() {
+                let is_selected = app.chrome.omnibox.selected == Some(idx);
+                let (rect, response) = ui.allocate_exact_size(
+                  egui::vec2(ui.available_width(), row_height),
+                  egui::Sense::click(),
                 );
-              }
-              if selected_t > 0.0 {
-                ui.painter().rect_filled(
-                  rect,
-                  0.0,
-                  with_alpha(
-                    ui.visuals().selection.bg_fill,
-                    selected_t * omnibox_open_opacity,
-                  ),
+                response.widget_info({
+                  let label = omnibox_suggestion_a11y_label(suggestion);
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
+                });
+
+                let row_id = omnibox_dropdown_id.with(("row", idx));
+                let hover_t = motion.animate_bool(
+                  ctx,
+                  row_id.with("hover"),
+                  response.hovered(),
+                  motion.durations.hover_fade,
                 );
-              }
-              if is_selected && scrolled_to_selected != Some(idx) {
-                response.scroll_to_me(Some(egui::Align::Center));
-                scrolled_to_selected = Some(idx);
-              }
+                let selected_t = motion.animate_bool(
+                  ctx,
+                  row_id.with("selected"),
+                  is_selected,
+                  motion.durations.hover_fade,
+                );
+                if hover_t > 0.0 {
+                  ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    with_alpha(
+                      ui.visuals().widgets.hovered.bg_fill,
+                      hover_t * omnibox_open_opacity,
+                    ),
+                  );
+                }
+                if selected_t > 0.0 {
+                  ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    with_alpha(
+                      ui.visuals().selection.bg_fill,
+                      selected_t * omnibox_open_opacity,
+                    ),
+                  );
+                }
+                if is_selected && scrolled_to_selected != Some(idx) {
+                  response.scroll_to_me(Some(egui::Align::Center));
+                  scrolled_to_selected = Some(idx);
+                }
 
-              ui.allocate_ui_at_rect(rect, |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.horizontal(|ui| {
-                  ui.add_space(6.0);
-                  match omnibox_suggestion_icon(suggestion) {
-                    OmniboxSuggestionIcon::Icon(icon) => {
-                      // Render decorative row icons without allocating an egui widget so we don't
-                      // add noise to the accessibility tree (the row itself has a semantic label).
-                      let icon_side = ui.spacing().icon_width;
-                      let (_id, icon_rect) = ui.allocate_space(egui::vec2(icon_side, row_height));
-                      paint_icon_in_rect(
-                        ui,
-                        icon_rect,
-                        icon,
-                        icon_side,
-                        with_alpha(ui.visuals().text_color(), omnibox_open_opacity),
-                      );
+                ui.allocate_ui_at_rect(rect, |ui| {
+                  ui.spacing_mut().item_spacing.x = 8.0;
+                  ui.horizontal(|ui| {
+                    ui.add_space(6.0);
+                    match omnibox_suggestion_icon(suggestion) {
+                      OmniboxSuggestionIcon::Icon(icon) => {
+                        // Render decorative row icons without allocating an egui widget so we don't
+                        // add noise to the accessibility tree (the row itself has a semantic label).
+                        let icon_side = ui.spacing().icon_width;
+                        let (_id, icon_rect) = ui.allocate_space(egui::vec2(icon_side, row_height));
+                        paint_icon_in_rect(
+                          ui,
+                          icon_rect,
+                          icon,
+                          icon_side,
+                          with_alpha(ui.visuals().text_color(), omnibox_open_opacity),
+                        );
+                      }
+                      OmniboxSuggestionIcon::Text(text) => {
+                        ui.label(egui::RichText::new(text).strong());
+                      }
                     }
-                    OmniboxSuggestionIcon::Text(text) => {
-                      ui.label(egui::RichText::new(text).strong());
-                    }
-                  }
 
-                  let title = suggestion
-                    .title
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
-                  let url = suggestion
-                    .url
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
+                    let title = suggestion
+                      .title
+                      .as_deref()
+                      .map(str::trim)
+                      .filter(|s| !s.is_empty());
+                    let url = suggestion
+                      .url
+                      .as_deref()
+                      .map(str::trim)
+                      .filter(|s| !s.is_empty());
 
-                  let (primary, secondary) = if let Some(title) = title {
-                    (title, url)
-                  } else if let Some(url) = url {
-                    (url, None)
-                  } else if let OmniboxAction::Search(query) = &suggestion.action {
-                    (query.as_str(), None)
-                  } else {
-                    ("", None)
-                  };
+                    let (primary, secondary) = if let Some(title) = title {
+                      (title, url)
+                    } else if let Some(url) = url {
+                      (url, None)
+                    } else if let OmniboxAction::Search(query) = &suggestion.action {
+                      (query.as_str(), None)
+                    } else {
+                      ("", None)
+                    };
 
-                  ui.vertical(|ui| {
-                    ui.add(egui::Label::new(primary).wrap(false).truncate(true));
-                    if let Some(secondary) = secondary {
-                      ui.add(
-                        egui::Label::new(
-                          egui::RichText::new(secondary)
-                            .small()
-                            .color(with_alpha(
-                              ui.visuals().weak_text_color(),
-                              omnibox_open_opacity,
-                            )),
-                        )
-                        .wrap(false)
-                        .truncate(true),
-                      );
-                    }
+                    ui.vertical(|ui| {
+                      ui.add(egui::Label::new(primary).wrap(false).truncate(true));
+                      if let Some(secondary) = secondary {
+                        ui.add(
+                          egui::Label::new(egui::RichText::new(secondary).small().color(
+                            with_alpha(ui.visuals().weak_text_color(), omnibox_open_opacity),
+                          ))
+                          .wrap(false)
+                          .truncate(true),
+                        );
+                      }
+                    });
                   });
                 });
-              });
 
-              if response.clicked() {
-                clicked_suggestion = Some(idx);
+                if response.clicked() {
+                  clicked_suggestion = Some(idx);
+                }
               }
-            }
-            ctx.data_mut(|d| {
-              d.insert_temp(scroll_selected_id, scrolled_to_selected);
+              ctx.data_mut(|d| {
+                d.insert_temp(scroll_selected_id, scrolled_to_selected);
+              });
             });
-          });
         });
       });
 
@@ -2740,8 +2847,10 @@ pub fn chrome_ui_with_bookmarks(
     let mut popup_rect: Option<egui::Rect> = None;
     let inner = area.show(ctx, |ui| {
       ui.set_enabled(app.chrome.appearance_popup_open);
-      ui.visuals_mut().override_text_color =
-        Some(with_alpha(ui.visuals().text_color(), appearance_open_opacity));
+      ui.visuals_mut().override_text_color = Some(with_alpha(
+        ui.visuals().text_color(),
+        appearance_open_opacity,
+      ));
       let mut frame = egui::Frame::popup(ui.style());
       frame.fill = with_alpha(frame.fill, appearance_open_opacity);
       frame.stroke.color = with_alpha(frame.stroke.color, appearance_open_opacity);
@@ -2838,9 +2947,8 @@ pub fn chrome_ui_with_bookmarks(
             .clamp_to_range(true)
             .show_value(true),
         );
-        ui_scale_resp.widget_info(|| {
-          egui::WidgetInfo::labeled(egui::WidgetType::Slider, "UI scale")
-        });
+        ui_scale_resp
+          .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "UI scale"));
         if ui.button("Reset scale (1.0)").clicked() {
           app.appearance.ui_scale = DEFAULT_UI_SCALE;
         }
@@ -3071,7 +3179,8 @@ pub fn chrome_ui_with_bookmarks(
 
             ui.separator();
 
-            let close_other_tabs = ui.add_enabled(can_close_tabs, egui::Button::new("Close Other Tabs"));
+            let close_other_tabs =
+              ui.add_enabled(can_close_tabs, egui::Button::new("Close Other Tabs"));
             close_other_tabs.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close other tabs")
             });
@@ -3095,8 +3204,10 @@ pub fn chrome_ui_with_bookmarks(
 
             ui.separator();
 
-            let reopen_closed_tab =
-              ui.add_enabled(can_reopen_closed_tab, egui::Button::new("Reopen Closed Tab"));
+            let reopen_closed_tab = ui.add_enabled(
+              can_reopen_closed_tab,
+              egui::Button::new("Reopen Closed Tab"),
+            );
             reopen_closed_tab.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Reopen closed tab")
             });
@@ -3276,7 +3387,8 @@ pub fn hover_status_overlay_ui(
   }
 
   let screen_rect = ctx.screen_rect();
-  let mut anchor_offset = hover_status_overlay_anchor_offset(screen_rect, content_rect_points, margin);
+  let mut anchor_offset =
+    hover_status_overlay_anchor_offset(screen_rect, content_rect_points, margin);
   if motion.enabled {
     // Micro-interaction: subtle slide from the bottom edge.
     anchor_offset.y += (1.0 - open_opacity) * HOVER_STATUS_OVERLAY_SLIDE_PX;
@@ -3326,10 +3438,8 @@ pub fn hover_status_overlay_ui(
         stroke
       };
 
-      let rounding = egui::Rounding::same(
-        (visuals.widgets.inactive.rounding.nw * 0.6)
-          .clamp(4.0, 8.0),
-      );
+      let rounding =
+        egui::Rounding::same((visuals.widgets.inactive.rounding.nw * 0.6).clamp(4.0, 8.0));
 
       let mut frame = egui::Frame::none()
         .fill(fill)
@@ -3372,7 +3482,10 @@ fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
 
 #[cfg(test)]
 mod tests {
-  use super::{chrome_focus_ring_style, chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches, ChromeAction};
+  use super::{
+    chrome_focus_ring_style, chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches,
+    ChromeAction,
+  };
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
 
@@ -3669,7 +3782,10 @@ mod tests {
   fn omnibox_suggests_bookmarked_urls() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let mut bookmarks = BookmarkStore::default();
     bookmarks
@@ -3790,18 +3906,18 @@ mod tests {
       BrowserTabState::new(tab_id, "https://example.com/path?x=1#y".to_string()),
       true,
     );
- 
+
     // Simulate a click-to-focus address bar interaction where winit batches the click and first
     // keystrokes (text + Enter) into the same egui frame.
     let mut events = left_click_at(egui::pos2(400.0, 60.0));
     events.push(egui::Event::Text("example.com".to_string()));
     events.push(key_press(egui::Key::Enter));
- 
+
     let ctx = egui::Context::default();
     begin_frame(&ctx, events);
     let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
     let _ = ctx.end_frame();
- 
+
     assert!(
       actions
         .iter()
@@ -3814,7 +3930,10 @@ mod tests {
   fn hover_status_overlay_shows_hovered_url() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     app.active_tab_mut().unwrap().hovered_url = Some("https://example.com/".to_string());
 
     let ctx = new_context();
@@ -3833,7 +3952,10 @@ mod tests {
   fn chrome_shows_zoom_percent_when_non_default() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     app.active_tab_mut().unwrap().zoom = crate::ui::zoom::zoom_in(crate::ui::zoom::DEFAULT_ZOOM);
     let expected = format!(
       "{}%",
@@ -3919,8 +4041,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
 
     app.chrome.tab_search.open = true;
     app.chrome.tab_search.query.clear();
@@ -3959,14 +4087,20 @@ mod tests {
         .any(|action| matches!(action, ChromeAction::CloseTabSearch)),
       "expected ChromeAction::CloseTabSearch, got {actions:?}"
     );
-    assert!(!app.chrome.tab_search.open, "expected tab search to be closed");
+    assert!(
+      !app.chrome.tab_search.open,
+      "expected tab search to be closed"
+    );
   }
 
   #[test]
   fn click_outside_closes_tab_search_overlay() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     app.chrome.tab_search.open = true;
     app.chrome.tab_search.query.clear();
     app.chrome.tab_search.selected = 0;
@@ -3982,7 +4116,10 @@ mod tests {
         .any(|action| matches!(action, ChromeAction::CloseTabSearch)),
       "expected ChromeAction::CloseTabSearch, got {actions:?}"
     );
-    assert!(!app.chrome.tab_search.open, "expected tab search to be closed");
+    assert!(
+      !app.chrome.tab_search.open,
+      "expected tab search to be closed"
+    );
   }
 
   #[test]
@@ -4048,7 +4185,10 @@ mod tests {
   fn ctrl_l_focuses_address_bar_even_when_find_bar_has_focus() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
 
     let ctx = egui::Context::default();
     let modifiers = egui::Modifiers {
@@ -4128,7 +4268,9 @@ mod tests {
       Some("x")
     );
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::OpenFindInPage)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::OpenFindInPage)),
       "expected ChromeAction::OpenFindInPage, got {actions:?}"
     );
     assert!(
@@ -4148,9 +4290,10 @@ mod tests {
       BrowserTabState::new(tab_id, "about:newtab".to_string()),
       true,
     );
-    app
-      .visited
-      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
     app.chrome.address_bar_text.clear();
 
     let ctx = egui::Context::default();
@@ -4189,7 +4332,10 @@ mod tests {
       app.active_tab().is_some_and(|tab| tab.find.open),
       "expected find bar to be open"
     );
-    assert!(!app.chrome.omnibox.open, "expected omnibox dropdown to be closed");
+    assert!(
+      !app.chrome.omnibox.open,
+      "expected omnibox dropdown to be closed"
+    );
   }
 
   #[test]
@@ -5180,7 +5326,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::NewTab)),
       "expected ChromeAction::NewTab, got {actions:?}"
     );
   }
@@ -5190,8 +5338,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), false);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      false,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      true,
+    );
     assert!(app.pin_tab(tab_a));
 
     let ctx = egui::Context::default();
@@ -5230,8 +5384,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
     assert!(app.pin_tab(tab_a));
 
     let ctx = egui::Context::default();
@@ -5262,8 +5422,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
 
     let ctx = egui::Context::default();
 
@@ -5340,7 +5506,10 @@ mod tests {
   fn dragging_hovered_link_to_address_bar_emits_navigate_action() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
     app
       .active_tab_mut()
       .expect("expected active tab")
@@ -5464,9 +5633,10 @@ mod tests {
     );
 
     // Seed history so the omnibox has local providers available in addition to the primary action.
-    app
-      .visited
-      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
 
     app.chrome.address_bar_text.clear();
     let ctx = egui::Context::default();
@@ -5543,9 +5713,10 @@ mod tests {
       BrowserTabState::new(tab_id, "about:newtab".to_string()),
       true,
     );
-    app
-      .visited
-      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
 
     // Ensure typed input doesn't append to the active tab URL.
     app.chrome.address_bar_text.clear();
@@ -5606,10 +5777,7 @@ mod tests {
     let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
     let _ = ctx.end_frame();
 
-    assert!(
-      app.chrome.omnibox.open,
-      "expected omnibox dropdown to open"
-    );
+    assert!(app.chrome.omnibox.open, "expected omnibox dropdown to open");
     assert!(
       app.chrome.omnibox.suggestions.iter().any(|s| {
         s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
@@ -5628,9 +5796,10 @@ mod tests {
       BrowserTabState::new(tab_id, "about:newtab".to_string()),
       true,
     );
-    app
-      .visited
-      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
     app.chrome.address_bar_text.clear();
 
     let ctx = egui::Context::default();
@@ -5668,9 +5837,10 @@ mod tests {
       BrowserTabState::new(tab_id, "about:newtab".to_string()),
       true,
     );
-    app
-      .visited
-      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
     app.chrome.address_bar_text.clear();
 
     let ctx = egui::Context::default();
@@ -5711,9 +5881,10 @@ mod tests {
       BrowserTabState::new(tab_id, "about:newtab".to_string()),
       true,
     );
-    app
-      .visited
-      .record_visit("https://example.com/".to_string(), Some("Example".to_string()));
+    app.visited.record_visit(
+      "https://example.com/".to_string(),
+      Some("Example".to_string()),
+    );
     app.chrome.address_bar_text.clear();
 
     let ctx = egui::Context::default();
@@ -5736,9 +5907,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions
-        .iter()
-        .any(|action| matches!(action, ChromeAction::NavigateTo(url) if url == "https://example.com/")),
+      actions.iter().any(
+        |action| matches!(action, ChromeAction::NavigateTo(url) if url == "https://example.com/")
+      ),
       "expected ChromeAction::NavigateTo(\"https://example.com/\"), got {actions:?}"
     );
   }
@@ -5757,71 +5928,65 @@ mod tests {
 
   #[test]
   fn tab_focus_traversal_in_nav_row_is_left_to_right() {
+    // Expected focus traversal order matches the visual left-to-right order of the main toolbar
+    // row (navigation, zoom controls, address bar cluster).
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
-    app.push_tab(
-      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
-      true,
-    );
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.can_go_back = true;
+    tab.can_go_forward = true;
+    app.push_tab(tab, true);
+    let bookmarks = BookmarkStore::default();
     let ctx = egui::Context::default();
 
-    // Frame 1: layout and capture widget IDs.
+    // Frame 0: render once to capture the widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
     let _ = ctx.end_frame();
 
-    let home_id = expect_temp_id(&ctx, "chrome_home_button_id");
-    let address_bar_text_edit_id = expect_temp_id(&ctx, "chrome_address_bar_text_edit_id");
-    let address_bar_display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
-    let menu_button_id = expect_temp_id(&ctx, "chrome_menu_button_id");
+    let order = vec![
+      expect_temp_id(&ctx, "chrome_back_button_id"),
+      expect_temp_id(&ctx, "chrome_forward_button_id"),
+      expect_temp_id(&ctx, "chrome_reload_stop_button_id"),
+      expect_temp_id(&ctx, "chrome_home_button_id"),
+      // Zoom controls are present in non-compact layout (800px wide test context).
+      expect_temp_id(&ctx, "chrome_zoom_out_button_id"),
+      expect_temp_id(&ctx, "chrome_zoom_reset_button_id"),
+      expect_temp_id(&ctx, "chrome_zoom_in_button_id"),
+      // Address bar + right-side actions (left-to-right): address bar, downloads, bookmark, menu, appearance.
+      expect_temp_id(&ctx, "chrome_address_bar_text_edit_id"),
+      expect_temp_id(&ctx, "chrome_downloads_button_id"),
+      expect_temp_id(&ctx, "chrome_bookmark_star_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    ];
 
-    // Frame 2: focus a left-side toolbar button so we have a stable starting point for Tab
-    // traversal.
-    ctx.memory_mut(|mem| mem.request_focus(home_id));
+    // Frame 1: focus the first widget (back button).
+    ctx.memory_mut(|mem| mem.request_focus(order[0]));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
     let _ = ctx.end_frame();
-
     assert!(
-      ctx.memory(|mem| mem.has_focus(home_id)),
-      "expected initial focus on home button"
+      ctx.memory(|mem| mem.has_focus(order[0])),
+      "expected initial focus on back button"
     );
 
-    // Now Tab forward through widgets and ensure we reach the address bar before the menu button.
-    let mut address_step: Option<usize> = None;
-    let mut menu_step: Option<usize> = None;
-
-    for step in 0..32 {
+    // Subsequent frames: press Tab and ensure focus advances in the expected order.
+    for (idx, expected) in order.iter().enumerate().skip(1) {
       begin_frame(&ctx, vec![key_press(egui::Key::Tab)]);
-      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), |_| None);
       let _ = ctx.end_frame();
 
-      let address_focused = ctx.memory(|mem| {
-        mem.has_focus(address_bar_text_edit_id) || mem.has_focus(address_bar_display_id)
-      });
-      let menu_focused = ctx.memory(|mem| mem.has_focus(menu_button_id));
-
-      if address_focused && address_step.is_none() {
-        address_step = Some(step);
-      }
-      if menu_focused && menu_step.is_none() {
-        menu_step = Some(step);
-      }
-
-      if address_step.is_some() && menu_step.is_some() {
-        break;
-      }
+      let focused = order
+        .iter()
+        .copied()
+        .find(|id| ctx.memory(|mem| mem.has_focus(*id)));
+      assert_eq!(
+        focused,
+        Some(*expected),
+        "unexpected focus after Tab step {idx}; expected {expected:?}, got {focused:?}"
+      );
     }
-
-    let address_step = address_step.unwrap_or_else(|| {
-      panic!("expected Tab traversal to reach address bar before giving up")
-    });
-    let menu_step = menu_step.unwrap_or_else(|| panic!("expected Tab traversal to reach menu button"));
-
-    assert!(
-      address_step < menu_step,
-      "expected address bar to be focused before menu button (address step {address_step}, menu step {menu_step})"
-    );
   }
 
   #[test]
@@ -5946,7 +6111,10 @@ mod tests {
       "chrome_menu_item_toggle_bookmark_rect",
     );
     assert!(
-      matches!(actions.as_slice(), [ChromeAction::ToggleBookmarkForActiveTab]),
+      matches!(
+        actions.as_slice(),
+        [ChromeAction::ToggleBookmarkForActiveTab]
+      ),
       "expected ChromeAction::ToggleBookmarkForActiveTab, got {actions:?}"
     );
   }
@@ -6015,7 +6183,10 @@ mod tests {
       "chrome_menu_item_open_clear_browsing_data_rect",
     );
     assert!(
-      matches!(actions.as_slice(), [ChromeAction::OpenClearBrowsingDataDialog]),
+      matches!(
+        actions.as_slice(),
+        [ChromeAction::OpenClearBrowsingDataDialog]
+      ),
       "expected ChromeAction::OpenClearBrowsingDataDialog, got {actions:?}"
     );
   }
@@ -6025,8 +6196,14 @@ mod tests {
     let mut app = BrowserAppState::new();
     let tab_a = TabId(1);
     let tab_b = TabId(2);
-    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
 
     let ctx = egui::Context::default();
 
@@ -6058,7 +6235,10 @@ mod tests {
     });
 
     // Frame 3: click the "Duplicate Tab" menu item.
-    begin_frame(&ctx, left_click_at(duplicate_text_pos + egui::vec2(1.0, 1.0)));
+    begin_frame(
+      &ctx,
+      left_click_at(duplicate_text_pos + egui::vec2(1.0, 1.0)),
+    );
     let actions = chrome_ui(&ctx, &mut app, |_| None);
     let _ = ctx.end_frame();
 
