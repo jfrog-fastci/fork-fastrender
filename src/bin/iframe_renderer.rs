@@ -66,6 +66,23 @@ fn is_crash_url(url: &str) -> bool {
 }
 
 fn main() {
+  // Defense-in-depth: close any accidentally inherited file descriptors before doing any work.
+  //
+  // This renderer is intended to be spawned as a security boundary. In production, the parent
+  // process should also enforce `FD_CLOEXEC`/handle allowlisting at spawn time, but closing fds in
+  // the child provides an extra layer of protection against leaks.
+  //
+  // On macOS we avoid `pre_exec`-based fd sanitization for safety (posix_spawn), so this
+  // post-exec close pass is most useful on Linux.
+  #[cfg(target_os = "linux")]
+  {
+    if let Ok(cfg) = fastrender::system::renderer_sandbox::RendererSandboxConfig::from_env() {
+      if cfg.close_fds {
+        let _ = fastrender::sandbox::close_fds_except(&[0, 1, 2]);
+      }
+    }
+  }
+
   let mut stdin = String::new();
   if std::io::stdin().read_to_string(&mut stdin).is_err() {
     std::process::exit(2);
