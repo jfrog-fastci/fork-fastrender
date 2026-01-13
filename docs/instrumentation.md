@@ -47,6 +47,16 @@ when diagnostics are enabled:
 High `shaping_cache_evictions` typically implies cache pressure; raise `FASTR_TEXT_SHAPING_CACHE_CAPACITY`
 to reduce churn.
 
+Grid layout has a similar opt-in measurement cache profiler for diagnosing expensive repeated grid
+item measurement work (often triggered during intrinsic track sizing):
+
+- Enable `FASTR_GRID_MEASURE_CACHE_PROFILE=1` (or `FASTR_LAYOUT_PROFILE=1`) to populate
+  `diagnostics.stats.layout.grid_measure_cache_*` counters, including a breakdown of lookups/hits
+  attributable to style overrides (`override_fingerprint`).
+- To experiment with sharing style-override measurements across rayon threads, enable
+  `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES=1` and compare `*_shared_hits`, `*_misses`, and the
+  `*_override_*` counters.
+
 Stage buckets:
 
 - `fetch`: html decode + DOM parse/setup (viewport meta, DOM clone, top-layer plumbing)
