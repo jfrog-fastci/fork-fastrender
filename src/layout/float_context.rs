@@ -1424,6 +1424,20 @@ impl FloatContext {
         eprintln!("  range_cache: <borrowed>");
       }
     }
+
+    // Surface the existing FloatContext profiling counters when enabled so a dump contains both
+    // structural information (segments/edges) and the high-level scan counts used to detect
+    // regressions.
+    if toggles.truthy("FASTR_LAYOUT_PROFILE") {
+      let stats = float_profile_stats();
+      eprintln!(
+        "  float_profile: range_queries={} range_boundaries_scanned={} max_range_boundaries_scanned_per_query={} max_range_cache_segments_len={}",
+        stats.range_queries,
+        stats.range_boundaries_scanned,
+        stats.max_range_boundaries_scanned_per_query,
+        stats.max_range_cache_segments_len
+      );
+    }
   }
 
   /// Returns and clears the recorded timeout, if any.
