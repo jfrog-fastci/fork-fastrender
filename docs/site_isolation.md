@@ -225,6 +225,15 @@ Responsibilities:
 - Reference-count processes by the number of live frames currently assigned to them.
 - Handle crashes (mark dead; notify `FrameTree` owners; allow reload to respawn).
 
+Scope (important):
+
+- The registry is **global to the browser process**, not per-tab.
+- Therefore, different tabs/windows that navigate to the same `SiteKey` are expected to **reuse the
+  same renderer process** (site-per-process, not tab-per-process).
+  - This matches the “one process per site” goal in the multiprocess workstream.
+  - Embeddings may optionally provide a debug mode that forces process-per-tab, but it must be
+    opt-in and must not be used as the default site isolation semantics.
+
 Minimal API shape:
 
 ```rust
