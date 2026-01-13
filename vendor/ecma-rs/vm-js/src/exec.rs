@@ -1074,7 +1074,12 @@ impl RuntimeEnv {
     Ok(!check_scope.heap().to_boolean(blocked)?)
   }
 
-  fn declare_var(&mut self, vm: &mut Vm, scope: &mut Scope<'_>, name: &str) -> Result<(), VmError> {
+  pub(crate) fn declare_var(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    name: &str,
+  ) -> Result<(), VmError> {
     // `var` declarations can be introduced dynamically via `eval` (direct or indirect). Those
     // declarations must not conflict with existing lexical bindings in the same variable scope.
     //

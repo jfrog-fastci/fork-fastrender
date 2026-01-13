@@ -350,12 +350,117 @@ impl<'vm> HirEvaluator<'vm> {
     //
     // This enables simple recursion and calling a function before its declaration statement is
     // executed.
+    self.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
     self.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;
 
     // Create `let` / `const` bindings for the entire function body statement list up-front so TDZ
     // + shadowing semantics are correct.
     self.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), self.env.lexical_env())?;
 
+    Ok(())
+  }
+
+  fn instantiate_var_decls(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+  ) -> Result<(), VmError> {
+    for stmt_id in stmts {
+      self.vm.tick()?;
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      match &stmt.kind {
+        hir_js::StmtKind::Var(decl) => {
+          if decl.kind == hir_js::VarDeclKind::Var {
+            for declarator in &decl.declarators {
+              self.vm.tick()?;
+              let pat = self.get_pat(body, declarator.pat)?;
+              let hir_js::PatKind::Ident(name_id) = pat.kind else {
+                return Err(VmError::Unimplemented(
+                  "non-identifier variable declarations (hir-js compiled path)",
+                ));
+              };
+              let name = self.resolve_name(name_id)?;
+              self.env.declare_var(self.vm, scope, name.as_str())?;
+            }
+          }
+        }
+        hir_js::StmtKind::For { init, body: inner, .. } => {
+          if let Some(hir_js::ForInit::Var(decl)) = init {
+            if decl.kind == hir_js::VarDeclKind::Var {
+              for declarator in &decl.declarators {
+                self.vm.tick()?;
+                let pat = self.get_pat(body, declarator.pat)?;
+                let hir_js::PatKind::Ident(name_id) = pat.kind else {
+                  return Err(VmError::Unimplemented(
+                    "non-identifier variable declarations (hir-js compiled path)",
+                  ));
+                };
+                let name = self.resolve_name(name_id)?;
+                self.env.declare_var(self.vm, scope, name.as_str())?;
+              }
+            }
+          }
+          self.instantiate_var_decls(scope, body, std::slice::from_ref(inner))?;
+        }
+        hir_js::StmtKind::ForIn { left, body: inner, .. } => {
+          if let hir_js::ForHead::Var(decl) = left {
+            if decl.kind == hir_js::VarDeclKind::Var {
+              for declarator in &decl.declarators {
+                self.vm.tick()?;
+                let pat = self.get_pat(body, declarator.pat)?;
+                let hir_js::PatKind::Ident(name_id) = pat.kind else {
+                  return Err(VmError::Unimplemented(
+                    "non-identifier variable declarations (hir-js compiled path)",
+                  ));
+                };
+                let name = self.resolve_name(name_id)?;
+                self.env.declare_var(self.vm, scope, name.as_str())?;
+              }
+            }
+          }
+          self.instantiate_var_decls(scope, body, std::slice::from_ref(inner))?;
+        }
+        hir_js::StmtKind::Block(inner) => {
+          self.instantiate_var_decls(scope, body, inner.as_slice())?;
+        }
+        hir_js::StmtKind::If {
+          consequent,
+          alternate,
+          ..
+        } => {
+          self.instantiate_var_decls(scope, body, std::slice::from_ref(consequent))?;
+          if let Some(alt) = alternate {
+            self.instantiate_var_decls(scope, body, std::slice::from_ref(alt))?;
+          }
+        }
+        hir_js::StmtKind::While { body: inner, .. }
+        | hir_js::StmtKind::DoWhile { body: inner, .. }
+        | hir_js::StmtKind::Labeled { body: inner, .. }
+        | hir_js::StmtKind::With { body: inner, .. } => {
+          self.instantiate_var_decls(scope, body, std::slice::from_ref(inner))?;
+        }
+        hir_js::StmtKind::Try {
+          block,
+          catch,
+          finally_block,
+        } => {
+          self.instantiate_var_decls(scope, body, std::slice::from_ref(block))?;
+          if let Some(catch) = catch {
+            self.instantiate_var_decls(scope, body, std::slice::from_ref(&catch.body))?;
+          }
+          if let Some(finally_block) = finally_block {
+            self.instantiate_var_decls(scope, body, std::slice::from_ref(finally_block))?;
+          }
+        }
+        hir_js::StmtKind::Switch { cases, .. } => {
+          for case in cases {
+            self.instantiate_var_decls(scope, body, case.consequent.as_slice())?;
+          }
+        }
+        _ => {}
+      }
+    }
     Ok(())
   }
 
@@ -851,14 +956,25 @@ impl<'vm> HirEvaluator<'vm> {
     let name = self.resolve_name(name_id)?;
 
     match kind {
-      hir_js::VarDeclKind::Var => self.env.set_var(
-        self.vm,
-        &mut *self.host,
-        &mut *self.hooks,
-        scope,
-        name.as_str(),
-        value,
-      ),
+      hir_js::VarDeclKind::Var => {
+        // `var x;` is a no-op: it does not assign `undefined` if the binding already exists.
+        //
+        // The binding is ensured via the hoisting pass, but `var` declarations can also appear in
+        // runtime-evaluated constructs (e.g. `for (var x; ...)`) so we preserve correct semantics
+        // here as well.
+        if init_missing {
+          self.env.declare_var(self.vm, scope, name.as_str())
+        } else {
+          self.env.set_var(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            scope,
+            name.as_str(),
+            value,
+          )
+        }
+      }
       hir_js::VarDeclKind::Let => {
         let env_rec = self.env.lexical_env();
         if !scope.heap().env_has_binding(env_rec, name.as_str())? {
@@ -2029,6 +2145,10 @@ pub(crate) fn run_compiled_script(
     .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
 
   evaluator.strict = evaluator.detect_use_strict_directive(body)?;
+
+  // Hoist `var` declarations so lookups before declaration see `undefined` instead of throwing
+  // ReferenceError.
+  evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
 
   // Hoist function declarations so they can be called before their declaration statement.
   evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice())?;

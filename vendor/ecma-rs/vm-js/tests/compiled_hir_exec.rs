@@ -538,6 +538,72 @@ fn compiled_strict_equality_compares_bigints_by_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_var_is_hoisted_in_function_body() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        return x;
+        var x = 1;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_var_declaration_without_initializer_is_noop() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f() {
+        var x = 1;
+        x = 2;
+        var x;
+        return x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_regex_literal_executes() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
