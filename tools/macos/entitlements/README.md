@@ -14,3 +14,9 @@ macOS `.app` bundle with separate executables (trusted browser/UI + sandboxed re
 See [`docs/security/macos_renderer_sandbox.md`](../../../docs/security/macos_renderer_sandbox.md)
 (“Seatbelt now, App Sandbox later”) for how these would be applied via `codesign` and why they are
 not used in dev builds today.
+
+## Editing notes
+
+These `*.entitlements` files are XML plists. If you add or edit comments inside them, remember that
+XML comments cannot contain a **double-hyphen** sequence (two consecutive `-` characters), or the
+file becomes invalid for strict plist/XML parsers.
