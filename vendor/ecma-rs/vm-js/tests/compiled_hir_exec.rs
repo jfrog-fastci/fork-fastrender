@@ -2488,6 +2488,45 @@ fn compiled_class_expression_basic() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_class_methods_and_accessors_are_not_constructors() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      class C {
+        m() {}
+        static sm() {}
+        get x() { return 1; }
+        set x(v) {}
+      }
+
+      let ok = true;
+      ok = ok && (new C()).m.name === "m";
+      ok = ok && C.sm.name === "sm";
+
+      const d = Object.getOwnPropertyDescriptor(C.prototype, "x");
+      ok = ok && d.get.name === "get x";
+      ok = ok && d.set.name === "set x";
+
+      try { new (new C()).m(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      try { new C.sm(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      try { new (d.get)(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+      try { new (d.set)(); ok = false; } catch (e) { ok = ok && (e instanceof TypeError); }
+
+      ok
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_function_length_counts_params_before_first_default() -> Result<(), VmError> {
   let source = r#"
     function f(a, b = 1, c) {}

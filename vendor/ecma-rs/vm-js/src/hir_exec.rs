@@ -519,6 +519,9 @@ impl<'vm> HirEvaluator<'vm> {
       ThisMode::Global
     };
 
+    // Arrow functions are never constructable regardless of the requested flag.
+    let is_constructable = is_constructable && !is_arrow;
+
     let func_obj = scope.alloc_user_function_with_env(
       CompiledFunctionRef {
         script,
@@ -550,16 +553,6 @@ impl<'vm> HirEvaluator<'vm> {
       scope
         .heap_mut()
         .set_function_bound_new_target(func_obj, self.new_target)?;
-    }
-
-    // Constructable functions get a `.prototype` object so `instanceof` works per spec.
-    //
-    // `OrdinaryHasInstance` requires `C.prototype` to be an object (and throws if it isn't). Some
-    // callable function kinds (arrow functions, object literal methods/accessors, class methods)
-    // are not constructable and do *not* have an own `"prototype"` property unless user code adds
-    // one, so gate this initialization on the constructability metadata from HIR lowering.
-    if is_constructable {
-      let _ = crate::function_properties::make_constructor(&mut scope, func_obj)?;
     }
 
     // Best-effort function `[[Prototype]]` / `[[Realm]]` metadata.
@@ -6017,22 +6010,23 @@ impl<'vm> HirEvaluator<'vm> {
               ));
             };
 
-            // Allocate the method function object (non-constructable).
-            let method_name = match key {
-              PropertyKey::String(s) => member_scope.heap().get_string(s)?.to_utf8_lossy(),
-              PropertyKey::Symbol(_) => String::new(),
-            };
+            // Allocate the method/accessor function object (non-constructable).
+            //
+            // We pass an empty string here and rely on `set_function_name` below to compute the
+            // correct name from the actual property key (including accessor prefixes).
             let func_obj_member = self.alloc_user_function_object(
               &mut member_scope,
               *body_id,
-              method_name.as_str(),
+              /* name */ "",
               /* is_arrow */ false,
               /* is_constructable */ false,
               /* name_binding */ None,
             )?;
+            member_scope.push_root(Value::Object(func_obj_member))?;
 
             match kind {
               hir_js::ClassMethodKind::Method => {
+                crate::function_properties::set_function_name(&mut member_scope, func_obj_member, key, None)?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -6046,6 +6040,12 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
               hir_js::ClassMethodKind::Getter => {
+                crate::function_properties::set_function_name(
+                  &mut member_scope,
+                  func_obj_member,
+                  key,
+                  Some("get"),
+                )?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
@@ -6058,6 +6058,12 @@ impl<'vm> HirEvaluator<'vm> {
                 )?;
               }
               hir_js::ClassMethodKind::Setter => {
+                crate::function_properties::set_function_name(
+                  &mut member_scope,
+                  func_obj_member,
+                  key,
+                  Some("set"),
+                )?;
                 member_scope.define_property_or_throw(
                   target_obj,
                   key,
