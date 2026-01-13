@@ -4550,6 +4550,126 @@ mod tests {
   }
 
   #[test]
+  fn websocket_teardown_does_not_hang_when_send_queue_is_full() -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_teardown_does_not_hang_when_send_queue_is_full") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+            let read_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(Message::Close(frame)) => {
+                  let _ = ws.close(frame);
+                  break;
+                }
+                Ok(Message::Ping(payload)) => {
+                  let _ = ws.write_message(Message::Pong(payload));
+                }
+                Ok(_) => {}
+                Err(tungstenite::Error::ConnectionClosed)
+                | Err(tungstenite::Error::AlreadyClosed)
+                | Err(tungstenite::Error::Protocol(_)) => break,
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                {
+                  if Instant::now() >= read_deadline {
+                    panic!("server did not observe client close");
+                  }
+                }
+                Err(err) => panic!("server read failed: {err}"),
+              }
+            }
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = make_host(dom, "http://example.invalid/")?;
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__threw = false;
+      globalThis.__throwMessage = "";
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+      ws.onopen = function () {{
+        // Give the socket thread time to enter its read loop (it uses a short read timeout for
+        // responsiveness). While it is blocked in read(), fill the bounded send queue.
+        setTimeout(function () {{
+          const msg = "x";
+          for (let i = 0; i < {max}; i++) {{
+            try {{
+              ws.send(msg);
+            }} catch (e) {{
+              globalThis.__threw = true;
+              globalThis.__throwMessage = String(e && e.message);
+              break;
+            }}
+          }}
+          globalThis.__done = true;
+        }}, 10);
+      }};
+      "#,
+      max = MAX_QUEUED_WEBSOCKET_SEND_COMMANDS + 32,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 200,
+        max_microtasks: 2000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default() == "true";
+      if done {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__threw").as_deref(),
+      Some("true"),
+      "expected send() to throw once the bounded send queue is full; message={:?}",
+      get_global_prop_utf8(&mut host, "__throwMessage")
+    );
+
+    let drop_start = Instant::now();
+    drop(host);
+    assert!(
+      drop_start.elapsed() < Duration::from_secs(5),
+      "websocket env teardown took too long (send-queue-full shutdown should be bounded)",
+    );
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
   fn websocket_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost("websocket_rejects_unrequested_protocol_selected_by_server") else {
