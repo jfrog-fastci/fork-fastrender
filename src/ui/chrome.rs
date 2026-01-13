@@ -4692,6 +4692,107 @@ mod tests {
   }
 
   #[test]
+  fn chrome_idle_does_not_request_continuous_repaints() {
+    use std::time::Duration;
+
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+
+    // Keep the chrome truly "idle": no panels, popups, or loading indicators.
+    app.chrome.appearance_popup_open = false;
+    app.chrome.history_panel_open = false;
+    app.chrome.bookmarks_manager_open = false;
+    app.chrome.tab_search.open = false;
+    app.chrome.open_tab_context_menu = None;
+    app.chrome.closing_tabs.clear();
+    if let Some(tab) = app.active_tab_mut() {
+      tab.loading = false;
+      tab.load_progress = None;
+      tab.hovered_url = None;
+      tab.warning = None;
+      tab.error = None;
+    }
+
+    // Run a few frames with monotonic time and no input. After the first frame (allowing one-time
+    // layout/focus settling), the chrome should report "no repaint requested" via a very large
+    // `repaint_after` value.
+    let mut repaint_after_by_frame = Vec::new();
+    for (idx, time) in [0.0_f64, 0.016, 0.032, 0.048, 0.064].into_iter().enumerate() {
+      begin_frame_with_time(&ctx, time, Vec::new());
+      let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+      let output = ctx.end_frame();
+      repaint_after_by_frame.push(output.repaint_after);
+
+      // Allow the first frame (idx=0) to request a follow-up repaint for one-time settling.
+      if idx == 0 {
+        continue;
+      }
+
+      assert!(
+        output.repaint_after >= Duration::from_secs(1),
+        "idle chrome should not request continuous repaints (expected repaint_after >= 1s after the first frame).\n\
+\n\
+frame={idx} repaint_after={:?}\n\
+\n\
+Common causes:\n\
+- unconditional `ctx.request_repaint()` / `request_repaint_after(...)`\n\
+- an animation left running (loading spinner/progress, tab close animation)\n\
+- an overlay/popup kept open (tab search, menus, tooltips)\n\
+- a focused TextEdit (cursor blink)\n",
+        output.repaint_after
+      );
+    }
+
+    // Provide the full observed sequence in the assertion output to make regressions easier to
+    // diagnose from CI logs.
+    assert!(
+      repaint_after_by_frame
+        .iter()
+        .skip(1)
+        .all(|d| *d >= Duration::from_secs(1)),
+      "idle chrome repaint_after sequence (after first frame) should be >=1s, got: {repaint_after_by_frame:?}"
+    );
+  }
+
+  #[test]
+  fn chrome_requests_continuous_repaint_when_loading_spinner_animates() {
+    use std::time::Duration;
+
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com".to_string());
+    tab.loading = true;
+    app.push_tab(tab, true);
+
+    // With loading=true and motion enabled (default), the spinner/progress indicator should keep
+    // requesting repaints so the animation advances.
+    for (idx, time) in [0.0_f64, 0.016, 0.032].into_iter().enumerate() {
+      begin_frame_with_time(&ctx, time, Vec::new());
+      let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+      let output = ctx.end_frame();
+
+      // The first frame may do setup work; assert on subsequent frames.
+      if idx == 0 {
+        continue;
+      }
+
+      assert!(
+        output.repaint_after <= Duration::from_millis(50),
+        "expected loading spinner animation to request frequent repaints (repaint_after <= 50ms).\n\
+\n\
+frame={idx} repaint_after={:?}\n",
+        output.repaint_after
+      );
+    }
+  }
+
+  #[test]
   fn ctrl_l_select_all_is_applied_before_first_typed_character() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
