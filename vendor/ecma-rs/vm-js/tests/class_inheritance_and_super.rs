@@ -926,6 +926,38 @@ fn direct_eval_super_property_reference_in_method() -> Result<(), VmError> {
 }
 
 #[test]
+fn direct_eval_super_property_reference_in_method_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+      // Avoid class inheritance on the compiled path: base class super resolves to Object.prototype.
+      Object.prototype.x = 42;
+      class C {
+        m() {
+          try { return eval("super.x"); }
+          catch (e) { return e.name; }
+        }
+      }
+      new C().m()
+    "#,
+  )?;
+
+  match value {
+    Value::Number(n) => assert_eq!(n, 42.0),
+    Value::String(_) => {
+      let name = value_to_string(&rt, value);
+      if name == "SyntaxError" {
+        return Ok(());
+      }
+      panic!("expected 42 or SyntaxError, got {name:?}");
+    }
+    other => panic!("expected number or string, got {other:?}"),
+  }
+  Ok(())
+}
+
+#[test]
 fn direct_eval_super_property_reference_in_field_initializer() -> Result<(), VmError> {
   let mut rt = new_runtime();
   let value = match rt.exec_script(
