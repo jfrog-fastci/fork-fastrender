@@ -3663,7 +3663,8 @@ mod tests {
 
     let filler_len = max_bytes / 3;
     let src = format!("await 0;{}", ";".repeat(filler_len));
-    let source = Arc::new(SourceText::new_charged(&mut heap, "m", src)?);
+    // Avoid `Arc::new`, which can abort the process on allocator OOM.
+    let source = SourceText::new_charged_arc(&mut heap, "m", src)?;
 
     let err = parse_module_ast_for_tla_fallback(&mut vm, &mut heap, &source).unwrap_err();
     assert!(matches!(err, VmError::OutOfMemory));
