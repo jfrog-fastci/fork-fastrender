@@ -28,7 +28,8 @@ and others are scaffolding. A few important “don’t get surprised” points:
   - Binary: [`src/bin/network.rs`](../src/bin/network.rs)
   - Spawn helper (library): [`src/network_process/client.rs`](../src/network_process/client.rs)
     (re-exported via [`src/network_process/mod.rs`](../src/network_process/mod.rs))
-  - Current protocol is intentionally tiny: `Hello { token }` + `Fetch { url }` + `Shutdown` (see
+  - Current protocol is intentionally tiny: `Hello { token, role }` + `Fetch { url }` +
+    `DownloadStart { url }` (browser-only) + `Shutdown` (browser-only) (see
     `fastrender::network_process::ipc` in [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)).
     - Security note: the `network_process::ipc` framing helpers are a prototype, but they *do*
       enforce per-direction frame caps (`MAX_INBOUND_FRAME_BYTES`, `MAX_OUTBOUND_FRAME_BYTES`) and
@@ -204,7 +205,7 @@ The response payload typically includes:
 There are currently multiple HTTP IPC shapes in-tree:
 
 - **Prototype (`network` binary):** [`src/bin/network.rs`](../src/bin/network.rs) implements a tiny
-  request set (`Hello { token }` / `Fetch { url }` / `Shutdown`) defined in
+  request set (`Hello { token, role }` / `Fetch { url }` / `DownloadStart { url }` / `Shutdown`) defined in
   [`src/network_process/ipc.rs`](../src/network_process/ipc.rs)
   (`fastrender::network_process::ipc`).
   - Transport: TCP on localhost, length-prefixed JSON (`u32_be` length).

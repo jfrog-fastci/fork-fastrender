@@ -98,7 +98,7 @@ transport/codec yet:
 - **Browser ↔ network (prototype `network` subprocess):**
   - The `network` binary ([`src/bin/network.rs`](../src/bin/network.rs)) uses JSON framing helpers in
     [`src/network_process/ipc.rs`](../src/network_process/ipc.rs) (`u32_be length` + JSON).
-  - It begins with a `Hello { token }` handshake and enforces:
+  - It begins with a `Hello { token, role }` handshake and enforces:
     - per-direction frame caps (`MAX_INBOUND_FRAME_BYTES`, `MAX_OUTBOUND_FRAME_BYTES`) **before**
       allocating, and
     - per-field caps like `MAX_URL_BYTES` / `MAX_AUTH_TOKEN_BYTES`.
