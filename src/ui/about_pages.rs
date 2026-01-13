@@ -3180,4 +3180,20 @@ mod tests {
       "expected layout-stress fixture to avoid network URLs"
     );
   }
+
+  #[test]
+  fn about_help_lists_test_pages() {
+    let html = html_for_about_url(ABOUT_HELP).unwrap();
+    for url in [
+      ABOUT_TEST_SCROLL,
+      ABOUT_TEST_HEAVY,
+      ABOUT_TEST_LAYOUT_STRESS,
+      ABOUT_TEST_FORM,
+    ] {
+      assert!(
+        html.contains(url),
+        "expected about:help to list test page {url}"
+      );
+    }
+  }
 }
