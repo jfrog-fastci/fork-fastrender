@@ -2271,6 +2271,8 @@ struct BrowserRuntime {
   deferred_msgs: VecDeque<UiToWorker>,
   #[cfg(test)]
   viewport_changed_handled_for_test: usize,
+  #[cfg(test)]
+  request_repaint_viewport_snapshot_for_test: HashMap<TabId, ((u32, u32), f32)>,
 }
 
 
@@ -2349,6 +2351,8 @@ impl BrowserRuntime {
       deferred_msgs: VecDeque::new(),
       #[cfg(test)]
       viewport_changed_handled_for_test: 0,
+      #[cfg(test)]
+      request_repaint_viewport_snapshot_for_test: HashMap::new(),
     }
   }
 
@@ -3824,9 +3828,17 @@ impl BrowserRuntime {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
+        #[cfg(test)]
+        let repaint_viewport_snapshot = (tab.viewport_css, tab.dpr);
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
         tab.force_repaint = true;
+        #[cfg(test)]
+        {
+          self
+            .request_repaint_viewport_snapshot_for_test
+            .insert(tab_id, repaint_viewport_snapshot);
+        }
       }
     }
   }
@@ -11871,6 +11883,21 @@ mod drain_messages_viewport_coalescing_tests {
     assert_eq!(
       runtime.viewport_changed_handled_for_test, 1,
       "expected ViewportChanged messages to be coalesced per tab"
+    );
+
+    let (viewport_css_at_repaint, dpr_at_repaint) = runtime
+      .request_repaint_viewport_snapshot_for_test
+      .get(&tab_id)
+      .copied()
+      .expect("expected RequestRepaint to be handled");
+    assert_eq!(
+      viewport_css_at_repaint,
+      (300, 240),
+      "expected ViewportChanged updates to be applied before RequestRepaint"
+    );
+    assert!(
+      (dpr_at_repaint - 2.0).abs() < 1e-6,
+      "expected ViewportChanged updates to be applied before RequestRepaint"
     );
 
     let tab = runtime.tabs.get(&tab_id).expect("tab state");
