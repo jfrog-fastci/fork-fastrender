@@ -1,12 +1,13 @@
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
 use parking_lot::{Mutex, RwLock};
 
-use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
+use super::{frames_to_duration, AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
+use crate::media::audio_clock::InterpolatedAudioClock;
 use crate::media::audio::ring_buffer::AudioRingBuffer;
 
 /// Offline audio backend that mixes to a fixed output format and writes into a `.wav` file.
@@ -17,7 +18,7 @@ use crate::media::audio::ring_buffer::AudioRingBuffer;
 pub struct WavAudioBackend {
   config: AudioStreamConfig,
   mixer: Arc<MixerState>,
-  frames_played: Arc<AtomicU64>,
+  clock: Arc<InterpolatedAudioClock>,
   writer: Mutex<WavWriter>,
 }
 
@@ -25,8 +26,8 @@ impl WavAudioBackend {
   /// Create a new WAV backend writing 48kHz stereo 16-bit PCM to `path`.
   pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
     let config = AudioStreamConfig::new(48_000, 2);
-    let frames_played = Arc::new(AtomicU64::new(0));
     let mixer = Arc::new(MixerState::new(config));
+    let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz.max(1)));
 
     let mut file = File::create(path)?;
     write_wav_header(&mut file, config, 0)?;
@@ -35,7 +36,7 @@ impl WavAudioBackend {
     Ok(Self {
       config,
       mixer,
-      frames_played,
+      clock,
       writer: Mutex::new(WavWriter { file, data_bytes: 0 }),
     })
   }
@@ -83,9 +84,15 @@ impl WavAudioBackend {
     update_wav_header(&mut writer.file, self.config, data_bytes)?;
     writer.file.flush()?;
 
+    let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+    let new_frames_written = self
+      .clock
+      .frames_written()
+      .saturating_add(u64::from(frames_u32));
+    let device_time_at_end = frames_to_duration(self.config.sample_rate_hz, new_frames_written);
     self
-      .frames_played
-      .fetch_add(frames as u64, Ordering::Relaxed);
+      .clock
+      .on_callback_end_with_device_time(frames_u32, device_time_at_end);
 
     Ok(())
   }
@@ -98,8 +105,7 @@ impl AudioBackend for WavAudioBackend {
 
   fn clock(&self) -> AudioClock {
     AudioClock::OutputFrames {
-      frames_played: self.frames_played.clone(),
-      sample_rate_hz: self.config.sample_rate_hz,
+      clock: self.clock.clone(),
     }
   }
 
@@ -262,8 +268,10 @@ fn write_wav_header(file: &mut File, config: AudioStreamConfig, data_bytes: u32)
 #[cfg(test)]
 mod tests {
   use std::convert::TryInto;
+  use std::time::Duration;
 
   use super::WavAudioBackend;
+  use crate::media::audio::test_signal;
 
   #[test]
   fn wav_audio_backend_writes_valid_header_and_sizes() {
@@ -275,7 +283,8 @@ mod tests {
       let sink = backend.create_sink();
 
       // 4 stereo frames -> 8 samples -> 16 bytes of 16-bit PCM.
-      let samples: [f32; 8] = [0.0, 0.0, 0.25, -0.25, 1.0, -1.0, 0.5, -0.5];
+      let samples = test_signal::impulse(Duration::from_millis(4), /* sample_rate */ 1000, 2);
+      assert_eq!(samples.len(), 8);
       assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
 
       backend.render(4).unwrap();
@@ -311,5 +320,14 @@ mod tests {
     assert_eq!(data_bytes, expected_data_bytes);
     assert_eq!(riff_chunk_size, 36 + expected_data_bytes);
     assert_eq!(bytes.len(), 44 + expected_data_bytes as usize);
+
+    // The impulse is full-scale on the first frame for both channels, followed by silence.
+    let mut pcm = bytes[44..].chunks_exact(2).map(|chunk| {
+      let arr: [u8; 2] = chunk.try_into().unwrap();
+      i16::from_le_bytes(arr)
+    });
+    assert_eq!(pcm.next(), Some(i16::MAX));
+    assert_eq!(pcm.next(), Some(i16::MAX));
+    assert!(pcm.all(|v| v == 0));
   }
 }
