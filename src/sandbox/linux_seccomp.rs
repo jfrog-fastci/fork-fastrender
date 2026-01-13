@@ -114,6 +114,8 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_openat,
     libc::SYS_openat2,
     libc::SYS_creat,
+    libc::SYS_open_by_handle_at,
+    libc::SYS_name_to_handle_at,
 
     // Filesystem mutation.
     libc::SYS_unlink,
@@ -165,8 +167,17 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_bpf,
     libc::SYS_perf_event_open,
     libc::SYS_kexec_load,
+    libc::SYS_reboot,
+    libc::SYS_swapon,
+    libc::SYS_swapoff,
+    libc::SYS_init_module,
+    libc::SYS_finit_module,
+    libc::SYS_delete_module,
 
     // High-risk kernel attack surface that should never be needed in a renderer process.
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
     libc::SYS_kcmp,
