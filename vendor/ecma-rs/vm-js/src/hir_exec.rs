@@ -883,6 +883,14 @@ impl<'vm> HirEvaluator<'vm> {
       self.env.set_lexical_env(scope.heap_mut(), body_lex);
     }
 
+    // Some early errors are still checked at runtime during instantiation so invalid declarations
+    // do not partially pollute the function environment.
+    //
+    // For example, `let {x};` and `const x;` are syntax errors (missing initializers).
+    if let hir_js::FunctionBody::Block(stmts) = &func_meta.body {
+      self.early_error_missing_initializers_in_stmt_list(body, stmts.as_slice())?;
+    }
+
     // Hoist function declarations (best-effort).
     //
     // This enables simple recursion and calling a function before its declaration statement is
@@ -893,6 +901,136 @@ impl<'vm> HirEvaluator<'vm> {
     // + shadowing semantics are correct.
     self.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), self.env.lexical_env())?;
 
+    Ok(())
+  }
+
+  fn early_error_missing_initializers_in_var_decl(
+    &mut self,
+    body: &hir_js::Body,
+    decl: &hir_js::VarDecl,
+  ) -> Result<(), VmError> {
+    match decl.kind {
+      // Destructuring `var`/`let` declarations always require an initializer (ECMA-262 early
+      // error). This check must run before any hoisting so invalid declarations do not partially
+      // pollute the function/global environment.
+      hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let => {
+        for declarator in &decl.declarators {
+          self.vm.tick()?;
+          if declarator.init.is_some() {
+            continue;
+          }
+
+          let pat = self.get_pat(body, declarator.pat)?;
+          if !matches!(pat.kind, hir_js::PatKind::Ident(_)) {
+            let diag = diagnostics::Diagnostic::error(
+              "VMJS0002",
+              "Missing initializer in destructuring declaration",
+              diagnostics::Span {
+                file: diagnostics::FileId(0),
+                range: pat.span,
+              },
+            );
+            return Err(VmError::Syntax(vec![diag]));
+          }
+        }
+      }
+      // `const x;` is a syntax error (missing initializer).
+      hir_js::VarDeclKind::Const => {
+        for declarator in &decl.declarators {
+          self.vm.tick()?;
+          if declarator.init.is_some() {
+            continue;
+          }
+
+          let pat = self.get_pat(body, declarator.pat)?;
+          let diag = diagnostics::Diagnostic::error(
+            "VMJS0002",
+            "Missing initializer in const declaration",
+            diagnostics::Span {
+              file: diagnostics::FileId(0),
+              range: pat.span,
+            },
+          );
+          return Err(VmError::Syntax(vec![diag]));
+        }
+      }
+      _ => {}
+    }
+    Ok(())
+  }
+
+  fn early_error_missing_initializers_in_stmt_list(
+    &mut self,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+  ) -> Result<(), VmError> {
+    for stmt_id in stmts {
+      self.early_error_missing_initializers_in_stmt(body, *stmt_id)?;
+    }
+    Ok(())
+  }
+
+  fn early_error_missing_initializers_in_stmt(
+    &mut self,
+    body: &hir_js::Body,
+    stmt_id: hir_js::StmtId,
+  ) -> Result<(), VmError> {
+    self.vm.tick()?;
+    let stmt = self.get_stmt(body, stmt_id)?;
+    match &stmt.kind {
+      hir_js::StmtKind::Var(decl) => {
+        self.early_error_missing_initializers_in_var_decl(body, decl)?;
+      }
+      hir_js::StmtKind::Block(stmts) => {
+        self.early_error_missing_initializers_in_stmt_list(body, stmts.as_slice())?;
+      }
+      hir_js::StmtKind::If {
+        consequent,
+        alternate,
+        ..
+      } => {
+        self.early_error_missing_initializers_in_stmt(body, *consequent)?;
+        if let Some(alt) = alternate {
+          self.early_error_missing_initializers_in_stmt(body, *alt)?;
+        }
+      }
+      hir_js::StmtKind::While { body: inner, .. }
+      | hir_js::StmtKind::DoWhile { body: inner, .. }
+      | hir_js::StmtKind::Labeled { body: inner, .. }
+      | hir_js::StmtKind::With { body: inner, .. } => {
+        self.early_error_missing_initializers_in_stmt(body, *inner)?;
+      }
+      hir_js::StmtKind::For { init, body: inner, .. } => {
+        if let Some(hir_js::ForInit::Var(decl)) = init {
+          self.early_error_missing_initializers_in_var_decl(body, decl)?;
+        }
+        self.early_error_missing_initializers_in_stmt(body, *inner)?;
+      }
+      // Destructuring `for-in/of` loop heads do not require initializers (bindings are per-iteration
+      // and are created by the loop itself).
+      hir_js::StmtKind::ForIn { body: inner, .. } => {
+        self.early_error_missing_initializers_in_stmt(body, *inner)?;
+      }
+      hir_js::StmtKind::Try {
+        block,
+        catch,
+        finally_block,
+      } => {
+        self.early_error_missing_initializers_in_stmt(body, *block)?;
+        if let Some(catch) = catch {
+          self.early_error_missing_initializers_in_stmt(body, catch.body)?;
+        }
+        if let Some(finally) = finally_block {
+          self.early_error_missing_initializers_in_stmt(body, *finally)?;
+        }
+      }
+      hir_js::StmtKind::Switch { cases, .. } => {
+        for case in cases {
+          self.early_error_missing_initializers_in_stmt_list(body, case.consequent.as_slice())?;
+        }
+      }
+      _ => {}
+    }
     Ok(())
   }
 
@@ -7216,6 +7354,10 @@ pub(crate) fn run_compiled_script(
     .ok_or(VmError::InvariantViolation("compiled script root body not found"))?;
 
   evaluator.strict = evaluator.detect_use_strict_directive(body)?;
+
+  // Some early errors are still checked at runtime during instantiation so invalid declarations do
+  // not partially pollute the global environment.
+  evaluator.early_error_missing_initializers_in_stmt_list(body, body.root_stmts.as_slice())?;
 
   // Hoist `var` declarations so lookups before declaration see `undefined` instead of throwing
   // ReferenceError.

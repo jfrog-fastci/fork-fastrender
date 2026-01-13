@@ -8378,6 +8378,86 @@ fn compiled_direct_eval_var_decl_conflicts_with_let() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_missing_initializer_in_destructuring_decl_is_syntax_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Destructuring `let` declarations require an initializer (early error).
+  let script = match CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      if (false) { let {x}; }
+    "#,
+  ) {
+    Ok(script) => script,
+    Err(VmError::Syntax(_)) => return Ok(()),
+    Err(other) => return Err(other),
+  };
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::Syntax(_) => Ok(()),
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_missing_initializer_in_const_decl_is_syntax_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `const` declarations require an initializer (early error).
+  let script = match CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      if (false) { const x; }
+    "#,
+  ) {
+    Ok(script) => script,
+    Err(VmError::Syntax(_)) => return Ok(()),
+    Err(other) => return Err(other),
+  };
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::Syntax(_) => Ok(()),
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+}
+
+#[test]
+fn compiled_missing_initializer_in_function_body_is_syntax_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Even when the invalid declaration appears inside a function body, the runtime should still
+  // surface it as a syntax error (not a runtime TypeError) when the function is invoked.
+  let script = match CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ if (false) { let {x}; } }
+      f()
+    "#,
+  ) {
+    Ok(script) => script,
+    Err(VmError::Syntax(_)) => return Ok(()),
+    Err(other) => return Err(other),
+  };
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::Syntax(_) => Ok(()),
+    other => panic!("expected syntax error, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_indirect_eval_does_not_see_local_let() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
