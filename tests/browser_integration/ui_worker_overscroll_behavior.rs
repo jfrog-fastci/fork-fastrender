@@ -4,7 +4,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use fastrender::scroll::ScrollState;
-use fastrender::ui::messages::{NavigationReason, RepaintReason, RenderedFrame, TabId, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, RenderedFrame, RepaintReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use fastrender::Point;
 
@@ -40,25 +40,16 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
   }
 }
 
-fn next_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> ScrollState {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
-  match msg {
-    WorkerToUi::ScrollStateUpdated { scroll, .. } => scroll,
-    other => panic!("unexpected WorkerToUi message: {other:?}"),
-  }
-}
-
-fn next_frame_and_scroll_state(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> ScrollState {
-  let frame = next_frame_ready(rx, tab_id);
-  let scroll = next_scroll_state_updated(rx, tab_id);
+fn next_frame_and_scroll_state(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> (RenderedFrame, ScrollState) {
+  let (frame, scroll) = support::wait_for_frame_and_scroll_state_updated(rx, tab_id, TIMEOUT);
   assert_eq!(
     frame.scroll_state, scroll,
     "FrameReady.scroll_state should match ScrollStateUpdated"
   );
-  scroll
+  (frame, scroll)
 }
 
 #[test]
@@ -125,8 +116,10 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
     "expected committed URL to match navigation URL"
   );
 
-  let initial_scroll = next_frame_and_scroll_state(&ui_rx, tab_id);
-  let baseline_viewport_y = initial_scroll.viewport.y;
+  // The worker does not guarantee an initial `ScrollStateUpdated` during navigation. Use the first
+  // painted frame as our baseline scroll state.
+  let initial_frame = next_frame_ready(&ui_rx, tab_id);
+  let baseline_viewport_y = initial_frame.scroll_state.viewport.y;
   assert!(
     baseline_viewport_y.abs() < 1e-3,
     "expected initial viewport scroll y≈0, got {baseline_viewport_y}"
@@ -145,7 +138,7 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
       Some(contain_pointer),
     ))
     .expect("Scroll contain scroller to max");
-  let contain_scrolled = next_frame_and_scroll_state(&ui_rx, tab_id);
+  let (_frame, contain_scrolled) = next_frame_and_scroll_state(&ui_rx, tab_id);
 
   assert!(
     (contain_scrolled.viewport.y - baseline_viewport_y).abs() < 1.0,
@@ -186,8 +179,14 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
   ui_tx
     .send(support::request_repaint(tab_id, RepaintReason::Explicit))
     .expect("RequestRepaint after overscroll contain");
-  let contain_scrolled_again = next_frame_and_scroll_state(&ui_rx, tab_id);
-  let contain_offset_again = contain_scrolled_again.elements.get(&contain_box_id).copied().unwrap_or(Point::ZERO);
+  // Overscrolling a maxed-out contained scroller is a no-op, so we may only get a `FrameReady` from
+  // the explicit repaint request (no accompanying `ScrollStateUpdated`).
+  let contain_scrolled_again = next_frame_ready(&ui_rx, tab_id).scroll_state;
+  let contain_offset_again = contain_scrolled_again
+    .elements
+    .get(&contain_box_id)
+    .copied()
+    .unwrap_or(Point::ZERO);
   assert!(
     (contain_scrolled_again.viewport.y - baseline_viewport_y).abs() < 1.0,
     "expected viewport scroll to remain unchanged when overscrolling contained scroller; was {} then {}",
@@ -212,9 +211,13 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
   // Scroll the auto scroller to (approximately) its max without overshooting: use the max scroll
   // distance observed from the contain scroller (identical geometry/content).
   ui_tx
-    .send(support::scroll_msg(tab_id, (0.0, max_scroll_y), Some(auto_pointer)))
+    .send(support::scroll_msg(
+      tab_id,
+      (0.0, max_scroll_y),
+      Some(auto_pointer),
+    ))
     .expect("Scroll auto scroller to max");
-  let auto_scrolled = next_frame_and_scroll_state(&ui_rx, tab_id);
+  let (_frame, auto_scrolled) = next_frame_and_scroll_state(&ui_rx, tab_id);
   let viewport_after_auto_to_max = auto_scrolled.viewport.y;
   assert!(
     (viewport_after_auto_to_max - baseline_viewport_y).abs() < 1.0,
@@ -227,7 +230,11 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
     .elements
     .iter()
     .filter_map(|(&id, &offset)| {
-      let prev = contain_scrolled_again.elements.get(&id).copied().unwrap_or(Point::ZERO);
+      let prev = contain_scrolled_again
+        .elements
+        .get(&id)
+        .copied()
+        .unwrap_or(Point::ZERO);
       (offset.y > prev.y + 1.0).then_some((id, offset))
     })
     .max_by(|a, b| a.1.y.total_cmp(&b.1.y))
@@ -245,9 +252,13 @@ fn overscroll_behavior_contain_prevents_scroll_chaining_to_viewport() {
 
   // Overscroll the auto scroller: leftover delta should propagate to the viewport.
   ui_tx
-    .send(support::scroll_msg(tab_id, (0.0, 200.0), Some(auto_pointer)))
+    .send(support::scroll_msg(
+      tab_id,
+      (0.0, 200.0),
+      Some(auto_pointer),
+    ))
     .expect("Scroll auto scroller beyond max (should chain)");
-  let auto_overscrolled = next_frame_and_scroll_state(&ui_rx, tab_id);
+  let (_frame, auto_overscrolled) = next_frame_and_scroll_state(&ui_rx, tab_id);
   assert!(
     auto_overscrolled.viewport.y > viewport_after_auto_to_max + 10.0,
     "expected scroll chaining to increase viewport scroll when overscrolling auto scroller; viewport y was {} then {}",

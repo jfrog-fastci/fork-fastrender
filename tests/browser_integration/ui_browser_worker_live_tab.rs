@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{RepaintReason, RenderedFrame, WorkerToUi};
+use fastrender::ui::messages::{RenderedFrame, RepaintReason, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
 use fastrender::ui::{TabId, UiToWorker};
 use std::time::Duration;
@@ -299,9 +299,7 @@ fn js_timer_dom_mutation_affects_rendered_pixels() {
   );
 
   // Drain navigation follow-ups so we only consider repaint-driven frames below.
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
-  });
+  let _ = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
   while handle.ui_rx.try_recv().is_ok() {}
 
   let mut last_sample = baseline;

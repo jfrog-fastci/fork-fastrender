@@ -3,10 +3,7 @@
 use fastrender::ui::messages::{TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 
-use super::support::{
-  create_tab_msg, scroll_to_msg, viewport_changed_msg, wait_for_frame_and_scroll_state_updated,
-  DEFAULT_TIMEOUT,
-};
+use super::support::{create_tab_msg, scroll_to_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 #[test]
 fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
@@ -27,7 +24,13 @@ fn ui_worker_reports_scroll_metrics_and_scroll_to_updates_scroll_state() {
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
 
-  let (frame, _scroll) = wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, DEFAULT_TIMEOUT);
+  let msg = super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .expect("initial FrameReady");
+  let WorkerToUi::FrameReady { frame, .. } = msg else {
+    unreachable!();
+  };
 
   // About page template:
   //   .spacer { height: 4000px; }

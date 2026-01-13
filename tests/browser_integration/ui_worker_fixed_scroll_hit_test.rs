@@ -11,7 +11,7 @@ use url::Url;
 
 use super::support::{
   create_tab_msg, navigate_msg, pointer_down, pointer_move, pointer_up, rgba_at, scroll_msg,
-  viewport_changed_msg, TempSite,
+  viewport_changed_msg, wait_for_frame_and_scroll_state_updated, TempSite,
 };
 
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
@@ -39,68 +39,6 @@ fn wait_for_frame_ready(
       Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected while waiting for frame"),
     }
   }
-}
-
-fn wait_for_scroll_and_frame(
-  rx: &Receiver<WorkerToUi>,
-  tab_id: TabId,
-  timeout: Duration,
-) -> (ScrollState, RenderedFrame) {
-  let deadline = Instant::now() + timeout;
-  let mut scroll: Option<ScrollState> = None;
-  let mut frame: Option<RenderedFrame> = None;
-
-  while Instant::now() < deadline {
-    if scroll.is_some() && frame.is_some() {
-      break;
-    }
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::ScrollStateUpdated {
-        tab_id: msg_tab,
-        scroll: s,
-      }) if msg_tab == tab_id => {
-        scroll = Some(s);
-      }
-      Ok(WorkerToUi::FrameReady {
-        tab_id: msg_tab,
-        frame: f,
-      }) if msg_tab == tab_id => {
-        frame = Some(f);
-      }
-      Ok(_) => {}
-      Err(RecvTimeoutError::Timeout) => {}
-      Err(RecvTimeoutError::Disconnected) => break,
-    }
-  }
-
-  (
-    scroll.expect("expected ScrollStateUpdated after scroll"),
-    frame.expect("expected FrameReady after scroll"),
-  )
-}
-
-fn wait_for_scroll_state_updated(
-  rx: &Receiver<WorkerToUi>,
-  tab_id: TabId,
-  timeout: Duration,
-) -> ScrollState {
-  let deadline = Instant::now() + timeout;
-  while Instant::now() < deadline {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::ScrollStateUpdated {
-        tab_id: msg_tab,
-        scroll,
-      }) if msg_tab == tab_id => {
-        return scroll;
-      }
-      Ok(_) => continue,
-      Err(RecvTimeoutError::Timeout) => continue,
-      Err(RecvTimeoutError::Disconnected) => break,
-    }
-  }
-  panic!("timed out waiting for ScrollStateUpdated for {tab_id:?}");
 }
 
 fn wait_for_hover_changed(
@@ -230,15 +168,20 @@ fn click_fixed_link_after_scroll_hits_link() {
     "expected pixel to be red before scroll, got rgba={px_before_scroll:?}"
   );
 
-  // Drain the initial scroll state update emitted by the worker so later assertions observe the
-  // scroll state produced by the scroll message below.
-  let _ = wait_for_scroll_state_updated(&ui_rx, tab_id, TIMEOUT);
+  // Drain any follow-up navigation messages so the scroll assertions below only observe the scroll
+  // interaction.
+  while ui_rx.try_recv().is_ok() {}
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 500.0), None))
     .expect("Scroll");
 
-  let (scroll, frame_after_scroll) = wait_for_scroll_and_frame(&ui_rx, tab_id, TIMEOUT);
+  let (frame_after_scroll, scroll) =
+    wait_for_frame_and_scroll_state_updated(&ui_rx, tab_id, TIMEOUT);
+  assert_eq!(
+    frame_after_scroll.scroll_state, scroll,
+    "FrameReady.scroll_state should match ScrollStateUpdated after scroll"
+  );
   assert!(
     (scroll.viewport.y - 500.0).abs() < 2.0,
     "expected viewport scroll y≈500 after scroll, got {}",
