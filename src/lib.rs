@@ -199,7 +199,6 @@ pub mod clock;
 pub mod compat;
 pub mod error;
 pub mod geometry;
-pub mod media;
 pub(crate) mod document_ticks;
 
 // ============================================================================
@@ -251,6 +250,7 @@ pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod js;
+pub mod media;
 pub mod memory;
 pub mod perf_log;
 pub mod perf_log_schema;

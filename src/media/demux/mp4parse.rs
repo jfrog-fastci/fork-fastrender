@@ -315,6 +315,10 @@ fn read_mp4_context<R: Read + Seek>(reader: &mut R) -> MediaResult<mp4parse::Med
 }
 
 fn track_codec_and_extradata(track: &mp4parse::Track) -> (MediaCodec, Vec<u8>) {
+  fn codec_type_name(codec: &mp4parse::CodecType) -> String {
+    format!("{codec:?}")
+  }
+
   // mp4parse exposes a fairly rich codec model, but for now we keep this simple and best-effort.
   //
   // - AAC: detect `mp4a` sample entries.

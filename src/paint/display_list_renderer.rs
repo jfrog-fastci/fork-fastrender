@@ -11333,13 +11333,19 @@ impl DisplayListRenderer {
 
       let dst_w = dest.width() as i32;
       let dst_h = dest.height() as i32;
+      let dest_width = dest.width() as usize;
+      let dest_height = dest.height() as usize;
+
+      // `tiny-skia` no longer exposes an immutable `PixmapMut::data()` accessor. Borrow the pixel
+      // buffer mutably once and treat it as read-only until we write the final scratch back.
+      let dest_data = dest.data_mut();
       if dst_w <= 0 || dst_h <= 0 {
-        dest.data_mut().copy_from_slice(scratch.data());
+        dest_data.copy_from_slice(scratch.data());
         return Ok(());
       }
 
-      let src_w = dest.width() as i32;
-      let src_h = dest.height() as i32;
+      let src_w = dest_width as i32;
+      let src_h = dest_height as i32;
       let x0 = dx.max(0);
       let y0 = dy.max(0);
       let x1 = (dx + dst_w).min(src_w);
@@ -11350,21 +11356,18 @@ impl DisplayListRenderer {
         let copy_w = (x1 - x0) as usize;
         let copy_h = (y1 - y0) as usize;
         let dst_stride = scratch.width() as usize * 4;
-        let src_stride = dest.width() as usize * 4;
+        let src_stride = dest_width * 4;
         let row_bytes = copy_w * 4;
-        {
-          let src_data = dest.as_ref().data();
-          let dst_data = scratch.data_mut();
-          for row in 0..copy_h {
-            let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
-            let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
-            dst_data[dst_idx..dst_idx + row_bytes]
-              .copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
-          }
+        let dst_data = scratch.data_mut();
+        for row in 0..copy_h {
+          let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
+          let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
+          dst_data[dst_idx..dst_idx + row_bytes]
+            .copy_from_slice(&dest_data[src_idx..src_idx + row_bytes]);
         }
       }
 
-      dest.data_mut().copy_from_slice(scratch.data());
+      dest_data.copy_from_slice(scratch.data());
       Ok(())
     })?;
     self.mark_current_pixmap_mutated();

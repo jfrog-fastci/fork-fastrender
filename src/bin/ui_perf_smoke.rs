@@ -1332,7 +1332,7 @@ fn run_resize_fixture(
         viewport.0, viewport.1, frame.viewport_css.0, frame.viewport_css.1, dt_ms
       );
     }
-    Ok(dt_ms)
+    Ok::<f64, WaitError>(dt_ms)
   }) {
     Ok(measured) => measured,
     Err(err) => {

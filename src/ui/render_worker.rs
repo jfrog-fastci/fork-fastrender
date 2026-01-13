@@ -952,36 +952,11 @@ impl TabState {
     doc: &BrowserDocument,
     scroll: &ScrollState,
   ) -> Option<Arc<crate::FragmentTree>> {
-    // Fast path: when there is no viewport or element scroll, the prepared fragment tree can be
-    // used directly for hit testing without cloning.
-    if scroll.viewport == Point::ZERO && scroll.elements.is_empty() {
-      self.hit_test_fragment_tree_cache = None;
-      return None;
-    }
-
-    let Some(prepared) = doc.prepared() else {
-      self.hit_test_fragment_tree_cache = None;
-      return None;
-    };
-    let prepared_fragment_tree_ptr = prepared.fragment_tree() as *const crate::FragmentTree;
-
-    if let Some(cache) = self.hit_test_fragment_tree_cache.as_ref() {
-      if cache.prepared_fragment_tree_ptr == prepared_fragment_tree_ptr
-        && cache.scroll_viewport == scroll.viewport
-        && cache.scroll_elements == scroll.elements
-      {
-        return Some(Arc::clone(&cache.tree));
-      }
-    }
-
-    let tree = Arc::new(prepared.fragment_tree_for_geometry(scroll));
-    self.hit_test_fragment_tree_cache = Some(HitTestFragmentTreeCache {
-      tree: Arc::clone(&tree),
-      prepared_fragment_tree_ptr,
-      scroll_viewport: scroll.viewport,
-      scroll_elements: scroll.elements.clone(),
-    });
-    Some(tree)
+    hit_test_fragment_tree_for_scroll_cached(
+      &mut self.hit_test_fragment_tree_cache,
+      doc,
+      scroll,
+    )
   }
 }
 
@@ -3922,17 +3897,18 @@ impl BrowserRuntime {
           let mut viewport_scrolled = false;
           let mut scroll_handled = false;
 
-           if let Some(pointer_css) = pointer_pos_css {
-             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
-              // gesture for numeric stepping (instead of scrolling the page).
-             let scroll_snapshot = tab.scroll_state.clone();
-             let hit_tree = hit_test_fragment_tree_for_scroll_cached(
-               &mut tab.hit_test_fragment_tree_cache,
-               doc,
-               &scroll_snapshot,
-             );
-              let engine = &mut tab.interaction;
-              if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          if let Some(pointer_css) = pointer_pos_css {
+            // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
+            // gesture for numeric stepping (instead of scrolling the page).
+            let scroll_snapshot = tab.scroll_state.clone();
+            let hit_tree = hit_test_fragment_tree_for_scroll_cached(
+              &mut tab.hit_test_fragment_tree_cache,
+              doc,
+              &scroll_snapshot,
+            );
+            let engine = &mut tab.interaction;
+            if let Ok(step_result) =
+              doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
                 let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
                 let step_result = engine.wheel_step_number_input(
                  dom,
@@ -6247,14 +6223,13 @@ impl BrowserRuntime {
               &scroll_snapshot,
               viewport_point,
             );
-          let mut fragment_tree_for_cursor = fragment_tree_before;
-          let mut scroll_for_cursor = &scroll_snapshot;
-
-          if let Some(scroll_after) = next_scroll.as_ref() {
-            let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
-            let (changed_after, hit_after, hover_is_drop_target_after) =
-              engine.pointer_move_and_hit_and_drop_target(
-                dom,
+            let mut fragment_tree_for_cursor = fragment_tree_before;
+            let mut scroll_for_cursor = &scroll_snapshot;
+            if let Some(scroll_after) = next_scroll.as_ref() {
+              let fragment_tree_after = hit_tree_after.as_deref().unwrap_or(fragment_tree);
+              let (changed_after, hit_after, hover_is_drop_target_after) =
+                engine.pointer_move_and_hit_and_drop_target(
+                  dom,
                 box_tree,
                 fragment_tree_after,
                 scroll_after,
@@ -6871,16 +6846,16 @@ impl BrowserRuntime {
               dom,
              box_tree,
              fragment_tree,
-             scroll,
-             viewport_point,
-             button,
-             modifiers,
-             click_count,
-           )
+             &scroll,
+              viewport_point,
+              button,
+              modifiers,
+              click_count,
+            )
          } else {
            let page_point = viewport_point.translate(scroll.viewport);
-           (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
-         };
+            (false, hit_test_dom(dom, box_tree, fragment_tree, page_point))
+          };
 
          let (target_id, target_element_id) = match hit {
            Some(hit) => (Some(hit.dom_node_id), hit.element_id),
@@ -7013,8 +6988,8 @@ impl BrowserRuntime {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
-      let scroll = &tab.scroll_state;
-      let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
+      let scroll_snapshot = tab.scroll_state.clone();
+      let viewport_point = viewport_point_for_pos_css(&scroll_snapshot, pos_css);
       let pointer_buttons = tab.pointer_buttons;
       let js_mutation_generation_before_dispatch =
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
@@ -7022,7 +6997,7 @@ impl BrowserRuntime {
       let hit_tree = hit_test_fragment_tree_for_scroll_cached(
         &mut tab.hit_test_fragment_tree_cache,
         doc,
-        scroll,
+        &scroll_snapshot,
       );
 
       let (target_id, target_element_id) = if tab.last_pointer_pos_css == Some(pos_css) {
@@ -7034,7 +7009,7 @@ impl BrowserRuntime {
         match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let fragment_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
 
-          let page_point = viewport_point.translate(scroll.viewport);
+          let page_point = viewport_point.translate(scroll_snapshot.viewport);
           let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
           let (target_id, target_element_id) = match hit {
             Some(hit) => (Some(hit.dom_node_id), hit.element_id),
@@ -12404,10 +12379,11 @@ impl BrowserRuntime {
     // Scroll-blit fast paths must be disabled when animation sampling time has advanced since the
     // last painted frame. Otherwise we'd reuse pixels from the previous animation time in the
     // overlapping region and only repaint the newly exposed scroll stripes.
+    let timeline_time_ms = duration_to_ms_f32(painted_tick_time);
     let wants_ticks = tab
       .document
       .as_mut()
-      .is_some_and(|doc| document_wants_ticks(doc, duration_to_ms_f32(tab.tick_time)));
+      .is_some_and(|doc| document_wants_ticks(doc, timeline_time_ms));
     let should_disable_scroll_blit_for_animation_time =
       is_scroll && !force && wants_ticks && tab.tick_time != tab.last_painted_tick_time;
     if should_disable_scroll_blit_for_animation_time {

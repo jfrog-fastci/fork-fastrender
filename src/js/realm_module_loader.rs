@@ -493,6 +493,10 @@ impl ModuleLoader {
     request: &ModuleRequest,
   ) -> Result<String, ModuleResolveError> {
     let specifier = request.specifier_utf8_lossy();
+    // `ModuleReferrer::Script` can fall back to a thread-local script URL hint stored in
+    // `job_callback_context`. That helper returns an owned `String`, so keep it in an outer local so
+    // any `&str` references derived from it remain valid for the rest of this function.
+    let mut tls_url: Option<String> = None;
     let base_url = match referrer {
       ModuleReferrer::Module(m) => Some(
         self
@@ -503,7 +507,7 @@ impl ModuleLoader {
       ),
       ModuleReferrer::Realm(_) => self.document_url.as_deref(),
       ModuleReferrer::Script(script) => {
-        let tls_url = job_callback_context::script_url_for_script_id(script);
+        tls_url = job_callback_context::script_url_for_script_id(script);
         self
           .script_url(script)
           .or(tls_url.as_deref())

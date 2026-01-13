@@ -5542,7 +5542,6 @@ mod tests {
     );
     assert!(lines.next().is_none(), "toast should be at most two lines");
   }
-
   #[test]
   fn session_restore_startup_plan_navigates_only_active_tab() {
     use fastrender::ui::{BrowserSessionTab, BrowserSessionWindow, NavigationReason, UiToWorker};
