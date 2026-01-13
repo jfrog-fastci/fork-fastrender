@@ -143,7 +143,7 @@ impl GroupingState {
     };
 
     for sink in sinks {
-      if sink.group == group {
+      if sink.group() == group {
         sink.apply_effective_volume();
       }
     }
@@ -344,8 +344,7 @@ impl AudioEngine {
     let inner = Arc::new(AudioEngineSinkInner {
       backend_sink,
       grouping: Arc::downgrade(&self.grouping),
-      group,
-      group_state,
+      group_state: Mutex::new((group, group_state)),
       sink_volume_bits: AtomicU32::new(1.0f32.to_bits()),
       counts_toward_limits,
     });
@@ -408,22 +407,57 @@ pub type AudioSinkHandle = AudioEngineSink;
 
 impl std::fmt::Debug for AudioEngineSink {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let group = self.group_id();
     f.debug_struct("AudioEngineSink")
-      .field("group", &self.inner.group)
+      .field("group", &group)
       .finish()
+  }
+}
+
+impl AudioEngineSink {
+  #[must_use]
+  pub fn group_id(&self) -> AudioGroupId {
+    self.inner.group()
+  }
+
+  /// Assign this sink to a different group.
+  ///
+  /// The `group` must have been created by [`AudioEngine::create_group`] (or be the default group).
+  /// If the engine has been dropped, this becomes a no-op.
+  pub fn set_group_id(&self, group: AudioGroupId) {
+    let Some(grouping) = self.inner.grouping.upgrade() else {
+      return;
+    };
+
+    let group_state = {
+      let groups = grouping.groups.lock();
+      groups.get(&group).cloned()
+    };
+
+    if let Some(group_state) = group_state {
+      self.inner.set_group(group, group_state);
+      self.inner.apply_effective_volume();
+    }
   }
 }
 
 struct AudioEngineSinkInner {
   backend_sink: Box<dyn AudioSink>,
   grouping: Weak<GroupingState>,
-  group: AudioGroupId,
-  group_state: Arc<AudioGroupState>,
+  group_state: Mutex<(AudioGroupId, Arc<AudioGroupState>)>,
   sink_volume_bits: AtomicU32,
   counts_toward_limits: bool,
 }
 
 impl AudioEngineSinkInner {
+  fn group(&self) -> AudioGroupId {
+    self.group_state.lock().0
+  }
+
+  fn set_group(&self, group: AudioGroupId, group_state: Arc<AudioGroupState>) {
+    *self.group_state.lock() = (group, group_state);
+  }
+
   fn sink_volume(&self) -> f32 {
     f32::from_bits(self.sink_volume_bits.load(Ordering::Relaxed))
   }
@@ -438,10 +472,12 @@ impl AudioEngineSinkInner {
       return;
     };
 
-    let gain = if grouping.master_muted() || self.group_state.muted() {
+    let group_state = self.group_state.lock().1.clone();
+
+    let gain = if grouping.master_muted() || group_state.muted() {
       0.0
     } else {
-      grouping.master_volume() * self.group_state.volume() * self.sink_volume()
+      grouping.master_volume() * group_state.volume() * self.sink_volume()
     };
 
     self.backend_sink.set_volume(gain);
@@ -475,6 +511,14 @@ impl AudioSink for AudioEngineSink {
   fn set_volume(&self, volume: f32) {
     self.inner.set_sink_volume(volume);
     self.inner.apply_effective_volume();
+  }
+
+  fn group_id(&self) -> Option<AudioGroupId> {
+    Some(AudioEngineSink::group_id(self))
+  }
+
+  fn set_group_id(&self, group: AudioGroupId) {
+    AudioEngineSink::set_group_id(self, group);
   }
 
   fn set_paused(&self, paused: bool) {

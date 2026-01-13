@@ -483,6 +483,7 @@ impl DriftResampler {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::time::Duration;
   use crate::media::audio::pcm_f32_queue;
   use std::time::Duration;
 

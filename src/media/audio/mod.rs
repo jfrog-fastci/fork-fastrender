@@ -593,6 +593,18 @@ pub trait AudioSink: Send + Sync {
   /// an explicit pause should stop draining.
   fn set_volume(&self, volume: f32);
 
+  /// Returns this sink's [`AudioGroupId`] if it is backed by an [`engine::AudioEngine`].
+  ///
+  /// The default implementation returns `None` for sinks that do not support grouping semantics.
+  fn group_id(&self) -> Option<AudioGroupId> {
+    None
+  }
+
+  /// Assign this sink to a different [`AudioGroupId`].
+  ///
+  /// The default implementation is a no-op for sinks that do not support grouping semantics.
+  fn set_group_id(&self, _group: AudioGroupId) {}
+
   /// Pauses/unpauses the sink.
   ///
   /// While paused, the sink must contribute silence **without draining** its internal buffer. This

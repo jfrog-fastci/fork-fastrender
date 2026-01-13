@@ -14,7 +14,7 @@
 //! (linear interpolation) for an MVP.
 
 use super::resample::resample_interleaved_f32_linear_with_playback_rate_into;
-use super::{AudioSink, AudioStreamConfig};
+use super::{AudioGroupId, AudioSink, AudioStreamConfig};
 use crate::debug::trace::TraceHandle;
 use crate::media::clock::{AudioDeviceClock, AudioStreamClock, MediaClock};
 use parking_lot::Mutex;
@@ -132,6 +132,20 @@ impl AudioStreamHandle {
   #[must_use]
   pub fn playback_rate(&self) -> f64 {
     f64::from_bits(self.inner.playback_rate_bits.load(Ordering::Relaxed))
+  }
+
+  /// Assign this stream to a different [`AudioGroupId`], if the underlying sink supports grouping.
+  ///
+  /// For [`super::AudioEngine`] sinks, this updates which group-level volume/mute controls apply.
+  /// For other sinks, this is a no-op.
+  pub fn set_group_id(&self, group: AudioGroupId) {
+    self.inner.sink.set_group_id(group);
+  }
+
+  /// Returns the stream's current [`AudioGroupId`] if the underlying sink supports grouping.
+  #[must_use]
+  pub fn group_id(&self) -> Option<AudioGroupId> {
+    self.inner.sink.group_id()
   }
 
   #[must_use]
