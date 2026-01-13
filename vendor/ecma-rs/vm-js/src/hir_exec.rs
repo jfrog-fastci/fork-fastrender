@@ -3523,7 +3523,6 @@ impl<'vm> HirEvaluator<'vm> {
 
     Ok(false)
   }
-
   /// ECMA-262 Abstract Equality Comparison (`==`) for the VM's supported value types.
   fn abstract_equality_comparison(
     &mut self,
