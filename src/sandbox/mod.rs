@@ -1129,5 +1129,44 @@ mod tests {
         String::from_utf8_lossy(&output.stderr)
       );
     }
+
+    #[test]
+    fn apply_macos_sandbox_from_env_reports_system_fonts_override() {
+      const CHILD_ENV: &str = "FASTR_TEST_APPLY_MACOS_SANDBOX_OVERRIDE_CHILD";
+
+      if std::env::var_os(CHILD_ENV).is_some() {
+        let status =
+          apply_macos_sandbox_from_env().expect("apply_macos_sandbox_from_env should not error");
+        match status {
+          MacosSandboxStatus::Applied { mode, .. } => {
+            assert_eq!(mode, MacosSandboxMode::Relaxed);
+          }
+          other => panic!("expected Applied status, got {other:?}"),
+        }
+        // Exit immediately so the sandboxed test process doesn't run additional libtest teardown
+        // logic under the Seatbelt profile.
+        std::process::exit(0);
+      }
+
+      let exe = std::env::current_exe().expect("current test exe path");
+      let test_name =
+        "sandbox::tests::macos::apply_macos_sandbox_from_env_reports_system_fonts_override";
+      let output = Command::new(exe)
+        .env(CHILD_ENV, "1")
+        // Force the relaxed system-fonts profile via the developer override.
+        .env(super::super::macos::ENV_MACOS_RENDERER_SANDBOX, "system-fonts")
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .output()
+        .expect("spawn sandbox override child process");
+
+      assert!(
+        output.status.success(),
+        "sandbox override child should exit successfully (stdout={}, stderr={})",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+      );
+    }
   }
 }
