@@ -894,17 +894,28 @@ impl TreeSink for Dom2TreeSink {
   ) {
     let mut doc = self.document.borrow_mut();
     let root = doc.root();
-    let insertion_idx = doc.node(root).children.len();
-    doc.live_mutation.pre_insert(root, insertion_idx, 1);
-    doc.push_node(
+    // html5ever can synthesize the `<html>` element early during parsing (before an authored
+    // `<!doctype>` token is processed). The DOM tree, however, expects the doctype (when present) to
+    // precede the document element in tree order.
+    //
+    // Insert the doctype before the first element/slot child so `document.firstChild` and
+    // `document.childNodes` reflect spec ordering.
+    let reference = doc
+      .node(root)
+      .children
+      .iter()
+      .copied()
+      .find(|&child| matches!(&doc.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }));
+    let doctype = doc.push_node(
       NodeKind::Doctype {
         name: name.to_string(),
         public_id: public_id.to_string(),
         system_id: system_id.to_string(),
       },
-      Some(root),
+      None,
       /* inert_subtree */ false,
     );
+    Self::insert_node_before(&mut doc, root, reference, doctype);
   }
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {

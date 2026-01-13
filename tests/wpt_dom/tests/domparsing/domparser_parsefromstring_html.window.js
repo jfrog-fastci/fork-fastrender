@@ -13,7 +13,9 @@ test(() => {
   );
 
   assert_true(doc instanceof Document);
-  assert_equals(doc.URL, document.URL);
+  // DOMParser-created documents are detached and have a `null` browsing context; browsers expose an
+  // `about:blank` URL for them.
+  assert_equals(doc.URL, "about:blank");
   assert_equals(doc.documentElement.tagName, "HTML");
   assert_equals(doc.body.tagName, "BODY");
   assert_equals(doc.getElementById("a").textContent, "hi");
@@ -29,4 +31,3 @@ test(() => {
 
   assert_equals(globalThis.__dp_ran, undefined);
 }, "DOMParser.parseFromString(text/html) must not execute scripts");
-

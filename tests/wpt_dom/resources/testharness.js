@@ -342,6 +342,26 @@ function assert_throws(expected, func, message) {
   throw Error(message || "assert_throws: expected must be a constructor or DOMException name");
 }
 //
+function assert_not_throws(func, message) {
+  if (typeof func !== "function") {
+    throw Error(message || "assert_not_throws: function is not callable");
+  }
+  try {
+    func();
+  } catch (e) {
+    throw Error(
+      __format_assertion_message(
+        message,
+        [
+          "assert_not_throws: unexpected exception thrown (",
+          __safe_string(e),
+          ")",
+        ].join("")
+      )
+    );
+  }
+}
+//
 function assert_throws_js(constructor, func, message) {
   if (typeof constructor !== "function") {
     throw Error(message || "assert_throws_js: expected constructor is not a function");
