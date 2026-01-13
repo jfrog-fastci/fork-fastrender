@@ -445,62 +445,76 @@ function assert_throws_dom(name, target, func, message) {
   // "HierarchyRequestError"), while `.code` preserves the historical numeric values.
   //
   // Keep this mapping *inside* `assert_throws_dom` so we don't leak helper globals into the test
-  // realm.
-  var __dom_exception_legacy_name_map = {
-    INDEX_SIZE_ERR: "IndexSizeError",
-    DOMSTRING_SIZE_ERR: "DOMStringSizeError",
-    HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
-    WRONG_DOCUMENT_ERR: "WrongDocumentError",
-    INVALID_CHARACTER_ERR: "InvalidCharacterError",
-    NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
-    NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
-    NOT_FOUND_ERR: "NotFoundError",
-    NOT_SUPPORTED_ERR: "NotSupportedError",
-    INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
-    INVALID_STATE_ERR: "InvalidStateError",
-    SYNTAX_ERR: "SyntaxError",
-    INVALID_MODIFICATION_ERR: "InvalidModificationError",
-    NAMESPACE_ERR: "NamespaceError",
-    INVALID_ACCESS_ERR: "InvalidAccessError",
-    VALIDATION_ERR: "ValidationError",
-    TYPE_MISMATCH_ERR: "TypeMismatchError",
-    SECURITY_ERR: "SecurityError",
-    NETWORK_ERR: "NetworkError",
-    ABORT_ERR: "AbortError",
-    URL_MISMATCH_ERR: "URLMismatchError",
-    QUOTA_EXCEEDED_ERR: "QuotaExceededError",
-    TIMEOUT_ERR: "TimeoutError",
-    INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
-    DATA_CLONE_ERR: "DataCloneError",
-  };
-  //
-  var __dom_exception_legacy_code_map = {
-    INDEX_SIZE_ERR: 1,
-    DOMSTRING_SIZE_ERR: 2,
-    HIERARCHY_REQUEST_ERR: 3,
-    WRONG_DOCUMENT_ERR: 4,
-    INVALID_CHARACTER_ERR: 5,
-    NO_DATA_ALLOWED_ERR: 6,
-    NO_MODIFICATION_ALLOWED_ERR: 7,
-    NOT_FOUND_ERR: 8,
-    NOT_SUPPORTED_ERR: 9,
-    INUSE_ATTRIBUTE_ERR: 10,
-    INVALID_STATE_ERR: 11,
-    SYNTAX_ERR: 12,
-    INVALID_MODIFICATION_ERR: 13,
-    NAMESPACE_ERR: 14,
-    INVALID_ACCESS_ERR: 15,
-    VALIDATION_ERR: 16,
-    TYPE_MISMATCH_ERR: 17,
-    SECURITY_ERR: 18,
-    NETWORK_ERR: 19,
-    ABORT_ERR: 20,
-    URL_MISMATCH_ERR: 21,
-    QUOTA_EXCEEDED_ERR: 22,
-    TIMEOUT_ERR: 23,
-    INVALID_NODE_TYPE_ERR: 24,
-    DATA_CLONE_ERR: 25,
-  };
+  // realm. However, allocate it only once: Range-heavy suites can call `assert_throws_dom` many
+  // times, and repeatedly allocating these large object literals adds unnecessary GC pressure in
+  // small JS backends.
+  var __dom_exception_legacy_name_map =
+    assert_throws_dom.__fastrender_dom_exception_legacy_name_map;
+  var __dom_exception_legacy_code_map =
+    assert_throws_dom.__fastrender_dom_exception_legacy_code_map;
+  if (
+    __dom_exception_legacy_name_map === undefined ||
+    __dom_exception_legacy_code_map === undefined
+  ) {
+    __dom_exception_legacy_name_map = {
+      INDEX_SIZE_ERR: "IndexSizeError",
+      DOMSTRING_SIZE_ERR: "DOMStringSizeError",
+      HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
+      WRONG_DOCUMENT_ERR: "WrongDocumentError",
+      INVALID_CHARACTER_ERR: "InvalidCharacterError",
+      NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
+      NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
+      NOT_FOUND_ERR: "NotFoundError",
+      NOT_SUPPORTED_ERR: "NotSupportedError",
+      INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
+      INVALID_STATE_ERR: "InvalidStateError",
+      SYNTAX_ERR: "SyntaxError",
+      INVALID_MODIFICATION_ERR: "InvalidModificationError",
+      NAMESPACE_ERR: "NamespaceError",
+      INVALID_ACCESS_ERR: "InvalidAccessError",
+      VALIDATION_ERR: "ValidationError",
+      TYPE_MISMATCH_ERR: "TypeMismatchError",
+      SECURITY_ERR: "SecurityError",
+      NETWORK_ERR: "NetworkError",
+      ABORT_ERR: "AbortError",
+      URL_MISMATCH_ERR: "URLMismatchError",
+      QUOTA_EXCEEDED_ERR: "QuotaExceededError",
+      TIMEOUT_ERR: "TimeoutError",
+      INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
+      DATA_CLONE_ERR: "DataCloneError",
+    };
+    __dom_exception_legacy_code_map = {
+      INDEX_SIZE_ERR: 1,
+      DOMSTRING_SIZE_ERR: 2,
+      HIERARCHY_REQUEST_ERR: 3,
+      WRONG_DOCUMENT_ERR: 4,
+      INVALID_CHARACTER_ERR: 5,
+      NO_DATA_ALLOWED_ERR: 6,
+      NO_MODIFICATION_ALLOWED_ERR: 7,
+      NOT_FOUND_ERR: 8,
+      NOT_SUPPORTED_ERR: 9,
+      INUSE_ATTRIBUTE_ERR: 10,
+      INVALID_STATE_ERR: 11,
+      SYNTAX_ERR: 12,
+      INVALID_MODIFICATION_ERR: 13,
+      NAMESPACE_ERR: 14,
+      INVALID_ACCESS_ERR: 15,
+      VALIDATION_ERR: 16,
+      TYPE_MISMATCH_ERR: 17,
+      SECURITY_ERR: 18,
+      NETWORK_ERR: 19,
+      ABORT_ERR: 20,
+      URL_MISMATCH_ERR: 21,
+      QUOTA_EXCEEDED_ERR: 22,
+      TIMEOUT_ERR: 23,
+      INVALID_NODE_TYPE_ERR: 24,
+      DATA_CLONE_ERR: 25,
+    };
+    assert_throws_dom.__fastrender_dom_exception_legacy_name_map =
+      __dom_exception_legacy_name_map;
+    assert_throws_dom.__fastrender_dom_exception_legacy_code_map =
+      __dom_exception_legacy_code_map;
+  }
   //
   var expected_legacy_code = null;
   var expected_modern_name = null;
