@@ -3070,7 +3070,7 @@ fn determine_startup_session(
       if !session.did_exit_cleanly {
         eprintln!("previous session ended unexpectedly; restoring");
       }
-      return (session, StartupSessionSource::Restored);
+      return (session.sanitized(), StartupSessionSource::Restored);
     }
   }
 
@@ -3080,16 +3080,47 @@ fn determine_startup_session(
     .as_ref()
     .map(|s| s.home_url.clone())
     .unwrap_or_else(|| fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
+  let appearance = loaded_session
+    .as_ref()
+    .map(|s| s.appearance.clone());
+  let (window_state, show_menu_bar) = loaded_session
+    .as_ref()
+    .and_then(|session| {
+      session
+        .windows
+        .get(session.active_window_index)
+        .or_else(|| session.windows.get(0))
+    })
+    .map(|window| (window.window_state.clone(), Some(window.show_menu_bar)))
+    .unwrap_or((None, None));
 
   if let Some(url) = cli_url {
     let mut session = fastrender::ui::BrowserSession::single(url);
     session.home_url = home_url;
+    if let Some(appearance) = appearance {
+      session.appearance = appearance;
+    }
+    if let Some(show_menu_bar) = show_menu_bar {
+      if let Some(window) = session.windows.get_mut(0) {
+        window.show_menu_bar = show_menu_bar;
+        window.window_state = window_state;
+      }
+    }
     return (session.sanitized(), StartupSessionSource::CliUrl);
   }
 
   let mut session =
     fastrender::ui::BrowserSession::single(fastrender::ui::about_pages::ABOUT_NEWTAB.to_string());
   session.home_url = home_url;
+  if let Some(appearance) = appearance {
+    session.appearance = appearance;
+  }
+  if let Some(show_menu_bar) = show_menu_bar {
+    if let Some(window) = session.windows.get_mut(0) {
+      window.show_menu_bar = show_menu_bar;
+      window.window_state = window_state;
+    }
+  }
   (session.sanitized(), StartupSessionSource::DefaultNewTab)
 }
 

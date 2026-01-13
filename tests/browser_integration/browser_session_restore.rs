@@ -84,11 +84,20 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
       "tab_groups": [
         {"title": "My Group", "color": "purple", "collapsed": true}
       ],
-      "active_tab_index": 1
+      "active_tab_index": 1,
+      "show_menu_bar": false,
+      "window_state": {
+        "x": 123,
+        "y": 456,
+        "width": 1111,
+        "height": 777,
+        "maximized": true
+      }
     }],
     "active_window_index": 0,
     "appearance": {
       "theme": "dark",
+      "accent_color": "#123456",
       "high_contrast": true,
       "reduced_motion": true,
       "ui_scale": 1.25
@@ -171,6 +180,12 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   );
   assert_eq!(
     appearance_value
+      .get("accent_color")
+      .and_then(|v| v.as_str()),
+    Some("#123456")
+  );
+  assert_eq!(
+    appearance_value
       .get("high_contrast")
       .and_then(|v| v.as_bool()),
     Some(true)
@@ -184,6 +199,30 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_eq!(
     appearance_value.get("ui_scale").and_then(|v| v.as_f64()),
     Some(1.25)
+  );
+  assert_eq!(
+    win0.get("show_menu_bar").and_then(|v| v.as_bool()),
+    Some(false)
+  );
+  let window_state = win0
+    .get("window_state")
+    .and_then(|v| v.as_object())
+    .expect("expected window_state object");
+  assert_eq!(window_state.get("x").and_then(|v| v.as_i64()), Some(123));
+  assert_eq!(window_state.get("y").and_then(|v| v.as_i64()), Some(456));
+  assert_eq!(
+    window_state.get("width").and_then(|v| v.as_i64()),
+    Some(1111)
+  );
+  assert_eq!(
+    window_state.get("height").and_then(|v| v.as_i64()),
+    Some(777)
+  );
+  assert_eq!(
+    window_state
+      .get("maximized")
+      .and_then(|v| v.as_bool()),
+    Some(true)
   );
   // Legacy v1 top-level keys should never be written.
   assert!(persisted_value.get("tabs").is_none());
@@ -206,6 +245,15 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_eq!(session.windows[0].tabs.len(), 1);
   assert_eq!(session.windows[0].active_tab_index, 0);
   assert_eq!(session.windows[0].tabs[0].url, "about:error");
+  assert_eq!(session.appearance, expected_session.appearance);
+  assert_eq!(
+    session.windows[0].window_state,
+    expected_session.windows[0].window_state
+  );
+  assert_eq!(
+    session.windows[0].show_menu_bar,
+    expected_session.windows[0].show_menu_bar
+  );
   let session_after_cli_override = session;
 
   // Fourth run: `<url>` + `--restore` forces restoring the prior session.
@@ -227,6 +275,15 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
   assert_eq!(session.windows[0].tabs.len(), 1);
   assert_eq!(session.windows[0].active_tab_index, 0);
   assert_eq!(session.windows[0].tabs[0].url, "about:newtab");
+  assert_eq!(session.appearance, expected_session.appearance);
+  assert_eq!(
+    session.windows[0].window_state,
+    expected_session.windows[0].window_state
+  );
+  assert_eq!(
+    session.windows[0].show_menu_bar,
+    expected_session.windows[0].show_menu_bar
+  );
 }
 
 #[test]
