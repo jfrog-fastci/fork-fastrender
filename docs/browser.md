@@ -19,8 +19,12 @@ Code lives in:
 
 **This is not:**
 
-- A “real” web browser engine (no sandboxed multi-process architecture yet, no
+- A “real” web browser engine (still missing many pieces: sandboxed multiprocess architecture,
   extensions/devtools/service workers, etc.).
+  - Multiprocess isolation (renderer/network separation, sandboxing) is tracked in
+    [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md) and
+    [`docs/network_process.md`](network_process.md) and should be treated as security-critical and
+    still-evolving.
 - A JavaScript-capable browser (yet): the `browser` binary does not currently execute author
   JavaScript (`<script>` does not run in the GUI today). See [javascript.md](javascript.md) and
   [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream, and

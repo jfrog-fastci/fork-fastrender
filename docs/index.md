@@ -43,6 +43,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - macOS Seatbelt sandboxing (overview + probe tool): [macos_sandbox.md](macos_sandbox.md)
 - macOS renderer sandboxing (Seatbelt now, App Sandbox later): [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md)
 - IPC transport invariants (framing, `SCM_RIGHTS`, `memfd`): [ipc.md](ipc.md)
+- Network process & IPC surface: [network_process.md](network_process.md)
 - Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 - Renderer-chrome internal schemes (`chrome://` assets, `chrome-action:` actions): [renderer_chrome_schemes.md](renderer_chrome_schemes.md)
 - Chrome JS bridge (trusted UI API surface): [chrome_js_bridge.md](chrome_js_bridge.md)

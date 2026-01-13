@@ -102,6 +102,10 @@ Renderer-chrome also relies on privileged internal URL schemes (`chrome://` asse
 must never be enabled for untrusted content; see
 [`docs/renderer_chrome_schemes.md`](../docs/renderer_chrome_schemes.md).
 
+For a developer-facing description of how the network process is structured and what IPC surfaces
+exist (HTTP, cookies, WebSocket, downloads), see
+[`docs/network_process.md`](../docs/network_process.md).
+
 ### Site isolation
 
 Beyond process-per-tab, consider site isolation:
