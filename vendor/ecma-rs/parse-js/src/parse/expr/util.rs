@@ -35,6 +35,11 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
   // Check for member expressions first (without moving the value).
   let is_member = match node.stx.as_ref() {
     Expr::Member(member) => {
+      // Parenthesized expressions are never valid assignment targets in strict ECMAScript mode
+      // (e.g. `(a) = 1`, `(obj.prop) = 1`).
+      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
+        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+      }
       if !recover && member.stx.optional_chaining {
         return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
       }
@@ -47,6 +52,9 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
   }
   let is_computed_member = match node.stx.as_ref() {
     Expr::ComputedMember(member) => {
+      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
+        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+      }
       if !recover && member.stx.optional_chaining {
         return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
       }
@@ -215,15 +223,22 @@ pub(crate) fn lit_to_pat_with_recover(node: Node<Expr>, recover: bool) -> Syntax
       }
       Ok(Node::new(loc, ObjPat { properties, rest }).into_wrapped())
     }
-    Expr::Id(n) => Ok(
-      Node::new(
-        loc,
-        IdPat {
-          name: n.stx.name.clone(),
-        },
+    Expr::Id(n) => {
+      // Parenthesized identifiers are not valid assignment targets in strict ECMAScript mode
+      // (e.g. `(a) = 1`, `for ((a) of b) {}`).
+      if !recover && node.assoc.get::<ParenthesizedExpr>().is_some() {
+        return Err(loc.error(SyntaxErrorType::InvalidAssigmentTarget, None));
+      }
+      Ok(
+        Node::new(
+          loc,
+          IdPat {
+            name: n.stx.name.clone(),
+          },
+        )
+        .into_wrapped(),
       )
-      .into_wrapped(),
-    ),
+    }
     // It's possible to encounter patterns already parsed e.g. `{a: [b] = 1}`, where `[b]` was already converted to a pattern.
     Expr::IdPat(n) => Ok(n.into_wrapped()),
     Expr::ArrPat(n) => Ok(n.into_wrapped()),

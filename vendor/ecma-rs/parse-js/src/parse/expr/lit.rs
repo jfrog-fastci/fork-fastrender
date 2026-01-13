@@ -3415,6 +3415,18 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn duplicate_named_capture_groups_are_only_allowed_in_disjoint_alternatives() {
+    // `DuplicateNamedCapturingGroups` (ECMA-262): duplicates are permitted when they cannot both
+    // participate in the same match result.
+    assert_valid(r"/(?:(?<x>a)|(?<x>b))/");
+    assert_valid(r"/(?:(?<x>a)|(?<y>a)(?<x>b))(?:(?<z>c)|(?<z>d))/");
+
+    // Duplicates in a single alternative are early errors.
+    assert_invalid(r"/(?<x>a)(?<x>b)/");
+    assert_invalid(r"/(?:(?<x>a)(?<x>b)|c)/");
+  }
+
+  #[test]
   fn unicode_sets_mode_rejects_reserved_double_punctuators() {
     for pat in [
       r"/[&&]/v",

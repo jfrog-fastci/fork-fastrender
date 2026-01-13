@@ -4568,8 +4568,18 @@ impl<'a> Parser<'a> {
           }
           // ClassSetReservedPunctuator (treat as identity escapes).
           x if is_class_set_reserved_punctuator(x) => Ok(x as u32),
-          // Identity escape (approximation).
-          other => Ok(other as u32),
+          // In UnicodeMode (`/v` implies UnicodeMode), identity escapes are restricted to
+          // `SyntaxCharacter` or `/` (IdentityEscape[+UnicodeMode]).
+          other => {
+            if is_syntax_character(other) || other == (b'/' as u16) {
+              Ok(other as u32)
+            } else {
+              Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into())
+            }
+          }
         }
       }
       // Syntax characters must be escaped in UnicodeSetsMode.

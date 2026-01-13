@@ -1240,26 +1240,42 @@ fn regexp_unicode_mode_escape_validation() {
 
   // UnicodeMode rejects invalid identity escapes (IdentityEscape[+UnicodeMode] is limited to
   // SyntaxCharacter or '/').
-  let value = rt
-    .exec_script(r#"try { new RegExp("\\M", "u"); "no"; } catch (e) { e.name }"#)
-    .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+  for flag in ["u", "v"] {
+    let script = format!(r#"try {{ new RegExp("\\M", "{flag}"); "no"; }} catch (e) {{ e.name }}"#);
+    let value = rt.exec_script(&script).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+  }
 
   // UnicodeMode rejects invalid control escapes (`\c` must be followed by an ASCII letter).
-  let value = rt
-    .exec_script(r#"try { new RegExp("\\c0", "u"); "no"; } catch (e) { e.name }"#)
-    .unwrap();
-  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+  for flag in ["u", "v"] {
+    let script = format!(r#"try {{ new RegExp("\\c0", "{flag}"); "no"; }} catch (e) {{ e.name }}"#);
+    let value = rt.exec_script(&script).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+  }
 
   // UnicodeMode rejects invalid decimal escapes/backreferences.
+  for flag in ["u", "v"] {
+    let script = format!(r#"try {{ new RegExp("\\1", "{flag}"); "no"; }} catch (e) {{ e.name }}"#);
+    let value = rt.exec_script(&script).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+  }
+
+  // Escaping a SyntaxCharacter is valid under UnicodeMode.
+  for flag in ["u", "v"] {
+    let script = format!(r#"try {{ new RegExp("\\{{", "{flag}"); "ok"; }} catch (e) {{ e.name }}"#);
+    let value = rt.exec_script(&script).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, value), "ok");
+  }
+
+  // UnicodeSetsMode (`v`) character classes use `ClassSetCharacter`, which also applies the
+  // UnicodeMode identity escape restrictions.
   let value = rt
-    .exec_script(r#"try { new RegExp("\\1", "u"); "no"; } catch (e) { e.name }"#)
+    .exec_script(r#"try { new RegExp("[\\M]", "v"); "no"; } catch (e) { e.name }"#)
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
 
-  // Escaping a SyntaxCharacter is valid under UnicodeMode.
   let value = rt
-    .exec_script(r#"try { new RegExp("\\{", "u"); "ok"; } catch (e) { e.name }"#)
+    .exec_script(r#"try { new RegExp("[\\{]", "v"); "ok"; } catch (e) { e.name }"#)
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "ok");
 }
