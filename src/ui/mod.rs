@@ -86,6 +86,10 @@ pub mod compositor_accessibility;
 #[cfg(feature = "browser_ui")]
 pub mod accesskit_bridge;
 
+// Bridge between FastRender's accessibility tree and AccessKit (used by renderer-chrome UI work).
+#[cfg(feature = "browser_ui")]
+pub mod fastrender_accesskit;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
