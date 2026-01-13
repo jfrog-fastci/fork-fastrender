@@ -2319,6 +2319,30 @@ fn columns_shorthand_number_and_length_treats_count_as_maximum() {
 }
 
 #[test]
+fn columns_shorthand_length_and_number_in_inline_style_treats_count_as_maximum() {
+  let html = r#"<!doctype html>
+    <style>html,body{margin:0;font-size:16px;}</style>
+    <div id=multi style="width:600px; columns: 8em 12;">hello<br>world<br>more<br>lines<br>to<br>flow</div>
+  "#;
+
+  let tree = render_tree_with_artifacts(html, 800, 200);
+  let container = find_first_multicol_container(&tree.root).expect("multicol container");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info");
+
+  assert_eq!(info.column_count, 4);
+  assert!((info.column_gap - 16.0).abs() < 0.1, "expected 1em gap");
+  assert!(
+    (info.column_width - 138.0).abs() < 0.6,
+    "expected computed column width (got {})",
+    info.column_width
+  );
+  assert!(info.column_width >= 128.0);
+}
+
+#[test]
 fn column_gap_em_resolves_against_font_size() {
   let html = r#"<!doctype html>
     <style>
