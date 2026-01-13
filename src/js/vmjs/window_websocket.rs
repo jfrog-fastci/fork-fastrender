@@ -1562,7 +1562,12 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
       let cmd = match cmd {
         WsCommand::SendText(text) => WebSocketCommand::SendText { text },
         WsCommand::SendBinary(data) => WebSocketCommand::SendBinary { data },
-        _ => unreachable!("websocket_send only queues SendText/SendBinary"), // fastrender-allow-panic
+        _ => {
+          revert_buffered(byte_len);
+          return Err(VmError::TypeError(
+            "WebSocket send expects a text or binary message",
+          ));
+        }
       };
       let msg = WebSocketIpcCommand::WebSocket { conn_id: ws_id, cmd };
       match cmd_tx.try_send(msg) {

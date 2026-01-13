@@ -599,6 +599,7 @@ impl ChromeFrameDocument {
     let can_go_back = active.map(|t| t.can_go_back).unwrap_or(false);
     let can_go_forward = active.map(|t| t.can_go_forward).unwrap_or(false);
     let loading = active.map(|t| t.loading).unwrap_or(false);
+    let title = active.map(|t| t.display_title()).unwrap_or("New Tab");
 
     // Address bar:
     // - The browser UI state owns the displayed text (`ChromeState::address_bar_text`) and already
@@ -944,6 +945,10 @@ impl ChromeFrameDocument {
           }
           dom_changed = true;
         }
+      }
+
+      if let Some(tab_title) = dom_mutation::find_element_by_id_mut(dom, "tab-title") {
+        dom_changed |= dom_mutation::set_text_content(tab_title, title);
       }
 
       dom_changed

@@ -1096,6 +1096,24 @@ mod state_machine_tests {
   }
 
   #[test]
+  fn classic_fetch_completed_rejects_module_script_ids() -> Result<()> {
+    let mut h = Harness::new();
+    let module_id = h.discover(module_external(
+      "m.js", /* async */ false, /* parser_inserted */ true,
+    ))?;
+
+    let err = h
+      .scheduler
+      .classic_fetch_completed(module_id, "console.log('x')".to_string())
+      .expect_err("expected classic_fetch_completed to reject module script");
+    assert!(
+      err.to_string().contains("non-classic"),
+      "unexpected error: {err}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn parser_inserted_deferred_module_scripts_execute_after_parsing_completed_in_order() -> Result<()>
   {
     let mut h = Harness::new();

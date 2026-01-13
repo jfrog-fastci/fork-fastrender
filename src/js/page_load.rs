@@ -1638,4 +1638,94 @@ mod tests {
     assert!(host.script_events[0].starts_with("error@"));
     Ok(())
   }
+
+  #[test]
+  fn fetcher_error_aborts_parse_task() -> Result<()> {
+    #[derive(Clone, Copy)]
+    struct FailingFetcher;
+
+    impl ScriptFetcher for FailingFetcher {
+      fn start_classic_fetch(
+        &mut self,
+        _script_id: HtmlScriptId,
+        _url: &str,
+        _destination: FetchDestination,
+        _credentials_mode: FetchCredentialsMode,
+      ) -> Result<()> {
+        Err(crate::error::Error::Other("fetcher boom".to_string()))
+      }
+
+      fn start_module_graph_fetch(
+        &mut self,
+        _script_id: HtmlScriptId,
+        _url: &str,
+        _destination: FetchDestination,
+        _credentials_mode: FetchCredentialsMode,
+        _element: &ScriptElementSpec,
+      ) -> Result<()> {
+        Err(crate::error::Error::Other("fetcher boom".to_string()))
+      }
+
+      fn start_inline_module_graph_fetch(
+        &mut self,
+        _script_id: HtmlScriptId,
+        _source_text: &str,
+        _base_url: Option<&str>,
+        _element: &ScriptElementSpec,
+      ) -> Result<()> {
+        Err(crate::error::Error::Other("fetcher boom".to_string()))
+      }
+    }
+
+    #[derive(Default)]
+    struct NoopExecutor;
+
+    impl ScriptExecutor<HtmlLoadOrchestrator<FailingFetcher, NoopExecutor>> for NoopExecutor {
+      fn execute_classic(
+        &mut self,
+        _source_text: &str,
+        _event_loop: &mut EventLoop<HtmlLoadOrchestrator<FailingFetcher, NoopExecutor>>,
+      ) -> Result<()> {
+        Ok(())
+      }
+
+      fn execute_module(
+        &mut self,
+        _source_text: &str,
+        _event_loop: &mut EventLoop<HtmlLoadOrchestrator<FailingFetcher, NoopExecutor>>,
+      ) -> Result<()> {
+        Ok(())
+      }
+
+      fn register_import_map(
+        &mut self,
+        _source_text: &str,
+        _base_url: Option<&str>,
+        _event_loop: &mut EventLoop<HtmlLoadOrchestrator<FailingFetcher, NoopExecutor>>,
+      ) -> Result<()> {
+        Ok(())
+      }
+    }
+
+    let html = "<!doctype html><script src=\"https://example.com/a.js\"></script>".to_string();
+    let mut host = HtmlLoadOrchestrator::new(
+      html,
+      Some("https://example.com/"),
+      1024,
+      FailingFetcher,
+      NoopExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<HtmlLoadOrchestrator<FailingFetcher, NoopExecutor>>::new();
+
+    host.start(&mut event_loop)?;
+
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
+      .expect_err("expected fetcher failure to abort event loop run");
+    assert!(
+      err.to_string().contains("fetcher boom"),
+      "unexpected error: {err}"
+    );
+    Ok(())
+  }
 }

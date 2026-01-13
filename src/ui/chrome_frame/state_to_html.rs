@@ -206,11 +206,10 @@ pub fn chrome_frame_html_from_state(app: &BrowserAppState) -> String {
     out.push_str(&tab_id);
     out.push_str("\" class=\"tab-activate\" role=\"tab\" aria-selected=\"");
     out.push_str(aria_selected);
-    write!(
+    let _ = write!(
       out,
       "\" aria-posinset=\"{aria_posinset}\" aria-setsize=\"{tab_setsize}\" href=\"{activate_href}",
-    )
-    .expect("write tab aria posinset/setsize");
+    );
     out.push_str("\">");
     out.push_str("<img class=\"tab-favicon\" src=\"");
     out.push_str(&favicon_url);

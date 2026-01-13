@@ -887,8 +887,8 @@ impl WindowRealm {
       .runtime
       .vm
       .user_data::<WindowRealmUserData>()
-      .expect("WindowRealm missing WindowRealmUserData") // fastrender-allow-unwrap
-      .window_id
+      .map(|data| data.window_id)
+      .unwrap_or(0)
   }
 
   pub fn global_object(&self) -> GcObject {
@@ -9214,19 +9214,15 @@ where
   let ty = any.type_id();
   let ptr = any as *mut dyn std::any::Any;
 
-  let mut f = Some(f);
-
   // SAFETY: we only cast the erased `Any` pointer back to a concrete type after checking its
   // runtime `TypeId`.
   unsafe {
     if ty == TypeId::of::<crate::js::host_document::DocumentHostState>() {
       let host = &mut *(ptr as *mut crate::js::host_document::DocumentHostState);
-      let f = f.take().expect("closure is only taken once"); // fastrender-allow-unwrap
       return Some(crate::js::DomHost::mutate_dom(host, f));
     }
     if ty == TypeId::of::<crate::api::BrowserDocumentDom2>() {
       let host = &mut *(ptr as *mut crate::api::BrowserDocumentDom2);
-      let f = f.take().expect("closure is only taken once"); // fastrender-allow-unwrap
       return Some(crate::js::DomHost::mutate_dom(host, f));
     }
   }
@@ -16747,7 +16743,6 @@ fn tree_walker_traverse_children(
         node = sibling;
         break;
       }
-
       let Some(parent) = node_parent_node_for_traversal(dom, current) else {
         return Ok(Value::Null);
       };
@@ -29939,22 +29934,14 @@ pub(crate) fn event_target_dispatch_event_dom2(
   //
   // This is a minimal approximation of the web platform's EventHandler IDL attributes: after the
   // normal DOM event dispatch completes, invoke `target["on" + type]` if it is callable.
-  if matches!(
-    resolved.target_id,
-    web_events::EventTargetId::Window
-      | web_events::EventTargetId::Document
-      | web_events::EventTargetId::Node(_)
-  ) {
-    let (handler_target_obj, handler_target_id) = match resolved.target_id {
-      web_events::EventTargetId::Window => (resolved.window_obj, web_events::EventTargetId::Window),
-      web_events::EventTargetId::Document => {
-        (resolved.document_obj, web_events::EventTargetId::Document)
-      }
-      web_events::EventTargetId::Node(node_id) => {
-        (target_obj, web_events::EventTargetId::Node(node_id))
-      }
-      _ => unreachable!(), // fastrender-allow-panic
-    };
+  let handler_target = match resolved.target_id {
+    web_events::EventTargetId::Window => Some((resolved.window_obj, web_events::EventTargetId::Window)),
+    web_events::EventTargetId::Document => Some((resolved.document_obj, web_events::EventTargetId::Document)),
+    web_events::EventTargetId::Node(node_id) => Some((target_obj, web_events::EventTargetId::Node(node_id))),
+    _ => None,
+  };
+
+  if let Some((handler_target_obj, handler_target_id)) = handler_target {
 
     let handler_name = format!("on{}", rust_event.type_);
     let handler_key = alloc_key(scope, &handler_name)?;
@@ -44640,8 +44627,13 @@ fn queue_dynamic_import_map_task_inline(
         .or(host.base_url.as_deref())
         .unwrap_or(host.document_url.as_str());
 
-      let base_url =
-        Url::parse(base_str).unwrap_or_else(|_| Url::parse("about:blank").expect("about:blank")); // fastrender-allow-unwrap
+      let base_url = match Url::parse(base_str) {
+        Ok(url) => url,
+        Err(_) => match Url::parse("about:blank") {
+          Ok(url) => url,
+          Err(_) => return Ok(()),
+        },
+      };
       host.register_import_map_from_script_text(&source_text, &base_url)?;
       Ok(())
     })

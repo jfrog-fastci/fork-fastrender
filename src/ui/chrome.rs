@@ -812,9 +812,9 @@ fn accesskit_node_id_for_egui_id(id: egui::Id) -> accesskit::NodeId {
   // hash value (see egui's `Id::accesskit_id`, which is crate-private). Mirror that mapping here so
   // we can reference other egui widgets via AccessKit relations like `active_descendant`.
   let raw: u64 = unsafe { std::mem::transmute::<egui::Id, u64>(id) };
-  accesskit::NodeId(
-    std::num::NonZeroU128::new(u128::from(raw).max(1)).expect("egui id maps to non-zero NodeId"),
-  )
+  let raw = u128::from(raw).max(1);
+  // SAFETY: `raw` is clamped to at least 1, so it is always non-zero.
+  accesskit::NodeId(unsafe { std::num::NonZeroU128::new_unchecked(raw) })
 }
 
 fn egui_id_from_focus_token(token: UiFocusToken) -> egui::Id {

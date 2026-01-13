@@ -38,6 +38,11 @@ fn style_uses_scroll_linked_animation_timeline(style: &ComputedStyle) -> bool {
   // Match the engine's animation list semantics: the number of animations is defined by
   // `animation-name`, and other `animation-*` lists are indexed by the same `idx`, falling back to
   // their last value when shorter (see `animation::pick`).
+  let Some(last_timeline) = timelines.last() else {
+    // Defensive: `timelines.is_empty()` is handled above, but avoid panicking if the style is
+    // malformed.
+    return false;
+  };
   for (idx, name) in names.iter().enumerate() {
     let Some(name) = name.as_deref() else {
       continue;
@@ -46,10 +51,7 @@ fn style_uses_scroll_linked_animation_timeline(style: &ComputedStyle) -> bool {
       continue;
     }
 
-    let Some(timeline) = timelines.get(idx).or_else(|| timelines.last()) else {
-      // Defensive: an empty timeline list would mean no scroll-linked timelines.
-      continue;
-    };
+    let timeline = timelines.get(idx).unwrap_or(last_timeline);
     if animation_timeline_is_scroll_linked(timeline) {
       return true;
     }

@@ -2877,7 +2877,12 @@ impl InlineFormattingContext {
           );
           if last_is_non_clearing_break {
             let Some((last_idx, _)) = last else {
-              unreachable!("break matched from last item but last item was none");
+              // Defensive: `last_is_non_clearing_break` implies `last` is present, but avoid
+              // panicking if future refactors change the logic.
+              flush_current(&mut segments, &mut current_items);
+              whitespace.reset();
+              segments.push(InlineFlowSegment::Block(BoxNodeRef::new(child)));
+              continue;
             };
             // A leading `<br>` (e.g. `<div><br><div>block</div></div>`) should still create an
             // empty line, so only drop the trailing hard break when the inline segment contains
@@ -8102,9 +8107,12 @@ impl InlineFormattingContext {
         };
 
         let mut segment_iter = segments.into_iter();
-        let first = segment_iter
-          .next()
-          .expect("split_text_item_on_punctuation must return at least one segment");
+        let Some(first) = segment_iter.next() else {
+          // Defensive: `split_text_item_on_punctuation` should only return `Ok` for non-empty
+          // splits, but avoid panicking if the helper ever changes.
+          idx += 1;
+          continue;
+        };
         items[idx] = InlineItem::Text(first);
         let mut insert_at = idx + 1;
         for seg in segment_iter {
@@ -8166,9 +8174,10 @@ impl InlineFormattingContext {
         };
 
         let mut segment_iter = segments.into_iter();
-        let first = segment_iter
-          .next()
-          .expect("split_text_item_on_punctuation must return at least one segment");
+        let Some(first) = segment_iter.next() else {
+          idx += 1;
+          continue;
+        };
         items[idx].item = InlineItem::Text(first);
         let mut insert_at = idx + 1;
         for seg in segment_iter {

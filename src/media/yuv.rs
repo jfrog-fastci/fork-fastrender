@@ -113,4 +113,3 @@ mod tests {
     assert_eq!(out_padded, out_tight);
   }
 }
-

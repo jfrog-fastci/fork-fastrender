@@ -455,11 +455,22 @@ pub(crate) struct PromiseRejectionTrackerState {
 type TimerCallback<Host> =
   Box<dyn for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static>;
 
+type TimerOnceCallback<Host> = Runnable<Host>;
+
+enum TimerCallbackKind<Host: 'static> {
+  Once(TimerOnceCallback<Host>),
+  Mut(TimerCallback<Host>),
+}
+
 type AnimationFrameCallback<Host> =
-  Box<dyn for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>, f64) -> Result<()> + 'static>;
+  Box<
+    dyn for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>, f64) -> Result<()> + 'static,
+  >;
 
 type IdleCallback<Host> =
-  Box<dyn for<'a> FnMut(&'a mut Host, &'a mut EventLoop<Host>, bool, f64) -> Result<()> + 'static>;
+  Box<
+    dyn for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>, bool, f64) -> Result<()> + 'static,
+  >;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerKind {
@@ -469,7 +480,7 @@ enum TimerKind {
 
 struct TimerState<Host: 'static> {
   kind: TimerKind,
-  callback: Option<TimerCallback<Host>>,
+  callback: Option<TimerCallbackKind<Host>>,
   interval: Option<Duration>,
   due: Duration,
   schedule_seq: u64,
@@ -1036,20 +1047,13 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: for<'a> FnOnce(&'a mut Host, &'a mut EventLoop<Host>) -> Result<()> + 'static,
   {
-    // Wrap the `FnOnce` callback in a `FnMut` closure by stashing it and taking it on first call.
-    //
-    // This keeps the callback non-virtual (no `dyn FnOnce`) and avoids lifetime-generalisation
-    // issues when coercing the wrapper closure into a `dyn FnMut` trait object.
-    let mut maybe = Some(callback);
-    let callback: TimerCallback<Host> =
-      box_try_new(move |host: &mut Host, event_loop: &mut EventLoop<Host>| {
-        let runnable = maybe
-          .take()
-          .ok_or_else(|| Error::Other("setTimeout callback invoked more than once".to_string()))?;
-        runnable(host, event_loop)
-      })
-      .ok_or_else(|| Error::Other(String::new()))?;
-    Ok(self.add_timer(TimerKind::Timeout, delay, None, callback)?)
+    let callback = try_box_runnable(callback)?;
+    Ok(self.add_timer(
+      TimerKind::Timeout,
+      delay,
+      None,
+      TimerCallbackKind::Once(callback),
+    )?)
   }
 
   pub fn set_interval<F>(&mut self, interval: Duration, callback: F) -> Result<TimerId>
@@ -1058,7 +1062,12 @@ impl<Host: 'static> EventLoop<Host> {
   {
     let callback: TimerCallback<Host> =
       box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
-    Ok(self.add_timer(TimerKind::Interval, interval, Some(interval), callback)?)
+    Ok(self.add_timer(
+      TimerKind::Interval,
+      interval,
+      Some(interval),
+      TimerCallbackKind::Mut(callback),
+    )?)
   }
 
   pub fn clear_timeout(&mut self, id: TimerId) {
@@ -1113,19 +1122,10 @@ impl<Host: 'static> EventLoop<Host> {
       .try_reserve(1)
       .map_err(|_| Error::Other(String::new()))?;
 
-    let mut maybe = Some(callback);
-    let callback: IdleCallback<Host> = box_try_new(
-      move |host: &mut Host,
-            event_loop: &mut EventLoop<Host>,
-            did_timeout: bool,
-            remaining_ms: f64| {
-        let runnable = maybe.take().ok_or_else(|| {
-          Error::Other("requestIdleCallback callback invoked more than once".to_string())
-        })?;
-        runnable(host, event_loop, did_timeout, remaining_ms)
-      },
-    )
-    .ok_or_else(|| Error::Other(String::new()))?;
+    let callback: IdleCallback<Host> = {
+      let boxed: Box<F> = box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
+      boxed
+    };
 
     self.idle_callbacks.insert(
       id,
@@ -1182,16 +1182,10 @@ impl<Host: 'static> EventLoop<Host> {
       }
     };
 
-    let mut maybe = Some(callback);
-    let callback: AnimationFrameCallback<Host> = box_try_new(
-      move |host: &mut Host, event_loop: &mut EventLoop<Host>, timestamp: f64| {
-        let runnable = maybe.take().ok_or_else(|| {
-          Error::Other("requestAnimationFrame callback invoked more than once".to_string())
-        })?;
-        runnable(host, event_loop, timestamp)
-      },
-    )
-    .ok_or_else(|| Error::Other(String::new()))?;
+    let callback: AnimationFrameCallback<Host> = {
+      let boxed: Box<F> = box_try_new(callback).ok_or_else(|| Error::Other(String::new()))?;
+      boxed
+    };
 
     self
       .animation_frame_callbacks
@@ -2053,7 +2047,7 @@ impl<Host: 'static> EventLoop<Host> {
         // scheduling queue).
         render_control::check_active(stage)?;
         let _ = queue.pop_front();
-        let Some(mut callback) = self.animation_frame_callbacks.remove(&id) else {
+        let Some(callback) = self.animation_frame_callbacks.remove(&id) else {
           continue;
         };
         if let Err(err) = (callback)(host, self, timestamp) {
@@ -2217,7 +2211,7 @@ impl<Host: 'static> EventLoop<Host> {
     kind: TimerKind,
     requested_delay: Duration,
     interval: Option<Duration>,
-    callback: TimerCallback<Host>,
+    callback: TimerCallbackKind<Host>,
   ) -> Result<TimerId> {
     self.maybe_compact_timer_queue();
     if self.timers.len() >= self.queue_limits.max_pending_timers {
@@ -2470,7 +2464,7 @@ impl<Host: 'static> EventLoop<Host> {
       }
     };
 
-    let Some(mut callback) = state.callback.take() else {
+    let Some(callback) = state.callback.take() else {
       return Err(Error::Other(
         "Idle callback missing while callback is active".to_string(),
       ));
@@ -2496,7 +2490,7 @@ impl<Host: 'static> EventLoop<Host> {
     let kind = timer.kind;
     let interval = timer.interval;
     let nesting_level = timer.nesting_level;
-    let Some(mut callback) = timer.callback.take() else {
+    let Some(callback) = timer.callback.take() else {
       return Err(Error::Other(
         "Timer callback missing while timer is active".to_string(),
       ));
@@ -2506,9 +2500,12 @@ impl<Host: 'static> EventLoop<Host> {
     // `run_next_task` performs after this task returns).
     self.timer_nesting_level = nesting_level;
 
-    let callback_err = match (callback)(host, self) {
-      Ok(()) => None,
-      Err(err) => Some(err),
+    let (callback_err, callback_for_interval) = match callback {
+      TimerCallbackKind::Once(callback) => ((callback)(host, self).err(), None),
+      TimerCallbackKind::Mut(mut callback) => {
+        let err = (callback)(host, self).err();
+        (err, Some(callback))
+      }
     };
 
     match kind {
@@ -2527,6 +2524,11 @@ impl<Host: 'static> EventLoop<Host> {
         let Some(interval) = interval else {
           return Err(Error::Other(
             "Interval timer missing interval duration".to_string(),
+          ));
+        };
+        let Some(callback) = callback_for_interval else {
+          return Err(Error::Other(
+            "Interval timer missing mutable callback".to_string(),
           ));
         };
         let now = self.clock.now();
@@ -2548,7 +2550,7 @@ impl<Host: 'static> EventLoop<Host> {
         if timer.schedule_seq != generation {
           return callback_err.map_or(Ok(()), Err);
         }
-        timer.callback = Some(callback);
+        timer.callback = Some(TimerCallbackKind::Mut(callback));
         timer.due = due;
         timer.nesting_level = next_nesting_level;
         timer.schedule_seq = schedule_seq;
@@ -4464,20 +4466,23 @@ mod tests {
       Ok(())
     })?;
 
-    // Simulate an internal bug by invoking the timer callback twice directly.
-    let mut callback = event_loop
+    // Simulate an internal bug by dropping the callback while the timer is still live.
+    let generation = event_loop
+      .timers
+      .get(&id)
+      .expect("timer should exist")
+      .schedule_seq;
+    let _ = event_loop
       .timers
       .get_mut(&id)
-      .and_then(|timer| timer.callback.take())
-      .expect("timer callback should exist");
+      .expect("timer should exist")
+      .callback
+      .take();
 
-    callback(&mut host, &mut event_loop)?;
-    assert_eq!(host.count, 1);
-
-    let err = callback(&mut host, &mut event_loop).expect_err("second invocation should fail");
-    assert!(
-      matches!(err, Error::Other(msg) if msg.contains("setTimeout callback invoked more than once"))
-    );
+    let err = event_loop
+      .fire_timer(&mut host, id, generation)
+      .expect_err("missing callback should error");
+    assert!(matches!(err, Error::Other(msg) if msg.contains("Timer callback missing")));
     Ok(())
   }
 

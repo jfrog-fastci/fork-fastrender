@@ -7268,7 +7268,7 @@ impl HttpFetcher {
     };
 
     let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
-      let budget = timeout_budget.expect("budget mode should be active");
+      let budget = timeout_budget;
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
@@ -7750,7 +7750,7 @@ impl HttpFetcher {
     };
 
     let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
-      let budget = timeout_budget.expect("budget mode should be active");
+      let budget = timeout_budget;
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
@@ -8224,7 +8224,7 @@ impl HttpFetcher {
     };
 
     let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
-      let budget = timeout_budget.expect("budget mode should be active");
+      let budget = timeout_budget;
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
@@ -8753,7 +8753,7 @@ impl HttpFetcher {
     };
 
     let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
-      let budget = timeout_budget.expect("budget mode should be active");
+      let budget = timeout_budget;
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
@@ -9287,7 +9287,7 @@ impl HttpFetcher {
     };
 
     let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
-      let budget = timeout_budget.expect("budget mode should be active");
+      let budget = timeout_budget;
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(
@@ -10096,7 +10096,7 @@ impl HttpFetcher {
     };
 
     let budget_exhausted_error = |current_url: &str, attempt: usize| -> Error {
-      let budget = timeout_budget.expect("budget mode should be active");
+      let budget = timeout_budget;
       let elapsed = started.elapsed();
       Error::Resource(
         ResourceError::new(

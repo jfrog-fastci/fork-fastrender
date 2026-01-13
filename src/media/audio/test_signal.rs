@@ -85,7 +85,7 @@ pub fn impulse(sample_rate: u32, channels: u16, frames: usize) -> Vec<f32> {
 #[must_use]
 pub fn sine(freq_hz: f32, duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
   let frames = match usize::try_from(duration_to_frames_floor(sample_rate, duration)) {
-    Ok(v) => v,
+    Ok(frames) => frames,
     Err(_) => return Vec::new(),
   };
   sine_wave(freq_hz, sample_rate, channels, frames)
@@ -97,7 +97,7 @@ pub fn sine(freq_hz: f32, duration: Duration, sample_rate: u32, channels: u16) -
 #[must_use]
 pub fn impulse_duration(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
   let frames = match usize::try_from(duration_to_frames_floor(sample_rate, duration)) {
-    Ok(v) => v,
+    Ok(frames) => frames,
     Err(_) => return Vec::new(),
   };
   impulse(sample_rate, channels, frames)
@@ -112,7 +112,7 @@ pub fn impulse_duration(duration: Duration, sample_rate: u32, channels: u16) -> 
 #[must_use]
 pub fn ramp(duration: Duration, sample_rate: u32, channels: u16) -> Vec<f32> {
   let frames = match usize::try_from(duration_to_frames_floor(sample_rate, duration)) {
-    Ok(v) => v,
+    Ok(frames) => frames,
     Err(_) => return Vec::new(),
   };
   let channels_usize = usize::from(channels);

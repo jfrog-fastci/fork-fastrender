@@ -101,7 +101,7 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
 
   // The broken-image placeholder keeps the image box transparent (so author-provided backgrounds
   // show through); the only non-transparent pixels should come from the UA icon.
-  let bg_px = pixmap.pixel(0, 0).expect("pixel in bounds");
+  let bg_px = pixmap.pixel(0, 0).expect("pixel in bounds"); // fastrender-allow-unwrap
   assert_eq!(
     (bg_px.red(), bg_px.green(), bg_px.blue(), bg_px.alpha()),
     (0, 0, 0, 255),
@@ -109,7 +109,8 @@ fn display_list_img_empty_bytes_renders_ua_placeholder() {
   );
 
   // The UA icon has a crisp 1px border.
-  let icon_border_px = pixmap.pixel(2, 2).expect("icon border pixel in bounds");
+  let icon_border_px =
+    pixmap.pixel(2, 2).expect("icon border pixel in bounds"); // fastrender-allow-unwrap
   assert_eq!(
     (
       icon_border_px.red(),
@@ -181,13 +182,14 @@ fn display_list_img_alt_text_wraps_within_replaced_box() {
 
   // If the alt text is wrapped into multiple lines, we should see red glyph pixels both near the
   // top of the replaced box and further down, while the top-left background remains transparent.
-  let bg_px = pixmap.pixel(0, 0).expect("pixel in bounds");
+  let bg_px = pixmap.pixel(0, 0).expect("pixel in bounds"); // fastrender-allow-unwrap
   assert_eq!(
     (bg_px.red(), bg_px.green(), bg_px.blue(), bg_px.alpha()),
     (0, 0, 0, 255),
     "expected background to show through at top-left (no full-frame border)",
   );
-  let icon_border_px = pixmap.pixel(2, 2).expect("icon border pixel in bounds");
+  let icon_border_px =
+    pixmap.pixel(2, 2).expect("icon border pixel in bounds"); // fastrender-allow-unwrap
   assert_eq!(
     (
       icon_border_px.red(),
@@ -330,7 +332,7 @@ fn display_list_img_marked_placeholder_png_renders_ua_broken_image_icon() {
 
   // Sample a pixel inside the "sky" portion of the UA broken-image icon.
   let px = pixmap.pixel(4, 4).expect("pixel in bounds");
-  assert_eq!(
+  assert_eq!( // fastrender-allow-panic
     (px.red(), px.green(), px.blue(), px.alpha()),
     (198, 216, 244, 255)
   );
@@ -375,7 +377,7 @@ fn display_list_img_unmarked_transparent_png_does_not_render_ua_broken_image_ico
   // With a successfully decoded (but fully transparent) image, the black page background should
   // remain visible.
   let px = pixmap.pixel(4, 4).expect("pixel in bounds");
-  assert_eq!(
+  assert_eq!( // fastrender-allow-panic
     (px.red(), px.green(), px.blue(), px.alpha()),
     (0, 0, 0, 255)
   );

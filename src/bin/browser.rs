@@ -27897,10 +27897,10 @@ impl App {
         }
       }
       action if is_scroll_action(action) => {
-        // Only the page node supports scroll actions in the minimal compositor tree.
-        if request.target != compositor_a11y::page_node_id() {
-          return;
-        }
+         // Only the page node supports scroll actions in the minimal compositor tree.
+         if request.target != compositor_a11y::page_node_id() {
+           return;
+         }
 
         use fastrender::scroll::ScrollBounds;
         use fastrender::ui::UiToWorker;
@@ -28049,18 +28049,19 @@ impl App {
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) -> bool {
     let _frame_span = self.trace.span("ui.frame", "ui.frame");
     let breakdown_enabled = self.frame_breakdown_enabled();
-    let frame_start = breakdown_enabled.then(std::time::Instant::now);
-    let perf_frame_start = if self.perf_log.is_some() { frame_start } else { None };
+    let frame_start = std::time::Instant::now();
+    let perf_frame_start = if self.perf_log.is_some() {
+      Some(frame_start)
+    } else {
+      None
+    };
     let mut breakdown = UiFrameBreakdown::default();
     if breakdown_enabled {
       breakdown.worker_msgs = self.pending_worker_msg_time;
     }
 
     if let Some(hud) = self.hud.as_mut() {
-      let now = frame_start.unwrap_or_else(|| {
-        debug_assert!(false, "frame timer start should exist when HUD is enabled");
-        std::time::Instant::now()
-      });
+      let now = frame_start;
       if let Some(prev) = hud.last_frame_start {
         let dt = now.saturating_duration_since(prev);
         let secs = dt.as_secs_f32();
@@ -30119,10 +30120,6 @@ impl App {
     };
 
     if breakdown_enabled {
-      let frame_start = frame_start.unwrap_or_else(|| {
-        debug_assert!(false, "frame timer start should exist when breakdown is enabled");
-        present_at
-      });
       breakdown.total = breakdown
         .worker_msgs
         .saturating_add(present_at.saturating_duration_since(frame_start));

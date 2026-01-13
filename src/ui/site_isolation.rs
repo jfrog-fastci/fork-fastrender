@@ -86,7 +86,7 @@ impl SiteKey {
         let host = host.to_ascii_lowercase();
         let port = parsed
           .port_or_known_default()
-          .expect("http/https URLs always have a known default port"); // fastrender-allow-unwrap
+          .unwrap_or_else(|| if scheme == "http" { 80 } else { 443 });
         return Self::Origin { scheme, host, port };
       }
     }

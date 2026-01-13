@@ -3538,13 +3538,19 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       let mut diagnostics = tab.diagnostics_snapshot().unwrap_or_default();
       diagnostics.embed_js_failure_into_stats();
 
-      match error {
-        None => Ok(RenderResult {
-          pixmap: pixmap.expect("pixmap exists when render succeeded"),
+      match (error, pixmap) {
+        (None, Some(pixmap)) => Ok(RenderResult {
+          pixmap,
           accessibility: None,
           diagnostics,
         }),
-        Some(error) => Err(WorkerRenderError {
+        (None, None) => Err(WorkerRenderError {
+          error: fastrender::Error::Other(
+            "internal error: render succeeded but produced no pixmap".to_string(),
+          ),
+          diagnostics: Some(diagnostics),
+        }),
+        (Some(error), _) => Err(WorkerRenderError {
           error,
           diagnostics: Some(diagnostics),
         }),

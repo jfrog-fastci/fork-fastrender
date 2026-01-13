@@ -1664,11 +1664,18 @@ fn finish_spawn(
   let h_process = process.as_raw_handle() as HANDLE;
 
   let mut job = Some(job);
-  if let Err(err) = job.as_ref().unwrap().assign_process(h_process) { // fastrender-allow-unwrap
+  let assign_result = match job.as_ref() {
+    Some(job_ref) => job_ref.assign_process(h_process),
+    None => Err(io::Error::new(
+      io::ErrorKind::Other,
+      "windows renderer sandbox missing JobObject handle",
+    )),
+  };
+  if let Err(err) = assign_result {
     if allow_jobless {
       eprintln!(
         "warning: Windows sandbox failed to assign child process {pid} to JobObject ({err}); \
-job limits (kill-on-close + active process limit) are NOT enforced (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?})"
+ job limits (kill-on-close + active process limit) are NOT enforced (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?})"
       );
       job = None;
     } else {
@@ -1682,8 +1689,8 @@ job limits (kill-on-close + active process limit) are NOT enforced (parent_in_jo
         err.kind(),
         format!(
           "windows renderer sandbox failed to assign child process {pid} to JobObject ({err}); \
-this likely indicates nested jobs are unsupported or disallowed by the parent job (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?}). \
-Set {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 to allow running without full job containment."
+ this likely indicates nested jobs are unsupported or disallowed by the parent job (parent_in_job={parent_in_job}, used_breakaway={used_breakaway}, level={level:?}). \
+ Set {ENV_ALLOW_UNSANDBOXED_RENDERER}=1 to allow running without full job containment."
         ),
       ));
     }

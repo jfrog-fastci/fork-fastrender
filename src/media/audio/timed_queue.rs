@@ -111,8 +111,8 @@ impl TimedAudioQueue {
     sample_rate: u32,
     max_buffered_duration: Duration,
   ) -> Self {
-    assert!(channels > 0, "channels must be non-zero");
-    assert!(sample_rate > 0, "sample_rate must be non-zero");
+    assert!(channels > 0, "channels must be non-zero"); // fastrender-allow-panic
+    assert!(sample_rate > 0, "sample_rate must be non-zero"); // fastrender-allow-panic
     let max_buffered_frames = if max_buffered_duration == Duration::ZERO {
       u64::MAX
     } else {
@@ -356,8 +356,8 @@ impl TimedAudioQueue {
     let channels = self.channels as usize;
     let needed_samples = frames
       .checked_mul(channels)
-      .expect("frames * channels should not overflow");
-    assert!(
+      .expect("frames * channels should not overflow"); // fastrender-allow-unwrap
+    assert!( // fastrender-allow-panic
       out.len() >= needed_samples,
       "TimedAudioQueue output buffer too small: need {needed_samples} samples, got {}",
       out.len()
@@ -376,7 +376,7 @@ impl TimedAudioQueue {
       _ => {}
     }
 
-    let start_frame = self.cursor_frame.expect("cursor_frame initialized");
+    let start_frame = self.cursor_frame.expect("cursor_frame initialized"); // fastrender-allow-unwrap
     let end_frame = start_frame.saturating_add(frames as u64);
 
     out[..needed_samples].fill(0.0);
@@ -510,7 +510,9 @@ impl TimedAudioQueue {
           && last.offset_samples == 0
           && seg.offset_samples == 0
         {
-          let tail = normalized.pop_back().expect("last segment exists");
+          let tail = normalized
+            .pop_back()
+            .expect("last segment exists"); // fastrender-allow-unwrap
           let mut merged_samples = tail.samples;
           merged_samples.extend(seg.samples);
           normalized.push_back(Segment {

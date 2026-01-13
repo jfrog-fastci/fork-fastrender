@@ -398,6 +398,52 @@ fn find_raw_text_element_end_range(
   (bytes.len(), bytes.len())
 }
 
+#[cfg(test)]
+mod executor_error_tests {
+  use super::*;
+  use crate::error::{Error, Result};
+
+  #[derive(Clone, Copy)]
+  struct NoopStylesheetLoader;
+
+  struct FailingScriptExecutor;
+
+  type Host = HtmlScriptingDriver<NoopStylesheetLoader, FailingScriptExecutor>;
+
+  impl StylesheetLoader<Host> for NoopStylesheetLoader {
+    fn start_external_stylesheet_load(
+      &mut self,
+      _href: &str,
+      _key: usize,
+      _event_loop: &mut EventLoop<Host>,
+    ) -> Result<()> {
+      Ok(())
+    }
+  }
+
+  impl ScriptExecutor for FailingScriptExecutor {
+    fn execute(&mut self, _code: &str) -> Result<()> {
+      Err(Error::Other("boom".to_string()))
+    }
+  }
+
+  #[test]
+  fn propagates_script_executor_error_from_task() {
+    let html = "<!doctype html><script>1 + 2</script>".to_string();
+    let mut host = Host::new(html, NoopStylesheetLoader, FailingScriptExecutor);
+    let mut event_loop = EventLoop::<Host>::new();
+    host.start(&mut event_loop).expect("queue parse task");
+
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
+      .expect_err("expected script error to abort run_until_idle");
+    assert!(
+      err.to_string().contains("boom"),
+      "expected error message to contain 'boom', got: {err:?}"
+    );
+  }
+}
+
 fn for_each_attribute<'a>(
   tag: &'a str,
   mut visit: impl FnMut(&'a str, Option<&'a str>) -> ControlFlow<()>,

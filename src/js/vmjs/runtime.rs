@@ -78,4 +78,29 @@ mod tests {
     );
     Ok(())
   }
+
+  #[test]
+  fn vm_js_exec_script_surfaces_syntax_error() -> Result<()> {
+    let html = "<!doctype html><html><head></head><body></body></html>";
+    let dom = parse_html(html)?;
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(NoFetchResourceFetcher);
+    let mut host = WindowHostState::new_with_fetcher_and_clock(
+      dom,
+      "https://example.com/index.html",
+      fetcher,
+      clock,
+    )?;
+
+    let err = host
+      .exec_script_in_event_loop(&mut event_loop, "function {")
+      .expect_err("expected syntax error");
+    assert!(
+      err.to_string().to_lowercase().contains("syntax"),
+      "expected error to mention syntax, got: {err}"
+    );
+    Ok(())
+  }
 }

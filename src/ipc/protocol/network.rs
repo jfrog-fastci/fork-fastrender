@@ -35,13 +35,12 @@ pub const MAX_URL_BYTES: usize = 1024 * 1024;
 pub const MAX_COOKIE_STRING_BYTES: usize = 4096;
 
 // Compile-time guard: protocol-level per-field caps must fit under the framing-layer limit.
+//
+// Trigger a compile error on overflow rather than using `panic!` so this remains compatible with
+// `xtask lint-no-panics`.
 const _: () = {
-  if MAX_URL_BYTES > crate::ipc::MAX_IPC_MESSAGE_BYTES {
-    panic!("MAX_URL_BYTES must be <= MAX_IPC_MESSAGE_BYTES"); // fastrender-allow-panic
-  }
-  if MAX_COOKIE_STRING_BYTES > crate::ipc::MAX_IPC_MESSAGE_BYTES {
-    panic!("MAX_COOKIE_STRING_BYTES must be <= MAX_IPC_MESSAGE_BYTES"); // fastrender-allow-panic
-  }
+  let _ = [0u8; crate::ipc::MAX_IPC_MESSAGE_BYTES - MAX_URL_BYTES];
+  let _ = [0u8; crate::ipc::MAX_IPC_MESSAGE_BYTES - MAX_COOKIE_STRING_BYTES];
 };
 
 /// Messages sent from the browser process to the network process.
