@@ -9,20 +9,26 @@ use vm_js::{
 struct TestHostHooks {
   microtasks: MicrotaskQueue,
   modules: HashMap<String, ModuleId>,
-  import_meta_url: String,
+  import_meta_urls: HashMap<ModuleId, String>,
+  import_referrers: HashMap<String, ModuleReferrer>,
 }
 
 impl TestHostHooks {
-  fn new(import_meta_url: impl Into<String>) -> Self {
+  fn new() -> Self {
     Self {
       microtasks: MicrotaskQueue::new(),
       modules: HashMap::new(),
-      import_meta_url: import_meta_url.into(),
+      import_meta_urls: HashMap::new(),
+      import_referrers: HashMap::new(),
     }
   }
 
   fn register_module(&mut self, specifier: &str, module: ModuleId) {
     self.modules.insert(specifier.to_string(), module);
+  }
+
+  fn register_import_meta_url(&mut self, module: ModuleId, url: &str) {
+    self.import_meta_urls.insert(module, url.to_string());
   }
 
   fn perform_microtask_checkpoint(&mut self, vm: &mut Vm, heap: &mut Heap) -> Result<(), VmError> {
@@ -163,10 +169,14 @@ impl VmHostHooks for TestHostHooks {
     &mut self,
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _module: ModuleId,
+    module: ModuleId,
   ) -> Result<Vec<ImportMetaProperty>, VmError> {
+    let meta_url = self
+      .import_meta_urls
+      .get(&module)
+      .ok_or_else(|| VmError::InvariantViolation("no import.meta.url registered for module"))?;
     let key_s = scope.alloc_string("url")?;
-    let val_s = scope.alloc_string(&self.import_meta_url)?;
+    let val_s = scope.alloc_string(meta_url)?;
     Ok(vec![ImportMetaProperty {
       key: PropertyKey::from_string(key_s),
       value: Value::String(val_s),
@@ -183,6 +193,9 @@ impl VmHostHooks for TestHostHooks {
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
+    self
+      .import_referrers
+      .insert(module_request.specifier.clone(), referrer);
     let module = *self
       .modules
       .get(module_request.specifier.as_str())
@@ -193,7 +206,8 @@ impl VmHostHooks for TestHostHooks {
 
 #[test]
 fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(), VmError> {
-  const META_URL: &str = "https://example.invalid/m.js";
+  const META_URL_M: &str = "https://example.invalid/m.js";
+  const META_URL_DEP: &str = "https://example.invalid/dep.js";
 
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
@@ -211,16 +225,32 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
       r#"
         export function f() { return import.meta.url; }
         export function g() { return import('dep.js'); }
+        export { h, gi } from 'dep.js';
       "#,
     )?,
   )?;
   let dep = modules.add_module_with_specifier(
     "dep.js",
-    SourceTextModuleRecord::parse(heap, "export const x = 1;")?,
+    SourceTextModuleRecord::parse(
+      heap,
+      r#"
+        export const x = 1;
+        export function h() { return import.meta.url; }
+        export function gi() { return import('dep2.js'); }
+      "#,
+    )?,
   )?;
+  let dep2 = modules.add_module_with_specifier(
+    "dep2.js",
+    SourceTextModuleRecord::parse(heap, "export const y = 2;")?,
+  )?;
+  modules.link_all_by_specifier();
 
-  let mut hooks = TestHostHooks::new(META_URL);
+  let mut hooks = TestHostHooks::new();
   hooks.register_module("dep.js", dep);
+  hooks.register_module("dep2.js", dep2);
+  hooks.register_import_meta_url(m, META_URL_M);
+  hooks.register_import_meta_url(dep, META_URL_DEP);
 
   let mut host = ();
 
@@ -261,7 +291,29 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
         "expected f() to return a string (import.meta.url)",
       ));
     };
-    assert_eq!(scope.heap().get_string(url_s)?.to_utf8_lossy(), META_URL);
+    assert_eq!(scope.heap().get_string(url_s)?.to_utf8_lossy(), META_URL_M);
+  }
+
+  // Read `h` (a function declared in `dep.js` and re-exported by `m.js`) and call it from host code.
+  // It should still be able to resolve `import.meta`, and `import.meta.url` should be specific to
+  // `dep.js` (not `m.js`).
+  {
+    let mut scope = heap.scope();
+    let ns = modules.get_module_namespace(m, vm, &mut scope)?;
+    scope.push_root(Value::Object(ns))?;
+
+    let h_key = PropertyKey::from_string(scope.alloc_string("h")?);
+    let h_value =
+      scope.get_with_host_and_hooks(vm, &mut host, &mut hooks, ns, h_key, Value::Object(ns))?;
+    scope.push_root(h_value)?;
+
+    let h_result = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, h_value, Value::Undefined, &[])?;
+    let Value::String(url_s) = h_result else {
+      return Err(VmError::InvariantViolation(
+        "expected h() to return a string (import.meta.url)",
+      ));
+    };
+    assert_eq!(scope.heap().get_string(url_s)?.to_utf8_lossy(), META_URL_DEP);
   }
 
   // Read `g` and call it from host code; it should be able to start a dynamic import even with no
@@ -322,6 +374,70 @@ fn module_decl_functions_capture_realm_and_module_for_host_calls() -> Result<(),
     assert!(matches!(x_value, Value::Number(n) if n == 1.0));
 
     scope.heap_mut().remove_root(import_promise_root);
+  }
+
+  // Read `gi` (declared in `dep.js`, re-exported by `m.js`) and call it from host code. The dynamic
+  // import referrer should be `dep.js`, not the entry module `m.js`.
+  let dep2_import_promise_root = {
+    let mut scope = heap.scope();
+    let ns = modules.get_module_namespace(m, vm, &mut scope)?;
+    scope.push_root(Value::Object(ns))?;
+
+    let gi_key = PropertyKey::from_string(scope.alloc_string("gi")?);
+    let gi_value =
+      scope.get_with_host_and_hooks(vm, &mut host, &mut hooks, ns, gi_key, Value::Object(ns))?;
+    scope.push_root(gi_value)?;
+
+    let p = vm.call_with_host_and_hooks(&mut host, &mut scope, &mut hooks, gi_value, Value::Undefined, &[])?;
+    scope.push_root(p)?;
+
+    assert_eq!(
+      hooks.import_referrers.get("dep2.js").copied(),
+      Some(ModuleReferrer::Module(dep))
+    );
+
+    scope.heap_mut().add_root(p)?
+  };
+
+  // Continue the dynamic import promise to completion.
+  hooks.perform_microtask_checkpoint(vm, heap)?;
+
+  // Verify the import() promise fulfills to the imported module namespace.
+  {
+    let mut scope = heap.scope();
+    let p = scope
+      .heap()
+      .get_root(dep2_import_promise_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    scope.push_root(p)?;
+    let Value::Object(promise_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "expected import() to return a Promise object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+    let ns_value = scope
+      .heap()
+      .promise_result(promise_obj)?
+      .expect("fulfilled promise should have a result");
+    let Value::Object(ns_obj) = ns_value else {
+      return Err(VmError::InvariantViolation(
+        "import() promise should fulfill to a module namespace object",
+      ));
+    };
+
+    let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+    let y_value = scope.get_with_host_and_hooks(
+      vm,
+      &mut host,
+      &mut hooks,
+      ns_obj,
+      y_key,
+      Value::Object(ns_obj),
+    )?;
+    assert!(matches!(y_value, Value::Number(n) if n == 2.0));
+
+    scope.heap_mut().remove_root(dep2_import_promise_root);
   }
 
   hooks.teardown_jobs(vm, heap);
