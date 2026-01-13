@@ -89,9 +89,14 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use getrandom::getrandom;
-use memmap2::{MmapMut, MmapOptions};
+use memmap2::MmapMut;
+#[cfg(unix)]
+use memmap2::MmapOptions;
+#[cfg(unix)]
 use std::ffi::CString;
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io;
 
 #[cfg(unix)]
@@ -481,6 +486,7 @@ impl Drop for ShmemRegion {
   }
 }
 
+#[cfg(unix)]
 fn ensure_nonzero_len(len: usize) -> io::Result<()> {
   if len == 0 {
     return Err(io::Error::new(
