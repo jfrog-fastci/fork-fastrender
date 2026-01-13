@@ -95,10 +95,13 @@ impl Mp4Track {
         let idx = self.pts_ns_by_sample.partition_point(|&pts| pts < time_ns);
         (idx, SeekMethod::MonotonicBinarySearch)
       }
-      PtsIndex::Sorted { sample_indices_by_pts } => {
+      PtsIndex::Sorted {
+        sample_indices_by_pts,
+        min_sample_index_from_pos,
+      } => {
         let pos = sample_indices_by_pts
           .partition_point(|&i| self.pts_ns_by_sample[i as usize] < time_ns);
-        let idx = sample_indices_by_pts
+        let idx = min_sample_index_from_pos
           .get(pos)
           .map(|&idx| idx as usize)
           .unwrap_or_else(|| self.samples.len());
@@ -156,8 +159,21 @@ impl Mp4Demuxer {
 enum PtsIndex {
   /// PTS values are monotonic in sample order (common for audio and baseline-profile H.264).
   Monotonic,
-  /// PTS values are non-monotonic in sample order; binary search over sorted PTS.
-  Sorted { sample_indices_by_pts: Vec<u32> },
+  /// PTS values are non-monotonic in sample order (e.g. B-frame reordering via `ctts`).
+  ///
+  /// To keep seeking fast while still returning a decode-order sample index:
+  /// - `sample_indices_by_pts` is sorted by PTS (then by index as a tiebreaker).
+  /// - `min_sample_index_from_pos[i]` stores the minimum decode-order sample index among
+  ///   `sample_indices_by_pts[i..]`.
+  ///
+  /// Seeking uses binary search to find the first position `pos` where `pts >= target`, then picks
+  /// `min_sample_index_from_pos[pos]`. This matches the semantics of a linear scan in decode order
+  /// ("first sample with pts>=target") without jumping directly to a B-frame that depends on earlier
+  /// reference frames.
+  Sorted {
+    sample_indices_by_pts: Vec<u32>,
+    min_sample_index_from_pos: Vec<u32>,
+  },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -350,7 +366,23 @@ fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
   // key), so `sort_unstable_by_key` avoids the extra scratch allocations of the stable sort.
   sample_indices_by_pts.sort_unstable_by_key(|&i| (pts_ns_by_sample[i as usize], i));
 
-  PtsIndex::Sorted { sample_indices_by_pts }
+  // Precompute suffix minima so seeking can return the first decode-order sample index with PTS >=
+  // target without scanning the remainder of the list.
+  let mut min_sample_index_from_pos = vec![0_u32; sample_indices_by_pts.len()];
+  let mut min = u32::MAX;
+  for (dst, &idx) in min_sample_index_from_pos
+    .iter_mut()
+    .rev()
+    .zip(sample_indices_by_pts.iter().rev())
+  {
+    min = min.min(idx);
+    *dst = min;
+  }
+
+  PtsIndex::Sorted {
+    sample_indices_by_pts,
+    min_sample_index_from_pos,
+  }
 }
 
 fn ticks_to_ns(ticks: i64, timescale: u32) -> u64 {
@@ -943,12 +975,15 @@ mod tests {
       last_seek_method: None,
     };
 
-    track.seek(1_000);
+    // Even though sample index 2 has the smallest PTS >= 500ns, seeking should return the *first*
+    // decode-order sample whose PTS is >= target (index 1). This avoids jumping directly to a
+    // B-frame that depends on earlier reference frames.
+    track.seek(500);
     assert_eq!(track.last_seek_method(), Some(SeekMethod::SortedBinarySearch));
     assert_eq!(
       track.next_sample(),
-      2,
-      "seek should choose sample with the smallest PTS >= target"
+      1,
+      "seek should choose the first decode-order sample with PTS >= target"
     );
   }
 } 
