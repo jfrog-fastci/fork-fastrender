@@ -1177,11 +1177,39 @@ pub(super) fn tab_strip_ui(
             }
           });
         });
-      pinned_scroll_offset_x = scroll_output.state.offset.x;
+      let mut scroll_state = scroll_output.state;
+      pinned_scroll_offset_x = scroll_state.offset.x;
       if let Some(scroll_delta) = restore_scroll_delta {
         pinned_ui.ctx().input_mut(|i| {
           i.scroll_delta = scroll_delta;
         });
+      }
+
+      // Auto-scroll pinned strip while drag-reordering a pinned tab.
+      let pinned_max_scroll_x = (pinned_content_width - pinned_viewport_rect.width()).max(0.0);
+      if pinned_max_scroll_x > 0.5 {
+        if let (Some(dragging_tab_id), Some(pointer_pos)) = (
+          app.chrome.dragging_tab_id,
+          ui.input(|i| i.pointer.interact_pos()),
+        ) {
+          let dragging_is_pinned = app.tab(dragging_tab_id).is_some_and(|tab| tab.pinned);
+          if dragging_is_pinned
+            && pointer_pos.y >= pinned_viewport_rect.top()
+            && pointer_pos.y <= pinned_viewport_rect.bottom()
+          {
+            let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
+            let delta_x = drag_autoscroll_delta_x(pointer_pos, pinned_viewport_rect, dt);
+            if delta_x != 0.0 {
+              let prev = scroll_state.offset.x;
+              let next = (prev + delta_x).clamp(0.0, pinned_max_scroll_x);
+              if (next - prev).abs() > 0.01 {
+                scroll_state.offset.x = next;
+                scroll_state.store(ui.ctx(), scroll_output.response.id);
+                ui.ctx().request_repaint();
+              }
+            }
+          }
+        }
       }
     }
 
