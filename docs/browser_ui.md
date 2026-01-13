@@ -461,6 +461,9 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
 
 ## Keyboard / mouse shortcuts
 
+For a cross-platform manual QA checklist (shortcuts + UX parity), see
+[manual_chrome_test_matrix.md](manual_chrome_test_matrix.md).
+
 | Shortcut | Action |
 |---|---|
 | Ctrl/Cmd+L | Focus address bar (select all) |
