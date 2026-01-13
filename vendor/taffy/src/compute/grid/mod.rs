@@ -1560,7 +1560,7 @@ where
   let mut item_content_size_contribution = Size::ZERO;
 
   // Sort items back into original order to allow them to be matched up with styles
-  items.sort_by_key(|item| item.source_order);
+  items.sort_unstable_by_key(|item| item.source_order);
 
   let container_alignment_styles = InBothAbsAxis {
     horizontal: justify_items,
@@ -1748,7 +1748,7 @@ where
   // Determine the grid container baseline(s) (currently we only compute the first baseline)
   let grid_container_baseline: f32 = {
     // Sort items by row start position so that we can iterate items in groups which are in the same row
-    items.sort_by_key(|item| item.row_indexes.start);
+    items.sort_unstable_by_key(|item| (item.row_indexes.start, item.source_order));
 
     // Get the row index of the first row containing items
     let first_row = items[0].row_indexes.start;

@@ -652,7 +652,7 @@ pub(super) fn resolve_item_baselines(
   // Sort items by track in the other axis (row) start position so that we can iterate items in groups which
   // are in the same track in the other axis (row)
   let other_axis = axis.other();
-  items.sort_by_key(|item| item.placement(other_axis).start);
+  items.sort_unstable_by_key(|item| item.placement(other_axis).start);
 
   // Iterate over grid rows
   let mut remaining_items = &mut items[0..];
@@ -800,7 +800,7 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
   // The track sizing algorithm requires us to iterate through the items in ascendeding order of the number of
   // tracks they span (first items that span 1 track, then items that span 2 tracks, etc).
   // To avoid having to do multiple iterations of the items, we pre-sort them into this order.
-  items.sort_by(cmp_by_cross_flex_then_span_then_start(axis));
+  items.sort_unstable_by(cmp_by_cross_flex_then_span_then_start(axis));
 
   // Step 2, Step 3 and Step 4
   // 2 & 3. Iterate over items that don't cross a flex track. Items should have already been sorted in ascending order
@@ -2404,5 +2404,72 @@ mod tests {
       items.iter().map(|it| it.crosses_intrinsic_column).collect::<Vec<_>>(),
       vec![false, false, false, true]
     );
+
+  }
+
+  #[test]
+  fn overlapping_items_in_same_cell_use_max_track_contribution() {
+    fn compute_grid_width(first_child_width: f32, second_child_width: f32) -> f32 {
+      let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+      let child_style = Style {
+        // Explicitly place both items into the same 1x1 grid cell.
+        grid_column: Line {
+          start: line(1),
+          end: line(2),
+        },
+        grid_row: Line {
+          start: line(1),
+          end: line(2),
+        },
+        // Prevent stretch alignment from forcing both children to the track size. We want the
+        // track size to be determined by the children's intrinsic contributions.
+        justify_self: Some(AlignSelf::Start),
+        align_self: Some(AlignSelf::Start),
+        ..Default::default()
+      };
+
+      let first_child = taffy.new_leaf(child_style.clone()).unwrap();
+      let second_child = taffy.new_leaf(child_style).unwrap();
+
+      let root = taffy
+        .new_with_children(
+          Style {
+            display: Display::Grid,
+            grid_template_columns: vec![auto()],
+            grid_template_rows: vec![auto()],
+            ..Default::default()
+          },
+          &[first_child, second_child],
+        )
+        .unwrap();
+
+      taffy
+        .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, _, node_id, _, _| {
+          let width = if node_id == first_child {
+            first_child_width
+          } else if node_id == second_child {
+            second_child_width
+          } else {
+            0.0
+          };
+
+          MeasureOutput {
+            size: Size {
+              width,
+              height: 10.0,
+            },
+            first_baselines: Point::NONE,
+          }
+        })
+        .unwrap();
+
+      taffy.layout(root).unwrap().size.width
+    }
+
+    // In both insertion orders, the auto track size should reflect the maximum of the children's
+    // intrinsic sizes (not whichever item happens to come first in the sorted grid item slice).
+    assert_eq!(compute_grid_width(10.0, 20.0), 20.0);
+    assert_eq!(compute_grid_width(20.0, 10.0), 20.0);
   }
 }
