@@ -10,6 +10,7 @@
 //! allocates SHM slots once, subsequent messages are control-only" transport.
 
 pub mod ancillary;
+pub mod connection;
 pub mod error;
 #[cfg(unix)]
 pub mod fd_passing;
@@ -23,6 +24,7 @@ pub mod websocket;
 #[cfg(target_os = "linux")]
 pub mod frame_slots;
 
+pub use connection::IpcConnection;
 pub use error::IpcError;
 pub use framing::{
   decode_bincode_payload, encode_bincode_payload, read_bincode_frame, read_frame, write_bincode_frame,

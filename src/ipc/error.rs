@@ -28,6 +28,13 @@ pub enum IpcError {
 
   #[error("IPC codec error")]
   Codec(#[source] Box<bincode::ErrorKind>),
+
+  #[error("failed to serialize IPC JSON message: {0}")]
+  Serialize(#[source] serde_json::Error),
+
+  #[error("failed to deserialize IPC JSON message: {0}")]
+  Deserialize(#[source] serde_json::Error),
+
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
