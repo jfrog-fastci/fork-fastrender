@@ -82,6 +82,7 @@ struct PendingScroll {
   seq: u64,
   delta_css: (f32, f32),
   pointer_css: Option<(f32, f32)>,
+  pointer_key: Option<(i32, i32)>,
 }
 
 impl UiToWorkerRouterCoalescer {
@@ -228,18 +229,20 @@ impl UiToWorkerRouterCoalescer {
     }
 
     let pointer_css = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+    let pointer_key = pointer_css.map(|(x, y)| (x.round() as i32, y.round() as i32));
     let seq = self.next_seq();
 
     let tab = self.tab_mut(tab_id);
 
     match tab.scroll.as_mut() {
-      Some(pending) if pending.pointer_css == pointer_css => {
+      Some(pending) if pending.pointer_key == pointer_key => {
         // Safe case: when pointer position is stable, the worker's scroll targeting semantics
         // (element-under-pointer scrolling vs viewport scrolling) will be consistent, so summing
         // deltas preserves the user's scroll distance while bounding queue growth.
         pending.delta_css.0 += dx;
         pending.delta_css.1 += dy;
         pending.seq = seq;
+        pending.pointer_css = pointer_css;
       }
       _ => {
         // Unsafe case: if the pointer position changes, the worker may target a different scroll
@@ -249,6 +252,7 @@ impl UiToWorkerRouterCoalescer {
           seq,
           delta_css: (dx, dy),
           pointer_css,
+          pointer_key,
         });
       }
     }
@@ -509,6 +513,41 @@ mod tests {
         assert_eq!(*tab_id, TabId(1));
         assert_eq!(*delta_css, (0.0, 2.0));
         assert_eq!(*pointer_css, Some((2.0, 2.0)));
+      }
+      other => panic!("expected Scroll, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn sums_scroll_deltas_when_pointer_rounds_to_same_px() {
+    let mut c = UiToWorkerRouterCoalescer::new();
+    assert!(c
+      .push(UiToWorker::Scroll {
+        tab_id: TabId(1),
+        delta_css: (1.0, 0.0),
+        pointer_css: Some((10.1, 10.4)),
+      })
+      .is_empty());
+    assert!(c
+      .push(UiToWorker::Scroll {
+        tab_id: TabId(1),
+        delta_css: (0.0, 2.0),
+        pointer_css: Some((10.2, 10.3)),
+      })
+      .is_empty());
+
+    let out = c.flush();
+    assert_eq!(out.len(), 1);
+    match &out[0] {
+      UiToWorker::Scroll {
+        tab_id,
+        delta_css,
+        pointer_css,
+      } => {
+        assert_eq!(*tab_id, TabId(1));
+        assert_eq!(*delta_css, (1.0, 2.0));
+        // Preserve the latest pointer position for the flush.
+        assert_eq!(*pointer_css, Some((10.2, 10.3)));
       }
       other => panic!("expected Scroll, got {other:?}"),
     }
