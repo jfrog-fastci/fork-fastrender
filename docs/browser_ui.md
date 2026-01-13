@@ -584,6 +584,9 @@ The windowed `browser` UI exposes accessibility information via **AccessKit** so
 readers (VoiceOver/Narrator/Orca) can traverse both the browser chrome and (experimental) page
 content.
 
+Note: the page is still *visually* rendered as a pixel buffer (pixmap); the page content
+accessibility subtree is a separate semantic tree merged into the OS accessibility tree.
+
 Accessibility sources:
 
 - **Chrome widgets (egui):** tabs, toolbar buttons, address bar, menus/panels/popups are exposed via
