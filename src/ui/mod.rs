@@ -86,6 +86,7 @@ pub mod notifications;
 pub mod async_scroll;
 pub mod chrome_dynamic_asset_fetcher;
 pub mod multiprocess;
+pub mod shutdown_join_tracker;
 
 #[cfg(any(test, feature = "browser_ui"))]
 mod tab_accessible_label;
@@ -203,6 +204,7 @@ pub use messages::{
 };
 pub use cancel::CancelGens;
 pub use renderer_process_id::RendererProcessId;
+pub use shutdown_join_tracker::ShutdownJoinTracker;
 
 pub use process_assignment::{ProcessAssignmentEvent, ProcessAssignmentState, ProcessModel};
 

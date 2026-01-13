@@ -5405,7 +5405,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   impl BrowserWindow {
-    fn shutdown(self) {
+    fn shutdown(self, shutdown_join_tracker: &mut fastrender::ui::ShutdownJoinTracker) {
       let BrowserWindow {
         mut app,
         worker_msgs,
@@ -5415,26 +5415,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         mut bridge_join,
       } = self;
 
-      app.shutdown();
+      app.shutdown(shutdown_join_tracker);
 
       // Drop the queue receiver before waiting on the bridge thread so it can stop forwarding
       // messages even if the worker is still producing output.
       drop(worker_msgs);
 
       if let Some(join) = bridge_join.take() {
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
-        let _ = std::thread::spawn(move || {
-          let _ = done_tx.send(join.join());
-        });
-        match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-          Ok(_) => {}
-          Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            eprintln!("timed out waiting for browser worker bridge thread to exit");
-          }
-          Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            eprintln!("browser worker bridge join helper thread disconnected during shutdown");
-          }
-        }
+        shutdown_join_tracker.track_join(
+          format!("browser worker bridge thread {:?}", app.window.id()),
+          join,
+        );
       }
     }
 
@@ -6008,6 +5999,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     fastrender::ui::session_autosave::SessionAutosave::new(session_path.clone())
   };
+  let mut shutdown_join_tracker = fastrender::ui::ShutdownJoinTracker::new();
 
   event_loop.run(move |event, event_loop_target, control_flow| {
     // Keep the session lock alive for the duration of the winit event loop.
@@ -6024,6 +6016,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         window_state_autosave_due = true;
       }
     }
+    // Opportunistically observe any background shutdown joins without blocking the UI thread.
+    shutdown_join_tracker.poll();
 
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
@@ -6094,7 +6088,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       }
 
       for (_, win) in windows.drain() {
-        win.shutdown();
+        win.shutdown(&mut shutdown_join_tracker);
       }
 
       // Mark the session as clean on shutdown (best-effort).
@@ -6186,7 +6180,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if active_window_id == Some(window_id) {
               active_window_id = window_order.last().copied();
             }
-            win.shutdown();
+            win.shutdown(&mut shutdown_join_tracker);
             session_dirty_immediate = true;
           }
         } else if let Some(win) = windows.get_mut(&window_id) {
@@ -7639,6 +7633,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(deadline) = next_deadline {
+      *control_flow = match *control_flow {
+        ControlFlow::Wait => ControlFlow::WaitUntil(deadline),
+        ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(deadline)),
+        other => other,
+      };
+    }
+
+    // Ensure we wake up to enforce shutdown join timeouts even when all live windows are idle.
+    if let Some(deadline) = shutdown_join_tracker.next_deadline() {
       *control_flow = match *control_flow {
         ControlFlow::Wait => ControlFlow::WaitUntil(deadline),
         ControlFlow::WaitUntil(existing) => ControlFlow::WaitUntil(existing.min(deadline)),
@@ -13981,30 +13984,16 @@ impl App {
     self.window.request_redraw();
   }
 
-  fn shutdown(&mut self) {
+  fn shutdown(&mut self, shutdown_join_tracker: &mut fastrender::ui::ShutdownJoinTracker) {
     // Close the UI→worker channel so the worker can observe it and exit.
     self.renderer_backend.shutdown();
 
-    // Best-effort join: don't risk hanging the UI thread forever if the worker is stuck in a long
-    // render job.
+    // Joining can block for a long time if the worker is stuck; never block the UI thread.
     let renderer_backend = self.renderer_backend.clone();
-    let (done_tx, done_rx) = std::sync::mpsc::channel::<std::thread::Result<()>>();
-    let _ = std::thread::spawn(move || {
-      let _ = done_tx.send(renderer_backend.join());
-    });
-
-    match done_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-      Ok(Ok(())) => {}
-      Ok(Err(_)) => {
-        eprintln!("browser worker thread panicked during shutdown");
-      }
-      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-        eprintln!("timed out waiting for browser worker thread to exit; shutting down anyway");
-      }
-      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-        eprintln!("browser worker join helper thread disconnected during shutdown");
-      }
-    }
+    shutdown_join_tracker.track_blocking(
+      format!("browser worker thread {:?}", self.window.id()),
+      move || renderer_backend.join(),
+    );
 
     self.destroy_all_textures();
   }
