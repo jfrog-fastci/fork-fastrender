@@ -7688,12 +7688,16 @@ impl DisplayListBuilder {
             if let Some(provider) = self.media_provider.as_ref() {
               let (content_rect, clip_radii) =
                 self.replaced_content_rect_and_radii(rect, style_for_image);
+              let dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+                self.device_pixel_ratio
+              } else {
+                1.0
+              };
               let size_hint = Some(crate::media::MediaFrameSizeHint::new(
                 Size::new(content_rect.width().max(0.0), content_rect.height().max(0.0)),
-                self.device_pixel_ratio,
+                dpr,
               ));
-              if let Some(frame) = provider.video_frame(fragment.box_id(), src, size_hint) {
-                let image = frame;
+              if let Some(image) = provider.video_frame(fragment.box_id(), src, size_hint) {
                 let (dest_x, dest_y, dest_w, dest_h) = {
                   let (fit, position, font_size, root_font_size) =
                     if let Some(style) = fragment.style.as_deref() {
@@ -22353,6 +22357,141 @@ mod tests {
     assert!(
       list.is_empty(),
       "video without a poster should paint nothing rather than a placeholder"
+    );
+  }
+
+  #[derive(Clone)]
+  struct MockMediaFrameProvider {
+    frame: Option<Arc<ImageData>>,
+    requests: Arc<std::sync::Mutex<Vec<(Option<usize>, String, Option<crate::media::MediaFrameSizeHint>)>>>,
+  }
+
+  impl crate::media::MediaFrameProvider for MockMediaFrameProvider {
+    fn video_frame(
+      &self,
+      box_id: Option<usize>,
+      src: &str,
+      size_hint: Option<crate::media::MediaFrameSizeHint>,
+    ) -> Option<Arc<ImageData>> {
+      self
+        .requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((box_id, src.to_string(), size_hint));
+      self.frame.clone()
+    }
+  }
+
+  #[test]
+  fn video_frame_provider_paints_decoded_frame() {
+    let pixels = vec![
+      10u8, 20, 30, 255, // distinctive premultiplied RGBA pixel
+      10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
+    ];
+    let frame = Arc::new(ImageData::new_premultiplied(2, 2, 2.0, 2.0, pixels));
+    let requests: Arc<
+      std::sync::Mutex<Vec<(Option<usize>, String, Option<crate::media::MediaFrameSizeHint>)>>,
+    > =
+      Arc::new(std::sync::Mutex::new(vec![]));
+    let provider: Arc<dyn crate::media::MediaFrameProvider> = Arc::new(MockMediaFrameProvider {
+      frame: Some(frame.clone()),
+      requests: Arc::clone(&requests),
+    });
+
+    let mut style = ComputedStyle::default();
+    style.object_fit = ObjectFit::Contain;
+    let style = Arc::new(style);
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 50.0),
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Video {
+          src: "v.mp4".to_string(),
+          poster: None,
+          controls: false,
+        },
+        box_id: Some(1),
+      },
+      vec![],
+      style,
+    );
+
+    let list = DisplayListBuilder::new()
+      .with_media_provider(Some(provider))
+      .build(&fragment);
+
+    assert_eq!(list.len(), 1, "decoded video frame should paint as a single image item");
+    match &list.items()[0] {
+      DisplayItem::Image(item) => {
+        // 100×50 content box with a 2×2 square image using `object-fit: contain` should become 50×50
+        // centered within the box.
+        assert_eq!(item.dest_rect, Rect::from_xywh(25.0, 0.0, 50.0, 50.0));
+        assert!(item.image.premultiplied, "mock frame should be treated as premultiplied");
+        assert_eq!(item.image.width, 2);
+        assert_eq!(item.image.height, 2);
+        assert_eq!(&item.image.pixels.as_ref()[0..4], &[10u8, 20, 30, 255]);
+      }
+      other => panic!("expected DisplayItem::Image, got {other:?}"),
+    }
+
+    let requests = requests.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(requests.len(), 1, "provider should be queried exactly once");
+    assert_eq!(
+      requests[0],
+      (
+        Some(1),
+        "v.mp4".to_string(),
+        Some(crate::media::MediaFrameSizeHint::new(
+          Size::new(100.0, 50.0),
+          1.0,
+        ))
+      )
+    );
+  }
+
+  #[test]
+  fn video_frame_provider_none_preserves_no_placeholder_behavior() {
+    let requests: Arc<
+      std::sync::Mutex<Vec<(Option<usize>, String, Option<crate::media::MediaFrameSizeHint>)>>,
+    > =
+      Arc::new(std::sync::Mutex::new(vec![]));
+    let provider: Arc<dyn crate::media::MediaFrameProvider> = Arc::new(MockMediaFrameProvider {
+      frame: None,
+      requests: Arc::clone(&requests),
+    });
+
+    let fragment = FragmentNode::new(
+      Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Video {
+          src: "v.mp4".to_string(),
+          poster: None,
+          controls: false,
+        },
+        box_id: Some(1),
+      },
+      vec![],
+    );
+    let builder = DisplayListBuilder::new().with_media_provider(Some(provider));
+    let list = builder.build(&fragment);
+
+    assert!(
+      list.is_empty(),
+      "video without poster + no controls should stay transparent when no decoded frame is available"
+    );
+
+    let requests = requests.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(requests.len(), 1, "provider should still be queried");
+    assert_eq!(
+      requests[0],
+      (
+        Some(1),
+        "v.mp4".to_string(),
+        Some(crate::media::MediaFrameSizeHint::new(
+          Size::new(40.0, 20.0),
+          1.0,
+        ))
+      )
     );
   }
 
