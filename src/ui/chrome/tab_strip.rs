@@ -152,9 +152,18 @@ enum TabStripOp {
 /// Pure sizing logic for the tab strip.
 ///
 /// This keeps the strip single-row by shrinking tabs down to `TAB_MIN_WIDTH`, and reports whether
-/// tabs will overflow the available viewport width at that minimum.
-pub(super) fn compute_tab_strip_sizing(available_width: f32, tab_count: usize) -> TabStripSizing {
-  if tab_count == 0 {
+/// the strip will overflow the available viewport width at that minimum.
+///
+/// The strip can also contain fixed-width "extra" items (e.g. tab group chips) which participate in
+/// the same `TAB_GAP` spacing as normal tabs.
+fn compute_tab_strip_sizing_with_extras(
+  available_width: f32,
+  tab_count: usize,
+  extra_item_width: f32,
+  extra_item_count: usize,
+) -> TabStripSizing {
+  let total_item_count = tab_count.saturating_add(extra_item_count);
+  if total_item_count == 0 {
     return TabStripSizing {
       tab_width: 0.0,
       overflow: false,
@@ -168,17 +177,33 @@ pub(super) fn compute_tab_strip_sizing(available_width: f32, tab_count: usize) -
     0.0
   };
 
-  let gaps = TAB_GAP * (tab_count.saturating_sub(1) as f32);
-  let ideal_width = ((available_width - gaps) / (tab_count as f32)).max(0.0);
-  let tab_width = ideal_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
-  let total_content_width = (tab_width * tab_count as f32) + gaps;
-  let overflow = total_content_width > available_width + 0.5;
+  let extra_item_width = if extra_item_width.is_finite() {
+    extra_item_width.max(0.0)
+  } else {
+    0.0
+  };
+
+  let gaps = TAB_GAP * (total_item_count.saturating_sub(1) as f32);
+  let tab_width = if tab_count == 0 {
+    0.0
+  } else {
+    let available_for_tabs = (available_width - gaps - extra_item_width).max(0.0);
+    let ideal_width = (available_for_tabs / (tab_count as f32)).max(0.0);
+    ideal_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+  };
+
+  let total_content_width = extra_item_width + (tab_width * tab_count as f32) + gaps;
+  let overflow = total_content_width > available_width + 0.01;
 
   TabStripSizing {
     tab_width,
     overflow,
     total_content_width,
   }
+}
+
+pub(super) fn compute_tab_strip_sizing(available_width: f32, tab_count: usize) -> TabStripSizing {
+  compute_tab_strip_sizing_with_extras(available_width, tab_count, 0.0, 0)
 }
 
 fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32) {
@@ -763,22 +788,44 @@ pub(super) fn tab_strip_ui(
   let unpinned_viewport_width = unpinned_viewport_rect.width().max(0.0);
 
   let mut visible_unpinned_count = 0usize;
+  let mut group_chip_count = 0usize;
+  let mut group_chip_total_width = 0.0f32;
   {
     let mut idx = pinned_len;
     while idx < app.tabs.len() {
       if let Some(group_id) = app.tabs[idx].group {
-        if app.tab_groups.get(&group_id).is_some_and(|g| g.collapsed) {
-          while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
-            idx += 1;
+        if let Some(group) = app.tab_groups.get(&group_id) {
+          let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
+          if is_first {
+            let title = if group.title.trim().is_empty() {
+              "Group"
+            } else {
+              group.title.as_str()
+            };
+            let arrow = if group.collapsed { "▸" } else { "▾" };
+            let label = format!("{arrow} {title}");
+            group_chip_total_width += group_chip_width(ui, &label);
+            group_chip_count += 1;
           }
-          continue;
+
+          if group.collapsed {
+            while idx < app.tabs.len() && app.tabs[idx].group == Some(group_id) {
+              idx += 1;
+            }
+            continue;
+          }
         }
       }
       visible_unpinned_count += 1;
       idx += 1;
     }
   }
-  let sizing = compute_tab_strip_sizing(unpinned_viewport_width, visible_unpinned_count);
+  let sizing = compute_tab_strip_sizing_with_extras(
+    unpinned_viewport_width,
+    visible_unpinned_count,
+    group_chip_total_width,
+    group_chip_count,
+  );
 
   let mut ops: Vec<TabStripOp> = Vec::new();
 
@@ -846,9 +893,32 @@ pub(super) fn tab_strip_ui(
       );
       unpinned_ui.set_clip_rect(unpinned_viewport_rect);
 
+      let mut restore_scroll_delta: Option<(Vec2, Vec2)> = None;
+      // Browser-like ergonomics: treat vertical wheel scrolling as horizontal scrolling when the
+      // pointer is over the tab strip (so users don't need a trackpad horizontal gesture).
+      let pointer_over_strip = unpinned_ui.input(|i| {
+        i.pointer
+          .hover_pos()
+          .is_some_and(|pos| unpinned_viewport_rect.contains(pos))
+      });
+      if pointer_over_strip {
+        let has_vertical_scroll = unpinned_ui.input(|i| {
+          i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0
+        });
+        if has_vertical_scroll {
+          unpinned_ui.ctx().input_mut(|i| {
+            restore_scroll_delta = Some((i.scroll_delta, i.smooth_scroll_delta));
+            i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
+            i.smooth_scroll_delta =
+              Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
+          });
+        }
+      }
+
       let scroll_output = egui::ScrollArea::horizontal()
         .id_source("tab_strip_scroll")
         .auto_shrink([false, true])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(&mut unpinned_ui, |ui| {
           ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
           ui.horizontal(|ui| {
@@ -926,6 +996,12 @@ pub(super) fn tab_strip_ui(
           });
         });
       scroll_offset_x = scroll_output.state.offset.x;
+      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_delta {
+        unpinned_ui.ctx().input_mut(|i| {
+          i.scroll_delta = scroll_delta;
+          i.smooth_scroll_delta = smooth_scroll_delta;
+        });
+      }
     }
   }
 
@@ -944,29 +1020,31 @@ pub(super) fn tab_strip_ui(
   // Micro-interaction: animate the active tab underline position/width.
   if sizing.overflow && unpinned_viewport_rect.width() > 0.0 {
     let max_scroll_x = (sizing.total_content_width - unpinned_viewport_width).max(0.0);
-    let show_left = scroll_offset_x > 0.5;
-    let show_right = scroll_offset_x + 0.5 < max_scroll_x;
-    if show_left || show_right {
-      let fade_w = 18.0_f32.min(unpinned_viewport_rect.width() * 0.5);
-      let fade_rect = Rect::from_min_max(
-        unpinned_viewport_rect.min,
-        Pos2::new(unpinned_viewport_rect.max.x, unpinned_viewport_rect.max.y - 1.0),
-      );
-      let painter = ui.painter().with_clip_rect(unpinned_viewport_rect);
-      let fade_color = ui.visuals().panel_fill;
-      if show_left {
-        let left_rect = Rect::from_min_max(
-          fade_rect.min,
-          Pos2::new(fade_rect.min.x + fade_w, fade_rect.max.y),
+    let fade_w = 18.0_f32.min(unpinned_viewport_rect.width() * 0.5);
+    if max_scroll_x > 0.0 && fade_w > 0.0 {
+      let left_t = (scroll_offset_x / fade_w).clamp(0.0, 1.0);
+      let right_t = ((max_scroll_x - scroll_offset_x) / fade_w).clamp(0.0, 1.0);
+      if left_t > 0.0 || right_t > 0.0 {
+        let fade_rect = Rect::from_min_max(
+          unpinned_viewport_rect.min,
+          Pos2::new(unpinned_viewport_rect.max.x, unpinned_viewport_rect.max.y - 1.0),
         );
-        paint_tab_strip_edge_fade(&painter, left_rect, fade_color, true);
-      }
-      if show_right {
-        let right_rect = Rect::from_min_max(
-          Pos2::new(fade_rect.max.x - fade_w, fade_rect.min.y),
-          fade_rect.max,
-        );
-        paint_tab_strip_edge_fade(&painter, right_rect, fade_color, false);
+        let painter = ui.painter().with_clip_rect(unpinned_viewport_rect);
+        let fade_color = ui.visuals().panel_fill;
+        if left_t > 0.0 {
+          let left_rect = Rect::from_min_max(
+            fade_rect.min,
+            Pos2::new(fade_rect.min.x + fade_w, fade_rect.max.y),
+          );
+          paint_tab_strip_edge_fade(&painter, left_rect, with_alpha(fade_color, left_t), true);
+        }
+        if right_t > 0.0 {
+          let right_rect = Rect::from_min_max(
+            Pos2::new(fade_rect.max.x - fade_w, fade_rect.min.y),
+            fade_rect.max,
+          );
+          paint_tab_strip_edge_fade(&painter, right_rect, with_alpha(fade_color, right_t), false);
+        }
       }
     }
   }
@@ -1228,5 +1306,19 @@ mod tests {
     let sizing = compute_tab_strip_sizing(required, tabs);
     assert!(!sizing.overflow);
     assert!((sizing.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn sizing_with_group_chips_can_overflow_even_when_few_tabs() {
+    let sizing = compute_tab_strip_sizing_with_extras(400.0, 2, 160.0, 1);
+    assert!(sizing.overflow);
+    assert!((sizing.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn sizing_with_only_group_chips_reports_overflow() {
+    let sizing = compute_tab_strip_sizing_with_extras(200.0, 0, 240.0, 2);
+    assert!(sizing.overflow);
+    assert!((sizing.tab_width - 0.0).abs() < f32::EPSILON);
   }
 }
