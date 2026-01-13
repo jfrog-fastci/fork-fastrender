@@ -111,14 +111,43 @@ mod tests {
   use super::*;
 
   #[test]
-  fn maps_simple_actions() {
-    let cases = vec![
+  fn maps_all_variants() {
+    let tab_id = TabId(123);
+
+    let cases: Vec<(ChromeActionUrl, ChromeAction)> = vec![
       (ChromeActionUrl::Back, ChromeAction::Back),
       (ChromeActionUrl::Forward, ChromeAction::Forward),
       (ChromeActionUrl::Reload, ChromeAction::Reload),
       (ChromeActionUrl::StopLoading, ChromeAction::StopLoading),
       (ChromeActionUrl::Home, ChromeAction::Home),
       (ChromeActionUrl::NewTab, ChromeAction::NewTab),
+      (ChromeActionUrl::ReopenClosedTab, ChromeAction::ReopenClosedTab),
+      (ChromeActionUrl::OpenTabSearch, ChromeAction::OpenTabSearch),
+      (ChromeActionUrl::CloseTabSearch, ChromeAction::CloseTabSearch),
+      (ChromeActionUrl::ToggleBookmarksBar, ChromeAction::ToggleBookmarksBar),
+      (ChromeActionUrl::ToggleHistoryPanel, ChromeAction::ToggleHistoryPanel),
+      (
+        ChromeActionUrl::ToggleBookmarksManager,
+        ChromeAction::ToggleBookmarksManager,
+      ),
+      (
+        ChromeActionUrl::OpenClearBrowsingDataDialog,
+        ChromeAction::OpenClearBrowsingDataDialog,
+      ),
+      (
+        ChromeActionUrl::ToggleDownloadsPanel,
+        ChromeAction::ToggleDownloadsPanel,
+      ),
+      (
+        ChromeActionUrl::ToggleBookmarkForActiveTab,
+        ChromeAction::ToggleBookmarkForActiveTab,
+      ),
+      (ChromeActionUrl::FocusAddressBar, ChromeAction::FocusAddressBar),
+      (ChromeActionUrl::NewWindow, ChromeAction::NewWindow),
+      (ChromeActionUrl::ToggleFullScreen, ChromeAction::ToggleFullScreen),
+      (ChromeActionUrl::OpenFindInPage, ChromeAction::OpenFindInPage),
+      (ChromeActionUrl::SavePage, ChromeAction::SavePage),
+      (ChromeActionUrl::PrintPage, ChromeAction::PrintPage),
       (
         ChromeActionUrl::SetShowMenuBar { show: true },
         ChromeAction::SetShowMenuBar(true),
@@ -128,16 +157,48 @@ mod tests {
         ChromeAction::AddressBarFocusChanged(false),
       ),
       (
-        ChromeActionUrl::CloseTab { tab_id: TabId(1) },
-        ChromeAction::CloseTab(TabId(1)),
+        ChromeActionUrl::Navigate {
+          url: "https://example.com/".to_string(),
+        },
+        ChromeAction::NavigateTo("https://example.com/".to_string()),
       ),
       (
-        ChromeActionUrl::ActivateTab { tab_id: TabId(2) },
-        ChromeAction::ActivateTab(TabId(2)),
+        ChromeActionUrl::OpenUrlInNewTab {
+          url: "about:blank".to_string(),
+        },
+        ChromeAction::OpenUrlInNewTab("about:blank".to_string()),
       ),
       (
-        ChromeActionUrl::TogglePinTab { tab_id: TabId(3) },
-        ChromeAction::TogglePinTab(TabId(3)),
+        ChromeActionUrl::CloseTab { tab_id },
+        ChromeAction::CloseTab(tab_id),
+      ),
+      (
+        ChromeActionUrl::DetachTab { tab_id },
+        ChromeAction::DetachTab(tab_id),
+      ),
+      (
+        ChromeActionUrl::ReloadTab { tab_id },
+        ChromeAction::ReloadTab(tab_id),
+      ),
+      (
+        ChromeActionUrl::DuplicateTab { tab_id },
+        ChromeAction::DuplicateTab(tab_id),
+      ),
+      (
+        ChromeActionUrl::CloseOtherTabs { tab_id },
+        ChromeAction::CloseOtherTabs(tab_id),
+      ),
+      (
+        ChromeActionUrl::CloseTabsToRight { tab_id },
+        ChromeAction::CloseTabsToRight(tab_id),
+      ),
+      (
+        ChromeActionUrl::ActivateTab { tab_id },
+        ChromeAction::ActivateTab(tab_id),
+      ),
+      (
+        ChromeActionUrl::TogglePinTab { tab_id },
+        ChromeAction::TogglePinTab(tab_id),
       ),
     ];
 
@@ -147,10 +208,10 @@ mod tests {
   }
 
   #[test]
-  fn maps_url_payload_actions() {
+  fn url_payload_trims_ascii_whitespace() {
     assert_eq!(
       ChromeActionUrl::Navigate {
-        url: "https://example.com/".to_string()
+        url: "  https://example.com/ \n".to_string()
       }
       .into_chrome_action()
       .unwrap(),
@@ -159,7 +220,7 @@ mod tests {
 
     assert_eq!(
       ChromeActionUrl::OpenUrlInNewTab {
-        url: "about:blank".to_string()
+        url: "\tabout:blank\r".to_string()
       }
       .into_chrome_action()
       .unwrap(),
@@ -183,10 +244,20 @@ mod tests {
 
   #[test]
   fn errors_on_invalid_tab_id() {
-    let err = ChromeActionUrl::CloseTab { tab_id: TabId(0) }
-      .into_chrome_action()
-      .unwrap_err();
-    assert!(err.contains("invalid tab id"), "unexpected error: {err}");
+    let cases = vec![
+      ChromeActionUrl::CloseTab { tab_id: TabId(0) },
+      ChromeActionUrl::DetachTab { tab_id: TabId(0) },
+      ChromeActionUrl::ReloadTab { tab_id: TabId(0) },
+      ChromeActionUrl::DuplicateTab { tab_id: TabId(0) },
+      ChromeActionUrl::CloseOtherTabs { tab_id: TabId(0) },
+      ChromeActionUrl::CloseTabsToRight { tab_id: TabId(0) },
+      ChromeActionUrl::ActivateTab { tab_id: TabId(0) },
+      ChromeActionUrl::TogglePinTab { tab_id: TabId(0) },
+    ];
+
+    for case in cases {
+      let err = case.into_chrome_action().unwrap_err();
+      assert!(err.contains("invalid tab id"), "unexpected error: {err}");
+    }
   }
 }
-

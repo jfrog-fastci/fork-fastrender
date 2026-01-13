@@ -5,7 +5,7 @@ use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
-use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkId, BookmarkStore};
+use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkStore};
 use crate::ui::browser_app::{BrowserAppState, BrowserTabState, UiFocusToken};
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::load_progress::{load_progress_indicator, LoadProgressIndicator};
