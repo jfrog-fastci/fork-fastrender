@@ -5529,6 +5529,9 @@ fn collect_atomic_candidates_with_axis(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
+    let child_suppress_break_inside_avoid = matches!(context, FragmentationContext::Page)
+      && node_is_row_flex_container
+      && is_in_flow_flex_child(&child.content, child_style);
     let skip_descendants = (idx < in_flow_grid_item_count && child_style.position.is_in_flow())
       || grid_items
         .and_then(|info| info.items.get(idx))
@@ -5539,9 +5542,6 @@ fn collect_atomic_candidates_with_axis(
       // should not contribute descendant break opportunities to their container. However, the grid
       // item box itself can still be atomic (e.g. `break-inside: avoid-*`) and must participate in
       // boundary selection.
-      let child_suppress_break_inside_avoid = matches!(context, FragmentationContext::Page)
-        && node_is_row_flex_container
-        && is_in_flow_flex_child(&child.content, child_style);
       collect_atomic_candidate_for_node(
         child,
         child_abs_start,
@@ -5561,9 +5561,7 @@ fn collect_atomic_candidates_with_axis(
       axis,
       node_block_size,
       context,
-      matches!(context, FragmentationContext::Page)
-        && node_is_row_flex_container
-        && is_in_flow_flex_child(&child.content, child_style),
+      child_suppress_break_inside_avoid,
     );
   }
 }
