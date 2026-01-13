@@ -18,6 +18,7 @@ Related:
 - Multiprocess threat model (trust boundary statement): [`multiprocess_threat_model.md`](multiprocess_threat_model.md)
 - Network process overview + IPC surface: [`network_process.md`](network_process.md)
 - Renderer sandboxing overview (platform notes, seccomp/AppContainer/etc): [`sandboxing.md`](sandboxing.md)
+- Linux renderer seccomp allowlist workflow: [`seccomp_allowlist.md`](seccomp_allowlist.md)
 
 ---
 
