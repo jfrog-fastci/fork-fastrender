@@ -4917,6 +4917,7 @@ impl App {
   const DEBUG_LOG_MAX_LINES: usize = 200;
   const ANIMATION_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
   const PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+  const RESIZE_PAGE_UPLOAD_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
   const CLOSE_ANIM_FAVICON_TTL: std::time::Duration = std::time::Duration::from_millis(250);
   const MAX_CLOSING_TAB_FAVICONS: usize = 64;
   const RESIZE_VIEWPORT_THROTTLE_CONFIG: fastrender::ui::ViewportThrottleConfig =
@@ -7120,8 +7121,13 @@ impl App {
     // If we already have a texture for this tab, we can rate-limit uploads and let egui scale the
     // existing texture during interactive resize.
     if self.tab_textures.contains_key(&tab_id) {
+      let min_interval = if self.resize_burst_active {
+        Self::RESIZE_PAGE_UPLOAD_MIN_INTERVAL
+      } else {
+        Self::PAGE_UPLOAD_MIN_INTERVAL
+      };
       if let Some(last) = self.last_page_upload_at {
-        if let Some(earliest) = last.checked_add(Self::PAGE_UPLOAD_MIN_INTERVAL) {
+        if let Some(earliest) = last.checked_add(min_interval) {
           if now < earliest {
             self.next_page_upload_redraw = Some(
               self
