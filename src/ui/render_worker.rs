@@ -4327,9 +4327,11 @@ impl BrowserRuntime {
     let can_paste = hit_info.text_control_target.is_some()
       && !hit_info.text_control_disabled
       && !hit_info.text_control_readonly;
-    let can_select_all =
-      hit_info.text_control_target.is_some_and(|_| !hit_info.text_control_disabled)
-        || has_document_selection;
+    // Native browsers typically offer Select All from the page context menu even when no text is
+    // currently selected (it selects the whole document in that case). Our interaction engine
+    // already supports this via `InteractionEngine::clipboard_select_all`, so advertise it
+    // whenever a document is loaded unless the click is on a disabled/inert text control.
+    let can_select_all = !hit_info.text_control_disabled;
     let _ = self.ui_tx.send(WorkerToUi::ContextMenu {
       tab_id,
       pos_css,
