@@ -55,14 +55,42 @@ What exists today:
 
 Import maps are integrated end-to-end for:
 
-* `BrowserTab`: inline `<script type="importmap">` scripts are executed by the script scheduler and
-  registered into per-document state via `BrowserTabJsExecutor::execute_import_map_script` (for the
-  `vm-js` executor: `VmJsBrowserTabExecutor`). Module specifier resolution for module scripts goes
-  through the active `ImportMapState`.
-* Tooling (`fetch_and_render --js`): supports **inline** `<script type="importmap">` and applies the
-  active import map during module loading via `VmJsModuleLoader` (`src/js/vmjs/module_loader.rs`).
+* `BrowserTab` (production `vm-js` executor):
+  * Inline `<script type="importmap">` scripts are executed by the HTML script scheduler and
+    registered via `BrowserTabJsExecutor::execute_import_map_script` (implemented by
+    `VmJsBrowserTabExecutor` in `src/api/browser_tab_vm_js_executor.rs`).
+  * The active import map state is stored **per document/realm**: `WindowRealm` owns a per-realm
+    `realm_module_loader::ModuleLoader` (`src/js/realm_module_loader.rs`), which in turn owns the
+    `ImportMapState`.
+  * That same `ImportMapState` is consulted for **all** module specifier resolution in the realm:
+    * `<script type="module">` static imports,
+    * dynamic `import()` from both classic and module scripts, and
+    * `import.meta.resolve(...)` (implemented via the realm module loader).
+  * See the integration test:
+    `tests/js/js_html_integration.rs::p2_dynamic_import_works_from_classic_and_module_scripts_and_honors_import_maps`.
+* `vm-js` realm module loader (`src/js/realm_module_loader.rs`):
+  * Resolves every `ModuleRequest` by calling
+    `import_maps::resolve_module_specifier(&mut state, specifier, base_url)` (where `state` is the
+    per-realm `ImportMapState`).
+  * Tracks classic-script base URLs (via `ScriptId`) so dynamic `import()` originating from classic
+    scripts resolves relative to the script URL and still honors import maps.
+* Tooling loader (`src/js/vmjs/module_loader.rs`, `VmJsModuleLoader`):
+  * Module evaluation can be run with import maps by passing an `&mut ImportMapState` to
+    `evaluate_*_with_import_maps(...)`. This applies to both static and dynamic imports.
+  * The loader also mirrors that state into the realm module loader so `import.meta.resolve(...)`
+    stays consistent.
 
-Remaining gaps include dynamic `import()` / asynchronous module loading and evaluation.
+> Spec note: External import maps are **not supported** by the HTML Standard today. A
+> `<script type="importmap" src="...">` must not be fetched/processed; browsers fire the `<script>`
+> element `error` event. FastRender matches this behavior (see `HtmlScriptScheduler`).
+
+Remaining gaps / limitations:
+
+* The tooling loader (`VmJsModuleLoader`) is not an HTML-like execution environment: it does not run
+  a full task queue / networking pipeline like `BrowserTab` and only waits for promises by draining
+  a bounded number of microtask checkpoints. This is sufficient for many module graphs, but can
+  reject modules whose loading/evaluation remains pending beyond microtasks (e.g. top-level await
+  waiting on timers or network).
 
 ### How to run tests
 
@@ -233,6 +261,13 @@ registration and module loading:
 * a **resolved module set** (specifier resolution records), which prevents later import maps from
   changing the meaning of already-resolved specifiers.
 
+In FastRender, specifiers enter the resolved module set whenever the host resolves through
+`resolve_module_specifier(...)` (directly or indirectly), including:
+
+* module graph fetch/evaluation for `<script type="module">`,
+* dynamic `import()` (from both module and classic scripts), and
+* `import.meta.resolve(...)` (implemented via the same module loader resolution path).
+
 FastRender models this directly with `ImportMapState`:
 
 * `import_map: ImportMap` — the current merged import map.
@@ -254,6 +289,15 @@ Type alias: `ResolvedModuleSet = Vec<SpecifierResolutionRecord>`.
 
 Host integration should keep one `ImportMapState` per **global object** / JS realm (e.g. a `Window`)
 and pass it to `register_import_map(...)` and `resolve_module_specifier(...)`.
+
+In FastRender’s production `vm-js` embedding, this is implemented by storing the `ImportMapState`
+inside the per-realm module loader (`src/js/realm_module_loader.rs::ModuleLoader`), owned by
+`WindowRealm` (`src/js/vmjs/window_realm.rs`). `BrowserTab` creates a fresh `WindowRealm` per
+navigation, so import map state is naturally scoped to the current document.
+
+Example: if `"foo"` is resolved while the active import map maps it to `/a.js`, and a later
+`<script type="importmap">` tries to map `"foo"` to `/b.js`, the later mapping is ignored during
+merge and subsequent resolutions of `"foo"` continue to produce `/a.js`.
 
 ---
 
