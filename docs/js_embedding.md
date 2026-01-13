@@ -51,6 +51,9 @@ FastRender’s JS embedding is designed around a **tab-like** host object that o
 3. an HTML-shaped event loop (tasks + microtasks + timers),
 4. (eventually) a `<script>` scheduler that follows the HTML Standard.
 
+If you’re deciding between the various public “document/tab” containers (which ones have JS, event
+loop, navigation, etc), see [`docs/runtime_stacks.md`](runtime_stacks.md).
+
 ### Current state (what exists today)
 
 FastRender currently exposes **two** “tab-like” host containers:

@@ -1,4 +1,4 @@
-# Runtime stacks: `BrowserDocument` vs `BrowserDocumentDom2` vs `BrowserTab`
+# Runtime stacks: `BrowserDocument` vs `BrowserDocument2` vs `BrowserDocumentDom2` vs `BrowserTab`
 
 FastRender currently exposes multiple “document/tab” APIs that look similar but live at different layers.
 This doc is a **choose-the-right-type** reference that answers:
@@ -17,6 +17,7 @@ All types below are exported as `fastrender::api::*` and also re-exported at the
 |---|---|---|---|---|---|---|
 | `api::BrowserDocument` | `crate::dom::DomNode` | Yes (`render_if_needed`) | No | No | No | URL fetch+replace (`navigate_url`) |
 | `api::BrowserDocumentDom2` | `crate::dom2::Document` (authoritative) + snapshots to `DomNode` for layout | Yes (`render_if_needed`) | No (host must embed) | No | No | URL fetch+replace (`navigate_url`) |
+| `api::BrowserDocument2` | `crate::dom2::Document` + snapshots to `DomNode` for layout | Yes (`render_if_needed`) | No | No | No | URL fetch+replace (`navigate_url`) |
 | `api::BrowserTab` | `BrowserDocumentDom2` + tab state | Yes (driven by event loop + rendering) | Yes (via `BrowserTabJsExecutor`) | Yes (`EventLoop<BrowserTabHost>`) | Yes (streaming parser + scheduler) | Yes (history + script-driven navigations) |
 | `api::BrowserDocumentJs` | `BrowserDocumentDom2` | Yes (driven by its event loop + rendering) | Yes (`js::webidl::legacy::VmJsRuntime`) | Yes (`EventLoop<BrowserDocumentJs>`) | **No** (manual script execution) | No |
 
@@ -70,6 +71,18 @@ What it does *not* provide on its own:
 
 Use it when you want a live, mutable `dom2` document + rendering, but you are **not** running page JS
 (or you are embedding your own JS engine on top).
+
+## `api::BrowserDocument2` (dom2 renderer, no JS/event loop)
+
+Implementation: [`src/api/browser_document2.rs`](../src/api/browser_document2.rs)
+
+`BrowserDocument2` is another dom2-backed, multi-frame renderer. Like `BrowserDocumentDom2`, it
+stores a live `crate::dom2::Document` and snapshots it to `dom::DomNode` when layout needs to be
+recomputed.
+
+Compared to `BrowserDocumentDom2`, it does **not** carry the extra host-side state that `BrowserTab`
+relies on (for example `Document.currentScript` bookkeeping and active event tracking).
+
 
 ## `api::BrowserTab` (dom2 + JS + event loop + navigation)
 
@@ -159,4 +172,3 @@ Current status and guidance:
 - It does **not** implement the HTML `<script>` processing/scheduling model; scripts are executed via
   explicit host calls (e.g. `execute_script_element(...)`).
 - For JS-enabled HTML loading/navigation/rendering, prefer `BrowserTab`.
-
