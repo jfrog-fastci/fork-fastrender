@@ -24,5 +24,5 @@
 pub mod inspect;
 pub mod runtime;
 pub mod snapshot;
-pub(crate) mod trace;
+pub mod trace;
 pub mod tree_printer;

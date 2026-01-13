@@ -37,6 +37,9 @@ const ENV_BROWSER_RENDERER_CHROME: &str = "FASTR_BROWSER_RENDERER_CHROME";
 #[cfg(feature = "browser_ui")]
 const ENV_BROWSER_LOG_SURFACE_CONFIGURE: &str = "FASTR_BROWSER_LOG_SURFACE_CONFIGURE";
 
+#[cfg(feature = "browser_ui")]
+const ENV_BROWSER_TRACE_OUT: &str = "FASTR_BROWSER_TRACE_OUT";
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -2500,6 +2503,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let event_loop_proxy = event_loop.create_proxy();
   let window_icon = load_window_icon();
 
+  let browser_trace_out = match std::env::var(ENV_BROWSER_TRACE_OUT) {
+    Ok(raw) => {
+      let trimmed = raw.trim();
+      if trimmed.is_empty() {
+        None
+      } else {
+        Some(std::path::PathBuf::from(trimmed))
+      }
+    }
+    Err(_) => None,
+  };
+  let browser_trace = if browser_trace_out.is_some() {
+    fastrender::debug::trace::TraceHandle::enabled()
+  } else {
+    fastrender::debug::trace::TraceHandle::disabled()
+  };
+
   // Keep a single profile autosave worker (bookmarks/history) across all windows.
   let (profile_autosave_tx, mut profile_autosave) =
     match fastrender::ui::ProfileAutosaveHandle::spawn(bookmarks_path.clone(), history_path.clone())
@@ -2693,6 +2713,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       ui_to_worker_tx,
       worker_join,
       &gpu,
+      browser_trace.clone(),
       appearance_env,
       applied_appearance.clone(),
       theme_accent,
@@ -2833,6 +2854,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           );
         }
       }
+
+      if let Some(path) = browser_trace_out.as_ref() {
+        if let Err(err) = browser_trace.write_chrome_trace(path) {
+          eprintln!("failed to write browser trace to {}: {err}", path.display());
+        }
+      }
       return;
     }
 
@@ -2952,6 +2979,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut session_dirty = false;
         let mut needs_follow_up_wake = false;
         if let Some(win) = windows.get_mut(&window_id) {
+          let mut span = win.app.trace.span("worker_drain", "ui.worker");
           let hud_enabled = win.app.hud.is_some();
           // Clear the pending wake flag up-front so any messages that arrive while we're draining
           // can schedule another wake (avoids getting stuck with messages in the queue but no wake
@@ -2988,6 +3016,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               hud.record_worker_wake(outcome.drained as u64);
             }
           }
+          span.arg_u64("messages", outcome.drained as u64);
 
           if request_redraw {
             win.app.window.request_redraw();
@@ -3079,6 +3108,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           ui_to_worker_tx,
           worker_join,
           &gpu,
+          browser_trace.clone(),
           appearance_env,
           applied_appearance.clone(),
           theme_accent,
@@ -3200,6 +3230,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           ui_to_worker_tx,
           worker_join,
           &gpu,
+          browser_trace.clone(),
           appearance_env,
           applied_appearance.clone(),
           theme_accent,
@@ -4564,6 +4595,7 @@ struct App {
   window_title_cache: String,
   event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
   chrome_a11y: ChromeA11yBackend,
+  trace: fastrender::debug::trace::TraceHandle,
 
   surface: wgpu::Surface,
   device: std::sync::Arc<wgpu::Device>,
@@ -5081,6 +5113,7 @@ impl App {
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
     worker_join: std::thread::JoinHandle<()>,
     gpu: &GpuContext,
+    trace: fastrender::debug::trace::TraceHandle,
     appearance_env_overrides: fastrender::ui::appearance::AppearanceEnvOverrides,
     applied_appearance: fastrender::ui::appearance::AppearanceSettings,
     theme_accent: Option<egui::Color32>,
@@ -5217,6 +5250,7 @@ impl App {
       window_title_cache: String::new(),
       event_loop_proxy,
       chrome_a11y,
+      trace,
       surface,
       device,
       queue,
@@ -6848,6 +6882,8 @@ impl App {
   }
 
   fn flush_pending_frame_uploads(&mut self) {
+    let _span = self.trace.span("flush_pending_frame_uploads", "ui.upload");
+
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       self.next_page_upload_redraw = None;
       return;
@@ -9629,6 +9665,10 @@ impl App {
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
+    let _span = self
+      .trace
+      .span("handle_winit_input_event", "ui.input");
+
     if let ChromeA11yBackend::FastRender(a11y) = &mut self.chrome_a11y {
       a11y.process_window_event(&self.window, event);
     }
@@ -12062,6 +12102,8 @@ impl App {
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) -> bool {
+    let _frame_span = self.trace.span("ui.frame", "ui.frame");
+
     let frame_start = if let Some(hud) = self.hud.as_mut() {
       let now = std::time::Instant::now();
       if let Some(prev) = hud.last_frame_start {
@@ -12092,41 +12134,45 @@ impl App {
       self.browser_state.chrome.remote_search_cache.fetched_at = update.fetched_at;
     }
 
-    let (raw_input, wheel_events, paste_events) = {
-      let mut raw = self.egui_state.take_egui_input(&self.window);
-      raw.pixels_per_point = Some(self.pixels_per_point);
-      let wheel_events = raw
-        .events
-        .iter()
-        .filter_map(|event| match event {
-          egui::Event::MouseWheel {
-            unit,
-            delta,
-            modifiers,
-          } => {
-            // Ctrl/Cmd+wheel is treated as zoom (handled in `ui::chrome_ui`), so do not forward it
-            // to the page scroll pipeline.
-            if modifiers.command {
-              None
-            } else {
-              Some((*unit, *delta))
+    let (wheel_events, paste_events) = {
+      let _span = self.trace.span("egui.begin_frame", "ui.frame");
+      let (raw_input, wheel_events, paste_events) = {
+        let mut raw = self.egui_state.take_egui_input(&self.window);
+        raw.pixels_per_point = Some(self.pixels_per_point);
+        let wheel_events = raw
+          .events
+          .iter()
+          .filter_map(|event| match event {
+            egui::Event::MouseWheel {
+              unit,
+              delta,
+              modifiers,
+            } => {
+              // Ctrl/Cmd+wheel is treated as zoom (handled in `ui::chrome_ui`), so do not forward it
+              // to the page scroll pipeline.
+              if modifiers.command {
+                None
+              } else {
+                Some((*unit, *delta))
+              }
             }
-          }
-          _ => None,
-        })
-        .collect::<Vec<_>>();
-      let paste_events = raw
-        .events
-        .iter()
-        .filter_map(|event| match event {
-          egui::Event::Paste(text) => Some(text.clone()),
-          _ => None,
-        })
-        .collect::<Vec<_>>();
-      (raw, wheel_events, paste_events)
-    };
+            _ => None,
+          })
+          .collect::<Vec<_>>();
+        let paste_events = raw
+          .events
+          .iter()
+          .filter_map(|event| match event {
+            egui::Event::Paste(text) => Some(text.clone()),
+            _ => None,
+          })
+          .collect::<Vec<_>>();
+        (raw, wheel_events, paste_events)
+      };
 
-    self.egui_ctx.begin_frame(raw_input);
+      self.egui_ctx.begin_frame(raw_input);
+      (wheel_events, paste_events)
+    };
 
     let ctx = self.egui_ctx.clone();
     fastrender::ui::motion::UiMotion::set_ctx_reduced_motion(
@@ -13156,8 +13202,11 @@ impl App {
 
     // Update the cached focus model for use by the winit input handler after this frame.
     self.refresh_chrome_text_focus_from_egui(&ctx);
- 
-    let mut full_output = self.egui_ctx.end_frame();
+
+    let mut full_output = {
+      let _span = self.trace.span("egui.end_frame", "ui.frame");
+      self.egui_ctx.end_frame()
+    };
     let repaint_after = full_output.repaint_after;
     if let Some(text) = self.pending_clipboard_text.take() {
       full_output.platform_output.copied_text = text;
@@ -13175,50 +13224,59 @@ impl App {
     // frames even when no OS events are incoming.
     self.schedule_egui_repaint(repaint_after);
 
-    let paint_jobs = self.egui_ctx.tessellate(full_output.shapes);
+    let paint_jobs = {
+      let _span = self.trace.span("egui.tessellate", "ui.frame");
+      self.egui_ctx.tessellate(full_output.shapes)
+    };
 
     let screen_descriptor = egui_wgpu::renderer::ScreenDescriptor {
       size_in_pixels: [self.surface_config.width, self.surface_config.height],
       pixels_per_point: self.pixels_per_point,
     };
 
-    for (id, image_delta) in &full_output.textures_delta.set {
-      self
-        .egui_renderer
-        .update_texture(&self.device, &self.queue, *id, image_delta);
+    {
+      let _span = self.trace.span("egui.update_textures", "ui.upload");
+      for (id, image_delta) in &full_output.textures_delta.set {
+        self
+          .egui_renderer
+          .update_texture(&self.device, &self.queue, *id, image_delta);
+      }
     }
 
-    let mut surface_configured_this_frame = false;
-    if self.surface_needs_configure {
-      self.configure_surface("resize");
-      surface_configured_this_frame = true;
-    }
-
-    let mut surface_texture_result = self.surface.get_current_texture();
-    if matches!(
-      surface_texture_result,
-      Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)
-    ) {
-      if !surface_configured_this_frame {
-        self.configure_surface("lost/outdated");
+    let surface_texture = {
+      let _span = self.trace.span("wgpu.acquire", "ui.frame");
+      let mut surface_configured_this_frame = false;
+      if self.surface_needs_configure {
+        self.configure_surface("resize");
         surface_configured_this_frame = true;
       }
-      surface_texture_result = self.surface.get_current_texture();
-    }
 
-    let surface_texture = match surface_texture_result {
-      Ok(frame) => frame,
-      Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-        return session_dirty;
+      let mut surface_texture_result = self.surface.get_current_texture();
+      if matches!(
+        surface_texture_result,
+        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)
+      ) {
+        if !surface_configured_this_frame {
+          self.configure_surface("lost/outdated");
+          surface_configured_this_frame = true;
+        }
+        surface_texture_result = self.surface.get_current_texture();
       }
-      Err(wgpu::SurfaceError::Timeout) => {
-        return session_dirty;
-      }
-      Err(wgpu::SurfaceError::OutOfMemory) => {
-        eprintln!("wgpu surface out of memory; exiting");
-        self.shutdown();
-        *control_flow = winit::event_loop::ControlFlow::Exit;
-        return session_dirty;
+
+      match surface_texture_result {
+        Ok(frame) => frame,
+        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+          return session_dirty;
+        }
+        Err(wgpu::SurfaceError::Timeout) => {
+          return session_dirty;
+        }
+        Err(wgpu::SurfaceError::OutOfMemory) => {
+          eprintln!("wgpu surface out of memory; exiting");
+          self.shutdown();
+          *control_flow = winit::event_loop::ControlFlow::Exit;
+          return session_dirty;
+        }
       }
     };
 
@@ -13232,15 +13290,19 @@ impl App {
         label: Some("egui_encoder"),
       });
 
-    self.egui_renderer.update_buffers(
-      &self.device,
-      &self.queue,
-      &mut encoder,
-      &paint_jobs,
-      &screen_descriptor,
-    );
+    {
+      let _span = self.trace.span("wgpu.update_buffers", "ui.frame");
+      self.egui_renderer.update_buffers(
+        &self.device,
+        &self.queue,
+        &mut encoder,
+        &paint_jobs,
+        &screen_descriptor,
+      );
+    }
 
     {
+      let _span = self.trace.span("wgpu.render_pass", "ui.frame");
       let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("render_pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -13259,8 +13321,14 @@ impl App {
         .render(&mut rpass, &paint_jobs, &screen_descriptor);
     }
 
-    self.queue.submit(Some(encoder.finish()));
-    surface_texture.present();
+    {
+      let _span = self.trace.span("wgpu.submit", "ui.frame");
+      self.queue.submit(Some(encoder.finish()));
+    }
+    {
+      let _span = self.trace.span("wgpu.present", "ui.frame");
+      surface_texture.present();
+    }
 
     for id in &full_output.textures_delta.free {
       self.egui_renderer.free_texture(id);

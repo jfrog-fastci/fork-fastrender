@@ -59,45 +59,45 @@ fn current_thread_numeric_id() -> u64 {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct TraceHandle {
+pub struct TraceHandle {
   inner: Option<Arc<TraceState>>,
 }
 
 impl TraceHandle {
-  pub(crate) fn enabled() -> Self {
+  pub fn enabled() -> Self {
     let max_events = max_trace_events_from_env().unwrap_or(DEFAULT_MAX_TRACE_EVENTS);
     Self::enabled_with_max_events(max_events)
   }
 
-  pub(crate) fn enabled_with_max_events(max_events: usize) -> Self {
+  pub fn enabled_with_max_events(max_events: usize) -> Self {
     Self {
       inner: Some(Arc::new(TraceState::new(max_events))),
     }
   }
 
-  pub(crate) fn disabled() -> Self {
+  pub fn disabled() -> Self {
     Self { inner: None }
   }
 
-  pub(crate) fn is_enabled(&self) -> bool {
+  pub fn is_enabled(&self) -> bool {
     self.inner.is_some()
   }
 
-  pub(crate) fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan {
+  pub fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan {
     match &self.inner {
       Some(state) => TraceSpan::new(state.clone(), Cow::Borrowed(name), cat),
       None => TraceSpan::noop(),
     }
   }
 
-  pub(crate) fn span_owned(&self, name: String, cat: &'static str) -> TraceSpan {
+  pub fn span_owned(&self, name: String, cat: &'static str) -> TraceSpan {
     match &self.inner {
       Some(state) => TraceSpan::new(state.clone(), Cow::Owned(name), cat),
       None => TraceSpan::noop(),
     }
   }
 
-  pub(crate) fn write_chrome_trace(&self, path: &Path) -> std::io::Result<()> {
+  pub fn write_chrome_trace(&self, path: &Path) -> std::io::Result<()> {
     let Some(state) = &self.inner else {
       return Ok(());
     };
@@ -178,7 +178,7 @@ impl TraceState {
   }
 }
 
-pub(crate) struct TraceSpan {
+pub struct TraceSpan {
   state: Option<Arc<TraceState>>,
   name: Cow<'static, str>,
   cat: &'static str,
@@ -208,7 +208,7 @@ impl TraceSpan {
   }
 
   #[inline]
-  pub(crate) fn arg_u64(&mut self, key: &'static str, value: u64) {
+  pub fn arg_u64(&mut self, key: &'static str, value: u64) {
     let Some(_state) = &self.state else {
       return;
     };
@@ -217,7 +217,7 @@ impl TraceSpan {
   }
 
   #[inline]
-  pub(crate) fn arg_i64(&mut self, key: &'static str, value: i64) {
+  pub fn arg_i64(&mut self, key: &'static str, value: i64) {
     let Some(_state) = &self.state else {
       return;
     };
@@ -226,7 +226,7 @@ impl TraceSpan {
   }
 
   #[inline]
-  pub(crate) fn arg_bool(&mut self, key: &'static str, value: bool) {
+  pub fn arg_bool(&mut self, key: &'static str, value: bool) {
     let Some(_state) = &self.state else {
       return;
     };
@@ -235,7 +235,7 @@ impl TraceSpan {
   }
 
   #[inline]
-  pub(crate) fn arg_str(&mut self, key: &'static str, value: &str) {
+  pub fn arg_str(&mut self, key: &'static str, value: &str) {
     let Some(_state) = &self.state else {
       return;
     };

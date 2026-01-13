@@ -12,6 +12,10 @@ When using `render_pages`/`fetch_and_render`, per-page logs are written to `fetc
   - `fetch_and_render` also supports `--trace-out trace.json`, and library consumers can set `RenderOptions::with_trace_output`.
   - Use `FASTR_TRACE_MAX_EVENTS=<N>` to cap the number of events retained per render (default 200000).
 
+- `FASTR_BROWSER_TRACE_OUT=/tmp/browser-trace.json`
+  - Writes a Chrome trace of the windowed `browser` UI event loop (winit event handling, egui frame build, worker message drain, frame uploads, wgpu present). The trace is written when the browser process exits.
+  - Open it in Perfetto by visiting <https://ui.perfetto.dev> and using "Open trace file", or in Chromium via `chrome://tracing`.
+
 - Container query second-pass logging (used in `render_pages`/`fetch_and_render`):
   - `FASTR_LOG_CONTAINER_PASS=1` prints the number of query containers (size vs inline-size) and a few samples of their dimensions/names when the second cascade/layout runs.
   - `FASTR_LOG_CONTAINER_REUSE=1` reports how many styled nodes are reused during the container-query recascade.
