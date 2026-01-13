@@ -173,8 +173,17 @@ fn get_elements_by_tag_name_ns_supports_wildcards_and_html_namespace_equivalence
     doc.get_elements_by_tag_name_ns_from(doc.root(), Some(HTML_NAMESPACE), "div"),
     vec![a, b]
   );
+  // HTML namespace elements match `localName` ASCII case-insensitively.
+  assert_eq!(
+    doc.get_elements_by_tag_name_ns_from(doc.root(), Some(HTML_NAMESPACE), "DIV"),
+    vec![a, b]
+  );
   assert_eq!(
     doc.get_elements_by_tag_name_ns_from(doc.root(), Some(""), "div"),
+    vec![a, b]
+  );
+  assert_eq!(
+    doc.get_elements_by_tag_name_ns_from(doc.root(), Some(""), "DIV"),
     vec![a, b]
   );
   assert_eq!(
