@@ -12,9 +12,11 @@ thiserror = "1.0"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_JobObjects",
   "Win32_System_LibraryLoader",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
 

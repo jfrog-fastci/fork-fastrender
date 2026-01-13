@@ -12,6 +12,11 @@ mod job;
 #[cfg(windows)]
 pub use job::Job;
 
+#[cfg(windows)]
+mod restricted_token;
+#[cfg(windows)]
+pub use restricted_token::RestrictedToken;
+
 use thiserror::Error;
 
 /// Result type alias for win-sandbox operations.
