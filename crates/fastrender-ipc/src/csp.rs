@@ -466,6 +466,26 @@ impl FrameNode {
       candidate,
     )
   }
+
+  /// Check whether a child-frame navigation is allowed by the parent CSP (`frame-src`), taking
+  /// redirects into account.
+  ///
+  /// This mirrors the in-process renderer's `ResourceContext::check_allowed_with_final` behavior:
+  /// the requested URL is validated first, then (when present) the final URL after redirects is
+  /// validated as well.
+  pub fn check_frame_src_with_final(
+    &self,
+    requested_url: &str,
+    final_url: Option<&str>,
+  ) -> Result<Url, String> {
+    check_frame_src_with_final(
+      self.csp.as_ref(),
+      self.url.as_deref(),
+      self.origin.as_ref(),
+      requested_url,
+      final_url,
+    )
+  }
 }
 
 /// Evaluate CSP `frame-src` for `candidate` in the context of a parent document.
@@ -475,10 +495,49 @@ pub fn check_frame_src(
   document_origin: Option<&DocumentOrigin>,
   candidate: &str,
 ) -> Result<Url, String> {
+  check_frame_src_labeled(csp, document_url, document_origin, candidate, "requested")
+}
+
+/// Evaluate CSP `frame-src` for both the requested URL and an optional final URL after redirects.
+///
+/// The returned [`Url`] is the resolved requested URL.
+pub fn check_frame_src_with_final(
+  csp: Option<&CspPolicy>,
+  document_url: Option<&str>,
+  document_origin: Option<&DocumentOrigin>,
+  requested_url: &str,
+  final_url: Option<&str>,
+) -> Result<Url, String> {
+  let resolved = check_frame_src_labeled(
+    csp,
+    document_url,
+    document_origin,
+    requested_url,
+    "requested",
+  )?;
+  if let Some(final_url) = final_url {
+    let _ = check_frame_src_labeled(
+      csp,
+      document_url,
+      document_origin,
+      final_url,
+      "final",
+    )?;
+  }
+  Ok(resolved)
+}
+
+fn check_frame_src_labeled(
+  csp: Option<&CspPolicy>,
+  document_url: Option<&str>,
+  document_origin: Option<&DocumentOrigin>,
+  candidate: &str,
+  label: &str,
+) -> Result<Url, String> {
   let Some(csp) = csp else {
     return resolve_for_csp(candidate, document_url, document_origin).ok_or_else(|| {
       format!(
-        "Blocked by Content-Security-Policy ({}) for requested URL (invalid URL): {candidate}",
+        "Blocked by Content-Security-Policy ({}) for {label} URL (invalid URL): {candidate}",
         CspDirective::FrameSrc.as_str()
       )
     });
@@ -486,7 +545,7 @@ pub fn check_frame_src(
 
   let parsed = resolve_for_csp(candidate, document_url, document_origin).ok_or_else(|| {
     format!(
-      "Blocked by Content-Security-Policy ({}) for requested URL (invalid URL): {candidate}",
+      "Blocked by Content-Security-Policy ({}) for {label} URL (invalid URL): {candidate}",
       CspDirective::FrameSrc.as_str()
     )
   })?;
@@ -496,7 +555,7 @@ pub fn check_frame_src(
     Ok(parsed)
   } else {
     Err(format!(
-      "Blocked by Content-Security-Policy ({}) for requested URL: {resolved}",
+      "Blocked by Content-Security-Policy ({}) for {label} URL: {resolved}",
       CspDirective::FrameSrc.as_str()
     ))
   }
@@ -542,5 +601,24 @@ mod tests {
       "Blocked by Content-Security-Policy (frame-src) for requested URL: https://evil.example/child"
     );
   }
-}
 
+  #[test]
+  fn frame_src_checks_final_url_after_redirect() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://parent.example/".to_string(),
+      vec!["frame-src https://allowed.example".to_string()],
+    );
+
+    let err = frame
+      .check_frame_src_with_final(
+        "https://allowed.example/start",
+        Some("https://blocked.example/landing"),
+      )
+      .expect_err("expected frame-src to reject final redirected URL");
+    assert_eq!(
+      err,
+      "Blocked by Content-Security-Policy (frame-src) for final URL: https://blocked.example/landing"
+    );
+  }
+}

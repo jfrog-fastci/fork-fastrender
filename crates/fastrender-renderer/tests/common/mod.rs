@@ -118,12 +118,34 @@ pub struct TestServer {
   handle: Option<thread::JoinHandle<()>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct TestResponse {
+  pub status: u16,
+  pub headers: Vec<(String, String)>,
+  pub body: Vec<u8>,
+  pub content_type: &'static str,
+}
+
 impl TestServer {
   const MAX_SERVER_LIFETIME: Duration = Duration::from_secs(15);
 
   pub fn start(
     context: &str,
     handler: impl Fn(&str) -> Option<(Vec<u8>, &'static str)> + Send + Sync + 'static,
+  ) -> Option<Self> {
+    Self::start_with(context, move |path| {
+      handler(path).map(|(body, content_type)| TestResponse {
+        status: 200,
+        headers: Vec::new(),
+        body,
+        content_type,
+      })
+    })
+  }
+
+  pub fn start_with(
+    context: &str,
+    handler: impl Fn(&str) -> Option<TestResponse> + Send + Sync + 'static,
   ) -> Option<Self> {
     let listener = try_bind_localhost(context)?;
     listener
@@ -148,16 +170,29 @@ impl TestServer {
               .unwrap_or_else(|poisoned| poisoned.into_inner())
               .push(captured_request.clone());
 
-            let (status, body, content_type) = match handler(captured_request.path.as_str()) {
-              Some((body, content_type)) => (200u16, body, content_type),
-              None => (404u16, Vec::new(), "text/plain"),
+            let resp = match handler(captured_request.path.as_str()) {
+              Some(resp) => resp,
+              None => TestResponse {
+                status: 404,
+                headers: Vec::new(),
+                body: Vec::new(),
+                content_type: "text/plain",
+              },
             };
-            let response = format!(
-              "HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-              body.len()
+
+            let mut header_block = format!(
+              "HTTP/1.1 {} OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n",
+              resp.status,
+              resp.content_type,
+              resp.body.len()
             );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.write_all(&body);
+            for (name, value) in &resp.headers {
+              header_block.push_str(&format!("{name}: {value}\r\n"));
+            }
+            header_block.push_str("Connection: close\r\n\r\n");
+
+            let _ = stream.write_all(header_block.as_bytes());
+            let _ = stream.write_all(&resp.body);
             let _ = stream.flush();
           }
           Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {

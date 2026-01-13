@@ -170,7 +170,7 @@ fn compute_referer_header_value(
   }
 }
 
-fn http_get(url: &Url, referer: Option<&str>) -> Result<(Vec<(String, String)>, Vec<u8>), String> {
+fn http_get_raw(url: &Url, referer: Option<&str>) -> Result<Vec<u8>, String> {
   let host = url
     .host_str()
     .ok_or_else(|| format!("URL missing host: {url}"))?;
@@ -218,30 +218,101 @@ fn http_get(url: &Url, referer: Option<&str>) -> Result<(Vec<(String, String)>, 
     .read_to_end(&mut response)
     .map_err(|err| err.to_string())?;
 
-  let sep = response
+  Ok(response)
+}
+
+#[derive(Debug, Clone)]
+struct HttpResponse {
+  headers: Vec<(String, String)>,
+  body: Vec<u8>,
+  final_url: Url,
+}
+
+fn parse_http_response(bytes: &[u8]) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+  let sep = bytes
     .windows(4)
     .position(|w| w == b"\r\n\r\n")
     .ok_or_else(|| "invalid HTTP response (missing header separator)".to_string())?;
 
-  let header_bytes = &response[..sep];
-  let body = response[(sep + 4)..].to_vec();
-  let headers_text = String::from_utf8_lossy(header_bytes);
+  let headers_raw = &bytes[..sep];
+  let body = bytes[(sep + 4)..].to_vec();
+
+  let headers_text = String::from_utf8_lossy(headers_raw);
+  let mut lines = headers_text.lines();
+  let status_line = lines
+    .next()
+    .ok_or_else(|| "invalid HTTP response (missing status line)".to_string())?;
+  let status = status_line
+    .split_whitespace()
+    .nth(1)
+    .ok_or_else(|| format!("invalid HTTP status line: {status_line:?}"))?
+    .parse::<u16>()
+    .map_err(|_| format!("invalid HTTP status line: {status_line:?}"))?;
 
   // Very small/forgiving HTTP header parser sufficient for tests and CSP propagation.
   let mut headers = Vec::<(String, String)>::new();
-  for (idx, line) in headers_text.lines().enumerate() {
-    // Skip the status line.
-    if idx == 0 {
+  for line in lines {
+    let line = line.trim_end_matches('\r');
+    if line.is_empty() {
       continue;
     }
-    let line = line.trim_end_matches('\r');
     let Some((name, value)) = line.split_once(':') else {
       continue;
     };
     headers.push((name.trim().to_string(), value.trim().to_string()));
   }
 
-  Ok((headers, body))
+  Ok((status, headers, body))
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+  headers
+    .iter()
+    .find(|(h, _)| h.eq_ignore_ascii_case(name))
+    .map(|(_, v)| v.as_str())
+}
+
+fn is_redirect_status(status: u16) -> bool {
+  matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+fn http_get(url: &Url, referer: Option<&str>) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+  let raw = http_get_raw(url, referer)?;
+  parse_http_response(&raw)
+}
+
+fn http_get_follow_redirects(
+  initial_url: &Url,
+  raw_referrer: Option<&str>,
+  policy: ReferrerPolicy,
+) -> Result<HttpResponse, String> {
+  const MAX_REDIRECTS: usize = 10;
+
+  let mut url = initial_url.clone();
+  for _ in 0..=MAX_REDIRECTS {
+    let referer_header = raw_referrer.and_then(|raw| compute_referer_header_value(raw, &url, policy));
+    let (status, headers, body) = http_get(&url, referer_header.as_deref())?;
+
+    if is_redirect_status(status) {
+      let Some(location) = header_value(&headers, "Location") else {
+        return Err(format!("redirect {status} missing Location header"));
+      };
+      let next_url = Url::parse(location)
+        .ok()
+        .or_else(|| url.join(location).ok())
+        .ok_or_else(|| format!("invalid redirect Location: {location:?}"))?;
+      url = next_url;
+      continue;
+    }
+
+    return Ok(HttpResponse {
+      headers,
+      body,
+      final_url: url,
+    });
+  }
+
+  Err("too many redirects".to_string())
 }
 
 fn csp_values_from_http_headers(headers: &[(String, String)]) -> Vec<String> {
@@ -631,7 +702,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           }
         }
         BrowserToRenderer::RequestRepaint { frame_id } => {
-          let Some(frame) = self.frames.get(&frame_id) else {
+          let Some(frame) = self.frames.get_mut(&frame_id) else {
             let _ = self.transport.send(RendererToBrowser::Error {
               frame_id: Some(frame_id),
               message: "RequestRepaint for unknown frame".to_string(),
@@ -640,41 +711,39 @@ impl<T: IpcTransport> RendererMainLoop<T> {
           };
 
           let mut subframes = Vec::new();
-          if let Some(raw_url) = frame.url.as_deref() {
-            if let Ok(url) = Url::parse(raw_url) {
+          if let Some(raw_url) = frame.url.clone() {
+            if let Ok(url) = Url::parse(&raw_url) {
               if should_fetch_url(&url) {
-                let nav_referer = frame
-                  .navigation_context
-                  .referrer_url
-                  .as_deref()
-                  .and_then(|referrer| {
-                    compute_referer_header_value(
-                      referrer,
-                      &url,
-                      frame.navigation_context.referrer_policy,
-                    )
-                  });
-                match http_get(&url, nav_referer.as_deref()) {
-                  Ok((headers, body)) => {
-                    let html = String::from_utf8_lossy(&body);
+                match http_get_follow_redirects(
+                  &url,
+                  frame.navigation_context.referrer_url.as_deref(),
+                  frame.navigation_context.referrer_policy,
+                ) {
+                  Ok(response) => {
+                    // When the navigation redirects, commit the final URL so the browser can apply
+                    // embedder policy/CSP checks against the real destination.
+                    let committed_url = response.final_url.to_string();
+                    frame.url = Some(committed_url.clone());
+
+                    let html = String::from_utf8_lossy(&response.body);
                     subframes = subframes_from_html(frame_id, html.as_ref());
 
-                    let mut csp_values = csp_values_from_http_headers(&headers);
+                    let mut csp_values = csp_values_from_http_headers(&response.headers);
                     csp_values.extend(csp_values_from_html_meta(html.as_ref()));
                     // Report the committed CSP values to the browser so it can enforce parent
                     // `frame-src` on out-of-process iframe navigations.
                     self.transport.send(RendererToBrowser::NavigationCommitted {
                       frame_id,
-                      url: url.to_string(),
+                      url: committed_url.clone(),
                       csp: csp_values,
                     })?;
 
                     // Opportunistically fetch <img> subresources so integration tests can assert
                     // referrer policy behavior without implementing full layout/paint in the
                     // multiprocess renderer yet.
-                    for img_url in image_urls_from_html(&url, html.as_ref()) {
+                    for img_url in image_urls_from_html(&response.final_url, html.as_ref()) {
                       let referer = compute_referer_header_value(
-                        url.as_str(),
+                        response.final_url.as_str(),
                         &img_url,
                         frame.navigation_context.referrer_policy,
                       );

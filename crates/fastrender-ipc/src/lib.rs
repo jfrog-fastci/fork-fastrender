@@ -504,7 +504,10 @@ impl AffineTransform {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubframeInfo {
   pub child: FrameId,
-  /// Raw `src` attribute value used by the browser to decide which URL to navigate.
+  /// Raw `src` attribute value for the `<iframe>`, when present.
+  ///
+  /// This is untrusted renderer output. The browser must resolve/validate it against the parent
+  /// document's base URL and security policy before initiating a navigation.
   pub src: Option<String>,
   /// Affine transform from subframe-local space into the parent frame coordinate space.
   pub transform: AffineTransform,
@@ -1426,7 +1429,7 @@ mod frame_hit_testing_tests {
     let mut tester = FrameHitTester::new(root);
     tester.set_frame_size(root, 100, 100);
     tester.set_frame_size(child, 50, 50);
-    tester.set_subframes(
+      tester.set_subframes(
       root,
       vec![SubframeInfo {
         child,
