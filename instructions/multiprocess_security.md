@@ -165,7 +165,8 @@ See:
 - Renderer-focused quick reference: [`docs/security/macos_renderer_sandbox.md`](../docs/security/macos_renderer_sandbox.md)
 
 Windows quick reference:
-- [`docs/security/windows_renderer_sandbox.md`](../docs/security/windows_renderer_sandbox.md)
+- Detailed boundary doc: [`docs/windows_sandbox.md`](../docs/windows_sandbox.md)
+- Quick reference: [`docs/security/windows_renderer_sandbox.md`](../docs/security/windows_renderer_sandbox.md)
 
 App Sandbox note: when FastRender is eventually shipped as a macOS `.app`, we expect to sandbox
 the untrusted renderer helper process using **App Sandbox entitlements embedded in the code
