@@ -196,6 +196,12 @@ The fastest “does this basically work?” check is a real screen reader:
 - **Windows:** Narrator (`Win+Ctrl+Enter`) → scan the toolbar controls.
 - **Linux:** Orca (varies by distro) → ensure your build supports your winit backend (`browser_ui_wayland` if needed).
 
+If you need a lower-level view than a screen reader, use platform accessibility inspection tools:
+
+- **macOS:** Accessibility Inspector (Xcode → Open Developer Tool → Accessibility Inspector)
+- **Windows:** Inspect.exe (Windows SDK) / Accessibility Insights
+- **Linux:** Accerciser / other AT-SPI inspection tools
+
 Current scope note: the rendered page is still an image, so the screen reader will not traverse document content yet (see future work below).
 
 ---
