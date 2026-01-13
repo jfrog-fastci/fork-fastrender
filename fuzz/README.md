@@ -59,9 +59,7 @@ bash scripts/cargo_agent.sh fuzz run text_line_break -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run accessibility_tree fuzz/corpus/accessibility_tree tests/fuzz_corpus -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run html_scanners -- -runs=1000
 bash scripts/cargo_agent.sh fuzz run image_decoding -- -runs=1000
-# `ipc_decode` is intentionally dependency-light; it can be built without pulling in the full
-# `fastrender` crate (which is gated behind this fuzz crate's default feature set).
-bash scripts/cargo_agent.sh fuzz run ipc_decode --no-default-features -- -runs=1000
+bash scripts/cargo_agent.sh fuzz run ipc_decode -- -runs=1000
 ```
 
 You can point any target at additional corpora (e.g. `tests/fuzz_corpus/` which
