@@ -458,6 +458,60 @@ fn regexp_identity_escape_8_in_non_unicode_mode() {
 }
 
 #[test]
+fn regexp_non_unicode_out_of_range_decimal_escape_prefers_legacy_octal_over_prefix_backref() {
+  // When the full DecimalEscape is out of range, non-UnicodeMode must fall back to Annex B
+  // legacy octal / identity escapes. It must NOT treat the longest in-range *prefix* as a
+  // backreference.
+  //
+  // In particular, with one capturing group, `\11` must be parsed as a legacy octal escape (TAB),
+  // not as backref `\1` followed by literal `1`.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = new RegExp("(A)\\11");
+        [r.test("A\t"), r.test("AA1")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
+fn regexp_non_unicode_out_of_range_decimal_escape_100_is_legacy_octal_not_backref_10() {
+  // With 10 capturing groups, `\100` is still an out-of-range DecimalEscape (100 > 10) and must
+  // be parsed as an Annex B legacy octal escape (`\100` == '@'), not as backref `\10` + literal
+  // `0`.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = new RegExp("((((((((((A))))))))))\\100");
+        [r.test("A@"), r.test("AA0")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
+fn regexp_non_unicode_escape_89_is_identity_even_with_eight_captures() {
+  // Even with 8 capturing groups, `\89` parses as DecimalEscape 89, which is out of range
+  // (89 > 8). In non-UnicodeMode this therefore falls back to Annex B IdentityEscape `\8`
+  // followed by literal `9`.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = new RegExp("((((((((A))))))))\\89");
+        [r.test("A89"), r.test("AA9")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
 fn regexp_legacy_octal_escape_max_length_rule() {
   // `\400` parses as `\40` (octal for U+0020) followed by a literal `0`.
   let mut rt = new_runtime();
