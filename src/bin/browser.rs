@@ -7760,7 +7760,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let worker_wake_pending = Arc::new(AtomicBool::new(false));
     // Wake/perf counters are used both by the optional HUD and the perf-log mode. Ensure a single
     // shared counter instance feeds all consumers.
-    let worker_wake_counters = (browser_hud_enabled_from_env() || perf_log_enabled)
+    let worker_wake_counters = (hud_enabled || perf_log_enabled)
       .then(|| Arc::new(WorkerWakeHudCounters::default()));
     let worker_wake: fastrender::ui::WorkerWakeCallback = {
       // Wrap `EventLoopProxy` in a `Mutex` so the wake callback is `Sync` (the worker wants an
@@ -9070,7 +9070,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         next_window_index = next_window_index.saturating_add(1);
 
         let worker_wake_pending = Arc::new(AtomicBool::new(false));
-        let worker_wake_counters = (browser_hud_enabled_from_env() || perf_log_enabled)
+        let worker_wake_counters = (hud_enabled || perf_log_enabled)
           .then(|| Arc::new(WorkerWakeHudCounters::default()));
         let worker_wake: fastrender::ui::WorkerWakeCallback = {
           let proxy = std::sync::Mutex::new(event_loop_proxy.clone());
@@ -9277,7 +9277,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         next_window_index = next_window_index.saturating_add(1);
 
         let worker_wake_pending = Arc::new(AtomicBool::new(false));
-        let worker_wake_counters = (browser_hud_enabled_from_env() || perf_log_enabled)
+        let worker_wake_counters = (hud_enabled || perf_log_enabled)
           .then(|| Arc::new(WorkerWakeHudCounters::default()));
         let worker_wake: fastrender::ui::WorkerWakeCallback = {
           let proxy = std::sync::Mutex::new(event_loop_proxy.clone());
@@ -12091,11 +12091,31 @@ impl Default for WorkerWakeHudCounters {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Default)]
+struct HudTabMetrics {
+  nav_started_at: Option<std::time::Instant>,
+  awaiting_first_paint: bool,
+  ttfp_ms: Option<f32>,
+  pending_page_input_at: Option<std::time::Instant>,
+  page_input_latency_ms: Option<f32>,
+  pending_scroll_at: Option<std::time::Instant>,
+  scroll_latency_ms: Option<f32>,
+}
+
+#[cfg(feature = "browser_ui")]
 #[derive(Debug)]
 struct BrowserHud {
   last_frame_start: Option<std::time::Instant>,
   last_frame_cpu_ms: Option<f32>,
   fps: Option<f32>,
+  tab_metrics: std::collections::HashMap<fastrender::ui::TabId, HudTabMetrics>,
+  pending_resize_start: Option<std::time::Instant>,
+  pending_resize_tab: Option<fastrender::ui::TabId>,
+  resize_latency_ms: Option<f32>,
+  chrome_input_pending: Option<std::time::Instant>,
+  chrome_input_latency_ms: Option<f32>,
+  sys_metrics_last_sample: Option<std::time::Instant>,
+  rss_mib: Option<f32>,
   worker_wake_counters: std::sync::Arc<WorkerWakeHudCounters>,
   worker_wake_coalesced_prev: u64,
   worker_wake_sent_prev: u64,
@@ -12161,6 +12181,14 @@ impl BrowserHud {
       last_frame_start: None,
       last_frame_cpu_ms: None,
       fps: None,
+      tab_metrics: std::collections::HashMap::with_capacity(8),
+      pending_resize_start: None,
+      pending_resize_tab: None,
+      resize_latency_ms: None,
+      chrome_input_pending: None,
+      chrome_input_latency_ms: None,
+      sys_metrics_last_sample: None,
+      rss_mib: None,
       worker_wake_counters: std::sync::Arc::new(WorkerWakeHudCounters::default()),
       worker_wake_coalesced_prev: 0,
       worker_wake_sent_prev: 0,
@@ -12287,6 +12315,129 @@ impl BrowserHud {
         now.saturating_duration_since(start).as_millis() as u64,
       );
     }
+  }
+
+  fn note_navigation_started(&mut self, tab_id: fastrender::ui::TabId) {
+    let metrics = self.tab_metrics.entry(tab_id).or_default();
+    metrics.nav_started_at = Some(std::time::Instant::now());
+    metrics.awaiting_first_paint = true;
+    metrics.ttfp_ms = None;
+  }
+
+  fn note_resize_event(&mut self, active_tab: Option<fastrender::ui::TabId>) {
+    let Some(tab_id) = active_tab else {
+      self.pending_resize_start = None;
+      self.pending_resize_tab = None;
+      return;
+    };
+    self.pending_resize_start = Some(std::time::Instant::now());
+    self.pending_resize_tab = Some(tab_id);
+  }
+
+  fn note_chrome_input_event(&mut self) {
+    self.chrome_input_pending = Some(std::time::Instant::now());
+  }
+
+  fn note_ui_to_worker_msg(&mut self, msg: &fastrender::ui::UiToWorker) {
+    use fastrender::ui::UiToWorker;
+
+    match msg {
+      UiToWorker::Scroll { tab_id, .. } | UiToWorker::ScrollTo { tab_id, .. } => {
+        let metrics = self.tab_metrics.entry(*tab_id).or_default();
+        metrics.pending_scroll_at = Some(std::time::Instant::now());
+      }
+      UiToWorker::TextInput { tab_id, .. }
+      | UiToWorker::ImePreedit { tab_id, .. }
+      | UiToWorker::ImeCommit { tab_id, .. }
+      | UiToWorker::ImeCancel { tab_id }
+      | UiToWorker::Paste { tab_id, .. }
+      | UiToWorker::KeyAction { tab_id, .. } => {
+        let metrics = self.tab_metrics.entry(*tab_id).or_default();
+        metrics.pending_page_input_at = Some(std::time::Instant::now());
+      }
+      UiToWorker::CloseTab { tab_id } => {
+        self.tab_metrics.remove(tab_id);
+        if self.pending_resize_tab == Some(*tab_id) {
+          self.pending_resize_start = None;
+          self.pending_resize_tab = None;
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn note_frame_ready(&mut self, tab_id: fastrender::ui::TabId) {
+    let now = std::time::Instant::now();
+
+    if self.pending_resize_tab == Some(tab_id) {
+      if let Some(start) = self.pending_resize_start.take() {
+        let elapsed_ms = now.saturating_duration_since(start).as_secs_f32() * 1000.0;
+        if elapsed_ms.is_finite() {
+          self.resize_latency_ms = Some(elapsed_ms);
+        }
+        self.pending_resize_tab = None;
+      }
+    }
+
+    let Some(metrics) = self.tab_metrics.get_mut(&tab_id) else {
+      return;
+    };
+
+    if metrics.awaiting_first_paint {
+      if let Some(start) = metrics.nav_started_at {
+        let elapsed_ms = now.saturating_duration_since(start).as_secs_f32() * 1000.0;
+        if elapsed_ms.is_finite() {
+          metrics.ttfp_ms = Some(elapsed_ms);
+        }
+        metrics.awaiting_first_paint = false;
+      }
+    }
+
+    if let Some(start) = metrics.pending_page_input_at.take() {
+      let elapsed_ms = now.saturating_duration_since(start).as_secs_f32() * 1000.0;
+      if elapsed_ms.is_finite() {
+        metrics.page_input_latency_ms = Some(elapsed_ms);
+      }
+    }
+
+    if let Some(start) = metrics.pending_scroll_at.take() {
+      let elapsed_ms = now.saturating_duration_since(start).as_secs_f32() * 1000.0;
+      if elapsed_ms.is_finite() {
+        metrics.scroll_latency_ms = Some(elapsed_ms);
+      }
+    }
+  }
+
+  fn note_frame_presented(&mut self) {
+    let Some(start) = self.chrome_input_pending.take() else {
+      return;
+    };
+    let elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+    if elapsed_ms.is_finite() {
+      self.chrome_input_latency_ms = Some(elapsed_ms);
+    }
+  }
+
+  fn maybe_sample_system_metrics(&mut self) {
+    use std::time::{Duration, Instant};
+
+    // Sample infrequently; `/proc/self/status` reads are not free.
+    const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+
+    let now = Instant::now();
+    if self
+      .sys_metrics_last_sample
+      .is_some_and(|prev| now.saturating_duration_since(prev) < SAMPLE_INTERVAL)
+    {
+      return;
+    }
+    self.sys_metrics_last_sample = Some(now);
+
+    self.rss_mib = fastrender::memory::current_rss_bytes().and_then(|bytes| {
+      let mib = (bytes as f64) / (1024.0 * 1024.0);
+      let mib = mib as f32;
+      mib.is_finite().then_some(mib)
+    });
   }
 
   fn record_worker_wake(&mut self, drained_msgs: u64) {
@@ -16472,6 +16623,10 @@ impl App {
       _ => {}
     }
 
+    if let Some(hud) = self.hud.as_mut() {
+      hud.note_ui_to_worker_msg(&msg);
+    }
+
     match self.renderer_backend.send(msg) {
       Ok(()) => Ok(()),
       Err(err) => {
@@ -16743,6 +16898,10 @@ impl App {
     if new_size.width == self.surface_config.width && new_size.height == self.surface_config.height
     {
       return;
+    }
+
+    if let Some(hud) = self.hud.as_mut() {
+      hud.note_resize_event(self.browser_state.active_tab_id());
     }
 
     self.surface_config.width = new_size.width;
@@ -18372,6 +18531,9 @@ impl App {
     };
     if let fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } = &msg {
       self.perf_navigation_started(*tab_id, url);
+      if let Some(hud) = self.hud.as_mut() {
+        hud.note_navigation_started(*tab_id);
+      }
     }
 
     // `about:` pages are rendered in the trusted browser process. Once a tab is showing an about
@@ -19054,6 +19216,9 @@ impl App {
       // Ignore stale frames for tabs that have already been closed.
       if self.browser_state.tab(frame_ready.tab_id).is_some() {
         self.perf_frame_ready(frame_ready.tab_id);
+        if let Some(hud) = self.hud.as_mut() {
+          hud.note_frame_ready(frame_ready.tab_id);
+        }
         // Coalesce uploads until the next `render_frame`: uploading each intermediate pixmap is
         // expensive.
         if let Some(hud) = self.hud.as_mut() {
@@ -20429,6 +20594,7 @@ impl App {
       return;
     };
     hud.maybe_sample_worker_rates(std::time::Instant::now());
+    hud.maybe_sample_system_metrics();
 
     let pos = if let Some(page_rect) = self.page_rect_points {
       egui::pos2(page_rect.min.x + 6.0, page_rect.min.y + 6.0)
@@ -20487,17 +20653,54 @@ impl App {
       }
     }
 
-    match hud.process_rss_bytes {
-      Some(bytes) => {
-        let mib = fastrender::memory::bytes_to_mb(bytes);
-        let _ = writeln!(&mut hud.text_buf, "rss: {mib:.1} MiB");
+    let rss_mib = hud.process_rss_bytes.and_then(|bytes| {
+      let mib = (bytes as f64) / (1024.0 * 1024.0);
+      let mib = mib as f32;
+      mib.is_finite().then_some(mib)
+    });
+    match rss_mib.or(hud.rss_mib) {
+      Some(mib) if mib.is_finite() => {
+        let _ = writeln!(&mut hud.text_buf, "rss_mib: {mib:.1}");
       }
-      None => {
-        let _ = writeln!(&mut hud.text_buf, "rss: - MiB");
+      _ => {
+        let _ = writeln!(&mut hud.text_buf, "rss_mib: -");
       }
     }
 
-    let _ = write!(&mut hud.text_buf, "latency_ms: key=");
+    if let Some(active_tab_id) = self.browser_state.active_tab_id() {
+      let nav_pending = hud
+        .nav_ttfp_start
+        .get(&active_tab_id)
+        .map(|start| start.elapsed().as_millis() as u64);
+      let nav_last = hud.nav_ttfp_last_ms.get(&active_tab_id).copied();
+      match (nav_last, nav_pending) {
+        (Some(last_ms), Some(pending_ms)) => {
+          let _ = writeln!(&mut hud.text_buf, "ttfp_ms: {last_ms}  pending={pending_ms}");
+        }
+        (None, Some(pending_ms)) => {
+          let _ = writeln!(&mut hud.text_buf, "ttfp_ms: -  pending={pending_ms}");
+        }
+        (Some(last_ms), None) => {
+          let _ = writeln!(&mut hud.text_buf, "ttfp_ms: {last_ms}");
+        }
+        (None, None) => {
+          let _ = writeln!(&mut hud.text_buf, "ttfp_ms: -");
+        }
+      }
+    } else {
+      let _ = writeln!(&mut hud.text_buf, "ttfp_ms: -");
+    }
+
+    let _ = write!(&mut hud.text_buf, "input_to_present_ms: chrome=");
+    match hud.chrome_input_latency_ms {
+      Some(ms) if ms.is_finite() => {
+        let _ = write!(&mut hud.text_buf, "{ms:.0}");
+      }
+      _ => {
+        let _ = write!(&mut hud.text_buf, "-");
+      }
+    }
+    let _ = write!(&mut hud.text_buf, "  key=");
     match hud.last_keyboard_to_present_ms {
       Some(ms) => {
         let _ = write!(&mut hud.text_buf, "{ms}");
@@ -20526,37 +20729,82 @@ impl App {
     }
     let _ = writeln!(&mut hud.text_buf);
 
-    if let Some(active_tab_id) = self.browser_state.active_tab_id() {
-      let nav_pending = hud
-        .nav_ttfp_start
-        .get(&active_tab_id)
-        .map(|start| start.elapsed().as_millis() as u64);
-      let nav_last = hud.nav_ttfp_last_ms.get(&active_tab_id).copied();
-      match (nav_last, nav_pending) {
-        (Some(last_ms), Some(pending_ms)) => {
-          let _ = writeln!(
-            &mut hud.text_buf,
-            "nav_ttfp: {last_ms}ms (pending {pending_ms}ms)"
-          );
-        }
-        (None, Some(pending_ms)) => {
-          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: pending {pending_ms}ms");
-        }
-        (Some(last_ms), None) => {
-          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: {last_ms}ms");
-        }
-        (None, None) => {
-          let _ = writeln!(&mut hud.text_buf, "nav_ttfp: -");
-        }
+    let (page_input_last_ms, page_input_pending_ms, scroll_last_ms, scroll_pending_ms) = self
+      .browser_state
+      .active_tab_id()
+      .and_then(|tab_id| hud.tab_metrics.get(&tab_id))
+      .map(|metrics| {
+        (
+          metrics.page_input_latency_ms,
+          metrics
+            .pending_page_input_at
+            .map(|start| start.elapsed().as_millis() as u64),
+          metrics.scroll_latency_ms,
+          metrics
+            .pending_scroll_at
+            .map(|start| start.elapsed().as_millis() as u64),
+        )
+      })
+      .unwrap_or((None, None, None, None));
+
+    match (page_input_last_ms.filter(|ms| ms.is_finite()), page_input_pending_ms) {
+      (Some(last_ms), Some(pending_ms)) => {
+        let _ = writeln!(&mut hud.text_buf, "input_latency_ms: {last_ms:.0}  pending={pending_ms}");
       }
-    } else {
-      let _ = writeln!(&mut hud.text_buf, "nav_ttfp: -");
+      (None, Some(pending_ms)) => {
+        let _ = writeln!(&mut hud.text_buf, "input_latency_ms: -  pending={pending_ms}");
+      }
+      (Some(last_ms), None) => {
+        let _ = writeln!(&mut hud.text_buf, "input_latency_ms: {last_ms:.0}");
+      }
+      (None, None) => {
+        let _ = writeln!(&mut hud.text_buf, "input_latency_ms: -");
+      }
+    }
+
+    match (scroll_last_ms.filter(|ms| ms.is_finite()), scroll_pending_ms) {
+      (Some(last_ms), Some(pending_ms)) => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "scroll_latency_ms: {last_ms:.0}  pending={pending_ms}"
+        );
+      }
+      (None, Some(pending_ms)) => {
+        let _ = writeln!(&mut hud.text_buf, "scroll_latency_ms: -  pending={pending_ms}");
+      }
+      (Some(last_ms), None) => {
+        let _ = writeln!(&mut hud.text_buf, "scroll_latency_ms: {last_ms:.0}");
+      }
+      (None, None) => {
+        let _ = writeln!(&mut hud.text_buf, "scroll_latency_ms: -");
+      }
+    }
+
+    let resize_pending_ms = hud
+      .pending_resize_start
+      .map(|start| start.elapsed().as_millis() as u64);
+    match (hud.resize_latency_ms.filter(|ms| ms.is_finite()), resize_pending_ms) {
+      (Some(last_ms), Some(pending_ms)) => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "resize_latency_ms: {last_ms:.0}  pending={pending_ms}"
+        );
+      }
+      (None, Some(pending_ms)) => {
+        let _ = writeln!(&mut hud.text_buf, "resize_latency_ms: -  pending={pending_ms}");
+      }
+      (Some(last_ms), None) => {
+        let _ = writeln!(&mut hud.text_buf, "resize_latency_ms: {last_ms:.0}");
+      }
+      (None, None) => {
+        let _ = writeln!(&mut hud.text_buf, "resize_latency_ms: -");
+      }
     }
 
     let _ = writeln!(
       &mut hud.text_buf,
-      "frames: pending_uploads={}  dropped={}",
-      hud.pending_frame_uploads_at_frame_start, hud.coalesced_frames_total
+      "frames: pending_uploads={}  uploads={}  dropped={}",
+      hud.pending_frame_uploads_at_frame_start, hud.uploads_this_frame, hud.coalesced_frames_total
     );
 
     match (
@@ -25494,6 +25742,12 @@ impl App {
           }
         }
 
+        if self.chrome_has_text_focus {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_chrome_input_event();
+          }
+        }
+
         // Profile-level shortcuts that are *not* handled by `ui::chrome_ui` should never reach page
         // input (currently just "clear browsing data"). Most chrome shortcuts are handled in the
         // egui frame so we can respect egui focus rules.
@@ -26201,9 +26455,15 @@ impl App {
         if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
-        // If egui is actively editing text (e.g. the address bar), don't handle page-level IME
-        // events.
-        if !self.page_has_focus || self.chrome_has_text_focus {
+        // If egui is actively editing text (e.g. the address bar), treat this as chrome input and
+        // don't forward page-level IME events.
+        if self.chrome_has_text_focus {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_chrome_input_event();
+          }
+          return;
+        }
+        if !self.page_has_focus {
           return;
         }
 
@@ -26283,7 +26543,13 @@ impl App {
         if self.clear_browsing_data_dialog_open || self.set_home_page_dialog_open {
           return;
         }
-        if !self.page_has_focus || self.chrome_has_text_focus {
+        if self.chrome_has_text_focus {
+          if let Some(hud) = self.hud.as_mut() {
+            hud.note_chrome_input_event();
+          }
+          return;
+        }
+        if !self.page_has_focus {
           return;
         }
         // Avoid forwarding browser-chrome shortcuts (e.g. Ctrl/Cmd+L) as text input to the page.
@@ -29778,6 +30044,10 @@ impl App {
           }
         }
       }
+    }
+
+    if let Some(hud) = self.hud.as_mut() {
+      hud.note_frame_presented();
     }
 
     if let Some(perf_start) = perf_frame_start {
