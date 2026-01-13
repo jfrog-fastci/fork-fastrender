@@ -6951,6 +6951,63 @@ fn compiled_named_function_expr_recursion_works() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_named_function_expr_name_binding_is_immutable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let g = function fact() {
+          fact = 1;
+          return 0;
+        };
+        try {
+          g();
+          return false;
+        } catch (e) {
+          return e instanceof TypeError;
+        }
+      }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_named_function_expr_name_binding_does_not_leak_to_outer_scope() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let g = function fact() { return 1; };
+        return typeof fact;
+      }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined");
+  Ok(())
+}
+
+#[test]
 fn compiled_var_decl_object_destructuring_default() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
