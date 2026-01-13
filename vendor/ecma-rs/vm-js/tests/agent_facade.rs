@@ -141,6 +141,24 @@ fn agent_facade_format_vm_error_formats_native_error_objects_with_empty_message(
 }
 
 #[test]
+fn agent_facade_value_to_error_string_formats_native_error_objects() {
+  let mut agent = new_agent();
+
+  let err = agent
+    .run_script(
+      "throw_type_error_value_to_error_string.js",
+      "throw new TypeError('boom');",
+      Budget::unlimited(1),
+      None,
+    )
+    .unwrap_err();
+
+  let value = err.thrown_value().expect("expected thrown value");
+  let formatted = agent.value_to_error_string(value);
+  assert_eq!(formatted, "TypeError: boom");
+}
+
+#[test]
 fn agent_facade_format_vm_error_formats_thrown_string_values() {
   let mut agent = new_agent();
 

@@ -300,6 +300,18 @@ impl Agent {
   ///
   /// This uses the VM's `ToString` implementation (via [`Heap::to_string`]).
   pub fn value_to_error_string(&mut self, value: Value) -> String {
+    // Special-case native Error instances for host-facing formatting. `Heap::to_string` does not
+    // support objects, and calling `Error.prototype.toString` would be user-observable.
+    //
+    // This path is side-effect free (no getters, no Proxy traps).
+    if let Value::Object(obj) = value {
+      if self.heap().is_error_object(obj) {
+        if let Some(msg) = self.try_format_error_object_message(obj) {
+          return msg;
+        }
+      }
+    }
+
     let s = match self.heap_mut().to_string(value) {
       Ok(s) => s,
       // If ToString itself throws, format the thrown value.
