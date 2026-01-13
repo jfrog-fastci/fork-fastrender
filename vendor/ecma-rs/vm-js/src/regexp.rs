@@ -925,33 +925,33 @@ impl RegExpProgram {
         };
         match inst {
           Inst::Char(ch) => {
-            let Some(&u) = input.get(state.pos) else {
+            let Some((cp, len)) = decode_code_point(input, state.pos, flags.has_either_unicode_flag()) else {
               break;
             };
-            if !canonical_eq(*ch, u, flags) {
+            if canonicalize(flags, *ch) != canonicalize(flags, cp) {
               break;
             }
-            state.pos += 1;
+            state.pos = state.pos.saturating_add(len);
             state.pc += 1;
           }
           Inst::Any => {
-            let Some(&u) = input.get(state.pos) else {
+            let Some((cp, len)) = decode_code_point(input, state.pos, flags.has_either_unicode_flag()) else {
               break;
             };
-            if !flags.dot_all && is_line_terminator_unit(u) {
+            if !flags.dot_all && cp <= 0xFFFF && is_line_terminator_unit(cp as u16) {
               break;
             }
-            state.pos += 1;
+            state.pos = state.pos.saturating_add(len);
             state.pc += 1;
           }
           Inst::Class(cls) => {
-            let Some(&u) = input.get(state.pos) else {
+            let Some((cp, len)) = decode_code_point(input, state.pos, flags.has_either_unicode_flag()) else {
               break;
             };
-            if !cls.matches(u, flags) {
+            if !cls.matches(cp, flags) {
               break;
             }
-            state.pos += 1;
+            state.pos = state.pos.saturating_add(len);
             state.pc += 1;
           }
           Inst::UnicodeSet(cls) => {
@@ -1571,7 +1571,12 @@ impl<'a> ExecState<'a> {
 
 #[derive(Debug, Clone)]
 enum Inst {
-  Char(u16),
+  /// Matches a single pattern character.
+  ///
+  /// In non-UnicodeMode this matches a single UTF-16 code unit.
+  /// In UnicodeMode (`/u`), this matches a single Unicode code point (consuming 1 or 2 UTF-16
+  /// code units).
+  Char(u32),
   Any,
   Class(CharClass),
   /// UnicodeSets-mode (`/v`) character class that can match either a single code unit or a string
@@ -1633,7 +1638,7 @@ impl CharClass {
     })
   }
 
-  fn matches(&self, u: u16, flags: RegExpFlags) -> bool {
+  fn matches(&self, u: u32, flags: RegExpFlags) -> bool {
     let mut any = false;
     for item in self.items.iter() {
       if item.matches(u, flags) {
@@ -1870,17 +1875,17 @@ struct StringTrieEdge {
 
 #[derive(Debug, Clone, Copy)]
 enum CharClassItem {
-  Char(u16),
-  Range(u16, u16),
+  Char(u32),
+  Range(u32, u32),
   Digit { negated: bool },
   Word { negated: bool },
   Space { negated: bool },
 }
 
 impl CharClassItem {
-  fn matches(self, u: u16, flags: RegExpFlags) -> bool {
+  fn matches(self, u: u32, flags: RegExpFlags) -> bool {
     match self {
-      CharClassItem::Char(c) => canonical_eq(c, u, flags),
+      CharClassItem::Char(c) => canonicalize(flags, c) == canonicalize(flags, u),
       CharClassItem::Range(a, b) => {
         if a <= b {
           if !flags.ignore_case {
@@ -1889,26 +1894,26 @@ impl CharClassItem {
 
           // Approximation of the spec `CharacterRange` matching behaviour:
           // canonicalize the input and endpoints before comparing.
-          let cu = canonicalize_utf16_unit(flags, u);
-          let ca = canonicalize_utf16_unit(flags, a);
-          let cb = canonicalize_utf16_unit(flags, b);
+          let cu = canonicalize(flags, u);
+          let ca = canonicalize(flags, a);
+          let cb = canonicalize(flags, b);
           cu >= ca && cu <= cb
         } else {
           false
         }
       }
       CharClassItem::Digit { negated } => {
-        let is_digit = (b'0' as u16..=b'9' as u16).contains(&u);
+        let is_digit = (b'0' as u32..=b'9' as u32).contains(&u);
         if negated { !is_digit } else { is_digit }
       }
       CharClassItem::Word { negated } => {
-        let is_word = is_word_unit(u, flags);
+        let is_word = u <= 0xFFFF && is_word_unit(u as u16, flags);
         if negated { !is_word } else { is_word }
       }
       CharClassItem::Space { negated } => {
         // `\s` in ECMAScript RegExp matches the union of WhiteSpace and LineTerminator
         // (https://tc39.es/ecma262/#sec-characterclassescape).
-        let is_space = crate::ops::is_ecma_whitespace_unit(u);
+        let is_space = u <= 0xFFFF && crate::ops::is_ecma_whitespace_unit(u as u16);
         if negated { !is_space } else { is_space }
       }
     }
@@ -2005,6 +2010,24 @@ fn is_regexp_identifier_start_ascii(u: u16) -> bool {
 
 fn is_regexp_identifier_continue_ascii(u: u16) -> bool {
   is_regexp_identifier_start_ascii(u) || (b'0' as u16..=b'9' as u16).contains(&u)
+}
+
+fn decode_code_point(input: &[u16], pos: usize, unicode: bool) -> Option<(u32, usize)> {
+  let u = *input.get(pos)? as u32;
+  if !unicode {
+    return Some((u, 1));
+  }
+  // UnicodeMode: treat surrogate pairs as a single code point.
+  if (0xD800..=0xDBFF).contains(&u) && pos + 1 < input.len() {
+    let u2 = input[pos + 1] as u32;
+    if (0xDC00..=0xDFFF).contains(&u2) {
+      let lead = u - 0xD800;
+      let trail = u2 - 0xDC00;
+      let cp = 0x10000 + (lead << 10) + trail;
+      return Some((cp, 2));
+    }
+  }
+  Some((u, 1))
 }
 
 fn is_line_terminator_unit(u: u16) -> bool {
@@ -2115,7 +2138,12 @@ enum Assertion {
 
 #[derive(Debug, Clone)]
 enum Atom {
-  Literal(u16),
+  /// A literal pattern character.
+  ///
+  /// In non-UnicodeMode this represents a single UTF-16 code unit.
+  /// In UnicodeMode (`/u`), this represents a single Unicode code point (which may require a
+  /// surrogate pair in the input string).
+  Literal(u32),
   Any,
   Class(CharClass),
   UnicodeSet(UnicodeSetClass),
@@ -2407,7 +2435,7 @@ impl<'a> Parser<'a> {
           }
           .into())
         } else {
-          Ok(Atom::Literal(x))
+          Ok(Atom::Literal(x as u32))
         }
       }
       x if x == (b']' as u16) && unicode_mode => Err(RegExpSyntaxError {
@@ -2433,7 +2461,13 @@ impl<'a> Parser<'a> {
         }
       }
       x => {
-        Ok(Atom::Literal(x))
+        if is_line_terminator_unit(x) {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+        Ok(Atom::Literal(x as u32))
       }
     }
   }
@@ -2692,10 +2726,10 @@ impl<'a> Parser<'a> {
             // In unicode mode, `\c` must be followed by an ASCII letter or it is a syntax error
             // (unicode-restricted identity escape).
             let Some(next) = self.peek() else {
-              if self.flags.unicode {
+              if self.flags.has_either_unicode_flag() {
                 return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
               }
-              return Ok(CharClassItem::Char(b'c' as u16));
+              return Ok(CharClassItem::Char(b'c' as u32));
             };
             if ((b'A' as u16..=b'Z' as u16).contains(&next))
               || ((b'a' as u16..=b'z' as u16).contains(&next))
@@ -2706,11 +2740,11 @@ impl<'a> Parser<'a> {
               } else {
                 next
               };
-              Ok(CharClassItem::Char((upper % 32) as u16))
-            } else if self.flags.unicode {
+              Ok(CharClassItem::Char((upper % 32) as u32))
+            } else if self.flags.has_either_unicode_flag() {
               Err(RegExpSyntaxError { message: "Invalid escape" }.into())
             } else {
-              Ok(CharClassItem::Char(b'c' as u16))
+              Ok(CharClassItem::Char(b'c' as u32))
             }
           }
           x if x == (b'd' as u16) => Ok(CharClassItem::Digit { negated: false }),
@@ -2729,7 +2763,7 @@ impl<'a> Parser<'a> {
                 .into());
               }
               // Legacy: treat as identity escape of `c`.
-              return Ok(CharClassItem::Char(e));
+              return Ok(CharClassItem::Char(e as u32));
             };
             if !is_ascii_letter(next) {
               if self.flags.has_either_unicode_flag() {
@@ -2739,10 +2773,10 @@ impl<'a> Parser<'a> {
                 .into());
               }
               // Legacy: treat as identity escape of `c` and keep the next character.
-              return Ok(CharClassItem::Char(e));
+              return Ok(CharClassItem::Char(e as u32));
             }
             self.next();
-            Ok(CharClassItem::Char(((next as u8) & 0x1F) as u16))
+            Ok(CharClassItem::Char(((next as u8) & 0x1F) as u32))
           }
           x if x == (b'n' as u16) => Ok(CharClassItem::Char(0x000A)),
           x if x == (b'r' as u16) => Ok(CharClassItem::Char(0x000D)),
@@ -2765,9 +2799,9 @@ impl<'a> Parser<'a> {
           x if x == (b'-' as u16) => {
             if self.flags.has_either_unicode_flag() {
               // `ClassEscape[+UnicodeMode]` allows escaping `-` inside a character class.
-              Ok(CharClassItem::Char(x))
+              Ok(CharClassItem::Char(x as u32))
             } else {
-              Ok(CharClassItem::Char(x))
+              Ok(CharClassItem::Char(x as u32))
             }
           }
           x if x == (b'x' as u16) => Ok(CharClassItem::Char(self.parse_hex_escape_2(ctx)?)),
@@ -2775,7 +2809,7 @@ impl<'a> Parser<'a> {
           other => {
             if self.flags.has_either_unicode_flag() {
               if is_syntax_character(other) || other == (b'/' as u16) {
-                Ok(CharClassItem::Char(other))
+                Ok(CharClassItem::Char(other as u32))
               } else {
                 Err(RegExpSyntaxError {
                   message: "Invalid regular expression",
@@ -2783,12 +2817,12 @@ impl<'a> Parser<'a> {
                 .into())
               }
             } else {
-              Ok(CharClassItem::Char(other))
+              Ok(CharClassItem::Char(other as u32))
             }
           }
         }
       }
-      other => Ok(CharClassItem::Char(other)),
+      other => Ok(CharClassItem::Char(other as u32)),
     }
   }
 
@@ -2803,10 +2837,10 @@ impl<'a> Parser<'a> {
         // In unicode mode, `\c` must be followed by an ASCII letter or it is a syntax error
         // (unicode-restricted identity escape).
         let Some(next) = self.peek() else {
-          if self.flags.unicode {
+          if self.flags.has_either_unicode_flag() {
             return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
           }
-          return Ok(Atom::Literal(b'c' as u16));
+          return Ok(Atom::Literal(b'c' as u32));
         };
         if ((b'A' as u16..=b'Z' as u16).contains(&next))
           || ((b'a' as u16..=b'z' as u16).contains(&next))
@@ -2817,11 +2851,11 @@ impl<'a> Parser<'a> {
           } else {
             next
           };
-          Ok(Atom::Literal((upper % 32) as u16))
-        } else if self.flags.unicode {
+          Ok(Atom::Literal((upper % 32) as u32))
+        } else if self.flags.has_either_unicode_flag() {
           Err(RegExpSyntaxError { message: "Invalid escape" }.into())
         } else {
-          Ok(Atom::Literal(b'c' as u16))
+          Ok(Atom::Literal(b'c' as u32))
         }
       }
       x if x == (b'd' as u16) => {
@@ -2868,7 +2902,7 @@ impl<'a> Parser<'a> {
             .into());
           }
           // Legacy: treat as identity escape of `c`.
-          return Ok(Atom::Literal(e));
+          return Ok(Atom::Literal(e as u32));
         };
         if !is_ascii_letter(next) {
           if self.flags.has_either_unicode_flag() {
@@ -2878,10 +2912,10 @@ impl<'a> Parser<'a> {
             .into());
           }
           // Legacy: treat as identity escape of `c` and keep the next character.
-          return Ok(Atom::Literal(e));
+          return Ok(Atom::Literal(e as u32));
         }
         self.next();
-        Ok(Atom::Literal(((next as u8) & 0x1F) as u16))
+        Ok(Atom::Literal(((next as u8) & 0x1F) as u32))
       }
       x if x == (b'0' as u16) => {
         if self.flags.has_either_unicode_flag() {
@@ -2906,7 +2940,7 @@ impl<'a> Parser<'a> {
           }
           .into())
         } else {
-          Ok(Atom::Literal(x))
+          Ok(Atom::Literal(x as u32))
         }
       }
       x if (b'1' as u16..=b'9' as u16).contains(&x) => {
@@ -2933,7 +2967,7 @@ impl<'a> Parser<'a> {
       other => {
         if self.flags.has_either_unicode_flag() {
           if is_syntax_character(other) || other == (b'/' as u16) {
-            Ok(Atom::Literal(other))
+            Ok(Atom::Literal(other as u32))
           } else {
             Err(RegExpSyntaxError {
               message: "Invalid regular expression",
@@ -2941,13 +2975,31 @@ impl<'a> Parser<'a> {
             .into())
           }
         } else {
-          Ok(Atom::Literal(other))
+          Ok(Atom::Literal(other as u32))
         }
       }
     }
   }
 
-  fn parse_hex_escape_2(&mut self, _ctx: &mut CompileCtx<'_>) -> Result<u16, RegExpCompileError> {
+  fn parse_hex_escape_2(&mut self, _ctx: &mut CompileCtx<'_>) -> Result<u32, RegExpCompileError> {
+    // In non-UnicodeMode, `\x` is only a hex escape when followed by two hex digits; otherwise it
+    // is an identity escape for `x`.
+    if !self.flags.has_either_unicode_flag() {
+      let Some(&h1) = self.units.get(self.idx) else {
+        return Ok(b'x' as u32);
+      };
+      let Some(&h2) = self.units.get(self.idx + 1) else {
+        return Ok(b'x' as u32);
+      };
+      let (Some(v1), Some(v2)) = (hex_value(h1), hex_value(h2)) else {
+        return Ok(b'x' as u32);
+      };
+      // Consume digits.
+      self.idx = self.idx.saturating_add(2);
+      return Ok((v1 << 4) | v2);
+    }
+
+    // UnicodeMode: must be exactly `\xHH`.
     let h1 = self.next().ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
       message: "Invalid escape",
     }))?;
@@ -2960,17 +3012,20 @@ impl<'a> Parser<'a> {
     let v2 = hex_value(h2).ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
       message: "Invalid escape",
     }))?;
-    Ok(((v1 << 4) | v2) as u16)
+    Ok((v1 << 4) | v2)
   }
 
-  fn parse_unicode_escape(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u16, RegExpCompileError> {
+  fn parse_unicode_escape(&mut self, ctx: &mut CompileCtx<'_>) -> Result<u32, RegExpCompileError> {
     if self.flags.has_either_unicode_flag() && self.peek() == Some(b'{' as u16) {
       // \u{...}
-      self.next();
+      self.next(); // consume '{'
       let mut value: u32 = 0;
       let mut saw_digit = false;
       let mut digit_i: usize = 0;
-      while let Some(u) = self.peek() {
+      loop {
+        let Some(u) = self.peek() else {
+          return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
+        };
         if u == (b'}' as u16) {
           self.next();
           break;
@@ -2992,30 +3047,69 @@ impl<'a> Parser<'a> {
       if !saw_digit {
         return Err(RegExpSyntaxError { message: "Invalid escape" }.into());
       }
-      // Encode as UTF-16 code units; for now, only return the first unit for non-BMP code points.
-      // This is an approximation that matches the common BMP cases used in scripts.
-      if value <= 0xFFFF {
-        return Ok(value as u16);
-      }
-      // Non-BMP: return high surrogate; matching will see the low surrogate as a literal unit in
-      // the pattern only when it is explicitly written.
-      let cp = value - 0x10000;
-      let high = 0xD800 + ((cp >> 10) as u16);
-      Ok(high)
-    } else {
-      // \uXXXX
-      let mut value: u32 = 0;
-      for _ in 0..4 {
-        let u = self.next().ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
-          message: "Invalid escape",
-        }))?;
-        let d = hex_value(u).ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
-          message: "Invalid escape",
-        }))?;
-        value = (value << 4) | d;
-      }
-      Ok(value as u16)
+      return Ok(value);
     }
+
+    // \uXXXX
+    if !self.flags.has_either_unicode_flag() {
+      // Non-UnicodeMode: only treat as a Unicode escape sequence when followed by 4 hex digits;
+      // otherwise it is an identity escape for `u` (and leaves the input untouched so `{...}` can
+      // form a quantifier).
+      if self.idx + 4 <= self.units.len()
+        && self.units[self.idx..self.idx + 4]
+          .iter()
+          .all(|&u| hex_value(u).is_some())
+      {
+        let mut value: u32 = 0;
+        for _ in 0..4 {
+          let u = self.next().unwrap();
+          let d = hex_value(u).unwrap();
+          value = (value << 4) | d;
+        }
+        return Ok(value);
+      }
+      return Ok(b'u' as u32);
+    }
+
+    // UnicodeMode: must be exactly `\uXXXX`.
+    let mut value: u32 = 0;
+    for _ in 0..4 {
+      let u = self.next().ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
+        message: "Invalid escape",
+      }))?;
+      let d = hex_value(u).ok_or(RegExpCompileError::Syntax(RegExpSyntaxError {
+        message: "Invalid escape",
+      }))?;
+      value = (value << 4) | d;
+    }
+
+    // Surrogate-pair merge: `\uD83D\uDC38` => U+1F438 (UnicodeMode only), but only for the
+    // non-braced `\uXXXX` form. This matches ECMAScript ParsePattern semantics.
+    if (0xD800..=0xDBFF).contains(&(value as u16)) {
+      let save = self.idx;
+      if self.units.get(save) == Some(&(b'\\' as u16)) && self.units.get(save + 1) == Some(&(b'u' as u16)) {
+        // Do not merge braced escapes (`\u{...}`).
+        if self.units.get(save + 2) != Some(&(b'{' as u16)) && save + 6 <= self.units.len() {
+          let digits = &self.units[save + 2..save + 6];
+          if digits.iter().all(|&u| hex_value(u).is_some()) {
+            let mut trail: u32 = 0;
+            for &u in digits {
+              let d = hex_value(u).unwrap();
+              trail = (trail << 4) | d;
+            }
+            if (0xDC00..=0xDFFF).contains(&(trail as u16)) {
+              // Consume the second escape (`\u` + 4 hex digits).
+              self.idx = save + 6;
+              let lead = value - 0xD800;
+              let trail = trail - 0xDC00;
+              return Ok(0x10000 + (lead << 10) + trail);
+            }
+          }
+        }
+      }
+    }
+
+    Ok(value)
   }
 
   fn parse_quantifier_if_present(
