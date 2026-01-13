@@ -8,7 +8,6 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::OnceLock;
-use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use tungstenite::client::IntoClientRequest;
@@ -37,6 +36,40 @@ fn rustls_client_config() -> Arc<rustls::ClientConfig> {
   }))
 }
 
+struct DnsLookupRequest {
+  host: String,
+  port: u16,
+  resp: mpsc::Sender<io::Result<Vec<SocketAddr>>>,
+}
+
+const MAX_QUEUED_DNS_LOOKUPS: usize = 128;
+
+static DNS_LOOKUP_TX: OnceLock<mpsc::SyncSender<DnsLookupRequest>> = OnceLock::new();
+
+fn dns_lookup_tx() -> mpsc::SyncSender<DnsLookupRequest> {
+  DNS_LOOKUP_TX
+    .get_or_init(|| {
+      // DNS resolution can block inside system resolvers. Run it on a dedicated worker thread so
+      // a compromised renderer/network client cannot spawn unbounded threads by issuing many
+      // concurrent connects.
+      let (tx, rx) = mpsc::sync_channel::<DnsLookupRequest>(MAX_QUEUED_DNS_LOOKUPS);
+      // Best-effort: if thread creation fails (resource exhaustion), the receiver is dropped and
+      // sends will fail with `Disconnected`, which we surface as an error instead of panicking.
+      let _ = std::thread::Builder::new()
+        .name("ws-dns-resolve".to_string())
+        .spawn(move || {
+          while let Ok(req) = rx.recv() {
+            let res = (req.host.as_str(), req.port)
+              .to_socket_addrs()
+              .map(|iter| iter.collect::<Vec<_>>());
+            let _ = req.resp.send(res);
+          }
+        });
+      tx
+    })
+    .clone()
+}
+
 fn resolve_socket_addrs_with_timeout(
   host: &str,
   port: u16,
@@ -47,21 +80,25 @@ fn resolve_socket_addrs_with_timeout(
   }
 
   let (tx, rx) = mpsc::channel::<io::Result<Vec<SocketAddr>>>();
-  let host = host.to_string();
-  thread::Builder::new()
-    .name("ws-dns-resolve".to_string())
-    .spawn(move || {
-      let res = (host.as_str(), port)
-        .to_socket_addrs()
-        .map(|iter| iter.collect::<Vec<_>>());
-      let _ = tx.send(res);
-    })
-    .map_err(|err| {
-      tungstenite::Error::Io(io::Error::new(
+  match dns_lookup_tx().try_send(DnsLookupRequest {
+    host: host.to_string(),
+    port,
+    resp: tx,
+  }) {
+    Ok(()) => {}
+    Err(mpsc::TrySendError::Full(_)) => {
+      return Err(tungstenite::Error::Io(io::Error::new(
         io::ErrorKind::Other,
-        format!("failed to spawn DNS resolver thread: {err}"),
-      ))
-    })?;
+        "WebSocket DNS resolution queue is full",
+      )))
+    }
+    Err(mpsc::TrySendError::Disconnected(_)) => {
+      return Err(tungstenite::Error::Io(io::Error::new(
+        io::ErrorKind::Other,
+        "WebSocket DNS resolver is unavailable",
+      )))
+    }
+  }
 
   match rx.recv_timeout(timeout) {
     Ok(Ok(addrs)) => {
