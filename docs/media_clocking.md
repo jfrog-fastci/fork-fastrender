@@ -124,6 +124,45 @@ This clock is the **master** when audio is present (see below).
 
 ---
 
+## Audio backend clock contract (what `src/media/audio/*` must provide)
+
+Even with “audio is master” as a principle, the media pipeline still needs a precise contract for
+what time the audio backend reports.
+
+The audio backend should provide:
+
+* A **sample rate** (`Hz`) and channel configuration for the output stream.
+* A monotonically increasing **playhead counter**: “how many output frames have been presented to the
+  device since stream start”.
+* An estimate of **output latency** (“how long after we hand frames to the backend they become
+  audible”).
+* A way to query **audio device time in timeline units**, i.e.:
+  * “What media timeline time is *currently audible* (or will become audible after the modeled
+    latency)?”
+
+### Preferred: backend timestamps
+
+If the backend/API provides real device timestamps (or callback timestamps tied to the device clock),
+use them. This is the best way to make `audio_device_time` stable and low-jitter.
+
+### Fallback: sample-counter clock
+
+If no timestamps are available, derive time from the number of played frames:
+
+```text
+played_time = played_frames / sample_rate
+audio_device_time ≈ played_time + output_latency_constant
+```
+
+Notes:
+
+* The playhead must be derived from the backend’s real consumption (or a counter that tracks the
+  callback’s delivered frames), not from UI ticks.
+* A constant latency model is acceptable initially (it creates offset, not drift). See “Known
+  limitations”.
+
+---
+
 ## Master clock selection (why audio is master)
 
 When an audio track is present and audio output is enabled, **audio is the master clock**.

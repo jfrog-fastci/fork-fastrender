@@ -330,6 +330,10 @@ pub enum UiToWorker {
   ///
   /// The render worker should execute a bounded slice of JS/event-loop work (timers, microtasks)
   /// and, if the tab becomes dirty, render a new frame.
+  ///
+  /// This message is intentionally a **wake-up signal**, not a time source: it does not carry a
+  /// timestamp. Subsystems that care about time (especially audio/video playback) must query their
+  /// own clocks rather than inferring time from tick frequency. See `docs/media_clocking.md`.
   Tick {
     tab_id: TabId,
   },

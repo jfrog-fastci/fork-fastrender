@@ -176,6 +176,7 @@ pub mod api;
 pub mod compat;
 pub mod error;
 pub mod geometry;
+pub mod media;
 
 // ============================================================================
 // Pipeline Modules
