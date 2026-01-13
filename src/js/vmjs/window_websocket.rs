@@ -515,7 +515,7 @@ fn parse_protocols(
     Value::String(s) => {
       let s = js_string_to_rust_string_limited(scope.heap(), s, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
       if s.is_empty() {
-        return Ok(Vec::new());
+        return Err(VmError::TypeError("WebSocket protocol must not be empty"));
       }
       if !is_valid_websocket_subprotocol_token(&s) {
         return Err(VmError::TypeError("WebSocket protocol must be a token"));
@@ -588,7 +588,7 @@ fn parse_protocols(
       // Union conversion fallback: treat as DOMString.
       let s = to_rust_string_limited(scope.heap_mut(), other, MAX_WEBSOCKET_PROTOCOL_BYTES, "WebSocket protocol too long")?;
       if s.is_empty() {
-        return Ok(Vec::new());
+        return Err(VmError::TypeError("WebSocket protocol must not be empty"));
       }
       if !is_valid_websocket_subprotocol_token(&s) {
         return Err(VmError::TypeError("WebSocket protocol must be a token"));
@@ -2265,6 +2265,20 @@ mod tests {
 
   fn make_host(dom: dom2::Document, document_url: impl Into<String>) -> Result<WindowHost> {
     WindowHost::new_with_fetcher(dom, document_url, Arc::new(NoFetchResourceFetcher))
+  }
+
+  #[test]
+  fn websocket_ctor_rejects_empty_protocol_string() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let err = host
+      .exec_script(r#"new WebSocket("ws://example.invalid/", "");"#)
+      .expect_err("expected invalid protocols argument to throw");
+    assert!(
+      err.to_string().contains("WebSocket protocol must not be empty"),
+      "unexpected error: {err}"
+    );
+    Ok(())
   }
 
   #[test]
