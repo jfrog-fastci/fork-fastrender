@@ -1407,6 +1407,11 @@ impl Vm {
   /// executing any further jobs, discards all remaining queued jobs to clean up persistent roots,
   /// and returns the termination error (even if earlier jobs already failed with a non-termination
   /// error).
+  ///
+  /// [`VmError::OutOfMemory`] is also treated as a hard stop: it represents a fatal resource
+  /// condition. Continuing to run further jobs after an OOM is unlikely to succeed and risks
+  /// hitting infallible allocation paths. The checkpoint therefore discards all remaining queued
+  /// jobs (cleaning up their persistent roots) and returns `OutOfMemory`.
   pub fn perform_microtask_checkpoint_with_host(
     &mut self,
     host: &mut dyn VmHost,
@@ -1532,7 +1537,7 @@ impl Vm {
 
         match enqueue_result {
           Ok(()) => {}
-          Err(e @ VmError::Termination(_)) => {
+          Err(e @ (VmError::Termination(_) | VmError::OutOfMemory)) => {
             termination_err = Some(e);
             break;
           }
@@ -1571,7 +1576,7 @@ impl Vm {
 
       match job_result {
         Ok(()) => {}
-        Err(e @ VmError::Termination(_)) => {
+        Err(e @ (VmError::Termination(_) | VmError::OutOfMemory)) => {
           termination_err = Some(e);
           break;
         }
@@ -4359,6 +4364,12 @@ impl Vm {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::Job;
+  use crate::JobKind;
+  use crate::Value;
+  use crate::WeakGcObject;
+  use std::sync::atomic::{AtomicBool, Ordering};
+  use std::sync::Arc;
 
   fn value_to_string(rt: &crate::JsRuntime, value: Value) -> String {
     let Value::String(s) = value else {
@@ -4935,6 +4946,71 @@ mod tests {
       "Cannot mix BigInt and other types"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn microtask_checkpoint_treats_out_of_memory_as_hard_stop_and_discards_remaining_jobs(
+  ) -> Result<(), VmError> {
+    use crate::HeapLimits;
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let baseline_roots = heap.persistent_root_count();
+
+    // Allocate an object and keep only a weak handle so the only strong reference is the job's
+    // persistent root.
+    let obj = {
+      let mut scope = heap.scope();
+      scope.alloc_object()?
+    };
+    let weak = WeakGcObject::from(obj);
+    let obj_root = heap.add_root(Value::Object(obj))?;
+    assert_eq!(heap.persistent_root_count(), baseline_roots + 1);
+
+    // First job: fail with OOM.
+    let job_oom = Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::OutOfMemory))?;
+
+    // Second job: would run if the checkpoint continued draining after OOM.
+    let ran = Arc::new(AtomicBool::new(false));
+    let ran_clone = ran.clone();
+    let job_should_not_run = Job::new(JobKind::Promise, move |_ctx, _host| {
+      ran_clone.store(true, Ordering::SeqCst);
+      Ok(())
+    })?
+    .with_roots(vec![obj_root]);
+
+    vm
+      .microtask_queue_mut()
+      .enqueue_promise_job(job_oom, None);
+    vm
+      .microtask_queue_mut()
+      .enqueue_promise_job(job_should_not_run, None);
+
+    let mut dummy_host = ();
+    let err = vm
+      .perform_microtask_checkpoint_with_host(&mut dummy_host, &mut heap)
+      .unwrap_err();
+    assert!(matches!(err, VmError::OutOfMemory));
+
+    // The OOM should be treated as a hard stop: the later job must be discarded, not executed.
+    assert!(
+      !ran.load(Ordering::SeqCst),
+      "expected microtask checkpoint to discard remaining jobs after OOM"
+    );
+    assert!(
+      vm.microtask_queue().is_empty(),
+      "expected remaining jobs to be discarded after OOM"
+    );
+    assert_eq!(
+      heap.persistent_root_count(),
+      baseline_roots,
+      "expected job roots to be cleaned up when discarding jobs after OOM"
+    );
+
+    // After GC, the rooted object should no longer be live.
+    heap.collect_garbage();
+    assert_eq!(weak.upgrade(&heap), None);
     Ok(())
   }
 }
