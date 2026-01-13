@@ -6238,9 +6238,21 @@ mod tests {
       install_window_timers_bindings::<Host>(vm, realm, heap)?;
     }
 
+    // Run the script with an active EventLoop in hooks so this test remains valid even if the
+    // implementation changes the relative ordering of:
+    // - "string handler" rejection, and
+    // - "called without an active EventLoop" checks.
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut hooks = VmJsEventLoopHooks::<Host>::new_with_vm_host_and_window_realm(
+      &mut host.host_ctx,
+      &mut host.window,
+      Some(&mut host.bindings_host),
+    );
+    hooks.set_event_loop(&mut event_loop);
+
     let err_timeout = host
       .window
-      .exec_script("setTimeout('1+1', 0)")
+      .exec_script_with_hooks(&mut hooks, "setTimeout('1+1', 0)")
       .expect_err("expected setTimeout(string) to throw TypeError");
     assert_type_error_contains(
       host.window.heap_mut(),
@@ -6250,12 +6262,16 @@ mod tests {
 
     let err_interval = host
       .window
-      .exec_script("setInterval('1+1', 0)")
+      .exec_script_with_hooks(&mut hooks, "setInterval('1+1', 0)")
       .expect_err("expected setInterval(string) to throw TypeError");
     assert_type_error_contains(
       host.window.heap_mut(),
       err_interval,
       SET_INTERVAL_STRING_HANDLER_ERROR,
+    );
+    assert!(
+      hooks.finish(host.window.heap_mut()).is_none(),
+      "unexpected host hook error"
     );
 
     Ok(())

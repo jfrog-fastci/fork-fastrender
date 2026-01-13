@@ -472,15 +472,28 @@ mod tests {
         .map_err(|e| Error::Other(e.to_string()))?;
     }
 
+    // Run the script with an active EventLoop in hooks so this test remains valid even if the
+    // implementation changes the relative ordering of:
+    // - "string callback" rejection, and
+    // - "called without an active EventLoop" checks.
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut hooks =
+      VmJsEventLoopHooks::<Host>::new_with_vm_host_and_window_realm(&mut host.host_ctx, &mut host.window, None);
+    hooks.set_event_loop(&mut event_loop);
+
     let err = host
       .window
-      .exec_script("requestAnimationFrame('1+1')")
+      .exec_script_with_hooks(&mut hooks, "requestAnimationFrame('1+1')")
       .expect_err("expected requestAnimationFrame(string) to throw TypeError");
 
     assert_type_error_contains(
       host.window.heap_mut(),
       err,
       REQUEST_ANIMATION_FRAME_STRING_HANDLER_ERROR,
+    );
+    assert!(
+      hooks.finish(host.window.heap_mut()).is_none(),
+      "unexpected host hook error"
     );
 
     Ok(())
