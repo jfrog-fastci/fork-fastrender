@@ -153,6 +153,10 @@ separate OS-sandboxed renderer process.
 Windows sandboxing details (AppContainer + Job Objects + restricted-token fallback) and the
 Windows-only debug escape hatch live in [sandboxing.md](sandboxing.md).
 
+Debugging note (Windows): you can temporarily disable the renderer OS sandbox with
+`FASTR_DISABLE_RENDERER_SANDBOX=1` (alias: `FASTR_WINDOWS_RENDERER_SANDBOX=off`). This is **insecure**
+and prints a warning to stderr; see [sandboxing.md](sandboxing.md) for details.
+
 ## Implementation notes
 
 For implementation details (code layout, message protocol, cancellation, platform prerequisites),
