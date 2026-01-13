@@ -31,6 +31,8 @@ Code lives in:
   web-compat behaviors are still missing. See [javascript.md](javascript.md),
   [html_script_processing.md](html_script_processing.md), and [runtime_stacks.md](runtime_stacks.md)
   for context on the JS stacks and containers.
+  - JS execution is controlled by the browser CLI (see `browser --help` for `--js`/`--no-js` and the
+    current default).
 - A renderer-chrome browser UI (yet): the `browser` chrome is currently rendered via egui. The
   renderer-chrome workstream aims to render the chrome UI using FastRender; trusted chrome pages
   would then use the privileged JS bridge documented in [chrome_js_bridge.md](chrome_js_bridge.md).
@@ -98,6 +100,9 @@ end-to-end:
 - **Find in page**: Ctrl/Cmd+F opens a find bar and highlights matches in the current tab.
 - **Downloads**: “Download link/image” from the page context menu; view progress/cancel/retry/open from the downloads side panel.
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
+- **JavaScript (experimental)**: when enabled, `<script>` runs during navigation and can trigger
+  repaints via DOM mutations; time-based updates use the same tick loop described in
+  [browser_ui.md](browser_ui.md).
 - **Pointer/keyboard routing**:
   - link clicking (`<a href=...>`) navigates
   - click to focus and type into basic text inputs / textareas

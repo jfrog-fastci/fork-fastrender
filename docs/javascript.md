@@ -146,3 +146,26 @@ These are requirements, not optimizations:
 3. **Deterministic tests**: conformance tests must be offline and stable; event loop time and scheduling must be controllable.
 
 When tradeoffs are required, prefer a smaller, correct, budgeted subset over an unbounded “mostly works” implementation.
+
+## 9) Browser UI integration (live rendering)
+
+FastRender’s windowed `browser` app (see [`docs/browser_ui.md`](browser_ui.md) and
+[`src/bin/browser.rs`](../src/bin/browser.rs)) is the primary interactive surface for *live*
+rendering.
+
+When JavaScript is enabled (see `browser --help` for `--js`/`--no-js`/default behavior):
+
+- Author `<script>` elements execute during navigation/rendering (HTML script processing model),
+  so JS-driven pages can build/modify the DOM before the first “visual” frame.
+- DOM mutations can invalidate style/layout/paint and trigger repaints (today this is generally a
+  full rerender, not an incremental damaged-rect compositor).
+- Time-based behavior is driven by an explicit UI tick loop:
+  - Each rendered frame reports `RenderedFrame.wants_ticks` (in
+    [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
+  - While `wants_ticks` is true, the UI sends periodic `UiToWorker::Tick { tab_id }` messages to
+    advance the document’s notion of time (CSS animations/transitions, JS timers, and
+    `requestAnimationFrame`) and repaint when needed.
+
+For the message-level protocol and scheduling details, see the “Tick loop” section in
+[`docs/browser_ui.md`](browser_ui.md). For the library embedding surface and JS execution budgets,
+see [`docs/js_embedding.md`](js_embedding.md).

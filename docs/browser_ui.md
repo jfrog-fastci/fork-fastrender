@@ -763,7 +763,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - History actions (`GoBack { tab_id }`, `GoForward { tab_id }`, `Reload { tab_id }`)
 - `Tick { tab_id }` — periodic wake-up used to advance time-based effects and drive the tab event
   loop (CSS animations/transitions, animated images, JS timers/rAF, etc). UIs can drive ticks for
-  the active tab while the worker reports `RenderedFrame.wants_ticks == true`.
+  the active tab while the worker reports `RenderedFrame.wants_ticks == true` (typically at ~60Hz).
   - Tick is a wake-up signal (no timestamp); time-aware subsystems must query their own clocks (see
     [`docs/media_clocking.md`](media_clocking.md)).
 - `ViewportChanged { tab_id, viewport_css, dpr }`
@@ -836,6 +836,24 @@ Browser worker implementations typically install a stage listener for the durati
 job (navigation/tick/etc). Multiple worker threads can render concurrently without clobbering each
 other's stage forwarding, but overlapping render jobs on the *same* thread would still require
 per-job routing (e.g. tagging stage messages with a job identifier).
+
+#### Tick loop (`RenderedFrame.wants_ticks` / `UiToWorker::Tick`)
+
+FastRender’s browser UI worker is **tick-driven**: it does not busy-poll “document time” on its own.
+Front-ends drive time-based behavior by sending periodic
+[`UiToWorker::Tick`](../src/ui/messages.rs) messages.
+
+- The worker reports a per-frame hint: `RenderedFrame.wants_ticks` (on
+  [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
+- While `wants_ticks == true`, front-ends should send `Tick { tab_id }` for the active/visible tab.
+  - The windowed `browser` app does this with a small scheduler in
+    [`src/bin/browser.rs`](../src/bin/browser.rs), using `ControlFlow::WaitUntil` so it can animate
+    without busy-polling the winit event loop.
+  - Ticks are typically paused when the window is minimized/occluded or unfocused.
+- A tick is the worker’s chance to run a bounded slice of time-based work (CSS animations, JS
+  timers, `requestAnimationFrame`) and schedule a repaint if the page becomes dirty.
+- `Tick` is a wake-up signal (no timestamp). Time-aware subsystems (timers, animations, media) must
+  query their own clocks; see [`docs/media_clocking.md`](media_clocking.md).
 
 ### Worker-owned history semantics
 
@@ -996,8 +1014,9 @@ details and metric mapping.
   `Tick`), and best-effort syncs the JS tab’s `dom2` snapshot into the renderer DOM before painting.
   This is still incomplete (many Web APIs missing, lots of web-compat gaps). See
   [runtime_stacks.md](runtime_stacks.md) and [live_rendering_loop.md](live_rendering_loop.md).
-  - Note: the `browser --js` CLI flag currently only affects `--headless-smoke` (a vm-js
-    `BrowserTab` smoke test); the windowed UI has no stable CLI toggle to disable JS today.
+  - CLI note: the `browser --js` flag currently only affects `--headless-smoke` (a vm-js `BrowserTab`
+    smoke test); the windowed UI has no stable CLI toggle to disable JS today.
+  - Repaints are currently “whole frame” rerenders (no incremental damaged-rect compositor yet).
 - **Interaction gaps:** the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still
   incomplete (e.g. rich text editing, complex focus traversal).
