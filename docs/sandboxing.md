@@ -155,6 +155,9 @@ expectations, see [macos_sandbox.md](macos_sandbox.md) (and the launcher helper 
 - Select the relaxed "system fonts" profile for bring-up (still blocks network + user filesystem):
   - `FASTR_RENDERER_SANDBOX=relaxed` (preferred), or
   - `FASTR_MACOS_RENDERER_SANDBOX=system-fonts` (legacy alias).
+- Advanced override (macOS Seatbelt profile selection): `FASTR_RENDERER_MACOS_SEATBELT_PROFILE=...`
+  - Accepted values: `pure-computation`, `no-internet`, `renderer-default`, or a path to an SBPL file.
+  - When set, this overrides the `strict`/`relaxed` profile mapping when sandboxing is enabled.
 - Opt into wrapping spawns with Apple’s deprecated `sandbox-exec` wrapper when using `macos_spawn`
   helpers: `FASTR_MACOS_USE_SANDBOX_EXEC=1`.
   - Note: this is ignored when sandboxing is disabled via `FASTR_RENDERER_SANDBOX=off`,
