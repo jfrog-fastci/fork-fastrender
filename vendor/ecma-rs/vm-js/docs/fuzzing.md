@@ -67,19 +67,24 @@ Recommended workflow:
    ```bash
    # `cargo fuzz tmin` runs the target to minimize it; wrap with timeout.
    timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz tmin vm_js_exec fuzz/artifacts/vm_js_exec/crash-... > /tmp/vm-js.min
+   # For compiled-HIR crashes:
+   timeout -k 10 600 bash vendor/ecma-rs/scripts/cargo_agent.sh fuzz tmin vm_js_exec_compiled fuzz/artifacts/vm_js_exec_compiled/crash-... > /tmp/vm-js-compiled.min
    ```
 
 2. **Commit the minimized seed** into the tracked regression corpus:
 
    ```bash
    cp /tmp/vm-js.min vendor/ecma-rs/vm-js/fuzz/corpus/vm_js_exec/<short_name>.js
+   cp /tmp/vm-js-compiled.min vendor/ecma-rs/vm-js/fuzz/corpus/vm_js_exec_compiled/<short_name>.js
    ```
 
 3. **Add a unit test reproducer** under `vendor/ecma-rs/vm-js/tests/` using `include_str!`:
 
    ```rust
-   let src = include_str!("../fuzz/corpus/vm_js_exec/<short_name>.js");
-   // run with a tiny budget/heap; assert it does not panic
+    let src = include_str!("../fuzz/corpus/vm_js_exec/<short_name>.js");
+    // or:
+    // let src = include_str!("../fuzz/corpus/vm_js_exec_compiled/<short_name>.js");
+    // run with a tiny budget/heap; assert it does not panic
    ```
 
 Keeping the seed + test in-tree ensures the bug stays fixed even if the fuzzer corpus is pruned.
