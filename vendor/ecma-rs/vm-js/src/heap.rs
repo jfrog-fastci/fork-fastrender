@@ -720,19 +720,310 @@ impl Heap {
       match owner_obj {
         HeapObject::TypedArray(arr) => {
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
-          self.debug_validate_viewed_array_buffer(
-            format_args!("TypedArray(kind={:?})", arr.kind),
+          let owner_kind = format_args!("TypedArray(kind={:?})", arr.kind);
+          self.debug_validate_heap_id_expected(
+            owner_kind,
             owner_id,
-            arr.viewed_array_buffer,
+            format_args!("viewed_array_buffer"),
+            arr.viewed_array_buffer.0,
+            "live ArrayBuffer",
+            debug_expected_is_array_buffer,
           );
         }
         HeapObject::DataView(view) => {
           let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
-          self.debug_validate_viewed_array_buffer(
-            format_args!("DataView"),
+          let owner_kind = format_args!("DataView");
+          self.debug_validate_heap_id_expected(
+            owner_kind,
             owner_id,
-            view.viewed_array_buffer,
+            format_args!("viewed_array_buffer"),
+            view.viewed_array_buffer.0,
+            "live ArrayBuffer",
+            debug_expected_is_array_buffer,
           );
+        }
+        HeapObject::Proxy(p) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Proxy");
+
+          if p.target.is_some() != p.handler.is_some() {
+            panic!(
+              "GC invariant violated: {owner_kind} {owner_id:?} has inconsistent proxy slots: target={:?} handler={:?}",
+              p.target.map(|o| o.id()),
+              p.handler.map(|o| o.id()),
+            );
+          }
+
+          if let Some(target) = p.target {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("target"),
+              target.0,
+              "live Object",
+              debug_expected_is_object,
+            );
+          }
+          if let Some(handler) = p.handler {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("handler"),
+              handler.0,
+              "live Object",
+              debug_expected_is_object,
+            );
+          }
+        }
+        HeapObject::Function(f) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Function");
+
+          // Internal name metadata is a required strong string reference.
+          self.debug_validate_heap_id_expected(
+            owner_kind,
+            owner_id,
+            format_args!("name"),
+            f.name.0,
+            "live String",
+            debug_expected_is_string,
+          );
+
+          // FunctionData slots are internal strong edges.
+          match f.data {
+            FunctionData::None | FunctionData::PromiseCapabilityExecutor => {}
+            FunctionData::ClassConstructorBody { class_constructor } => {
+              self.debug_validate_heap_id_expected(
+                owner_kind,
+                owner_id,
+                format_args!("data.class_constructor"),
+                class_constructor.0,
+                "live Object",
+                debug_expected_is_object,
+              );
+            }
+            FunctionData::PromiseResolvingFunction { promise, .. } => {
+              // This is expected to point at a Promise object, but keep the invariant lightweight
+              // and only require a live object allocation.
+              self.debug_validate_heap_id_expected(
+                owner_kind,
+                owner_id,
+                format_args!("data.promise"),
+                promise.0,
+                "live Object",
+                debug_expected_is_object,
+              );
+            }
+            FunctionData::PromiseFinallyHandler {
+              on_finally,
+              constructor,
+              ..
+            } => {
+              self.debug_validate_value(owner_kind, owner_id, format_args!("data.on_finally"), on_finally);
+              self.debug_validate_value(
+                owner_kind,
+                owner_id,
+                format_args!("data.constructor"),
+                constructor,
+              );
+            }
+            FunctionData::PromiseFinallyThunk { value, .. } => {
+              self.debug_validate_value(owner_kind, owner_id, format_args!("data.value"), value);
+            }
+          }
+
+          // Bound functions: `bound_target` is a strong edge and should always be callable.
+          if let Some(target) = f.bound_target {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("bound_target"),
+              target.0,
+              "live Object",
+              debug_expected_is_object,
+            );
+            // Callability is a spec-level invariant for bound functions; catch violations early.
+            match self.is_callable(Value::Object(target)) {
+              Ok(true) => {}
+              Ok(false) => {
+                panic!(
+                  "GC invariant violated: {owner_kind} {owner_id:?} has non-callable bound_target={:?}",
+                  target.id()
+                );
+              }
+              Err(err) => {
+                panic!(
+                  "GC invariant violated: {owner_kind} {owner_id:?} failed to validate bound_target={:?}: {err:?}",
+                  target.id()
+                );
+              }
+            }
+          }
+          if let Some(bound_this) = f.bound_this {
+            self.debug_validate_value(owner_kind, owner_id, format_args!("bound_this"), bound_this);
+          }
+          if let Some(bound_new_target) = f.bound_new_target {
+            self.debug_validate_value(
+              owner_kind,
+              owner_id,
+              format_args!("bound_new_target"),
+              bound_new_target,
+            );
+          }
+          if let Some(bound_args) = &f.bound_args {
+            for (i, v) in bound_args.iter().copied().enumerate() {
+              self.debug_validate_value(
+                owner_kind,
+                owner_id,
+                format_args!("bound_args[{i}]"),
+                v,
+              );
+            }
+          }
+          if let Some(native_slots) = &f.native_slots {
+            for (i, v) in native_slots.iter().copied().enumerate() {
+              self.debug_validate_value(
+                owner_kind,
+                owner_id,
+                format_args!("native_slots[{i}]"),
+                v,
+              );
+            }
+          }
+          if let Some(realm) = f.realm {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("realm"),
+              realm.0,
+              "live Object",
+              debug_expected_is_object,
+            );
+          }
+          if let Some(env) = f.closure_env {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("closure_env"),
+              env.0,
+              "live Env",
+              debug_expected_is_env,
+            );
+          }
+        }
+        HeapObject::Promise(p) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Promise");
+
+          if let Some(result) = p.result {
+            self.debug_validate_value(owner_kind, owner_id, format_args!("result"), result);
+          }
+
+          if let Some(reactions) = p.fulfill_reactions.as_deref() {
+            for (i, reaction) in reactions.iter().enumerate() {
+              if let Some(cap) = &reaction.capability {
+                self.debug_validate_value(
+                  owner_kind,
+                  owner_id,
+                  format_args!("fulfill_reactions[{i}].capability.promise"),
+                  cap.promise,
+                );
+                self.debug_validate_value(
+                  owner_kind,
+                  owner_id,
+                  format_args!("fulfill_reactions[{i}].capability.resolve"),
+                  cap.resolve,
+                );
+                self.debug_validate_value(
+                  owner_kind,
+                  owner_id,
+                  format_args!("fulfill_reactions[{i}].capability.reject"),
+                  cap.reject,
+                );
+              }
+              if let Some(handler) = &reaction.handler {
+                let cb = handler.callback_object();
+                self.debug_validate_heap_id_expected(
+                  owner_kind,
+                  owner_id,
+                  format_args!("fulfill_reactions[{i}].handler.callback"),
+                  cb.0,
+                  "live Object",
+                  debug_expected_is_object,
+                );
+              }
+            }
+          }
+
+          if let Some(reactions) = p.reject_reactions.as_deref() {
+            for (i, reaction) in reactions.iter().enumerate() {
+              if let Some(cap) = &reaction.capability {
+                self.debug_validate_value(
+                  owner_kind,
+                  owner_id,
+                  format_args!("reject_reactions[{i}].capability.promise"),
+                  cap.promise,
+                );
+                self.debug_validate_value(
+                  owner_kind,
+                  owner_id,
+                  format_args!("reject_reactions[{i}].capability.resolve"),
+                  cap.resolve,
+                );
+                self.debug_validate_value(
+                  owner_kind,
+                  owner_id,
+                  format_args!("reject_reactions[{i}].capability.reject"),
+                  cap.reject,
+                );
+              }
+              if let Some(handler) = &reaction.handler {
+                let cb = handler.callback_object();
+                self.debug_validate_heap_id_expected(
+                  owner_kind,
+                  owner_id,
+                  format_args!("reject_reactions[{i}].handler.callback"),
+                  cb.0,
+                  "live Object",
+                  debug_expected_is_object,
+                );
+              }
+            }
+          }
+        }
+        HeapObject::RegExp(r) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("RegExp");
+          self.debug_validate_heap_id_expected(
+            owner_kind,
+            owner_id,
+            format_args!("original_source"),
+            r.original_source.0,
+            "live String",
+            debug_expected_is_string,
+          );
+          self.debug_validate_heap_id_expected(
+            owner_kind,
+            owner_id,
+            format_args!("original_flags"),
+            r.original_flags.0,
+            "live String",
+            debug_expected_is_string,
+          );
+        }
+        HeapObject::Symbol(sym) => {
+          let owner_id = HeapId::from_parts(owner_idx as u32, owner_slot.generation);
+          let owner_kind = format_args!("Symbol");
+          if let Some(desc) = sym.description() {
+            self.debug_validate_heap_id_expected(
+              owner_kind,
+              owner_id,
+              format_args!("description"),
+              desc.0,
+              "live String",
+              debug_expected_is_string,
+            );
+          }
         }
         _ => {}
       }
@@ -740,42 +1031,88 @@ impl Heap {
   }
 
   #[cfg(debug_assertions)]
-  fn debug_validate_viewed_array_buffer(
+  fn debug_validate_heap_id_expected(
     &self,
     owner_kind: core::fmt::Arguments<'_>,
     owner_id: HeapId,
-    viewed_array_buffer: GcObject,
+    field: core::fmt::Arguments<'_>,
+    referenced_id: HeapId,
+    expected: &'static str,
+    expected_pred: fn(&HeapObject) -> bool,
   ) {
-    let buf_id = viewed_array_buffer.id();
-    let buf_idx = buf_id.index() as usize;
-
-    let Some(buf_slot) = self.slots.get(buf_idx) else {
+    let idx = referenced_id.index() as usize;
+    let Some(slot) = self.slots.get(idx) else {
       panic!(
-        "GC invariant violated: {owner_kind} {owner_id:?} has invalid viewed_array_buffer={buf_id:?}; \
-referenced index {buf_idx} is out of bounds (heap slots len={})",
+        "GC invariant violated: {owner_kind} {owner_id:?} has invalid {field}={referenced_id:?}; \
+referenced index {idx} is out of bounds (heap slots len={})",
         self.slots.len()
       );
     };
 
-    // `viewed_array_buffer` must be a live `ArrayBuffer` allocation, and the handle's generation
-    // must match the current slot generation.
-    let generation_matches = buf_slot.generation == buf_id.generation();
-    let is_array_buffer = matches!(buf_slot.value.as_ref(), Some(HeapObject::ArrayBuffer(_)));
-    if generation_matches && is_array_buffer {
-      return;
+    if slot.generation == referenced_id.generation() {
+      if let Some(obj) = slot.value.as_ref() {
+        if expected_pred(obj) {
+          return;
+        }
+      }
     }
 
-    let current_kind = buf_slot
+    let current_kind = slot
       .value
       .as_ref()
       .map(|obj| obj.debug_kind())
       .unwrap_or("Free");
 
     panic!(
-      "GC invariant violated: {owner_kind} {owner_id:?} has invalid viewed_array_buffer={buf_id:?}; \
-referenced slot currently has generation={} and kind={current_kind} (expected live ArrayBuffer with matching generation)",
-      buf_slot.generation
+      "GC invariant violated: {owner_kind} {owner_id:?} has invalid {field}={referenced_id:?}; \
+referenced slot currently has generation={} and kind={current_kind} (expected {expected} with matching generation)",
+      slot.generation
     );
+  }
+
+  #[cfg(debug_assertions)]
+  fn debug_validate_value(
+    &self,
+    owner_kind: core::fmt::Arguments<'_>,
+    owner_id: HeapId,
+    field: core::fmt::Arguments<'_>,
+    value: Value,
+  ) {
+    match value {
+      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => {}
+      Value::BigInt(b) => self.debug_validate_heap_id_expected(
+        owner_kind,
+        owner_id,
+        field,
+        b.0,
+        "live BigInt",
+        debug_expected_is_bigint,
+      ),
+      Value::String(s) => self.debug_validate_heap_id_expected(
+        owner_kind,
+        owner_id,
+        field,
+        s.0,
+        "live String",
+        debug_expected_is_string,
+      ),
+      Value::Symbol(s) => self.debug_validate_heap_id_expected(
+        owner_kind,
+        owner_id,
+        field,
+        s.0,
+        "live Symbol",
+        debug_expected_is_symbol,
+      ),
+      Value::Object(o) => self.debug_validate_heap_id_expected(
+        owner_kind,
+        owner_id,
+        field,
+        o.0,
+        "live Object",
+        debug_expected_is_object,
+      ),
+    }
   }
 
   /// Total number of GC cycles that have run.
@@ -10261,6 +10598,54 @@ impl HeapObject {
   }
 }
 
+#[cfg(debug_assertions)]
+fn debug_expected_is_object(obj: &HeapObject) -> bool {
+  matches!(
+    obj,
+    HeapObject::Object(_)
+      | HeapObject::ArrayBuffer(_)
+      | HeapObject::TypedArray(_)
+      | HeapObject::DataView(_)
+      | HeapObject::Function(_)
+      | HeapObject::Proxy(_)
+      | HeapObject::RegExp(_)
+      | HeapObject::Promise(_)
+      | HeapObject::Map(_)
+      | HeapObject::Set(_)
+      | HeapObject::WeakRef(_)
+      | HeapObject::WeakMap(_)
+      | HeapObject::WeakSet(_)
+      | HeapObject::FinalizationRegistry(_)
+      | HeapObject::Generator(_)
+      | HeapObject::AsyncGenerator(_)
+  )
+}
+
+#[cfg(debug_assertions)]
+fn debug_expected_is_array_buffer(obj: &HeapObject) -> bool {
+  matches!(obj, HeapObject::ArrayBuffer(_))
+}
+
+#[cfg(debug_assertions)]
+fn debug_expected_is_string(obj: &HeapObject) -> bool {
+  matches!(obj, HeapObject::String(_))
+}
+
+#[cfg(debug_assertions)]
+fn debug_expected_is_symbol(obj: &HeapObject) -> bool {
+  matches!(obj, HeapObject::Symbol(_))
+}
+
+#[cfg(debug_assertions)]
+fn debug_expected_is_bigint(obj: &HeapObject) -> bool {
+  matches!(obj, HeapObject::BigInt(_))
+}
+
+#[cfg(debug_assertions)]
+fn debug_expected_is_env(obj: &HeapObject) -> bool {
+  matches!(obj, HeapObject::Env(_))
+}
+
 impl Trace for JsString {
   fn trace(&self, _tracer: &mut Tracer<'_>) {
     // Strings have no outgoing GC references.
@@ -12425,6 +12810,106 @@ mod gc_invariant_arraybuffer_view_tests {
     match scope.heap_mut().get_heap_object_mut(dv.0).unwrap() {
       HeapObject::DataView(view) => view.viewed_array_buffer = not_ab,
       _ => panic!("expected DataView allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
+  }
+}
+
+#[cfg(test)]
+mod gc_invariant_other_internal_handle_tests {
+  use super::*;
+  use crate::function::NativeFunctionId;
+
+  #[test]
+  fn gc_invariant_accepts_valid_proxy_and_bound_function() -> Result<(), VmError> {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    // Proxy invariants.
+    let target = scope.alloc_object()?;
+    let handler = scope.alloc_object()?;
+    let proxy = scope.alloc_proxy(target, handler)?;
+    scope.push_root(Value::Object(proxy))?;
+
+    // Bound function invariants.
+    let target_name = scope.alloc_string("target")?;
+    let bound_name = scope.alloc_string("bound")?;
+    let target_fn = scope.alloc_native_function(NativeFunctionId(0), None, target_name, 0)?;
+    let bound_fn = scope.alloc_bound_function(target_fn, Value::Undefined, &[], bound_name, 0)?;
+    scope.push_root(Value::Object(bound_fn))?;
+
+    scope.heap_mut().collect_garbage();
+    Ok(())
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "Proxy")]
+  fn gc_invariant_panics_on_proxy_with_non_object_target() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let target = scope.alloc_object().unwrap();
+    let handler = scope.alloc_object().unwrap();
+    let proxy = scope.alloc_proxy(target, handler).unwrap();
+    scope.push_root(Value::Object(proxy)).unwrap();
+
+    let s = scope.alloc_string("not an object").unwrap();
+    let fake_obj = GcObject(s.id());
+
+    match scope.heap_mut().get_heap_object_mut(proxy.0).unwrap() {
+      HeapObject::Proxy(p) => p.target = Some(fake_obj),
+      _ => panic!("expected Proxy allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "non-callable bound_target")]
+  fn gc_invariant_panics_on_bound_function_with_non_callable_target() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let target_name = scope.alloc_string("target").unwrap();
+    let bound_name = scope.alloc_string("bound").unwrap();
+    let target_fn = scope
+      .alloc_native_function(NativeFunctionId(0), None, target_name, 0)
+      .unwrap();
+    let bound_fn = scope
+      .alloc_bound_function(target_fn, Value::Undefined, &[], bound_name, 0)
+      .unwrap();
+    scope.push_root(Value::Object(bound_fn)).unwrap();
+
+    let non_callable = scope.alloc_object().unwrap();
+
+    match scope.heap_mut().get_heap_object_mut(bound_fn.0).unwrap() {
+      HeapObject::Function(f) => f.bound_target = Some(non_callable),
+      _ => panic!("expected Function allocation"),
+    }
+
+    scope.heap_mut().collect_garbage();
+  }
+
+  #[cfg(debug_assertions)]
+  #[test]
+  #[should_panic(expected = "Promise")]
+  fn gc_invariant_panics_on_promise_with_wrong_kind_result() {
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut scope = heap.scope();
+
+    let promise = scope.alloc_promise().unwrap();
+    scope.push_root(Value::Object(promise)).unwrap();
+
+    let obj = scope.alloc_object().unwrap();
+    // Build an invalid `Value::String` whose handle points at a non-string allocation.
+    let fake_string = GcString(obj.id());
+
+    match scope.heap_mut().get_heap_object_mut(promise.0).unwrap() {
+      HeapObject::Promise(p) => p.result = Some(Value::String(fake_string)),
+      _ => panic!("expected Promise allocation"),
     }
 
     scope.heap_mut().collect_garbage();
