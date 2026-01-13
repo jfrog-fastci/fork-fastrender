@@ -13286,6 +13286,26 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               }
             }
 
+            if self.open_media_controls.is_some() {
+              if self
+                .open_media_controls_rect
+                .is_some_and(|rect| rect.contains(pos_points))
+              {
+                return;
+              }
+              let clicked_media_element = self.open_media_controls.as_ref().is_some_and(|controls| {
+                self
+                  .page_input_mapping
+                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(controls.anchor_css))
+                  .is_some_and(|rect_points| rect_points.contains(pos_points))
+              });
+              self.close_media_controls();
+              self.window.request_redraw();
+              if clicked_media_element {
+                return;
+              }
+            }
+
             if self.cursor_over_egui_overlay(pos_points) {
               return;
             }
