@@ -409,6 +409,15 @@ mod tests {
     }
   }
 
+  fn seg_stereo(start_ms: u64, samples: &[f32]) -> TimedAudioSegment {
+    TimedAudioSegment {
+      start_pts: Duration::from_millis(start_ms),
+      samples: samples.to_vec(),
+      channels: 2,
+      sample_rate: 10,
+    }
+  }
+
   #[test]
   fn contiguous_segments_read_back_continuously() {
     let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
@@ -529,5 +538,52 @@ mod tests {
         105.0, 106.0, 107.0, 108.0, 109.0,
       ]
     );
+  }
+
+  #[test]
+  fn stereo_gap_inserts_silence() {
+    let mut q = TimedAudioQueue::new(2, 10, Duration::from_secs(10));
+    // 1 frame of stereo audio (2 samples), then another frame after a 1-frame gap.
+    q.push_segment(seg_stereo(0, &[1.0, 2.0])).unwrap();
+    q.push_segment(seg_stereo(200, &[3.0, 4.0])).unwrap();
+
+    // Read 3 frames from t=0.
+    let mut out = vec![0.0; 3 * 2];
+    let res = q.read_into(&mut out, Duration::ZERO, 3);
+    assert_eq!(res.frames_audio, 2);
+    assert_eq!(res.frames_silence, 1);
+    assert_eq!(out, vec![1.0, 2.0, 0.0, 0.0, 3.0, 4.0]);
+  }
+
+  #[test]
+  fn invalid_interleaved_sample_count_rejected() {
+    let mut q = TimedAudioQueue::new(2, 10, Duration::from_secs(10));
+    // 3 samples cannot be evenly divided into 2-channel frames.
+    let err = q.push_segment(seg_stereo(0, &[1.0, 2.0, 3.0])).unwrap_err();
+    assert_eq!(err, PushError::InvalidSamples);
+  }
+
+  #[test]
+  fn format_mismatch_rejected() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    // Wrong channel count.
+    let err = q.push_segment(TimedAudioSegment {
+      start_pts: Duration::ZERO,
+      samples: vec![1.0, 2.0],
+      channels: 2,
+      sample_rate: 10,
+    })
+    .unwrap_err();
+    assert_eq!(err, PushError::FormatMismatch);
+
+    // Wrong sample rate.
+    let err = q.push_segment(TimedAudioSegment {
+      start_pts: Duration::ZERO,
+      samples: vec![1.0, 2.0],
+      channels: 1,
+      sample_rate: 11,
+    })
+    .unwrap_err();
+    assert_eq!(err, PushError::FormatMismatch);
   }
 }
