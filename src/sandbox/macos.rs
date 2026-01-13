@@ -252,7 +252,7 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::io;
+  use std::io::{self, Write};
   use std::net::{TcpListener, TcpStream};
   use std::process::Command;
   use std::time::{Instant, SystemTime};
@@ -265,6 +265,24 @@ mod tests {
       return true;
     }
     matches!(err.raw_os_error(), Some(libc::EPERM) | Some(libc::EACCES))
+  }
+
+  fn assert_spawn_denied(mut command: Command) {
+    match command.status() {
+      Ok(status) => {
+        panic!(
+          "expected Seatbelt sandbox to deny spawning {:?}, but it exited with status {status}",
+          command
+        );
+      }
+      Err(err) => {
+        assert!(
+          is_permission_error(&err),
+          "expected sandbox to deny spawning {:?}, got {err:?}",
+          command
+        );
+      }
+    }
   }
 
   #[test]
@@ -336,6 +354,80 @@ mod tests {
     assert!(
       output.status.success(),
       "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
+  fn seatbelt_pure_computation_blocks_process_spawn() {
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      apply_pure_computation_sandbox().expect("apply pure-computation sandbox");
+
+      assert_spawn_denied(Command::new("/usr/bin/true"));
+
+      // Defense in depth: ensure a common shell entrypoint cannot be executed either.
+      let mut sh = Command::new("/bin/sh");
+      sh.arg("-c").arg(":");
+      assert_spawn_denied(sh);
+      return;
+    }
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name = "sandbox::macos::tests::seatbelt_pure_computation_blocks_process_spawn";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
+  fn seatbelt_pure_computation_allows_inherited_stdout_pipe() {
+    const SENTINEL: &[u8] = b"fastrender-seatbelt-stdout-ok";
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      apply_pure_computation_sandbox().expect("apply pure-computation sandbox");
+      std::io::stdout()
+        .write_all(SENTINEL)
+        .and_then(|_| std::io::stdout().flush())
+        .expect("write sentinel to stdout after sandbox");
+      return;
+    }
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name =
+      "sandbox::macos::tests::seatbelt_pure_computation_allows_inherited_stdout_pipe";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn sandbox child process");
+
+    assert!(
+      output.status.success(),
+      "sandbox child should exit 0 (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+      output
+        .stdout
+        .windows(SENTINEL.len())
+        .any(|window| window == SENTINEL),
+      "expected sandbox child to write sentinel to stdout; got stdout={}, stderr={}",
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
     );
