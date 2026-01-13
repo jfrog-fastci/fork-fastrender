@@ -7,8 +7,9 @@
 //! - Focuses on the subset needed for baseline real-world behaviour: literals, character classes,
 //!   groups, alternation, quantifiers, `^`/`$`, `.`/dotAll, `\\b`/`\\B`, and basic lookahead.
 //!
-//! This module intentionally does **not** attempt to be a full spec implementation yet (e.g.
-//! unicode property escapes and full unicode case folding are not implemented).
+//! This module intentionally does **not** attempt to be a full spec implementation yet.
+//! Unicode-heavy features in particular are still evolving (Unicode property escapes, complete
+//! `/v` UnicodeSets syntax, etc).
 //! Call sites must treat compilation failures as `SyntaxError`.
 
 use crate::tick::{tick_every, DEFAULT_TICK_EVERY};

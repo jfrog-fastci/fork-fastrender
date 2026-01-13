@@ -81,6 +81,12 @@ Only the binary properties of strings listed in ECMA-262
 
 These properties must **not** be accepted in `u` mode (they are `v`-mode only).
 
+Note: per ECMA-262, Unicode string properties cannot be negated. That means:
+
+* `\P{RGI_Emoji}` is a `SyntaxError`
+* a negated `/v` character class that would require complementing a string-property set is also a
+  `SyntaxError`
+
 ### “Lone” property names/values (`\p{Lu}`, `\p{Alphabetic}`)
 
 The grammar permits `\p{…}` with a single identifier-like token (no `=`):
@@ -120,6 +126,10 @@ v17.0.0 (see the `Unicode v17.0.0` header lines in the generated test files).
 This is a pragmatic interoperability constraint: even if the spec references “latest” UCD, our
 conformance oracle (test262) is pinned to a concrete Unicode version. If the engine’s Unicode data
 drifts (ahead or behind), tests can fail in subtle ways.
+
+Implementation note: keep the `UNICODE_VERSION` constant in
+`xtask/src/generate_regexp_unicode_property_strings.rs` aligned with this policy and with test262’s
+generated headers.
 
 ## Vendored Unicode input files (and other pinned sources)
 
@@ -200,6 +210,12 @@ timeout -k 10 600 bash scripts/cargo_agent.sh xtask generate-regexp-unicode-prop
 
 Note: this requires the `vendor/ecma-rs/test262-semantic/data` submodule to be present/up-to-date.
 
+CI note: `.github/workflows/ci.yml` enforces this via:
+
+```bash
+cargo xtask generate-regexp-unicode-property-strings --check
+```
+
 After regenerating, run the relevant conformance suites (at minimum, RegExp-related test262
 subsets).
 
@@ -219,6 +235,23 @@ RegExp case folding is derived from the pinned `CaseFolding.txt` snapshot:
 
   This reads `tools/unicode/ucd-17.0.0/CaseFolding.txt` and rewrites
   `vendor/ecma-rs/vm-js/src/unicode_case_folding.rs`.
+
+## `vm-js` implementation pointers
+
+If you’re updating RegExp Unicode property escape support, these are the main entry points:
+
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_resolver.rs` — resolves the raw
+  `UnicodePropertyValueExpression` string with **strict matching** rules into an internal query.
+* `vendor/ecma-rs/vm-js/src/regexp_unicode_property_strings.rs` — generated trie + exact-name
+  lookup for `v`-mode properties of strings (Emoji); generated from test262 `strings/*.js`.
+* `xtask/src/generate_regexp_unicode_property_strings.rs` — generator (parses test262 input files,
+  validates the `RGI_Emoji` union, supports `--check`).
+* Case folding:
+  * `vendor/ecma-rs/vm-js/src/regexp.rs` — `canonicalize` implementation for `u`/`v` ignoreCase.
+  * `vendor/ecma-rs/vm-js/src/unicode_case_folding.rs` — `scf` table used for `v`-mode
+    `MaybeSimpleCaseFolding`.
+  * `vendor/ecma-rs/vm-js/src/regexp_case_folding.rs` + `vendor/ecma-rs/vm-js/build.rs` — build-time
+    generation of the compact RegExp folding table from `vm-js/unicode/CaseFolding.txt`.
 
 ## Surrogates: property sets include them (tests rely on this)
 
