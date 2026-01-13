@@ -272,6 +272,147 @@ fn tab_focus_scrolls_nested_scroller_to_reveal_focused_element() {
 }
 
 #[test]
+fn tab_focus_scrolls_bordered_scroller_to_expected_offset() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  const DEFAULT_FOCUS_SCROLL_PADDING_CSS: f32 = 8.0;
+
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #scroller {
+            width: 200px;
+            height: 100px;
+            overflow-y: scroll;
+            border: 10px solid black;
+            background: rgb(0,0,0);
+          }
+          #content {
+            position: relative;
+            height: 1000px;
+          }
+          #target {
+            position: absolute;
+            left: 10px;
+            top: 800px;
+            width: 120px;
+            height: 30px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: rgb(255,0,0);
+          }
+        </style>
+      </head>
+      <body>
+        <div id="scroller">
+          <div id="content">
+            <input id="target" value="hello" />
+          </div>
+        </div>
+      </body>
+    </html>
+  "#;
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-focus-scroll-bordered-scroller").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (220, 220), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  let frame = wait_for_frame(&ui_rx, tab_id, DEFAULT_TIMEOUT);
+  assert_eq!(frame.scroll_state.viewport.y, 0.0);
+  assert!(
+    frame.scroll_state.elements.is_empty(),
+    "expected initial element scroll offsets to be empty"
+  );
+
+  ui_tx.send(key_action(tab_id, KeyAction::Tab)).expect("Tab");
+
+  // Focus-driven auto-scroll should use the *scrollport* (padding box) coordinate space for the
+  // bordered scroller, not the border box. For a 100px tall scrollport and 8px focus padding, the
+  // desired scroll offset is:
+  //   input_bottom - (scrollport_height - padding)
+  // = (800 + 30) - (100 - 8)
+  // = 738px.
+  let frame = {
+    let deadline = Instant::now() + DEFAULT_TIMEOUT;
+    loop {
+      let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::from_secs(0));
+      assert!(
+        remaining > Duration::ZERO,
+        "timed out waiting for focused scroll frame"
+      );
+      let msg = ui_rx.recv_timeout(remaining).expect("worker msg");
+      match msg {
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
+          if frame
+            .scroll_state
+            .elements
+            .values()
+            .any(|offset| offset.y > 0.0)
+          {
+            break frame;
+          }
+        }
+        _ => {}
+      }
+    }
+  };
+
+  assert_eq!(
+    frame.scroll_state.viewport.y, 0.0,
+    "expected focus scroll to adjust the nested scroller, not the viewport"
+  );
+  assert_eq!(
+    frame.scroll_state.elements.len(),
+    1,
+    "expected exactly one element scroller to be updated"
+  );
+
+  let scroll_y = frame
+    .scroll_state
+    .elements
+    .values()
+    .next()
+    .copied()
+    .expect("element scroll offset")
+    .y;
+  assert!(
+    scroll_y.is_finite() && scroll_y > 0.0,
+    "expected element scroll y > 0, got {scroll_y}"
+  );
+
+  let input_bottom = 800.0 + 30.0;
+  let scrollport_height = 100.0;
+  let expected = input_bottom - (scrollport_height - DEFAULT_FOCUS_SCROLL_PADDING_CSS);
+  assert!(
+    (scroll_y - expected).abs() <= 1.0,
+    "expected bordered scroller scroll y ≈ {expected}, got {scroll_y}"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
 fn tab_focus_scrolls_horizontal_scroller_to_reveal_focused_element() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   let _lock = super::stage_listener_test_lock();

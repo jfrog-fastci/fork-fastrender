@@ -18,6 +18,14 @@ fn sanitize_point(point: Point) -> Point {
   )
 }
 
+fn sanitize_nonneg(value: f32) -> f32 {
+  if value.is_finite() {
+    value.max(0.0)
+  } else {
+    0.0
+  }
+}
+
 fn scrollport_size_for_state(state: &ScrollChainState<'_>, is_viewport: bool) -> Size {
   if !is_viewport {
     if let Some(style) = state.container.style.as_deref() {
@@ -60,6 +68,31 @@ fn scrollport_size_for_state(state: &ScrollChainState<'_>, is_viewport: bool) ->
     } else {
       0.0
     },
+  )
+}
+
+fn scrollport_origin_for_state(state: &ScrollChainState<'_>, is_viewport: bool) -> Point {
+  if is_viewport {
+    // Mirror `scroll::scroll_bounds_for_fragment(treat_as_root=true)`: the viewport scroll container
+    // uses the layout viewport size and only reserved classic scrollbar gutters affect the scrollport
+    // origin (borders on the root fragment are not treated as an inset scrollport origin).
+    let reservation = state.container.scrollbar_reservation;
+    return Point::new(
+      sanitize_nonneg(reservation.left),
+      sanitize_nonneg(reservation.top),
+    );
+  }
+
+  if let Some(style) = state.container.style.as_deref() {
+    return crate::scroll::scrollport_rect_for_fragment(state.container, style).origin;
+  }
+
+  // Fallback for synthetic fragment trees without styles: assume no borders, but still honor any
+  // scrollbar reservation attached to the fragment.
+  let reservation = state.container.scrollbar_reservation;
+  Point::new(
+    sanitize_nonneg(reservation.left),
+    sanitize_nonneg(reservation.top),
   )
 }
 
@@ -284,10 +317,12 @@ fn apply_focus_scroll_chain(
     } else {
       state.origin
     };
+    let scrollport_origin = scrollport_origin_for_state(state, is_viewport);
 
     let target_local = target_bounds
       .translate(Point::new(-origin.x, -origin.y))
-      .translate(Point::new(-descendant_scroll.x, -descendant_scroll.y));
+      .translate(Point::new(-descendant_scroll.x, -descendant_scroll.y))
+      .translate(Point::new(-scrollport_origin.x, -scrollport_origin.y));
 
     let viewport = scrollport_size_for_state(state, is_viewport);
     if can_scroll {
@@ -381,12 +416,17 @@ pub fn scroll_state_for_focus(
 
       let target_in_viewport_space =
         target_bounds.translate(Point::new(-element_shift.x, -element_shift.y));
+      let viewport_scrollport_origin = scrollport_origin_for_state(viewport_state, true);
+      let target_in_viewport_scrollport_space = target_in_viewport_space.translate(Point::new(
+        -viewport_scrollport_origin.x,
+        -viewport_scrollport_origin.y,
+      ));
       let viewport_scrollport = scrollport_size_for_state(viewport_state, true);
 
       next.viewport = scroll_to_reveal_rect(
         next.viewport,
         viewport_state.bounds,
-        target_in_viewport_space,
+        target_in_viewport_scrollport_space,
         viewport_scrollport,
         DEFAULT_FOCUS_SCROLL_PADDING_CSS,
       );
