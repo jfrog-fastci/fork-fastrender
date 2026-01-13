@@ -3480,7 +3480,7 @@ impl BrowserRuntime {
     tab.sync_js_scroll_state();
     tab
       .history
-      .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+      .update_scroll_state(&tab.scroll_state);
     let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
       tab_id,
       scroll: tab.scroll_state.clone(),
