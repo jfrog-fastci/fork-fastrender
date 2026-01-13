@@ -29717,14 +29717,16 @@ fn schedule_dynamic_script_via_browser_tab_host(
     return false;
   };
   let base_url_at_discovery = spec.base_url.clone();
+  // Queue script preparation as a microtask so that scripts inserted from microtasks (e.g. Promise
+  // reactions queued by `DOMContentLoaded` listeners) become load blockers before any already-queued
+  // `load` task has a chance to run.
+  //
+  // This mirrors the HTML model where "prepare a script" runs as part of DOM insertion steps and can
+  // affect the load-event delay count synchronously within the same task turn.
   event_loop
-    .queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      let _ = host.register_and_schedule_dynamic_script(
-        script,
-        spec,
-        base_url_at_discovery,
-        event_loop,
-      )?;
+    .queue_microtask(move |host, event_loop| {
+      let _ =
+        host.register_and_schedule_dynamic_script(script, spec, base_url_at_discovery, event_loop)?;
       Ok(())
     })
     .is_ok()

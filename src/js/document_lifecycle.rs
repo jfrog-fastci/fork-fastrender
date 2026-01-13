@@ -89,6 +89,23 @@ pub trait DocumentLifecycleHost {
   where
     Self: Sized + 'static;
 
+  /// Give the embedding a chance to discover/register new load blockers right before the `load`
+  /// event is dispatched.
+  ///
+  /// The HTML spec allows scripts and other subresources to be discovered late (for example, scripts
+  /// inserted from microtasks after `DOMContentLoaded` has been dispatched but before the `load`
+  /// task runs). If the host defers discovery work until "between turns", the queued `load` task may
+  /// otherwise run before the new blocker is registered, causing `load` to fire too early.
+  ///
+  /// Embeddings that need to support late-discovered blockers should override this to perform any
+  /// required discovery. The default implementation is a no-op.
+  fn before_load_event(&mut self, _event_loop: &mut EventLoop<Self>) -> Result<()>
+  where
+    Self: Sized + 'static,
+  {
+    Ok(())
+  }
+
   /// Mutable access to the per-document lifecycle state machine.
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle;
 }
@@ -347,6 +364,16 @@ fn maybe_fire_load<Host: DocumentLifecycleHost + 'static>(
   host: &mut Host,
   event_loop: &mut EventLoop<Host>,
 ) -> Result<()> {
+  // Let the host discover/register any late load blockers before we decide whether `load` can be
+  // dispatched.
+  //
+  // This is important for resources inserted after `DOMContentLoaded` but before the queued `load`
+  // task runs (e.g. scripts inserted via microtasks).
+  let load_already_fired = host.document_lifecycle_mut().load_fired;
+  if !load_already_fired {
+    host.before_load_event(event_loop)?;
+  }
+
   // The `load` task can be queued when the last load blocker reaches 0, but new blockers can still
   // be registered before that queued task runs (for example: scripts inserted from DOMContentLoaded
   // listeners). Re-check the current blocker count at dispatch time and no-op if still blocked.

@@ -1413,6 +1413,57 @@ fn p3_load_event_waits_for_images_inserted_after_domcontentloaded() -> Result<()
 }
 
 #[test]
+fn p3_load_event_waits_for_module_script_inserted_after_domcontentloaded() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    supports_module_scripts: true,
+    ..Default::default()
+  };
+  let mut h = Harness::new(
+    "https://example.invalid/p3_load_dynamic_module_script.html",
+    js_options,
+  )?;
+
+  // Insert a module script after DOMContentLoaded (via a microtask) and ensure it still delays
+  // `load`.
+  //
+  // This mirrors `p3_load_event_waits_for_images_inserted_after_domcontentloaded`, but exercises the
+  // script/module pipeline (including load blockers registered after the load task has already been
+  // queued).
+  let module_url = "https://example.invalid/dynmod.js";
+  h.register_script_source(module_url, r#"console.log("module");"#);
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          Promise.resolve().then(() => {{
+            console.log("microtask");
+            const s = document.createElement("script");
+            s.type = "module";
+            s.src = "{module_url}";
+            document.body.appendChild(s);
+          }});
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "microtask".to_string(),
+      "module".to_string(),
+      "load".to_string()
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p3_load_event_waits_for_link_rel_icon() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_icon.html", js_options)?;

@@ -3974,6 +3974,16 @@ impl DocumentLifecycleHost for BrowserTabHost {
     Ok(())
   }
 
+  fn before_load_event(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()>
+  where
+    Self: Sized + 'static,
+  {
+    // `BrowserTabHost` defers dynamic `<script>` discovery to "between turn" scans. When a load task
+    // is already queued, ensure we perform one last discovery pass before deciding whether `load`
+    // can be dispatched so late-inserted scripts participate as load blockers.
+    self.discover_dynamic_scripts(event_loop)
+  }
+
   fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
     &mut self.lifecycle
   }
