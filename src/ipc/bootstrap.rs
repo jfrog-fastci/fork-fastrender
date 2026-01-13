@@ -93,7 +93,8 @@ fn socket_pair_with_type(sock_type: libc::c_int) -> io::Result<(OwnedFd, OwnedFd
   let sock_cloexec = 0;
 
   let mut fds: [libc::c_int; 2] = [-1, -1];
-  let rc = unsafe { libc::socketpair(libc::AF_UNIX, sock_type | sock_cloexec, 0, fds.as_mut_ptr()) };
+  let rc =
+    unsafe { libc::socketpair(libc::AF_UNIX, sock_type | sock_cloexec, 0, fds.as_mut_ptr()) };
   if rc != 0 {
     return Err(io::Error::last_os_error());
   }
@@ -114,6 +115,7 @@ fn socket_pair_with_type(sock_type: libc::c_int) -> io::Result<(OwnedFd, OwnedFd
 /// - The IPC socket will be available in the child at FD `3` (`INHERITED_IPC_FD`).
 /// - `env_key` will be set to the numeric FD value (currently `"3"`).
 /// - The socket is passed without touching the filesystem.
+/// - All other inherited file descriptors are marked `FD_CLOEXEC` (defense-in-depth).
 ///
 /// The function consumes `child_end` to make ownership transfer explicit.
 ///
@@ -145,6 +147,13 @@ pub fn spawn_child_with_ipc(
       if src_fd == INHERITED_IPC_FD {
         set_cloexec(INHERITED_IPC_FD, false)?;
       }
+
+      // Defense-in-depth: ensure unrelated inherited file descriptors do not leak into the exec'd
+      // child process.
+      //
+      // This only sets `FD_CLOEXEC` and does not close fds, so it does not interfere with
+      // `std::process::Command`'s internal CLOEXEC exec-error pipes.
+      crate::sandbox::set_cloexec_on_fds_except(&[0, 1, 2, INHERITED_IPC_FD])?;
 
       Ok(())
     });
