@@ -73,6 +73,15 @@ fn indexed_db_presence_shim_installs_and_fails_async() -> Result<()> {
         typeof IDBTransaction === 'function' &&
         typeof IDBObjectStore === 'function' &&
         typeof IDBKeyRange === 'function';
+      const keyRangeAliasOk =
+        // Guard `===` with `typeof` so this test never throws even if the
+        // prefixed globals don't exist.
+        typeof webkitIDBKeyRange === 'function' &&
+        IDBKeyRange === webkitIDBKeyRange &&
+        typeof msIDBKeyRange === 'function' &&
+        IDBKeyRange === msIDBKeyRange;
+      const keyRangeFeatureDetectOk =
+        typeof (IDBKeyRange || webkitIDBKeyRange || msIDBKeyRange) === 'function';
 
       // `open` must not throw synchronously.
       let req;
@@ -142,7 +151,8 @@ fn indexed_db_presence_shim_installs_and_fails_async() -> Result<()> {
       try { IDBKeyRange.upperBound(1); } catch (e) { globalThis.__idb_keyrange_upper_ok = __isNotSupportedError(e); }
       try { IDBKeyRange.bound(1, 2); } catch (e) { globalThis.__idb_keyrange_bound_ok = __isNotSupportedError(e); }
 
-      globalThis.__idb_ok = hasIndexedDb && aliasOk && ctorOk && !threw;
+      globalThis.__idb_ok =
+        hasIndexedDb && aliasOk && ctorOk && keyRangeAliasOk && keyRangeFeatureDetectOk && !threw;
       globalThis.__idb_del_call_ok =
         !delThrew && typeof delReq === 'object' && delReq !== null;
     "#,

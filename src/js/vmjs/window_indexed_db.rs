@@ -209,15 +209,14 @@ pub(crate) const INDEXED_DB_SHIM_JS: &str = r#"
     g.IDBTransaction = IDBTransaction;
     g.IDBObjectStore = IDBObjectStore;
     g.IDBKeyRange = IDBKeyRange;
-    g.IDBVersionChangeEvent = IDBVersionChangeEvent;
-
     // Vendor-prefixed constructor aliases (legacy IndexedDB shims).
     //
     // Many older libraries probe `webkitIDBKeyRange`/`mozIDBKeyRange`/`msIDBKeyRange` even when
     // `IDBKeyRange` exists.
-    g.webkitIDBKeyRange = IDBKeyRange;
-    g.mozIDBKeyRange = IDBKeyRange;
-    g.msIDBKeyRange = IDBKeyRange;
+    if (typeof g.webkitIDBKeyRange === "undefined") g.webkitIDBKeyRange = IDBKeyRange;
+    if (typeof g.mozIDBKeyRange === "undefined") g.mozIDBKeyRange = IDBKeyRange;
+    if (typeof g.msIDBKeyRange === "undefined") g.msIDBKeyRange = IDBKeyRange;
+    g.IDBVersionChangeEvent = IDBVersionChangeEvent;
 
     g.indexedDB = factory;
     g.webkitIndexedDB = factory;
