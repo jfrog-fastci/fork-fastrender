@@ -55,7 +55,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - JS HTML integration (script loading, modules): [`instructions/js_html_integration.md`](../instructions/js_html_integration.md)
 - WebIDL stack (crate layout + boundaries): [webidl_stack.md](webidl_stack.md)
 - JavaScript integration architecture: [javascript.md](javascript.md)
-- Runtime stacks (Document vs DOM2 vs Tab): [runtime_stacks.md](runtime_stacks.md)
+- Runtime stacks (Document vs DOM2 vs Tab vs JS): [runtime_stacks.md](runtime_stacks.md)
 - Driving a live `BrowserTab` loop (`tick_frame`, `run_until_stable`): [live_rendering_loop.md](live_rendering_loop.md)
 - LLVM StackMaps / statepoint metadata decoding: [llvm_stackmaps.md](llvm_stackmaps.md)
 - LLVM 18 statepoint StackMap ABI assumptions (regression-tested): [llvm_statepoint_stackmap_abi.md](llvm_statepoint_stackmap_abi.md)
