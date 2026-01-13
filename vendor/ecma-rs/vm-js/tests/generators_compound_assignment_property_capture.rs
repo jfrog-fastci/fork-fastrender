@@ -93,3 +93,58 @@ fn generator_compound_assignment_property_captures_base_and_computed_key_before_
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_compound_assignment_evaluates_base_key_and_old_value_once_across_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var baseCount = 0;
+      var keyCount = 0;
+      var getCount = 0;
+      var setCount = 0;
+      var stored = 0;
+
+      var o1 = {
+        get a() { getCount++; return 1; },
+        set a(v) { setCount++; stored = v; },
+      };
+
+      var o2 = { a: 100 };
+      var k2 = "a";
+
+      function getO() { baseCount++; return o1; }
+      function getK() { keyCount++; return "a"; }
+
+      function* g() { getO()[getK()] += (yield 0); return stored; }
+      var it = g();
+      var r1 = it.next();
+
+      // By the time the generator yields, base + key are evaluated and the old value is read.
+      var ok1 =
+        r1.value === 0 && r1.done === false &&
+        baseCount === 1 && keyCount === 1 &&
+        getCount === 1 && setCount === 0;
+
+      // Change the base/key producers after yielding; the assignment must not re-evaluate them.
+      getO = function () { baseCount++; return o2; };
+      getK = function () { keyCount++; return k2; };
+
+      var r2 = it.next(2);
+      var ok2 =
+        r2.value === 3 && r2.done === true &&
+        stored === 3 &&
+        // No re-evaluation after resumption.
+        baseCount === 1 && keyCount === 1 &&
+        // Old value getter was called once (before the yield), setter once (after resume).
+        getCount === 1 && setCount === 1 &&
+        // And nothing was written to the rebound object.
+        o2.a === 100;
+
+      ok1 && ok2
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
