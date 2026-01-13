@@ -14374,23 +14374,53 @@ pub fn regexp_prototype_source_get(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
   // https://tc39.es/ecma262/#sec-get-regexp.prototype.source
   //
+  // Note: vm-js does not yet switch `vm.intrinsics()` when calling cross-realm intrinsic
+  // functions. Like the RegExp prototype flag getters, this accessor captures its realm's
+  // `%RegExp.prototype%` and `%TypeError.prototype%` in native slots so:
+  // - `get.call(%RegExp.prototype%)` returns `"(?:)"`, and
+  // - invalid receivers throw a TypeError from the getter's realm.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let Some(Value::Object(regexp_prototype)) = slots.get(0).copied() else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype.source getter missing %RegExp.prototype% native slot",
+    ));
+  };
+  let Some(Value::Object(type_error_prototype)) = slots.get(1).copied() else {
+    return Err(VmError::InvariantViolation(
+      "RegExp.prototype.source getter missing %TypeError.prototype% native slot",
+    ));
+  };
+
+  let Value::Object(obj) = this else {
+    let err =
+      crate::error_object::new_error(scope, type_error_prototype, "TypeError", "expected object")?;
+    return Err(VmError::Throw(err));
+  };
+
   // `%RegExp.prototype%` itself is not a RegExp exotic object in vm-js. Per spec, invoking the
   // getter with `%RegExp.prototype%` as the receiver must return `"(?:)"` instead of throwing.
-  let obj = require_object(this)?;
-  let intr = require_intrinsics(vm)?;
-  if obj == intr.regexp_prototype() {
+  if obj == regexp_prototype {
     let s = scope.alloc_string("(?:)")?;
     return Ok(Value::String(s));
   }
 
-  let rx = require_regexp_object(scope, this)?;
-  let source = scope.heap().regexp_original_source(rx)?;
+  if !scope.heap().is_regexp_object(obj) {
+    let err = crate::error_object::new_error(
+      scope,
+      type_error_prototype,
+      "TypeError",
+      "RegExp method called on incompatible receiver",
+    )?;
+    return Err(VmError::Throw(err));
+  }
+
+  let source = scope.heap().regexp_original_source(obj)?;
   if scope.heap().get_string(source)?.is_empty() {
     let s = scope.alloc_string("(?:)")?;
     return Ok(Value::String(s));
@@ -14420,7 +14450,7 @@ pub fn regexp_prototype_source_get(
   // In `v` mode, nested character classes are permitted (RegExp set notation), so we track a full
   // depth counter. In classic mode, a character class cannot nest, so depth only ever takes values
   // 0/1. This mirrors the literal scanning logic used when evaluating RegExp literals.
-  let flags_s = scope.heap().regexp_original_flags(rx)?;
+  let flags_s = scope.heap().regexp_original_flags(obj)?;
   let has_v_flag = scope
     .heap()
     .get_string(flags_s)?

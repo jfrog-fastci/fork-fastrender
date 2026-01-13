@@ -3636,7 +3636,21 @@ impl Intrinsics {
       let key = PropertyKey::from_string(key_s);
 
       let get_name = scope.alloc_string("get source")?;
-      let get = scope.alloc_native_function(regexp_prototype_source_get, None, get_name, 0)?;
+      // Like the RegExp prototype flag getters, `RegExp.prototype.source` must be cross-realm-safe:
+      // it needs to special-case *this* realm's `%RegExp.prototype%` and throw a TypeError from the
+      // getter's realm for all other invalid receivers.
+      //
+      // `%TypeError.prototype%` is initialized later in this function (as part of error intrinsic
+      // setup), so we temporarily store `undefined` in slot 1 and patch it once the real
+      // `%TypeError.prototype%` object is available.
+      let get_slots = [Value::Object(regexp_prototype), Value::Undefined];
+      let get = scope.alloc_native_function_with_slots(
+        regexp_prototype_source_get,
+        None,
+        get_name,
+        0,
+        &get_slots,
+      )?;
       scope.push_root(Value::Object(get))?;
       scope
         .heap_mut()
@@ -6908,7 +6922,7 @@ impl Intrinsics {
       1,
     )?;
 
-    // Now that `%TypeError.prototype%` exists, patch the RegExp prototype flag getter native slots.
+    // Now that `%TypeError.prototype%` exists, patch the RegExp prototype getter native slots.
     //
     // These getters need to construct TypeError instances from their own realm when called with
     // cross-realm receivers (test262 `built-ins/RegExp/prototype/*/cross-realm.js`).
@@ -6940,6 +6954,7 @@ impl Intrinsics {
         Ok(())
       };
 
+      patch_getter("source")?;
       patch_getter("hasIndices")?;
       patch_getter("global")?;
       patch_getter("ignoreCase")?;
