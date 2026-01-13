@@ -683,22 +683,27 @@ fn truncate_utf8_str_to_bytes(value: &str, max_bytes: usize) -> String {
 
 #[cfg(any(test, feature = "browser_ui"))]
 fn truncate_utf8_string_in_place(value: &mut String, max_bytes: usize) {
-  if value.len() <= max_bytes {
-    return;
-  }
   if max_bytes == 0 {
     value.clear();
     value.shrink_to_fit();
     return;
   }
-  let mut end = max_bytes.min(value.len());
-  while end > 0 && !value.is_char_boundary(end) {
-    end -= 1;
+  if value.len() > max_bytes {
+    let mut end = max_bytes.min(value.len());
+    while end > 0 && !value.is_char_boundary(end) {
+      end -= 1;
+    }
+    value.truncate(end);
   }
-  value.truncate(end);
+
   // Drop attacker-controlled excess capacity eagerly so the browser UI doesn't retain a large
-  // allocation after truncating untrusted payloads (e.g. picker values).
-  value.shrink_to_fit();
+  // allocation even when the payload was already within our byte limit (hostile senders can
+  // reserve huge buffers with small logical lengths).
+  if value.capacity() > max_bytes {
+    let mut out = String::with_capacity(value.len());
+    out.push_str(value);
+    *value = out;
+  }
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
@@ -728,6 +733,10 @@ fn sanitize_select_control_for_windowed_ui(
   use fastrender::tree::box_tree::SelectItem;
   use fastrender::ui::protocol_limits::{MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES};
 
+  const ABSURD_CAPACITY_MULTIPLIER: usize = 4;
+  let absurd_item_vec_capacity = MAX_SELECT_ITEMS.saturating_mul(ABSURD_CAPACITY_MULTIPLIER);
+  let absurd_label_capacity = MAX_SELECT_LABEL_BYTES.saturating_mul(ABSURD_CAPACITY_MULTIPLIER);
+
   let items_len = control.items.len();
   if items_len > MAX_SELECT_ITEMS {
     return None;
@@ -748,13 +757,23 @@ fn sanitize_select_control_for_windowed_ui(
     control.selected.truncate(items_len);
     control.selected.shrink_to_fit();
   }
+  // Even if we didn't mutate `selected`, a hostile worker can reserve an absurd amount of capacity.
+  if control.selected.capacity() > absurd_item_vec_capacity {
+    control.selected = control.selected.iter().copied().collect();
+  }
 
-  let needs_truncation = control.items.iter().any(|item| match item {
-    SelectItem::OptGroupLabel { label, .. } => label.len() > MAX_SELECT_LABEL_BYTES,
-    SelectItem::Option { label, value, .. } => {
-      label.len() > MAX_SELECT_LABEL_BYTES || value.len() > MAX_SELECT_LABEL_BYTES
-    }
-  });
+  let needs_truncation = control.items.capacity() > absurd_item_vec_capacity
+    || control.items.iter().any(|item| match item {
+      SelectItem::OptGroupLabel { label, .. } => {
+        label.len() > MAX_SELECT_LABEL_BYTES || label.capacity() > absurd_label_capacity
+      }
+      SelectItem::Option { label, value, .. } => {
+        label.len() > MAX_SELECT_LABEL_BYTES
+          || value.len() > MAX_SELECT_LABEL_BYTES
+          || label.capacity() > absurd_label_capacity
+          || value.capacity() > absurd_label_capacity
+      }
+    });
 
   if !needs_truncation {
     return Some(control);
@@ -764,7 +783,7 @@ fn sanitize_select_control_for_windowed_ui(
   for item in control.items.iter() {
     match item {
       SelectItem::OptGroupLabel { label, disabled } => {
-        let label = if label.len() <= MAX_SELECT_LABEL_BYTES {
+        let label = if label.len() <= MAX_SELECT_LABEL_BYTES && label.capacity() <= absurd_label_capacity {
           label.clone()
         } else {
           truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
@@ -782,12 +801,12 @@ fn sanitize_select_control_for_windowed_ui(
         disabled,
         in_optgroup,
       } => {
-        let label = if label.len() <= MAX_SELECT_LABEL_BYTES {
+        let label = if label.len() <= MAX_SELECT_LABEL_BYTES && label.capacity() <= absurd_label_capacity {
           label.clone()
         } else {
           truncate_utf8_str_to_bytes(label, MAX_SELECT_LABEL_BYTES)
         };
-        let value = if value.len() <= MAX_SELECT_LABEL_BYTES {
+        let value = if value.len() <= MAX_SELECT_LABEL_BYTES && value.capacity() <= absurd_label_capacity {
           value.clone()
         } else {
           truncate_utf8_str_to_bytes(value, MAX_SELECT_LABEL_BYTES)
@@ -953,6 +972,16 @@ fn sanitize_worker_to_ui_for_bridge_queue(
   // never retains the full attacker-controlled string.
   let (msg, clipboard_update) =
     fastrender::ui::protocol_limits::sanitize_worker_to_ui_clipboard_message(msg);
+  let mut clipboard_update = clipboard_update;
+  if let Some(update) = clipboard_update.as_mut() {
+    // Ensure we don't retain absurd attacker-controlled capacity even if the payload is within the
+    // byte limit.
+    if update.text.capacity() > fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES {
+      let mut out = String::with_capacity(update.text.len());
+      out.push_str(&update.text);
+      update.text = out;
+    }
+  }
 
   // Windowed-browser specific sanitization for picker/dropdown payloads (may drop messages).
   let msg = sanitize_worker_to_ui_for_windowed_browser(msg);
@@ -996,12 +1025,18 @@ fn sanitize_worker_to_ui_untrusted_payloads(
   match msg {
     WorkerToUi::Favicon {
       tab_id,
-      rgba,
+      mut rgba,
       width,
       height,
     } => {
       if !validate_untrusted_favicon_rgba(rgba.len(), width, height) {
         return None;
+      }
+      // Drop hostile reserved capacity eagerly (RGBA payloads are tiny; cloning is cheap).
+      if rgba.capacity() > fastrender::ui::protocol_limits::MAX_FAVICON_BYTES {
+        let mut out = Vec::with_capacity(rgba.len());
+        out.extend_from_slice(&rgba);
+        rgba = out;
       }
       Some(WorkerToUi::Favicon {
         tab_id,
@@ -1402,6 +1437,30 @@ mod bridge_worker_to_ui_sanitization_tests {
   }
 
   #[test]
+  fn clipboard_text_capacity_is_shrunk_even_when_in_limit() {
+    let tab_id = TabId(1);
+    let mut text = String::with_capacity(MAX_CLIPBOARD_TEXT_BYTES * 8);
+    text.push_str("ok");
+    assert!(text.capacity() > MAX_CLIPBOARD_TEXT_BYTES);
+    let msg = WorkerToUi::SetClipboardText { tab_id, text };
+
+    let BridgeSanitizedMsgs::Two(first, _second) = sanitize_worker_to_ui_for_bridge_queue(msg) else {
+      panic!("expected clipboard message to split into two queued items");
+    };
+    let QueuedMsg::Clipboard(result) = first else {
+      panic!("expected clipboard item first");
+    };
+    assert!(!result.truncated);
+    assert_eq!(result.text, "ok");
+    assert!(
+      result.text.capacity() <= MAX_CLIPBOARD_TEXT_BYTES,
+      "expected clipboard text capacity to be bounded (cap={}, len={})",
+      result.text.capacity(),
+      result.text.len()
+    );
+  }
+
+  #[test]
   fn debug_log_is_sanitized_and_does_not_retain_huge_capacity() {
     let tab_id = TabId(1);
     let huge = "a".repeat(1_000_000);
@@ -1446,6 +1505,38 @@ mod bridge_worker_to_ui_sanitization_tests {
     assert!(
       matches!(sanitize_worker_to_ui_for_bridge_queue(msg), BridgeSanitizedMsgs::Drop),
       "expected oversized favicon payload to be dropped"
+    );
+  }
+
+  #[test]
+  fn favicon_capacity_is_shrunk_before_enqueue() {
+    let tab_id = TabId(1);
+    let width = 32u32;
+    let height = 32u32;
+    let mut rgba = Vec::with_capacity(MAX_FAVICON_BYTES * 128);
+    rgba.extend(std::iter::repeat(0u8).take(MAX_FAVICON_BYTES));
+    assert!(rgba.capacity() > MAX_FAVICON_BYTES);
+    let msg = WorkerToUi::Favicon {
+      tab_id,
+      rgba,
+      width,
+      height,
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected favicon message to be enqueued");
+    };
+    let WorkerToUi::Favicon { rgba, .. } = worker_msg else {
+      panic!("expected favicon message after sanitization");
+    };
+    assert_eq!(rgba.len(), MAX_FAVICON_BYTES);
+    assert!(
+      rgba.capacity() <= MAX_FAVICON_BYTES,
+      "expected favicon rgba capacity to shrink (cap={}, len={})",
+      rgba.capacity(),
+      rgba.len()
     );
   }
 
@@ -1496,6 +1587,37 @@ mod bridge_worker_to_ui_sanitization_tests {
       panic!("expected DateTimePickerOpened after sanitization");
     };
     assert!(value.len() <= fastrender::ui::protocol_limits::MAX_INPUT_VALUE_BYTES);
+  }
+
+  #[test]
+  fn picker_payload_capacity_is_shrunk_even_when_in_limit() {
+    let mut accept = String::with_capacity(MAX_ACCEPT_ATTR_BYTES * 64);
+    accept.push_str("text/plain");
+    assert!(accept.len() < MAX_ACCEPT_ATTR_BYTES);
+    assert!(accept.capacity() > MAX_ACCEPT_ATTR_BYTES);
+    let msg = WorkerToUi::FilePickerOpened {
+      tab_id: TabId(1),
+      input_node_id: 5,
+      multiple: false,
+      accept: Some(accept),
+      anchor_css: Rect::from_xywh(1.0, 2.0, 3.0, 4.0),
+    };
+
+    let BridgeSanitizedMsgs::One(QueuedMsg::Worker(worker_msg)) =
+      sanitize_worker_to_ui_for_bridge_queue(msg)
+    else {
+      panic!("expected FilePickerOpened to be enqueued");
+    };
+    let WorkerToUi::FilePickerOpened { accept, .. } = worker_msg else {
+      panic!("expected FilePickerOpened after sanitization");
+    };
+    let accept = accept.expect("accept should remain Some");
+    assert!(
+      accept.capacity() <= MAX_ACCEPT_ATTR_BYTES,
+      "expected accept capacity to be bounded (cap={}, len={})",
+      accept.capacity(),
+      accept.len()
+    );
   }
 }
 
