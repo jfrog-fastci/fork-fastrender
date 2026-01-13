@@ -2957,7 +2957,7 @@ fn storage_set_item_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let Value::Object(storage_obj) = this else {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -2998,7 +2998,7 @@ fn storage_remove_item_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let Value::Object(storage_obj) = this else {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -3023,7 +3023,7 @@ fn storage_clear_native(
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
   let Value::Object(storage_obj) = this else {
-    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+    return Err(VmError::TypeError(ILLEGAL_INVOCATION_ERROR));
   };
   let area = storage_area_from_kind(vm, kind)?;
   let change = area.lock().clear();

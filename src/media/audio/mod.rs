@@ -1,4 +1,4 @@
-//! Audio output backends and decoder-facing PCM ingestion.
+//! Audio output backends, decoder-facing PCM ingestion, clock exposure, and runtime selection.
 //!
 //! The audio backend is responsible for two things:
 //!
@@ -13,6 +13,13 @@
 //! from callback frame counts (`AudioClock::OutputFrames`) can be ahead of “what the user hears” by
 //! a roughly-constant buffer duration; callers should treat this as a constant offset (not drift)
 //! and compensate using the estimated latency.
+//!
+//! ## Runtime selection (CI-friendly)
+//!
+//! The browser should be able to run on hosts without audio devices (e.g. CI). To keep behaviour
+//! predictable, the audio backend can be controlled with environment variables:
+//! - `FASTR_AUDIO_BACKEND=null|cpal|auto` (default: prefer CPAL when compiled, else null)
+//! - `FASTR_AUDIO_DEVICE=<substring>` (best-effort output device selection for CPAL)
 //!
 //! Real-time audio callbacks (e.g. the CPAL output callback) must never unwind across the callback
 //! boundary; see `panic_guard` for helpers that catch panics and output silence.
@@ -210,6 +217,58 @@ pub(crate) fn next_device_id_for_name(
   AudioDeviceId {
     name: name.to_string(),
     ordinal,
+  }
+}
+
+/// Environment variable controlling which audio backend to use.
+pub const ENV_AUDIO_BACKEND: &str = "FASTR_AUDIO_BACKEND";
+
+/// Environment variable used to select a specific output device (substring match).
+pub const ENV_AUDIO_DEVICE: &str = "FASTR_AUDIO_DEVICE";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioBackendKind {
+  Null,
+  Cpal,
+}
+
+impl AudioBackendKind {
+  pub fn as_str(self) -> &'static str {
+    match self {
+      Self::Null => "null",
+      Self::Cpal => "cpal",
+    }
+  }
+}
+
+impl std::fmt::Display for AudioBackendKind {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.as_str())
+  }
+}
+
+/// Small, UI-friendly info payload describing how the audio backend was chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioBackendInfo {
+  /// Backend requested via `FASTR_AUDIO_BACKEND` (if set).
+  ///
+  /// `None` means "auto" (use the default backend selection).
+  pub requested_backend: Option<AudioBackendKind>,
+  /// Backend selected after applying defaults (before runtime fallback).
+  pub resolved_backend: AudioBackendKind,
+  /// Backend that will actually be used.
+  pub selected_backend: AudioBackendKind,
+  /// Device substring filter requested via `FASTR_AUDIO_DEVICE`.
+  pub device_query: Option<String>,
+  /// Output device name chosen by the backend (best effort).
+  pub selected_device_name: Option<String>,
+  /// When the selected backend differs from the resolved backend, explains why.
+  pub fallback_reason: Option<String>,
+}
+
+impl AudioBackendInfo {
+  pub fn fell_back_to_null(&self) -> bool {
+    self.resolved_backend == AudioBackendKind::Cpal && self.selected_backend == AudioBackendKind::Null
   }
 }
 
@@ -716,11 +775,92 @@ pub trait AudioBackend: Send + Sync {
 }
 
 impl dyn AudioBackend {
+  /// Construct an audio backend using `FASTR_AUDIO_BACKEND` + `FASTR_AUDIO_DEVICE`.
+  ///
+  /// This function must never panic:
+  /// - Invalid env values are treated as "auto" with a warning.
+  /// - Runtime failures fall back to the null backend.
+  #[must_use]
+  pub fn new_from_env() -> (Box<dyn AudioBackend>, AudioBackendInfo) {
+    Self::new_from_env_with_config(&audio_engine_config())
+  }
+
+  /// Like [`Self::new_from_env`], but uses the provided configuration instead of reading
+  /// process-wide defaults.
+  #[must_use]
+  pub fn new_from_env_with_config(cfg: &AudioEngineConfig) -> (Box<dyn AudioBackend>, AudioBackendInfo) {
+    Self::new_from_env_with_config_and_trace(cfg, TraceHandle::default())
+  }
+
+  fn new_from_env_with_config_and_trace(
+    cfg: &AudioEngineConfig,
+    trace: TraceHandle,
+  ) -> (Box<dyn AudioBackend>, AudioBackendInfo) {
+    let backend_raw = std::env::var(ENV_AUDIO_BACKEND).ok();
+    let device_raw = std::env::var(ENV_AUDIO_DEVICE).ok();
+
+    let requested_backend = match parse_audio_backend_env(backend_raw.as_deref()) {
+      Ok(v) => v,
+      Err(err) => {
+        eprintln!("warning: {err}; falling back to auto selection");
+        None
+      }
+    };
+    let device_query = parse_audio_device_env(device_raw.as_deref());
+
+    let resolved_backend = requested_backend.unwrap_or_else(default_backend_kind);
+
+    let mut info = AudioBackendInfo {
+      requested_backend,
+      resolved_backend,
+      selected_backend: resolved_backend,
+      device_query: device_query.clone(),
+      selected_device_name: None,
+      fallback_reason: None,
+    };
+
+    let mut make_null = || {
+      Box::new(NullAudioBackend::new_with_config_and_trace(cfg, trace.clone()))
+        as Box<dyn AudioBackend>
+    };
+
+    let backend: Box<dyn AudioBackend> = match resolved_backend {
+      AudioBackendKind::Null => make_null(),
+      AudioBackendKind::Cpal => {
+        #[cfg(feature = "audio_cpal")]
+        {
+          match CpalAudioBackend::new_with_config_and_trace_and_device_query(
+            cfg,
+            trace.clone(),
+            device_query.as_deref(),
+          ) {
+            Ok(backend) => {
+              info.selected_device_name = backend.device_name().map(str::to_string);
+              Box::new(backend)
+            }
+            Err(err) => {
+              info.selected_backend = AudioBackendKind::Null;
+              info.fallback_reason = Some(err.to_string());
+              make_null()
+            }
+          }
+        }
+
+        #[cfg(not(feature = "audio_cpal"))]
+        {
+          info.selected_backend = AudioBackendKind::Null;
+          info.fallback_reason = Some("cpal backend is not enabled at compile time".to_string());
+          make_null()
+        }
+      }
+    };
+
+    (backend, info)
+  }
+
   /// Construct an audio backend suitable for interactive browsing sessions.
   ///
-  /// This prefers the CPAL output backend when available and falls back to a null backend
-  /// (silence) when audio devices are unavailable. The fallback path is intended to keep
-  /// headless/CI runs stable.
+  /// This is equivalent to [`Self::new_from_env`] with the debug info dropped.
   #[must_use]
   pub fn new_best_effort() -> Box<dyn AudioBackend> {
     Self::new_best_effort_with_config_and_trace(&audio_engine_config(), TraceHandle::default())
@@ -743,42 +883,13 @@ impl dyn AudioBackend {
   #[must_use]
   pub fn new_best_effort_with_config_and_trace(
     cfg: &AudioEngineConfig,
-    _trace: TraceHandle,
+    trace: TraceHandle,
   ) -> Box<dyn AudioBackend> {
-    #[cfg(feature = "audio_cpal")]
-    {
-      use std::sync::Once;
-      static WARN_ONCE: Once = Once::new();
-
-      match CpalAudioBackend::new_with_config_and_trace(cfg, _trace.clone()) {
-        Ok(backend) => return Box::new(backend),
-        Err(err) => {
-          // Device-unavailable is expected in CI/headless runs; avoid spamming a warning in that
-          // common case.
-          if err.kind() != AudioErrorKind::DeviceUnavailable {
-            WARN_ONCE.call_once(|| {
-              eprintln!(
-                "warning: failed to initialize CPAL audio backend ({err}); falling back to NullAudioBackend"
-              );
-            });
-          }
-        }
-      }
-    }
-
-    Box::new(NullAudioBackend::new_with_config_and_trace(cfg, _trace))
-  }
-
-  /// Returns a shared monotonic clock suitable for driving media time when audio is present.
-  ///
-  /// The returned clock is derived from the backend's timebase (often output-frame counts) and does
-  /// **not** apply output latency compensation. Callers that need an estimate of "time heard"
-  /// should subtract [`AudioOutputInfo::estimated_output_latency`].
-  #[must_use]
-  pub fn device_clock(&self) -> Arc<super::AudioDeviceClock> {
-    Arc::new(self.clock())
+    let (backend, _info) = Self::new_from_env_with_config_and_trace(cfg, trace);
+    backend
   }
 }
+
 impl PcmF32QueueProducer {
   /// Push decoder-provided PCM samples in a variety of common formats/layouts.
   ///
@@ -907,5 +1018,129 @@ impl PcmF32QueueProducer {
       self.push_without_pts(samples);
     }
     Ok(())
+  }
+}
+#[cfg(all(test, feature = "audio_cpal"))]
+mod audio_cpal_compile_tests {
+  use super::CpalAudioBackend;
+
+  /// Compile-only sanity check for the `audio_cpal` feature.
+  ///
+  /// This test must not attempt to open an audio device; it exists purely to ensure the optional
+  /// backend type is available and is thread-safe.
+  #[test]
+  fn audio_cpal_feature_compiles() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<CpalAudioBackend>();
+  }
+}
+
+fn default_backend_kind() -> AudioBackendKind {
+  if cfg!(feature = "audio_cpal") {
+    AudioBackendKind::Cpal
+  } else {
+    AudioBackendKind::Null
+  }
+}
+
+fn parse_audio_backend_env(
+  raw: Option<&str>,
+) -> std::result::Result<Option<AudioBackendKind>, String> {
+  let Some(raw) = raw else {
+    return Ok(None);
+  };
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Ok(None);
+  }
+
+  let normalized = trimmed.to_ascii_lowercase();
+  match normalized.as_str() {
+    "auto" | "default" => Ok(None),
+
+    "null" | "none" | "off" | "disabled" | "disable" | "0" | "false" | "no" => {
+      Ok(Some(AudioBackendKind::Null))
+    }
+
+    "cpal" | "1" | "true" | "yes" | "on" => Ok(Some(AudioBackendKind::Cpal)),
+
+    _ => Err(format!(
+      "{ENV_AUDIO_BACKEND}: invalid value {trimmed:?}; expected null|cpal|auto"
+    )),
+  }
+}
+
+fn parse_audio_device_env(raw: Option<&str>) -> Option<String> {
+  let raw = raw?;
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    None
+  } else {
+    Some(trimmed.to_string())
+  }
+}
+
+#[cfg(test)]
+mod env_parsing_tests {
+  use super::*;
+
+  #[test]
+  fn parse_audio_backend_env_values() {
+    assert_eq!(parse_audio_backend_env(None), Ok(None));
+    assert_eq!(parse_audio_backend_env(Some("")), Ok(None));
+    assert_eq!(parse_audio_backend_env(Some("   ")), Ok(None));
+    assert_eq!(parse_audio_backend_env(Some("auto")), Ok(None));
+    assert_eq!(parse_audio_backend_env(Some("DEFAULT")), Ok(None));
+
+    assert_eq!(
+      parse_audio_backend_env(Some("null")),
+      Ok(Some(AudioBackendKind::Null))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("NoNe")),
+      Ok(Some(AudioBackendKind::Null))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("off")),
+      Ok(Some(AudioBackendKind::Null))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("0")),
+      Ok(Some(AudioBackendKind::Null))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("false")),
+      Ok(Some(AudioBackendKind::Null))
+    );
+
+    assert_eq!(
+      parse_audio_backend_env(Some("cpal")),
+      Ok(Some(AudioBackendKind::Cpal))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("CPAL")),
+      Ok(Some(AudioBackendKind::Cpal))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("1")),
+      Ok(Some(AudioBackendKind::Cpal))
+    );
+    assert_eq!(
+      parse_audio_backend_env(Some("true")),
+      Ok(Some(AudioBackendKind::Cpal))
+    );
+
+    assert!(parse_audio_backend_env(Some("maybe")).is_err());
+  }
+
+  #[test]
+  fn parse_audio_device_env_values() {
+    assert_eq!(parse_audio_device_env(None), None);
+    assert_eq!(parse_audio_device_env(Some("")), None);
+    assert_eq!(parse_audio_device_env(Some("   ")), None);
+    assert_eq!(
+      parse_audio_device_env(Some(" Speakers ")),
+      Some("Speakers".to_string())
+    );
   }
 }

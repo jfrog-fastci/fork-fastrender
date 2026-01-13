@@ -271,6 +271,7 @@ impl IdleBackend for CpalStreamControlBackend {
 }
 pub struct CpalAudioBackend {
   config: AudioStreamConfig,
+  device_name: Option<String>,
   max_buffered_duration: Duration,
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
@@ -316,6 +317,27 @@ impl CpalAudioBackend {
     Self::new_with_config_and_device_and_trace(engine_cfg, DeviceSelector::Default, trace)
   }
 
+  pub(super) fn new_with_config_and_trace_and_device_query(
+    engine_cfg: &AudioEngineConfig,
+    trace: TraceHandle,
+    device_query: Option<&str>,
+  ) -> Result<Self, AudioError> {
+    let selector = device_query
+      .map(str::trim)
+      .filter(|q| !q.is_empty())
+      .map(str::to_ascii_lowercase)
+      .and_then(|query_lower| {
+        let devices = list_output_devices().ok()?;
+        devices
+          .into_iter()
+          .find(|device| device.name.to_ascii_lowercase().contains(&query_lower))
+          .map(|device| DeviceSelector::Device(device.id))
+      })
+      .unwrap_or(DeviceSelector::Default);
+
+    Self::new_with_config_and_device_and_trace(engine_cfg, selector, trace)
+  }
+
   /// Returns whether the CPAL output callback has ever panicked.
   ///
   /// This is a sticky flag intended for telemetry and recovery logic; it is never reset.
@@ -343,6 +365,7 @@ impl CpalAudioBackend {
     // lifetime via a shutdown channel + join handle.
     type ReadyState = (
       AudioStreamConfig,
+      Option<String>,
       Option<u32>,
       Arc<AtomicU32>,
       Arc<AtomicU64>,
@@ -364,6 +387,7 @@ impl CpalAudioBackend {
         let device_name = device_name_best_effort(&device);
         let (stream_config, _cpal_sample_format) =
           select_output_stream_config(&device, &device_name)?;
+        let device_name = Some(device_name);
         let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);
         let fixed_callback_frames = match stream_config.buffer_size {
           cpal::BufferSize::Fixed(frames) => Some(frames),
@@ -385,6 +409,7 @@ impl CpalAudioBackend {
         Ok((
           (
             config,
+            device_name,
             fixed_callback_frames,
             last_callback_frames,
             estimated_latency_nanos,
@@ -407,6 +432,7 @@ impl CpalAudioBackend {
 
       let (
         config,
+        _device_name,
         fixed_callback_frames,
         last_callback_frames,
         estimated_latency_nanos,
@@ -600,6 +626,7 @@ impl CpalAudioBackend {
 
     let (
       config,
+      device_name,
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
@@ -628,6 +655,7 @@ impl CpalAudioBackend {
 
     Ok(Self {
       config,
+      device_name,
       max_buffered_duration,
       fixed_callback_frames,
       last_callback_frames,
@@ -650,6 +678,9 @@ impl CpalAudioBackend {
   /// Snapshot of the debounced output-stream lifecycle state (useful for telemetry/debugging).
   pub fn idle_telemetry(&self) -> IdleEngineTelemetry {
     self.idle_engine.telemetry()
+  }
+  pub fn device_name(&self) -> Option<&str> {
+    self.device_name.as_deref()
   }
 }
 

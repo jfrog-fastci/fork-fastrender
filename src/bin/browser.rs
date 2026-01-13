@@ -6928,6 +6928,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     return Ok(());
   }
 
+  let (_, audio_info) = <dyn fastrender::media::audio::AudioBackend>::new_from_env();
+  if audio_info.fell_back_to_null() {
+    let reason = audio_info
+      .fallback_reason
+      .as_deref()
+      .unwrap_or("unknown error");
+    eprintln!("warning: audio output disabled; falling back to null backend ({reason})");
+  }
+
   let session_path = if let Some(path) = cli
     .session_path
     .as_ref()
@@ -13699,7 +13708,6 @@ impl PerfWindowLog {
     }
   }
 }
-
 #[cfg(feature = "browser_ui")]
 struct PendingPageSubtreeAccessKitUpdate {
   root_id: accesskit::NodeId,
