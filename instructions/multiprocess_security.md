@@ -183,6 +183,14 @@ Code-level API quick reference:
   - `ReportOnly` when `RendererSandboxConfig.report_only=true`
   - `Unsupported` when the current platform does not implement the requested sandbox layers
 
+- Spawn-time helper (preferred on Linux): `fastrender::sandbox::spawn::configure_renderer_command(...)`
+  (`src/sandbox/spawn.rs`).
+  - On Linux this installs a **pre-`exec` hardening prelude** via `CommandExt::pre_exec` to minimize
+    the unsandboxed window.
+  - Important nuance: the full Linux renderer seccomp policy intentionally denies `execve(2)` and
+    therefore cannot be installed in the `pre_exec` hook; the renderer process should still call
+    `apply_renderer_sandbox(...)` early during startup to install the full policy.
+
 macOS note: FastRender prefers the system-provided Seatbelt profile `pure-computation` when
 applying a strict sandbox. Some macOS versions do not ship that named profile (or treat it as
 invalid), so the implementation falls back to an embedded SBPL profile string with:
