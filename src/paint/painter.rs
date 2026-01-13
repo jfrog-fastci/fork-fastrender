@@ -26761,6 +26761,43 @@ mod tests {
     }
 
     #[test]
+    fn svg_mask_image_match_source_respects_mask_type_alpha_css_property() {
+      let html = r#"<!doctype html>
+        <style>
+          html, body { margin: 0; padding: 0; background: white; }
+          #box {
+            width: 100px;
+            height: 20px;
+            background: rgb(255 0 0);
+            mask-image: url(#m);
+            mask-repeat: no-repeat;
+            mask-size: 100% 100%;
+            mask-position: 0 0;
+          }
+          #m { mask-type: alpha; }
+        </style>
+        <svg width="0" height="0" style="position:absolute">
+          <mask id="m">
+            <rect x="0" y="0" width="50" height="20" fill="black"/>
+            <rect x="50" y="0" width="50" height="20" fill="white"/>
+          </mask>
+        </svg>
+        <div id="box"></div>
+      "#;
+
+      let (list, font_ctx) = build_display_list(html, 100, 20);
+      let pixmap = DisplayListRenderer::new(100, 20, Rgba::WHITE, font_ctx)
+        .expect("renderer")
+        .with_parallelism(PaintParallelism::disabled())
+        .render(&list)
+        .expect("render");
+
+      // With mask-type: alpha, opaque black and opaque white both yield full opacity.
+      assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
+      assert_eq!(pixel(&pixmap, 75, 10), (255, 0, 0, 255));
+    }
+
+    #[test]
     fn svg_mask_image_respects_maskContentUnits_object_bounding_box() {
       let html = r#"<!doctype html>
         <style>
