@@ -695,6 +695,26 @@ struct BrowserArgs {
   #[arg(long)]
   release: bool,
 
+  /// Show the in-app HUD overlay (sets `FASTR_BROWSER_HUD=1`).
+  #[arg(long)]
+  hud: bool,
+
+  /// Enable responsiveness/perf logging (sets `FASTR_PERF_LOG=1`).
+  #[arg(long)]
+  perf_log: bool,
+
+  /// Optional output path for responsiveness/perf logging (sets `FASTR_PERF_LOG_OUT=<path>`).
+  ///
+  /// Note: if the browser build does not support `FASTR_PERF_LOG_OUT` yet, tee stdout/stderr
+  /// instead:
+  /// `bash scripts/cargo_agent.sh xtask browser --release --perf-log about:test-layout-stress 2>&1 | tee target/perf.log`
+  #[arg(long, value_name = "PATH")]
+  perf_log_out: Option<PathBuf>,
+
+  /// Write Chrome trace events to this path (sets `FASTR_TRACE_OUT=<path>`).
+  #[arg(long, value_name = "PATH")]
+  trace_out: Option<PathBuf>,
+
   /// Apply an in-process address-space limit (MiB) via `FASTR_BROWSER_MEM_LIMIT_MB`.
   ///
   /// This is applied by the `browser` binary itself after startup so Cargo/rustup can still run
@@ -2491,6 +2511,10 @@ fn run_browser(args: BrowserArgs) -> Result<()> {
     &xtask::browser::BrowserCommandArgs {
       url: args.url,
       release: args.release,
+      hud: args.hud,
+      perf_log: args.perf_log || args.perf_log_out.is_some(),
+      perf_log_out: args.perf_log_out,
+      trace_out: args.trace_out,
       mem_limit_mb: args.mem_limit_mb,
       headless_smoke: args.headless_smoke,
     },

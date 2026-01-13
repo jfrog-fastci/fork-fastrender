@@ -27,6 +27,14 @@ enabled by default.
 Always use the repo wrappers (see [`AGENTS.md`](../AGENTS.md)) when building/running the browser UI:
 `scripts/cargo_agent.sh` for Cargo invocations and `scripts/run_limited.sh` to apply resource limits.
 
+The easiest entry point is the wrapper-safe `xtask browser` command, which already runs under
+`scripts/run_limited.sh` and exposes a few common instrumentation toggles:
+
+```bash
+# Release browser with HUD + responsiveness/perf logging enabled:
+bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress
+```
+
 ```bash
 # Debug build:
 bash scripts/run_limited.sh --as 64G -- \

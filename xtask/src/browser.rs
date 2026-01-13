@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Environment variable read by `src/bin/browser.rs` to apply an in-process address-space cap (MiB).
@@ -7,10 +7,31 @@ pub const FASTR_BROWSER_MEM_LIMIT_MB_ENV: &str = "FASTR_BROWSER_MEM_LIMIT_MB";
 /// Environment variable read by `src/bin/browser.rs` to run without initializing winit/wgpu.
 pub const FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV: &str = "FASTR_TEST_BROWSER_HEADLESS_SMOKE";
 
+/// Environment variable read by `src/bin/browser.rs` to show the in-app HUD overlay.
+pub const FASTR_BROWSER_HUD_ENV: &str = "FASTR_BROWSER_HUD";
+
+/// Environment variable used to enable lightweight responsiveness/perf logging in the browser UI.
+///
+/// Note: the browser may ignore this unless the corresponding instrumentation is implemented.
+pub const FASTR_PERF_LOG_ENV: &str = "FASTR_PERF_LOG";
+
+/// Optional output path for `FASTR_PERF_LOG` logs, when supported.
+///
+/// When unsupported, prefer teeing stdout/stderr instead:
+/// `bash scripts/cargo_agent.sh xtask browser --perf-log ... 2>&1 | tee target/perf.log`
+pub const FASTR_PERF_LOG_OUT_ENV: &str = "FASTR_PERF_LOG_OUT";
+
+/// Environment variable used by the render pipeline to write Chrome trace events.
+pub const FASTR_TRACE_OUT_ENV: &str = "FASTR_TRACE_OUT";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrowserCommandArgs {
   pub url: Option<String>,
   pub release: bool,
+  pub hud: bool,
+  pub perf_log: bool,
+  pub perf_log_out: Option<PathBuf>,
+  pub trace_out: Option<PathBuf>,
   pub mem_limit_mb: Option<u64>,
   pub headless_smoke: bool,
 }
@@ -26,6 +47,18 @@ pub fn build_browser_command(repo_root: &Path, args: &BrowserCommandArgs) -> Com
   cmd.current_dir(repo_root);
 
   // Apply in-process guardrails / test hooks expected by `src/bin/browser.rs`.
+  if args.hud {
+    cmd.env(FASTR_BROWSER_HUD_ENV, "1");
+  }
+  if args.perf_log || args.perf_log_out.is_some() {
+    cmd.env(FASTR_PERF_LOG_ENV, "1");
+  }
+  if let Some(out) = args.perf_log_out.as_ref() {
+    cmd.env(FASTR_PERF_LOG_OUT_ENV, out.as_os_str());
+  }
+  if let Some(out) = args.trace_out.as_ref() {
+    cmd.env(FASTR_TRACE_OUT_ENV, out.as_os_str());
+  }
   if let Some(limit_mb) = args.mem_limit_mb {
     cmd.env(FASTR_BROWSER_MEM_LIMIT_MB_ENV, limit_mb.to_string());
   }

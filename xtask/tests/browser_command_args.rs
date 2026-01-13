@@ -2,8 +2,9 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use xtask::browser::{
-  build_browser_command, BrowserCommandArgs, FASTR_BROWSER_MEM_LIMIT_MB_ENV,
-  FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV,
+  build_browser_command, BrowserCommandArgs, FASTR_BROWSER_HUD_ENV, FASTR_BROWSER_MEM_LIMIT_MB_ENV,
+  FASTR_PERF_LOG_ENV, FASTR_PERF_LOG_OUT_ENV, FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV,
+  FASTR_TRACE_OUT_ENV,
 };
 
 fn repo_root() -> PathBuf {
@@ -74,11 +75,19 @@ fn browser_command_wraps_cargo_with_run_limited_and_cargo_agent() {
 fn browser_command_supports_release_url_and_env_flags() {
   let repo_root = repo_root();
   let url = "https://example.com/".to_string();
+  let perf_log_out = PathBuf::from("target/perf.log");
+  let trace_out = PathBuf::from("target/trace.json");
+  let perf_log_out_value = perf_log_out.to_string_lossy().into_owned();
+  let trace_out_value = trace_out.to_string_lossy().into_owned();
   let cmd = build_browser_command(
     &repo_root,
     &BrowserCommandArgs {
       url: Some(url.clone()),
       release: true,
+      hud: true,
+      perf_log: true,
+      perf_log_out: Some(perf_log_out.clone()),
+      trace_out: Some(trace_out.clone()),
       mem_limit_mb: Some(1024),
       headless_smoke: true,
     },
@@ -103,5 +112,25 @@ fn browser_command_supports_release_url_and_env_flags() {
     cmd_env(&cmd, FASTR_TEST_BROWSER_HEADLESS_SMOKE_ENV).as_deref(),
     Some("1"),
     "expected headless smoke env to be set"
+  );
+  assert_eq!(
+    cmd_env(&cmd, FASTR_BROWSER_HUD_ENV).as_deref(),
+    Some("1"),
+    "expected hud env to be set"
+  );
+  assert_eq!(
+    cmd_env(&cmd, FASTR_PERF_LOG_ENV).as_deref(),
+    Some("1"),
+    "expected perf log env to be set"
+  );
+  assert_eq!(
+    cmd_env(&cmd, FASTR_PERF_LOG_OUT_ENV).as_deref(),
+    Some(perf_log_out_value.as_str()),
+    "expected perf log out env to be set"
+  );
+  assert_eq!(
+    cmd_env(&cmd, FASTR_TRACE_OUT_ENV).as_deref(),
+    Some(trace_out_value.as_str()),
+    "expected trace out env to be set"
   );
 }
