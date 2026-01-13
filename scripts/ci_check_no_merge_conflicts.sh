@@ -16,8 +16,11 @@ cd "${repo_root}"
 # - tests/wpt{,_dom,_suites}/**: vendored Web Platform Tests corpora (massive, not project source).
 # - vendor/ecma-rs/test262*/data/**: vendored JS corpora (massive, not project source).
 #
-# Note: we respect .gitignore by default to avoid scanning build outputs (target/, tmp/, ...). The
-# goal is to block committing conflict markers in source, not to lint generated artifacts.
+# Implementation note:
+# - When scanning the repository (default), prefer `git grep` so we only scan tracked files. This
+#   avoids false positives from build outputs and avoids missing tracked-but-ignored files (gitignore
+#   does not apply to tracked files, but tools like ripgrep still skip them).
+# - When scanning an arbitrary directory via `--path`, fall back to `rg` or a small Python walker.
 
 usage() {
   cat <<'EOF'
@@ -63,7 +66,35 @@ if command -v rg >/dev/null 2>&1; then
 fi
 
 set +e
-if [[ "${have_rg}" -eq 1 ]]; then
+use_git=0
+if [[ "${scan_root}" == "." ]] && command -v git >/dev/null 2>&1; then
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    use_git=1
+  fi
+fi
+
+if [[ "${use_git}" -eq 1 ]]; then
+  pathspecs=(
+    "${scan_root}"
+    ':!vendor/ecma-rs/parse-js/tests/TypeScript/**'
+    ':!specs/**'
+    ':!tests/wpt/**'
+    ':!tests/wpt_dom/**'
+    ':!tests/wpt_suites/**'
+    ':!vendor/ecma-rs/test262/data/**'
+    ':!vendor/ecma-rs/test262-semantic/data/**'
+  )
+
+  matches="$(
+    git grep -n -I \
+      -e '^<<<<<<< ' \
+      -e '^||||||| ' \
+      -e '^=======[[:space:]]*$' \
+      -e '^>>>>>>> ' \
+      -- "${pathspecs[@]}"
+  )"
+  status=$?
+elif [[ "${have_rg}" -eq 1 ]]; then
   matches="$(
     rg -n --hidden --no-messages \
       -e '^<<<<<<< ' \
@@ -181,7 +212,7 @@ fi
 # Legacy compatibility: older checkouts used `vendor/ecma-rs` as a git submodule. The top-level
 # `git grep` does not search inside submodules, so explicitly scan the ecma-rs work tree when it
 # exists as its own git repository.
-if [[ -e vendor/ecma-rs/.git ]]; then
+if [[ "${scan_root}" == "." && -e vendor/ecma-rs/.git ]]; then
   set +e
   ecma_rs_matches="$(
     git -C vendor/ecma-rs grep -n -I \
@@ -201,7 +232,7 @@ if [[ -e vendor/ecma-rs/.git ]]; then
     echo "error: found unresolved git merge-conflict markers in vendor/ecma-rs:" >&2
     echo "${ecma_rs_matches}" >&2
     echo >&2
-    echo "hint: resolve the conflict and delete the <<<<<<< / ======= / >>>>>>> lines before committing." >&2
+    echo "hint: resolve the conflict and delete the <<<<<<< / ||||||| / ======= / >>>>>>> lines before committing." >&2
     exit 1
   fi
 
