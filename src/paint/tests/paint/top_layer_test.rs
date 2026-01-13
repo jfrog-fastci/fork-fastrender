@@ -60,10 +60,9 @@ fn modal_dialog_adds_backdrop_and_inert() {
   let ids = enumerate_dom_ids(doc.dom());
   let btn = find_dom_by_id(doc.dom(), "btn").expect("button");
   let btn_id = *ids.get(&(btn as *const DomNode)).expect("node id");
-  let interaction_state = InteractionState {
-    focused: Some(btn_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(btn_id);
+  interaction_state.set_focus_chain(vec![btn_id]);
   let pixmap = doc
     .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
     .expect("paint dialog")
@@ -99,10 +98,9 @@ fn non_modal_dialog_allows_focus() {
   let ids = enumerate_dom_ids(doc.dom());
   let btn = find_dom_by_id(doc.dom(), "btn").expect("button");
   let btn_id = *ids.get(&(btn as *const DomNode)).expect("node id");
-  let interaction_state = InteractionState {
-    focused: Some(btn_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(btn_id);
+  interaction_state.set_focus_chain(vec![btn_id]);
   let pixmap = doc
     .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
     .expect("paint dialog")

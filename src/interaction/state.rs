@@ -203,12 +203,15 @@ pub struct InteractionState {
   /// Whether the focused element should match `:focus-visible`.
   pub focus_visible: bool,
   /// The focused element and its element ancestors (used for `:focus-within` matching).
-  pub focus_chain: Vec<usize>,
+  focus_chain: Vec<usize>,
+  focus_chain_membership: FxHashSet<usize>,
 
   /// The element under the pointer and its element ancestors (used for `:hover` matching).
-  pub hover_chain: Vec<usize>,
+  hover_chain: Vec<usize>,
+  hover_chain_membership: FxHashSet<usize>,
   /// The active element (e.g. pointer down) and its element ancestors (used for `:active` matching).
-  pub active_chain: Vec<usize>,
+  active_chain: Vec<usize>,
+  active_chain_membership: FxHashSet<usize>,
 
   /// Set of link node ids that have been visited in this document.
   ///
@@ -240,23 +243,107 @@ pub struct InteractionState {
 
 impl InteractionState {
   #[inline]
+  pub fn focus_chain(&self) -> &[usize] {
+    &self.focus_chain
+  }
+
+  #[inline]
+  pub fn hover_chain(&self) -> &[usize] {
+    &self.hover_chain
+  }
+
+  #[inline]
+  pub fn active_chain(&self) -> &[usize] {
+    &self.active_chain
+  }
+
+  pub fn set_focus_chain(&mut self, chain: Vec<usize>) {
+    self.focus_chain_membership.clear();
+    self.focus_chain_membership.reserve(chain.len());
+    for &id in &chain {
+      self.focus_chain_membership.insert(id);
+    }
+    self.focus_chain = chain;
+  }
+
+  pub fn set_hover_chain(&mut self, chain: Vec<usize>) {
+    self.hover_chain_membership.clear();
+    self.hover_chain_membership.reserve(chain.len());
+    for &id in &chain {
+      self.hover_chain_membership.insert(id);
+    }
+    self.hover_chain = chain;
+  }
+
+  pub fn set_active_chain(&mut self, chain: Vec<usize>) {
+    self.active_chain_membership.clear();
+    self.active_chain_membership.reserve(chain.len());
+    for &id in &chain {
+      self.active_chain_membership.insert(id);
+    }
+    self.active_chain = chain;
+  }
+
+  pub fn clear_focus_chain(&mut self) {
+    self.focus_chain.clear();
+    self.focus_chain_membership.clear();
+  }
+
+  pub fn clear_hover_chain(&mut self) {
+    self.hover_chain.clear();
+    self.hover_chain_membership.clear();
+  }
+
+  pub fn clear_active_chain(&mut self) {
+    self.active_chain.clear();
+    self.active_chain_membership.clear();
+  }
+
+  pub(crate) fn mutate_focus_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
+    f(&mut self.focus_chain);
+    self.focus_chain_membership.clear();
+    self.focus_chain_membership.reserve(self.focus_chain.len());
+    for &id in &self.focus_chain {
+      self.focus_chain_membership.insert(id);
+    }
+  }
+
+  pub(crate) fn mutate_hover_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
+    f(&mut self.hover_chain);
+    self.hover_chain_membership.clear();
+    self.hover_chain_membership.reserve(self.hover_chain.len());
+    for &id in &self.hover_chain {
+      self.hover_chain_membership.insert(id);
+    }
+  }
+
+  pub(crate) fn mutate_active_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
+    f(&mut self.active_chain);
+    self.active_chain_membership.clear();
+    self.active_chain_membership.reserve(self.active_chain.len());
+    for &id in &self.active_chain {
+      self.active_chain_membership.insert(id);
+    }
+  }
+
+  #[inline]
   pub fn is_focused(&self, node_id: usize) -> bool {
     self.focused == Some(node_id)
   }
 
   #[inline]
   pub fn is_focus_within(&self, node_id: usize) -> bool {
-    self.focus_chain.contains(&node_id)
+    self.focus_chain_membership.contains(&node_id)
   }
 
   #[inline]
   pub fn is_hovered(&self, node_id: usize) -> bool {
-    self.hover_chain.contains(&node_id)
+    self.hover_chain_membership.contains(&node_id)
   }
 
   #[inline]
   pub fn is_active(&self, node_id: usize) -> bool {
-    self.active_chain.contains(&node_id)
+    self.active_chain_membership.contains(&node_id)
   }
 
   #[inline]

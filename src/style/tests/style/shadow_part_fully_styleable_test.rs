@@ -53,10 +53,8 @@ fn part_supports_state_pseudo_classes() {
   "#;
   let dom = dom::parse_html(html).expect("parse html");
   let button_id = dom_node_id_by_id(&dom, "button");
-  let interaction_state = InteractionState {
-    hover_chain: vec![button_id],
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.set_hover_chain(vec![button_id]);
   let stylesheet = parse_stylesheet("x-host::part(button):hover { color: rgb(1, 2, 3); }")
     .expect("parse stylesheet");
   let styled = apply_styles_with_interaction_state(&dom, &stylesheet, Some(&interaction_state));

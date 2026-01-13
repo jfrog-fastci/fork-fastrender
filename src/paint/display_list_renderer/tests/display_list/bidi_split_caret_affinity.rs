@@ -71,16 +71,15 @@ fn display_list_bidi_split_caret_uses_affinity() {
   let caret = 4; // boundary after "ABC " (split caret between LTR/RTL runs)
 
   let render_with_affinity = |doc: &mut BrowserDocument, affinity: CaretAffinity| -> Pixmap {
-    let interaction_state = InteractionState {
-      focused: Some(node_id),
-      text_edit: Some(TextEditPaintState {
-        node_id,
-        caret,
-        caret_affinity: affinity,
-        selection: None,
-      }),
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.focused = Some(node_id);
+    interaction_state.set_focus_chain(vec![node_id]);
+    interaction_state.text_edit = Some(TextEditPaintState {
+      node_id,
+      caret,
+      caret_affinity: affinity,
+      selection: None,
+    });
     doc
       .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
       .expect("render form control")

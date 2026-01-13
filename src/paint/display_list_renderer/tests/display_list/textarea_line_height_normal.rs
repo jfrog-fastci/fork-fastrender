@@ -79,10 +79,9 @@ fn display_list_textarea_line_height_normal_positions_caret_using_font_metrics()
   let ids = enumerate_dom_ids(doc.dom());
   let node = find_by_id(doc.dom(), "target").expect("target textarea");
   let node_id = *ids.get(&(node as *const DomNode)).expect("node id");
-  let interaction_state = InteractionState {
-    focused: Some(node_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(node_id);
+  interaction_state.set_focus_chain(vec![node_id]);
   let pixmap = doc
     .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
     .expect("render textarea")

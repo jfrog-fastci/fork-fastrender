@@ -61,12 +61,10 @@ fn focus_within_considers_slotted_descendants() {
   "#;
   let dom = dom::parse_html(html).expect("parse html");
   let slotted_id = dom_node_id_by_id(&dom, "slotted");
-  let interaction_state = InteractionState {
-    focused: Some(slotted_id),
-    focus_visible: false,
-    focus_chain: vec![slotted_id],
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(slotted_id);
+  interaction_state.focus_visible = false;
+  interaction_state.set_focus_chain(vec![slotted_id]);
   let stylesheet = parse_stylesheet("").expect("stylesheet");
   let styled = apply_styles_with_interaction_state(&dom, &stylesheet, Some(&interaction_state));
 

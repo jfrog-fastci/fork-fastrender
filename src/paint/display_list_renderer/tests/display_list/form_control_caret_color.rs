@@ -48,10 +48,9 @@ fn display_list_form_control_caret_color_is_used() {
   let ids = enumerate_dom_ids(doc.dom());
   let node = find_by_id(doc.dom(), "target").expect("target input");
   let node_id = *ids.get(&(node as *const DomNode)).expect("node id");
-  let interaction_state = InteractionState {
-    focused: Some(node_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(node_id);
+  interaction_state.set_focus_chain(vec![node_id]);
   let pixmap = doc
     .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))
     .expect("render form control")

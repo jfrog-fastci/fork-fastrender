@@ -140,12 +140,10 @@ fn focus_states_use_interaction_state_hints() {
   let focus_only = find_dom_by_id(&dom, "focus-only").expect("focus-only input");
   let focus_only_id = *ids.get(&(focus_only as *const DomNode)).expect("node id");
 
-  let interaction_state = InteractionState {
-    focused: Some(focused_id),
-    focus_visible: true,
-    focus_chain: vec![focused_id],
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(focused_id);
+  interaction_state.focus_visible = true;
+  interaction_state.set_focus_chain(vec![focused_id]);
   let tree = renderer
     .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");
@@ -162,12 +160,10 @@ fn focus_states_use_interaction_state_hints() {
   assert!(!visible_only.states.focused);
   assert!(!visible_only.states.focus_visible);
 
-  let interaction_state = InteractionState {
-    focused: Some(focus_only_id),
-    focus_visible: false,
-    focus_chain: vec![focus_only_id],
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(focus_only_id);
+  interaction_state.focus_visible = false;
+  interaction_state.set_focus_chain(vec![focus_only_id]);
   let tree = renderer
     .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");

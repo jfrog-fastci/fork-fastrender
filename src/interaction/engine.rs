@@ -4914,13 +4914,13 @@ impl InteractionEngine {
       check_node_id("focused", focused);
     }
 
-    for &id in &self.state.focus_chain {
+    for &id in self.state.focus_chain() {
       check_node_id("focus_chain", id);
     }
-    for &id in &self.state.hover_chain {
+    for &id in self.state.hover_chain() {
       check_node_id("hover_chain", id);
     }
-    for &id in &self.state.active_chain {
+    for &id in self.state.active_chain() {
       check_node_id("active_chain", id);
     }
     for (&id, _) in &self.state.form_state.file_inputs {
@@ -5666,7 +5666,6 @@ impl InteractionEngine {
   ) -> bool {
     let prev_focused = self.state.focused;
     let prev_focus_visible = self.state.focus_visible;
-    let prev_focus_chain = self.state.focus_chain.clone();
     let mut changed = false;
 
     // Any focus change cancels an in-progress IME composition and resets text-editing state.
@@ -5687,9 +5686,11 @@ impl InteractionEngine {
 
     self.state.focused = new_focused;
     self.state.focus_visible = new_focused.is_some() && focus_visible;
-    self.state.focus_chain = new_focused
+    let new_focus_chain = new_focused
       .map(|id| collect_element_chain(index, id))
       .unwrap_or_default();
+    let focus_chain_changed = self.state.focus_chain() != new_focus_chain.as_slice();
+    self.state.set_focus_chain(new_focus_chain);
 
     if prev_focused != new_focused {
       if let Some(new_id) = new_focused {
@@ -5729,7 +5730,7 @@ impl InteractionEngine {
     changed
       || prev_focused != self.state.focused
       || prev_focus_visible != self.state.focus_visible
-      || prev_focus_chain != self.state.focus_chain
+      || focus_chain_changed
   }
 
   /// Programmatically update focus state for the given DOM node id.
@@ -5916,10 +5917,10 @@ impl InteractionEngine {
   }
 
   pub fn clear_pointer_state(&mut self, _dom: &mut DomNode) -> bool {
-    let hover_changed = !self.state.hover_chain.is_empty();
-    let active_changed = !self.state.active_chain.is_empty();
-    self.state.hover_chain.clear();
-    self.state.active_chain.clear();
+    let hover_changed = !self.state.hover_chain().is_empty();
+    let active_changed = !self.state.active_chain().is_empty();
+    self.state.clear_hover_chain();
+    self.state.clear_active_chain();
     self.pointer_down_target = None;
     self.link_drag = None;
     self.range_drag = None;
@@ -5932,8 +5933,8 @@ impl InteractionEngine {
   }
 
   pub fn clear_pointer_state_without_dom(&mut self) {
-    self.state.hover_chain.clear();
-    self.state.active_chain.clear();
+    self.state.clear_hover_chain();
+    self.state.clear_active_chain();
     self.pointer_down_target = None;
     self.link_drag = None;
     self.range_drag = None;
@@ -6259,8 +6260,8 @@ impl InteractionEngine {
       .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
       .unwrap_or_default();
 
-    let changed = self.state.hover_chain != new_chain;
-    self.state.hover_chain = new_chain;
+    let changed = self.state.hover_chain() != new_chain.as_slice();
+    self.state.set_hover_chain(new_chain);
     dom_changed | changed
   }
 
@@ -6385,8 +6386,8 @@ impl InteractionEngine {
       .map(|target| collect_element_chain_with_label_associated_controls(&index, target))
       .unwrap_or_default();
 
-    let changed = self.state.active_chain != new_chain;
-    self.state.active_chain = new_chain;
+    let changed = self.state.active_chain() != new_chain.as_slice();
+    self.state.set_active_chain(new_chain);
     self.pointer_down_target = down_target;
 
     let mut dom_changed = changed;
@@ -6967,8 +6968,12 @@ impl InteractionEngine {
       *id = new_ids.get(&(ptr as *const DomNode)).copied();
     }
 
-    remap_vec(&mut self.state.hover_chain, old_index, new_ids);
-    remap_vec(&mut self.state.active_chain, old_index, new_ids);
+    self
+      .state
+      .mutate_hover_chain(|ids| remap_vec(ids, old_index, new_ids));
+    self
+      .state
+      .mutate_active_chain(|ids| remap_vec(ids, old_index, new_ids));
     remap_opt(&mut self.pointer_down_target, old_index, new_ids);
     remap_opt(&mut self.last_click_target, old_index, new_ids);
     remap_opt(&mut self.last_form_submitter, old_index, new_ids);
@@ -6997,7 +7002,9 @@ impl InteractionEngine {
       }
     }
     remap_opt(&mut self.state.focused, old_index, new_ids);
-    remap_vec(&mut self.state.focus_chain, old_index, new_ids);
+    self
+      .state
+      .mutate_focus_chain(|ids| remap_vec(ids, old_index, new_ids));
 
     // Remap visited links.
     if !self.state.visited_links.is_empty() {
@@ -7271,8 +7278,8 @@ impl InteractionEngine {
         }
       }
     }
-    let active_changed = !self.state.active_chain.is_empty();
-    self.state.active_chain.clear();
+    let active_changed = !self.state.active_chain().is_empty();
+    self.state.clear_active_chain();
     self.pointer_down_target = None;
     dom_changed |= active_changed;
 

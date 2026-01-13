@@ -68,32 +68,30 @@ fn display_list_form_control_rtl_caret_maps_logical_start_to_visual_right() {
   let node_id = *ids.get(&(node as *const DomNode)).expect("node id");
   let value_len = "אבגדהוזח".chars().count();
 
-  let interaction_start = InteractionState {
-    focused: Some(node_id),
-    text_edit: Some(TextEditPaintState {
-      node_id,
-      caret: 0,
-      caret_affinity: CaretAffinity::Downstream,
-      selection: None,
-    }),
-    ..InteractionState::default()
-  };
+  let mut interaction_start = InteractionState::default();
+  interaction_start.focused = Some(node_id);
+  interaction_start.set_focus_chain(vec![node_id]);
+  interaction_start.text_edit = Some(TextEditPaintState {
+    node_id,
+    caret: 0,
+    caret_affinity: CaretAffinity::Downstream,
+    selection: None,
+  });
   let pixmap_start = doc
     .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_start))
     .expect("render rtl caret at start")
     .pixmap;
   let caret_x_start = caret_center_x(&pixmap_start);
 
-  let interaction_end = InteractionState {
-    focused: Some(node_id),
-    text_edit: Some(TextEditPaintState {
-      node_id,
-      caret: value_len,
-      caret_affinity: CaretAffinity::Downstream,
-      selection: None,
-    }),
-    ..InteractionState::default()
-  };
+  let mut interaction_end = InteractionState::default();
+  interaction_end.focused = Some(node_id);
+  interaction_end.set_focus_chain(vec![node_id]);
+  interaction_end.text_edit = Some(TextEditPaintState {
+    node_id,
+    caret: value_len,
+    caret_affinity: CaretAffinity::Downstream,
+    selection: None,
+  });
   let pixmap_end = doc
     .render_frame_with_scroll_state_and_interaction_state(Some(&interaction_end))
     .expect("render rtl caret at end")

@@ -127,13 +127,11 @@ fn accessibility_exports_selection_debug_fields() {
   let text_node = find_dom_by_id(&dom, "text").expect("text input");
   let text_id = *ids.get(&(text_node as *const DomNode)).expect("text id");
 
-  let mut state = InteractionState {
-    focused: Some(text_id),
-    focus_visible: true,
-    focus_chain: vec![text_id],
-    document_selection: Some(DocumentSelectionState::All),
-    ..InteractionState::default()
-  };
+  let mut state = InteractionState::default();
+  state.focused = Some(text_id);
+  state.focus_visible = true;
+  state.set_focus_chain(vec![text_id]);
+  state.document_selection = Some(DocumentSelectionState::All);
   state.text_edit = Some(TextEditPaintState {
     node_id: text_id,
     caret: 3,

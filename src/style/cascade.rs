@@ -19876,11 +19876,9 @@ mod tests {
       },
       children: vec![],
     };
-    let interaction_state = InteractionState {
-      focused: Some(1),
-      focus_chain: vec![1],
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.focused = Some(1);
+    interaction_state.set_focus_chain(vec![1]);
     let styled_focused = apply_styles_with_interaction_state(
       &focused_empty_input,
       &stylesheet,
@@ -30425,11 +30423,9 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let stylesheet =
       parse_stylesheet("html { color-scheme: light dark; } body { margin: 0; }").unwrap();
     let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Dark);
-    let interaction_state = InteractionState {
-      focused: Some(3),
-      focus_chain: vec![3, 2, 1],
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.focused = Some(3);
+    interaction_state.set_focus_chain(vec![3, 2, 1]);
     let styled = apply_styles_with_media_and_interaction_state(
       &dom,
       &stylesheet,
@@ -30479,11 +30475,9 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let stylesheet =
       parse_stylesheet("html { color-scheme: light dark; } body { margin: 0; }").unwrap();
     let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Dark);
-    let interaction_state = InteractionState {
-      focused: Some(3),
-      focus_chain: vec![3, 2, 1],
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.focused = Some(3);
+    interaction_state.set_focus_chain(vec![3, 2, 1]);
     let styled = apply_styles_with_media_and_interaction_state(
       &dom,
       &stylesheet,
@@ -33353,10 +33347,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       children: vec![],
     };
 
-    let interaction_state = InteractionState {
-      active_chain: vec![1],
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.set_active_chain(vec![1]);
     let styled_active =
       apply_styles_with_interaction_state(&active, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_active.styles.color, Rgba::new(255, 0, 0, 1.0));
@@ -33373,10 +33365,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       children: vec![],
     };
 
-    let interaction_state = InteractionState {
-      hover_chain: vec![1],
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.set_hover_chain(vec![1]);
     let styled_hover =
       apply_styles_with_interaction_state(&hover, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_hover.styles.color, Rgba::new(255, 0, 0, 1.0));
@@ -33390,11 +33380,9 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       children: vec![],
     };
 
-    let interaction_state = InteractionState {
-      focused: Some(1),
-      focus_chain: vec![1],
-      ..InteractionState::default()
-    };
+    let mut interaction_state = InteractionState::default();
+    interaction_state.focused = Some(1);
+    interaction_state.set_focus_chain(vec![1]);
     let styled_focus =
       apply_styles_with_interaction_state(&focus, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_focus.styles.outline_style, OutlineStyle::Dotted);

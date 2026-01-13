@@ -186,14 +186,13 @@ pub fn interaction_state_for_autofocus(dom: &DomNode) -> Option<InteractionState
     current = index.parent.get(current).copied().unwrap_or(0);
   }
 
-  Some(InteractionState {
-    focused: Some(focused_id),
-    // Autofocus is not pointer-driven. Err on the side of matching `:focus-visible` as well,
-    // which aligns with typical browser behavior for initially focused text controls.
-    focus_visible: true,
-    focus_chain,
-    ..InteractionState::default()
-  })
+  let mut state = InteractionState::default();
+  state.focused = Some(focused_id);
+  // Autofocus is not pointer-driven. Err on the side of matching `:focus-visible` as well,
+  // which aligns with typical browser behavior for initially focused text controls.
+  state.focus_visible = true;
+  state.set_focus_chain(focus_chain);
+  Some(state)
 }
 
 /// Returns the pre-order DOM node id of the first eligible `[autofocus]` element, if any.
@@ -273,4 +272,3 @@ mod tests {
     assert!(interaction_state_for_autofocus(&dom).is_none());
   }
 }
-

@@ -8553,7 +8553,7 @@ impl<'a> Element for ElementRef<'a> {
         let Some(slot_map) = _context.extra_data.slot_map else {
           return false;
         };
-        for focused_chain_id in state.focus_chain.iter() {
+        for focused_chain_id in state.focus_chain().iter() {
           let Some(slot) = slot_map.node_to_slot.get(focused_chain_id) else {
             continue;
           };
@@ -16118,7 +16118,7 @@ mod tests {
       children: vec![],
     };
     let mut state = InteractionState::default();
-    state.active_chain = vec![1];
+    state.set_active_chain(vec![1]);
     assert!(matches_with_interaction(
       &active,
       &[],
@@ -16138,7 +16138,7 @@ mod tests {
       children: vec![],
     };
     let mut hover_state = InteractionState::default();
-    hover_state.hover_chain = vec![1];
+    hover_state.set_hover_chain(vec![1]);
     assert!(matches_with_interaction(
       &hover,
       &[],
@@ -16162,7 +16162,7 @@ mod tests {
     };
     let mut focus_state = InteractionState::default();
     focus_state.focused = Some(1);
-    focus_state.focus_chain = vec![1];
+    focus_state.set_focus_chain(vec![1]);
     assert!(!matches_with_interaction(
       &focus,
       &[],
@@ -16205,7 +16205,7 @@ mod tests {
     assert!(matches(&svg, &[], &PseudoClass::Hover) == false);
     let mut state = InteractionState::default();
     state.focused = Some(1);
-    state.focus_chain = vec![1];
+    state.set_focus_chain(vec![1]);
     assert!(!matches_with_interaction(
       &svg,
       &[],
@@ -16226,7 +16226,7 @@ mod tests {
     };
     let mut state = InteractionState::default();
     state.focused = Some(1);
-    state.focus_chain = vec![1];
+    state.set_focus_chain(vec![1]);
     assert!(matches_with_interaction(
       &svg,
       &[],
@@ -16248,7 +16248,7 @@ mod tests {
 
     let mut state = InteractionState::default();
     state.focused = Some(1);
-    state.focus_chain = vec![1];
+    state.set_focus_chain(vec![1]);
     assert!(!matches_with_interaction(
       &svg,
       &[],
@@ -16270,7 +16270,7 @@ mod tests {
 
     let mut state = InteractionState::default();
     state.focused = Some(1);
-    state.focus_chain = vec![1];
+    state.set_focus_chain(vec![1]);
     assert!(matches_with_interaction(
       &focused,
       &[],
@@ -16304,7 +16304,7 @@ mod tests {
     let mut state = InteractionState::default();
     // pre-order ids: parent=1, child=2
     state.focused = Some(2);
-    state.focus_chain = vec![2, 1];
+    state.set_focus_chain(vec![2, 1]);
     assert!(matches_with_interaction(
       &parent,
       &[],
@@ -16366,7 +16366,7 @@ mod tests {
     let mut focus_state = InteractionState::default();
     // parent=1, svg=2
     focus_state.focused = Some(2);
-    focus_state.focus_chain = vec![2, 1];
+    focus_state.set_focus_chain(vec![2, 1]);
     assert!(matches_with_interaction(
       &parent_focusable,
       &[],
@@ -16388,7 +16388,7 @@ mod tests {
 
     let mut state = InteractionState::default();
     state.focused = Some(1);
-    state.focus_chain = vec![1];
+    state.set_focus_chain(vec![1]);
     state.focus_visible = true;
     assert!(matches_with_interaction(
       &dom,
@@ -16411,7 +16411,7 @@ mod tests {
 
     let mut state = InteractionState::default();
     state.focused = Some(1);
-    state.focus_chain = vec![1];
+    state.set_focus_chain(vec![1]);
     state.focus_visible = false;
     assert!(!matches_with_interaction(
       &dom,

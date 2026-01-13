@@ -2122,7 +2122,7 @@ fn new_form_control_input_types_are_identified() {
   let mut interaction_state = InteractionState::default();
   interaction_state.focused = Some(focus_id);
   interaction_state.focus_visible = true;
-  interaction_state.focus_chain = vec![focus_id];
+  interaction_state.set_focus_chain(vec![focus_id]);
   let box_tree = generate_box_tree_with_options_and_interaction_state(
     &styled,
     &BoxGenerationOptions::default(),

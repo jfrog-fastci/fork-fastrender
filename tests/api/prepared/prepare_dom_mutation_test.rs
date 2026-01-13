@@ -84,10 +84,9 @@ fn prepare_dom_with_options_round_trips_focus_state() -> Result<()> {
   .expect("input element");
   let input_id = *ids.get(&(input as *const DomNode)).expect("node id");
 
-  let interaction_state = InteractionState {
-    focused: Some(input_id),
-    ..InteractionState::default()
-  };
+  let mut interaction_state = InteractionState::default();
+  interaction_state.focused = Some(input_id);
+  interaction_state.set_focus_chain(vec![input_id]);
   let _frame =
     doc.render_frame_with_scroll_state_and_interaction_state(Some(&interaction_state))?;
   let prepared = doc.prepared().expect("prepared");

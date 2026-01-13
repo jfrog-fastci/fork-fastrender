@@ -81,9 +81,9 @@ fn interaction_state_css_fingerprint(state: Option<&InteractionState>) -> u64 {
       1u8.hash(&mut hasher);
       state.focused.hash(&mut hasher);
       state.focus_visible.hash(&mut hasher);
-      state.focus_chain.hash(&mut hasher);
-      state.hover_chain.hash(&mut hasher);
-      state.active_chain.hash(&mut hasher);
+      state.focus_chain().hash(&mut hasher);
+      state.hover_chain().hash(&mut hasher);
+      state.active_chain().hash(&mut hasher);
       hash_usize_set(&mut hasher, &state.visited_links);
       hash_usize_set(&mut hasher, &state.user_validity);
     }
