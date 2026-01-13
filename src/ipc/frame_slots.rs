@@ -294,9 +294,10 @@ impl SharedMemory {
       return Err(Error::Io(io::Error::last_os_error()));
     }
 
-    // Best-effort: prevent the renderer from shrinking/growing the slot (SIGBUS footgun). See
-    // `docs/ipc_linux_fd_passing.md` (seals checklist).
-    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+    // Best-effort: prevent the renderer from shrinking/growing the slot (SIGBUS footgun) and lock
+    // the seal set so the renderer cannot persistently add `F_SEAL_WRITE` (breaking future reuse of
+    // pooled slots). See `docs/ipc_linux_fd_passing.md` (seals checklist).
+    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
     let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_ADD_SEALS, seals) };
     if rc != 0 {
       let err = io::Error::last_os_error();
