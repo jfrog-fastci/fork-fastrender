@@ -145,6 +145,61 @@ impl ChromeFrameDocument {
     Ok(frame.pixmap)
   }
 
+  /// Render a new chrome frame only when something is invalidated (DOM mutations, scroll, etc).
+  ///
+  /// Returns `Ok(None)` when no dirty flags are set and no animation frame is required.
+  pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
+    if self.dirty {
+      return Ok(Some(self.render()?));
+    }
+    let interaction_state = self.interaction.interaction_state();
+    // Preserve `interaction_state = None` behavior (notably autofocus synthesis) unless we have any
+    // dynamic interaction state to apply.
+    let interaction_state =
+      has_nontrivial_interaction_state(interaction_state).then_some(interaction_state);
+    let rendered = self
+      .document
+      .render_if_needed_with_interaction_state(interaction_state)?;
+    if rendered.is_some() {
+      self.dirty = false;
+    }
+    Ok(rendered)
+  }
+
+  /// Returns `true` when the most recently prepared fragment tree contains any CSS animations or
+  /// transitions that require time-based sampling.
+  pub fn wants_ticks(&self) -> bool {
+    self.document.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    })
+  }
+
+  /// Advance the animation timeline.
+  ///
+  /// - When `now_ms` is `Some(t)`, CSS animations/transitions are sampled at `t` milliseconds since
+  ///   load. This marks paint dirty (but does not invalidate style/layout), allowing repaints from
+  ///   cached layout artifacts.
+  /// - When `now_ms` is `None`, real-time animation sampling is enabled and a repaint is requested
+  ///   only when [`BrowserDocument::needs_animation_frame`] indicates the animation clock has
+  ///   advanced.
+  ///
+  /// Returns `true` when callers should render a new frame.
+  pub fn tick(&mut self, now_ms: Option<f32>) -> bool {
+    match now_ms {
+      Some(ms) => {
+        self.document.set_animation_time_ms(ms);
+        true
+      }
+      None => {
+        // Ensure any previous explicit timeline is cleared so real-time sampling can be used.
+        self.document.set_animation_time(None);
+        self.document.set_realtime_animations_enabled(true);
+        self.document.needs_animation_frame()
+      }
+    }
+  }
+
   pub fn document(&self) -> &BrowserDocument {
     &self.document
   }
@@ -549,6 +604,71 @@ mod tests {
     );
     let action = chrome.handle_address_bar_key(&mut app, OmniboxNavKey::Enter);
     assert_eq!(action, Some(ChromeAction::ActivateTab(tab2)));
+    Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_tick_advances_css_keyframes_animation() -> Result<()> {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()?;
+
+    let options = RenderOptions::new().with_viewport(32, 32);
+    let mut chrome = ChromeFrameDocument::new(renderer, options.clone())?;
+
+    // Replace the built-in chrome template with a tiny deterministic animated document.
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #box {
+        width: 32px;
+        height: 32px;
+        background: rgb(255, 0, 0);
+        animation: bg 1000ms linear infinite;
+      }
+      @keyframes bg {
+        from { background: rgb(255, 0, 0); }
+        to   { background: rgb(0, 0, 255); }
+      }
+    </style>
+  </head>
+  <body><div id="box"></div></body>
+</html>"#;
+
+    chrome.document_mut().reset_with_html(html, options.clone())?;
+
+    assert!(
+      !chrome.wants_ticks(),
+      "expected wants_ticks to be false before the first render (no prepared fragment tree)"
+    );
+
+    // Prime the layout/paint cache so wants_ticks can inspect the prepared fragment tree.
+    let _ = chrome.render()?;
+    assert!(
+      chrome.wants_ticks(),
+      "expected wants_ticks to be true after first render for a document containing @keyframes"
+    );
+
+    // Drive the animation timeline deterministically and ensure subsequent renders differ.
+    assert!(chrome.tick(Some(0.0)), "tick(Some) should request a repaint");
+    let first = chrome
+      .render_if_needed()?
+      .expect("expected a new frame after tick(Some(0.0))");
+    let first_hash = pixmap_hash(&first);
+
+    assert!(chrome.tick(Some(500.0)), "tick(Some) should request a repaint");
+    let second = chrome
+      .render_if_needed()?
+      .expect("expected a new frame after tick(Some(500.0))");
+    let second_hash = pixmap_hash(&second);
+
+    assert_ne!(
+      first_hash, second_hash,
+      "expected keyframes animation sampling to change the rendered output between two times"
+    );
     Ok(())
   }
 }
