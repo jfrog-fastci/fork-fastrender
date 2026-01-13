@@ -1698,6 +1698,30 @@ pub fn form_submission_dom2(
   }
 }
 
+/// Compute an HTML form submission request for a submit button/input, using a live `dom2` document.
+///
+/// This mirrors the legacy [`form_submission`] API shape (submitter-first) so interaction engines
+/// can compute a submission given only the activated submitter element.
+pub fn form_submission_from_submitter_dom2(
+  dom: &dom2::Document,
+  submitter_node_id: dom2::NodeId,
+  submitter_image_coords: Option<(i32, i32)>,
+  document_url: &str,
+  base_url: &str,
+  file_inputs: Option<&dyn Dom2FileInputLookup>,
+) -> Option<FormSubmission> {
+  let form_id = resolve_form_owner_dom2(dom, submitter_node_id)?;
+  form_submission_dom2(
+    dom,
+    form_id,
+    Some(submitter_node_id),
+    submitter_image_coords,
+    document_url,
+    base_url,
+    file_inputs,
+  )
+}
+
 /// Compute an HTML form submission request for the given `<form>` without a submitter, using `dom2`.
 pub fn form_submission_without_submitter_dom2(
   dom: &dom2::Document,
@@ -1729,6 +1753,25 @@ pub fn form_submission_get_url_dom2(
   let submission = form_submission_dom2(
     dom,
     form_node_id,
+    submitter_node_id,
+    None,
+    document_url,
+    base_url,
+    file_inputs,
+  )?;
+  (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
+}
+
+/// Convenience wrapper around [`form_submission_from_submitter_dom2`] for GET-only submissions.
+pub fn form_submission_get_url_from_submitter_dom2(
+  dom: &dom2::Document,
+  submitter_node_id: dom2::NodeId,
+  document_url: &str,
+  base_url: &str,
+  file_inputs: Option<&dyn Dom2FileInputLookup>,
+) -> Option<String> {
+  let submission = form_submission_from_submitter_dom2(
+    dom,
     submitter_node_id,
     None,
     document_url,
