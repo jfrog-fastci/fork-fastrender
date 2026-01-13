@@ -1503,16 +1503,6 @@ status = "xfail"
 reason = "vm-js: RegExp backtracking/repetition capture semantics are still incorrect for some nested groups."
 
 [[expectations]]
-id = "built-ins/RegExp/prototype/exec/failure-lastindex-access.js"
-status = "xfail"
-reason = "vm-js: RegExpBuiltinExec should Get/ToLength(lastIndex) (with side effects) even when global/sticky are unset."
-
-[[expectations]]
-id = "built-ins/RegExp/prototype/exec/success-lastindex-access.js"
-status = "xfail"
-reason = "vm-js: RegExpBuiltinExec should Get/ToLength(lastIndex) (with side effects) even when global/sticky are unset."
-
-[[expectations]]
 id = "built-ins/RegExp/prototype/exec/u-captured-value.js"
 status = "xfail"
 reason = "vm-js: /u capture encoding for astral symbols is incorrect (should return UTF-16 surrogate pairs)."

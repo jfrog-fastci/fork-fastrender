@@ -8352,10 +8352,13 @@ fn regexp_exec_raw(
     s.len_code_units()
   };
 
-  let mut start = 0usize;
-  if global_or_sticky {
-    start = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
-  }
+  // ECMA-262 `RegExpBuiltinExec` always performs `Get(R, "lastIndex")` + `ToLength`, even when
+  // global/sticky are not set (in which case the value is ignored and the match begins at 0).
+  //
+  // This is observable via `lastIndex` getters and is covered by test262
+  // `failure-lastindex-access.js` / `success-lastindex-access.js`.
+  let last_index = regexp_get_last_index(vm, &mut scope, host, hooks, rx)?;
+  let start = if global_or_sticky { last_index } else { 0 };
 
   if start > s_len {
     if global_or_sticky {

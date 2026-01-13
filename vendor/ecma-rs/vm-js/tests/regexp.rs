@@ -421,6 +421,33 @@ fn regexp_unicode_mode_parses_non_bmp_literals_and_classes_as_code_points() {
 }
 
 #[test]
+fn regexp_exec_reads_lastindex_even_without_global_or_sticky() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        // Mirror test262 `failure-lastindex-access.js` / `success-lastindex-access.js`:
+        // when /g and /y are unset, RegExpBuiltinExec still reads `lastIndex` and performs ToLength,
+        // but does not write it back.
+        let gets = 0;
+        let counter = {
+          valueOf() { gets++; return 0; }
+        };
+        const r = /a/;
+        r.lastIndex = counter;
+
+        const fail = r.exec("nbc");
+        const ok1 = fail === null && r.lastIndex === counter;
+        const succ = r.exec("abc");
+        const ok2 = succ !== null && succ[0] === "a" && r.lastIndex === counter;
+        ok1 && ok2 && gets === 2
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn string_regex_methods_basic_match_search_replace_split() {
   let mut rt = new_runtime();
   let value = rt
