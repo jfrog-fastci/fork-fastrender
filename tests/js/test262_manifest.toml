@@ -1368,21 +1368,6 @@ status = "xfail"
 reason = "vm-js: RegExp backtracking/repetition capture semantics are still incorrect for some nested groups."
 
 [[expectations]]
-id = "built-ins/RegExp/prototype/exec/u-captured-value.js"
-status = "xfail"
-reason = "vm-js: /u capture encoding for astral symbols is incorrect (should return UTF-16 surrogate pairs)."
-
-[[expectations]]
-id = "built-ins/RegExp/prototype/exec/u-lastindex-value.js"
-status = "xfail"
-reason = "vm-js: /u lastIndex update should use UTF-16 code unit indices."
-
-[[expectations]]
-id = "built-ins/RegExp/prototype/exec/duplicate-named-groups-properties.js"
-status = "xfail"
-reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
-
-[[expectations]]
 id = "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js"
 status = "pass"
 
