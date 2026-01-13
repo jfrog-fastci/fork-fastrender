@@ -1086,8 +1086,12 @@ pub enum RendererToBrowser {
   /// The renderer discovered or updated the set of subframes attached to `parent_frame_id`.
   ///
   /// The browser must treat this message as untrusted: `parent_frame_id` must be owned by the
-  /// sending renderer process, and any referenced child `FrameId`s must be validated against the
-  /// browser's frame tree.
+  /// sending renderer process.
+  ///
+  /// Unlike [`SubframeInfo`], this message does **not** reference child [`FrameId`] values. The
+  /// renderer reports stable [`SubframeToken`]s plus a lightweight [`IframeNavigation`] spec; the
+  /// browser owns the mapping from `(parent_frame_id, token)` to a stable child `FrameId` and is
+  /// responsible for deciding when to create/navigate/process-swap child frames.
   SubframesDiscovered {
     parent_frame_id: FrameId,
     subframes: Vec<DiscoveredSubframe>,

@@ -129,7 +129,10 @@ impl BrowserFrameTree {
 
       match existing {
         Some(existing) => {
-          if existing.last_navigation != navigation {
+          let nav_changed = existing.last_navigation != navigation;
+          let opaque_origin_changed = existing.opaque_origin != subframe.opaque_origin;
+
+          if nav_changed || opaque_origin_changed {
             self.navigate_existing_subframe(
               parent_process,
               existing.frame_id,
@@ -141,7 +144,6 @@ impl BrowserFrameTree {
           }
 
           let rect_changed = existing.rect != subframe.rect;
-          let nav_changed = existing.last_navigation != navigation;
           if rect_changed || nav_changed || existing.opaque_origin != subframe.opaque_origin {
             if let Some(parent) = self.frames.get_mut(&parent_frame_id) {
               if let Some(slot) = parent.subframes.get_mut(&token) {
@@ -517,5 +519,84 @@ fn same_token_srcdoc_hash_change_triggers_navigate_without_process_swap() {
       BrowserToRenderer::DestroyFrame { .. } | BrowserToRenderer::CreateFrame { .. }
     )),
     "expected no process swap for srcdoc update; got {msgs_after:?}"
+  );
+}
+
+#[test]
+fn opaque_origin_change_causes_process_swap_even_with_same_navigation() {
+  let mut browser = BrowserFrameTree::new(SiteKeyFactory::new_with_seed(1));
+  let parent = browser.create_root("https://parent.test/");
+  let parent_process = browser.frames.get(&parent).unwrap().process;
+
+  // Start as an unsandboxed about:blank iframe (inherits parent site/process).
+  browser.handle_subframes_discovered(
+    parent,
+    &[discovered(
+      4,
+      IframeNavigation::AboutBlank,
+      rect(0.0, 0.0, 100.0, 100.0),
+    )],
+  );
+
+  let child_frame_id = browser
+    .frames
+    .get(&parent)
+    .unwrap()
+    .subframes
+    .get(&SubframeToken(4))
+    .unwrap()
+    .frame_id;
+  let child_process_before = browser.frames.get(&child_frame_id).unwrap().process;
+  assert_eq!(
+    child_process_before, parent_process,
+    "expected unsandboxed about:blank iframe to share the parent process"
+  );
+
+  let msgs_before = browser.processes.messages(parent_process).len();
+
+  // Now treat the same iframe token as forcing an opaque origin (e.g. sandbox without allow-same-origin).
+  let mut updated = discovered(4, IframeNavigation::AboutBlank, rect(0.0, 0.0, 100.0, 100.0));
+  updated.opaque_origin = true;
+  browser.handle_subframes_discovered(parent, &[updated]);
+
+  let child_process_after = browser.frames.get(&child_frame_id).unwrap().process;
+  assert_ne!(
+    child_process_before, child_process_after,
+    "expected process swap when opaque_origin changes"
+  );
+
+  let old_msgs = browser.processes.messages(child_process_before);
+  assert!(
+    old_msgs.iter().any(|msg| matches!(
+      msg,
+      BrowserToRenderer::DestroyFrame { frame_id } if *frame_id == child_frame_id
+    )),
+    "expected DestroyFrame in old process; got {old_msgs:?}"
+  );
+
+  let new_msgs = browser.processes.messages(child_process_after);
+  assert!(
+    new_msgs.iter().any(|msg| matches!(
+      msg,
+      BrowserToRenderer::CreateFrame { frame_id } if *frame_id == child_frame_id
+    )),
+    "expected CreateFrame in new process; got {new_msgs:?}"
+  );
+  assert!(
+    new_msgs.iter().any(|msg| matches!(
+      msg,
+      BrowserToRenderer::Navigate { frame_id, navigation, .. }
+        if *frame_id == child_frame_id && *navigation == IframeNavigation::AboutBlank
+    )),
+    "expected Navigate to about:blank in new process; got {new_msgs:?}"
+  );
+
+  // Parent process should not receive any extra Navigate for the child; only DestroyFrame due to swap.
+  let parent_new_msgs = &browser.processes.messages(parent_process)[msgs_before..];
+  assert!(
+    parent_new_msgs
+      .iter()
+      .all(|msg| !matches!(msg, BrowserToRenderer::Navigate { frame_id, .. } if *frame_id == child_frame_id)),
+    "expected no Navigate for child in parent process; got {parent_new_msgs:?}"
   );
 }
