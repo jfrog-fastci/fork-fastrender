@@ -13402,9 +13402,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
     // Critical safety: never store range responses into the normal cache. Range responses are not
     // complete representations and could poison future full-body reads if cached.
-    let res = self
-      .inner
-      .fetch_range_with_request(req, range, max_bytes)?;
+    // Range fetches intentionally bypass the single-flight map: `InFlightKey` does not encode the
+    // requested byte range, so de-duplicating could return the wrong bytes or collide with full
+    // fetches.
+    let res = self.inner.fetch_range_with_request(req, range, max_bytes)?;
     reserve_policy_bytes(&self.policy, &res)?;
     Ok(res)
   }
@@ -14270,6 +14271,7 @@ mod tests {
   use std::io::Write;
   use std::net::TcpListener;
   use std::net::TcpStream;
+  use std::sync::Condvar;
   use std::sync::atomic::AtomicUsize;
   use std::sync::atomic::Ordering;
   use std::sync::Arc;
@@ -24050,6 +24052,99 @@ mod tests {
     }
 
     assert_eq!(counter.load(Ordering::SeqCst), 1);
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_does_not_dedup_different_ranges() {
+    #[derive(Default)]
+    struct RangeControl {
+      started: usize,
+      release: bool,
+    }
+
+    #[derive(Clone)]
+    struct BlockingRangeFetcher {
+      calls: Arc<AtomicUsize>,
+      control: Arc<(Mutex<RangeControl>, Condvar)>,
+    }
+
+    impl ResourceFetcher for BlockingRangeFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("fetch() should not be called for range fetches");
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        let start = *range.start();
+        let end = *range.end();
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (lock, cv) = &*self.control;
+        let mut guard = lock.lock().unwrap();
+        guard.started += 1;
+        cv.notify_all();
+        while !guard.release {
+          guard = cv.wait(guard).unwrap();
+        }
+        drop(guard);
+
+        let mut res =
+          FetchedResource::new(format!("{start}-{end}").into_bytes(), Some("test/range".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let control = Arc::new((Mutex::new(RangeControl::default()), Condvar::new()));
+    let cache = Arc::new(CachingFetcher::new(BlockingRangeFetcher {
+      calls: Arc::clone(&calls),
+      control: Arc::clone(&control),
+    }));
+    let start_barrier = Arc::new(Barrier::new(2));
+
+    let url = "http://example.com/video.bin";
+    let req = FetchRequest::new(url, FetchDestination::Other);
+
+    let handle_a = {
+      let cache = Arc::clone(&cache);
+      let barrier = Arc::clone(&start_barrier);
+      thread::spawn(move || {
+        barrier.wait();
+        cache.fetch_range_with_request(req, 0..=3, 4).unwrap()
+      })
+    };
+    let handle_b = {
+      let cache = Arc::clone(&cache);
+      let barrier = Arc::clone(&start_barrier);
+      thread::spawn(move || {
+        barrier.wait();
+        cache.fetch_range_with_request(req, 4..=7, 4).unwrap()
+      })
+    };
+
+    // Wait for both inner range fetches to enter, then release them. If range requests were
+    // (incorrectly) single-flight de-duplicated, only one call would reach the inner fetcher and
+    // this wait would time out.
+    {
+      let (lock, cv) = &*control;
+      let guard = lock.lock().unwrap();
+      let (mut guard, _) = cv
+        .wait_timeout_while(guard, Duration::from_millis(500), |state| state.started < 2)
+        .unwrap();
+      guard.release = true;
+      cv.notify_all();
+    }
+
+    let res_a = handle_a.join().unwrap();
+    let res_b = handle_b.join().unwrap();
+
+    assert_eq!(String::from_utf8_lossy(&res_a.bytes), "0-3");
+    assert_eq!(String::from_utf8_lossy(&res_b.bytes), "4-7");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
   }
 
   #[test]
