@@ -4177,9 +4177,9 @@ pub(crate) fn is_readable_stream_object(vm: &Vm, heap: &Heap, obj: GcObject) -> 
   let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
 
   let key = WeakGcObject::from(obj);
-  let gc_runs = heap.gc_runs();
 
   if let Some(realm_id) = vm.current_realm() {
+    let gc_runs = heap.gc_runs();
     let Some(state) = registry.realms.get_mut(&realm_id) else {
       return false;
     };
@@ -4193,12 +4193,11 @@ pub(crate) fn is_readable_stream_object(vm: &Vm, heap: &Heap, obj: GcObject) -> 
 
   // If we don't have a current realm (e.g. tests calling native handlers directly), fall back to
   // scanning all installed realm states. The number of realms is expected to be small.
-  for state in registry.realms.values_mut() {
-    if gc_runs != state.last_gc_runs {
-      state.last_gc_runs = gc_runs;
-      state.streams.retain(|k, _| k.upgrade(heap).is_some());
-      state.readers.retain(|k, _| k.upgrade(heap).is_some());
-    }
+  //
+  // IMPORTANT: this fallback path must be read-only. The stream registry is global, and tests may
+  // create multiple independent VMs/heaps in parallel. Sweeping another realm's weak refs using the
+  // caller's heap can corrupt that realm state (WeakGcObject IDs are heap-local).
+  for state in registry.realms.values() {
     if state.streams.contains_key(&key) {
       return true;
     }
@@ -5598,9 +5597,9 @@ pub(crate) fn readable_stream_is_locked(vm: &Vm, heap: &Heap, obj: GcObject) -> 
   let mut registry = registry().lock().unwrap_or_else(|err| err.into_inner());
 
   let key = WeakGcObject::from(obj);
-  let gc_runs = heap.gc_runs();
 
   if let Some(realm_id) = vm.current_realm() {
+    let gc_runs = heap.gc_runs();
     let Some(state) = registry.realms.get_mut(&realm_id) else {
       return false;
     };
@@ -5614,12 +5613,10 @@ pub(crate) fn readable_stream_is_locked(vm: &Vm, heap: &Heap, obj: GcObject) -> 
 
   // If we don't have a current realm (e.g. tests calling native handlers directly), fall back to
   // scanning all installed realm states. The number of realms is expected to be small.
-  for state in registry.realms.values_mut() {
-    if gc_runs != state.last_gc_runs {
-      state.last_gc_runs = gc_runs;
-      state.streams.retain(|k, _| k.upgrade(heap).is_some());
-      state.readers.retain(|k, _| k.upgrade(heap).is_some());
-    }
+  //
+  // IMPORTANT: this fallback path must be read-only. See the comment in
+  // `is_readable_stream_object` for details.
+  for state in registry.realms.values() {
     if let Some(stream_state) = state.streams.get(&key) {
       return stream_state.locked;
     }

@@ -7836,7 +7836,6 @@ mod dom_dispatch_tests {
     let window = host.window_mut();
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
@@ -7934,7 +7933,6 @@ mod dom_dispatch_tests {
     let window = host.window_mut();
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
@@ -7986,7 +7984,6 @@ mod dom_dispatch_tests {
     let window = host.window_mut();
     let (vm, realm, heap) = window.vm_realm_and_heap_mut();
     let mut scope = heap.scope();
-
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
     let document_obj = vm
       .user_data::<WindowRealmUserData>()

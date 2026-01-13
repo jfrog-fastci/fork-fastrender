@@ -39,7 +39,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vm_js::{
   GcObject, Heap, HostSlots, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -135,6 +135,7 @@ struct StreamConsumeState {
   reader_root: RootId,
   resolve_root: RootId,
   reject_root: RootId,
+  abort_signal_root: Option<RootId>,
   on_fulfilled_root: RootId,
   on_rejected_root: RootId,
   bytes: Vec<u8>,
@@ -144,6 +145,7 @@ struct StreamConsumeState {
 
 struct EnvState {
   env: WindowFetchEnv,
+  realm_id: RealmId,
   promise_executor_call: NativeFunctionId,
   body_stream_get_reader_wrapper_call: NativeFunctionId,
   body_stream_cancel_wrapper_call: NativeFunctionId,
@@ -151,6 +153,8 @@ struct EnvState {
   body_stream_reader_cancel_wrapper_call: NativeFunctionId,
   stream_consume_fulfilled_call: NativeFunctionId,
   stream_consume_rejected_call: NativeFunctionId,
+  fetch_body_stream_then_fulfilled_call: NativeFunctionId,
+  fetch_body_stream_then_rejected_call: NativeFunctionId,
   next_id: u64,
   multipart_boundary_counter: u64,
   owned_headers: HashMap<u64, CoreHeaders>,
@@ -164,7 +168,19 @@ struct EnvState {
   response_wrappers: HashMap<u64, ResponseWrapperState>,
   headers_iterators_wrappers: HashMap<u64, WeakGcObject>,
   stream_consumptions: HashMap<u64, StreamConsumeState>,
+  pending_fetch_stream_bodies: HashMap<u64, PendingFetchStreamBodyState>,
   last_gc_runs: u64,
+}
+
+struct PendingFetchStreamBodyState {
+  request: CoreRequest,
+  object_url_origin: String,
+  headers_proto: GcObject,
+  response_proto: GcObject,
+  resolve_root: RootId,
+  reject_root: RootId,
+  promise_root: RootId,
+  signal_root: Option<RootId>,
 }
 
 struct HeadersIteratorState {
@@ -187,6 +203,7 @@ struct ResponseWrapperState {
 impl EnvState {
   fn new(
     env: WindowFetchEnv,
+    realm_id: RealmId,
     promise_executor_call: NativeFunctionId,
     body_stream_get_reader_wrapper_call: NativeFunctionId,
     body_stream_cancel_wrapper_call: NativeFunctionId,
@@ -194,10 +211,13 @@ impl EnvState {
     body_stream_reader_cancel_wrapper_call: NativeFunctionId,
     stream_consume_fulfilled_call: NativeFunctionId,
     stream_consume_rejected_call: NativeFunctionId,
+    fetch_body_stream_then_fulfilled_call: NativeFunctionId,
+    fetch_body_stream_then_rejected_call: NativeFunctionId,
     last_gc_runs: u64,
   ) -> Self {
     Self {
       env,
+      realm_id,
       promise_executor_call,
       body_stream_get_reader_wrapper_call,
       body_stream_cancel_wrapper_call,
@@ -205,6 +225,8 @@ impl EnvState {
       body_stream_reader_cancel_wrapper_call,
       stream_consume_fulfilled_call,
       stream_consume_rejected_call,
+      fetch_body_stream_then_fulfilled_call,
+      fetch_body_stream_then_rejected_call,
       next_id: 1,
       multipart_boundary_counter: 1,
       owned_headers: HashMap::new(),
@@ -218,6 +240,7 @@ impl EnvState {
       response_wrappers: HashMap::new(),
       headers_iterators_wrappers: HashMap::new(),
       stream_consumptions: HashMap::new(),
+      pending_fetch_stream_bodies: HashMap::new(),
       last_gc_runs,
     }
   }
@@ -894,6 +917,7 @@ fn start_consuming_body_stream(
   host_hooks: &mut dyn VmHostHooks,
   env_id: u64,
   stream: GcObject,
+  abort_signal: Option<GcObject>,
   max_bytes: usize,
   kind: StreamConsumeKind,
 ) -> Result<Value, VmError> {
@@ -904,6 +928,10 @@ fn start_consuming_body_stream(
   let resolve_root = scope.heap_mut().add_root(cap.resolve)?;
   let reject_root = scope.heap_mut().add_root(cap.reject)?;
   let stream_root = scope.heap_mut().add_root(Value::Object(stream))?;
+  let abort_signal_root = match abort_signal {
+    Some(obj) => Some(scope.heap_mut().add_root(Value::Object(obj))?),
+    None => None,
+  };
 
   // Install wrappers for `getReader()`/`cancel()` and reader methods.
   ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, stream)?;
@@ -948,6 +976,9 @@ fn start_consuming_body_stream(
       scope.heap_mut().remove_root(resolve_root);
       scope.heap_mut().remove_root(reject_root);
       scope.heap_mut().remove_root(stream_root);
+      if let Some(abort_signal_root) = abort_signal_root {
+        scope.heap_mut().remove_root(abort_signal_root);
+      }
       return Ok(promise);
     }
   };
@@ -1005,6 +1036,7 @@ fn start_consuming_body_stream(
         reader_root,
         resolve_root,
         reject_root,
+        abort_signal_root,
         on_fulfilled_root,
         on_rejected_root,
         bytes: Vec::new(),
@@ -1060,6 +1092,9 @@ fn start_consuming_body_stream(
       scope.heap_mut().remove_root(state.reader_root);
       scope.heap_mut().remove_root(state.resolve_root);
       scope.heap_mut().remove_root(state.reject_root);
+      if let Some(abort_signal_root) = state.abort_signal_root {
+        scope.heap_mut().remove_root(abort_signal_root);
+      }
       scope.heap_mut().remove_root(state.on_fulfilled_root);
       scope.heap_mut().remove_root(state.on_rejected_root);
     }
@@ -1282,6 +1317,9 @@ fn stream_consume_resolve_reject_and_cleanup(
   scope.heap_mut().remove_root(state.reader_root);
   scope.heap_mut().remove_root(state.resolve_root);
   scope.heap_mut().remove_root(state.reject_root);
+  if let Some(abort_signal_root) = state.abort_signal_root {
+    scope.heap_mut().remove_root(abort_signal_root);
+  }
   scope.heap_mut().remove_root(state.on_fulfilled_root);
   scope.heap_mut().remove_root(state.on_rejected_root);
   // Drop buffers eagerly.
@@ -1299,6 +1337,37 @@ fn stream_consume_fulfilled_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let (env_id, consume_id) = stream_consume_info_from_callee(scope, callee)?;
+
+  // AbortSignal support (used by fetch request body buffering). If a signal is provided and has
+  // been aborted, stop consumption and reject with `signal.reason`.
+  let abort_signal_root = with_env_state(env_id, scope.heap(), |state| {
+    Ok(
+      state
+        .stream_consumptions
+        .get(&consume_id)
+        .and_then(|s| s.abort_signal_root),
+    )
+  })?;
+  if let Some(signal_root_id) = abort_signal_root {
+    let signal_value = scope
+      .heap()
+      .get_root(signal_root_id)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    if let Value::Object(signal_obj) = signal_value {
+      scope.push_root(Value::Object(signal_obj))?;
+      let aborted_key = alloc_key(scope, "aborted")?;
+      let aborted_val =
+        vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, aborted_key)?;
+      if scope.heap().to_boolean(aborted_val)? {
+        let reason_key = alloc_key(scope, "reason")?;
+        let reason = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, reason_key)?;
+        if let Some(state) = stream_consume_cleanup(scope, env_id, consume_id)? {
+          stream_consume_resolve_reject_and_cleanup(vm, scope, host, host_hooks, state, Err(reason))?;
+        }
+        return Ok(Value::Undefined);
+      }
+    }
+  }
 
   let result_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(result_obj) = result_val else {
@@ -1405,12 +1474,12 @@ fn stream_consume_fulfilled_native(
   }
 
   let chunk_val = vm.get_with_host_and_hooks(host, scope, host_hooks, result_obj, value_key)?;
-  let bytes: Vec<u8> = match chunk_val {
+  let chunk_bytes: &[u8] = match chunk_val {
     Value::Object(obj) => {
       if scope.heap().is_uint8_array_object(obj) {
-        scope.heap().uint8_array_data(obj)?.to_vec()
+        scope.heap().uint8_array_data(obj)?
       } else if scope.heap().is_array_buffer_object(obj) {
-        scope.heap().array_buffer_data(obj)?.to_vec()
+        scope.heap().array_buffer_data(obj)?
       } else {
         let Some(state) = stream_consume_cleanup(scope, env_id, consume_id)? else {
           return Ok(Value::Undefined);
@@ -1460,7 +1529,7 @@ fn stream_consume_fulfilled_native(
       let next_len = consume_state
         .bytes
         .len()
-        .checked_add(bytes.len())
+        .checked_add(chunk_bytes.len())
         .unwrap_or(usize::MAX);
       next_len > consume_state.max_bytes
     };
@@ -1477,7 +1546,7 @@ fn stream_consume_fulfilled_native(
       .stream_consumptions
       .get_mut(&consume_id)
       .ok_or(VmError::TypeError("stream consume state missing"))?;
-    consume_state.bytes.extend_from_slice(&bytes);
+    consume_state.bytes.extend_from_slice(chunk_bytes);
     Ok(AppendOutcome::Continue {
       reader_root: consume_state.reader_root,
       on_fulfilled_root: consume_state.on_fulfilled_root,
@@ -3464,15 +3533,30 @@ fn apply_request_init(
     match body_val {
       Value::Object(obj) => {
         if is_readable_stream_like_object(vm, scope, host, host_hooks, obj)? {
-          // FastRender's networking layer only supports in-memory request bodies for now.
-          // Reject ReadableStream bodies up-front (and do not coerce via `ToString`).
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host,
-            host_hooks,
-            "Request body ReadableStream is not supported yet",
-          ));
+          // Track disturbed state for external body streams (Fetch's `bodyUsed`).
+          ensure_body_stream_wrappers_installed(vm, scope, host, host_hooks, env_id, obj)?;
+          if readable_stream_is_locked(vm, scope, host, host_hooks, obj)? {
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is locked",
+            ));
+          }
+          if body_stream_is_used(scope, obj)? {
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is already used",
+            ));
+          }
+          // The core fetch layer only supports in-memory bodies. The stream will be buffered when
+          // the request is dispatched (e.g. via `fetch()`).
+          request.body = None;
+          *body_stream_out = Some(obj);
         } else {
           let bytes: Vec<u8> = if scope.heap().is_array_buffer_object(obj) {
             let data = scope.heap().array_buffer_data(obj)?;
@@ -4044,6 +4128,7 @@ fn request_text_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::Text,
       );
@@ -4178,6 +4263,7 @@ fn request_array_buffer_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::ArrayBuffer,
       );
@@ -4342,6 +4428,7 @@ fn request_blob_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::Blob { blob_type },
       );
@@ -4538,6 +4625,7 @@ fn request_form_data_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::FormData { content_type },
       );
@@ -4725,6 +4813,7 @@ fn request_json_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::Json,
       );
@@ -4868,7 +4957,29 @@ fn request_body_get_native(
     return Ok(Value::Null);
   }
 
-  let stream_obj = window_streams::create_readable_byte_stream_lazy(vm, scope, callee, move || {
+  // `window_streams::create_readable_byte_stream_lazy` needs a realm id. When this accessor is
+  // invoked without an active `ExecutionContext` (e.g. Rust tests calling `vm.get` directly),
+  // provide a temporary callee with a realm-id slot so streams can resolve per-realm state.
+  let streams_callee = if vm.current_realm().is_some() {
+    callee
+  } else {
+    let (realm_id, call_id) = with_env_state(env_id, scope.heap(), |state| {
+      Ok((state.realm_id, state.promise_executor_call))
+    })?;
+    let name_s = scope.alloc_string("__fastrender_streams_realm")?;
+    scope.push_root(Value::String(name_s))?;
+    let token_fn = scope.alloc_native_function_with_slots(
+      call_id,
+      None,
+      name_s,
+      0,
+      &[Value::Number(realm_id.to_raw() as f64)],
+    )?;
+    scope.push_root(Value::Object(token_fn))?;
+    token_fn
+  };
+
+  let stream_obj = window_streams::create_readable_byte_stream_lazy(vm, scope, streams_callee, move || {
     with_env_state_mut_no_sweep(env_id, |state| {
       let req = state
         .requests
@@ -5267,6 +5378,7 @@ fn response_text_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::Text,
       );
@@ -5401,6 +5513,7 @@ fn response_array_buffer_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::ArrayBuffer,
       );
@@ -5566,6 +5679,7 @@ fn response_blob_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::Blob { blob_type },
       );
@@ -5763,6 +5877,7 @@ fn response_form_data_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::FormData { content_type },
       );
@@ -5993,6 +6108,7 @@ fn response_json_native(
         host_hooks,
         env_id,
         stream_obj,
+        None,
         max_bytes,
         StreamConsumeKind::Json,
       );
@@ -6206,7 +6322,27 @@ fn response_body_get_native(
     return Ok(Value::Null);
   }
 
-  let stream_obj = window_streams::create_readable_byte_stream_lazy(vm, scope, callee, move || {
+  // See `request_body_get_native` for why we may need to synthesize a realm-aware callee.
+  let streams_callee = if vm.current_realm().is_some() {
+    callee
+  } else {
+    let (realm_id, call_id) = with_env_state(env_id, scope.heap(), |state| {
+      Ok((state.realm_id, state.promise_executor_call))
+    })?;
+    let name_s = scope.alloc_string("__fastrender_streams_realm")?;
+    scope.push_root(Value::String(name_s))?;
+    let token_fn = scope.alloc_native_function_with_slots(
+      call_id,
+      None,
+      name_s,
+      0,
+      &[Value::Number(realm_id.to_raw() as f64)],
+    )?;
+    scope.push_root(Value::Object(token_fn))?;
+    token_fn
+  };
+
+  let stream_obj = window_streams::create_readable_byte_stream_lazy(vm, scope, streams_callee, move || {
     with_env_state_mut_no_sweep(env_id, |state| {
       let res = state
         .responses
@@ -6696,264 +6832,35 @@ fn response_ctor_construct(
   Ok(Value::Object(obj))
 }
 
-fn fetch_call<Host: WindowRealmHost + 'static>(
+fn remove_fetch_roots(heap: &mut Heap, resolve_root: RootId, reject_root: RootId, promise_root: RootId, signal_root: Option<RootId>) {
+  heap.remove_root(resolve_root);
+  heap.remove_root(reject_root);
+  heap.remove_root(promise_root);
+  if let Some(signal_root) = signal_root {
+    heap.remove_root(signal_root);
+  }
+}
+
+fn enqueue_fetch_network_task<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
-) -> Result<Value, VmError> {
-  let env_id = env_id_from_callee(scope, callee)?;
-  let headers_proto = headers_proto_from_callee(scope, callee)?;
-  let response_proto = response_proto_from_callee(scope, callee)?;
-  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
-  let input = args.get(0).copied().unwrap_or(Value::Undefined);
-  let init = args.get(1).copied().unwrap_or(Value::Undefined);
-
-  // Build request synchronously (invalid init should reject deterministically).
-  let input_request_info = request_info_from_value(scope, input);
-  let input_request_obj = match (input_request_info, input) {
-    (Some(_), Value::Object(obj)) => Some(obj),
-    _ => None,
-  };
-
-  let mut request = if let Some((other_env_id, other_request_id)) = input_request_info {
-    let cloned: Option<CoreRequest> = with_env_state(other_env_id, scope.heap(), |state| {
-      let req = state
-        .requests
-        .get(&other_request_id)
-        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
-      if req.body.as_ref().map_or(false, |b| b.body_used()) {
-        Ok(None)
-      } else {
-        Ok(Some(req.clone()))
-      }
-    })?;
-    match cloned {
-      Some(req) => req,
-      None => {
-        return Err(throw_type_error(
-          vm,
-          scope,
-          host,
-          host_hooks,
-          "Request body is already used",
-        ));
-      }
-    }
-  } else {
-    let url = to_rust_string_limited(
-      scope.heap_mut(),
-      input,
-      limits.max_url_bytes,
-      FETCH_URL_TOO_LONG_ERROR,
-    )?;
-    let base_url = current_document_base_url(vm, scope.heap(), env_id)?;
-    let url = resolve_url(&url, base_url.as_deref())
-      .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
-    CoreRequest::new_with_limits("GET", url, &limits)
-  };
-
-  let mut body_stream: Option<GcObject> = None;
-  let init_body_provided = apply_request_init(
-    vm,
-    scope,
-    host,
-    host_hooks,
-    env_id,
-    &limits,
-    &mut request,
-    &mut body_stream,
-    init,
-  )?;
-
-  // Enforce invariants even when `init` is omitted (e.g. `fetch(existingRequest)`).
-  request.method =
-    normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
-  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
-    if request.body.is_some() || body_stream.is_some() {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        host,
-        host_hooks,
-        "Request body is not allowed for GET/HEAD",
-      ));
-    }
-  }
-  if request.mode == RequestMode::NoCors {
-    if request.redirect != RequestRedirect::Follow {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        host,
-        host_hooks,
-        "Request.redirect must be \"follow\" for mode \"no-cors\"",
-      ));
-    }
-    if !(request.method.eq_ignore_ascii_case("GET")
-      || request.method.eq_ignore_ascii_case("HEAD")
-      || request.method.eq_ignore_ascii_case("POST"))
-    {
-      return Err(throw_type_error(
-        vm,
-        scope,
-        host,
-        host_hooks,
-        "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
-      ));
-    }
-  }
-
-  if !init_body_provided {
-    if let Some(input_obj) = input_request_obj {
-      if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, input_obj)? {
-        return Err(throw_type_error(
-          vm,
-          scope,
-          host,
-          host_hooks,
-          "Request body is locked",
-        ));
-      }
-
-      // Fetch cannot currently stream request bodies. Avoid silently dropping external streams when
-      // `fetch(existingRequest)` is used.
-      if request.body.is_none() && body_stream.is_none() {
-        let cached = get_data_prop(scope, input_obj, REQUEST_BODY_STREAM_KEY)?;
-        if let Value::Object(input_stream) = cached {
-          if body_stream_is_used(scope, input_stream)? {
-            return Err(throw_type_error(
-              vm,
-              scope,
-              host,
-              host_hooks,
-              "Request body is already used",
-            ));
-          }
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host,
-            host_hooks,
-            "Request body ReadableStream is not supported yet",
-          ));
-        }
-      }
-    }
-  }
-
-  if body_stream.is_some() {
-    // FastRender's networking layer only supports in-memory request bodies for now.
-    return Err(throw_type_error(
-      vm,
-      scope,
-      host,
-      host_hooks,
-      "Request body ReadableStream is not supported yet",
-    ));
-  }
-
-  // Resolve the associated AbortSignal, if any.
-  //
-  // `fetch(input, init)` matches the `new Request(input, init)` behavior: an explicit `init.signal`
-  // overrides `input.signal` when `input` is a `Request`.
-  let mut signal: Option<Value> = None;
-  let mut init_specified_signal = false;
-
-  if !matches!(init, Value::Undefined | Value::Null) {
-    // `apply_request_init` already validated `init` is an object when present; keep a defensive
-    // check here to preserve VM invariants.
-    let Value::Object(init_obj) = init else {
-      return Err(VmError::InvariantViolation(
-        "Request init must be an object",
-      ));
-    };
-    let signal_key = alloc_key(scope, "signal")?;
-    let signal_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, signal_key)?;
-    if !matches!(signal_val, Value::Undefined) {
-      init_specified_signal = true;
-      match signal_val {
-        Value::Undefined | Value::Null => signal = None,
-        Value::Object(_) => signal = Some(signal_val),
-        _ => {
-          return Err(throw_type_error(
-            vm,
-            scope,
-            host,
-            host_hooks,
-            "RequestInit.signal must be an AbortSignal or null",
-          ));
-        }
-      }
-    }
-  }
-
-  if !init_specified_signal {
-    if let Some(input_obj) = input_request_obj {
-      let inherited = get_data_prop(scope, input_obj, "signal")?;
-      if matches!(inherited, Value::Object(_)) {
-        signal = Some(inherited);
-      }
-    }
-  }
-
-  // `blob:` object URLs are origin-scoped. Capture the current origin so the networking task can
-  // enforce same-origin access without needing to touch the JS heap.
-  let object_url_origin = current_document_origin_for_object_urls(vm, scope.heap(), env_id)?;
-
-  // Create a Promise capability for the returned Promise.
-  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
-  let promise = cap.promise;
-
-  // Resolve/reject later; keep them rooted until settlement.
-  let resolve_root = scope.heap_mut().add_root(cap.resolve)?;
-  let reject_root = scope.heap_mut().add_root(cap.reject)?;
-  let promise_root = scope.heap_mut().add_root(promise)?;
-  let signal_root = match signal {
-    Some(v) => Some(scope.heap_mut().add_root(v)?),
-    None => None,
-  };
-
-  // If the signal is already aborted, reject immediately and skip queueing any networking task.
-  if let Some(signal_root) = signal_root {
-    let signal_value = scope
-      .heap()
-      .get_root(signal_root)
-      .ok_or_else(|| VmError::invalid_handle())?;
-    if let Value::Object(signal_obj) = signal_value {
-      let aborted_key = alloc_key(scope, "aborted")?;
-      let aborted = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, aborted_key)?;
-      if scope.heap().to_boolean(aborted)? {
-        let reason_key = alloc_key(scope, "reason")?;
-        let reason = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, reason_key)?;
-        vm.call_with_host_and_hooks(
-          &mut *host,
-          scope,
-          host_hooks,
-          cap.reject,
-          Value::Undefined,
-          &[reason],
-        )?;
-        scope.heap_mut().remove_root(resolve_root);
-        scope.heap_mut().remove_root(reject_root);
-        scope.heap_mut().remove_root(promise_root);
-        scope.heap_mut().remove_root(signal_root);
-        return Ok(promise);
-      }
-    }
-  }
-
+  env_id: u64,
+  request: CoreRequest,
+  object_url_origin: String,
+  headers_proto: GcObject,
+  response_proto: GcObject,
+  resolve_root: RootId,
+  reject_root: RootId,
+  promise_root: RootId,
+  signal_root: Option<RootId>,
+) -> Result<(), VmError> {
   let Some(event_loop) = event_loop_mut_from_hooks::<Host>(host_hooks) else {
-    // Reject synchronously.
-    scope.heap_mut().remove_root(resolve_root);
-    scope.heap_mut().remove_root(reject_root);
-    scope.heap_mut().remove_root(promise_root);
-    if let Some(signal_root) = signal_root {
-      scope.heap_mut().remove_root(signal_root);
-    }
+    let reject_val = scope
+      .heap()
+      .get_root(reject_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
     let err = create_type_error(
       vm,
       scope,
@@ -6961,15 +6868,11 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       host_hooks,
       "fetch called without an active EventLoop",
     )?;
-    vm.call_with_host_and_hooks(
-      &mut *host,
-      scope,
-      host_hooks,
-      cap.reject,
-      Value::Undefined,
-      &[err],
-    )?;
-    return Ok(promise);
+    let call_result =
+      vm.call_with_host_and_hooks(&mut *host, scope, host_hooks, reject_val, Value::Undefined, &[err]);
+    remove_fetch_roots(scope.heap_mut(), resolve_root, reject_root, promise_root, signal_root);
+    call_result?;
+    return Ok(());
   };
 
   let enqueue_result = event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
@@ -7149,7 +7052,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       Ok(mut response) => {
         // JS `Response.headers` for fetch() results is immutable in browsers.
         response.headers.set_guard(HeadersGuard::Immutable);
-        
+
         // If the signal was aborted while the underlying fetch was running, reject instead of
         // storing/settling with a `Response`.
         if let Some(signal_root_id) = signal_root {
@@ -7255,8 +7158,7 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
                   .get_root(reject_root)
                   .ok_or_else(|| VmError::invalid_handle())?;
                 let mut scope = heap.scope();
-                let type_error =
-                  create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
+                let type_error = create_type_error(&mut vm, &mut scope, vm_host, &mut hooks, &message)?;
                 vm.call_with_host_and_hooks(
                   vm_host,
                   &mut scope,
@@ -7487,23 +7389,652 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   });
 
   if let Err(err) = enqueue_result {
-    // Failed to enqueue networking task; reject synchronously and clean up roots.
-    scope.heap_mut().remove_root(resolve_root);
-    scope.heap_mut().remove_root(reject_root);
-    scope.heap_mut().remove_root(promise_root);
-    if let Some(signal_root) = signal_root {
-      scope.heap_mut().remove_root(signal_root);
-    }
+    let reject_val = scope
+      .heap()
+      .get_root(reject_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
     let err_value = create_type_error(vm, scope, &mut *host, host_hooks, &err.to_string())?;
-    vm.call_with_host_and_hooks(
+    let call_result = vm.call_with_host_and_hooks(
       &mut *host,
       scope,
       host_hooks,
-      cap.reject,
+      reject_val,
       Value::Undefined,
       &[err_value],
-    )?;
+    );
+    remove_fetch_roots(scope.heap_mut(), resolve_root, reject_root, promise_root, signal_root);
+    call_result?;
   }
+
+  Ok(())
+}
+
+fn fetch_body_stream_then_info_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<(u64, u64), VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let env_id = slots
+    .get(0)
+    .copied()
+    .ok_or(VmError::InvariantViolation(
+      "fetch body stream callback missing env id slot",
+    ))?;
+  let pending_id = slots
+    .get(1)
+    .copied()
+    .ok_or(VmError::InvariantViolation(
+      "fetch body stream callback missing state id slot",
+    ))?;
+  let env_id = number_to_u64(env_id).map_err(|_| VmError::InvariantViolation("invalid env id slot"))?;
+  let pending_id =
+    number_to_u64(pending_id).map_err(|_| VmError::InvariantViolation("invalid state id slot"))?;
+  Ok((env_id, pending_id))
+}
+
+fn fetch_body_stream_then_fulfilled_native<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, pending_id) = fetch_body_stream_then_info_from_callee(scope, callee)?;
+  let Some(mut pending) = with_env_state_mut(env_id, scope.heap(), |state| {
+    Ok(state.pending_fetch_stream_bodies.remove(&pending_id))
+  })?
+  else {
+    return Ok(Value::Undefined);
+  };
+
+  // If the signal was aborted during stream buffering, reject instead of dispatching the request.
+  if let Some(signal_root) = pending.signal_root {
+    if let Some(Value::Object(signal_obj)) = scope.heap().get_root(signal_root) {
+      scope.push_root(Value::Object(signal_obj))?;
+      let aborted_key = alloc_key(scope, "aborted")?;
+      let aborted = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, aborted_key)?;
+      if scope.heap().to_boolean(aborted)? {
+        let reason_key = alloc_key(scope, "reason")?;
+        let reason = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, reason_key)?;
+        let reject_val = scope
+          .heap()
+          .get_root(pending.reject_root)
+          .ok_or_else(|| VmError::invalid_handle())?;
+        let call_result = vm.call_with_host_and_hooks(
+          host,
+          scope,
+          host_hooks,
+          reject_val,
+          Value::Undefined,
+          &[reason],
+        );
+        remove_fetch_roots(
+          scope.heap_mut(),
+          pending.resolve_root,
+          pending.reject_root,
+          pending.promise_root,
+          pending.signal_root,
+        );
+        call_result?;
+        return Ok(Value::Undefined);
+      }
+    }
+  }
+
+  let bytes_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let bytes: Vec<u8> = match bytes_val {
+    Value::Object(obj) if scope.heap().is_array_buffer_object(obj) => {
+      scope.heap().array_buffer_data(obj)?.to_vec()
+    }
+    Value::Object(obj) if scope.heap().is_uint8_array_object(obj) => scope.heap().uint8_array_data(obj)?.to_vec(),
+    _ => {
+      let reject_val = scope
+        .heap()
+        .get_root(pending.reject_root)
+        .ok_or_else(|| VmError::invalid_handle())?;
+      let err = create_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "ReadableStream request body must resolve to an ArrayBuffer",
+      )?;
+      let call_result = vm.call_with_host_and_hooks(
+        host,
+        scope,
+        host_hooks,
+        reject_val,
+        Value::Undefined,
+        &[err],
+      );
+      remove_fetch_roots(
+        scope.heap_mut(),
+        pending.resolve_root,
+        pending.reject_root,
+        pending.promise_root,
+        pending.signal_root,
+      );
+      call_result?;
+      return Ok(Value::Undefined);
+    }
+  };
+
+  // Defensive limit enforcement (stream consumer should already enforce this).
+  if bytes.len() > pending.request.headers.limits().max_request_body_bytes {
+    let reject_val = scope
+      .heap()
+      .get_root(pending.reject_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let err = create_type_error(vm, scope, host, host_hooks, FETCH_BODY_TOO_LONG_ERROR)?;
+    let call_result = vm.call_with_host_and_hooks(
+      host,
+      scope,
+      host_hooks,
+      reject_val,
+      Value::Undefined,
+      &[err],
+    );
+    remove_fetch_roots(
+      scope.heap_mut(),
+      pending.resolve_root,
+      pending.reject_root,
+      pending.promise_root,
+      pending.signal_root,
+    );
+    call_result?;
+    return Ok(Value::Undefined);
+  }
+
+  let body = match Body::new_with_limits(bytes, pending.request.headers.limits()) {
+    Ok(b) => b,
+    Err(err) => {
+      let reject_val = scope
+        .heap()
+        .get_root(pending.reject_root)
+        .ok_or_else(|| VmError::invalid_handle())?;
+      let err_value = create_type_error(vm, scope, host, host_hooks, &err.to_string())?;
+      let call_result = vm.call_with_host_and_hooks(
+        host,
+        scope,
+        host_hooks,
+        reject_val,
+        Value::Undefined,
+        &[err_value],
+      );
+      remove_fetch_roots(
+        scope.heap_mut(),
+        pending.resolve_root,
+        pending.reject_root,
+        pending.promise_root,
+        pending.signal_root,
+      );
+      call_result?;
+      return Ok(Value::Undefined);
+    }
+  };
+
+  pending.request.body = Some(body);
+
+  enqueue_fetch_network_task::<Host>(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    env_id,
+    pending.request,
+    pending.object_url_origin,
+    pending.headers_proto,
+    pending.response_proto,
+    pending.resolve_root,
+    pending.reject_root,
+    pending.promise_root,
+    pending.signal_root,
+  )?;
+  Ok(Value::Undefined)
+}
+
+fn fetch_body_stream_then_rejected_native<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let (env_id, pending_id) = fetch_body_stream_then_info_from_callee(scope, callee)?;
+  let Some(pending) = with_env_state_mut(env_id, scope.heap(), |state| {
+    Ok(state.pending_fetch_stream_bodies.remove(&pending_id))
+  })?
+  else {
+    return Ok(Value::Undefined);
+  };
+  let reason = args.get(0).copied().unwrap_or(Value::Undefined);
+  let reject_val = scope
+    .heap()
+    .get_root(pending.reject_root)
+    .ok_or_else(|| VmError::invalid_handle())?;
+  let call_result = vm.call_with_host_and_hooks(
+    host,
+    scope,
+    host_hooks,
+    reject_val,
+    Value::Undefined,
+    &[reason],
+  );
+  remove_fetch_roots(
+    scope.heap_mut(),
+    pending.resolve_root,
+    pending.reject_root,
+    pending.promise_root,
+    pending.signal_root,
+  );
+  call_result?;
+  Ok(Value::Undefined)
+}
+
+fn fetch_call<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_callee(scope, callee)?;
+  let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let response_proto = response_proto_from_callee(scope, callee)?;
+  let limits = with_env_state(env_id, scope.heap(), |state| Ok(state.env.limits.clone()))?;
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  let init = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  // Build request synchronously (invalid init should reject deterministically).
+  let input_request_info = request_info_from_value(scope, input);
+  let input_request_obj = match (input_request_info, input) {
+    (Some(_), Value::Object(obj)) => Some(obj),
+    _ => None,
+  };
+
+  let mut request = if let Some((other_env_id, other_request_id)) = input_request_info {
+    let cloned: Option<CoreRequest> = with_env_state(other_env_id, scope.heap(), |state| {
+      let req = state
+        .requests
+        .get(&other_request_id)
+        .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+      if req.body.as_ref().map_or(false, |b| b.body_used()) {
+        Ok(None)
+      } else {
+        Ok(Some(req.clone()))
+      }
+    })?;
+    match cloned {
+      Some(req) => req,
+      None => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request body is already used",
+        ));
+      }
+    }
+  } else {
+    let url = to_rust_string_limited(
+      scope.heap_mut(),
+      input,
+      limits.max_url_bytes,
+      FETCH_URL_TOO_LONG_ERROR,
+    )?;
+    let base_url = current_document_base_url(vm, scope.heap(), env_id)?;
+    let url = resolve_url(&url, base_url.as_deref())
+      .map_err(|err| throw_type_error(vm, scope, host, host_hooks, &err.to_string()))?;
+    CoreRequest::new_with_limits("GET", url, &limits)
+  };
+
+  let mut body_stream: Option<GcObject> = None;
+  let init_body_provided = apply_request_init(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    env_id,
+    &limits,
+    &mut request,
+    &mut body_stream,
+    init,
+  )?;
+
+  // Enforce invariants even when `init` is omitted (e.g. `fetch(existingRequest)`).
+  request.method =
+    normalize_and_validate_method(vm, scope, host, host_hooks, request.method.as_str())?;
+  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
+    if request.body.is_some() || body_stream.is_some() {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request body is not allowed for GET/HEAD",
+      ));
+    }
+  }
+  if request.mode == RequestMode::NoCors {
+    if request.redirect != RequestRedirect::Follow {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request.redirect must be \"follow\" for mode \"no-cors\"",
+      ));
+    }
+    if !(request.method.eq_ignore_ascii_case("GET")
+      || request.method.eq_ignore_ascii_case("HEAD")
+      || request.method.eq_ignore_ascii_case("POST"))
+    {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request.mode \"no-cors\" requires a CORS-safelisted method (GET/HEAD/POST)",
+      ));
+    }
+  }
+
+  if !init_body_provided {
+    if let Some(input_obj) = input_request_obj {
+      if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, input_obj)? {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request body is locked",
+        ));
+      }
+
+      if request.body.is_none() && body_stream.is_none() {
+        let cached = get_data_prop(scope, input_obj, REQUEST_BODY_STREAM_KEY)?;
+        if let Value::Object(input_stream) = cached {
+          if body_stream_is_used(scope, input_stream)? {
+            return Err(throw_type_error(
+              vm,
+              scope,
+              host,
+              host_hooks,
+              "Request body is already used",
+            ));
+          }
+          body_stream = Some(input_stream);
+        }
+      }
+    }
+  }
+
+  // Resolve the associated AbortSignal, if any.
+  //
+  // `fetch(input, init)` matches the `new Request(input, init)` behavior: an explicit `init.signal`
+  // overrides `input.signal` when `input` is a `Request`.
+  let mut signal: Option<Value> = None;
+  let mut init_specified_signal = false;
+
+  if !matches!(init, Value::Undefined | Value::Null) {
+    // `apply_request_init` already validated `init` is an object when present; keep a defensive
+    // check here to preserve VM invariants.
+    let Value::Object(init_obj) = init else {
+      return Err(VmError::InvariantViolation(
+        "Request init must be an object",
+      ));
+    };
+    let signal_key = alloc_key(scope, "signal")?;
+    let signal_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, signal_key)?;
+    if !matches!(signal_val, Value::Undefined) {
+      init_specified_signal = true;
+      match signal_val {
+        Value::Undefined | Value::Null => signal = None,
+        Value::Object(_) => signal = Some(signal_val),
+        _ => {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host,
+            host_hooks,
+            "RequestInit.signal must be an AbortSignal or null",
+          ));
+        }
+      }
+    }
+  }
+
+  if !init_specified_signal {
+    if let Some(input_obj) = input_request_obj {
+      let inherited = get_data_prop(scope, input_obj, "signal")?;
+      if matches!(inherited, Value::Object(_)) {
+        signal = Some(inherited);
+      }
+    }
+  }
+
+  // `blob:` object URLs are origin-scoped. Capture the current origin so the networking task can
+  // enforce same-origin access without needing to touch the JS heap.
+  let object_url_origin = current_document_origin_for_object_urls(vm, scope.heap(), env_id)?;
+
+  // Create a Promise capability for the returned Promise.
+  let cap = new_promise_capability_for_env(vm, scope, &mut *host, host_hooks, env_id)?;
+  let promise = cap.promise;
+
+  // Resolve/reject later; keep them rooted until settlement.
+  let resolve_root = scope.heap_mut().add_root(cap.resolve)?;
+  let reject_root = scope.heap_mut().add_root(cap.reject)?;
+  let promise_root = scope.heap_mut().add_root(promise)?;
+  let signal_root = match signal {
+    Some(v) => Some(scope.heap_mut().add_root(v)?),
+    None => None,
+  };
+
+  // If the signal is already aborted, reject immediately and skip queueing any networking task.
+  if let Some(signal_root) = signal_root {
+    let signal_value = scope
+      .heap()
+      .get_root(signal_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    if let Value::Object(signal_obj) = signal_value {
+      let aborted_key = alloc_key(scope, "aborted")?;
+      let aborted = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, aborted_key)?;
+      if scope.heap().to_boolean(aborted)? {
+        let reason_key = alloc_key(scope, "reason")?;
+        let reason = vm.get_with_host_and_hooks(host, scope, host_hooks, signal_obj, reason_key)?;
+        vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          cap.reject,
+          Value::Undefined,
+          &[reason],
+        )?;
+        scope.heap_mut().remove_root(resolve_root);
+        scope.heap_mut().remove_root(reject_root);
+        scope.heap_mut().remove_root(promise_root);
+        scope.heap_mut().remove_root(signal_root);
+        return Ok(promise);
+      }
+    }
+  }
+
+  // If the request body is an external ReadableStream, buffer it into bounded in-memory bytes
+  // before dispatching the underlying Rust fetch implementation.
+  if let Some(stream_obj) = body_stream {
+    // Stream buffering relies on Promise jobs, which are only executed when an EventLoop is active.
+    // If no EventLoop is present, reject like the non-stream path.
+    if event_loop_mut_from_hooks::<Host>(host_hooks).is_none() {
+      enqueue_fetch_network_task::<Host>(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        request,
+        object_url_origin,
+        headers_proto,
+        response_proto,
+        resolve_root,
+        reject_root,
+        promise_root,
+        signal_root,
+      )?;
+      return Ok(promise);
+    }
+
+    let max_bytes = request.headers.limits().max_request_body_bytes;
+    let abort_signal_obj = signal_root
+      .and_then(|root_id| scope.heap().get_root(root_id))
+      .and_then(|v| match v {
+        Value::Object(obj) => Some(obj),
+        _ => None,
+      });
+
+    let (pending_id, on_fulfilled_call, on_rejected_call) = with_env_state_mut(env_id, scope.heap(), |state| {
+      let id = state.alloc_id();
+      let on_fulfilled_call = state.fetch_body_stream_then_fulfilled_call;
+      let on_rejected_call = state.fetch_body_stream_then_rejected_call;
+      state.pending_fetch_stream_bodies.insert(
+        id,
+        PendingFetchStreamBodyState {
+          request,
+          object_url_origin,
+          headers_proto,
+          response_proto,
+          resolve_root,
+          reject_root,
+          promise_root,
+          signal_root,
+        },
+      );
+      Ok((id, on_fulfilled_call, on_rejected_call))
+    })?;
+
+    let setup_result: Result<(), VmError> = (|| {
+      // Build then callbacks.
+      let intr = vm
+        .intrinsics()
+        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+      let func_proto = intr.function_prototype();
+
+      let on_fulfilled_name = scope.alloc_string("onFetchBodyBuffered")?;
+      scope.push_root(Value::String(on_fulfilled_name))?;
+      let on_fulfilled = scope.alloc_native_function_with_slots(
+        on_fulfilled_call,
+        None,
+        on_fulfilled_name,
+        1,
+        &[Value::Number(env_id as f64), Value::Number(pending_id as f64)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(on_fulfilled, Some(func_proto))?;
+
+      let on_rejected_name = scope.alloc_string("onFetchBodyRejected")?;
+      scope.push_root(Value::String(on_rejected_name))?;
+      let on_rejected = scope.alloc_native_function_with_slots(
+        on_rejected_call,
+        None,
+        on_rejected_name,
+        1,
+        &[Value::Number(env_id as f64), Value::Number(pending_id as f64)],
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(on_rejected, Some(func_proto))?;
+
+      // Start consuming into an ArrayBuffer.
+      let consume_promise = start_consuming_body_stream(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        env_id,
+        stream_obj,
+        abort_signal_obj,
+        max_bytes,
+        StreamConsumeKind::ArrayBuffer,
+      )?;
+      let Value::Object(promise_obj) = consume_promise else {
+        return Err(VmError::TypeError(
+          "ReadableStream buffering must return a Promise object",
+        ));
+      };
+
+      // consumePromise.then(on_fulfilled, on_rejected)
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(promise_obj))?;
+      scope.push_root(Value::Object(on_fulfilled))?;
+      scope.push_root(Value::Object(on_rejected))?;
+      let then_key = alloc_key(&mut scope, "then")?;
+      let then_fn = vm.get_with_host_and_hooks(host, &mut scope, host_hooks, promise_obj, then_key)?;
+      vm.call_with_host_and_hooks(
+        host,
+        &mut scope,
+        host_hooks,
+        then_fn,
+        Value::Object(promise_obj),
+        &[Value::Object(on_fulfilled), Value::Object(on_rejected)],
+      )?;
+
+      Ok(())
+    })();
+
+    if let Err(err) = setup_result {
+      // Best-effort cleanup: remove pending state and reject the returned fetch Promise.
+      if let Some(pending) = with_env_state_mut(env_id, scope.heap(), |state| {
+        Ok(state.pending_fetch_stream_bodies.remove(&pending_id))
+      })? {
+        let reject_val = scope
+          .heap()
+          .get_root(pending.reject_root)
+          .ok_or_else(|| VmError::invalid_handle())?;
+        let err_value = match err {
+          VmError::Throw(thrown) => thrown,
+          other => create_type_error(vm, scope, &mut *host, host_hooks, &other.to_string())?,
+        };
+        let call_result = vm.call_with_host_and_hooks(
+          &mut *host,
+          scope,
+          host_hooks,
+          reject_val,
+          Value::Undefined,
+          &[err_value],
+        );
+        remove_fetch_roots(
+          scope.heap_mut(),
+          pending.resolve_root,
+          pending.reject_root,
+          pending.promise_root,
+          pending.signal_root,
+        );
+        call_result?;
+      }
+    }
+
+    return Ok(promise);
+  }
+
+  enqueue_fetch_network_task::<Host>(
+    vm,
+    scope,
+    host,
+    host_hooks,
+    env_id,
+    request,
+    object_url_origin,
+    headers_proto,
+    response_proto,
+    resolve_root,
+    reject_root,
+    promise_root,
+    signal_root,
+  )?;
 
   Ok(promise)
 }
@@ -7538,12 +8069,17 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
   let body_stream_reader_cancel_wrapper_call = vm.register_native_call(body_stream_reader_cancel_wrapper_native)?;
   let stream_consume_fulfilled_call = vm.register_native_call(stream_consume_fulfilled_native)?;
   let stream_consume_rejected_call = vm.register_native_call(stream_consume_rejected_native)?;
+  let fetch_body_stream_then_fulfilled_call =
+    vm.register_native_call(fetch_body_stream_then_fulfilled_native::<Host>)?;
+  let fetch_body_stream_then_rejected_call =
+    vm.register_native_call(fetch_body_stream_then_rejected_native::<Host>)?;
   {
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     lock.insert(
       env_id,
       EnvState::new(
         env,
+        realm.id(),
         promise_executor_call,
         body_stream_get_reader_wrapper_call,
         body_stream_cancel_wrapper_call,
@@ -7551,6 +8087,8 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
         body_stream_reader_cancel_wrapper_call,
         stream_consume_fulfilled_call,
         stream_consume_rejected_call,
+        fetch_body_stream_then_fulfilled_call,
+        fetch_body_stream_then_rejected_call,
         heap.gc_runs(),
       ),
     );
@@ -9227,30 +9765,48 @@ mod tests {
       let locked_after = vm.get(&mut scope, body_obj, locked_key)?;
       assert!(matches!(locked_after, Value::Bool(false)));
 
-      // Further reads throw TypeError.
+      // Further reads reject with TypeError.
       let read_key = alloc_key(&mut scope, "read")?;
       let read_fn = vm.get(&mut scope, reader_obj, read_key)?;
-      let err = vm
-        .call_with_host_and_hooks(&mut host_state, &mut scope, &mut hooks, read_fn, Value::Object(reader_obj), &[])
-        .expect_err("expected read() to throw after releaseLock()");
-      // `vm-js` may either surface internal TypeErrors directly (`VmError::TypeError`) or coerce
-      // them into thrown `TypeError` objects (e.g. with a captured stack trace). Accept both forms.
-      match err {
-        VmError::TypeError(msg) => assert_eq!(msg, "ReadableStreamDefaultReader has no stream"),
-        other => {
-          let Some(Value::Object(err_obj)) = other.thrown_value() else {
-            panic!("expected TypeError, got {other:?}");
-          };
-          scope.push_root(Value::Object(err_obj))?;
-          let message_key = alloc_key(&mut scope, "message")?;
-          let message_val = vm.get(&mut scope, err_obj, message_key)?;
-          let Value::String(message_str) = message_val else {
-            panic!("expected TypeError.message string, got {message_val:?}");
-          };
-          let msg = scope.heap().get_string(message_str)?.to_utf8_lossy();
-          assert_eq!(msg, "ReadableStreamDefaultReader has no stream");
-        }
-      }
+      let promise = vm.call_with_host_and_hooks(
+        &mut host_state,
+        &mut scope,
+        &mut hooks,
+        read_fn,
+        Value::Object(reader_obj),
+        &[],
+      )?;
+      let Value::Object(promise_obj) = promise else {
+        return Err(VmError::InvariantViolation("read() must return a Promise object"));
+      };
+      assert_eq!(
+        scope.heap().promise_state(promise_obj)?,
+        PromiseState::Rejected,
+        "expected read() after releaseLock to return a rejected Promise"
+      );
+      let Some(reason) = scope.heap().promise_result(promise_obj)? else {
+        return Err(VmError::InvariantViolation(
+          "read() rejected Promise missing reason",
+        ));
+      };
+      let Value::Object(err_obj) = reason else {
+        return Err(VmError::InvariantViolation(
+          "read() rejection reason must be an object",
+        ));
+      };
+      scope.push_root(Value::Object(err_obj))?;
+      let message_key = alloc_key(&mut scope, "message")?;
+      let message_val = vm.get(&mut scope, err_obj, message_key)?;
+      let Value::String(message_str) = message_val else {
+        return Err(VmError::InvariantViolation(
+          "read() rejection reason must have a message string",
+        ));
+      };
+      let msg = scope.heap().get_string(message_str)?.to_utf8_lossy();
+      assert!(
+        msg.starts_with("ReadableStreamDefaultReader has no stream"),
+        "expected TypeError message to mention missing stream, got {msg:?}"
+      );
     }
 
     heap.remove_root(resp_root);
@@ -9302,12 +9858,15 @@ mod tests {
       else {
         return Err(VmError::InvariantViolation("Response constructor must return an object"));
       };
+      // Root response/body/reader across subsequent allocations: `alloc_key` can trigger GC.
+      scope.push_root(Value::Object(resp_obj))?;
 
       // Consume via body stream.
       let body_key = alloc_key(&mut scope, "body")?;
       let Value::Object(body_obj) = vm.get(&mut scope, resp_obj, body_key)? else {
         return Err(VmError::InvariantViolation("Response.body must return an object"));
       };
+      scope.push_root(Value::Object(body_obj))?;
       let get_reader_key = alloc_key(&mut scope, "getReader")?;
       let get_reader_fn = vm.get(&mut scope, body_obj, get_reader_key)?;
       let Value::Object(reader_obj) = vm.call_with_host_and_hooks(
@@ -9321,6 +9880,7 @@ mod tests {
       else {
         return Err(VmError::InvariantViolation("ReadableStream.getReader must return an object"));
       };
+      scope.push_root(Value::Object(reader_obj))?;
 
       let read_key = alloc_key(&mut scope, "read")?;
       let read_fn = vm.get(&mut scope, reader_obj, read_key)?;
@@ -10240,7 +10800,7 @@ mod tests {
     };
 
     realm.exec_script(
-      "for (let i = 0; i < 50; i++) { const r = new Request('https://example.invalid/', { method: 'POST', body: 'x' }); r.body; }",
+      "for (let i = 0; i < 50; i++) { new Request('https://example.invalid/', { method: 'POST', body: 'x' }).body; }",
     )?;
 
     let before_gc = {
@@ -11651,8 +12211,10 @@ mod tests {
     }
 
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut heap = Heap::new(HeapLimits::new(TEST_HEAP_BYTES, TEST_HEAP_BYTES));
     let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let _realm_guard = RealmTeardownGuard::new(&mut realm, &mut heap);
+    let _streams_guard = StreamsTeardownGuard::install(&mut vm, &realm, &mut heap)?;
     let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
       &mut vm,
       &realm,
@@ -13740,7 +14302,7 @@ mod tests {
   }
 
   #[test]
-  fn request_ctor_rejects_readable_stream_bodyinit_without_to_string() -> Result<(), VmError> {
+  fn request_ctor_does_not_call_to_string_on_readable_stream_bodyinit() -> Result<(), VmError> {
     let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
 
     let fetcher: Arc<dyn ResourceFetcher> = Arc::new(StaticOkFetcher);
@@ -13775,29 +14337,7 @@ mod tests {
     scope.push_root(Value::Object(result_obj))?;
 
     let ok_key = alloc_key(&mut scope, "ok")?;
-    assert_eq!(vm.get(&mut scope, result_obj, ok_key)?, Value::Bool(false));
-
-    let name_key = alloc_key(&mut scope, "name")?;
-    let msg_key = alloc_key(&mut scope, "message")?;
-
-    let Value::String(name_s) = vm.get(&mut scope, result_obj, name_key)? else {
-      return Err(VmError::InvariantViolation(
-        "expected Request ReadableStream rejection test to return an error name string",
-      ));
-    };
-    let Value::String(msg_s) = vm.get(&mut scope, result_obj, msg_key)? else {
-      return Err(VmError::InvariantViolation(
-        "expected Request ReadableStream rejection test to return an error message string",
-      ));
-    };
-    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
-    let msg = scope.heap().get_string(msg_s)?.to_utf8_lossy();
-    assert_eq!(name, "TypeError");
-    assert!(
-      msg.contains("ReadableStream"),
-      "expected error message to mention ReadableStream; msg={msg}"
-    );
-    assert_ne!(msg, "toString called");
+    assert_eq!(vm.get(&mut scope, result_obj, ok_key)?, Value::Bool(true));
 
     Ok(())
   }
@@ -14688,6 +15228,173 @@ mod tests {
       captured.body.as_deref()
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_readable_stream_body_sends_bytes() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            const stream = new ReadableStream({
+              start(c) {
+                c.enqueue(new Uint8Array([1, 2, 3]));
+                c.enqueue(new Uint8Array([4, 5]));
+                c.close();
+              },
+            });
+            fetch("https://example.invalid/post", { method: "POST", body: stream });
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.url, "https://example.invalid/post");
+    assert_eq!(captured.body.as_deref(), Some(&[1, 2, 3, 4, 5][..]));
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_readable_stream_body_too_large_rejects() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let mut limits = WebFetchLimits::default();
+    limits.max_request_body_bytes = 3;
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    )
+    .with_limits(limits);
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__err = null;
+            (async () => {
+              const stream = new ReadableStream({
+                start(c) {
+                  c.enqueue(new Uint8Array([1, 2]));
+                  c.enqueue(new Uint8Array([3, 4])); // total 4 > limit 3
+                  c.close();
+                },
+              });
+              try {
+                await fetch("https://example.invalid/post", { method: "POST", body: stream });
+              } catch (e) {
+                globalThis.__err = e && e.message ? e.message : String(e);
+              }
+            })();
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      fetcher.take().is_none(),
+      "expected no fetch_http_request call for oversized body"
+    );
+    let err_val = host.window.exec_script("globalThis.__err").unwrap();
+    assert_eq!(get_string(host.window.heap(), err_val), FETCH_BODY_TOO_LONG_ERROR);
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_reusing_stream_body_for_two_requests_rejects_second() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EventLoopHost>::with_clock(clock);
+    let mut host = EventLoopHost::new_with_js_execution_options(JsExecutionOptions::default());
+
+    let fetcher = Arc::new(CaptureHttpRequestFetcher::default());
+    let env = WindowFetchEnv::for_document(
+      fetcher.clone(),
+      Some("https://example.invalid/".to_string()),
+    );
+    let _bindings = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<EventLoopHost>(vm, realm, heap, env)
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
+    };
+
+    {
+      let mut hooks = VmJsEventLoopHooks::<EventLoopHost>::new_with_host(&mut host)?;
+      hooks.set_event_loop(&mut event_loop);
+      let EventLoopHost { host_ctx, window } = &mut host;
+      window
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+            globalThis.__err = null;
+            (async () => {
+              const stream = new ReadableStream({
+                start(c) {
+                  c.enqueue(new Uint8Array([9, 8]));
+                  c.close();
+                },
+              });
+              const r1 = new Request("https://example.invalid/one", { method: "POST", body: stream });
+              const r2 = new Request("https://example.invalid/two", { method: "POST", body: stream });
+              await fetch(r1);
+              try {
+                await fetch(r2);
+              } catch (e) {
+                globalThis.__err = e && e.message ? e.message : String(e);
+              }
+            })();
+          "#,
+        )
+        .unwrap();
+    }
+
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let captured = fetcher.take().expect("expected fetch_http_request call");
+    assert_eq!(captured.url, "https://example.invalid/one");
+    assert_eq!(captured.body.as_deref(), Some(&[9, 8][..]));
+
+    let err_val = host.window.exec_script("globalThis.__err").unwrap();
+    assert_eq!(get_string(host.window.heap(), err_val), "Request body is already used");
     Ok(())
   }
 
