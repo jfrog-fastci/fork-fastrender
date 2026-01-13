@@ -10,7 +10,8 @@
 //! - Set
 //! - ordinary objects (MVP: enumerable own *string* keys only)
 //! - ArrayBuffer (copy or transfer)
-//! - Uint8Array (clones underlying ArrayBuffer and re-creates the view)
+//! - TypedArrays (clones underlying ArrayBuffer and re-creates the view)
+//! - DataView
 //! - Date
 //! - RegExp
 //! - boxed primitives (`new Boolean(...)`, `new Number(...)`, `new String(...)`, `Object(1n)`)
@@ -27,7 +28,8 @@ use crate::js::window_realm::make_dom_exception;
 use std::collections::{HashMap, HashSet};
 use vm_js::{
   GcObject, GcString, GcSymbol, Intrinsics, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  RealmId, RegExpFlags, RegExpProgram, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
+  RealmId, RegExpFlags, RegExpProgram, Scope, TypedArrayKind, Value, Vm, VmError, VmHost,
+  VmHostHooks,
 };
 use vm_js::iterator::{get_iterator, iterator_step_value};
 
@@ -340,10 +342,16 @@ enum Node {
     /// Present only when `transferred == false`.
     bytes: Option<Vec<u8>>,
   },
-  Uint8Array {
+  TypedArray {
+    kind: TypedArrayKind,
     buffer: NodeId,
     byte_offset: usize,
     length: usize,
+  },
+  DataView {
+    buffer: NodeId,
+    byte_offset: usize,
+    byte_length: usize,
   },
   Date {
     time: f64,
@@ -517,7 +525,7 @@ fn structured_clone_native(
     clones: HashMap::new(),
     transfer_data,
   };
-  deserialize_value_iterative(vm, &mut scope, &mut deser, callee, root)
+  deserialize_value_iterative(vm, &mut scope, host, hooks, &mut deser, callee, root)
 }
 
 fn prepare_cached_keys(scope: &mut Scope<'_>) -> Result<(PropertyKey, PropertyKey, PropertyKey), VmError> {
@@ -1161,73 +1169,61 @@ fn serialize_object_shallow(
     return Ok((id, None));
   }
 
-  // Uint8Array.
-  if scope.heap().is_uint8_array_object(obj) {
-    // Uint8Array.buffer / byteOffset / length are built-in accessors.
-    let buffer_val = vm.get_with_host_and_hooks(host, scope, hooks, obj, state.uint8_buffer_key)?;
-    let Value::Object(buffer_obj) = buffer_val else {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        state.global,
-        "structuredClone: Uint8Array.buffer is not an object",
-      ));
-    };
-    if !scope.heap().is_array_buffer_object(buffer_obj) {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        state.global,
-        "structuredClone: Uint8Array.buffer is not an ArrayBuffer",
-      ));
-    }
+  // Typed arrays.
+  if scope.heap().is_typed_array_object(obj) {
+    // Use typed array internal slots directly (not JS-visible properties) to avoid invoking user
+    // code and to ignore shadowed properties on the instance/prototype chain.
+    let kind = scope.heap().typed_array_kind(obj)?;
+    let buffer_obj = scope.heap().typed_array_buffer(obj)?;
+    let byte_offset = scope.heap().typed_array_byte_offset(obj)?;
+    let length = scope.heap().typed_array_length(obj)?;
 
-    let byte_offset_val =
-      vm.get_with_host_and_hooks(host, scope, hooks, obj, state.uint8_byte_offset_key)?;
-    let length_val = vm.get_with_host_and_hooks(host, scope, hooks, obj, state.uint8_length_key)?;
-    let (Value::Number(byte_offset_n), Value::Number(length_n)) = (byte_offset_val, length_val) else {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        state.global,
-        "structuredClone: Uint8Array has invalid view metadata",
-      ));
-    };
-    if !byte_offset_n.is_finite() || byte_offset_n < 0.0 || byte_offset_n.fract() != 0.0 {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        state.global,
-        "structuredClone: Uint8Array has invalid byteOffset",
-      ));
-    }
-    if !length_n.is_finite() || length_n < 0.0 || length_n.fract() != 0.0 {
-      return Err(throw_data_clone_error(
-        vm,
-        scope,
-        state.global,
-        "structuredClone: Uint8Array has invalid length",
-      ));
-    }
-
-    // Ensure the buffer is serialized before creating the view node (for easier deserialization).
+    // Ensure the backing buffer is serialized before creating the view node (for easier
+    // deserialization).
     if !state.object_to_id.contains_key(&buffer_obj) {
       scope.push_root(Value::Object(buffer_obj))?;
     }
     let buffer_id = serialize_array_buffer_object(vm, scope, state, buffer_obj)?;
 
     let id = state.push_node(
-      Node::Uint8Array {
+      Node::TypedArray {
+        kind,
         buffer: buffer_id,
-        byte_offset: byte_offset_n as usize,
-        length: length_n as usize,
+        byte_offset,
+        length,
       },
       vm,
       scope,
     )?;
     state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
     state.object_to_id.insert(obj, id);
+    return Ok((id, None));
+  }
 
+  // DataView.
+  if scope.heap().is_data_view_object(obj) {
+    // Use internal slots directly (not JS-visible properties) to avoid invoking user code and to
+    // ignore shadowed properties on the instance/prototype chain.
+    let buffer_obj = scope.heap().data_view_buffer(obj)?;
+    let byte_offset = scope.heap().data_view_byte_offset(obj)?;
+    let byte_length = scope.heap().data_view_byte_length(obj)?;
+
+    if !state.object_to_id.contains_key(&buffer_obj) {
+      scope.push_root(Value::Object(buffer_obj))?;
+    }
+    let buffer_id = serialize_array_buffer_object(vm, scope, state, buffer_obj)?;
+
+    let id = state.push_node(
+      Node::DataView {
+        buffer: buffer_id,
+        byte_offset,
+        byte_length,
+      },
+      vm,
+      scope,
+    )?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    state.object_to_id.insert(obj, id);
     return Ok((id, None));
   }
 
@@ -1599,11 +1595,13 @@ struct DeserializeFrame {
 fn deserialize_value_iterative(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   state: &mut DeserializeState,
   callee: GcObject,
   value: EncodedValue,
 ) -> Result<Value, VmError> {
-  let (root, root_frame) = deserialize_value_shallow(vm, scope, state, callee, value)?;
+  let (root, root_frame) = deserialize_value_shallow(vm, scope, host, hooks, state, callee, value)?;
   let mut stack: Vec<DeserializeFrame> = Vec::new();
   if let Some(frame) = root_frame {
     stack.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
@@ -1623,7 +1621,8 @@ fn deserialize_value_iterative(
           let (key_s, val) = props[*next_prop_idx];
           *next_prop_idx += 1;
 
-          let (cloned_val, child_frame) = deserialize_value_shallow(vm, scope, state, callee, val)?;
+          let (cloned_val, child_frame) =
+            deserialize_value_shallow(vm, scope, host, hooks, state, callee, val)?;
           let key = PropertyKey::from_string(key_s);
           scope.define_property(
             frame.dst,
@@ -1656,9 +1655,10 @@ fn deserialize_value_iterative(
           let (key, value) = entries[*next_entry_idx];
           *next_entry_idx += 1;
 
-          let (cloned_key, key_frame) = deserialize_value_shallow(vm, scope, state, callee, key)?;
+          let (cloned_key, key_frame) =
+            deserialize_value_shallow(vm, scope, host, hooks, state, callee, key)?;
           let (cloned_value, value_frame) =
-            deserialize_value_shallow(vm, scope, state, callee, value)?;
+            deserialize_value_shallow(vm, scope, host, hooks, state, callee, value)?;
 
           scope
             .heap_mut()
@@ -1690,7 +1690,7 @@ fn deserialize_value_iterative(
           *next_entry_idx += 1;
 
           let (cloned_value, child_frame) =
-            deserialize_value_shallow(vm, scope, state, callee, value)?;
+            deserialize_value_shallow(vm, scope, host, hooks, state, callee, value)?;
           scope
             .heap_mut()
             .set_add_with_tick(frame.dst, cloned_value, || vm.tick())?;
@@ -1713,6 +1713,8 @@ fn deserialize_value_iterative(
 fn deserialize_value_shallow(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   state: &mut DeserializeState,
   callee: GcObject,
   value: EncodedValue,
@@ -1720,7 +1722,7 @@ fn deserialize_value_shallow(
   match value {
     EncodedValue::Primitive(v) => Ok((v, None)),
     EncodedValue::Object(id) => {
-      let (obj, frame) = deserialize_node_shallow(vm, scope, state, callee, id)?;
+      let (obj, frame) = deserialize_node_shallow(vm, scope, host, hooks, state, callee, id)?;
       Ok((Value::Object(obj), frame))
     }
   }
@@ -1729,6 +1731,8 @@ fn deserialize_value_shallow(
 fn deserialize_node_shallow(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   state: &mut DeserializeState,
   callee: GcObject,
   id: NodeId,
@@ -1747,7 +1751,7 @@ fn deserialize_node_shallow(
     Some(Node::Array { .. }) => 1u8,
     Some(Node::Object { .. }) => 2u8,
     Some(Node::ArrayBuffer { .. }) => 3u8,
-    Some(Node::Uint8Array { .. }) => 4u8,
+    Some(Node::TypedArray { .. }) => 4u8,
     Some(Node::Date { .. }) => 5u8,
     Some(Node::Blob { .. }) => 6u8,
     Some(Node::BooleanObject { .. }) => 7u8,
@@ -1758,6 +1762,7 @@ fn deserialize_node_shallow(
     Some(Node::RegExp { .. }) => 12u8,
     Some(Node::Map { .. }) => 13u8,
     Some(Node::Set { .. }) => 14u8,
+    Some(Node::DataView { .. }) => 15u8,
     None => return Err(VmError::InvariantViolation("structuredClone node id out of bounds")),
   };
 
@@ -1898,27 +1903,61 @@ fn deserialize_node_shallow(
       ab
     }
     4 => {
-      // Uint8Array.
-      let (buffer_id, byte_offset, length) = match state.nodes.get(id) {
-        Some(Node::Uint8Array {
+      // TypedArray.
+      let (kind, buffer_id, byte_offset, length) = match state.nodes.get(id) {
+        Some(Node::TypedArray {
+          kind,
           buffer,
           byte_offset,
           length,
-        }) => (*buffer, *byte_offset, *length),
+        }) => (*kind, *buffer, *byte_offset, *length),
         _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
       };
-      let (buffer_obj, buffer_frame) = deserialize_node_shallow(vm, scope, state, callee, buffer_id)?;
+      let (buffer_obj, buffer_frame) =
+        deserialize_node_shallow(vm, scope, host, hooks, state, callee, buffer_id)?;
       if buffer_frame.is_some() {
         return Err(VmError::InvariantViolation(
-          "structuredClone Uint8Array buffer must not require property population",
+          "structuredClone typed array buffer must not require property population",
         ));
       }
 
-      let view = scope.alloc_uint8_array(buffer_obj, byte_offset, length)?;
+      let (ctor, proto) = match kind {
+        TypedArrayKind::Int8 => (intr.int8_array(), intr.int8_array_prototype()),
+        TypedArrayKind::Uint8 => (intr.uint8_array(), intr.uint8_array_prototype()),
+        TypedArrayKind::Uint8Clamped => (
+          intr.uint8_clamped_array(),
+          intr.uint8_clamped_array_prototype(),
+        ),
+        TypedArrayKind::Int16 => (intr.int16_array(), intr.int16_array_prototype()),
+        TypedArrayKind::Uint16 => (intr.uint16_array(), intr.uint16_array_prototype()),
+        TypedArrayKind::Int32 => (intr.int32_array(), intr.int32_array_prototype()),
+        TypedArrayKind::Uint32 => (intr.uint32_array(), intr.uint32_array_prototype()),
+        TypedArrayKind::Float32 => (intr.float32_array(), intr.float32_array_prototype()),
+        TypedArrayKind::Float64 => (intr.float64_array(), intr.float64_array_prototype()),
+      };
+
+      let args = [
+        Value::Object(buffer_obj),
+        Value::Number(byte_offset as f64),
+        Value::Number(length as f64),
+      ];
+      let view_val = vm.construct_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        Value::Object(ctor),
+        &args,
+        Value::Object(ctor),
+      )?;
+      let Value::Object(view) = view_val else {
+        return Err(VmError::InvariantViolation(
+          "structuredClone typed array constructor returned non-object",
+        ));
+      };
       scope.push_root(Value::Object(view))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(view, Some(intr.uint8_array_prototype()))?;
+      // Defensively set the prototype to the intrinsic typed array prototype to ensure the clone is
+      // correct even if user code tampered with the constructor or its `prototype` property.
+      scope.heap_mut().object_set_prototype(view, Some(proto))?;
       state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
       state.clones.insert(id, view);
       view
@@ -2142,6 +2181,52 @@ fn deserialize_node_shallow(
       state.clones.insert(id, re);
       re
     }
+    15 => {
+      // DataView.
+      let (buffer_id, byte_offset, byte_length) = match state.nodes.get(id) {
+        Some(Node::DataView {
+          buffer,
+          byte_offset,
+          byte_length,
+        }) => (*buffer, *byte_offset, *byte_length),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+      let (buffer_obj, buffer_frame) =
+        deserialize_node_shallow(vm, scope, host, hooks, state, callee, buffer_id)?;
+      if buffer_frame.is_some() {
+        return Err(VmError::InvariantViolation(
+          "structuredClone DataView buffer must not require property population",
+        ));
+      }
+
+      let ctor = intr.data_view();
+      let proto = intr.data_view_prototype();
+      let args = [
+        Value::Object(buffer_obj),
+        Value::Number(byte_offset as f64),
+        Value::Number(byte_length as f64),
+      ];
+      let view_val = vm.construct_with_host_and_hooks(
+        host,
+        scope,
+        hooks,
+        Value::Object(ctor),
+        &args,
+        Value::Object(ctor),
+      )?;
+      let Value::Object(view) = view_val else {
+        return Err(VmError::InvariantViolation(
+          "structuredClone DataView constructor returned non-object",
+        ));
+      };
+      scope.push_root(Value::Object(view))?;
+      // Defensively set the prototype to the intrinsic DataView prototype to ensure the clone is
+      // correct even if user code tampered with the constructor or its `prototype` property.
+      scope.heap_mut().object_set_prototype(view, Some(proto))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      state.clones.insert(id, view);
+      view
+    }
     _ => return Err(VmError::InvariantViolation("structuredClone invalid node kind tag")),
   };
 
@@ -2354,6 +2439,41 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_typed_array_and_data_view_use_intrinsics() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Regression test: cloning ArrayBuffer views must not consult global `Int16Array` / `DataView`
+    // bindings, which user code can overwrite.
+    let ok = realm.exec_script(
+      "(() => {\
+         const OriginalInt16Array = Int16Array;\
+         const OriginalDataView = DataView;\
+         globalThis.Int16Array = function() { throw 1 };\
+         globalThis.DataView = function() { throw 1 };\
+         const ta = new OriginalInt16Array(new ArrayBuffer(4));\
+         ta[0] = 1234;\
+         const ta2 = structuredClone(ta);\
+         if (!(ta2 instanceof OriginalInt16Array)) return false;\
+         if (Object.getPrototypeOf(ta2) !== OriginalInt16Array.prototype) return false;\
+         if (Object.prototype.toString.call(ta2) !== '[object Int16Array]') return false;\
+         if (ta2.length !== ta.length) return false;\
+         if (ta2[0] !== 1234) return false;\
+         const dv = new OriginalDataView(new ArrayBuffer(4));\
+         dv.setInt16(0, 0x1234, true);\
+         const dv2 = structuredClone(dv);\
+         if (!(dv2 instanceof OriginalDataView)) return false;\
+         if (Object.getPrototypeOf(dv2) !== OriginalDataView.prototype) return false;\
+         if (Object.prototype.toString.call(dv2) !== '[object DataView]') return false;\
+         if (dv2.byteLength !== dv.byteLength) return false;\
+         if (dv2.getInt16(0, true) !== 0x1234) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_transfer_list_detach_even_if_unreferenced() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(
@@ -2473,7 +2593,10 @@ mod tests {
   fn structured_clone_rejects_boxed_symbol() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(
-      "try { structuredClone(Object(Symbol('x'))); 'no' } catch (e) { e.name } === 'DataCloneError'",
+      "(() => {\
+         try { structuredClone(Object(Symbol('x'))); return 'no'; }\
+         catch (e) { return e.name; }\
+       })() === 'DataCloneError'",
     )?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
