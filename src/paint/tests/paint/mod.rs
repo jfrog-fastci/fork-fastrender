@@ -257,6 +257,7 @@ mod text_justify_display_list_test;
 mod text_multiscript_emoji_golden;
 mod text_rasterize_test;
 mod text_shadow_color_emoji_golden;
+mod text_shadow_multiple_layers_order_bounds;
 mod text_stroke_test;
 mod text_subpixel_aa_scratch_resizing;
 mod text_subpixel_aa_gamma_test;

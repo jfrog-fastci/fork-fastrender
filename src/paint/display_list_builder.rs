@@ -900,6 +900,23 @@ impl DisplayListBuilder {
     bounds
   }
 
+  fn subtree_has_text_shadow(fragment: &FragmentNode) -> bool {
+    let mut stack: Vec<&FragmentNode> = vec![fragment];
+    while let Some(node) = stack.pop() {
+      if node
+        .style
+        .as_deref()
+        .is_some_and(|style| !style.text_shadow.is_empty())
+      {
+        return true;
+      }
+      for child in node.children.iter() {
+        stack.push(child);
+      }
+    }
+    false
+  }
+
   fn deadline_reached(&mut self) -> bool {
     if self.error.is_some() {
       return true;
@@ -2413,11 +2430,25 @@ impl DisplayListBuilder {
               .scroll_overflow
               .translate(absolute_rect.origin),
           );
+          // Some fragment types (notably intermediate line boxes) do not carry a computed style, but
+          // can still contain paintable descendants whose paint bounds extend outside the fragment's
+          // border box (e.g. `text-shadow` on an inline child).
+          //
+          // If we cull such a fragment solely based on its own paint bounds, we can incorrectly skip
+          // visible descendant paint. To avoid scanning every style-less fragment, we only recurse
+          // into offscreen containers when the subtree actually contains `text-shadow`.
+          let maybe_allow_offscreen_children =
+            style_opt.is_none() && frame.recurse_children && !frame.fragment.children.is_empty();
+          let mut allow_offscreen_children_cache: Option<bool> = None;
           if let Some(vis) = frame.visibility.rect {
             if !vis.intersects(paint_bounds) {
-              continue;
-            }
-            if frame.visibility.hard_clip {
+              let allow_offscreen_children = maybe_allow_offscreen_children
+                && *allow_offscreen_children_cache
+                  .get_or_insert_with(|| Self::subtree_has_text_shadow(frame.fragment));
+              if !allow_offscreen_children {
+                continue;
+              }
+            } else if frame.visibility.hard_clip {
               paint_bounds = match paint_bounds.intersection(vis) {
                 Some(intersection)
                   if intersection.width() > 0.0 && intersection.height() > 0.0 =>
@@ -2489,9 +2520,13 @@ impl DisplayListBuilder {
           }
           if let Some(vis) = child_visibility.rect {
             if !vis.intersects(paint_bounds) {
-              continue;
-            }
-            if child_visibility.hard_clip {
+              let allow_offscreen_children = maybe_allow_offscreen_children
+                && *allow_offscreen_children_cache
+                  .get_or_insert_with(|| Self::subtree_has_text_shadow(frame.fragment));
+              if !allow_offscreen_children {
+                continue;
+              }
+            } else if child_visibility.hard_clip {
               match paint_bounds.intersection(vis) {
                 Some(intersection)
                   if intersection.width() > 0.0 && intersection.height() > 0.0 => {}

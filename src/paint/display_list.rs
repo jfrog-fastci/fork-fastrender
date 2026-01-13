@@ -208,7 +208,7 @@ impl DisplayItem {
       DisplayItem::FillRoundedRect(item) => Some(item.rect),
       DisplayItem::StrokeRoundedRect(item) => Some(item.rect.inflate(item.width * 0.5)),
       DisplayItem::Outline(item) => Some(item.outer_rect()),
-      DisplayItem::Text(item) => Some(text_bounds(item)),
+      DisplayItem::Text(item) => Some(text_paint_bounds(item)),
       DisplayItem::Image(item) => Some(item.dest_rect),
       DisplayItem::RemoteFrameSlot(item) => Some(item.rect),
       DisplayItem::ImagePattern(item) => Some(item.dest_rect),
@@ -1129,6 +1129,28 @@ pub fn text_bounds(item: &TextItem) -> Rect {
     bounds = bounds.inflate(pad);
   }
   bounds
+}
+
+fn text_paint_bounds(item: &TextItem) -> Rect {
+  let base = text_bounds(item);
+  if item.shadows.is_empty() {
+    return base;
+  }
+
+  let mut out = base;
+  for shadow in &item.shadows {
+    let mut shadow_bounds = base.translate(shadow.offset);
+    let blur_outset = if shadow.blur_radius.is_finite() {
+      shadow.blur_radius.abs() * 3.0
+    } else {
+      0.0
+    };
+    if blur_outset > 0.0 {
+      shadow_bounds = shadow_bounds.inflate(blur_outset);
+    }
+    out = out.union(shadow_bounds);
+  }
+  out
 }
 
 /// Conservative bounds for a set of text runs (e.g. union clip masks).
