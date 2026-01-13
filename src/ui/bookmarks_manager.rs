@@ -105,11 +105,15 @@ pub fn bookmarks_manager_side_panel(
       // Messages / errors (callouts)
       // -----------------------------------------------------------------------
       if let Some(msg) = state.message.as_deref().filter(|s| !s.trim().is_empty()) {
-        callout(ui, CalloutKind::Message, msg);
+        if callout_dismissible(ui, CalloutKind::Message, msg, "Dismiss message") {
+          state.message = None;
+        }
         ui.add_space(ui.spacing().item_spacing.y.max(6.0));
       }
       if let Some(err) = state.error.as_deref().filter(|s| !s.trim().is_empty()) {
-        callout(ui, CalloutKind::Error, err);
+        if callout_dismissible(ui, CalloutKind::Error, err, "Dismiss error") {
+          state.error = None;
+        }
         ui.add_space(ui.spacing().item_spacing.y.max(6.0));
       }
 
@@ -370,6 +374,52 @@ pub fn bookmarks_manager_side_panel(
 enum CalloutKind {
   Message,
   Error,
+}
+
+fn callout_dismissible(
+  ui: &mut egui::Ui,
+  kind: CalloutKind,
+  text: &str,
+  dismiss_label: &'static str,
+) -> bool {
+  let visuals = ui.visuals();
+  let (icon, stroke, fill) = match kind {
+    CalloutKind::Message => {
+      let stroke = visuals.selection.stroke;
+      let fill = visuals.selection.bg_fill;
+      (BrowserIcon::Info, stroke, fill)
+    }
+    CalloutKind::Error => {
+      let color = visuals.error_fg_color;
+      let fill = with_alpha(color, 0.12);
+      let stroke = egui::Stroke::new(visuals.selection.stroke.width.max(1.0), color);
+      (BrowserIcon::Error, stroke, fill)
+    }
+  };
+
+  let mut dismissed = false;
+  egui::Frame::none()
+    .fill(fill)
+    .stroke(stroke)
+    .rounding(visuals.widgets.inactive.rounding)
+    .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+    .show(ui, |ui| {
+      ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let dismiss = icon_button(ui, BrowserIcon::Close, "Dismiss", true);
+        dismiss.widget_info(|| {
+          egui::WidgetInfo::labeled(egui::WidgetType::Button, dismiss_label)
+        });
+        dismissed = dismiss.clicked();
+
+        ui.add_space(6.0);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+          icon_tinted(ui, icon, ui.spacing().icon_width, stroke.color);
+          ui.label(text);
+        });
+      });
+    });
+
+  dismissed
 }
 
 fn callout(ui: &mut egui::Ui, kind: CalloutKind, text: &str) {
