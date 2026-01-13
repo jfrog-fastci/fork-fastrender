@@ -1,6 +1,6 @@
 use super::super::{
   apply_svg_filter, svg_filter_test_guard, ColorInterpolationFilters, FilterPrimitive, FilterStep,
-  SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
+  FilterCacheConfig, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
 };
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Rect;
@@ -13,6 +13,26 @@ use tiny_skia::{Pixmap, PremultipliedColorU8};
 #[test]
 fn svg_filter_result_cache_key_respects_deadline() {
   let _guard = svg_filter_test_guard();
+
+  // Ensure filter result caching is enabled and isolated for this test. We need a cache *hit* on the
+  // second `apply_svg_filter` call so that:
+  // - without deadline-aware hashing, the function would return `Ok(())` without ever checking the
+  //   deadline (regression reproduction);
+  // - with deadline-aware hashing, the cache key fingerprint scan can be interrupted.
+  let previous_config = super::super::filter_result_cache_config();
+  struct CacheConfigGuard(FilterCacheConfig);
+  impl Drop for CacheConfigGuard {
+    fn drop(&mut self) {
+      super::super::reset_filter_result_cache_for_tests(self.0);
+    }
+  }
+  let _cache_guard = CacheConfigGuard(previous_config);
+  super::super::reset_filter_result_cache_for_tests(FilterCacheConfig {
+    max_items: 8,
+    max_bytes: 16 * 1024 * 1024,
+  });
+  assert_eq!(super::super::filter_result_cache_len(), 0);
+
   let mut source = Pixmap::new(512, 512).expect("pixmap");
   source
     .pixels_mut()
@@ -43,9 +63,17 @@ fn svg_filter_result_cache_key_respects_deadline() {
   };
   filter.refresh_fingerprint();
 
+  // Seed the cache with a successful render.
+  let mut first = source.clone();
+  apply_svg_filter(&filter, &mut first, 1.0, bbox).expect("seed apply");
+  assert!(
+    super::super::filter_result_cache_len() > 0,
+    "expected svg filter result cache to be populated"
+  );
+
   // Install a deadline that cancels after the first `check_active`, then invoke the filter.
-  // Without deadline-aware cache key hashing this would succeed: the filter itself is cheap and
-  // would not hit a second deadline check.
+  // With a warmed cache, the second call should exit early after the cache hit, so the only place
+  // that can observe the cancellation is cache key fingerprinting.
   let calls = Arc::new(AtomicUsize::new(0));
   let calls_cb = Arc::clone(&calls);
   let cancel = Arc::new(move || calls_cb.fetch_add(1, Ordering::SeqCst) >= 1);
