@@ -228,12 +228,14 @@ Then open these fixture pages (via address bar, or pass as the initial URL argum
 
 ```bash
 # MP4 (H.264 + AAC):
-cargo run --features browser_ui --bin browser -- \
-  "file://$PWD/tests/pages/fixtures/media_mp4_basic/index.html"
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+    "file://$PWD/tests/pages/fixtures/media_mp4_basic/index.html"
 
 # WebM (VP9 + Opus):
-cargo run --features browser_ui --bin browser -- \
-  "file://$PWD/tests/pages/fixtures/media_webm_basic/index.html"
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+    "file://$PWD/tests/pages/fixtures/media_webm_basic/index.html"
 ```
 
 Useful runtime toggles while debugging:
