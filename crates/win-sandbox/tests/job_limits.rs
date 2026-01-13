@@ -6,18 +6,7 @@ use std::process::{Command, Stdio};
 
 use win_sandbox::Job;
 
-use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
-
-fn assign_child(job: &Job, child: &std::process::Child) {
-  let ok = unsafe {
-    AssignProcessToJobObject(
-      job.handle(),
-      child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
-    )
-  };
-  assert_ne!(ok, 0, "AssignProcessToJobObject failed");
-}
 
 #[test]
 fn kill_on_close_terminates_processes() {
@@ -33,7 +22,7 @@ fn kill_on_close_terminates_processes() {
     .spawn()
     .expect("spawn child");
 
-  assign_child(&job, &child);
+  job.assign_process(&child).expect("assign process to job");
 
   // Let the child proceed into its sleep loop.
   child
@@ -53,10 +42,21 @@ fn kill_on_close_terminates_processes() {
   };
   const WAIT_OBJECT_0: u32 = 0x0000_0000;
   const WAIT_TIMEOUT: u32 = 0x0000_0102;
-  assert_ne!(wait, WAIT_TIMEOUT, "child was not terminated by job close");
-  assert_eq!(wait, WAIT_OBJECT_0, "unexpected wait result: {wait}");
-
-  let _ = child.wait();
+  match wait {
+    WAIT_OBJECT_0 => {
+      let _ = child.wait();
+    }
+    WAIT_TIMEOUT => {
+      let _ = child.kill();
+      let _ = child.wait();
+      panic!("child was not terminated by job close");
+    }
+    other => {
+      let _ = child.kill();
+      let _ = child.wait();
+      panic!("unexpected wait result: {other}");
+    }
+  }
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn active_process_limit_blocks_grandchildren() {
     .spawn()
     .expect("spawn child");
 
-  assign_child(&job, &child);
+  job.assign_process(&child).expect("assign process to job");
 
   child
     .stdin

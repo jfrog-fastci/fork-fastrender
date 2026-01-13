@@ -2,14 +2,15 @@ use crate::{OwnedHandle, Result, WinSandboxError};
 
 use std::ffi::{c_void, OsStr};
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
 
 use windows_sys::Win32::System::JobObjects::{
-  CreateJobObjectW, JobObjectBasicUIRestrictions, JobObjectExtendedLimitInformation,
-  QueryInformationJobObject, SetInformationJobObject, JOBOBJECT_BASIC_UI_RESTRICTIONS,
-  JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-  JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-  JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, JOB_OBJECT_UILIMIT_DESKTOP,
-  JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
+  AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
+  JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+  JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+  JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_JOB_MEMORY,
+  JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+  JOB_OBJECT_UILIMIT_DESKTOP, JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
   JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
   JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
 };
@@ -74,6 +75,22 @@ impl Job {
   /// Returns the raw Windows `HANDLE` for this job.
   pub fn handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
     self.handle.as_raw()
+  }
+
+  /// Assigns a process to this job.
+  ///
+  /// This is the call that actually "sandboxes" the process: job limits apply
+  /// to processes associated with the job.
+  pub fn assign_process(&self, process: &impl AsRawHandle) -> Result<()> {
+    let process = process.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+
+    // SAFETY: `AssignProcessToJobObject` expects a valid job handle and a valid
+    // process handle.
+    let ok = unsafe { AssignProcessToJobObject(self.handle.as_raw(), process) };
+    if ok == 0 {
+      return Err(WinSandboxError::last("AssignProcessToJobObject"));
+    }
+    Ok(())
   }
 
   /// Enables `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
