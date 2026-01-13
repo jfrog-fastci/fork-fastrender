@@ -18,6 +18,11 @@ fn unicode_mode_rejects_right_bracket_as_pattern_character() {
     err.typ,
     SyntaxErrorType::ExpectedSyntax("valid regular expression")
   );
+  let err = parse("/]/v").unwrap_err();
+  assert_eq!(
+    err.typ,
+    SyntaxErrorType::ExpectedSyntax("valid regular expression")
+  );
 
   // Non-unicode mode still permits `]` as a literal PatternCharacter.
   parse("/]/").unwrap();
@@ -29,11 +34,43 @@ fn unicode_mode_rejects_character_class_escape_ranges() {
     r"/[\d-a]/u",
     r"/[a-\d]/u",
     r"/[\w-\w]/u",
+    r"/[\w-\uFFFF]/u",
+    r"/[\W-\uFFFF]/u",
+    r"/[\d-\uFFFF]/u",
+    r"/[\D-\uFFFF]/u",
     r"/[\s-\uFFFF]/u",
+    r"/[\S-\uFFFF]/u",
+    r"/[\uFFFF-\w]/u",
+    r"/[\uFFFF-\W]/u",
+    r"/[\uFFFF-\d]/u",
+    r"/[\uFFFF-\D]/u",
+    r"/[\uFFFF-\s]/u",
+    r"/[\uFFFF-\S]/u",
+    r"/[\W-\W]/u",
+    r"/[\d-\d]/u",
+    r"/[\D-\D]/u",
+    r"/[\s-\s]/u",
+    r"/[\S-\S]/u",
     r"/[\d-a]/v",
     r"/[a-\d]/v",
     r"/[\w-\w]/v",
+    r"/[\w-\uFFFF]/v",
+    r"/[\W-\uFFFF]/v",
+    r"/[\d-\uFFFF]/v",
+    r"/[\D-\uFFFF]/v",
     r"/[\s-\uFFFF]/v",
+    r"/[\S-\uFFFF]/v",
+    r"/[\uFFFF-\w]/v",
+    r"/[\uFFFF-\W]/v",
+    r"/[\uFFFF-\d]/v",
+    r"/[\uFFFF-\D]/v",
+    r"/[\uFFFF-\s]/v",
+    r"/[\uFFFF-\S]/v",
+    r"/[\W-\W]/v",
+    r"/[\d-\d]/v",
+    r"/[\D-\D]/v",
+    r"/[\s-\s]/v",
+    r"/[\S-\S]/v",
   ] {
     let err = parse(src).unwrap_err();
     assert_eq!(
