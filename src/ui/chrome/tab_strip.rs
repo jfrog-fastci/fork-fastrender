@@ -2362,6 +2362,7 @@ pub(super) fn tab_strip_ui(
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                     chrome.drag_start_pointer_pos = pointer_pos;
                     chrome.drag_start_tab_rect = Some(tab_rect);
+                    chrome.tab_drag_session = chrome.tab_drag_session.wrapping_add(1);
                   }
                 }
               }
@@ -2816,6 +2817,7 @@ pub(super) fn tab_strip_ui(
                         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                         app.chrome.drag_start_pointer_pos = pointer_pos;
                         app.chrome.drag_start_tab_rect = Some(tab_rect);
+                        app.chrome.tab_drag_session = app.chrome.tab_drag_session.wrapping_add(1);
                       }
                     }
                   }
@@ -2942,6 +2944,7 @@ pub(super) fn tab_strip_ui(
                     let pointer_pos = ui.input(|i| i.pointer.interact_pos());
                     app.chrome.drag_start_pointer_pos = pointer_pos;
                     app.chrome.drag_start_tab_rect = Some(tab_rect);
+                    app.chrome.tab_drag_session = app.chrome.tab_drag_session.wrapping_add(1);
                   }
                 }
               }
@@ -3230,6 +3233,8 @@ pub(super) fn tab_strip_ui(
       .and_then(|gid| app.tab_groups.get(&gid))
       .map(|g| group_color_egui(g.color));
 
+    let drag_anim_key = (dragging_tab_id, app.chrome.tab_drag_session);
+
     let mut insertion_index: Option<usize> = None;
     let mut target_index: Option<usize> = None;
     let mut insertion_changed = false;
@@ -3295,7 +3300,7 @@ pub(super) fn tab_strip_ui(
       };
       let pulse_t = motion.animate_f32(
         ui.ctx(),
-        egui::Id::new("tab_strip_drag_gap_pulse"),
+        egui::Id::new("tab_strip_drag_gap_pulse").with(drag_anim_key),
         pulse_target,
         motion.durations.hover_fade,
       );
@@ -3336,7 +3341,7 @@ pub(super) fn tab_strip_ui(
         x
       };
 
-      let drop_id = egui::Id::new("tab_strip_drop_indicator");
+      let drop_id = egui::Id::new("tab_strip_drop_indicator").with(drag_anim_key);
       let drop_x = motion.animate_f32(
         ui.ctx(),
         drop_id.with("x"),
@@ -3399,13 +3404,7 @@ pub(super) fn tab_strip_ui(
 
     // Animate the lift/scale-in so the dragged tab feels like it's being "picked up". When reduced
     // motion is enabled this snaps to the final state.
-    let (lift_start_x, lift_start_y) = app
-      .chrome
-      .drag_start_pointer_pos
-      .map(|p| (p.x, p.y))
-      .unwrap_or((0.0, 0.0));
-    let lift_id =
-      egui::Id::new("tab_strip_drag_lift").with((dragging_tab_id, lift_start_x, lift_start_y));
+    let lift_id = egui::Id::new("tab_strip_drag_lift").with(drag_anim_key);
     let lift_t = motion.animate_bool(ui.ctx(), lift_id, true, motion.durations.tab_drag_lift);
     let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y * lift_t);
     preview_rect = preview_rect.translate(lift);
@@ -3927,7 +3926,10 @@ mod tests {
       "expected pinned viewport to match content width when it fits"
     );
     let gap = total - pinned - unpinned;
-    assert!((gap - TAB_GAP).abs() < 0.01, "expected default inter-segment gap");
+    assert!(
+      (gap - TAB_GAP).abs() < 0.01,
+      "expected default inter-segment gap"
+    );
   }
 
   #[test]
@@ -3950,9 +3952,15 @@ mod tests {
   fn pinned_viewport_drops_gap_when_strip_is_too_narrow() {
     let total = PINNED_TAB_WIDTH + 2.0;
     let (pinned, unpinned) = compute_pinned_viewport_width(total, 10_000.0, true);
-    assert!(unpinned > 0.0, "expected some width reserved for unpinned viewport");
+    assert!(
+      unpinned > 0.0,
+      "expected some width reserved for unpinned viewport"
+    );
     let gap = total - pinned - unpinned;
-    assert!(gap.abs() < 0.01, "expected gap to be dropped under narrow widths");
+    assert!(
+      gap.abs() < 0.01,
+      "expected gap to be dropped under narrow widths"
+    );
   }
 
   #[test]

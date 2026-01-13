@@ -707,6 +707,13 @@ pub struct ChromeState {
   /// Screen-space rect of the tab when the drag started (used for rendering a floating drag ghost).
   #[cfg(feature = "browser_ui")]
   pub drag_start_tab_rect: Option<egui::Rect>,
+  /// Monotonic counter incremented each time a tab drag starts.
+  ///
+  /// This is used to namespace egui animation ids so drag animations (lift/indicator/pulse) reset
+  /// cleanly between separate drag sessions (even when dragging the same tab from the same
+  /// position).
+  #[cfg(feature = "browser_ui")]
+  pub tab_drag_session: u64,
   #[cfg(feature = "browser_ui")]
   pub drag_target_index: Option<usize>,
   /// Transient "drag a hovered link to the address bar" state.
