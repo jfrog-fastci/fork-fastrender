@@ -16,6 +16,7 @@ mod fixture_chrome_diff;
 mod fixture_determinism;
 mod freeze_page_fixture_cmd;
 mod generate_emoji_tables;
+mod generate_regexp_unicode_property_strings;
 mod import_page_fixture;
 mod js;
 mod lint_no_openssl;
@@ -87,6 +88,9 @@ fn main() -> Result<()> {
       lint_no_openssl::run_lint_no_openssl(&repo_root, args)
     }
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
+    Commands::GenerateRegExpUnicodePropertyStrings(args) => {
+      generate_regexp_unicode_property_strings::run_generate_regexp_unicode_property_strings(args)
+    }
     Commands::WebIdlCodegen(args) => webidl_codegen::run_webidl_codegen(args),
     Commands::WebIdlBindingsCodegen(args) => {
       xtask::webidl_bindings_codegen::run_webidl_bindings_codegen(args)
@@ -167,6 +171,14 @@ enum Commands {
   /// Regenerate the Unicode emoji property tables used by the renderer.
   #[command(alias = "gen-emoji-tables")]
   GenerateEmojiTables(generate_emoji_tables::GenerateEmojiTablesArgs),
+  /// Regenerate the RegExp `v` flag Unicode properties-of-strings tables (emoji sequences).
+  #[command(
+    name = "generate-regexp-unicode-property-strings",
+    alias = "gen-regexp-unicode-property-strings"
+  )]
+  GenerateRegExpUnicodePropertyStrings(
+    generate_regexp_unicode_property_strings::GenerateRegExpUnicodePropertyStringsArgs,
+  ),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
   /// Fail CI if tests introduce new process-global state mutations (env vars, cwd changes, etc.).

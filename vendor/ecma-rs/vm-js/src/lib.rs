@@ -164,6 +164,7 @@ mod property;
 mod property_descriptor_ops;
 mod realm;
 mod regexp;
+mod regexp_unicode_property_strings;
 mod source;
 mod spec_ops;
 mod string;
@@ -171,6 +172,9 @@ mod symbol;
 mod tick;
 mod value;
 mod vm;
+
+#[cfg(test)]
+mod regexp_unicode_property_strings_tests;
 
 pub use crate::handle::EnvRootId;
 
