@@ -24,6 +24,9 @@
 #[cfg(target_os = "linux")]
 use std::io;
 
+#[cfg(target_os = "linux")]
+pub mod linux_landlock;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
   Applied,
@@ -54,6 +57,13 @@ pub enum SeccompInstallRejectedReason {
 pub enum SandboxError {
   #[error("sandboxing is not supported on this platform")]
   UnsupportedPlatform,
+
+  #[cfg(target_os = "linux")]
+  #[error("failed to apply Landlock sandbox")]
+  LandlockFailed {
+    #[source]
+    source: linux_landlock::LandlockError,
+  },
 
   #[cfg(target_os = "linux")]
   #[error("failed to enable no_new_privs via prctl(PR_SET_NO_NEW_PRIVS)")]
@@ -91,6 +101,14 @@ pub fn apply_renderer_sandbox(
 ) -> Result<SandboxStatus, SandboxError> {
   #[cfg(target_os = "linux")]
   {
+    // Apply Landlock as defense-in-depth. This doesn't affect already-open FDs (pipes, sockets,
+    // memfd, etc.) because Landlock mediates path-based filesystem operations.
+    match linux_landlock::apply(&linux_landlock::LandlockConfig::default()) {
+      Ok(linux_landlock::LandlockStatus::Applied { .. }) => {}
+      Ok(linux_landlock::LandlockStatus::Unsupported { .. }) => {}
+      Err(source) => return Err(SandboxError::LandlockFailed { source }),
+    }
+
     return linux_seccomp::apply_renderer_sandbox_linux(config);
   }
 
@@ -180,3 +198,4 @@ mod tests {
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+
