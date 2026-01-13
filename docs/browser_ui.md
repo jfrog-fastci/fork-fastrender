@@ -123,6 +123,9 @@ Downloaded files are saved into a per-browser download directory resolved in thi
 3. The OS downloads directory (via `directories::UserDirs`)
 4. The current working directory
 
+This resolved directory is also the one opened by the Downloads panel’s **Show downloads folder**
+action.
+
 To prevent huge in-process pixmap allocations when the window is resized to extreme sizes (or when
 running on very high-DPI displays), the browser UI also clamps viewport/DPR based on these env vars
 (see [env-vars.md](env-vars.md) for defaults and details):
@@ -418,6 +421,16 @@ The browser uses the same `Theme` behaviour on Linux (only override when explici
   clipboard/editing actions like copy/cut/paste/select all).
 - Click the downloads icon in the toolbar to open the downloads side panel (shows progress and lets
   you cancel/retry/open/reveal completed downloads).
+
+### Downloads
+
+- Open the downloads panel via the toolbar downloads icon, <kbd>Ctrl</kbd>+<kbd>J</kbd> (Win/Linux),
+  <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS), or **Window → Show Downloads…**.
+- For completed downloads:
+  - **Open** launches the file using the OS default application.
+  - **Show in Folder** reveals the file in your OS file manager.
+- **Show downloads folder** opens the currently configured download directory (as resolved from
+  `--download-dir` / `FASTR_BROWSER_DOWNLOAD_DIR` / OS Downloads / working directory).
 
 ## Keyboard / mouse shortcuts
 
