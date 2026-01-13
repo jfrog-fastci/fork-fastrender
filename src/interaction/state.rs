@@ -1180,6 +1180,28 @@ impl InteractionStateDom2 {
     // Conservative: drop detached nodes from these per-element sets to avoid retaining stale ids.
     self.visited_links.retain(|&id| is_connected(id));
     self.user_validity.retain(|&id| is_connected(id));
+
+    if let Some(selection) = &mut self.document_selection {
+      match selection {
+        DocumentSelectionStateDom2::All => {}
+        DocumentSelectionStateDom2::Ranges(ranges) => {
+          ranges
+            .ranges
+            .retain(|range| is_connected(range.start.node_id) && is_connected(range.end.node_id));
+          if ranges.ranges.is_empty() {
+            self.document_selection = None;
+          } else {
+            if !is_connected(ranges.anchor.node_id) || !is_connected(ranges.focus.node_id) {
+              // Keep anchor/focus consistent with remaining ranges when the endpoints are detached.
+              let first = ranges.ranges[0];
+              ranges.anchor = first.start;
+              ranges.focus = first.end;
+            }
+            ranges.normalize(mapping);
+          }
+        }
+      }
+    }
   }
 
   /// Project this stable, `dom2::NodeId` keyed state into the renderer's preorder-id keyed

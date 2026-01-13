@@ -151,6 +151,63 @@ fn interaction_state_dom2_projection_projects_document_selection_and_updates_on_
 }
 
 #[test]
+fn interaction_state_dom2_projection_prunes_detached_document_selection() {
+  let html = "<!doctype html><html><body><div id=a>hello</div></body></html>";
+  let mut doc = crate::dom2::parse_html(html).unwrap();
+
+  let div = doc.get_element_by_id("a").expect("div");
+  let text = doc.node(div).children[0];
+
+  let selection = DocumentSelectionStateDom2::Ranges(DocumentSelectionRangesDom2 {
+    ranges: vec![DocumentSelectionRangeDom2 {
+      start: DocumentSelectionPointDom2 {
+        node_id: text,
+        char_offset: 1,
+      },
+      end: DocumentSelectionPointDom2 {
+        node_id: text,
+        char_offset: 4,
+      },
+    }],
+    primary: 0,
+    anchor: DocumentSelectionPointDom2 {
+      node_id: text,
+      char_offset: 1,
+    },
+    focus: DocumentSelectionPointDom2 {
+      node_id: text,
+      char_offset: 4,
+    },
+  });
+
+  let mut state_dom2 = InteractionStateDom2 {
+    document_selection: Some(selection),
+    ..Default::default()
+  };
+
+  let snapshot1 = doc.to_renderer_dom_with_mapping();
+  let projected_1 = state_dom2.project_to_preorder(&snapshot1.mapping);
+  assert!(
+    projected_1.document_selection.is_some(),
+    "expected selection to project while node is connected"
+  );
+
+  // Detach the selected text node.
+  assert!(doc.remove_child(div, text).unwrap());
+
+  let snapshot2 = doc.to_renderer_dom_with_mapping();
+  let projected_2 = state_dom2.project_to_preorder(&snapshot2.mapping);
+  assert!(
+    projected_2.document_selection.is_none(),
+    "expected selection to be cleared when node becomes detached"
+  );
+  assert!(
+    state_dom2.document_selection.is_none(),
+    "expected stable dom2 selection to be pruned when node becomes detached"
+  );
+}
+
+#[test]
 fn interaction_state_dom2_projection_updates_preorder_ids_after_dom_mutation() {
   let html = concat!(
     "<!doctype html>",
