@@ -277,12 +277,12 @@ impl GridItem {
   /// The key thing that is being done here is applying stretch alignment, which is necessary to
   /// allow percentage sizes further down the tree to resolve properly in some cases
   fn known_dimensions(
-    &self,
+    &mut self,
     tree: &mut impl LayoutPartialTree,
     inner_node_size: Size<Option<f32>>,
     grid_area_size: Size<Option<f32>>,
   ) -> Size<Option<f32>> {
-    let margins = self.margins_axis_sums_with_baseline_shims(inner_node_size.width, tree);
+    let margins = self.margins_axis_sums_with_baseline_shims_cached(inner_node_size.width, tree);
 
     let aspect_ratio = self.aspect_ratio;
     let padding = self
@@ -410,6 +410,7 @@ impl GridItem {
   /// Compute the item's resolved margins for size contributions. Horizontal percentage margins always resolve
   /// to zero if the container size is indefinite as otherwise this would introduce a cyclic dependency.
   #[inline(always)]
+  #[allow(dead_code)]
   pub fn margins_axis_sums_with_baseline_shims(
     &self,
     inner_node_width: Option<f32>,
@@ -499,7 +500,7 @@ impl GridItem {
 
   /// Compute the item's min content contribution from the provided parameters
   pub fn min_content_contribution(
-    &self,
+    &mut self,
     axis: AbstractAxis,
     tree: &mut impl LayoutPartialTree,
     available_space: Size<Option<f32>>,
@@ -541,7 +542,7 @@ impl GridItem {
 
   /// Compute the item's max content contribution from the provided parameters
   pub fn max_content_contribution(
-    &self,
+    &mut self,
     axis: AbstractAxis,
     tree: &mut impl LayoutPartialTree,
     available_space: Size<Option<f32>>,
