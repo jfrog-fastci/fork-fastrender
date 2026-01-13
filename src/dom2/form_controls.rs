@@ -497,7 +497,7 @@ impl Document {
     Ok(self.input_state(input)?.value.as_str())
   }
 
-  pub fn set_input_value(&mut self, input: NodeId, value: &str) -> Result<(), DomError> {
+  pub fn set_input_value(&mut self, input: NodeId, value: &str) -> Result<bool, DomError> {
     let _ = self.node_checked(input)?;
     // Validate node type (must be an HTML <input> with internal state).
     let _ = self.input_state(input)?;
@@ -507,23 +507,29 @@ impl Document {
     if is_input_type_file(self.get_attribute(input, "type")?) {
       if !value.is_empty() {
         // No-op: do not mutate state and do not bump mutation generation.
-        return Ok(());
+        return Ok(false);
       }
       let state = self.input_state_mut(input)?;
+      if state.value.is_empty() {
+        return Ok(false);
+      }
       state.dirty_value = true;
       state.value.clear();
       self.record_form_state_mutation(input);
       self.bump_mutation_generation_classified();
-      return Ok(());
+      return Ok(true);
     }
 
     let state = self.input_state_mut(input)?;
+    if state.value == value {
+      return Ok(false);
+    }
     state.dirty_value = true;
     state.value.clear();
     state.value.push_str(value);
     self.record_form_state_mutation(input);
     self.bump_mutation_generation_classified();
-    Ok(())
+    Ok(true)
   }
 
   pub fn input_checked(&self, input: NodeId) -> Result<bool, DomError> {
@@ -531,19 +537,27 @@ impl Document {
     Ok(self.input_state(input)?.checkedness)
   }
 
-  pub fn set_input_checked(&mut self, input: NodeId, checked: bool) -> Result<(), DomError> {
+  pub fn set_input_checked(&mut self, input: NodeId, checked: bool) -> Result<bool, DomError> {
     let _ = self.node_checked(input)?;
-    {
-      let state = self.input_state_mut(input)?;
-      state.dirty_checkedness = true;
-      state.checkedness = checked;
+    let state = self.input_state_mut(input)?;
+    if state.checkedness == checked {
+      // Even if the target checkedness is unchanged, the call may still normalize radio group
+      // exclusivity by unchecking other radios. Only treat it as a no-op if no state changes.
+      if checked && self.uncheck_other_radios_in_group(input, /* set_dirty_checkedness_on_others */ true)
+      {
+        self.bump_mutation_generation_classified();
+        return Ok(true);
+      }
+      return Ok(false);
     }
+    state.dirty_checkedness = true;
+    state.checkedness = checked;
     if checked {
       self.uncheck_other_radios_in_group(input, /* set_dirty_checkedness_on_others */ true);
     }
     self.record_form_state_mutation(input);
     self.bump_mutation_generation_classified();
-    Ok(())
+    Ok(true)
   }
 
   pub fn textarea_value(&self, textarea: NodeId) -> Result<String, DomError> {
@@ -560,15 +574,30 @@ impl Document {
     Ok(self.textarea_state(textarea)?.dirty_value)
   }
 
-  pub fn set_textarea_value(&mut self, textarea: NodeId, value: &str) -> Result<(), DomError> {
+  pub fn set_textarea_value(&mut self, textarea: NodeId, value: &str) -> Result<bool, DomError> {
     let _ = self.node_checked(textarea)?;
+
+    // `TextareaState.value` is only authoritative once the dirty flag is set. While not dirty, the
+    // effective value is derived from descendant text nodes.
+    let no_change = {
+      let state = self.textarea_state(textarea)?;
+      if state.dirty_value {
+        state.value == value
+      } else {
+        self.textarea_default_value(textarea)? == value
+      }
+    };
+    if no_change {
+      return Ok(false);
+    }
+
     let state = self.textarea_state_mut(textarea)?;
     state.dirty_value = true;
     state.value.clear();
     state.value.push_str(value);
     self.record_form_state_mutation(textarea);
     self.bump_mutation_generation_classified();
-    Ok(())
+    Ok(true)
   }
 
   pub fn option_selected(&self, option: NodeId) -> Result<bool, DomError> {
@@ -576,7 +605,7 @@ impl Document {
     Ok(self.option_state(option)?.selectedness)
   }
 
-  pub fn set_option_selected(&mut self, option: NodeId, selected: bool) -> Result<(), DomError> {
+  pub fn set_option_selected(&mut self, option: NodeId, selected: bool) -> Result<bool, DomError> {
     let _ = self.node_checked(option)?;
     let select_owner = self.ancestors(option).skip(1).find(|&ancestor| {
       let NodeKind::Element {
@@ -591,29 +620,38 @@ impl Document {
     });
     let repaint_target = select_owner.unwrap_or(option);
 
-    {
+    let current_selectedness = self.option_state(option)?.selectedness;
+    let mut changed = false;
+
+    // Avoid setting dirty flags / bumping generation when the effective selection state is
+    // unchanged.
+    if current_selectedness != selected {
       let state = self.option_state_mut(option)?;
       state.dirty_selectedness = true;
       state.selectedness = selected;
+      changed = true;
     }
-    self.record_form_state_mutation(repaint_target);
-    self.bump_mutation_generation_classified();
 
     let Some(select) = select_owner else {
-      return Ok(());
+      if changed {
+        self.record_form_state_mutation(repaint_target);
+        self.bump_mutation_generation_classified();
+      }
+      return Ok(changed);
     };
 
     let multiple = self.has_attribute(select, "multiple")?;
     if multiple {
-      return Ok(());
+      if changed {
+        self.record_form_state_mutation(repaint_target);
+        self.bump_mutation_generation_classified();
+      }
+      return Ok(changed);
     }
 
-    let options = self.select_options(select);
-    if options.is_empty() {
-      return Ok(());
-    }
-
+    // Single-select: ensure mutual exclusion when an option is selected.
     if selected {
+      let options = self.select_options(select);
       for other in options {
         if other == option {
           continue;
@@ -628,38 +666,19 @@ impl Document {
         if state.selectedness {
           state.selectedness = false;
           state.dirty_selectedness = true;
-          self.record_form_state_mutation(repaint_target);
-          self.bump_mutation_generation_classified();
+          changed = true;
         }
       }
-      return Ok(());
     }
 
-    let any_selected = options.iter().any(|&opt| {
-      self
-        .option_states
-        .get(opt.index())
-        .and_then(|s| s.as_ref())
-        .is_some_and(|s| s.selectedness)
-    });
-    if any_selected {
-      return Ok(());
-    }
-
-    let first = options[0];
-    let Some(state) = self
-      .option_states
-      .get_mut(first.index())
-      .and_then(|s| s.as_mut())
-    else {
-      return Ok(());
-    };
-    if !state.selectedness {
-      state.selectedness = true;
+    if changed {
       self.record_form_state_mutation(repaint_target);
       self.bump_mutation_generation_classified();
     }
-    Ok(())
+    // Unlike `selectedIndex`, the `option.selected = false` IDL setter is allowed to leave a
+    // single-select with no selected option. `select_selected_index()` / `select_value()` shims
+    // normalize this state on read when needed.
+    Ok(changed)
   }
 
   pub fn reset_input(&mut self, input: NodeId) -> Result<(), DomError> {

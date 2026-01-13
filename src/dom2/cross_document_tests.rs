@@ -1113,8 +1113,8 @@ fn clone_node_propagates_input_state_and_dirty_flags() {
   let input = doc.create_element("input", HTML_NAMESPACE);
   doc.set_attribute(input, "type", "checkbox").unwrap();
   doc.set_attribute(input, "checked", "").unwrap();
-  doc.set_input_value(input, "b").unwrap();
-  doc.set_input_checked(input, false).unwrap();
+  assert!(doc.set_input_value(input, "b").unwrap());
+  assert!(doc.set_input_checked(input, false).unwrap());
 
   let cloned = doc.clone_node(input, /* deep */ false).unwrap();
   assert_eq!(doc.input_value(cloned).unwrap(), "b");
@@ -1137,7 +1137,7 @@ fn import_node_from_propagates_textarea_state_and_dirty_value_flag() {
   let textarea = src.create_element("textarea", HTML_NAMESPACE);
   let text = src.create_text("a");
   src.append_child(textarea, text).unwrap();
-  src.set_textarea_value(textarea, "b").unwrap();
+  assert!(src.set_textarea_value(textarea, "b").unwrap());
 
   let mut dst = Document::new(QuirksMode::NoQuirks);
   let imported = dst
@@ -1158,8 +1158,8 @@ fn adopt_node_from_preserves_input_state_and_dirty_flags() {
   let input = src.create_element("input", HTML_NAMESPACE);
   src.set_attribute(input, "type", "checkbox").unwrap();
   src.set_attribute(input, "checked", "").unwrap();
-  src.set_input_value(input, "b").unwrap();
-  src.set_input_checked(input, false).unwrap();
+  assert!(src.set_input_value(input, "b").unwrap());
+  assert!(src.set_input_checked(input, false).unwrap());
   src.append_child(src.root(), input).unwrap();
 
   let mut dst = Document::new(QuirksMode::NoQuirks);

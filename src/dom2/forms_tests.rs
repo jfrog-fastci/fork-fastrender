@@ -48,8 +48,11 @@ fn input_value_and_checked_use_internal_state_with_dirty_flags() {
   assert!(doc.input_checked(input).unwrap());
 
   // IDL property setters must not mutate attributes.
-  doc.set_input_value(input, "bar").unwrap();
-  doc.set_input_checked(input, false).unwrap();
+  assert!(doc.set_input_value(input, "bar").unwrap());
+  assert!(doc.set_input_checked(input, false).unwrap());
+  // Setting the same state twice should be a no-op.
+  assert!(!doc.set_input_value(input, "bar").unwrap());
+  assert!(!doc.set_input_checked(input, false).unwrap());
   assert_eq!(doc.get_attribute(input, "value").unwrap(), Some("foo"));
   assert!(doc.has_attribute(input, "checked").unwrap());
 
@@ -102,7 +105,8 @@ fn textarea_value_uses_text_content_until_dirty() {
   doc.set_text_data(text, "world").unwrap();
   assert_eq!(doc.textarea_value(textarea).unwrap(), "world");
 
-  doc.set_textarea_value(textarea, "dirty").unwrap();
+  assert!(doc.set_textarea_value(textarea, "dirty").unwrap());
+  assert!(!doc.set_textarea_value(textarea, "dirty").unwrap());
   assert_eq!(doc.textarea_value(textarea).unwrap(), "dirty");
   // `.value` does not mutate the underlying text nodes.
   assert_eq!(doc.text_data(text).unwrap(), "world");
@@ -127,7 +131,8 @@ fn option_selectedness_uses_internal_state_with_dirty_flag() {
   assert!(doc.option_selected(option).unwrap());
 
   // IDL property setter must not mutate attributes.
-  doc.set_option_selected(option, false).unwrap();
+  assert!(doc.set_option_selected(option, false).unwrap());
+  assert!(!doc.set_option_selected(option, false).unwrap());
   assert!(doc.has_attribute(option, "selected").unwrap());
   assert!(!doc.option_selected(option).unwrap());
 
@@ -671,4 +676,35 @@ fn file_input_form_reset_clears_value_and_dirty_flags() {
   // Dirty flags must be cleared so type changes away from `file` can sync from the value attribute.
   doc.set_attribute(input, "type", "text").unwrap();
   assert_eq!(doc.input_value(input).unwrap(), "foo");
+}
+
+#[test]
+fn select_selected_index_setter_noop_does_not_bump_generation_or_record_mutations() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let select = doc.create_element("select", "");
+  let option_a = doc.create_element("option", "");
+  let option_b = doc.create_element("option", "");
+  doc.append_child(select, option_a).unwrap();
+  doc.append_child(select, option_b).unwrap();
+
+  // Building the subtree may record structural mutations; clear them so we only observe
+  // `selectedIndex` effects.
+  let _ = doc.take_mutations();
+  let gen_before = doc.mutation_generation();
+
+  assert!(doc.set_select_selected_index(select, 0).unwrap());
+  assert!(doc.mutation_generation() > gen_before);
+  let mutations = doc.take_mutations();
+  assert!(
+    mutations.form_state_changed.contains(&select),
+    "expected selectedIndex mutation to be recorded"
+  );
+
+  let gen_after = doc.mutation_generation();
+  assert!(!doc.set_select_selected_index(select, 0).unwrap());
+  assert_eq!(doc.mutation_generation(), gen_after);
+  assert!(
+    doc.take_mutations().is_empty(),
+    "no-op selectedIndex setter should not record mutations"
+  );
 }

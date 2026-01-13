@@ -524,7 +524,11 @@ impl Document {
         return Ok(changed);
       };
 
-      changed |= self.set_option_selectedness(select, target, true, true);
+      // Avoid setting dirty flags / bumping generation when the effective selection state is
+      // unchanged.
+      if !self.option_selectedness(target) {
+        changed |= self.set_option_selectedness(select, target, true, true);
+      }
       return Ok(changed);
     }
 
@@ -532,7 +536,9 @@ impl Document {
       return Ok(false);
     };
 
-    changed |= self.set_option_selectedness(select, target, true, true);
+    if !self.option_selectedness(target) {
+      changed |= self.set_option_selectedness(select, target, true, true);
+    }
     for option in options {
       if option == target {
         continue;

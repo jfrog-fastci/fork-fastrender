@@ -6805,9 +6805,6 @@ impl BrowserTab {
                       }
                       SelectionAction::RemoveFromSelection => {
                         after[target_idx] = false;
-                        if after.iter().all(|&selected| !selected) && !after.is_empty() {
-                          after[0] = true;
-                        }
                       }
                     }
                   }
@@ -6828,12 +6825,17 @@ impl BrowserTab {
                             }
                           }
                         }
-                        SelectionAction::AddToSelection => dom.set_option_selected(target, true)?,
-                        SelectionAction::RemoveFromSelection => dom.set_option_selected(target, false)?,
+                        SelectionAction::AddToSelection => {
+                          dom.set_option_selected(target, true)?;
+                        }
+                        SelectionAction::RemoveFromSelection => {
+                          dom.set_option_selected(target, false)?;
+                        }
                       }
                     } else {
-                      // Single-select: `set_option_selected` enforces exclusive selection and ensures
-                      // at least one option remains selected.
+                      // Single-select: `set_option_selected` enforces exclusive selection when an
+                      // option becomes selected. Deselecting can leave no option selected; DOM
+                      // select accessors normalize this state on read when needed.
                       dom.set_option_selected(target, desired_selected)?;
                     }
                   }
