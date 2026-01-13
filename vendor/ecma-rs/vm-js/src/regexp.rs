@@ -4204,7 +4204,8 @@ impl<'a> Parser<'a> {
               set.chars = set.chars.complement();
             }
           }
-          // Unicode property escapes (`\p{...}` / `\P{...}`) are not implemented yet.
+          // Unicode property escapes (`\p{...}` / `\P{...}`) are not implemented in
+          // UnicodeSets-mode (`/v`) class set expressions yet.
           x if x == (b'p' as u16) || x == (b'P' as u16) => {
             return Err(RegExpSyntaxError {
               message: "Invalid regular expression",
