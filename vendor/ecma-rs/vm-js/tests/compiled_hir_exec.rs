@@ -1528,6 +1528,57 @@ fn compiled_object_literal_object_spread_boxes_string_primitives() -> Result<(),
 }
 
 #[test]
+fn compiled_object_literal_object_spread_copies_symbol_properties() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let sym = Symbol("s");
+      let a = {};
+      a[sym] = 1;
+      let o = { ...a };
+      o[sym]
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_object_spread_invokes_getter_once() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // CopyDataProperties should use `Get` on enumerable properties, so accessors are invoked and the
+  // resulting value is copied as a data property.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let log = "";
+      let src = { get x() { log += "x"; return 1; } };
+      let o = { ...src };
+      let before = log;
+      let val = o.x;
+      let after = log;
+      before + ":" + after + ":" + val
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "x:x:1");
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_object_spread_respects_member_order() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
