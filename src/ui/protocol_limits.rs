@@ -60,6 +60,38 @@ pub const MAX_INPUT_VALUE_BYTES: usize = 1024;
 /// Maximum UTF-8 byte length allowed for `<input type=file accept>` attribute strings.
 pub const MAX_ACCEPT_ATTR_BYTES: usize = 1024;
 
+// -----------------------------------------------------------------------------
+// Untrusted form submission payload limits (worker → UI)
+// -----------------------------------------------------------------------------
+//
+// `WorkerToUi::RequestOpenInNewTabRequest` includes an owned `FormSubmission` (method + headers +
+// optional body). Even though this message is usually triggered by user interaction, it still
+// crosses the renderer/worker trust boundary: a compromised renderer (or malicious page that
+// manages to synthesize extreme input values) must not be able to force the windowed browser UI to
+// allocate/retain huge vectors and hang/crash.
+//
+// These limits are applied by
+// `ui::untrusted::validate_untrusted_form_submission_for_open_in_new_tab_request` before the
+// windowed browser UI creates a new tab and forwards the request back to the worker.
+
+/// Maximum number of HTTP headers accepted in an untrusted `FormSubmission` payload.
+pub const MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_COUNT: usize = 64;
+
+/// Maximum total UTF-8 bytes accepted across all header name/value strings.
+pub const MAX_OPEN_IN_NEW_TAB_REQUEST_TOTAL_HEADER_BYTES: usize = 16 * 1024; // 16 KiB
+
+/// Maximum UTF-8 byte length accepted for a single header name.
+pub const MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_NAME_BYTES: usize = 256;
+
+/// Maximum UTF-8 byte length accepted for a single header value.
+pub const MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_VALUE_BYTES: usize = 8 * 1024; // 8 KiB
+
+/// Maximum bytes accepted for the request body in `RequestOpenInNewTabRequest`.
+///
+/// This is intentionally bounded: the UI forwards the body back to the worker over an in-memory
+/// channel, so extremely large payloads could cause OOM or long GC/allocator pauses.
+pub const MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES: usize = 512 * 1024; // 512 KiB
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardTextLimitResult {
   pub tab_id: TabId,

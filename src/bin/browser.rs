@@ -7666,19 +7666,15 @@ impl App {
   /// This is used for form submissions with `target=_blank` that carry an explicit request (notably
   /// POST submissions).
   fn open_request_in_new_tab(&mut self, request: fastrender::interaction::FormSubmission) -> bool {
-    use fastrender::ui::cancel::CancelGens;
-    use fastrender::ui::messages::{NavigationReason, RepaintReason, UiToWorker};
-    use fastrender::ui::{BrowserTabState, PointerButton, TabId};
+    use fastrender::ui::messages::NavigationReason;
 
-    let mut request = request;
-    let safe_url = match fastrender::ui::untrusted::validate_untrusted_navigation_url(&request.url) {
-      Ok(url) => url,
-      Err(_) => {
-        self.show_chrome_toast("Blocked attempt to open an invalid URL");
+    let request = match fastrender::ui::untrusted::validate_untrusted_form_submission_for_open_in_new_tab_request(request) {
+      Ok(request) => request,
+      Err(err) => {
+        self.show_chrome_toast(err.toast_message());
         return false;
       }
     };
-    request.url = safe_url;
 
     // Close any transient UI state before switching tabs.
     if self.open_select_dropdown.is_some() {
@@ -7694,41 +7690,13 @@ impl App {
       self.cancel_pointer_capture();
     }
 
-    let url = request.url.clone();
-    let new_tab_id = TabId::new();
-    let mut tab_state = BrowserTabState::new(new_tab_id, url.clone());
-    tab_state.loading = true;
-    tab_state.unresponsive = false;
-    tab_state.last_worker_msg_at = std::time::SystemTime::now();
-    let cancel: CancelGens = tab_state.cancel.clone();
-    self.tab_cancel.insert(new_tab_id, cancel.clone());
-    self.browser_state.push_tab(tab_state, true);
-
-    // Reset per-tab cached state; mimic `ChromeAction::NewTab`/`ActivateTab` behaviour.
-    self.page_has_focus = true;
-    self.viewport_cache_tab = None;
-    self.pointer_captured = false;
-    self.captured_button = PointerButton::None;
-    self.cursor_in_page = false;
-    self.hover_sync_pending = true;
-    self.pending_pointer_move = None;
-
-    let _ = self.send_worker_msg(UiToWorker::CreateTab {
-      tab_id: new_tab_id,
-      initial_url: None,
-      cancel,
-    });
-    let _ = self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_tab_id });
-    let _ = self.send_worker_msg(UiToWorker::NavigateRequest {
-      tab_id: new_tab_id,
+    let (_tab_id, msgs) = fastrender::ui::open_in_new_tab::open_request_in_new_tab_state(
+      &mut self.browser_state,
+      &mut self.tab_cancel,
       request,
-      reason: NavigationReason::LinkClick,
-    });
-    let _ = self.send_worker_msg(UiToWorker::RequestRepaint {
-      tab_id: new_tab_id,
-      reason: RepaintReason::Explicit,
-    });
-    self.window.request_redraw();
+      NavigationReason::LinkClick,
+    );
+    self.apply_open_url_in_new_tab_messages(msgs);
 
     true
   }

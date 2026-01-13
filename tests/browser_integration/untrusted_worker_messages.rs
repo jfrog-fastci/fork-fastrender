@@ -194,3 +194,61 @@ fn hovered_url_from_worker_rejects_javascript_scheme() {
     tab.hovered_url
   );
 }
+
+#[test]
+fn open_in_new_tab_request_from_worker_is_size_limited() {
+  use fastrender::interaction::{FormSubmission, FormSubmissionMethod};
+  use fastrender::ui::cancel::CancelGens;
+  use fastrender::ui::messages::NavigationReason;
+  use fastrender::ui::open_in_new_tab::open_untrusted_request_in_new_tab;
+  use fastrender::ui::protocol_limits::MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES;
+  use fastrender::ui::untrusted::UntrustedFormSubmissionError;
+  use std::collections::HashMap;
+
+  let mut app_state = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+  let before_tabs = app_state.tabs.len();
+  let before_active = app_state.active_tab_id();
+  let mut tab_cancel: HashMap<TabId, CancelGens> = HashMap::new();
+
+  // Simulate a malicious worker sending an absurdly large POST body. The windowed browser UI should
+  // treat this as untrusted IPC and drop it without creating a new tab or forwarding any worker
+  // messages.
+  let request = FormSubmission {
+    url: "https://example.com/".to_string(),
+    method: FormSubmissionMethod::Post,
+    headers: vec![(
+      "content-type".to_string(),
+      "application/x-www-form-urlencoded".to_string(),
+    )],
+    body: Some(vec![0u8; MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES + 1]),
+  };
+
+  let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    open_untrusted_request_in_new_tab(
+      &mut app_state,
+      &mut tab_cancel,
+      request,
+      NavigationReason::LinkClick,
+    )
+  }))
+  .expect("open_untrusted_request_in_new_tab must not panic");
+
+  assert_eq!(
+    result.unwrap_err(),
+    UntrustedFormSubmissionError::BodyTooLarge
+  );
+  assert_eq!(
+    app_state.tabs.len(),
+    before_tabs,
+    "expected no new tab to be created when dropping untrusted payload"
+  );
+  assert_eq!(
+    app_state.active_tab_id(),
+    before_active,
+    "active tab should remain unchanged when dropping untrusted payload"
+  );
+  assert!(
+    tab_cancel.is_empty(),
+    "expected no cancel state to be recorded when request is dropped"
+  );
+}

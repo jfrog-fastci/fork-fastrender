@@ -3,11 +3,46 @@
 //! The UI treats all [`crate::ui::messages::WorkerToUi`] payloads as untrusted. Do not store or
 //! display raw worker strings without first applying the helpers in this module.
 
+use crate::interaction::FormSubmission;
 use crate::tree::box_tree::{SelectControl, SelectItem};
 use crate::ui::protocol_limits::{
-  MAX_FAVICON_BYTES, MAX_SELECT_ITEMS, MAX_SELECT_LABEL_BYTES, MAX_URL_BYTES,
+  MAX_FAVICON_BYTES,
+  MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES,
+  MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_COUNT,
+  MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_NAME_BYTES,
+  MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_VALUE_BYTES,
+  MAX_OPEN_IN_NEW_TAB_REQUEST_TOTAL_HEADER_BYTES,
+  MAX_SELECT_ITEMS,
+  MAX_SELECT_LABEL_BYTES,
+  MAX_URL_BYTES,
 };
 use std::sync::Arc;
+
+/// Validation failure for an untrusted [`FormSubmission`] payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UntrustedFormSubmissionError {
+  InvalidUrl,
+  UrlTooLong,
+  TooManyHeaders,
+  HeaderNameTooLong,
+  HeaderValueTooLong,
+  HeadersTooLarge,
+  BodyTooLarge,
+}
+
+impl UntrustedFormSubmissionError {
+  /// User-facing toast message for a blocked form submission.
+  pub fn toast_message(self) -> &'static str {
+    match self {
+      Self::InvalidUrl | Self::UrlTooLong => "Blocked attempt to open an invalid URL",
+      Self::TooManyHeaders
+      | Self::HeaderNameTooLong
+      | Self::HeaderValueTooLong
+      | Self::HeadersTooLarge => "Blocked attempt to open a new tab: request headers too large",
+      Self::BodyTooLarge => "Blocked attempt to open a new tab: request body too large",
+    }
+  }
+}
 
 /// Clamp an untrusted string to `max_bytes` in UTF-8 without splitting code points.
 ///
@@ -89,6 +124,85 @@ pub fn validate_untrusted_navigation_url(url: &str) -> Result<String, String> {
   Ok(sanitized)
 }
 
+/// Validate + sanitize an untrusted [`FormSubmission`] originating from the worker process.
+///
+/// This is intended for `WorkerToUi::RequestOpenInNewTabRequest`: the windowed UI must treat the
+/// payload as untrusted IPC and enforce size limits before cloning/storing it or forwarding it back
+/// to the worker.
+///
+/// On success, this returns a sanitized `FormSubmission` with a normalized, scheme-validated URL.
+pub fn validate_untrusted_form_submission_for_open_in_new_tab_request(
+  mut request: FormSubmission,
+) -> Result<FormSubmission, UntrustedFormSubmissionError> {
+  // Avoid spending time sanitizing/parsing absurdly large payloads. This protects against inputs
+  // that are mostly control/whitespace (which would otherwise take O(n) time to scan while the
+  // output stays empty).
+  const ABSURD_URL_BYTES_MULTIPLIER: usize = 64;
+  let absurd_url_limit = MAX_URL_BYTES.saturating_mul(ABSURD_URL_BYTES_MULTIPLIER);
+  if request.url.len() > absurd_url_limit {
+    return Err(UntrustedFormSubmissionError::UrlTooLong);
+  }
+
+  request.url = validate_untrusted_navigation_url(&request.url)
+    .map_err(|_| UntrustedFormSubmissionError::InvalidUrl)?;
+
+  // Protect against hostile allocations where the attacker reserves a huge buffer but keeps the
+  // logical length small. Length-based limits alone would accept such a payload and retain the
+  // oversized allocation when forwarding the request back to the worker.
+  const ABSURD_CAPACITY_MULTIPLIER: usize = 4;
+
+  if request.headers.capacity()
+    > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_COUNT.saturating_mul(ABSURD_CAPACITY_MULTIPLIER)
+  {
+    return Err(UntrustedFormSubmissionError::TooManyHeaders);
+  }
+
+  if request.headers.len() > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_COUNT {
+    return Err(UntrustedFormSubmissionError::TooManyHeaders);
+  }
+
+  let mut total_header_bytes: usize = 0;
+  for (name, value) in request.headers.iter() {
+    if name.capacity()
+      > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_NAME_BYTES.saturating_mul(ABSURD_CAPACITY_MULTIPLIER)
+    {
+      return Err(UntrustedFormSubmissionError::HeaderNameTooLong);
+    }
+    if name.len() > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_NAME_BYTES {
+      return Err(UntrustedFormSubmissionError::HeaderNameTooLong);
+    }
+    if value.capacity()
+      > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_VALUE_BYTES.saturating_mul(ABSURD_CAPACITY_MULTIPLIER)
+    {
+      return Err(UntrustedFormSubmissionError::HeaderValueTooLong);
+    }
+    if value.len() > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_VALUE_BYTES {
+      return Err(UntrustedFormSubmissionError::HeaderValueTooLong);
+    }
+
+    total_header_bytes = total_header_bytes
+      .checked_add(name.len())
+      .and_then(|total| total.checked_add(value.len()))
+      .ok_or(UntrustedFormSubmissionError::HeadersTooLarge)?;
+    if total_header_bytes > MAX_OPEN_IN_NEW_TAB_REQUEST_TOTAL_HEADER_BYTES {
+      return Err(UntrustedFormSubmissionError::HeadersTooLarge);
+    }
+  }
+
+  if let Some(body) = request.body.as_ref() {
+    if body.capacity()
+      > MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES.saturating_mul(ABSURD_CAPACITY_MULTIPLIER)
+    {
+      return Err(UntrustedFormSubmissionError::BodyTooLarge);
+    }
+    if body.len() > MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES {
+      return Err(UntrustedFormSubmissionError::BodyTooLarge);
+    }
+  }
+
+  Ok(request)
+}
+
 /// Validate that an untrusted RGBA8 favicon buffer has a sane shape and byte length.
 ///
 /// Returns `true` when:
@@ -144,6 +258,7 @@ pub fn sanitize_untrusted_select_control(mut control: SelectControl) -> SelectCo
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::interaction::FormSubmissionMethod;
   use std::sync::Arc;
 
   #[test]
@@ -216,5 +331,58 @@ mod tests {
       }
       _ => panic!("expected Option"),
     }
+  }
+
+  #[test]
+  fn validate_untrusted_form_submission_rejects_excessive_body() {
+    let request = FormSubmission {
+      url: "https://example.com/".to_string(),
+      method: FormSubmissionMethod::Post,
+      headers: vec![(
+        "content-type".to_string(),
+        "application/x-www-form-urlencoded".to_string(),
+      )],
+      body: Some(vec![0u8; MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES + 1]),
+    };
+
+    let err = validate_untrusted_form_submission_for_open_in_new_tab_request(request)
+      .expect_err("expected body size limit to reject request");
+    assert_eq!(err, UntrustedFormSubmissionError::BodyTooLarge);
+  }
+
+  #[test]
+  fn validate_untrusted_form_submission_rejects_too_many_headers() {
+    let mut headers = Vec::new();
+    for idx in 0..(MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_COUNT + 1) {
+      headers.push((format!("x-{idx}"), "v".to_string()));
+    }
+    let request = FormSubmission {
+      url: "https://example.com/".to_string(),
+      method: FormSubmissionMethod::Post,
+      headers,
+      body: None,
+    };
+
+    let err = validate_untrusted_form_submission_for_open_in_new_tab_request(request)
+      .expect_err("expected header count limit to reject request");
+    assert_eq!(err, UntrustedFormSubmissionError::TooManyHeaders);
+  }
+
+  #[test]
+  fn validate_untrusted_form_submission_accepts_small_payload() {
+    let request = FormSubmission {
+      url: " https://example.com/\n".to_string(),
+      method: FormSubmissionMethod::Post,
+      headers: vec![(
+        "content-type".to_string(),
+        "application/x-www-form-urlencoded".to_string(),
+      )],
+      body: Some(b"q=a+b".to_vec()),
+    };
+
+    let sanitized = validate_untrusted_form_submission_for_open_in_new_tab_request(request)
+      .expect("expected request to be valid");
+    assert_eq!(sanitized.url, "https://example.com/");
+    assert_eq!(sanitized.body, Some(b"q=a+b".to_vec()));
   }
 }

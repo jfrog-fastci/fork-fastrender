@@ -40,6 +40,7 @@ pub mod messages;
 pub mod clipboard;
 pub mod media_prefs;
 pub mod downloads;
+pub mod open_in_new_tab;
 pub mod protocol_limits;
 pub mod untrusted;
 pub mod process_assignment;
