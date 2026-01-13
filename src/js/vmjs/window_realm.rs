@@ -47201,6 +47201,79 @@ fn init_window_globals(
       node_ctor
     };
 
+    // CharacterData constructor + prototype.
+    //
+    // `CharacterData` sits between `Node` and the character-data node types (`Text`, `Comment`,
+    // `ProcessingInstruction`). Curated WPT tests assert that `CharacterData` is exposed on the
+    // global object and that comment/text nodes are `instanceof CharacterData`.
+    //
+    // When using WebIDL bindings, the generated interface object may already exist; avoid
+    // clobbering it and instead reuse its `.prototype` object.
+    let character_data_key = alloc_key(&mut scope, "CharacterData")?;
+    let (character_data_ctor, character_data_proto) = if let Some(character_data_val) = scope
+      .heap()
+      .object_get_own_data_property_value(global, &character_data_key)?
+    {
+      let Value::Object(character_data_ctor) = character_data_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.CharacterData to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(character_data_ctor))?;
+      let Some(Value::Object(character_data_proto)) = scope
+        .heap()
+        .object_get_own_data_property_value(character_data_ctor, &prototype_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.CharacterData.prototype to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(character_data_proto))?;
+      (character_data_ctor, character_data_proto)
+    } else {
+      let character_data_proto = scope.alloc_object()?;
+      scope.push_root(Value::Object(character_data_proto))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(character_data_proto, Some(node_proto))?;
+
+      let character_data_ctor = make_illegal_ctor(&mut scope, "CharacterData")?;
+      scope.push_root(Value::Object(character_data_ctor))?;
+      scope.define_property(
+        character_data_ctor,
+        prototype_key,
+        ctor_link_desc(Value::Object(character_data_proto)),
+      )?;
+      scope.define_property(
+        character_data_proto,
+        constructor_key,
+        ctor_link_desc(Value::Object(character_data_ctor)),
+      )?;
+      scope.define_property(
+        global,
+        character_data_key,
+        data_desc(Value::Object(character_data_ctor)),
+      )?;
+      (character_data_ctor, character_data_proto)
+    };
+
+    // Ensure the prototype chain matches the DOM Standard even when some interfaces are supplied by
+    // WebIDL bindings.
+    //
+    // `Text`, `Comment`, and `ProcessingInstruction` should inherit from `CharacterData.prototype`
+    // rather than directly from `Node.prototype`.
+    scope
+      .heap_mut()
+      .object_set_prototype(character_data_proto, Some(node_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(text_proto, Some(character_data_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(comment_proto, Some(character_data_proto))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(processing_instruction_proto, Some(character_data_proto))?;
     // Element/Document/DocumentFragment/Text constructors.
     //
     // Most core DOM interface objects are not constructible in practice; we install "illegal"
@@ -47693,11 +47766,18 @@ fn init_window_globals(
     scope
       .heap_mut()
       .object_set_prototype(shadow_root_ctor, Some(document_fragment_ctor))?;
-    scope.heap_mut().object_set_prototype(text_ctor, Some(node_ctor))?;
-    scope.heap_mut().object_set_prototype(comment_ctor, Some(node_ctor))?;
     scope
       .heap_mut()
-      .object_set_prototype(processing_instruction_ctor, Some(node_ctor))?;
+      .object_set_prototype(character_data_ctor, Some(node_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(text_ctor, Some(character_data_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(comment_ctor, Some(character_data_ctor))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(processing_instruction_ctor, Some(character_data_ctor))?;
     scope
       .heap_mut()
       .object_set_prototype(html_element_ctor, Some(element_ctor))?;
