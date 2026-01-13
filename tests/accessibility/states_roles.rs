@@ -49,7 +49,7 @@ fn aria_state_flags_cover_common_controls() {
   let visited = find_dom_by_id(&dom, "visited").expect("visited link");
   let visited_id = *ids.get(&(visited as *const DomNode)).expect("node id");
   let mut interaction_state = InteractionState::default();
-  interaction_state.visited_links.insert(visited_id);
+  interaction_state.visited_links_mut().insert(visited_id);
   let tree = renderer
     .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");

@@ -3768,7 +3768,7 @@ impl BrowserRuntime {
     // Record visited URL state for link-click navigations.
     //
     // This is stored per-tab (not global profile) for now; it is later used to synthesize
-    // `InteractionState.visited_links` for newly loaded documents without mutating the DOM.
+    // Populate visited-link interaction state for newly loaded documents without mutating the DOM.
     if reason == NavigationReason::LinkClick {
       tab.visited_urls.record_visited_url(&url);
     }
@@ -8532,7 +8532,7 @@ impl BrowserRuntime {
     // Initial visited-link state (`:visited`)
     // -----------------------------
     //
-    // Populate `InteractionState.visited_links` for the newly loaded document by scanning all
+    // Populate visited-link interaction state for the newly loaded document by scanning all
     // `<a href>` / `<area href>` elements and matching their resolved URLs against the per-tab
     // visited URL store.
     //
@@ -8559,7 +8559,7 @@ impl BrowserRuntime {
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
       let interaction_state = (autofocus_target.is_some()
-        || !interaction.interaction_state().visited_links.is_empty())
+        || !interaction.interaction_state().visited_links().is_empty())
       .then(|| interaction.interaction_state());
       if let Some(interaction_state) = interaction_state {
         match doc.render_if_needed_with_deadlines_and_interaction_state(

@@ -468,6 +468,10 @@ pub(crate) fn document_selection_contains_point_dom2(
 /// When mutating public fields directly (i.e. outside [`InteractionEngine`](crate::interaction::InteractionEngine)),
 /// callers must mark the appropriate digest dirty via [`mark_css_hash_dirty`](Self::mark_css_hash_dirty)
 /// and/or [`mark_paint_hash_dirty`](Self::mark_paint_hash_dirty).
+///
+/// Note: `visited_links` and `user_validity` are kept private; use
+/// [`visited_links_mut`](Self::visited_links_mut) / [`user_validity_mut`](Self::user_validity_mut)
+/// (or the `insert_*` helpers) to mutate them, which automatically dirties the CSS hash.
 #[derive(Debug)]
 pub struct InteractionState {
   /// Currently focused element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
@@ -489,7 +493,7 @@ pub struct InteractionState {
   ///
   /// Note: This is currently per-document (cleared on navigation), matching the legacy behaviour
   /// where visited state was stored on the DOM element itself.
-  pub visited_links: FxHashSet<usize>,
+  visited_links: FxHashSet<usize>,
 
   /// Optional IME composition (preedit) state for the focused text control.
   pub ime_preedit: Option<ImePreeditState>,
@@ -510,7 +514,7 @@ pub struct InteractionState {
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   ///
   /// This gates `:user-valid` / `:user-invalid` pseudo-classes.
-  pub user_validity: FxHashSet<usize>,
+  user_validity: FxHashSet<usize>,
 
   /// Cached hash of interaction state that can affect CSS selector matching.
   ///
@@ -724,6 +728,30 @@ impl InteractionState {
   }
 
   #[inline]
+  pub fn visited_links(&self) -> &FxHashSet<usize> {
+    &self.visited_links
+  }
+
+  /// Mutably access the visited-links set.
+  ///
+  /// This automatically marks the cached CSS interaction hash dirty so render caching observes any
+  /// modifications.
+  #[inline]
+  pub fn visited_links_mut(&mut self) -> &mut FxHashSet<usize> {
+    self.mark_css_hash_dirty();
+    &mut self.visited_links
+  }
+
+  #[inline]
+  pub fn insert_visited_link(&mut self, node_id: usize) -> bool {
+    let changed = self.visited_links.insert(node_id);
+    if changed {
+      self.mark_css_hash_dirty();
+    }
+    changed
+  }
+
+  #[inline]
   pub fn ime_preedit_for(&self, node_id: usize) -> Option<&str> {
     self
       .ime_preedit
@@ -743,6 +771,30 @@ impl InteractionState {
   #[inline]
   pub fn has_user_validity(&self, node_id: usize) -> bool {
     self.user_validity.contains(&node_id)
+  }
+
+  #[inline]
+  pub fn user_validity(&self) -> &FxHashSet<usize> {
+    &self.user_validity
+  }
+
+  /// Mutably access the user-validity set.
+  ///
+  /// This automatically marks the cached CSS interaction hash dirty so render caching observes any
+  /// modifications.
+  #[inline]
+  pub fn user_validity_mut(&mut self) -> &mut FxHashSet<usize> {
+    self.mark_css_hash_dirty();
+    &mut self.user_validity
+  }
+
+  #[inline]
+  pub fn insert_user_validity(&mut self, node_id: usize) -> bool {
+    let changed = self.user_validity.insert(node_id);
+    if changed {
+      self.mark_css_hash_dirty();
+    }
+    changed
   }
 
   /// Mark the cached CSS interaction hash as dirty.

@@ -5648,8 +5648,7 @@ impl InteractionEngine {
   /// This is used by browser-UI integrations to populate `:visited` pseudo-class matching from an
   /// external per-tab visited URL store without mutating the DOM.
   pub fn set_visited_links(&mut self, visited_links: FxHashSet<usize>) {
-    self.state.visited_links = visited_links;
-    self.state.mark_css_hash_dirty();
+    *self.state.visited_links_mut() = visited_links;
   }
 
   /// Return the kind of *active* drag-and-drop gesture, if any.
@@ -5839,11 +5838,7 @@ impl InteractionEngine {
   }
 
   fn mark_user_validity(&mut self, node_id: usize) -> bool {
-    let changed = self.state.user_validity.insert(node_id);
-    if changed {
-      self.state.mark_css_hash_dirty();
-    }
-    changed
+    self.state.insert_user_validity(node_id)
   }
 
   fn record_text_undo_snapshot(&mut self, node_id: usize, value: &str, edit: &TextEditState) {
@@ -6065,28 +6060,28 @@ impl InteractionEngine {
 
     // Clear HTML "user validity" gating for the form + its associated controls.
     let mut cleared_user_validity = false;
-    if self.state.user_validity.remove(&form_id) {
-      cleared_user_validity = true;
-    }
-    for node_id in 1..index.id_to_node.len() {
-      if node_or_ancestor_is_template(index, node_id) {
-        continue;
-      }
-      let Some(node) = index.node(node_id) else {
-        continue;
-      };
-      if !(is_input(node) || is_textarea(node) || is_select(node) || is_button(node)) {
-        continue;
-      }
-      if resolve_form_owner(index, node_id) != Some(form_id) {
-        continue;
-      }
-      if self.state.user_validity.remove(&node_id) {
+    if !self.state.user_validity().is_empty() {
+      let user_validity = self.state.user_validity_mut();
+      if user_validity.remove(&form_id) {
         cleared_user_validity = true;
       }
-    }
-    if cleared_user_validity {
-      self.state.mark_css_hash_dirty();
+      for node_id in 1..index.id_to_node.len() {
+        if node_or_ancestor_is_template(index, node_id) {
+          continue;
+        }
+        let Some(node) = index.node(node_id) else {
+          continue;
+        };
+        if !(is_input(node) || is_textarea(node) || is_select(node) || is_button(node)) {
+          continue;
+        }
+        if resolve_form_owner(index, node_id) != Some(form_id) {
+          continue;
+        }
+        if user_validity.remove(&node_id) {
+          cleared_user_validity = true;
+        }
+      }
     }
     changed |= cleared_user_validity;
 
@@ -8066,21 +8061,24 @@ impl InteractionEngine {
       .mutate_focus_chain(|ids| remap_vec(ids, old_index, new_ids));
 
     // Remap visited links.
-    if !self.state.visited_links.is_empty() {
+    if !self.state.visited_links().is_empty() {
       let mut remapped = rustc_hash::FxHashSet::default();
-      remapped.reserve(self.state.visited_links.len());
-      for old in self.state.visited_links.iter().copied() {
-        let Some(ptr) = old_index.id_to_node.get(old).copied() else {
-          continue;
-        };
-        if ptr.is_null() {
-          continue;
-        }
-        if let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) {
-          remapped.insert(new_id);
+      {
+        let visited_links = self.state.visited_links();
+        remapped.reserve(visited_links.len());
+        for old in visited_links.iter().copied() {
+          let Some(ptr) = old_index.id_to_node.get(old).copied() else {
+            continue;
+          };
+          if ptr.is_null() {
+            continue;
+          }
+          if let Some(&new_id) = new_ids.get(&(ptr as *const DomNode)) {
+            remapped.insert(new_id);
+          }
         }
       }
-      self.state.visited_links = remapped;
+      *self.state.visited_links_mut() = remapped;
     }
 
     // Remap active IME preedit state.
@@ -8794,10 +8792,7 @@ impl InteractionEngine {
               }
 
               if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
-                if self.state.visited_links.insert(target_id) {
-                  dom_changed = true;
-                  self.state.mark_css_hash_dirty();
-                }
+                dom_changed |= self.state.insert_visited_link(target_id);
 
                 let download_attr = index
                   .node(target_id)
@@ -11415,10 +11410,7 @@ impl InteractionEngine {
           .and_then(|node| node.get_attribute_ref("href"))
         {
           if let Some(resolved) = resolve_url(base_url, href) {
-            if self.state.visited_links.insert(focused) {
-              changed = true;
-              self.state.mark_css_hash_dirty();
-            }
+            changed |= self.state.insert_visited_link(focused);
             let download_attr = index.node(focused).and_then(|node| node.get_attribute_ref("download"));
             let is_download = download_attr.is_some();
             let download_name = download_attr
@@ -11873,10 +11865,7 @@ impl InteractionEngine {
           .and_then(|node| node.get_attribute_ref("href"))
         {
           if let Some(resolved) = resolve_url(base_url, href) {
-            if self.state.visited_links.insert(focused) {
-              changed = true;
-              self.state.mark_css_hash_dirty();
-            }
+            changed |= self.state.insert_visited_link(focused);
             let target_blank = index
               .node(focused)
               .and_then(|node| node.get_attribute_ref("target"))

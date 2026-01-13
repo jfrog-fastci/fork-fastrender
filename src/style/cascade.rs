@@ -33585,7 +33585,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     };
 
     let mut interaction_state = InteractionState::default();
-    interaction_state.visited_links.insert(1);
+    interaction_state.visited_links_mut().insert(1);
     let styled_visited =
       apply_styles_with_interaction_state(&visited, &StyleSheet::new(), Some(&interaction_state));
     assert_eq!(styled_visited.styles.color, Rgba::new(85, 26, 139, 1.0));

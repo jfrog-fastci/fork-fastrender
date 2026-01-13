@@ -80,7 +80,7 @@ fn user_invalid_matches_when_control_user_validity_set() {
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
   let mut interaction_state = InteractionState::default();
   interaction_state
-    .user_validity
+    .user_validity_mut()
     .insert(node_id_by_id_attr(&dom, "r"));
   let styled = apply_styles_with_media_target_and_interaction_state(
     &dom,
@@ -112,7 +112,7 @@ fn user_invalid_matches_when_form_user_validity_set() {
   let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
   let mut interaction_state = InteractionState::default();
   interaction_state
-    .user_validity
+    .user_validity_mut()
     .insert(node_id_by_id_attr(&dom, "f"));
   let styled = apply_styles_with_media_target_and_interaction_state(
     &dom,

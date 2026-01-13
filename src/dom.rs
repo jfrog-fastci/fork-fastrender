@@ -16098,7 +16098,7 @@ mod tests {
       children: vec![],
     };
     let mut visited_state = InteractionState::default();
-    visited_state.visited_links.insert(1);
+    visited_state.visited_links_mut().insert(1);
     assert!(!matches_with_interaction(
       &visited,
       &[],
@@ -16147,7 +16147,7 @@ mod tests {
       children: vec![],
     };
     let mut visited_state = InteractionState::default();
-    visited_state.visited_links.insert(1);
+    visited_state.visited_links_mut().insert(1);
     assert!(!matches_with_interaction(
       &visited,
       &[],
@@ -17748,7 +17748,7 @@ mod tests {
     assert!(!matches(&text_input, &[], &PseudoClass::Invalid));
     assert!(!matches(&text_input, &[], &PseudoClass::UserInvalid));
     let mut interaction_state = InteractionState::default();
-    interaction_state.user_validity.insert(1);
+    interaction_state.user_validity_mut().insert(1);
     assert!(matches_with_interaction(
       &text_input,
       &[],
@@ -17821,7 +17821,7 @@ mod tests {
     ));
 
     let mut interaction_state = InteractionState::default();
-    interaction_state.user_validity.insert(1);
+    interaction_state.user_validity_mut().insert(1);
     assert!(matches_with_interaction(
       &required_empty,
       &[],

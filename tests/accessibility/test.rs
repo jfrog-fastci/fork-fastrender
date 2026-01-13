@@ -395,7 +395,7 @@ fn accessibility_roles_and_states_basic() {
   let link = find_dom_by_id(&dom, "link").expect("link element");
   let link_id = *ids.get(&(link as *const DomNode)).expect("node id");
   let mut interaction_state = InteractionState::default();
-  interaction_state.visited_links.insert(link_id);
+  interaction_state.visited_links_mut().insert(link_id);
   let tree = renderer
     .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&interaction_state))
     .expect("accessibility tree");
