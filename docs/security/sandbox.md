@@ -271,7 +271,9 @@ can disable layers during bring-up.
 ### seccomp prerequisites / failure modes
 
 - Kernel must support `seccomp-bpf` (`CONFIG_SECCOMP` + `CONFIG_SECCOMP_FILTER`).
-- `SECCOMP_FILTER_FLAG_TSYNC` must be supported; older kernels may reject with `EINVAL`.
+- `SECCOMP_FILTER_FLAG_TSYNC` is attempted for whole-process coverage. If the running kernel rejects
+  it with `EINVAL`, FastRender falls back to installing the filter without TSYNC and reports
+  `SandboxStatus::AppliedWithoutTsync` (sandbox must be applied before spawning threads).
 - In containerized CI, an outer seccomp profile may block installing a filter, yielding `EPERM`.
 
 The sandbox code maps these failures into structured errors (see `SandboxError` in
@@ -343,8 +345,11 @@ Exit codes:
 Interpreting failures:
 
 - `EPERM` installing seccomp often means you’re already inside an outer sandbox (container seccomp).
-- `EINVAL` installing seccomp often means the kernel is too old for TSYNC (or the flags are not
-  supported).
+- If `sandbox_probe` prints “applied without TSYNC”, the kernel does not support TSYNC. This is not
+  inherently a failure, but it means you must apply the sandbox **before** any threads are spawned
+  to ensure the entire process is covered.
+- A fatal `EINVAL` from seccomp installation generally means the kernel does not support the
+  requested seccomp mode/flags (beyond the TSYNC fallback).
 - Landlock `Unsupported` is normal on older kernels or when Landlock is not enabled in the kernel’s
   active LSM list (e.g. missing from `lsm=`); in `--mode full` we treat Landlock as best-effort and
   still apply seccomp.
