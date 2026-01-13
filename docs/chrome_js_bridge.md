@@ -147,6 +147,9 @@ Imperative navigation on the **active tab**.
   - Blocked/unknown schemes (e.g. `javascript:`) must be rejected; see
     [`validate_user_navigation_url_scheme`](../src/ui/url.rs) for the in-tree allowlist used by the
     egui chrome today.
+  - In the in-tree egui browser, “typed navigation” normalization lives in
+    `BrowserTabState::navigate_typed` in [`src/ui/browser_app.rs`](../src/ui/browser_app.rs) and uses
+    [`resolve_omnibox_input`](../src/ui/url.rs) + `validate_user_navigation_url_scheme`.
 - `chrome.navigation.goBack()`
 - `chrome.navigation.goForward()`
 - `chrome.navigation.reload()`
@@ -175,6 +178,8 @@ Tab management within the current window (MVP).
     - `Number.isSafeInteger(id) === true`
     - `0 <= id <= Number.MAX_SAFE_INTEGER` (`2^53 - 1`)
   - Values outside this range must throw a **TypeError** (no silent precision loss).
+  - In the in-tree browser protocol, `TabId(0)` is reserved as an “invalid” value; real ids start at
+    1 (see `TabId::new` in [`src/ui/messages.rs`](../src/ui/messages.rs)).
 
 ### State snapshot (optional)
 
