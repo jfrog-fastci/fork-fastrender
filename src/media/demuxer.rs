@@ -444,6 +444,13 @@ fn read_top_level_box_bytes(
 ) -> std::io::Result<Option<Vec<u8>>> {
   use std::io::{Read, SeekFrom};
 
+  // `Mp4PacketDemuxer::open` reads the `moov` box once to build a seek index, then rewinds and lets
+  // the `mp4` crate parse the file normally. Cap how much we read for this *best-effort* index build
+  // so we don't temporarily allocate/IO huge `moov` boxes (which can be attacker-controlled).
+  //
+  // If the box is larger, we simply fall back to the old linear-scan seek path.
+  const MAX_BOX_BYTES_FOR_INDEX: u64 = 64 * 1024 * 1024;
+
   reader.seek(SeekFrom::Start(0))?;
   let mut pos = 0_u64;
   while pos + 8 <= file_len {
@@ -468,7 +475,13 @@ fn read_top_level_box_bytes(
     }
 
     if name == typ {
-      let mut buf = vec![0_u8; size as usize];
+      if size > MAX_BOX_BYTES_FOR_INDEX {
+        return Ok(None);
+      }
+      let Ok(size_usize) = usize::try_from(size) else {
+        return Ok(None);
+      };
+      let mut buf = vec![0_u8; size_usize];
       reader.seek(SeekFrom::Start(pos))?;
       reader.read_exact(&mut buf)?;
       return Ok(Some(buf));
