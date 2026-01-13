@@ -13421,11 +13421,12 @@ impl PerfWindowLog {
     }
 
     if let Some(tab_id) = active_tab_id {
-      let should_emit_ttfp = self
+      let frame_uploaded = self
         .pending_nav
         .get(&tab_id)
-        .is_some_and(|pending| pending.frame_uploaded);
-      if should_emit_ttfp {
+        .map(|pending| pending.frame_uploaded)
+        .unwrap_or(false);
+      if frame_uploaded {
         if let Some(pending) = self.pending_nav.remove(&tab_id) {
           let ttfp_ms = present_at
             .saturating_duration_since(pending.started_at)
@@ -15739,7 +15740,8 @@ impl App {
       self.pending_context_menu_request = Some(PendingContextMenuRequest {
         tab_id,
         pos_css,
-        anchor_points: pos_points,
+        anchor_points: Some(pos_points),
+        match_pos_css: true,
       });
       let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
         tab_id,
@@ -24546,9 +24548,10 @@ impl App {
                 self.pending_context_menu_request = Some(PendingContextMenuRequest {
                   tab_id,
                   pos_css,
-                  anchor_points: pos_points,
+                  anchor_points: Some(pos_points),
+                  match_pos_css: true,
                 });
-                self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
                   tab_id,
                   pos_css,
                   modifiers: map_modifiers(self.modifiers),

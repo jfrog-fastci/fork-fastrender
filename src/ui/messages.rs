@@ -10,9 +10,9 @@ use crate::ui::cancel::CancelGens;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
 #[cfg(test)]
 use std::sync::Mutex;
+use std::time::Duration;
 
 pub use crate::interaction::DateTimeInputKind;
 pub use crate::interaction::FormSubmission;
