@@ -3776,6 +3776,244 @@ mod tests {
     assert_eq!(transform.ty, 20.0);
   }
 
+  mod font_smoothing_aa_tests {
+    use super::*;
+
+    fn glyph_for_char(font: &LoadedFont, c: char) -> Option<u32> {
+      let face = font.as_ttf_face().ok()?;
+      face.glyph_index(c).map(|g| g.0 as u32)
+    }
+
+    fn any_partial_alpha(pixmap: &Pixmap) -> bool {
+      pixmap
+        .data()
+        .chunks_exact(4)
+        .any(|px| px[3] > 0 && px[3] < 255)
+    }
+
+    fn any_ink(pixmap: &Pixmap) -> bool {
+      pixmap.data().chunks_exact(4).any(|px| px[3] > 0)
+    }
+
+    fn any_color_fringes(pixmap: &Pixmap) -> bool {
+      // Only meaningful when both the background and glyph color are grayscale (R==G==B). In that
+      // case, any channel divergence indicates the LCD/subpixel branch ran.
+      pixmap.data().chunks_exact(4).any(|px| px[0] != px[1] || px[1] != px[2])
+    }
+
+    fn render_single_glyph(
+      font: &LoadedFont,
+      glyph_id: u32,
+      font_size: f32,
+      x: f32,
+      baseline_y: f32,
+      color: Rgba,
+      background: Option<tiny_skia::Color>,
+      state: TextRenderState<'_>,
+    ) -> (Pixmap, TextRasterizer) {
+      let glyphs = [GlyphPosition {
+        glyph_id,
+        cluster: 0,
+        x_offset: 0.0,
+        y_offset: 0.0,
+        x_advance: 0.0,
+        y_advance: 0.0,
+      }];
+
+      let mut rasterizer = TextRasterizer::new();
+      let mut pixmap = Pixmap::new(96, 96).expect("pixmap");
+      if let Some(bg) = background {
+        pixmap.fill(bg);
+      }
+
+      rasterizer
+        .render_glyph_run(
+          &glyphs,
+          font,
+          font_size,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          x,
+          baseline_y,
+          color,
+          state,
+          &mut pixmap,
+        )
+        .expect("render glyph");
+
+      (pixmap, rasterizer)
+    }
+
+    #[test]
+    fn font_smoothing_none_disables_antialiasing() {
+      let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_TEXT_SUBPIXEL_AA".to_string(),
+        "0".to_string(),
+      )])));
+      runtime::with_runtime_toggles(toggles, || {
+        let Some(font) = get_test_font() else {
+          return;
+        };
+        let Some(glyph_id) = glyph_for_char(&font, 'A') else {
+          return;
+        };
+
+        let (aa_pixmap, _rasterizer) = render_single_glyph(
+          &font,
+          glyph_id,
+          64.0,
+          10.25,
+          72.5,
+          Rgba::BLACK,
+          None,
+          TextRenderState {
+            font_smoothing: FontSmoothing::Auto,
+            ..TextRenderState::default()
+          },
+        );
+        assert!(
+          any_partial_alpha(&aa_pixmap),
+          "expected grayscale AA to produce partially-covered pixels"
+        );
+
+        let (none_pixmap, _rasterizer) = render_single_glyph(
+          &font,
+          glyph_id,
+          64.0,
+          10.25,
+          72.5,
+          Rgba::BLACK,
+          None,
+          TextRenderState {
+            font_smoothing: FontSmoothing::None,
+            ..TextRenderState::default()
+          },
+        );
+        assert!(any_ink(&none_pixmap), "expected glyph to draw");
+        assert!(
+          !any_partial_alpha(&none_pixmap),
+          "FontSmoothing::None should disable anti-aliasing"
+        );
+      });
+    }
+
+    #[test]
+    fn font_smoothing_grayscale_disables_subpixel_aa_branch() {
+      let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+        ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
+        (
+          "FASTR_TEXT_SUBPIXEL_AA_DIAGNOSTICS".to_string(),
+          "1".to_string(),
+        ),
+        // Keep glyph positions fractional so we reliably exercise LCD edge cases.
+        ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+      ])));
+      runtime::with_runtime_toggles(toggles, || {
+        let Some(font) = get_test_font() else {
+          return;
+        };
+        let Some(glyph_id) = glyph_for_char(&font, 'I') else {
+          return;
+        };
+
+        let (pixmap, rasterizer) = render_single_glyph(
+          &font,
+          glyph_id,
+          64.0,
+          10.25,
+          72.5,
+          Rgba::WHITE,
+          Some(tiny_skia::Color::from_rgba8(128, 128, 128, 255)),
+          TextRenderState {
+            font_smoothing: FontSmoothing::Grayscale,
+            ..TextRenderState::default()
+          },
+        );
+
+        assert!(rasterizer.subpixel_aa_enabled);
+        assert!(
+          rasterizer.subpixel_aa_diagnostics.is_some(),
+          "expected diagnostics to be enabled for test"
+        );
+        let stats = rasterizer.subpixel_aa_diagnostics.unwrap();
+        assert_eq!(
+          stats.attempts, 0,
+          "FontSmoothing::Grayscale should skip LCD/subpixel AA attempts"
+        );
+        assert_eq!(stats.successes, 0);
+        assert!(
+          pixmap
+            .data()
+            .chunks_exact(4)
+            .any(|px| px[0] != 128 || px[1] != 128 || px[2] != 128),
+          "expected glyph draw to modify the backdrop"
+        );
+        assert!(
+          !any_color_fringes(&pixmap),
+          "grayscale AA should not introduce color fringes"
+        );
+      });
+    }
+
+    #[test]
+    fn font_smoothing_subpixel_enables_subpixel_aa_branch() {
+      let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+        ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
+        (
+          "FASTR_TEXT_SUBPIXEL_AA_DIAGNOSTICS".to_string(),
+          "1".to_string(),
+        ),
+        ("FASTR_TEXT_SNAP_GLYPH_POSITIONS".to_string(), "0".to_string()),
+      ])));
+      runtime::with_runtime_toggles(toggles, || {
+        let Some(font) = get_test_font() else {
+          return;
+        };
+        let Some(glyph_id) = glyph_for_char(&font, 'I') else {
+          return;
+        };
+
+        let (pixmap, rasterizer) = render_single_glyph(
+          &font,
+          glyph_id,
+          64.0,
+          10.25,
+          72.5,
+          Rgba::WHITE,
+          Some(tiny_skia::Color::from_rgba8(128, 128, 128, 255)),
+          TextRenderState {
+            font_smoothing: FontSmoothing::Subpixel,
+            ..TextRenderState::default()
+          },
+        );
+
+        assert!(rasterizer.subpixel_aa_enabled);
+        assert!(
+          rasterizer.subpixel_aa_diagnostics.is_some(),
+          "expected diagnostics to be enabled for test"
+        );
+        let stats = rasterizer.subpixel_aa_diagnostics.unwrap();
+        assert_eq!(
+          stats.attempts, 1,
+          "FontSmoothing::Subpixel should attempt LCD/subpixel AA when enabled"
+        );
+        assert_eq!(
+          stats.successes, 1,
+          "FontSmoothing::Subpixel should successfully rasterize via the LCD path"
+        );
+        assert!(
+          any_color_fringes(&pixmap),
+          "expected LCD/subpixel AA to introduce color fringes on an opaque backdrop"
+        );
+      });
+    }
+  }
+
   #[test]
   fn subpixel_text_rasterization_produces_color_fringes_only_on_opaque_backdrops() {
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
