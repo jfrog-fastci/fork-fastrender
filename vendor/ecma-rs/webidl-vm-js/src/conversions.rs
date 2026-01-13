@@ -209,23 +209,28 @@ where
 
     // WebIDL record conversion uses `PropertyKeyToString` / `ToString(key)`. Enumerable symbol keys
     // therefore throw a TypeError (since `ToString(Symbol)` throws).
-    if let PropertyKey::Symbol(sym) = key {
-      // Root the symbol across `ToString` (it can allocate if `value` is object and invokes user
-      // code; Symbols don't, but keep the rooting discipline consistent).
-      rt.scope.push_root(Value::Symbol(sym))?;
-      match rt
-        .scope
-        .to_string(&mut *rt.vm, host, hooks, Value::Symbol(sym))
-      {
-        Ok(_) => {}
-        Err(VmError::TypeError(message)) => return Err(rt.throw_type_error(message)),
-        Err(err) => return Err(err),
-      };
-      // `ToString(Symbol)` always throws, so we should never reach here.
-      continue;
+    match key {
+      PropertyKey::Symbol(sym) => {
+        match rt
+          .scope
+          .to_string(&mut *rt.vm, host, hooks, Value::Symbol(sym))
+        {
+          Ok(_) => {}
+          Err(VmError::TypeError(message)) => return Err(rt.throw_type_error(message)),
+          Err(err) => return Err(err),
+        };
+        // `ToString(Symbol)` always throws, so we should never reach here.
+        continue;
+      }
+      PropertyKey::String(s) => {
+        // WebIDL's key conversion enforces `max_string_code_units` after verifying that the
+        // property is enumerable.
+        let len = rt.scope.heap().get_string(s)?.as_code_units().len();
+        if len > rt.limits().max_string_code_units {
+          return Err(rt.throw_range_error("string exceeds maximum length"));
+        }
+      }
     }
-
-    // Record keys are strings (symbol keys either throw above or were skipped as non-enumerable).
     if entries >= rt.limits().max_record_entries {
       return Err(rt.throw_range_error("record exceeds maximum entry count"));
     }
