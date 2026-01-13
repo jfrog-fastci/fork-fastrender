@@ -10,8 +10,9 @@ thread_local! {
   static EXPECTED_PROXY: Cell<Option<GcObject>> = const { Cell::new(None) };
   static EXPECTED_TARGET: Cell<Option<GcObject>> = const { Cell::new(None) };
   static GET_TRAP_CALLS: Cell<u32> = const { Cell::new(0) };
-  static HANDLE_EVENT_CALLS: Cell<u32> = const { Cell::new(0) };
-  static HANDLE_EVENT_FN: Cell<Option<GcObject>> = const { Cell::new(None) };
+  static OP_CALLS: Cell<u32> = const { Cell::new(0) };
+  static OP_FN: Cell<Option<GcObject>> = const { Cell::new(None) };
+  static EXPECTED_OP_KEY: Cell<&'static str> = const { Cell::new("handleEvent") };
 }
 
 fn proxy_get_trap(
@@ -33,10 +34,8 @@ fn proxy_get_trap(
   let Value::String(key_s) = args[1] else {
     return Err(VmError::TypeError("expected string key in Proxy get trap"));
   };
-  assert_eq!(
-    scope.heap().get_string(key_s)?.to_utf8_lossy(),
-    "handleEvent".to_string()
-  );
+  let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
+  let expected = EXPECTED_OP_KEY.with(|c| c.get());
 
   let expected_proxy = EXPECTED_PROXY.with(|c| c.get()).expect("EXPECTED_PROXY should be set");
   assert_eq!(args[2], Value::Object(expected_proxy));
@@ -44,13 +43,23 @@ fn proxy_get_trap(
   // Force a GC while the trap is running to stress rooting.
   scope.heap_mut().collect_garbage();
 
-  let method = HANDLE_EVENT_FN
+  if key.as_str() == expected {
+    // ok
+  } else if expected == "acceptNode" && key.as_str() == "handleEvent" {
+    // `invoke_callback_interface` / `CallbackHandle` probe `handleEvent` first; return `undefined`
+    // so they fall back to `acceptNode`.
+    return Ok(Value::Undefined);
+  } else {
+    return Err(VmError::TypeError("unexpected property key in Proxy get trap"));
+  }
+
+  let method = OP_FN
     .with(|m| m.get())
-    .expect("HANDLE_EVENT_FN should be set");
+    .expect("OP_FN should be set");
   Ok(Value::Object(method))
 }
 
-fn handle_event(
+fn callback_op(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
@@ -59,7 +68,7 @@ fn handle_event(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  HANDLE_EVENT_CALLS.with(|c| c.set(c.get() + 1));
+  OP_CALLS.with(|c| c.set(c.get() + 1));
 
   let expected_proxy = EXPECTED_PROXY.with(|c| c.get()).expect("EXPECTED_PROXY should be set");
   assert_eq!(this, Value::Object(expected_proxy));
@@ -78,12 +87,12 @@ fn alloc_proxy_callback_interface(
 ) -> Result<GcObject, VmError> {
   let mut scope = heap.scope();
 
-  let handle_event_id = vm.register_native_call(handle_event)?;
-  let handle_event_name = scope.alloc_string("handleEvent")?;
-  scope.push_root(Value::String(handle_event_name))?;
-  let handle_event_fn = scope.alloc_native_function(handle_event_id, None, handle_event_name, 1)?;
-  scope.push_root(Value::Object(handle_event_fn))?;
-  HANDLE_EVENT_FN.with(|m| m.set(Some(handle_event_fn)));
+  let op_id = vm.register_native_call(callback_op)?;
+  let op_name = scope.alloc_string("op")?;
+  scope.push_root(Value::String(op_name))?;
+  let op_fn = scope.alloc_native_function(op_id, None, op_name, 1)?;
+  scope.push_root(Value::Object(op_fn))?;
+  OP_FN.with(|m| m.set(Some(op_fn)));
 
   let get_id = vm.register_native_call(proxy_get_trap)?;
   let get_name = scope.alloc_string("get")?;
@@ -105,10 +114,10 @@ fn alloc_proxy_callback_interface(
 
   // Keep the method function alive across GCs by storing it on the handler object, which is
   // reachable from the Proxy.
-  let method_key_s = scope.alloc_string("handleEventFn")?;
+  let method_key_s = scope.alloc_string("opFn")?;
   scope.push_root(Value::String(method_key_s))?;
   let method_key = vm_js::PropertyKey::from_string(method_key_s);
-  scope.create_data_property_or_throw(handler, method_key, Value::Object(handle_event_fn))?;
+  scope.create_data_property_or_throw(handler, method_key, Value::Object(op_fn))?;
 
   let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
   scope.push_root(Value::Object(proxy))?;
@@ -118,9 +127,10 @@ fn alloc_proxy_callback_interface(
 }
 
 #[test]
-fn invoke_callback_interface_respects_proxy_get_trap() -> Result<(), VmError> {
+fn invoke_callback_interface_handle_event_respects_proxy_get_trap() -> Result<(), VmError> {
+  EXPECTED_OP_KEY.with(|c| c.set("handleEvent"));
   GET_TRAP_CALLS.with(|c| c.set(0));
-  HANDLE_EVENT_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
 
   let mut vm = Vm::new(VmOptions::default());
   // Stress rooting: force a GC before each allocation.
@@ -141,14 +151,45 @@ fn invoke_callback_interface_respects_proxy_get_trap() -> Result<(), VmError> {
   assert_eq!(out, Value::Number(9.0));
 
   assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 1);
-  assert_eq!(HANDLE_EVENT_CALLS.with(|c| c.get()), 1);
+  assert_eq!(OP_CALLS.with(|c| c.get()), 1);
   Ok(())
 }
 
 #[test]
-fn callback_handle_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
+fn invoke_callback_interface_accept_node_respects_proxy_get_trap() -> Result<(), VmError> {
+  EXPECTED_OP_KEY.with(|c| c.set("acceptNode"));
   GET_TRAP_CALLS.with(|c| c.set(0));
-  HANDLE_EVENT_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
+
+  let mut vm = Vm::new(VmOptions::default());
+  // Stress rooting: force a GC before each allocation.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let proxy = alloc_proxy_callback_interface(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let mut hooks = MicrotaskQueue::new();
+
+  let out = invoke_callback_interface(
+    &mut vm,
+    &mut scope,
+    &mut hooks,
+    Value::Object(proxy),
+    Value::Undefined,
+    &[Value::Number(123.0)],
+  )?;
+  assert_eq!(out, Value::Number(9.0));
+
+  // `invoke_callback_interface` probes `handleEvent` then falls back to `acceptNode`.
+  assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 2);
+  assert_eq!(OP_CALLS.with(|c| c.get()), 1);
+  Ok(())
+}
+
+#[test]
+fn callback_handle_handle_event_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
+  EXPECTED_OP_KEY.with(|c| c.set("handleEvent"));
+  GET_TRAP_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
 
   let mut vm = Vm::new(VmOptions::default());
   // Stress rooting: force a GC before each allocation.
@@ -159,7 +200,7 @@ fn callback_handle_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
   let handle = CallbackHandle::from_callback_interface(&mut vm, &mut heap, Value::Object(proxy), false)?
     .expect("expected callback interface handle");
   GET_TRAP_CALLS.with(|c| c.set(0));
-  HANDLE_EVENT_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
 
   let mut host = ();
   let mut hooks = MicrotaskQueue::new();
@@ -175,6 +216,43 @@ fn callback_handle_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
 
   assert_eq!(out, Value::Number(9.0));
   assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 1);
-  assert_eq!(HANDLE_EVENT_CALLS.with(|c| c.get()), 1);
+  assert_eq!(OP_CALLS.with(|c| c.get()), 1);
+  Ok(())
+}
+
+#[test]
+fn callback_handle_accept_node_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
+  EXPECTED_OP_KEY.with(|c| c.set("acceptNode"));
+  GET_TRAP_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
+
+  let mut vm = Vm::new(VmOptions::default());
+  // Stress rooting: force a GC before each allocation.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let proxy = alloc_proxy_callback_interface(&mut vm, &mut heap)?;
+
+  // Creating the handle performs a `GetMethod` probe; ignore those trap calls for this test.
+  let handle =
+    CallbackHandle::from_callback_interface(&mut vm, &mut heap, Value::Object(proxy), false)?
+      .expect("expected callback interface handle");
+  GET_TRAP_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
+
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let out = handle.invoke_with_this(
+    &mut vm,
+    &mut heap,
+    &mut host,
+    &mut hooks,
+    Value::Undefined,
+    &[Value::Number(123.0)],
+  )?;
+  handle.unroot(&mut heap);
+
+  assert_eq!(out, Value::Number(9.0));
+  // `CallbackHandle` invocation probes `handleEvent` then falls back to `acceptNode`.
+  assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 2);
+  assert_eq!(OP_CALLS.with(|c| c.get()), 1);
   Ok(())
 }
