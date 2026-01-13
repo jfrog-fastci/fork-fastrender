@@ -452,6 +452,12 @@ struct ImageLoadState {
   request_id: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ActiveDataTransfer {
+  obj: vm_js::GcObject,
+  root_id: vm_js::RootId,
+}
+
 #[derive(Clone)]
 struct ScriptSourceOverrideFetcher {
   overrides: Arc<Mutex<HashMap<String, String>>>,
@@ -677,6 +683,8 @@ pub struct BrowserTabHost {
   streaming_parse_in_progress: bool,
   streaming_parse: Option<StreamingParseState>,
   pending_parser_blocking_script: Option<PendingParserBlockingScript>,
+  next_data_transfer_id: u64,
+  active_data_transfers: HashMap<u64, ActiveDataTransfer>,
 }
 
 impl BrowserTabHost {
@@ -750,6 +758,8 @@ impl BrowserTabHost {
       streaming_parse_in_progress: false,
       streaming_parse: None,
       pending_parser_blocking_script: None,
+      next_data_transfer_id: 1,
+      active_data_transfers: HashMap::new(),
     })
   }
 
@@ -874,6 +884,24 @@ impl BrowserTabHost {
 
   fn set_event_invoker(&mut self, invoker: Box<dyn crate::web::events::EventListenerInvoker>) {
     self.event_invoker = invoker;
+  }
+
+  fn clear_active_data_transfers(&mut self) {
+    if self.active_data_transfers.is_empty() {
+      return;
+    }
+    let roots: Vec<vm_js::RootId> = self
+      .active_data_transfers
+      .drain()
+      .map(|(_, handle)| handle.root_id)
+      .collect();
+    // Best-effort: if the executor has no WindowRealm, we cannot remove the persistent roots.
+    // In that case, the heap is either not present or will be torn down by the executor.
+    if let Some(realm) = self.executor.window_realm_mut() {
+      for root in roots {
+        realm.heap_mut().remove_root(root);
+      }
+    }
   }
 
   fn dispatch_dom_event(&mut self, target: EventTargetId, mut event: Event) -> Result<bool> {
@@ -1111,6 +1139,10 @@ impl BrowserTabHost {
     self.streaming_parse_active = false;
     self.streaming_parse = None;
     self.pending_parser_blocking_script = None;
+    // DataTransfer objects are rooted in the current realm's heap so they can be reused across
+    // multiple drag event dispatches. Navigations recreate the JS realm, so clear any outstanding
+    // roots before the executor tears down the realm.
+    self.clear_active_data_transfers();
     self.executor.reset_for_navigation(
       self.document_url.as_deref(),
       &mut self.document,
@@ -6069,6 +6101,109 @@ impl BrowserTab {
     }
 
     dispatch_result
+  }
+
+  /// Create and root a `DataTransfer`-like object in the tab's vm-js WindowRealm.
+  ///
+  /// Returns a stable handle ID that can later be passed to [`BrowserTab::dispatch_drag_event`].
+  pub fn create_data_transfer_for_text(&mut self, text: &str) -> Result<u64> {
+    let id = self.host.next_data_transfer_id;
+    self.host.next_data_transfer_id = self.host.next_data_transfer_id.wrapping_add(1);
+
+    let (obj, root_id) = {
+      let Some(realm) = self.host.executor.window_realm_mut() else {
+        return Err(Error::Other(
+          "create_data_transfer_for_text requires a vm-js WindowRealm".to_string(),
+        ));
+      };
+
+      realm.reset_interrupt();
+
+      // Use JSON string escaping so the payload is safe to embed into a JS string literal.
+      let text_json =
+        serde_json::to_string(text).map_err(|err| Error::Other(err.to_string()))?;
+
+      // Minimal DataTransfer stub sufficient for common drag-and-drop handlers.
+      let script = format!(
+        r#"(function () {{
+  var dt = {{}};
+  dt._store = Object.create(null);
+  dt.setData = function (type, data) {{ this._store[String(type)] = String(data); }};
+  dt.getData = function (type) {{
+    type = String(type);
+    var v = this._store[type];
+    return v === undefined ? "" : v;
+  }};
+  dt.setData("text/plain", {text_json});
+  return dt;
+}})()"#
+      );
+
+      let value = realm
+        .exec_script(&script)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let vm_js::Value::Object(obj) = value else {
+        return Err(Error::Other(format!(
+          "create_data_transfer_for_text produced non-object value: {value:?}"
+        )));
+      };
+
+      let root_id = {
+        let (_vm, _realm_ref, heap) = realm.vm_realm_and_heap_mut();
+        let mut scope = heap.scope();
+        scope
+          .push_root(vm_js::Value::Object(obj))
+          .map_err(|err| Error::Other(err.to_string()))?;
+        scope
+          .heap_mut()
+          .add_root(vm_js::Value::Object(obj))
+          .map_err(|err| Error::Other(err.to_string()))?
+      };
+
+      (obj, root_id)
+    };
+
+    self
+      .host
+      .active_data_transfers
+      .insert(id, ActiveDataTransfer { obj, root_id });
+    Ok(id)
+  }
+
+  /// Release a previously created DataTransfer handle.
+  ///
+  /// Best-effort: safe to call multiple times or with an unknown ID.
+  pub fn release_data_transfer(&mut self, id: u64) {
+    let Some(handle) = self.host.active_data_transfers.remove(&id) else {
+      return;
+    };
+
+    if let Some(realm) = self.host.executor.window_realm_mut() {
+      realm.heap_mut().remove_root(handle.root_id);
+    }
+  }
+
+  /// Dispatch a trusted drag-and-drop DOM event to `node_id`.
+  ///
+  /// Returns `true` when the event's default was **not** prevented.
+  pub fn dispatch_drag_event(
+    &mut self,
+    node_id: NodeId,
+    type_: &str,
+    init: EventInit,
+    mouse: MouseEvent,
+    data_transfer_id: Option<u64>,
+  ) -> Result<bool> {
+    let mut event = Event::new(type_, init);
+    event.is_trusted = true;
+    event.mouse = Some(mouse);
+    if let Some(id) = data_transfer_id {
+      if let Some(handle) = self.host.active_data_transfers.get(&id) {
+        event.drag_data_transfer = Some(vm_js::Value::Object(handle.obj));
+      }
+    }
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    host.dispatch_dom_event_in_event_loop(EventTargetId::Node(node_id).normalize(), event, event_loop)
   }
 
   /// Dispatch a trusted `submit` DOM event to `node_id`.
@@ -12023,6 +12158,151 @@ mod tests {
       realm.exec_script("globalThis.__mark2").map_err(|err| Error::Other(err.to_string()))?;
     assert!(matches!(same, Value::Bool(true)));
     assert!(matches!(mark2, Value::Number(n) if n == 123.0));
+    Ok(())
+  }
+
+  #[test]
+  fn host_dispatched_drag_event_exposes_data_transfer_payload() -> Result<()> {
+    let mut tab = BrowserTab::from_html_with_vmjs_executor(
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::default(),
+    )?;
+
+    let target_id = tab.host.mutate_dom(|dom| {
+      let target = dom.create_element("div", "");
+      dom
+        .set_attribute(target, "id", "target")
+        .expect("set_attribute");
+      let body = dom.body().expect("expected <body>");
+      dom.append_child(body, target).expect("append_child");
+      (target, true)
+    });
+
+    {
+      let host = &mut tab.host;
+      let event_loop = &mut tab.event_loop;
+
+      let mut hooks = VmJsEventLoopHooks::<BrowserTabHost>::new_with_host(host)?;
+      hooks.set_event_loop(event_loop);
+      let (host_ctx, realm) = host.vm_host_and_window_realm()?;
+      realm
+        .exec_script_with_host_and_hooks(
+          host_ctx,
+          &mut hooks,
+          r#"
+          const el = document.getElementById('target');
+          globalThis.__got = undefined;
+          globalThis.__dt = undefined;
+          globalThis.__same = undefined;
+          globalThis.__trusted = undefined;
+
+          el.addEventListener('dragstart', (e) => {
+            globalThis.__trusted = e.isTrusted;
+            if (globalThis.__dt === undefined) {
+              globalThis.__dt = e.dataTransfer;
+              globalThis.__same = true;
+            } else {
+              globalThis.__same = (e.dataTransfer === globalThis.__dt);
+            }
+            globalThis.__got = e.dataTransfer && e.dataTransfer.getData('text/plain');
+          });
+          "#,
+        )
+        .map_err(|err| Error::Other(err.to_string()))?;
+      if let Some(err) = hooks.finish(realm.heap_mut()) {
+        return Err(err);
+      }
+    }
+
+    let baseline_roots = {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("vm-js executor should expose a WindowRealm");
+      realm.heap().persistent_root_count()
+    };
+
+    let dt_id = tab.create_data_transfer_for_text("hello")?;
+
+    let after_create_roots = {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("vm-js executor should expose a WindowRealm");
+      realm.heap().persistent_root_count()
+    };
+    assert_eq!(
+      after_create_roots,
+      baseline_roots + 1,
+      "expected DataTransfer handle to add one persistent root"
+    );
+
+    let mouse = MouseEvent {
+      client_x: 1.0,
+      client_y: 2.0,
+      button: 0,
+      buttons: 0,
+      detail: 0,
+      ctrl_key: false,
+      shift_key: false,
+      alt_key: false,
+      meta_key: false,
+      related_target: None,
+    };
+    let init = EventInit {
+      bubbles: true,
+      cancelable: true,
+      composed: false,
+    };
+
+    tab.dispatch_drag_event(target_id, "dragstart", init, mouse, Some(dt_id))?;
+    tab.dispatch_drag_event(target_id, "dragstart", init, mouse, Some(dt_id))?;
+
+    {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("vm-js executor should expose a WindowRealm");
+      let got =
+        realm.exec_script("globalThis.__got").map_err(|err| Error::Other(err.to_string()))?;
+      let same =
+        realm.exec_script("globalThis.__same").map_err(|err| Error::Other(err.to_string()))?;
+      let trusted = realm
+        .exec_script("globalThis.__trusted")
+        .map_err(|err| Error::Other(err.to_string()))?;
+      let Value::String(got_s) = got else {
+        return Err(Error::Other(format!(
+          "expected __got to be a string, got {got:?}"
+        )));
+      };
+      let got = realm
+        .heap()
+        .get_string(got_s)
+        .map_err(|err| Error::Other(err.to_string()))?
+        .to_utf8_lossy();
+      assert_eq!(got.as_str(), "hello");
+      assert!(matches!(same, Value::Bool(true)));
+      assert!(matches!(trusted, Value::Bool(true)));
+    }
+
+    tab.release_data_transfer(dt_id);
+
+    let after_release_roots = {
+      let realm = tab
+        .host
+        .executor
+        .window_realm_mut()
+        .expect("vm-js executor should expose a WindowRealm");
+      realm.heap().persistent_root_count()
+    };
+    assert_eq!(
+      after_release_roots, baseline_roots,
+      "expected DataTransfer release to remove persistent root"
+    );
+
     Ok(())
   }
 
