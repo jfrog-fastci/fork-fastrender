@@ -16,12 +16,35 @@
 
 /// JS source that installs the IndexedDB presence shim in a realm.
 ///
-/// The shim is guarded: it only installs when `globalThis.indexedDB` is missing so that a future
-/// native implementation can replace it without churn.
+/// The shim only installs a stub implementation when `globalThis.indexedDB` (and vendor-prefixed
+/// aliases) are missing so that a future native implementation can replace it without churn.
+///
+/// When `indexedDB` already exists, the shim still defines vendor-prefixed aliases
+/// (`webkitIndexedDB`, `mozIndexedDB`, `msIndexedDB`, etc) for compatibility with older libraries.
 pub(crate) const INDEXED_DB_SHIM_JS: &str = r#"
   (function () {
     var g = typeof globalThis !== "undefined" ? globalThis : this;
-    if (typeof g.indexedDB !== "undefined") return;
+
+    // If an IndexedDB implementation already exists (native or polyfilled), keep it but ensure
+    // legacy vendor-prefixed aliases exist for compatibility.
+    var existingFactory = g.indexedDB || g.webkitIndexedDB || g.mozIndexedDB || g.msIndexedDB || g.OIndexedDB;
+    if (typeof existingFactory !== "undefined") {
+      // Preserve any native readonly `indexedDB` attribute (don’t overwrite it when present).
+      if (typeof g.indexedDB === "undefined") g.indexedDB = existingFactory;
+      g.webkitIndexedDB = g.indexedDB || existingFactory;
+      g.mozIndexedDB = g.indexedDB || existingFactory;
+      g.msIndexedDB = g.indexedDB || existingFactory;
+      g.OIndexedDB = g.indexedDB || existingFactory;
+
+      var existingKeyRange = g.IDBKeyRange || g.webkitIDBKeyRange || g.mozIDBKeyRange || g.msIDBKeyRange;
+      if (typeof existingKeyRange !== "undefined") {
+        if (typeof g.IDBKeyRange === "undefined") g.IDBKeyRange = existingKeyRange;
+        g.webkitIDBKeyRange = g.IDBKeyRange || existingKeyRange;
+        g.mozIDBKeyRange = g.IDBKeyRange || existingKeyRange;
+        g.msIDBKeyRange = g.IDBKeyRange || existingKeyRange;
+      }
+      return;
+    }
 
     var NOT_SUPPORTED_MSG = "IndexedDB is not supported";
 
@@ -209,20 +232,21 @@ pub(crate) const INDEXED_DB_SHIM_JS: &str = r#"
     g.IDBTransaction = IDBTransaction;
     g.IDBObjectStore = IDBObjectStore;
     g.IDBKeyRange = IDBKeyRange;
+    g.IDBVersionChangeEvent = IDBVersionChangeEvent;
+
     // Vendor-prefixed constructor aliases (legacy IndexedDB shims).
     //
     // Many older libraries probe `webkitIDBKeyRange`/`mozIDBKeyRange`/`msIDBKeyRange` even when
     // `IDBKeyRange` exists.
-    if (typeof g.webkitIDBKeyRange === "undefined") g.webkitIDBKeyRange = IDBKeyRange;
-    if (typeof g.mozIDBKeyRange === "undefined") g.mozIDBKeyRange = IDBKeyRange;
-    if (typeof g.msIDBKeyRange === "undefined") g.msIDBKeyRange = IDBKeyRange;
-    g.IDBVersionChangeEvent = IDBVersionChangeEvent;
+    if (typeof g.webkitIDBKeyRange === "undefined") g.webkitIDBKeyRange = g.IDBKeyRange;
+    if (typeof g.mozIDBKeyRange === "undefined") g.mozIDBKeyRange = g.IDBKeyRange;
+    if (typeof g.msIDBKeyRange === "undefined") g.msIDBKeyRange = g.IDBKeyRange;
 
     g.indexedDB = factory;
-    g.webkitIndexedDB = factory;
-    g.mozIndexedDB = factory;
-    g.msIndexedDB = factory;
-    g.OIndexedDB = factory;
+    g.webkitIndexedDB = g.indexedDB;
+    g.mozIndexedDB = g.indexedDB;
+    g.msIndexedDB = g.indexedDB;
+    g.OIndexedDB = g.indexedDB;
   })();
 "#;
 
@@ -278,6 +302,56 @@ mod tests {
     let ok = host.exec_script(INDEXED_DB_SHIM_JS)?;
     // Script returns undefined; we only care that it runs without throwing.
     assert_eq!(ok, Value::Undefined);
+    Ok(())
+  }
+
+  #[test]
+  fn indexed_db_shim_sets_vendor_aliases_when_indexeddb_already_exists() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new_with_fetcher(
+      dom,
+      "https://example.invalid/",
+      Arc::new(NoFetchResourceFetcher),
+    )?;
+
+    host.exec_script(
+      r#"
+      (() => {
+        globalThis.__idb_sentinel = { a: 1 };
+        globalThis.indexedDB = globalThis.__idb_sentinel;
+        delete globalThis.webkitIndexedDB;
+        delete globalThis.mozIndexedDB;
+        delete globalThis.msIndexedDB;
+        delete globalThis.OIndexedDB;
+
+        globalThis.__kr_sentinel = function KR() {};
+        globalThis.IDBKeyRange = globalThis.__kr_sentinel;
+        delete globalThis.webkitIDBKeyRange;
+        delete globalThis.mozIDBKeyRange;
+        delete globalThis.msIDBKeyRange;
+        return true;
+      })()
+      "#,
+    )?;
+
+    host.exec_script(INDEXED_DB_SHIM_JS)?;
+
+    let ok = host.exec_script(
+      r#"
+      (() => {
+        return (
+          webkitIndexedDB === __idb_sentinel &&
+          mozIndexedDB === __idb_sentinel &&
+          msIndexedDB === __idb_sentinel &&
+          OIndexedDB === __idb_sentinel &&
+          webkitIDBKeyRange === __kr_sentinel &&
+          mozIDBKeyRange === __kr_sentinel &&
+          msIDBKeyRange === __kr_sentinel
+        );
+      })()
+      "#,
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 }
