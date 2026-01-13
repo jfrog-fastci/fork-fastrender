@@ -5599,6 +5599,7 @@ impl BrowserTab {
     let mut frames_rendered = 0usize;
     let _ = self.commit_pending_navigation()?;
     if !self.host.document.is_dirty()
+      && !self.host.document.needs_animation_frame()
       && self.event_loop.is_idle()
       && !self.event_loop.has_pending_animation_frame_callbacks()
     {
@@ -5892,7 +5893,7 @@ impl BrowserTab {
     // When BrowserTab runs the JS event loop it may have already rendered between tasks to keep the
     // document stable (see `browser_tab_render_interleaving` tests). Those frames are buffered here
     // so callers can still pull the updated pixels via `render_if_needed()`.
-    if self.host.document.is_dirty() {
+    if self.host.document.is_dirty() || self.host.document.needs_animation_frame() {
       // Any buffered frame is stale if the document is currently dirty.
       self.pending_frame = None;
       return self.host.document.render_if_needed();
@@ -10896,6 +10897,63 @@ html, body { margin: 0; padding: 0; }
       "expected BrowserTab::render_if_needed to produce a new frame after JS DOM mutation (textContent clear)"
     );
     assert!(tab.render_if_needed()?.is_none());
+
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_stable_renders_frame_when_realtime_animation_clock_advances() -> Result<()> {
+    use std::time::Duration;
+
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: black;
+          animation: fade 1000ms linear forwards;
+        }
+        @keyframes fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+    let mut tab = BrowserTab::from_html(
+      html,
+      RenderOptions::new().with_viewport(20, 20),
+      NoopExecutor::default(),
+    )?;
+
+    let clock = Arc::new(crate::js::VirtualClock::new());
+    tab.host.document.set_animation_clock(clock.clone());
+    tab.host.document.set_realtime_animations_enabled(true);
+
+    let frame0 = tab.render_frame()?;
+    let px0 = rgba_at(&frame0, 5, 5);
+
+    clock.advance(Duration::from_millis(500));
+
+    match tab.run_until_stable(1)? {
+      RunUntilStableOutcome::Stable { frames_rendered } => {
+        assert!(
+          frames_rendered > 0,
+          "expected run_until_stable to render at least one frame after animation clock advance"
+        );
+      }
+      other => panic!("expected Stable outcome, got {other:?}"),
+    }
+
+    let frame1 = tab
+      .render_if_needed()?
+      .expect("expected run_until_stable to buffer a freshly rendered frame");
+    let px1 = rgba_at(&frame1, 5, 5);
+    assert_ne!(
+      px1, px0,
+      "expected pixels to change after advancing the realtime animation clock"
+    );
 
     Ok(())
   }

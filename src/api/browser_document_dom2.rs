@@ -81,6 +81,7 @@ pub struct BrowserDocumentDom2 {
   realtime_animations_enabled: bool,
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
+  last_painted_animation_clock: Option<Duration>,
 }
 
 fn hash_usize_set(hasher: &mut DefaultHasher, set: &FxHashSet<usize>) {
@@ -202,6 +203,7 @@ impl BrowserDocumentDom2 {
       realtime_animations_enabled: false,
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
+      last_painted_animation_clock: None,
     })
   }
 
@@ -283,6 +285,8 @@ impl BrowserDocumentDom2 {
     self.animation_clock = clock;
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
+    self.last_painted_animation_clock = None;
+    self.paint_dirty = true;
   }
 
   /// Enables/disables real-time animation sampling based on this document's timeline.
@@ -294,11 +298,25 @@ impl BrowserDocumentDom2 {
       self.realtime_animations_enabled = true;
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
+      self.last_painted_animation_clock = None;
+      self.paint_dirty = true;
     } else if !enabled && self.realtime_animations_enabled {
       self.realtime_animations_enabled = false;
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
+      self.last_painted_animation_clock = None;
+      self.paint_dirty = true;
     }
+  }
+
+  pub fn needs_animation_frame(&self) -> bool {
+    if self.options.animation_time.is_some() || !self.realtime_animations_enabled {
+      return false;
+    }
+    let Some(last) = self.last_painted_animation_clock else {
+      return self.prepared.is_some();
+    };
+    self.animation_clock.now() != last
   }
 
   pub(crate) fn renderer_mut(&mut self) -> &mut super::FastRender {
@@ -343,6 +361,7 @@ impl BrowserDocumentDom2 {
     self.renderer.document_csp = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.animation_timeline_origin = None;
+    self.last_painted_animation_clock = None;
     self.invalidate_all();
   }
 
@@ -369,6 +388,7 @@ impl BrowserDocumentDom2 {
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.animation_timeline_origin = None;
+    self.last_painted_animation_clock = None;
   }
 
   /// Parses HTML using the internal renderer and resets the document state.
@@ -1795,6 +1815,7 @@ impl BrowserDocumentDom2 {
     if !self.is_dirty()
       && self.prepared.is_some()
       && interaction_hash == self.interaction_state_hash
+      && !self.needs_animation_frame()
     {
       return Ok(None);
     }
@@ -2097,6 +2118,11 @@ impl BrowserDocumentDom2 {
     // A successful paint always satisfies any outstanding paint invalidation, but must not clear
     // pending style/layout dirtiness.
     self.paint_dirty = false;
+    if self.realtime_animations_enabled && self.options.animation_time.is_none() {
+      self.last_painted_animation_clock = Some(self.animation_clock.now());
+    } else {
+      self.last_painted_animation_clock = None;
+    }
     Ok(frame)
   }
 
