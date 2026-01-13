@@ -70,6 +70,24 @@ fn tab_status_messages(tab: &BrowserTabState) -> (Option<&str>, Option<&str>) {
   (err, warn)
 }
 
+fn tab_a11y_label(title: &str, loading: bool, has_error: bool, has_warning: bool) -> String {
+  let mut parts: Vec<&'static str> = Vec::new();
+  if loading {
+    parts.push("loading");
+  }
+  if has_error {
+    parts.push("error");
+  }
+  if has_warning {
+    parts.push("warning");
+  }
+  if parts.is_empty() {
+    title.to_string()
+  } else {
+    format!("{title} ({})", parts.join(", "))
+  }
+}
+
 fn paint_tab_status_badges(
   painter: &egui::Painter,
   icon_rect: Rect,
@@ -544,12 +562,7 @@ fn tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
-  let a11y_label = match (err.is_some(), warn.is_some()) {
-    (true, true) => format!("{title} (error, warning)"),
-    (true, false) => format!("{title} (error)"),
-    (false, true) => format!("{title} (warning)"),
-    (false, false) => title.clone(),
-  };
+  let a11y_label = tab_a11y_label(title.as_str(), tab.loading, err.is_some(), warn.is_some());
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
@@ -844,12 +857,7 @@ fn pinned_tab_ui(
       response = response.on_hover_text(lines.join("\n"));
     }
   }
-  let a11y_label = match (err.is_some(), warn.is_some()) {
-    (true, true) => format!("{title} (error, warning)"),
-    (true, false) => format!("{title} (error)"),
-    (false, true) => format!("{title} (warning)"),
-    (false, false) => title.clone(),
-  };
+  let a11y_label = tab_a11y_label(title.as_str(), tab.loading, err.is_some(), warn.is_some());
   response.widget_info({
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
@@ -1769,6 +1777,24 @@ pub(super) fn load_test_layout(ctx: &egui::Context) -> Option<(Rect, Vec<Rect>)>
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn tab_a11y_label_formats_loading_error_warning_states() {
+    let title = "Example title";
+    let cases = [
+      (false, false, false, "Example title"),
+      (true, false, false, "Example title (loading)"),
+      (false, true, false, "Example title (error)"),
+      (false, false, true, "Example title (warning)"),
+      (true, true, false, "Example title (loading, error)"),
+      (true, false, true, "Example title (loading, warning)"),
+      (false, true, true, "Example title (error, warning)"),
+      (true, true, true, "Example title (loading, error, warning)"),
+    ];
+    for (loading, err, warn, expected) in cases {
+      assert_eq!(tab_a11y_label(title, loading, err, warn), expected);
+    }
+  }
 
   #[test]
   fn sizing_without_overflow_prefers_max_width() {
