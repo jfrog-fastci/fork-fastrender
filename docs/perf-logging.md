@@ -120,10 +120,14 @@ bash scripts/cargo_agent.sh xtask ui-perf-smoke \
 How to map the harness output back to the metrics table in
 `instructions/browser_responsiveness.md`:
 
-- **TTFP**: `ui_perf_smoke` reports a navigation `ttfp_ms` (or equivalent) metric.
-- **Scroll frame time**: look for `scroll_*frame*_ms` samples/percentiles (p50/p95/max).
-- **Resize frame time**: look for `resize_*frame*_ms` samples/percentiles.
-- **Input latency**: look for `input_*latency*_ms` samples/percentiles.
+- **TTFP**: scenario `ttfp_newtab` reports `ttfp_p50_ms` / `ttfp_p95_ms` / `ttfp_max_ms`
+  (and `ttfp_ms` as a convenience alias for p50).
+- **Scroll responsiveness**: scenario `scroll_fixture` reports `scroll_latency_p50_ms` / `scroll_latency_p95_ms`
+  / `scroll_latency_max_ms` (ScrollTo → next frame).
+- **Resize responsiveness**: scenario `resize_fixture` reports `resize_latency_p50_ms` / `resize_latency_p95_ms`
+  / `resize_latency_max_ms` (ViewportChanged → next frame).
+- **Input latency**: scenario `input_text` reports `input_latency_p50_ms` / `input_latency_p95_ms`
+  / `input_latency_max_ms` (TextInput/Backspace → next frame).
 
 ### Traces (Perfetto)
 
