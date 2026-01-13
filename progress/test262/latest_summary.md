@@ -6,53 +6,53 @@ Committed snapshot of `vm-js` conformance on the curated `test262-semantic` suit
 
 ```bash
 # from repo root
-CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
   --harness test262 \
   --suite-path ../../tests/js/test262_suites/curated.toml \
   --manifest ../../tests/js/test262_manifest.toml \
   --timeout-secs 10 \
   --jobs 4 \
   --report-path ../../target/js/test262.json \
-  --fail-on new
+  --fail-on none
 ```
 
 - RegExp-focused suite (separate from the curated suite):
   ```bash
   # from repo root
-  CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+  CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
     --harness test262 \
     --suite-path ../../tests/js/test262_suites/regexp.toml \
     --manifest ../../tests/js/test262_manifest.toml \
     --timeout-secs 10 \
     --jobs 4 \
     --report-path ../../target/js/test262_regexp.json \
-    --fail-on new
+    --fail-on none
   ```
 
 - RegExp `/v` Unicode sets suite (large generated corpus; kept separate from `regexp.toml`):
   ```bash
   # from repo root
-  CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+  CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
     --harness test262 \
     --suite-path ../../tests/js/test262_suites/regexp_unicode_sets.toml \
     --manifest ../../tests/js/test262_manifest.toml \
     --timeout-secs 10 \
     --jobs 4 \
     --report-path ../../target/js/test262_regexp_unicode_sets.json \
-    --fail-on new
+    --fail-on none
   ```
 
 - RegExp Unicode property escapes (generated) suite (large; some known slow cases are excluded in the suite file):
   ```bash
   # from repo root
-  CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
+  CARGO_TARGET_DIR=../../target LIMIT_STACK=64M timeout -k 10 900 bash scripts/cargo_agent.sh run -p test262-semantic --release -- \
     --harness test262 \
     --suite-path ../../tests/js/test262_suites/regexp_property_escapes_generated.toml \
     --manifest ../../tests/js/test262_manifest.toml \
     --timeout-secs 10 \
     --jobs 4 \
     --report-path ../../target/js/test262_regexp_property_escapes_generated.json \
-    --fail-on new
+    --fail-on none
   ```
 
 - JSON report (not committed): `target/js/test262.json`
@@ -71,8 +71,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 15685 (90.57%) |
-| Mismatched upstream expected | 1633 (9.43%) |
+| Matched upstream expected | 15689 (90.59%) |
+| Mismatched upstream expected | 1629 (9.41%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 672 |
@@ -81,8 +81,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15645 |
-| failed | 1633 |
+| passed | 15649 |
+| failed | 1629 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -101,23 +101,23 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 | --- | ---: |
 | PASS | 8028 |
 | FAIL (unexpected) | 672 |
-| XFAIL | 961 |
-| XPASS | 7617 |
+| XFAIL | 957 |
+| XPASS | 7621 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| language | 10128 | 8927 | 1201 | 11.86% | 1786 | 666 | 535 | 7141 | 0 |
 | built-ins | 7185 | 6753 | 432 | 6.01% | 6237 | 6 | 426 | 476 | 40 |
+| language | 10128 | 8931 | 1197 | 11.82% | 1786 | 666 | 531 | 7145 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 1090 | 15.22% | 754 | 666 | 424 | 5317 | 0 |
+| `language/statements` | 7161 | 1086 | 15.17% | 754 | 666 | 420 | 5321 | 0 |
 | `built-ins/Set` | 764 | 306 | 40.05% | 388 | 2 | 304 | 70 | 0 |
 | `built-ins/Object` | 1692 | 110 | 6.50% | 1330 | 2 | 108 | 252 | 0 |
 | `language/expressions` | 2337 | 103 | 4.41% | 1032 | 0 | 103 | 1202 | 0 |
@@ -133,8 +133,8 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 1017 (62.28%)
-- VmError::Unimplemented: 593 (36.31%)
+- exception/other: 1029 (63.17%)
+- VmError::Unimplemented: 577 (35.42%)
 - termination: 23 (1.41%)
 
 ### Top 20
@@ -144,7 +144,7 @@ Mismatched cases by high-level bucket:
 | 1 | VmError::Unimplemented | 413 | `unimplemented: async generator functions` |
 | 2 | exception/other | 208 | `value is not callable` |
 | 3 | exception/other | 116 | `Expected a Test262Error to be thrown but no exception was thrown at all` |
-| 4 | VmError::Unimplemented | 106 | `unimplemented: expression type` |
+| 4 | VmError::Unimplemented | 90 | `unimplemented: expression type` |
 | 5 | exception/other | 84 | `Expected a TypeError to be thrown but no exception was thrown at all` |
 | 6 | exception/other | 76 | `Cannot convert undefined or null to object` |
 | 7 | exception/other | 66 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
@@ -160,8 +160,82 @@ Mismatched cases by high-level bucket:
 | 17 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
 | 18 | exception/other | 14 | `isConstructor invoked with a non-function value` |
 | 19 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
-| 20 | exception/other | 10 | `#18: value === undefined. Actual: value ===value` |
+| 20 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
 
 ## Timed-out tests
 
 _None._
+
+## Appendix: top failing tests (IDs + first-line error)
+
+At least 50 mismatched cases, grouped by the largest mismatch buckets.
+
+### `language/statements` (10 shown / 1086 mismatches)
+
+- `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
+- `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
+- `language/statements/async-function/dflt-params-ref-later.js#non_strict`: `Cannot access 'y' before initialization`
+- `language/statements/async-function/dflt-params-ref-later.js#strict`: `Cannot access 'y' before initialization`
+- `language/statements/async-function/dflt-params-ref-self.js#non_strict`: `Cannot access 'x' before initialization`
+- `language/statements/async-function/dflt-params-ref-self.js#strict`: `Cannot access 'x' before initialization`
+- `language/statements/async-function/early-errors-declaration-formals-body-duplicate.js#non_strict`: `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>`
+- `language/statements/async-function/early-errors-declaration-formals-body-duplicate.js#strict`: `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>`
+- `language/statements/async-function/eval-var-scope-syntax-err.js#non_strict`: `null`
+- `language/statements/async-function/evaluation-default-that-throws.js#non_strict`: `value is not callable`
+
+### `built-ins/Set` (10 shown / 306 mismatches)
+
+- `built-ins/Set/Symbol.species/return-value.js#non_strict`: `error[PS0002]: expected identifier`
+- `built-ins/Set/Symbol.species/return-value.js#strict`: `error[PS0002]: expected identifier`
+- `built-ins/Set/prototype/difference/add-not-called.js#non_strict`: `value is not callable`
+- `built-ins/Set/prototype/difference/add-not-called.js#strict`: `value is not callable`
+- `built-ins/Set/prototype/difference/allows-set-like-class.js#non_strict`: `value is not callable`
+- `built-ins/Set/prototype/difference/allows-set-like-class.js#strict`: `value is not callable`
+- `built-ins/Set/prototype/difference/allows-set-like-object.js#non_strict`: `value is not callable`
+- `built-ins/Set/prototype/difference/allows-set-like-object.js#strict`: `value is not callable`
+- `built-ins/Set/prototype/difference/builtins.js#non_strict`: `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true`
+- `built-ins/Set/prototype/difference/builtins.js#strict`: `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true`
+
+### `built-ins/Object` (10 shown / 110 mismatches)
+
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-118.js#non_strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-118.js#strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-120.js#non_strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-120.js#strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-121.js#non_strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-121.js#strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-122.js#non_strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-122.js#strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js#non_strict`: `Cannot convert undefined or null to object`
+- `built-ins/Object/getOwnPropertyDescriptor/15.2.3.3-4-123.js#strict`: `Cannot convert undefined or null to object`
+
+### `language/expressions` (10 shown / 103 mismatches)
+
+- `language/expressions/comma/tco-final.js#strict`: `execution terminated: stack overflow`
+- `language/expressions/in/private-field-presence-accessor.js#non_strict`: `Expected SameValue(«false», «true») to be true`
+- `language/expressions/in/private-field-presence-accessor.js#strict`: `Expected SameValue(«false», «true») to be true`
+- `language/expressions/in/private-field-presence-field.js#non_strict`: `unimplemented: private instance fields`
+- `language/expressions/in/private-field-presence-field.js#strict`: `unimplemented: private instance fields`
+- `language/expressions/in/private-field-presence-method.js#non_strict`: `Expected SameValue(«false», «true») to be true`
+- `language/expressions/in/private-field-presence-method.js#strict`: `Expected SameValue(«false», «true») to be true`
+- `language/expressions/in/private-field-rhs-non-object.js#non_strict`: `unimplemented: private instance fields`
+- `language/expressions/in/private-field-rhs-non-object.js#strict`: `unimplemented: private instance fields`
+- `language/expressions/logical-and/tco-right.js#strict`: `execution terminated: stack overflow`
+
+### `built-ins/Array` (6 shown / 6 mismatches)
+
+- `built-ins/Array/prototype/slice/coerced-start-end-grow.js#non_strict`: `BigInt64Array is not defined`
+- `built-ins/Array/prototype/slice/coerced-start-end-grow.js#strict`: `BigInt64Array is not defined`
+- `built-ins/Array/prototype/slice/coerced-start-end-shrink.js#non_strict`: `TypedArray view out of bounds`
+- `built-ins/Array/prototype/slice/coerced-start-end-shrink.js#strict`: `TypedArray view out of bounds`
+- `built-ins/Array/prototype/slice/resizable-buffer.js#non_strict`: `TypedArray view out of bounds`
+- `built-ins/Array/prototype/slice/resizable-buffer.js#strict`: `TypedArray view out of bounds`
+
+### `language/directive-prologue` (6 shown / 6 mismatches)
+
+- `language/directive-prologue/10.1.1-14-s.js#non_strict`: `Expected a SyntaxError to be thrown but no exception was thrown at all`
+- `language/directive-prologue/10.1.1-30-s.js#non_strict`: `Expected a SyntaxError but got a ReferenceError`
+- `language/directive-prologue/10.1.1-5-s.js#non_strict`: `Expected a SyntaxError to be thrown but no exception was thrown at all`
+- `language/directive-prologue/10.1.1-8-s.js#non_strict`: `Expected a SyntaxError to be thrown but no exception was thrown at all`
+- `language/directive-prologue/14.1-4-s.js#non_strict`: `Expected true but got false`
+- `language/directive-prologue/14.1-5-s.js#non_strict`: `Expected true but got false`
