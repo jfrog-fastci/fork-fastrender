@@ -20,6 +20,7 @@ pub mod av_sync;
 pub mod audio;
 pub mod audio_clock;
 pub mod audio_engine;
+pub mod backends;
 pub mod clock;
 pub mod codecs;
 pub mod decoder;
@@ -219,4 +220,30 @@ pub struct DecodedVideoFrame {
 pub enum DecodedItem {
   Video(DecodedVideoFrame),
   Audio(DecodedAudioChunk),
+}
+
+/// Blocking decode session that yields decoded items in (best-effort) timestamp order.
+///
+/// This is intended for background decode work (not paint-thread access). Paint should instead use
+/// [`MediaFrameProvider`] implementations that cache decoded frames.
+pub trait MediaSession: Send {
+  fn next_decoded(&mut self) -> MediaResult<Option<DecodedItem>>;
+  fn seek(&mut self, time_ns: u64) -> MediaResult<()>;
+}
+
+impl MediaSession for MediaDecodePipeline {
+  fn next_decoded(&mut self) -> MediaResult<Option<DecodedItem>> {
+    MediaDecodePipeline::next_decoded(self)
+  }
+
+  fn seek(&mut self, time_ns: u64) -> MediaResult<()> {
+    MediaDecodePipeline::seek(self, time_ns)
+  }
+}
+
+/// Selectable media backend (native pipeline vs CLI fallback).
+pub trait MediaBackend: Send + Sync {
+  fn name(&self) -> &'static str;
+  fn available(&self) -> bool;
+  fn open(&self, bytes: Arc<[u8]>) -> MediaResult<Box<dyn MediaSession>>;
 }

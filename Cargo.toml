@@ -41,6 +41,8 @@ avif = ["dep:avif-decode", "dep:avif-parse"]
 audio_cpal = ["dep:cpal"]
 # Offline WAV file sink backend for deterministic audio debugging/tests.
 audio_wav = ["dep:hound"]
+# Optional CLI-based media demux+decode fallback using system `ffmpeg`/`ffprobe` binaries.
+media_ffmpeg_cli = []
 box_generation_demo = []
 disk_cache = ["fs2"]
 preserve3d_warp = []
