@@ -408,6 +408,9 @@ impl Dom2TreeSink {
             );
           }
         }
+        if has_live_ranges {
+          doc.live_range_merge_text_steps(reference, prev_id, prev_old_len + inserted_len);
+        }
         if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
           content.push_str(&next_content);
         }
@@ -1092,28 +1095,33 @@ impl TreeSink for Dom2TreeSink {
         };
         let has_live_subscribers = doc.live_mutation.has_subscribers();
         let has_live_ranges = !doc.ranges.is_empty();
-        if has_live_subscribers || has_live_ranges {
-          let offset = match &doc.node(prev).kind {
-            NodeKind::Text { content } => utf16_len(content),
-            _ => 0,
-          };
-          let inserted_len = utf16_len(&next_content);
-          if has_live_subscribers {
-            doc.live_mutation.replace_data(
-              prev,
-              offset,
-              /* removed_len */ 0,
-              /* inserted_len */ inserted_len,
-            );
-          }
-          if has_live_ranges {
-            doc.live_range_replace_data_steps(
-              prev,
-              offset,
-              /* removed_len */ 0,
-              /* inserted_len */ inserted_len,
-            );
-          }
+        let (offset, inserted_len) = if has_live_subscribers || has_live_ranges {
+          (
+            match &doc.node(prev).kind {
+              NodeKind::Text { content } => utf16_len(content),
+              _ => 0,
+            },
+            utf16_len(&next_content),
+          )
+        } else {
+          (0, 0)
+        };
+        if has_live_subscribers {
+          doc.live_mutation.replace_data(
+            prev,
+            offset,
+            /* removed_len */ 0,
+            /* inserted_len */ inserted_len,
+          );
+        }
+        if has_live_ranges {
+          doc.live_range_replace_data_steps(
+            prev,
+            offset,
+            /* removed_len */ 0,
+            /* inserted_len */ inserted_len,
+          );
+          doc.live_range_merge_text_steps(next, prev, offset);
         }
         if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
           content.push_str(&next_content);
@@ -2228,6 +2236,63 @@ mod live_mutation_hook_tests {
         }
       ]
     );
+  }
+
+  #[test]
+  fn append_text_at_merges_next_text_node_and_moves_live_ranges_into_prev() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let (parent, prev_text, next_text) = {
+      let mut doc = sink.document_mut();
+      let parent = doc.push_node(
+        new_element("div"),
+        Some(root),
+        /* inert_subtree */ false,
+      );
+      let prev_text = doc.push_node(
+        NodeKind::Text {
+          content: "a".to_string(),
+        },
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+      let next_text = doc.push_node(
+        NodeKind::Text {
+          content: "b".to_string(),
+        },
+        Some(parent),
+        /* inert_subtree */ false,
+      );
+      (parent, prev_text, next_text)
+    };
+
+    let range = {
+      let mut doc = sink.document_mut();
+      let range = doc.create_range();
+      // Boundary point at the end of the second text node ("b").
+      doc.range_set_start(range, next_text, 1).unwrap();
+      doc.range_set_end(range, next_text, 1).unwrap();
+      range
+    };
+
+    {
+      let mut doc = sink.document_mut();
+      Dom2TreeSink::append_text_at(&mut doc, parent, Some(next_text), "x", false);
+    }
+
+    let doc = sink.document();
+    // "a" + inserted "x" + merged-away "b"
+    let NodeKind::Text { content } = &doc.node(prev_text).kind else {
+      panic!("expected merged text node");
+    };
+    assert_eq!(content, "axb");
+
+    // The range should be moved into the surviving text node with an offset shift of 2 ("ax").
+    assert_eq!(doc.range_start_container(range).unwrap(), prev_text);
+    assert_eq!(doc.range_end_container(range).unwrap(), prev_text);
+    assert_eq!(doc.range_start_offset(range).unwrap(), 3);
+    assert_eq!(doc.range_end_offset(range).unwrap(), 3);
   }
 
   #[test]

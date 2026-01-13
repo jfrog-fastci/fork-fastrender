@@ -1978,6 +1978,35 @@ impl Document {
     }
   }
 
+  /// Live range updates for merging a `Text` node into another and removing the merged-away node.
+  ///
+  /// `from` is the text node that will be removed. `to` is the surviving text node that now
+  /// contains `from`'s data. `offset` is the UTF-16 code unit offset in `to` where `from`'s data is
+  /// inserted (i.e. the length of `to`'s data *before* the merge point).
+  ///
+  /// This mirrors the relevant `Range` maintenance behavior from DOM's `Node.normalize()` and other
+  /// text-node-merge algorithms: boundary points that were inside the removed node are moved into
+  /// the surviving node with their offsets shifted by `offset`.
+  pub(super) fn live_range_merge_text_steps(&mut self, from: NodeId, to: NodeId, offset: usize) {
+    if self.ranges.is_empty() {
+      return;
+    }
+    if from == to {
+      return;
+    }
+
+    for range in self.ranges.values_mut() {
+      if range.start.node == from {
+        range.start.node = to;
+        range.start.offset = range.start.offset.saturating_add(offset);
+      }
+      if range.end.node == from {
+        range.end.node = to;
+        range.end.offset = range.end.offset.saturating_add(offset);
+      }
+    }
+  }
+
   /// Live range updates for the DOM `Text.splitText()` algorithm.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-text-split
