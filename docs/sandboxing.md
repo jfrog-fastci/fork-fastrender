@@ -4,13 +4,27 @@ FastRender is moving toward a **multiprocess** architecture where untrusted page
 in a separate OS-sandboxed *renderer process*. This document captures the intended sandbox behavior
 and the practical debugging knobs.
 
+**Status / repo reality (today):**
+
+- The windowed `browser` app still runs the “renderer” on a worker thread, not a separate OS
+  process.
+- The Windows sandbox code in [`src/sandbox/windows.rs`](../src/sandbox/windows.rs) currently
+  implements *sandbox selection* plus a debug escape hatch. Spawn-time enforcement is expected to be
+  wired up as the renderer process model lands.
+
+Related docs (other platforms / tooling):
+
+- Linux seccomp allowlist workflow: [seccomp_allowlist.md](seccomp_allowlist.md)
+- macOS sandbox probe tool: [macos_sandbox.md](macos_sandbox.md)
+
 ## Windows sandbox implementation
 
 Windows sandbox code lives in [`src/sandbox/windows.rs`](../src/sandbox/windows.rs).
 
 ### Primary mode: AppContainer (zero capabilities)
 
-When available, the renderer is spawned inside an **AppContainer** with **no capabilities**:
+When available, the renderer is intended to be spawned inside an **AppContainer** with **no
+capabilities**:
 
 - **No network**: no `INTERNET_CLIENT` capability is granted, so outbound network access is blocked.
 - **Restricted filesystem**: access is limited to what AppContainer policy permits (no arbitrary
@@ -33,8 +47,9 @@ itself crashes or misbehaves.
 
 ### Fallback mode: restricted token + low integrity (+ job object)
 
-If AppContainer is unavailable (or creation fails), the renderer falls back to spawning with a
-**restricted token** and **low integrity**, still under the same Job Object constraints.
+If AppContainer is unavailable (or creation fails), the renderer is intended to fall back to
+spawning with a **restricted token** and **low integrity**, still under the same Job Object
+constraints.
 
 Limitations of the fallback:
 
@@ -60,7 +75,8 @@ silent.
 
 Linux sandbox code lives in:
 
-- `seccomp-bpf`: [`src/sandbox/linux_seccomp.rs`](../src/sandbox/linux_seccomp.rs) (installed via [`src/sandbox/mod.rs`](../src/sandbox/mod.rs))
+- `seccomp-bpf`: [`src/sandbox/linux_seccomp.rs`](../src/sandbox/linux_seccomp.rs) (installed via
+  [`src/sandbox/mod.rs`](../src/sandbox/mod.rs))
 - Optional filesystem defense-in-depth: [`src/sandbox/linux_landlock.rs`](../src/sandbox/linux_landlock.rs)
 
 Repo reality (today): the Linux seccomp sandbox is designed to:
