@@ -437,33 +437,50 @@ impl ShardedGridMeasureCache {
       return;
     }
 
-    // When override key sharing is enabled, keep override entries bounded so they cannot evict the
-    // entire base-style keyset.
-    if is_override
-      && shard.override_entries >= GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD
-      && !shard.map.contains_key(&key)
-    {
-      let eviction_batch = GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD
-        .max(1)
-        .min(GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD.max(1))
-        .min(shard.override_entries);
-      if eviction_batch > 0 {
-        let keys: Vec<_> = shard
-          .map
-          .keys()
-          .filter(|candidate| candidate.override_fingerprint.is_some())
-          .take(eviction_batch)
-          .cloned()
-          .collect();
-        for key in keys {
-          if shard.map.remove(&key).is_some() {
-            shard.override_entries = shard.override_entries.saturating_sub(1);
-          }
+    let contains = shard.map.contains_key(&key);
+
+    let mut evict_override_keys = |shard: &mut GridMeasureCacheShard, count: usize| {
+      if count == 0 || shard.override_entries == 0 {
+        return;
+      }
+      let keys: Vec<_> = shard
+        .map
+        .keys()
+        .filter(|candidate| candidate.override_fingerprint.is_some())
+        .take(count)
+        .cloned()
+        .collect();
+      for key in keys {
+        if shard.map.remove(&key).is_some() {
+          shard.override_entries = shard.override_entries.saturating_sub(1);
+        }
+      }
+    };
+
+    if !contains {
+      // When override key sharing is enabled, keep override entries bounded so they cannot evict the
+      // entire base-style keyset.
+      if is_override && shard.override_entries >= GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD
+      {
+        let eviction_batch = GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD
+          .max(1)
+          .min(GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD.max(1))
+          .min(shard.override_entries);
+        evict_override_keys(&mut shard, eviction_batch);
+      }
+
+      if shard.map.len() >= max_entries {
+        // Under total-capacity pressure, prefer evicting override entries first so transient
+        // override variants do not evict stable base-style measurements.
+        if shard.override_entries > 0 {
+          let eviction_batch =
+            GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD.max(1).min(shard.override_entries);
+          evict_override_keys(&mut shard, eviction_batch);
         }
       }
     }
 
-    if shard.map.len() >= max_entries && !shard.map.contains_key(&key) {
+    if shard.map.len() >= max_entries && !contains {
       let eviction_batch = GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD
         .max(1)
         .min(max_entries)
