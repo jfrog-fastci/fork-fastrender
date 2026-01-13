@@ -4223,7 +4223,7 @@ impl App {
               let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
               let icon_a11y_label = format!("Warning: {title_text}");
               icon_resp.widget_info(move || {
-                egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label)
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label.clone())
               });
 
               let title_label = title_text.clone();
@@ -4234,7 +4234,7 @@ impl App {
                 )
                 .on_hover_text(&toast_text);
               title_resp.widget_info(move || {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, title_label)
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, title_label.clone())
               });
               if title_resp.clicked() {
                 expanded = !expanded;
@@ -8613,7 +8613,7 @@ impl App {
           // Results list
           // -------------------------------------------------------------------
           const HISTORY_PANEL_LIMIT: usize = 500;
-          let query = self.browser_state.chrome.history_search_text.trim();
+          let query = self.browser_state.chrome.history_search_text.trim().to_string();
           let results: Vec<(usize, &fastrender::ui::GlobalHistoryEntry)> = if query.is_empty() {
             self
               .browser_state
@@ -8622,7 +8622,7 @@ impl App {
               .take(HISTORY_PANEL_LIMIT)
               .collect()
           } else {
-            self.browser_state.history.search(query, HISTORY_PANEL_LIMIT)
+            self.browser_state.history.search(&query, HISTORY_PANEL_LIMIT)
           };
 
           if results.is_empty() {

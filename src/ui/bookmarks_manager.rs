@@ -461,7 +461,7 @@ fn render_nodes(
             delete_resp.widget_info(|| {
               egui::WidgetInfo::labeled(
                 egui::WidgetType::Button,
-                delete_a11y_label,
+                delete_a11y_label.clone(),
               )
             });
             if delete_resp.clicked() {
@@ -577,7 +577,7 @@ fn render_bookmark_row(
 
     let resp = ui.button(label).on_hover_text(entry.url.clone());
     resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, open_a11y_label)
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, open_a11y_label.clone())
     });
     if resp.clicked() {
       out.actions.push(BookmarksManagerAction::Open(entry.url.clone()));
@@ -585,14 +585,14 @@ fn render_bookmark_row(
 
     let new_tab_resp = ui.small_button("New tab");
     new_tab_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, new_tab_a11y_label)
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, new_tab_a11y_label.clone())
     });
     if new_tab_resp.clicked() {
       out.actions.push(BookmarksManagerAction::OpenInNewTab(entry.url.clone()));
     }
     let edit_resp = ui.small_button("Edit");
     edit_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, edit_a11y_label)
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, edit_a11y_label.clone())
     });
     if edit_resp.clicked() {
       state.editing_bookmark = Some(EditBookmarkState {
@@ -607,7 +607,7 @@ fn render_bookmark_row(
     }
     let delete_resp = ui.small_button("Delete");
     delete_resp.widget_info(|| {
-      egui::WidgetInfo::labeled(egui::WidgetType::Button, delete_a11y_label)
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, delete_a11y_label.clone())
     });
     if delete_resp.clicked() {
       if store.remove_by_id(entry.id) {
