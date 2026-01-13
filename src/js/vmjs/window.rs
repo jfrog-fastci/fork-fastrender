@@ -12,6 +12,7 @@ use crate::js::web_storage::{
 };
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_file_reader::install_window_file_reader_bindings;
+use crate::js::window_indexed_db::INDEXED_DB_SHIM_JS;
 use crate::js::window_realm::{
   ConsoleSink, DomBindingsBackend, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
@@ -778,6 +779,15 @@ impl WindowHostState {
 
       (fetch_bindings, xhr_bindings, websocket_bindings)
     };
+
+    // Install an IndexedDB presence shim so feature-detection scripts can gracefully fall back.
+    //
+    // FastRender does not implement IndexedDB storage yet, but many libraries treat a missing
+    // `indexedDB` global as a hard environment failure. The shim provides realistic API surface and
+    // deterministic async failure (`NotSupportedError`) for `open(..)`/`deleteDatabase(..)`.
+    window
+      .exec_script_with_name("fastrender_indexed_db_shim.js", INDEXED_DB_SHIM_JS)
+      .map_err(|err| Error::Other(err.to_string()))?;
 
     // Install minimal observer API shims used by real-world scripts and the offline WPT DOM runner.
     //

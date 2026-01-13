@@ -17,6 +17,7 @@ mod js_dom_exception;
 mod js_dom_realm_selectors;
 mod js_dom_wrapper_identity;
 mod js_execution_budgets;
+mod js_indexed_db_shim;
 mod js_intersection_observer;
 mod js_time_determinism;
 mod js_url_bindings;
