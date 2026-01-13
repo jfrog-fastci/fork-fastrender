@@ -1969,6 +1969,18 @@ status = "xfail"
 reason = "vm-js: WeakSet conformance is still incomplete; incremental bring-up."
 
 [[expectations]]
+id = "built-ins/JSON/parse/reviver-context-source-array-literal.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/JSON/parse/reviver-context-source-object-literal.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/JSON/parse/reviver-context-source-primitive-literal.js"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/JSON/**"
 status = "xfail"
 reason = "vm-js: built-in coverage is still incomplete; tracked via curated test262 progress."

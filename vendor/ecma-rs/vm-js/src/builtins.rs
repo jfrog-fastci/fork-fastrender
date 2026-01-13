@@ -22500,7 +22500,29 @@ impl<'a> JsonParser<'a> {
       .heap_mut()
       .object_set_prototype(obj, Some(intr.object_prototype()))?;
 
+    // Source metadata must be keyed by the canonical `GcString` handle stored in the object's
+    // property table: when a JSON object contains duplicate keys, `DefineOwnProperty` updates the
+    // existing property value/descriptor but typically preserves the original key handle. Later,
+    // `[[OwnPropertyKeys]]` returns that canonical handle, so we must canonicalize duplicates here
+    // to ensure `InternalizeJSONProperty` can find the correct source entry.
+    //
+    // Additionally, the stored source must correspond to the final parsed value for a key (after
+    // processing duplicate JSON keys). If a later duplicate overwrites a primitive with an
+    // object/array value, we must remove any stale primitive source info so reviver side effects
+    // cannot "resurrect" it.
+    fn hash_u16_units(units: &[u16]) -> u64 {
+      // FNV-1a
+      let mut hash: u64 = 0xcbf29ce484222325;
+      for &u in units {
+        hash ^= u as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+      }
+      hash
+    }
+
     let mut prop_sources: HashMap<GcString, JsonParseSourceInfo> = HashMap::new();
+    // Hash → canonical key handles (first-occurrence keys).
+    let mut canonical_keys: HashMap<u64, Vec<GcString>> = HashMap::new();
 
     self.skip_ws(vm, scope)?;
     if matches!(self.peek(), Some(u) if u == b'}' as u16) {
@@ -22522,6 +22544,38 @@ impl<'a> JsonParser<'a> {
         let key_str = self.parse_string(vm, &mut member_scope)?;
         member_scope.push_root(Value::String(key_str))?;
 
+        // Canonicalize the key handle for duplicate JSON object keys so it matches the handle
+        // returned from `[[OwnPropertyKeys]]` later (see comment above).
+        let canonical_key = {
+          let units = member_scope.heap().get_string(key_str)?.as_code_units();
+          let hash = hash_u16_units(units);
+          let bucket = canonical_keys.get_mut(&hash);
+          if let Some(bucket) = bucket {
+            let mut found: Option<GcString> = None;
+            for &existing in bucket.iter() {
+              let existing_units = member_scope.heap().get_string(existing)?.as_code_units();
+              if existing_units == units {
+                found = Some(existing);
+                break;
+              }
+            }
+            if let Some(found) = found {
+              found
+            } else {
+              vec_try_push(bucket, key_str)?;
+              key_str
+            }
+          } else {
+            canonical_keys
+              .try_reserve(1)
+              .map_err(|_| VmError::OutOfMemory)?;
+            let mut v: Vec<GcString> = Vec::new();
+            vec_try_push(&mut v, key_str)?;
+            canonical_keys.insert(hash, v);
+            key_str
+          }
+        };
+
         self.skip_ws(vm, &mut member_scope)?;
         self.expect(vm, &mut member_scope, b':' as u16)?;
         self.skip_ws(vm, &mut member_scope)?;
@@ -22539,7 +22593,11 @@ impl<'a> JsonParser<'a> {
           prop_sources
             .try_reserve(1)
             .map_err(|_| VmError::OutOfMemory)?;
-          prop_sources.insert(key_str, info);
+          prop_sources.insert(canonical_key, info);
+        } else {
+          // Final value for this key is an object/array; ensure we do not retain a stale primitive
+          // source entry from an earlier duplicate.
+          prop_sources.remove(&canonical_key);
         }
       }
 
