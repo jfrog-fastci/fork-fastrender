@@ -19,6 +19,7 @@
 pub mod document;
 pub mod dom_exception;
 pub mod dom_exception_vmjs;
+pub mod shadow_root;
 pub mod generated;
 pub mod generated_legacy;
 pub mod host;
@@ -26,6 +27,7 @@ pub use crate::js::vm_dom::{install_dom_bindings, install_dom_bindings_with_limi
 pub use document::install_document_query_selector_bindings;
 pub use dom_exception::DomExceptionClass;
 pub use dom_exception_vmjs::{dom_exception_from_rust, throw_dom_exception, DomExceptionClassVmJs};
+pub use shadow_root::install_shadow_root_bindings_vm_js;
 pub use generated::{
   install_character_data_bindings_vm_js, install_document_bindings_vm_js,
   install_document_fragment_bindings_vm_js, install_element_bindings_vm_js,

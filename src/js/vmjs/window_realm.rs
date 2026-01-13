@@ -32813,6 +32813,7 @@ fn init_window_globals(
     crate::js::bindings::install_element_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_shadow_root_bindings_vm_js(vm, heap, realm)?;
     // Collections/DOM wrappers returned by host dispatch (e.g. `querySelectorAll`, `classList`)
     // need their WebIDL-generated constructors/prototypes installed as globals so wrapper objects
     // can adopt the correct prototypes and pass `instanceof` checks.
