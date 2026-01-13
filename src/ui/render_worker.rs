@@ -37,9 +37,9 @@ use crate::ui::clipboard;
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason,
-  MediaCommand, PageExportKind, PageExportOutcome, PointerButton, RenderedFrame, ScrollMetrics, TabId,
-  UiToWorker, WakeReason, WorkerToUi,
+  BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, MediaCommand,
+  MediaElementKind, NavigationReason, PageExportKind, PageExportOutcome, PointerButton, RenderedFrame,
+  ScrollMetrics, TabId, UiToWorker, WakeReason, WorkerToUi,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
@@ -187,6 +187,116 @@ impl UiThreadWorkerHandle {
     // Ensure the worker loop can observe channel closure before we block on joining.
     drop(self.ui_tx);
     self.join.join()
+  }
+}
+
+#[cfg(test)]
+mod media_controls_anchor_fallback_tests {
+  use super::*;
+
+  #[test]
+  fn media_controls_open_falls_back_to_last_pointer_pos_when_no_prepared_tree() {
+    let factory = default_ui_worker_factory().expect("expected default ui worker factory");
+
+    let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory.clone(), downloads);
+
+    let tab_id = TabId::new();
+    let mut tab = TabState::new(CancelGens::new());
+
+    // Create a document but do not render it so `prepared == None`.
+    let renderer = factory
+      .build_renderer()
+      .expect("expected renderer from factory");
+    let html = r#"<!doctype html>
+      <html>
+        <body>
+          <video id="v" controls tabindex="0"></video>
+        </body>
+      </html>
+    "#;
+    let options = RenderOptions::default()
+      .with_viewport(320, 240)
+      .with_device_pixel_ratio(1.0);
+    let doc = BrowserDocument::new(renderer, html, options).expect("expected BrowserDocument");
+    let video_node_id = {
+      let mut dom = doc.dom().clone();
+      let index = crate::interaction::dom_index::DomIndex::build(&mut dom);
+      *index
+        .id_by_element_id
+        .get("v")
+        .expect("expected <video id=v> to exist")
+    };
+    tab.document = Some(doc);
+    runtime.tabs.insert(tab_id, tab);
+
+    // Seed a last-known pointer position without requiring prepared layout: pointer-move stores the
+    // position before attempting hit-testing.
+    runtime.handle_message(UiToWorker::PointerMove {
+      tab_id,
+      pos_css: (10.0, 20.0),
+      button: PointerButton::None,
+      modifiers: crate::ui::PointerModifiers::NONE,
+    });
+
+    // Focus the video element and trigger the media controls open gesture.
+    for _ in 0..16 {
+      if runtime
+        .tabs
+        .get(&tab_id)
+        .and_then(|tab| tab.interaction.focused_node_id())
+        == Some(video_node_id)
+      {
+        break;
+      }
+      runtime.handle_message(UiToWorker::KeyAction {
+        tab_id,
+        key: crate::interaction::KeyAction::Tab,
+      });
+    }
+    assert_eq!(
+      runtime
+        .tabs
+        .get(&tab_id)
+        .and_then(|tab| tab.interaction.focused_node_id()),
+      Some(video_node_id),
+      "expected Tab traversal to focus the <video>"
+    );
+
+    runtime.handle_message(UiToWorker::KeyAction {
+      tab_id,
+      key: crate::interaction::KeyAction::Space,
+    });
+
+    let mut opened: Option<WorkerToUi> = None;
+    while let Ok(msg) = worker_rx.try_recv() {
+      if matches!(msg, WorkerToUi::MediaControlsOpened { .. }) {
+        opened = Some(msg);
+        break;
+      }
+    }
+
+    let Some(WorkerToUi::MediaControlsOpened {
+      tab_id: got_tab,
+      node_id,
+      kind,
+      anchor_css,
+    }) = opened
+    else {
+      panic!("expected WorkerToUi::MediaControlsOpened to be emitted");
+    };
+
+    assert_eq!(got_tab, tab_id);
+    assert_eq!(node_id, video_node_id);
+    assert_eq!(kind, MediaElementKind::Video);
+    assert_eq!(anchor_css, Rect::from_xywh(10.0, 20.0, 1.0, 1.0));
+    assert!(
+      anchor_css.width() > 0.0 && anchor_css.height() > 0.0,
+      "anchor_css should be non-empty, got {anchor_css:?}"
+    );
   }
 }
 
@@ -1147,11 +1257,25 @@ fn dom_is_button(node: &crate::dom::DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
 }
 
+fn dom_media_controls_kind(node: &crate::dom::DomNode) -> Option<MediaElementKind> {
+  let tag = node.tag_name()?;
+  if tag.eq_ignore_ascii_case("video") {
+    return node
+      .get_attribute_ref("controls")
+      .is_some()
+      .then_some(MediaElementKind::Video);
+  }
+  if tag.eq_ignore_ascii_case("audio") {
+    return node
+      .get_attribute_ref("controls")
+      .is_some()
+      .then_some(MediaElementKind::Audio);
+  }
+  None
+}
+
 fn dom_is_video_controls(node: &crate::dom::DomNode) -> bool {
-  node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("video"))
-    && node.get_attribute_ref("controls").is_some()
+  dom_media_controls_kind(node).is_some()
 }
 
 fn mouse_event_button(button: PointerButton) -> i16 {
@@ -2054,6 +2178,63 @@ fn select_anchor_css(
   select_node_id: usize,
 ) -> Option<Rect> {
   styled_node_anchor_css(box_tree, geom_tree, scroll_state, select_node_id)
+}
+
+fn media_controls_anchor_css(
+  preferred_anchor_css: Option<Rect>,
+  trigger_pos_css: Option<(f32, f32)>,
+  last_pointer_pos_css: Option<(f32, f32)>,
+) -> Rect {
+  // Treat geometry as untrusted: layout can be missing (no prepared tree) and pointer positions can
+  // be sent as NaN/sentinel values. Always return a deterministic, non-empty rect so front-ends can
+  // position the overlay.
+  const MAX_ABS_POS: f32 = 1_000_000.0;
+  const MAX_SIZE: f32 = 1_000_000.0;
+
+  fn clamp_finite(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+      value.clamp(min, max)
+    } else {
+      fallback
+    }
+  }
+
+  fn sanitize_rect(rect: Rect) -> Rect {
+    let x = clamp_finite(rect.origin.x, -MAX_ABS_POS, MAX_ABS_POS, 0.0);
+    let y = clamp_finite(rect.origin.y, -MAX_ABS_POS, MAX_ABS_POS, 0.0);
+    let w = clamp_finite(rect.size.width, 0.0, MAX_SIZE, 0.0);
+    let h = clamp_finite(rect.size.height, 0.0, MAX_SIZE, 0.0);
+    Rect::from_xywh(x, y, w, h)
+  }
+
+  fn rect_is_nonempty(rect: &Rect) -> bool {
+    rect.width() > 0.0 && rect.height() > 0.0
+  }
+
+  fn pos_anchor_css(pos_css: (f32, f32)) -> Option<Rect> {
+    let (x, y) = pos_css;
+    if !x.is_finite() || !y.is_finite() {
+      return None;
+    }
+    if x < 0.0 || y < 0.0 {
+      // `(-1, -1)` is used by the UI as a sentinel meaning "pointer is not in page".
+      return None;
+    }
+    let x = x.clamp(0.0, MAX_ABS_POS);
+    let y = y.clamp(0.0, MAX_ABS_POS);
+    Some(Rect::from_xywh(x, y, 1.0, 1.0))
+  }
+
+  if let Some(rect) = preferred_anchor_css.map(sanitize_rect).filter(rect_is_nonempty) {
+    return rect;
+  }
+  if let Some(rect) = trigger_pos_css.and_then(pos_anchor_css) {
+    return rect;
+  }
+  if let Some(rect) = last_pointer_pos_css.and_then(pos_anchor_css) {
+    return rect;
+  }
+  Rect::from_xywh(0.0, 0.0, 1.0, 1.0)
 }
 
 fn compute_page_accessibility_snapshot(
@@ -7220,10 +7401,10 @@ impl BrowserRuntime {
         }
       }
       InteractionAction::OpenMediaControls { media_node_id, kind } => {
-        // Prefer anchoring the overlay to the `<video>`/`<audio>` box, falling back to the cursor
-        // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
-        let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
-        let anchor_css = tab
+        // Prefer anchoring the overlay to the `<video>`/`<audio>` box, falling back to the pointer
+        // position, last-known pointer position, or a safe default when layout geometry is
+        // unavailable (e.g. missing prepared tree).
+        let preferred_anchor_css = tab
           .document
           .as_ref()
           .and_then(|doc| doc.prepared())
@@ -7235,9 +7416,12 @@ impl BrowserRuntime {
               &scroll_snapshot,
               media_node_id,
             )
-          })
-          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
-          .unwrap_or(cursor_anchor_css);
+          });
+        let anchor_css = media_controls_anchor_css(
+          preferred_anchor_css,
+          /* trigger_pos_css */ Some(pos_css),
+          tab.last_pointer_pos_css,
+        );
 
         let _ = self.ui_tx.send(WorkerToUi::MediaControlsOpened {
           tab_id,
@@ -8773,9 +8957,11 @@ impl BrowserRuntime {
           focused_is_select,
           focused_is_button,
           focused_is_video_controls,
+          focused_media_kind,
         ) = focused
           .and_then(|focused_id| {
             crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
+              let media_kind = dom_media_controls_kind(node);
               (
                 node.get_attribute_ref("id").map(|id| id.to_string()),
                 dom_is_text_input(node),
@@ -8783,11 +8969,12 @@ impl BrowserRuntime {
                 dom_is_textarea(node),
                 dom_is_select(node),
                 dom_is_button(node),
-                dom_is_video_controls(node),
+                media_kind.is_some(),
+                media_kind,
               )
             })
           })
-          .unwrap_or((None, false, false, false, false, false, false));
+          .unwrap_or((None, false, false, false, false, false, false, None));
         let focus_scroll = match &action {
           InteractionAction::FocusChanged {
             node_id: Some(node_id),
@@ -8824,6 +9011,7 @@ impl BrowserRuntime {
             focused_is_select,
             focused_is_button,
             focused_is_video_controls,
+            focused_media_kind,
           ),
         )
       });
@@ -8842,6 +9030,7 @@ impl BrowserRuntime {
         focused_is_select,
         focused_is_button,
         focused_is_video_controls,
+        focused_media_kind,
       ) = match result {
         Ok(result) => result,
         Err(_) => {
@@ -8856,6 +9045,7 @@ impl BrowserRuntime {
           let mut focused_is_select = false;
           let mut focused_is_button = false;
           let mut focused_is_video_controls = false;
+          let mut focused_media_kind: Option<MediaElementKind> = None;
           let changed = doc.mutate_dom(|dom| {
             let (dom_changed, next_action) =
               tab
@@ -8869,10 +9059,19 @@ impl BrowserRuntime {
                 .map(|id| id.to_string())
             });
             focused = tab.interaction.focused_node_id();
-            let (id, is_text_input, is_input, is_textarea, is_select, is_button, is_video_controls) =
-              focused
+            let (
+              id,
+              is_text_input,
+              is_input,
+              is_textarea,
+              is_select,
+              is_button,
+              is_video_controls,
+              media_kind,
+            ) = focused
               .and_then(|focused_id| {
                 crate::dom::find_node_mut_by_preorder_id(dom, focused_id).map(|node| {
+                  let media_kind = dom_media_controls_kind(node);
                   (
                     node.get_attribute_ref("id").map(|id| id.to_string()),
                     dom_is_text_input(node),
@@ -8880,11 +9079,12 @@ impl BrowserRuntime {
                     dom_is_textarea(node),
                     dom_is_select(node),
                     dom_is_button(node),
-                    dom_is_video_controls(node),
+                    media_kind.is_some(),
+                    media_kind,
                   )
                 })
               })
-              .unwrap_or((None, false, false, false, false, false, false));
+              .unwrap_or((None, false, false, false, false, false, false, None));
             focused_element_id = id;
             focused_is_text_input = is_text_input;
             focused_is_input = is_input;
@@ -8892,6 +9092,7 @@ impl BrowserRuntime {
             focused_is_select = is_select;
             focused_is_button = is_button;
             focused_is_video_controls = is_video_controls;
+            focused_media_kind = media_kind;
             dom_changed
           });
           (
@@ -8909,6 +9110,7 @@ impl BrowserRuntime {
             focused_is_select,
             focused_is_button,
             focused_is_video_controls,
+            focused_media_kind,
           )
         }
       };
@@ -9326,6 +9528,42 @@ impl BrowserRuntime {
           }
         }
         _ => {
+          // Media controls overlay: Space/Enter on a focused `<video controls>` / `<audio controls>`
+          // element should request that the UI open its controls overlay. Prefer anchoring to the
+          // element's layout box, falling back deterministically when we don't have cached layout
+          // (e.g. prepared tree missing).
+          if action_is_none {
+            if let (Some(media_node_id), Some(kind)) = (focused, focused_media_kind) {
+              if matches!(
+                key,
+                crate::interaction::KeyAction::Space
+                  | crate::interaction::KeyAction::ShiftSpace
+                  | crate::interaction::KeyAction::Enter
+              ) {
+                let preferred_anchor_css = doc.prepared().and_then(|prepared| {
+                  let tree = prepared.fragment_tree_for_geometry(&tab.scroll_state);
+                  styled_node_anchor_css(
+                    prepared.box_tree(),
+                    &tree,
+                    &tab.scroll_state,
+                    media_node_id,
+                  )
+                });
+                let anchor_css = media_controls_anchor_css(
+                  preferred_anchor_css,
+                  /* trigger_pos_css */ None,
+                  tab.last_pointer_pos_css,
+                );
+                let _ = self.ui_tx.send(WorkerToUi::MediaControlsOpened {
+                  tab_id,
+                  node_id: media_node_id,
+                  kind,
+                  anchor_css,
+                });
+              }
+            }
+          }
+
           // Basic keyboard scrolling: when scroll keys are pressed and the focused element is not a
           // form control that would normally consume them, treat the key as a viewport scrolling
           // shortcut (matching common browser behaviour like Space scrolling even when a link is
