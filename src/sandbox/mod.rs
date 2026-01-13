@@ -175,21 +175,6 @@ pub fn apply_renderer_seccomp_denylist() -> Result<SandboxStatus, SandboxError> 
   }
 }
 
-/// Apply the macOS Seatbelt `pure-computation` sandbox to the current process.
-///
-/// This is a convenience wrapper around [`macos::apply_pure_computation_sandbox`] and is only
-/// supported on macOS.
-pub fn apply_pure_computation_sandbox() -> std::io::Result<()> {
-  #[cfg(target_os = "macos")]
-  return macos::apply_pure_computation_sandbox();
-
-  #[cfg(not(target_os = "macos"))]
-  return Err(std::io::Error::new(
-    std::io::ErrorKind::Unsupported,
-    "Seatbelt sandboxing is only supported on macOS",
-  ));
-}
-
 #[cfg(target_os = "linux")]
 mod linux_seccomp;
 
