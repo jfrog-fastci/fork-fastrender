@@ -407,3 +407,56 @@ fn range_offsets_ignore_shadow_root_pseudo_child() {
     Err(DomError::IndexSizeError)
   ));
 }
+
+#[test]
+fn live_range_pre_insert_increments_offsets_and_remove_roundtrips() {
+  let html = "<!doctype html><html><body><div id=c><span id=a></span><span id=b></span></div></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let container = doc.get_element_by_id("c").expect("container not found");
+  let a = doc.get_element_by_id("a").expect("a not found");
+
+  // Collapsed range between <span id=a> and <span id=b>.
+  let range = doc.create_range();
+  doc.range_set_start(range, container, 1).unwrap();
+  doc.range_set_end(range, container, 1).unwrap();
+
+  let inserted = doc.create_element("i", "");
+  assert!(doc.insert_before(container, inserted, Some(a)).unwrap());
+
+  assert_eq!(doc.range_start_container(range).unwrap(), container);
+  assert_eq!(doc.range_end_container(range).unwrap(), container);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+
+  // Removing the inserted node should decrement the offsets back to their original position.
+  assert!(doc.remove_child(container, inserted).unwrap());
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
+fn live_range_replace_data_clamps_and_shifts_offsets() {
+  let html = "<!doctype html><html><body><div id=c>abcdef</div></body></html>";
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let container = doc.get_element_by_id("c").expect("container not found");
+  let text = doc.node(container).children[0];
+  assert!(
+    matches!(doc.node(text).kind, NodeKind::Text { .. }),
+    "expected first child to be a text node"
+  );
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 3).unwrap(); // inside the replaced range
+  doc.range_set_end(range, text, 5).unwrap(); // after the replaced range
+
+  // Replace "cd" (offset=2,count=2) with "Z" (inserted_len=1, removed_len=2).
+  assert!(doc.replace_data(text, 2, 2, "Z").unwrap());
+
+  // start offset 3 -> clamped to 2, end offset 5 -> shifted by -1 to 4.
+  assert_eq!(doc.range_start_container(range).unwrap(), text);
+  assert_eq!(doc.range_end_container(range).unwrap(), text);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 2);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 4);
+}

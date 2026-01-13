@@ -230,6 +230,27 @@ impl Document {
     self.ranges.remove(&id);
   }
 
+  /// Live range pre-insert steps.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-node-insert
+  pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
+    if count == 0 || self.ranges.is_empty() {
+      return;
+    }
+
+    // Per DOM's insertion algorithm:
+    // - For each live range whose start/end node is `parent` and whose offset is greater than the
+    //   insertion index, increase its offset by the number of inserted nodes.
+    for range in self.ranges.values_mut() {
+      if range.start.node == parent && range.start.offset > index {
+        range.start.offset = range.start.offset.saturating_add(count);
+      }
+      if range.end.node == parent && range.end.offset > index {
+        range.end.offset = range.end.offset.saturating_add(count);
+      }
+    }
+  }
+
   fn range(&self, range: RangeId) -> DomResult<&Range> {
     self.ranges.get(&range).ok_or(DomError::NotFoundError)
   }
