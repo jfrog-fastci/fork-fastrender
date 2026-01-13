@@ -6834,27 +6834,12 @@ impl App {
     }
   }
 
-  fn select_dropdown_option_a11y_label(base: &str, selected: bool, disabled: bool) -> String {
+  fn select_dropdown_option_a11y_label(base: &str) -> String {
     let base = base.trim();
-    let mut out = if base.is_empty() {
+    if base.is_empty() {
       "Option".to_string()
     } else {
       base.to_string()
-    };
-    if selected {
-      out.push_str(" (selected)");
-    }
-    if disabled {
-      out.push_str(" (disabled)");
-    }
-    out
-  }
-
-  fn select_dropdown_option_a11y_widget_type(disabled: bool) -> egui::WidgetType {
-    if disabled {
-      egui::WidgetType::Label
-    } else {
-      egui::WidgetType::Button
     }
   }
 
@@ -7138,10 +7123,15 @@ impl App {
                     .inner;
 
                   response.widget_info({
-                    let label = Self::select_dropdown_option_a11y_label(base, *selected, *disabled);
-                    let widget_type = Self::select_dropdown_option_a11y_widget_type(*disabled);
+                    let label = Self::select_dropdown_option_a11y_label(base);
                     let selected = *selected;
-                    move || egui::WidgetInfo::selected(widget_type, selected, label.clone())
+                    move || {
+                      egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        selected,
+                        label.clone(),
+                      )
+                    }
                   });
 
                   if response.clicked() && !*disabled {
@@ -12268,33 +12258,19 @@ mod select_dropdown_a11y_tests {
   }
 
   #[test]
-  fn select_dropdown_row_a11y_labels_include_state() {
+  fn select_dropdown_row_a11y_labels_are_non_empty() {
     let control = make_control();
 
     let mut optgroup_labels = Vec::new();
     let mut option_labels = Vec::new();
-    let mut option_widget_types = Vec::new();
     for item in control.items.iter() {
       match item {
         SelectItem::OptGroupLabel { label, disabled } => {
           optgroup_labels.push(App::select_dropdown_optgroup_a11y_label(label, *disabled));
         }
-        SelectItem::Option {
-          label,
-          value,
-          selected,
-          disabled,
-          ..
-        } => {
-          let base = if label.trim().is_empty() {
-            value
-          } else {
-            label
-          };
-          option_labels.push(App::select_dropdown_option_a11y_label(
-            base, *selected, *disabled,
-          ));
-          option_widget_types.push(App::select_dropdown_option_a11y_widget_type(*disabled));
+        SelectItem::Option { label, value, .. } => {
+          let base = if label.trim().is_empty() { value } else { label };
+          option_labels.push(App::select_dropdown_option_a11y_label(base));
         }
       }
     }
@@ -12304,19 +12280,11 @@ mod select_dropdown_a11y_tests {
       option_labels,
       vec![
         "Enabled option".to_string(),
-        "Disabled option (disabled)".to_string(),
-        "Selected option (selected)".to_string(),
+        "Disabled option".to_string(),
+        "Selected option".to_string(),
       ]
     );
     assert!(option_labels.iter().all(|label| !label.trim().is_empty()));
-    assert_eq!(
-      option_widget_types,
-      vec![
-        egui::WidgetType::Button,
-        egui::WidgetType::Label,
-        egui::WidgetType::Button
-      ]
-    );
   }
 
   #[test]
