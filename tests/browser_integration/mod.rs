@@ -156,6 +156,7 @@ mod ui_worker_keyboard;
 mod ui_worker_media_prefs;
 mod ui_worker_parse_time_js_dom_mutation_first_frame;
 mod ui_worker_form_state_tab_switch;
+mod ui_worker_form_control_dom1_to_dom2_mirror;
 mod ui_worker_navigation_errors;
 mod ui_worker_navigation_messages;
 mod ui_worker_number_input;

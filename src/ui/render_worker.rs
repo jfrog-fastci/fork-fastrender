@@ -822,6 +822,110 @@ fn patch_dom2_form_control_state_into_renderer_dom(
   }
 }
 
+fn dom_node_by_preorder_id<'a>(
+  root: &'a crate::dom::DomNode,
+  preorder_id: usize,
+) -> Option<&'a crate::dom::DomNode> {
+  if preorder_id == 0 {
+    return None;
+  }
+  let mut next_id = 1usize;
+  let mut stack: Vec<&crate::dom::DomNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    if next_id == preorder_id {
+      return Some(node);
+    }
+    next_id += 1;
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn mirror_dom1_form_control_state_into_dom2(
+  js_tab: &mut BrowserTab,
+  dom_mapping: Option<&crate::dom2::RendererDomMapping>,
+  dom: &crate::dom::DomNode,
+  preorder_id: usize,
+  element_id: Option<&str>,
+) {
+  let Some(dom_node) = dom_node_by_preorder_id(dom, preorder_id) else {
+    return;
+  };
+
+  let dom2_node = element_id
+    .and_then(|id| js_tab.dom().get_element_by_id(id))
+    .or_else(|| dom_mapping.and_then(|mapping| mapping.node_id_for_preorder(preorder_id)));
+  let Some(dom2_node) = dom2_node else {
+    return;
+  };
+
+  let Some(tag) = dom_node.tag_name() else {
+    return;
+  };
+
+  // Mirror a subset of interactive form controls so:
+  // - JS event handlers observe user edits applied by the UI-side interaction engine, and
+  // - dom2→dom1 resync doesn't clobber UI-driven state stored only in dom1.
+  if tag.eq_ignore_ascii_case("input") {
+    let ty = dom_input_type(dom_node);
+    if ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio") {
+      let checked = dom_node.get_attribute_ref("checked").is_some();
+      let _ = js_tab.dom_mut().set_input_checked(dom2_node, checked);
+      return;
+    }
+    if ty.eq_ignore_ascii_case("file") {
+      let dom2 = js_tab.dom_mut();
+      match dom_node.get_attribute_ref("data-fastr-file-value") {
+        Some(v) if !v.is_empty() => {
+          let _ = dom2.set_attribute(dom2_node, "data-fastr-file-value", v);
+        }
+        _ => {
+          let _ = dom2.remove_attribute(dom2_node, "data-fastr-file-value");
+        }
+      }
+      match dom_node.get_attribute_ref("data-fastr-files") {
+        Some(v) if !v.is_empty() => {
+          let _ = dom2.set_attribute(dom2_node, "data-fastr-files", v);
+        }
+        _ => {
+          let _ = dom2.remove_attribute(dom2_node, "data-fastr-files");
+        }
+      }
+      return;
+    }
+
+    // Avoid marking non-user-editable inputs (submit/reset/button/etc) as "dirty" in dom2. Those
+    // controls expose their label via the content attribute and are not mutated by the UI-side
+    // interaction engine.
+    if ty.eq_ignore_ascii_case("button")
+      || ty.eq_ignore_ascii_case("submit")
+      || ty.eq_ignore_ascii_case("reset")
+      || ty.eq_ignore_ascii_case("hidden")
+      || ty.eq_ignore_ascii_case("image")
+    {
+      return;
+    }
+
+    let value = dom_node.get_attribute_ref("value").unwrap_or("");
+    let _ = js_tab.dom_mut().set_input_value(dom2_node, value);
+    return;
+  }
+
+  if tag.eq_ignore_ascii_case("textarea") {
+    let value = crate::dom::textarea_current_value(dom_node);
+    let _ = js_tab.dom_mut().set_textarea_value(dom2_node, &value);
+    return;
+  }
+
+  if tag.eq_ignore_ascii_case("option") {
+    let selected = dom_node.get_attribute_ref("selected").is_some();
+    let _ = js_tab.dom_mut().set_option_selected(dom2_node, selected);
+    return;
+  }
+}
+
 fn js_find_form_owner_for_submitter(
   dom: &crate::dom2::Document,
   submitter: crate::dom2::NodeId,
@@ -4365,6 +4469,36 @@ impl BrowserRuntime {
       )
     };
 
+    // Mirror any UI-driven form-control mutations from dom1 into the JS dom2 document before we
+    // dispatch `"click"`/`"submit"` events. This ensures JS handlers observe updated state (e.g.
+    // `checkbox.checked` after a click) and prevents dom2→dom1 resync from clobbering UI edits.
+    if dom_changed {
+      if let (Some(dom_snapshot), Some(js_tab)) = (
+        tab.document.as_ref().map(|doc| doc.dom()),
+        tab.js_tab.as_mut(),
+      ) {
+        let mapping = tab.js_dom_mapping.as_ref();
+        if let Some(target_id) = click_target {
+          mirror_dom1_form_control_state_into_dom2(
+            js_tab,
+            mapping,
+            dom_snapshot,
+            target_id,
+            click_target_element_id.as_deref(),
+          );
+        }
+        if let Some(submitter_id) = form_submitter {
+          mirror_dom1_form_control_state_into_dom2(
+            js_tab,
+            mapping,
+            dom_snapshot,
+            submitter_id,
+            form_submitter_element_id.as_deref(),
+          );
+        }
+      }
+    }
+
     if let Some(target_id) = mouseup_target {
       if let Some(js_tab) = tab.js_tab.as_mut() {
         let target =
@@ -5091,6 +5225,18 @@ impl BrowserRuntime {
     let dom_changed = doc
       .mutate_dom(|dom| engine.activate_select_option(dom, select_node_id, option_node_id, false));
     if dom_changed {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, option_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          option_node_id,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5110,6 +5256,7 @@ impl BrowserRuntime {
     };
 
     let mut should_close = false;
+    let mut selected_option: Option<usize> = None;
     let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| {
       let index = crate::interaction::dom_index::DomIndex::build(dom);
@@ -5118,6 +5265,7 @@ impl BrowserRuntime {
       match row {
         Some(SelectRow::Option { node_id, disabled }) if !disabled => {
           should_close = true;
+          selected_option = Some(node_id);
           engine.activate_select_option(dom, select_node_id, node_id, false)
         }
         _ => false,
@@ -5129,6 +5277,18 @@ impl BrowserRuntime {
     }
 
     if dom_changed {
+      if let (Some(option_node_id), Some(js_tab)) = (selected_option, tab.js_tab.as_mut()) {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, option_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          option_node_id,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5144,6 +5304,19 @@ impl BrowserRuntime {
 
     let changed = doc.mutate_dom(|dom| tab.interaction.text_input(dom, text));
     if changed {
+      if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
+      {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          focused,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5165,6 +5338,18 @@ impl BrowserRuntime {
     let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, &value));
     if dom_changed {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          input_node_id,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5208,6 +5393,18 @@ impl BrowserRuntime {
     let changed = doc.mutate_dom(|dom| engine.file_picker_choose(dom, input_node_id, &paths));
 
     if changed {
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, input_node_id)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          input_node_id,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5238,6 +5435,19 @@ impl BrowserRuntime {
 
     let changed = doc.mutate_dom(|dom| tab.interaction.ime_commit(dom, text));
     if changed {
+      if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
+      {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          focused,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5332,6 +5542,19 @@ impl BrowserRuntime {
     }
 
     if changed {
+      if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
+      {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          focused,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5348,6 +5571,19 @@ impl BrowserRuntime {
     let text = clipboard::clamp_clipboard_text(text);
     let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
     if changed {
+      if let (Some(focused), Some(js_tab)) = (tab.interaction.focused_node_id(), tab.js_tab.as_mut())
+      {
+        let dom_snapshot = doc.dom();
+        let element_id = dom_node_by_preorder_id(dom_snapshot, focused)
+          .and_then(|node| node.get_attribute_ref("id"));
+        mirror_dom1_form_control_state_into_dom2(
+          js_tab,
+          tab.js_dom_mapping.as_ref(),
+          dom_snapshot,
+          focused,
+          element_id,
+        );
+      }
       tab.cancel.bump_paint();
       tab.needs_repaint = true;
     }
@@ -5570,6 +5806,20 @@ impl BrowserRuntime {
         }
       }
 
+      // Mirror UI-driven form control changes (dom1) into dom2 before dispatching click/submit.
+      if changed {
+        if let (Some(target_id), Some(js_tab)) = (click_target_id, tab.js_tab.as_mut()) {
+          let dom_snapshot = doc.dom();
+          mirror_dom1_form_control_state_into_dom2(
+            js_tab,
+            tab.js_dom_mapping.as_ref(),
+            dom_snapshot,
+            target_id,
+            click_target_element_id,
+          );
+        }
+      }
+
       if let Some(target_id) = click_target_id {
         if let Some(js_tab) = tab.js_tab.as_mut() {
           let target = js_dom_node_for_preorder_id_with_log(
@@ -5624,6 +5874,14 @@ impl BrowserRuntime {
       if default_allowed {
         if let Some(source_id) = submit_source_id {
           if let Some(js_tab) = tab.js_tab.as_mut() {
+            let dom_snapshot = doc.dom();
+            mirror_dom1_form_control_state_into_dom2(
+              js_tab,
+              tab.js_dom_mapping.as_ref(),
+              dom_snapshot,
+              source_id,
+              submit_source_element_id,
+            );
             let source_node =
               js_dom_node_for_preorder_id_with_log(
                 &self.ui_tx,
