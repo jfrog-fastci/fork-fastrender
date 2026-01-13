@@ -1668,6 +1668,11 @@ pub struct TableCollapsedBordersItem {
   /// Origin of the table fragment in absolute coordinates.
   pub origin: Point,
   /// Bounds covering the collapsed strokes in absolute coordinates.
+  ///
+  /// Note that collapsed border strokes can extend outside the table fragment's own rectangle
+  /// (including into negative coordinates) because outer borders are centered on the outer grid
+  /// lines and may spill into the margin (CSS 2.1 §17.6.2). This bounds is used for culling and
+  /// must not be clamped to the fragment bounds (WPT `border-collapse-basic-001`).
   pub bounds: Rect,
   /// Resolved collapsed border segments.
   pub borders: Arc<TableCollapsedBorders>,

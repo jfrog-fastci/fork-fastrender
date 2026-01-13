@@ -2856,6 +2856,13 @@ impl DisplayListBuilder {
                 }
               }
 
+              // `TableCollapsedBorders.paint_bounds` is in table-fragment-local coordinates and
+              // can extend outside the table fragment's own `bounds` (including into negative
+              // coordinates) because collapsed borders are centered on outer grid lines and may
+              // spill into the margin (CSS 2.1 §17.6.2; WPT `border-collapse-basic-001`).
+              //
+              // Do not clamp this to the fragment rect: the bounds are used for culling/tiling and
+              // must include any outward spill to avoid clipping thick outer-edge winners.
               let bounds = table_borders.paint_bounds.translate(origin);
               let has_visible_borders = table_borders
                 .vertical_borders
