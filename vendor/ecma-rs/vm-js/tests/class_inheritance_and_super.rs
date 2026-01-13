@@ -1,4 +1,4 @@
-use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
+use vm_js::{CompiledScript, Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -27,6 +27,8 @@ fn thrown_error_message(rt: &mut JsRuntime, err: &VmError) -> Option<String> {
   };
 
   let mut scope = rt.heap.scope();
+  // Root the thrown object across allocations (allocating the `"message"` key can trigger GC).
+  scope.push_root(Value::Object(thrown)).ok()?;
   let key_s = scope.alloc_string("message").ok()?;
   let key = PropertyKey::from_string(key_s);
   let msg = scope.heap().get(thrown, &key).ok()?;

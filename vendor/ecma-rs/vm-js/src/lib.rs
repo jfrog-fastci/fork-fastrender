@@ -264,7 +264,7 @@ mod private_brand_check_in_operator_tests;
 mod generators_short_circuit_and_comma_tests;
 
 #[cfg(test)]
-#[path = "../tests/unit/class_inheritance_and_super.rs"]
+#[path = "../tests/class_inheritance_and_super.rs"]
 mod class_inheritance_and_super_tests;
 
 pub use crate::handle::EnvRootId;
