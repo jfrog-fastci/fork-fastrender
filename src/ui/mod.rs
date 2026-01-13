@@ -41,6 +41,7 @@ pub mod visited;
 pub mod omnibox;
 pub mod omnibox_nav;
 mod string_match;
+pub mod tab_search;
 pub mod load_progress;
 pub mod search_suggest;
 pub mod trusted_chrome_fetcher;

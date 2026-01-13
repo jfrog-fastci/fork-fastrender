@@ -1223,11 +1223,50 @@ impl Default for RemoteSearchSuggestCache {
   }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TabSearchState {
   pub open: bool,
   pub query: String,
   pub selected: usize,
+  cached_query: String,
+  cached_tabs_revision: Option<u64>,
+  cached_matches: Vec<crate::ui::tab_search::TabSearchMatch>,
+}
+
+impl Default for TabSearchState {
+  fn default() -> Self {
+    Self {
+      open: false,
+      query: String::new(),
+      selected: 0,
+      cached_query: String::new(),
+      cached_tabs_revision: None,
+      cached_matches: Vec::new(),
+    }
+  }
+}
+
+impl TabSearchState {
+  /// Recompute cached tab search matches if needed.
+  ///
+  /// Returns `true` when the cache was refreshed.
+  pub fn update_cached_matches(&mut self, tabs_revision: u64, tabs: &[BrowserTabState]) -> bool {
+    let query_key = self.query.trim();
+    if self.cached_tabs_revision == Some(tabs_revision) && self.cached_query == query_key {
+      return false;
+    }
+
+    self.cached_tabs_revision = Some(tabs_revision);
+    self.cached_query.clear();
+    self.cached_query.push_str(query_key);
+
+    crate::ui::tab_search::ranked_matches_into(query_key, tabs, &mut self.cached_matches);
+    true
+  }
+
+  pub fn cached_matches(&self) -> &[crate::ui::tab_search::TabSearchMatch] {
+    &self.cached_matches
+  }
 }
 
 /// Egui-agnostic UI state for the address bar omnibox dropdown.
@@ -1287,6 +1326,11 @@ pub struct BrowserAppState {
   pub chrome: ChromeState,
   pub downloads: DownloadsState,
   pub appearance: AppearanceSettings,
+  /// Monotonic revision counter for changes that affect tab search / quick switcher results.
+  ///
+  /// This is intentionally narrower than `session_revision` so callers (notably the tab search
+  /// overlay) can cache expensive per-tab computations and refresh only when tabs change.
+  tabs_revision: u64,
   session_revision: u64,
 }
 
@@ -1310,6 +1354,7 @@ impl BrowserAppState {
       chrome: ChromeState::default(),
       downloads: DownloadsState::default(),
       appearance: AppearanceSettings::default(),
+      tabs_revision: 0,
       session_revision: 0,
     }
   }
@@ -1337,8 +1382,22 @@ impl BrowserAppState {
     self.session_revision
   }
 
+  /// Monotonic revision counter for changes to the open tab list that affect tab search results.
+  pub fn tabs_revision(&self) -> u64 {
+    self.tabs_revision
+  }
+
   fn bump_session_revision(&mut self) {
     self.session_revision = self.session_revision.wrapping_add(1);
+  }
+
+  /// Manually bump the tab search revision counter.
+  ///
+  /// Most callers should not need this (use the provided `BrowserAppState` tab mutation helpers),
+  /// but front-ends that directly mutate tab titles/URLs via `tab_mut` should call it so tab-search
+  /// caches can invalidate correctly.
+  pub fn bump_tabs_revision(&mut self) {
+    self.tabs_revision = self.tabs_revision.wrapping_add(1);
   }
 
   pub fn tab(&self, tab_id: TabId) -> Option<&BrowserTabState> {
@@ -1436,6 +1495,7 @@ impl BrowserAppState {
     let insert_at = pinned_end.min(self.tabs.len());
     self.tabs.insert(insert_at, tab);
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
     true
   }
@@ -1454,6 +1514,7 @@ impl BrowserAppState {
     let insert_at = pinned_end.saturating_sub(1).min(self.tabs.len());
     self.tabs.insert(insert_at, tab);
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
     true
   }
@@ -1482,6 +1543,7 @@ impl BrowserAppState {
       self.chrome.omnibox.reset();
       self.sync_address_bar_to_active();
     }
+    self.bump_tabs_revision();
     self.bump_session_revision();
   }
 
@@ -1523,6 +1585,7 @@ impl BrowserAppState {
 
     let tab = self.tabs.remove(from_idx);
     self.tabs.insert(target_index, tab);
+    self.bump_tabs_revision();
     self.bump_session_revision();
     true
   }
@@ -1644,6 +1707,7 @@ impl BrowserAppState {
 
     self.tabs.splice(insert_idx..insert_idx, extracted);
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
     group_id
   }
@@ -1699,6 +1763,7 @@ impl BrowserAppState {
     }
 
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
   }
 
@@ -1714,6 +1779,7 @@ impl BrowserAppState {
       // The tab claims to be grouped, but the group isn't contiguous; treat as ungrouped.
       self.tabs[idx].group = None;
       self.prune_empty_tab_groups();
+      self.bump_tabs_revision();
       self.bump_session_revision();
       return;
     };
@@ -1731,6 +1797,7 @@ impl BrowserAppState {
     }
 
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
   }
 
@@ -1823,6 +1890,7 @@ impl BrowserAppState {
       self.tabs.insert(insert_idx, tab);
       self.prune_empty_tab_groups();
       if changed {
+        self.bump_tabs_revision();
         self.bump_session_revision();
       }
       return changed;
@@ -1884,6 +1952,7 @@ impl BrowserAppState {
     self.tabs.insert(insert_idx, tab);
     self.prune_empty_tab_groups();
     if changed {
+      self.bump_tabs_revision();
       self.bump_session_revision();
     }
     changed
@@ -1929,6 +1998,7 @@ impl BrowserAppState {
         .or_else(|| closed.title.clone()),
       pinned: closed.pinned,
     });
+    self.bump_tabs_revision();
     self.bump_session_revision();
 
     let was_active = self.active_tab == Some(tab_id);
@@ -2001,6 +2071,7 @@ impl BrowserAppState {
     self.tabs = vec![kept];
     let _ = self.set_active_tab(tab_id);
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
     closed_ids
   }
@@ -2059,6 +2130,7 @@ impl BrowserAppState {
     }
 
     self.prune_empty_tab_groups();
+    self.bump_tabs_revision();
     self.bump_session_revision();
     closed_ids
   }
@@ -2135,9 +2207,11 @@ impl BrowserAppState {
     self.chrome.omnibox.reset();
     self.chrome.address_bar_text = normalized.clone();
 
+    let mut tabs_changed = false;
     if let Some(tab) = self.tab_mut(tab_id) {
       tab.crashed = false;
       tab.crash_reason = None;
+      tabs_changed = tab.current_url.as_deref() != Some(normalized.as_str());
       tab.current_url = Some(normalized.clone());
       tab.loading = true;
       tab.unresponsive = false;
@@ -2145,6 +2219,9 @@ impl BrowserAppState {
       tab.error = None;
       tab.stage = None;
       tab.reset_load_progress();
+    }
+    if tabs_changed {
+      self.bump_tabs_revision();
     }
 
     Ok(normalized)
@@ -2224,6 +2301,7 @@ impl BrowserAppState {
       tab.last_worker_msg_at = now;
       tab.unresponsive = false;
     }
+    let mut tabs_changed = false;
 
     match msg {
       WorkerToUi::FrameReady { tab_id, frame } => {
@@ -2428,6 +2506,9 @@ impl BrowserAppState {
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
+            if tab.current_url.as_deref() != Some(url.as_str()) {
+              tabs_changed = true;
+            }
             tab.current_url = Some(url.clone());
           }
           tab.loading = true;
@@ -2504,10 +2585,16 @@ impl BrowserAppState {
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
+            let title_deref = safe_title.as_deref();
+            if tab.current_url.as_deref() != Some(url.as_str())
+              || tab.committed_url.as_deref() != Some(url.as_str())
+              || tab.title.as_deref() != title_deref
+              || tab.committed_title.as_deref() != title_deref
+            {
+              tabs_changed = true;
+            }
             tab.current_url = Some(url.clone());
             tab.committed_url = Some(url.clone());
-          }
-          if safe_url.is_some() {
             tab.title = safe_title.clone();
             tab.committed_title = safe_title.clone();
           }
@@ -2550,7 +2637,13 @@ impl BrowserAppState {
           tab.crash_reason = None;
           tab.renderer_site_key = site_key;
           if let Some(url) = safe_url.as_ref() {
+            if tab.current_url.as_deref() != Some(url.as_str()) {
+              tabs_changed = true;
+            }
             tab.current_url = Some(url.clone());
+          }
+          if tab.title.is_some() {
+            tabs_changed = true;
           }
           tab.loading = false;
           if safe_url.is_some() {
@@ -2757,6 +2850,9 @@ impl BrowserAppState {
       }
     }
 
+    if tabs_changed {
+      self.bump_tabs_revision();
+    }
     update
   }
 }
@@ -3007,6 +3103,56 @@ mod browser_app_tests {
     );
     assert_eq!(app.active_tab_id(), Some(tab_b));
     assert_active_is_valid(&app);
+  }
+
+  #[test]
+  fn tab_search_cache_invalidates_on_query_or_tab_changes() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+
+    app.chrome.tab_search.query = "a".to_string();
+    let rev0 = app.tabs_revision();
+    assert!(
+      app.chrome.tab_search.update_cached_matches(rev0, &app.tabs),
+      "expected initial cache fill"
+    );
+    assert!(
+      !app.chrome.tab_search.update_cached_matches(rev0, &app.tabs),
+      "expected cache hit when query + tabs unchanged"
+    );
+
+    app.chrome.tab_search.query = "b".to_string();
+    assert!(
+      app.chrome.tab_search.update_cached_matches(rev0, &app.tabs),
+      "expected query change to invalidate cache"
+    );
+
+    let rev_before = app.tabs_revision();
+    app.push_tab(
+      BrowserTabState::new(TabId(3), "https://c.example/".to_string()),
+      false,
+    );
+    let rev_after = app.tabs_revision();
+    assert!(
+      rev_after > rev_before,
+      "expected adding a tab to bump tabs_revision"
+    );
+    assert!(
+      app
+        .chrome
+        .tab_search
+        .update_cached_matches(rev_after, &app.tabs),
+      "expected tab list change to invalidate cache"
+    );
   }
 
   #[test]

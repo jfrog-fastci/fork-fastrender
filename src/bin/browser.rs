@@ -15706,6 +15706,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               tex.destroy(&mut self.egui_renderer);
             }
           }
+          self.browser_state.bump_tabs_revision();
           let _ = self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
         ChromeAction::DuplicateTab(source_tab_id) => {
@@ -15823,6 +15824,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           let Some(msg) = msg else {
             continue;
           };
+          self.browser_state.bump_tabs_revision();
           session_dirty = true;
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
@@ -15856,6 +15858,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               tex.destroy(&mut self.egui_renderer);
             }
           }
+          self.browser_state.bump_tabs_revision();
 
           let _ = self.send_worker_msg(UiToWorker::Reload { tab_id });
         }
@@ -15873,6 +15876,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
             }
             tab.title = tab.committed_title.clone();
           }
+          self.browser_state.bump_tabs_revision();
           self.browser_state.sync_address_bar_to_active();
 
           let _ = self.send_worker_msg(UiToWorker::StopLoading { tab_id });
@@ -15900,6 +15904,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           let Some(msg) = msg else {
             continue;
           };
+          self.browser_state.bump_tabs_revision();
           session_dirty = true;
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
@@ -15935,6 +15940,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           tab.error = None;
           tab.stage = None;
           tab.title = None;
+          self.browser_state.bump_tabs_revision();
           let _ = self.send_worker_msg(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
@@ -15954,6 +15960,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           tab.error = None;
           tab.stage = None;
           tab.title = None;
+          self.browser_state.bump_tabs_revision();
           let _ = self.send_worker_msg(UiToWorker::GoForward { tab_id });
         }
       }

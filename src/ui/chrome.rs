@@ -20,6 +20,7 @@ use crate::ui::omnibox_nav::{
 };
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
+use crate::ui::tab_search::{self, TabSearchMatch};
 use crate::ui::theme;
 use crate::ui::theme_parsing::{
   format_hex_color, parse_browser_accent_env, parse_hex_color, BrowserTheme as ThemeChoice,
@@ -362,71 +363,8 @@ fn restore_focus_or_clear_popup_focus(
   });
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TabSearchMatch {
-  tab_id: TabId,
-  tab_index: usize,
-  score: u8,
-}
-
 fn tab_search_ranked_matches(query: &str, tabs: &[BrowserTabState]) -> Vec<TabSearchMatch> {
-  let query = query.trim();
-  if query.is_empty() {
-    return tabs
-      .iter()
-      .enumerate()
-      .map(|(idx, tab)| TabSearchMatch {
-        tab_id: tab.id,
-        tab_index: idx,
-        score: 0,
-      })
-      .collect();
-  }
-
-  let q = query.to_lowercase();
-  let mut out = Vec::new();
-
-  for (idx, tab) in tabs.iter().enumerate() {
-    let title = tab
-      .title
-      .as_deref()
-      .filter(|s| !s.trim().is_empty())
-      .or_else(|| {
-        tab
-          .committed_title
-          .as_deref()
-          .filter(|s| !s.trim().is_empty())
-      })
-      .unwrap_or("");
-    let url = tab
-      .committed_url
-      .as_deref()
-      .or_else(|| tab.current_url.as_deref())
-      .unwrap_or("");
-
-    let mut best: Option<u8> = None;
-    let title_lc = title.to_lowercase();
-    let url_lc = url.to_lowercase();
-
-    if let Some(pos) = title_lc.find(&q) {
-      best = Some(if pos == 0 { 0 } else { 2 });
-    }
-    if let Some(pos) = url_lc.find(&q) {
-      let score = if pos == 0 { 1 } else { 3 };
-      best = Some(best.map_or(score, |existing| existing.min(score)));
-    }
-
-    if let Some(score) = best {
-      out.push(TabSearchMatch {
-        tab_id: tab.id,
-        tab_index: idx,
-        score,
-      });
-    }
-  }
-
-  out.sort_by_key(|m| m.score);
-  out
+  tab_search::ranked_matches(query, tabs)
 }
 
 fn tab_search_secondary_text(tab: &BrowserTabState) -> String {
@@ -436,13 +374,8 @@ fn tab_search_secondary_text(tab: &BrowserTabState) -> String {
     .or_else(|| tab.current_url.as_deref())
     .unwrap_or_default();
 
-  if let Ok(parsed) = Url::parse(url) {
-    if let Some(host) = parsed.host_str() {
-      let host = host.trim();
-      if !host.is_empty() {
-        return host.to_string();
-      }
-    }
+  if let Some(host) = tab_search::http_host(url) {
+    return host.to_string();
   }
 
   url.to_string()
@@ -550,165 +483,190 @@ fn tab_search_overlay_ui(
 
       ui.separator();
 
-      let matches = tab_search_ranked_matches(&app.chrome.tab_search.query, &app.tabs);
+      let matches_recomputed = app
+        .chrome
+        .tab_search
+        .update_cached_matches(app.tabs_revision(), &app.tabs);
+      let matches_len = app.chrome.tab_search.cached_matches().len();
 
+      let mut selected = app.chrome.tab_search.selected;
       if query_changed {
-        app.chrome.tab_search.selected = 0;
+        selected = 0;
       }
 
-      if matches.is_empty() {
+      if matches_len == 0 {
         ui.label(egui::RichText::new("No matching tabs").italics().weak());
         return None::<TabId>;
       }
 
-      if app.chrome.tab_search.selected >= matches.len() {
-        app.chrome.tab_search.selected = matches.len() - 1;
+      if selected >= matches_len {
+        selected = matches_len - 1;
       }
 
       let down = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowDown));
       let up = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::ArrowUp));
       if down {
-        app.chrome.tab_search.selected =
-          (app.chrome.tab_search.selected + 1).min(matches.len() - 1);
+        selected = (selected + 1).min(matches_len - 1);
       } else if up {
-        app.chrome.tab_search.selected = app.chrome.tab_search.selected.saturating_sub(1);
+        selected = selected.saturating_sub(1);
       }
 
       let enter = app.chrome.tab_search.open && ctx.input(|i| i.key_pressed(egui::Key::Enter));
       if enter {
-        let tab_id = matches[app.chrome.tab_search.selected].tab_id;
+        let tab_id = app.chrome.tab_search.cached_matches()[selected].tab_id;
         return Some(tab_id);
       }
 
       let mut clicked: Option<TabId> = None;
-      egui::ScrollArea::vertical()
-        .max_height(360.0)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-          let row_height = ui.spacing().interact_size.y.max(28.0);
-          let rounding = egui::Rounding::same(4.0);
-          let inner_margin = egui::vec2(6.0, 4.0);
-          let selected_fill = ui.visuals().selection.bg_fill;
-          let hovered_fill = {
-            // Use a subtle text-colored scrim so hover remains visible even when the theme's
-            // hovered widget fill matches the popup background.
-            let base = ui.visuals().text_color();
-            let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
-            egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
-          };
+      {
+        let matches = app.chrome.tab_search.cached_matches();
+        egui::ScrollArea::vertical()
+          .id_source(overlay_id.with("matches_scroll"))
+          .max_height(360.0)
+          .auto_shrink([false, false])
+          .show_rows(
+            ui,
+            ui.spacing().interact_size.y.max(28.0),
+            matches.len(),
+            |ui, row_range| {
+              let row_height = ui.spacing().interact_size.y.max(28.0);
+              let rounding = egui::Rounding::same(4.0);
+              let inner_margin = egui::vec2(6.0, 4.0);
+              let selected_fill = ui.visuals().selection.bg_fill;
+              let hovered_fill = {
+                // Use a subtle text-colored scrim so hover remains visible even when the theme's
+                // hovered widget fill matches the popup background.
+                let base = ui.visuals().text_color();
+                let alpha = if ui.visuals().dark_mode { 24 } else { 14 };
+                egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
+              };
 
-          let scroll_selected_id = overlay_id.with("scroll_selected");
-          let mut scrolled_to_selected = ctx
-            .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
-            .unwrap_or(None);
-          let should_scroll_selected = opening || down || up || query_changed;
-          if should_scroll_selected {
-            scrolled_to_selected = None;
-          }
+              let scroll_selected_id = overlay_id.with("scroll_selected");
+              let mut scrolled_to_selected = ctx
+                .data(|d| d.get_temp::<Option<usize>>(scroll_selected_id))
+                .unwrap_or(None);
+              let should_scroll_selected =
+                opening || down || up || query_changed || matches_recomputed;
+              if should_scroll_selected {
+                scrolled_to_selected = None;
+              }
 
-          for (idx, m) in matches.iter().enumerate() {
-            let tab = &app.tabs[m.tab_index];
-            let is_selected = idx == app.chrome.tab_search.selected;
+              // `show_rows` only constructs visible rows. To keep keyboard navigation UX identical
+              // to the non-virtualized implementation, request scrolling to the selected row even
+              // when it is outside `row_range`.
+              if should_scroll_selected && scrolled_to_selected != Some(selected) {
+                let selected_idx = selected;
+                let first_row_top = ui.cursor().min.y;
+                let dy_rows = selected_idx as f32 - row_range.start as f32;
+                let target_top = first_row_top + dy_rows * row_height;
+                let left = ui.cursor().min.x;
+                let rect = egui::Rect::from_min_size(
+                  egui::pos2(left, target_top),
+                  egui::vec2(ui.available_width().max(0.0), row_height),
+                );
+                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                scrolled_to_selected = Some(selected_idx);
+              }
 
-            let title = tab.display_title().to_string();
-            let secondary = tab_search_secondary_text(tab);
+              for idx in row_range {
+                let m = matches[idx];
+                let tab = &app.tabs[m.tab_index];
+                let is_selected = idx == selected;
 
-            let row_id = egui::Id::new(("tab_search_row", tab.id));
-            let (rect, response) = ui.allocate_exact_size(
-              egui::vec2(ui.available_width().max(0.0), row_height),
-              egui::Sense::click(),
-            );
-            response.widget_info({
-              let label = title.clone();
-              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
-            });
+                let title = tab.display_title().to_string();
+                let secondary = tab_search_secondary_text(tab);
 
-            let hover_t = motion.animate_bool(
-              ui.ctx(),
-              row_id.with("hover"),
-              response.hovered(),
-              motion.durations.hover_fade,
-            );
-            let selected_t = motion.animate_bool(
-              ui.ctx(),
-              row_id.with("selected"),
-              is_selected,
-              motion.durations.hover_fade,
-            );
-            if hover_t > 0.0 {
-              ui.painter().rect_filled(
-                rect,
-                rounding,
-                with_alpha(hovered_fill, hover_t * open_opacity),
-              );
-            }
-            if selected_t > 0.0 {
-              ui.painter().rect_filled(
-                rect,
-                rounding,
-                with_alpha(selected_fill, selected_t * open_opacity),
-              );
-            }
-
-            // Keep the selected row visible when navigating via keyboard (or on initial open).
-            //
-            // Avoid continuously forcing the scroll position: only scroll when the selection was
-            // recently updated by keyboard input or when the overlay is first opened.
-            if is_selected && should_scroll_selected && scrolled_to_selected != Some(idx) {
-              response.scroll_to_me(Some(egui::Align::Center));
-              scrolled_to_selected = Some(idx);
-            }
-
-            ui.allocate_ui_at_rect(rect.shrink2(inner_margin), |ui| {
-              ui.horizontal(|ui| {
-                let mut drew_favicon = false;
-                if let Some(tex_id) = favicon_for_tab(tab.id) {
-                  let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                  if let Some(meta) = tab.favicon_meta {
-                    let (w, h) = meta.size_px;
-                    if w > 0 && h > 0 {
-                      let height_points = 16.0;
-                      let aspect = (w as f32) / (h as f32);
-                      let width_points = (height_points * aspect).clamp(8.0, 32.0);
-                      let (_id, rect) = ui.allocate_space(egui::vec2(width_points, height_points));
-                      if ui.is_rect_visible(rect) {
-                        ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
-                      }
-                      drew_favicon = true;
-                    }
-                  }
-                  if !drew_favicon {
-                    let (_id, rect) = ui.allocate_space(egui::vec2(16.0, 16.0));
-                    if ui.is_rect_visible(rect) {
-                      ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
-                    }
-                    drew_favicon = true;
-                  }
-                }
-                if !drew_favicon {
-                  ui.add_space(16.0);
-                }
-
-                ui.vertical(|ui| {
-                  ui.label(egui::RichText::new(title).strong());
-                  ui.label(egui::RichText::new(secondary).small().weak());
+                let row_id = egui::Id::new(("tab_search_row", tab.id));
+                let (rect, response) = ui.allocate_exact_size(
+                  egui::vec2(ui.available_width().max(0.0), row_height),
+                  egui::Sense::click(),
+                );
+                response.widget_info({
+                  let label = title.clone();
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
+
+                let hover_t = motion.animate_bool(
+                  ui.ctx(),
+                  row_id.with("hover"),
+                  response.hovered(),
+                  motion.durations.hover_fade,
+                );
+                let selected_t = motion.animate_bool(
+                  ui.ctx(),
+                  row_id.with("selected"),
+                  is_selected,
+                  motion.durations.hover_fade,
+                );
+                if hover_t > 0.0 {
+                  ui.painter().rect_filled(
+                    rect,
+                    rounding,
+                    with_alpha(hovered_fill, hover_t * open_opacity),
+                  );
+                }
+                if selected_t > 0.0 {
+                  ui.painter().rect_filled(
+                    rect,
+                    rounding,
+                    with_alpha(selected_fill, selected_t * open_opacity),
+                  );
+                }
+
+                ui.allocate_ui_at_rect(rect.shrink2(inner_margin), |ui| {
+                  ui.horizontal(|ui| {
+                    let mut drew_favicon = false;
+                    if let Some(tex_id) = favicon_for_tab(tab.id) {
+                      let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                      if let Some(meta) = tab.favicon_meta {
+                        let (w, h) = meta.size_px;
+                        if w > 0 && h > 0 {
+                          let height_points = 16.0;
+                          let aspect = (w as f32) / (h as f32);
+                          let width_points = (height_points * aspect).clamp(8.0, 32.0);
+                          let (_id, rect) =
+                            ui.allocate_space(egui::vec2(width_points, height_points));
+                          if ui.is_rect_visible(rect) {
+                            ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
+                          }
+                          drew_favicon = true;
+                        }
+                      }
+                      if !drew_favicon {
+                        let (_id, rect) = ui.allocate_space(egui::vec2(16.0, 16.0));
+                        if ui.is_rect_visible(rect) {
+                          ui.painter().image(tex_id, rect, uv, egui::Color32::WHITE);
+                        }
+                        drew_favicon = true;
+                      }
+                    }
+                    if !drew_favicon {
+                      ui.add_space(16.0);
+                    }
+
+                    ui.vertical(|ui| {
+                      ui.label(egui::RichText::new(title).strong());
+                      ui.label(egui::RichText::new(secondary).small().weak());
+                    });
+                  });
+                });
+
+                if app.chrome.tab_search.open && response.hovered() && !(down || up) {
+                  selected = idx;
+                }
+                if app.chrome.tab_search.open && response.clicked() {
+                  clicked = Some(tab.id);
+                }
+              }
+
+              ctx.data_mut(|d| {
+                d.insert_temp(scroll_selected_id, scrolled_to_selected);
               });
-            });
+            },
+          );
+      }
 
-            if app.chrome.tab_search.open && response.hovered() && !(down || up) {
-              app.chrome.tab_search.selected = idx;
-            }
-            if app.chrome.tab_search.open && response.clicked() {
-              clicked = Some(tab.id);
-            }
-          }
-
-          ctx.data_mut(|d| {
-            d.insert_temp(scroll_selected_id, scrolled_to_selected);
-          });
-        });
-
+      app.chrome.tab_search.selected = selected;
       clicked
     });
 
