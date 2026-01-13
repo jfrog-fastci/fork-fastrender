@@ -79,6 +79,39 @@ pub fn assert_accesskit_update_has_no_orphans<'a, I>(
   panic!("AccessKit update contains orphan nodes (unreachable from root):\n{pretty}");
 }
 
+/// Assertion helper that fails the test if `target` is not reachable from the tree root.
+///
+/// When this fails, it prints a full [`AccessKitConnectivitySnapshot`] to help debug why the node
+/// is unreachable.
+pub fn assert_accesskit_node_is_reachable<'a, I>(
+  update: &'a accesskit::TreeUpdate,
+  target: accesskit::NodeId,
+  root_id_fallback: Option<accesskit::NodeId>,
+  additional_nodes: I,
+) where
+  I: IntoIterator<Item = (accesskit::NodeId, &'a accesskit::Node)>,
+{
+  let additional: Vec<(accesskit::NodeId, &'a accesskit::Node)> =
+    additional_nodes.into_iter().collect();
+  let reachable =
+    accesskit_reachable_node_ids_from_update(update, root_id_fallback, additional.iter().copied());
+  if reachable.contains(&target) {
+    return;
+  }
+  let snapshot = accesskit_connectivity_snapshot_from_update(
+    update,
+    root_id_fallback,
+    additional.iter().copied(),
+  );
+  let pretty = serde_json::to_string_pretty(&snapshot)
+    .expect("accesskit connectivity snapshot must serialize to JSON");
+  panic!(
+    "AccessKit node id {} is not reachable from root {}.\n{pretty}",
+    target.0.get(),
+    snapshot.root_id
+  );
+}
+
 /// Convenience helper for tests that need to reason about multiple incremental AccessKit updates.
 ///
 /// `accesskit::TreeUpdate` objects can omit `tree` (and thus the root id) and may only contain the
@@ -217,6 +250,18 @@ impl AccessKitTestTree {
     output: &egui::FullOutput,
   ) -> AccessKitConnectivitySnapshot {
     self.connectivity_snapshot_from_platform_output(&output.platform_output)
+  }
+
+  pub fn assert_update_has_no_orphans(&self, update: &accesskit::TreeUpdate) {
+    assert_accesskit_update_has_no_orphans(update, self.root_id, self.nodes_iter());
+  }
+
+  pub fn assert_node_is_reachable(
+    &self,
+    update: &accesskit::TreeUpdate,
+    target: accesskit::NodeId,
+  ) {
+    assert_accesskit_node_is_reachable(update, target, self.root_id, self.nodes_iter());
   }
 }
 
@@ -629,6 +674,21 @@ pub fn assert_accesskit_full_output_has_no_orphans(output: &egui::FullOutput) {
   assert_accesskit_platform_output_has_no_orphans(&output.platform_output);
 }
 
+pub fn assert_accesskit_platform_output_node_is_reachable(
+  output: &egui::PlatformOutput,
+  target: accesskit::NodeId,
+) {
+  let update = accesskit_update_from_platform_output(output);
+  assert_accesskit_node_is_reachable(update, target, None, std::iter::empty());
+}
+
+pub fn assert_accesskit_full_output_node_is_reachable(
+  output: &egui::FullOutput,
+  target: accesskit::NodeId,
+) {
+  assert_accesskit_platform_output_node_is_reachable(&output.platform_output, target);
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -829,5 +889,24 @@ mod tests {
       focus: None,
     };
     assert_accesskit_update_has_no_orphans(&update, None, std::iter::empty());
+  }
+
+  #[test]
+  #[should_panic(expected = "not reachable")]
+  fn assert_accesskit_node_is_reachable_panics_when_unreachable() {
+    let root_id = id(1);
+    let orphan_id = id(2);
+    let mut classes = accesskit::NodeClassSet::new();
+    let root = node_with_classes(&mut classes, accesskit::Role::Window, "root", &[]);
+    let orphan = node_with_classes(&mut classes, accesskit::Role::Button, "orphan", &[]);
+    let update = accesskit::TreeUpdate {
+      nodes: vec![(root_id, root), (orphan_id, orphan)],
+      tree: Some(accesskit::Tree {
+        root: root_id,
+        root_scroller: None,
+      }),
+      focus: None,
+    };
+    assert_accesskit_node_is_reachable(&update, orphan_id, None, std::iter::empty());
   }
 }
