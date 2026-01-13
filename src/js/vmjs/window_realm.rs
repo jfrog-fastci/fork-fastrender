@@ -30929,6 +30929,155 @@ fn node_get_root_node_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), root)
 }
 
+const DOCUMENT_POSITION_DISCONNECTED: u16 = 0x01;
+const DOCUMENT_POSITION_PRECEDING: u16 = 0x02;
+const DOCUMENT_POSITION_FOLLOWING: u16 = 0x04;
+const DOCUMENT_POSITION_CONTAINS: u16 = 0x08;
+const DOCUMENT_POSITION_CONTAINED_BY: u16 = 0x10;
+const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: u16 = 0x20;
+
+fn node_parent_for_document_position(dom: &dom2::Document, node_id: NodeId) -> Option<NodeId> {
+  if node_id.index() >= dom.nodes_len() {
+    return None;
+  }
+  if matches!(dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
+    // ShadowRoot is the root of a separate tree for tree-order algorithms.
+    return None;
+  }
+  dom.parent_node(node_id)
+}
+
+fn node_path_to_root_for_document_position(dom: &dom2::Document, node_id: NodeId) -> Vec<NodeId> {
+  let mut out: Vec<NodeId> = Vec::new();
+  let mut current = Some(node_id);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    out.push(id);
+    current = node_parent_for_document_position(dom, id);
+  }
+  out.reverse();
+  out
+}
+
+fn node_compare_document_position_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(this_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(other_obj) = other_value else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  if this_obj == other_obj {
+    return Ok(Value::Number(0.0));
+  }
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let this_key = platform.require_node_handle(scope.heap(), Value::Object(this_obj))?;
+  let other_key = platform.require_node_handle(scope.heap(), other_value)?;
+  if this_key == other_key {
+    return Ok(Value::Number(0.0));
+  }
+
+  let disconnected = |this_key: DomNodeKey, other_key: DomNodeKey| -> u16 {
+    let key_this = (this_key.document_id, this_key.node_id.index());
+    let key_other = (other_key.document_id, other_key.node_id.index());
+    let ordering = if key_other < key_this {
+      DOCUMENT_POSITION_PRECEDING
+    } else {
+      DOCUMENT_POSITION_FOLLOWING
+    };
+    DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC | ordering
+  };
+
+  let Some(this_dom_ptr) = dom_ptr_for_document_id_read(vm, host, this_key.document_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let Some(other_dom_ptr) = dom_ptr_for_document_id_read(vm, host, other_key.document_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  if this_dom_ptr != other_dom_ptr {
+    return Ok(Value::Number(disconnected(this_key, other_key) as f64));
+  }
+
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { this_dom_ptr.as_ref() };
+  if this_key.node_id.index() >= dom.nodes_len() || other_key.node_id.index() >= dom.nodes_len() {
+    return Ok(Value::Number(disconnected(this_key, other_key) as f64));
+  }
+
+  // WHATWG DOM tree order comparisons treat ShadowRoot as a separate tree root.
+  let path_this = node_path_to_root_for_document_position(dom, this_key.node_id);
+  let path_other = node_path_to_root_for_document_position(dom, other_key.node_id);
+
+  let root_this = path_this[0];
+  let root_other = path_other[0];
+  if root_this != root_other {
+    return Ok(Value::Number(disconnected(this_key, other_key) as f64));
+  }
+
+  let mut i = 0usize;
+  let min_len = path_this.len().min(path_other.len());
+  while i < min_len && path_this[i] == path_other[i] {
+    i += 1;
+  }
+
+  let mut result: u16 = 0;
+  if i == path_this.len() {
+    // this is an ancestor of other (and not equal, handled above).
+    result |= DOCUMENT_POSITION_CONTAINS;
+    result |= DOCUMENT_POSITION_FOLLOWING;
+    return Ok(Value::Number(result as f64));
+  }
+  if i == path_other.len() {
+    // other is an ancestor of this.
+    result |= DOCUMENT_POSITION_CONTAINED_BY;
+    result |= DOCUMENT_POSITION_PRECEDING;
+    return Ok(Value::Number(result as f64));
+  }
+
+  let common = path_this[i - 1];
+  let child_this = path_this[i];
+  let child_other = path_other[i];
+  let idx_this = dom
+    .node(common)
+    .children
+    .iter()
+    .position(|&c| c == child_this);
+  let idx_other = dom
+    .node(common)
+    .children
+    .iter()
+    .position(|&c| c == child_other);
+
+  let this_precedes_other = match (idx_this, idx_other) {
+    (Some(a), Some(b)) => a < b,
+    _ => child_this.index() < child_other.index(),
+  };
+
+  if this_precedes_other {
+    result |= DOCUMENT_POSITION_FOLLOWING;
+  } else {
+    result |= DOCUMENT_POSITION_PRECEDING;
+  }
+  Ok(Value::Number(result as f64))
+}
+
 fn node_contains_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -49709,12 +49858,37 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(get_root_node_func))?;
     let get_root_node_key = alloc_key(&mut scope, "getRootNode")?;
+      scope.define_property(
+        node_proto,
+        get_root_node_key,
+        data_desc(Value::Object(get_root_node_func)),
+      )?;
+    }
+
+    // Node.compareDocumentPosition (used by WPT expected DOM algorithms, e.g. Range tests).
+    //
+    // Install this for both handwritten and WebIDL DOM bindings backends so all `dom2` wrappers
+    // expose the method.
+    let compare_doc_pos_call_id = vm.register_native_call(node_compare_document_position_native)?;
+    let compare_doc_pos_name = scope.alloc_string("compareDocumentPosition")?;
+    scope.push_root(Value::String(compare_doc_pos_name))?;
+    let compare_doc_pos_func = scope.alloc_native_function(
+      compare_doc_pos_call_id,
+      None,
+      compare_doc_pos_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      compare_doc_pos_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(compare_doc_pos_func))?;
+    let compare_doc_pos_key = alloc_key(&mut scope, "compareDocumentPosition")?;
     scope.define_property(
       node_proto,
-      get_root_node_key,
-      data_desc(Value::Object(get_root_node_func)),
+      compare_doc_pos_key,
+      data_desc(Value::Object(compare_doc_pos_func)),
     )?;
-    }
 
     // Node.compareDocumentPosition
     //
@@ -56654,6 +56828,120 @@ mod tests {
       Value::Bool(true)
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn node_compare_document_position_reports_tree_order_and_shadow_disconnection() -> Result<(), VmError>
+  {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=a><span id=b></span></div><p id=c></p></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        if (typeof Node.prototype.compareDocumentPosition !== 'function') return 'missing_method';
+        const a = document.getElementById('a');
+        const b = document.getElementById('b');
+        const c = document.getElementById('c');
+        const PRECEDING = Node.DOCUMENT_POSITION_PRECEDING;
+        const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+        const CONTAINS = Node.DOCUMENT_POSITION_CONTAINS;
+        const CONTAINED_BY = Node.DOCUMENT_POSITION_CONTAINED_BY;
+
+        const r1 = a.compareDocumentPosition(b);
+        if (r1 !== (FOLLOWING | CONTAINS)) return 'a_vs_b:' + r1;
+        const r2 = b.compareDocumentPosition(a);
+        if (r2 !== (PRECEDING | CONTAINED_BY)) return 'b_vs_a:' + r2;
+        const r3 = b.compareDocumentPosition(c);
+        if (r3 !== FOLLOWING) return 'b_vs_c:' + r3;
+        const r4 = c.compareDocumentPosition(b);
+        if (r4 !== PRECEDING) return 'c_vs_b:' + r4;
+        const r5 = a.compareDocumentPosition(a);
+        if (r5 !== 0) return 'a_vs_a:' + r5;
+
+        // Shadow trees are separate from the light DOM tree for compareDocumentPosition.
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const sr = host.attachShadow({ mode: 'open' });
+        sr.innerHTML = '<span id=shadow>shadow</span>';
+        const shadow = sr.querySelector('#shadow');
+        const res = host.compareDocumentPosition(shadow);
+        if (!(res & Node.DOCUMENT_POSITION_DISCONNECTED)) return 'shadow_missing_disconnected:' + res;
+        if (!(res & Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC)) return 'shadow_missing_impl:' + res;
+        if (res & Node.DOCUMENT_POSITION_CONTAINS) return 'shadow_contains:' + res;
+        if (res & Node.DOCUMENT_POSITION_CONTAINED_BY) return 'shadow_contained_by:' + res;
+        if (!(res & (PRECEDING | FOLLOWING))) return 'shadow_missing_order:' + res;
+
+        const rev = shadow.compareDocumentPosition(host);
+        if (!(rev & Node.DOCUMENT_POSITION_DISCONNECTED)) return 'shadow_rev_missing_disconnected:' + rev;
+        if (!(rev & Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC)) return 'shadow_rev_missing_impl:' + rev;
+        // The implementation-specific ordering bit must be symmetric.
+        if ((res & PRECEDING) && !(rev & FOLLOWING)) return 'shadow_rev_order';
+        if ((res & FOLLOWING) && !(rev & PRECEDING)) return 'shadow_rev_order';
+
+        return 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_compare_document_position_reports_tree_order_and_shadow_disconnection_webidl(
+  ) -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=a><span id=b></span></div><p id=c></p></body></html>",
+    )
+    .unwrap();
+    let document = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let window = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let mut host = WebIdlTestHost::new(document, window);
+
+    let result = host.exec_script(
+      r#"(() => {
+        if (typeof Node.prototype.compareDocumentPosition !== 'function') return 'missing_method';
+        const a = document.getElementById('a');
+        const b = document.getElementById('b');
+        const c = document.getElementById('c');
+        const PRECEDING = Node.DOCUMENT_POSITION_PRECEDING;
+        const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
+        const CONTAINS = Node.DOCUMENT_POSITION_CONTAINS;
+        const CONTAINED_BY = Node.DOCUMENT_POSITION_CONTAINED_BY;
+
+        const r1 = a.compareDocumentPosition(b);
+        if (r1 !== (FOLLOWING | CONTAINS)) return 'a_vs_b:' + r1;
+        const r2 = b.compareDocumentPosition(a);
+        if (r2 !== (PRECEDING | CONTAINED_BY)) return 'b_vs_a:' + r2;
+        const r3 = b.compareDocumentPosition(c);
+        if (r3 !== FOLLOWING) return 'b_vs_c:' + r3;
+        const r4 = c.compareDocumentPosition(b);
+        if (r4 !== PRECEDING) return 'c_vs_b:' + r4;
+
+        const host = document.createElement('div');
+        document.body.appendChild(host);
+        const sr = host.attachShadow({ mode: 'open' });
+        sr.innerHTML = '<span id=shadow>shadow</span>';
+        const shadow = sr.querySelector('#shadow');
+        const res = host.compareDocumentPosition(shadow);
+        if (!(res & Node.DOCUMENT_POSITION_DISCONNECTED)) return 'shadow_missing_disconnected:' + res;
+        if (!(res & Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC)) return 'shadow_missing_impl:' + res;
+        if (res & Node.DOCUMENT_POSITION_CONTAINS) return 'shadow_contains:' + res;
+        if (res & Node.DOCUMENT_POSITION_CONTAINED_BY) return 'shadow_contained_by:' + res;
+        if (!(res & (PRECEDING | FOLLOWING))) return 'shadow_missing_order:' + res;
+        return 'ok';
+      })()"#,
+    )?;
+
+    assert_eq!(get_string(host.window.heap(), result), "ok");
     Ok(())
   }
 
