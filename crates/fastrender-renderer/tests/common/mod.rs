@@ -453,6 +453,26 @@ impl RendererProc {
     }
   }
 
+  pub fn recv_navigation_failed(&self, timeout: Duration) -> Option<(FrameId, String, String)> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+      let msg = match self.rx.recv_timeout(Duration::from_millis(50)) {
+        Ok(msg) => msg,
+        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+      };
+      if let RendererToBrowser::NavigationFailed {
+        frame_id,
+        url,
+        error,
+      } = msg
+      {
+        return Some((frame_id, url, error));
+      }
+    }
+    None
+  }
+
   pub fn shutdown(mut self) {
     write_ipc_message(&mut self.stdin, &BrowserToRenderer::Shutdown);
     drop(self.stdin);
