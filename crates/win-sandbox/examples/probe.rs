@@ -48,8 +48,8 @@ mod windows {
   };
   use windows_sys::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-    TokenIsAppContainer, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
-    TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+    TokenIsAppContainer, TokenGroups, DACL_SECURITY_INFORMATION, PSID, SECURITY_CAPABILITIES,
+    SID_AND_ATTRIBUTES, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
   };
   use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
@@ -1064,6 +1064,11 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
       Err(err) => eprintln!("IntegrityLevel: error: {err}"),
     }
 
+    match token_has_group_sid(token.0, "S-1-15-2-1") {
+      Ok(has) => println!("TokenHasAllApplicationPackages(S-1-15-2-1): {has}"),
+      Err(err) => eprintln!("TokenHasAllApplicationPackages: error: {err}"),
+    }
+
     match current_process_in_job() {
       Ok(in_job) => println!("IsProcessInJob: {in_job}"),
       Err(err) => eprintln!("IsProcessInJob: error: {err}"),
@@ -1309,6 +1314,52 @@ Parent mode (default) spawns a sandboxed child.\nChild mode (--child) prints san
     let out = String::from_utf16_lossy(wide);
     windows_sys::Win32::Foundation::LocalFree(sid_str as _);
     Ok(out)
+  }
+
+  fn token_has_group_sid(
+    token: windows_sys::Win32::Foundation::HANDLE,
+    want_sid: &str,
+  ) -> io::Result<bool> {
+    let mut needed: u32 = 0;
+    let ok = unsafe {
+      GetTokenInformation(token, TokenGroups, std::ptr::null_mut(), 0, &mut needed)
+    };
+    if ok != 0 {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        "GetTokenInformation(TokenGroups) unexpectedly succeeded with null buffer",
+      ));
+    }
+    if needed == 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    // Ensure pointer alignment.
+    let word_count =
+      (needed as usize + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>();
+    let mut buffer_words = vec![0usize; word_count.max(1)];
+    let buffer_ptr = buffer_words.as_mut_ptr().cast::<c_void>();
+
+    let ok = unsafe { GetTokenInformation(token, TokenGroups, buffer_ptr, needed, &mut needed) };
+    if ok == 0 {
+      return Err(io::Error::last_os_error());
+    }
+
+    let groups = buffer_ptr.cast::<TOKEN_GROUPS>();
+    let count = unsafe { (*groups).GroupCount as usize };
+    let first = unsafe { (*groups).Groups.as_ptr() as *const SID_AND_ATTRIBUTES };
+    let entries = unsafe { std::slice::from_raw_parts(first, count) };
+    for entry in entries {
+      let sid = entry.Sid as PSID;
+      if sid.is_null() {
+        continue;
+      }
+      let sid_str = unsafe { sid_to_string(sid)? };
+      if sid_str == want_sid {
+        return Ok(true);
+      }
+    }
+    Ok(false)
   }
 
   fn current_process_in_job() -> io::Result<bool> {
