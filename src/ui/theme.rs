@@ -7,8 +7,8 @@ use crate::ui::theme_parsing;
 use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Style};
 use egui::epaint::Shadow;
 
-pub const ENV_BROWSER_THEME: &str = "FASTR_BROWSER_THEME";
-pub const ENV_BROWSER_ACCENT: &str = "FASTR_BROWSER_ACCENT";
+pub const ENV_BROWSER_THEME: &str = theme_parsing::ENV_BROWSER_THEME;
+pub const ENV_BROWSER_ACCENT: &str = theme_parsing::ENV_BROWSER_ACCENT;
 
 /// Environment variable for overriding the browser chrome UI scale.
 ///
@@ -217,46 +217,13 @@ pub fn theme_mode_override_from_env() -> Option<ThemeMode> {
   }
 }
 
-fn parse_hex_color(raw: &str) -> Option<Color32> {
-  let value = raw.trim();
-  let value = value.strip_prefix('#').unwrap_or(value);
-  let decode = |s: &str| u8::from_str_radix(s, 16).ok();
-
-  match value.len() {
-    3 => {
-      let mut chars = value.chars();
-      let r = chars.next()?;
-      let g = chars.next()?;
-      let b = chars.next()?;
-      let rr = decode(&format!("{r}{r}"))?;
-      let gg = decode(&format!("{g}{g}"))?;
-      let bb = decode(&format!("{b}{b}"))?;
-      Some(Color32::from_rgb(rr, gg, bb))
-    }
-    6 => {
-      let rr = decode(value.get(0..2)?)?;
-      let gg = decode(value.get(2..4)?)?;
-      let bb = decode(value.get(4..6)?)?;
-      Some(Color32::from_rgb(rr, gg, bb))
-    }
-    8 => {
-      let rr = decode(value.get(0..2)?)?;
-      let gg = decode(value.get(2..4)?)?;
-      let bb = decode(value.get(4..6)?)?;
-      let aa = decode(value.get(6..8)?)?;
-      Some(Color32::from_rgba_unmultiplied(rr, gg, bb, aa))
-    }
-    _ => None,
-  }
-}
-
 pub fn accent_color_override_from_env() -> Option<Color32> {
   let raw = std::env::var(ENV_BROWSER_ACCENT).ok()?;
   if raw.trim().is_empty() {
     return None;
   }
-  match parse_hex_color(&raw) {
-    Some(color) => Some(color),
+  match theme_parsing::parse_hex_color(&raw) {
+    Some(color) => Some(color.to_color32()),
     None => {
       eprintln!(
         "{ENV_BROWSER_ACCENT}: expected hex like #RRGGBB or #RRGGBBAA, got {raw:?}"
@@ -673,19 +640,19 @@ mod tests {
   #[test]
   fn parse_hex_color_accepts_rgb_and_rgba() {
     assert_eq!(
-      parse_hex_color("#ff0000"),
+      theme_parsing::parse_hex_color("#ff0000").map(|c| c.to_color32()),
       Some(egui::Color32::from_rgb(0xFF, 0x00, 0x00))
     );
     assert_eq!(
-      parse_hex_color("0f0"),
+      theme_parsing::parse_hex_color("0f0").map(|c| c.to_color32()),
       Some(egui::Color32::from_rgb(0x00, 0xFF, 0x00))
     );
     assert_eq!(
-      parse_hex_color("#11223344"),
+      theme_parsing::parse_hex_color("#11223344").map(|c| c.to_color32()),
       Some(egui::Color32::from_rgba_unmultiplied(0x11, 0x22, 0x33, 0x44))
     );
-    assert_eq!(parse_hex_color("not-a-color"), None);
-    assert_eq!(parse_hex_color("#12"), None);
+    assert_eq!(theme_parsing::parse_hex_color("not-a-color"), None);
+    assert_eq!(theme_parsing::parse_hex_color("#12"), None);
   }
 
   #[test]

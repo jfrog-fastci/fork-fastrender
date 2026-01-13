@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use crate::render_control::StageHeartbeat;
+use crate::debug::runtime::runtime_toggles;
 use crate::ui::a11y;
 use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
@@ -17,7 +18,10 @@ use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::security_indicator;
 use crate::ui::shortcuts::{map_shortcut, Key, KeyEvent, Modifiers, ShortcutAction};
 use crate::ui::url::{resolve_omnibox_input, search_url_for_query, OmniboxInputResolution, DEFAULT_SEARCH_ENGINE_TEMPLATE};
-use crate::ui::theme_parsing::BrowserTheme as ThemeChoice;
+use crate::ui::theme_parsing::{
+  format_hex_color, parse_browser_accent_env, parse_hex_color, BrowserTheme as ThemeChoice,
+  RgbaColor, ENV_BROWSER_ACCENT,
+};
 use crate::ui::theme;
 use crate::ui::url_display;
 use crate::ui::zoom;
@@ -697,22 +701,10 @@ pub fn chrome_ui_with_bookmarks(
   mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
 ) -> Vec<ChromeAction> {
   theme::apply_high_contrast_if_enabled(ctx);
-  let high_contrast = theme::high_contrast_enabled();
-  let dark_mode = ctx.style().visuals.dark_mode;
-  let focus_color = if high_contrast {
-    if dark_mode {
-      egui::Color32::YELLOW
-    } else {
-      egui::Color32::from_rgb(0, 92, 230)
-    }
-  } else if dark_mode {
-    egui::Color32::from_rgb(80, 180, 255)
-  } else {
-    egui::Color32::from_rgb(0, 120, 215)
-  };
+  let focus_stroke = ctx.style().visuals.selection.stroke;
   let focus_ring = FocusRingStyle {
-    stroke: egui::Stroke::new(if high_contrast { 3.0 } else { 2.0 }, focus_color),
-    expand: if high_contrast { 3.0 } else { 2.0 },
+    stroke: focus_stroke,
+    expand: focus_stroke.width.max(2.0),
     rounding: egui::Rounding::same(4.0),
   };
 
@@ -2643,6 +2635,77 @@ pub fn chrome_ui_with_bookmarks(
 
         if appearance_opened_now {
           first_radio.request_focus();
+        }
+
+        ui.add_space(8.0);
+        ui.label("Accent");
+        let env_accent_active = {
+          let toggles = runtime_toggles();
+          parse_browser_accent_env(toggles.get(ENV_BROWSER_ACCENT)).is_some()
+        };
+        if env_accent_active {
+          ui.label(
+            egui::RichText::new(format!("Accent overridden by {ENV_BROWSER_ACCENT}"))
+              .small()
+              .weak(),
+          );
+        }
+
+        let current_accent = app.appearance.accent.as_deref().and_then(parse_hex_color);
+
+        const ACCENT_PRESETS: [(&str, RgbaColor); 6] = [
+          ("Blue", RgbaColor::new(0x3B, 0x82, 0xF6, 0xFF)),
+          ("Green", RgbaColor::new(0x10, 0xB9, 0x81, 0xFF)),
+          ("Purple", RgbaColor::new(0xA8, 0x55, 0xF7, 0xFF)),
+          ("Orange", RgbaColor::new(0xF5, 0x9E, 0x0B, 0xFF)),
+          ("Red", RgbaColor::new(0xEF, 0x44, 0x44, 0xFF)),
+          ("Gray", RgbaColor::new(0x9C, 0xA3, 0xAF, 0xFF)),
+        ];
+        let swatch_size = egui::vec2(18.0, 18.0);
+        let swatch_rounding = egui::Rounding::same(4.0);
+        ui.horizontal_wrapped(|ui| {
+          for (label, rgba) in ACCENT_PRESETS {
+            let color = rgba.to_color32();
+            let selected = current_accent == Some(rgba);
+            let (rect, resp) = ui.allocate_exact_size(swatch_size, egui::Sense::click());
+            if ui.is_rect_visible(rect) {
+              ui.painter().rect_filled(rect, swatch_rounding, color);
+              let stroke = if selected {
+                ui.visuals().selection.stroke
+              } else {
+                ui.visuals().widgets.noninteractive.bg_stroke
+              };
+              ui.painter().rect_stroke(rect, swatch_rounding, stroke);
+            }
+            let resp = resp.on_hover_text(label);
+            if resp.clicked() {
+              app.appearance.accent = Some(format_hex_color(rgba));
+            }
+          }
+        });
+
+        ui.horizontal(|ui| {
+          ui.label("Custom");
+          let mut custom = current_accent
+            .map(|c| c.to_color32())
+            .unwrap_or(ui.visuals().hyperlink_color);
+          let resp = egui::color_picker::color_edit_button_srgba(
+            ui,
+            &mut custom,
+            egui::color_picker::Alpha::Blend,
+          );
+          if resp.changed() {
+            app.appearance.accent = Some(format_hex_color(RgbaColor::from(custom)));
+          }
+          if let Some(hex) = app.appearance.accent.as_deref() {
+            ui.monospace(hex);
+          } else {
+            ui.label(egui::RichText::new("Default").weak());
+          }
+        });
+
+        if ui.button("Reset accent").clicked() {
+          app.appearance.accent = None;
         }
 
         ui.add_space(8.0);

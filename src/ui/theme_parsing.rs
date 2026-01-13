@@ -1,6 +1,9 @@
 /// Environment variable used to override the browser UI theme.
 pub const ENV_BROWSER_THEME: &str = "FASTR_BROWSER_THEME";
 
+/// Environment variable used to override the browser UI accent color.
+pub const ENV_BROWSER_ACCENT: &str = "FASTR_BROWSER_ACCENT";
+
 /// Environment variable used to enable a high-contrast UI palette.
 pub const ENV_BROWSER_HIGH_CONTRAST: &str = "FASTR_BROWSER_HIGH_CONTRAST";
 
@@ -23,6 +26,41 @@ pub enum BrowserTheme {
   System,
   Light,
   Dark,
+}
+
+/// RGBA color used by the browser chrome theme (accent, etc).
+///
+/// This struct is intentionally lightweight and does **not** depend on egui types so it can be
+/// used by session persistence and env parsing without the `browser_ui` feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RgbaColor {
+  pub r: u8,
+  pub g: u8,
+  pub b: u8,
+  pub a: u8,
+}
+
+impl RgbaColor {
+  pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+    Self { r, g, b, a }
+  }
+
+  pub fn to_hex_string(self) -> String {
+    format_hex_color(self)
+  }
+
+  #[cfg(feature = "browser_ui")]
+  pub fn to_color32(self) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(self.r, self.g, self.b, self.a)
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+impl From<egui::Color32> for RgbaColor {
+  fn from(value: egui::Color32) -> Self {
+    let [r, g, b, a] = value.to_array();
+    Self { r, g, b, a }
+  }
 }
 
 impl Default for BrowserTheme {
@@ -84,6 +122,71 @@ pub fn parse_browser_theme(raw: &str) -> Option<BrowserTheme> {
 /// Parse the `FASTR_BROWSER_THEME` environment variable value.
 pub fn parse_browser_theme_env(raw: Option<&str>) -> Option<BrowserTheme> {
   raw.and_then(parse_browser_theme)
+}
+
+/// Parse a hex color string (`#RGB`, `#RRGGBB`, or `#RRGGBBAA`).
+///
+/// This is shared between:
+/// - env var parsing (`FASTR_BROWSER_ACCENT`)
+/// - persisted appearance settings in the session file
+///
+/// Parsing is intentionally forgiving:
+/// - leading `#` is optional
+/// - trims whitespace
+/// - ASCII hex digits only
+pub fn parse_hex_color(raw: &str) -> Option<RgbaColor> {
+  let value = raw.trim();
+  if value.is_empty() {
+    return None;
+  }
+  let value = value.strip_prefix('#').unwrap_or(value);
+
+  fn nibble(c: char) -> Option<u8> {
+    Some(u8::try_from(c.to_digit(16)?).ok()?)
+  }
+  fn byte2(s: &str) -> Option<u8> {
+    u8::from_str_radix(s, 16).ok()
+  }
+
+  match value.len() {
+    3 => {
+      let mut chars = value.chars();
+      let r = nibble(chars.next()?)?;
+      let g = nibble(chars.next()?)?;
+      let b = nibble(chars.next()?)?;
+      // Duplicate each nibble, e.g. `f` → `ff`.
+      Some(RgbaColor::new(r * 17, g * 17, b * 17, 0xFF))
+    }
+    6 => {
+      let r = byte2(value.get(0..2)?)?;
+      let g = byte2(value.get(2..4)?)?;
+      let b = byte2(value.get(4..6)?)?;
+      Some(RgbaColor::new(r, g, b, 0xFF))
+    }
+    8 => {
+      let r = byte2(value.get(0..2)?)?;
+      let g = byte2(value.get(2..4)?)?;
+      let b = byte2(value.get(4..6)?)?;
+      let a = byte2(value.get(6..8)?)?;
+      Some(RgbaColor::new(r, g, b, a))
+    }
+    _ => None,
+  }
+}
+
+pub fn parse_browser_accent_env(raw: Option<&str>) -> Option<RgbaColor> {
+  raw.and_then(parse_hex_color)
+}
+
+pub fn format_hex_color(color: RgbaColor) -> String {
+  if color.a == 0xFF {
+    format!("#{:02x}{:02x}{:02x}", color.r, color.g, color.b)
+  } else {
+    format!(
+      "#{:02x}{:02x}{:02x}{:02x}",
+      color.r, color.g, color.b, color.a
+    )
+  }
 }
 
 fn parse_env_bool(key: &str, raw: &str) -> Result<bool, ThemeEnvError> {
@@ -157,5 +260,30 @@ mod tests {
     assert_eq!(parse_high_contrast_env(Some("no")), Ok(false));
     assert_eq!(parse_high_contrast_env(Some("off")), Ok(false));
     assert!(parse_high_contrast_env(Some("maybe")).is_err());
+  }
+
+  #[test]
+  fn parse_hex_color_accepts_rgb_and_rgba() {
+    assert_eq!(
+      parse_hex_color("#ff0000"),
+      Some(RgbaColor::new(0xFF, 0x00, 0x00, 0xFF))
+    );
+    assert_eq!(parse_hex_color("0f0"), Some(RgbaColor::new(0x00, 0xFF, 0x00, 0xFF)));
+    assert_eq!(
+      parse_hex_color("#11223344"),
+      Some(RgbaColor::new(0x11, 0x22, 0x33, 0x44))
+    );
+    assert_eq!(parse_hex_color("not-a-color"), None);
+    assert_eq!(parse_hex_color("#12"), None);
+    assert_eq!(parse_hex_color(""), None);
+  }
+
+  #[test]
+  fn format_hex_color_omits_alpha_when_opaque() {
+    assert_eq!(format_hex_color(RgbaColor::new(0, 0, 0, 0xFF)), "#000000");
+    assert_eq!(
+      format_hex_color(RgbaColor::new(0x11, 0x22, 0x33, 0x44)),
+      "#11223344"
+    );
   }
 }

@@ -833,8 +833,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let appearance_env = fastrender::ui::appearance::AppearanceEnvOverrides::from_env();
-  let theme_accent = fastrender::ui::theme::accent_color_override_from_env();
-  let applied_appearance = startup_session.appearance.with_env_overrides(appearance_env);
+  let applied_appearance = startup_session
+    .appearance
+    .clone()
+    .with_env_overrides(appearance_env);
+  let theme_accent = applied_appearance
+    .accent
+    .as_deref()
+    .and_then(fastrender::ui::theme_parsing::parse_hex_color)
+    .map(|c| c.to_color32());
   let window_theme_override = match applied_appearance.theme {
     fastrender::ui::theme_parsing::BrowserTheme::Light => Some(Theme::Light),
     fastrender::ui::theme_parsing::BrowserTheme::Dark => Some(Theme::Dark),
@@ -888,7 +895,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
   };
   let home_url = startup_session.home_url.clone();
-  let startup_appearance = startup_session.appearance;
+  let startup_appearance = startup_session.appearance.clone();
   let startup_active_window_index = startup_session.active_window_index;
   let startup_windows = startup_session.windows;
   let window_count = startup_windows.len();
@@ -1037,7 +1044,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       worker_join,
       &gpu,
       appearance_env,
-      applied_appearance,
+      applied_appearance.clone(),
       theme_accent,
       bookmarks_path.clone(),
       history_path.clone(),
@@ -1046,7 +1053,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     app.profile_autosave_tx = profile_autosave_tx.clone();
     app.home_url = home_url.clone();
-    app.browser_state.appearance = startup_appearance;
+    app.browser_state.appearance = startup_appearance.clone();
     app.startup(session_window);
 
     let window_id = app.window.id();
@@ -1118,11 +1125,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      let mut appearance = startup_appearance;
+      let mut appearance = startup_appearance.clone();
       let mut home_url = home_url.clone();
       if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
         if let Some(active) = windows.get(&active_id) {
-          appearance = active.app.browser_state.appearance;
+          appearance = active.app.browser_state.appearance.clone();
           home_url = active.app.home_url.clone();
         }
       }
@@ -1187,11 +1194,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
 
-      let mut appearance = startup_appearance;
+      let mut appearance = startup_appearance.clone();
       let mut home_url = home_url.clone();
       if let Some(active_id) = active_window_id.and_then(|id| windows.get(&id).map(|_| id)) {
         if let Some(active) = windows.get(&active_id) {
-          appearance = active.app.browser_state.appearance;
+          appearance = active.app.browser_state.appearance.clone();
           home_url = active.app.home_url.clone();
         }
       }
@@ -1365,7 +1372,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           worker_join,
           &gpu,
           appearance_env,
-          applied_appearance,
+          applied_appearance.clone(),
           theme_accent,
           bookmarks_path.clone(),
           history_path.clone(),
@@ -1380,7 +1387,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         app.profile_autosave_tx = profile_autosave_tx.clone();
         app.home_url = home_url.clone();
-        app.browser_state.appearance = startup_appearance;
+        app.browser_state.appearance = startup_appearance.clone();
 
         app.startup(fastrender::ui::BrowserSessionWindow {
           tabs: vec![fastrender::ui::BrowserSessionTab {
@@ -2459,7 +2466,16 @@ impl App {
     };
 
     let high_contrast = self.applied_appearance.high_contrast;
-    if resolved_mode == self.theme.mode && high_contrast == self.theme.high_contrast {
+    // Accent overrides (env/session) should also trigger a theme rebuild.
+    let default_accent = match resolved_mode {
+      ThemeMode::Dark => egui::Color32::from_rgb(0x60, 0xA5, 0xFA), // blue-400
+      _ => egui::Color32::from_rgb(0x3B, 0x82, 0xF6),              // blue-500
+    };
+    let expected_accent = self.theme_accent.unwrap_or(default_accent);
+    if resolved_mode == self.theme.mode
+      && high_contrast == self.theme.high_contrast
+      && expected_accent == self.theme.colors.accent
+    {
       return false;
     }
 
@@ -2513,14 +2529,16 @@ impl App {
     let desired = self
       .browser_state
       .appearance
+      .clone()
       .with_env_overrides(self.appearance_env_overrides);
 
     if desired == self.applied_appearance {
       return false;
     }
 
-    let prev = self.applied_appearance;
-    self.applied_appearance = desired;
+    let prev = self.applied_appearance.clone();
+    self.applied_appearance = desired.clone();
+    let accent_changed = desired.accent.as_deref() != prev.accent.as_deref();
 
     let mut needs_redraw = false;
 
@@ -2541,6 +2559,14 @@ impl App {
         self.cancel_pointer_capture();
       }
       needs_redraw = true;
+    }
+
+    if accent_changed {
+      self.theme_accent = desired
+        .accent
+        .as_deref()
+        .and_then(fastrender::ui::theme_parsing::parse_hex_color)
+        .map(|c| c.to_color32());
     }
 
     if desired.theme != prev.theme || desired.high_contrast != prev.high_contrast {
@@ -2564,6 +2590,10 @@ impl App {
       needs_redraw |= self.refresh_theme_from_system_theme(self.window.theme());
       // Even if the resolved egui theme is unchanged (e.g. switching System→Light while the system
       // is already light), still treat this as a redraw-worthy UI change.
+      needs_redraw = true;
+    } else if accent_changed {
+      // Accent-only change: keep the same theme mode/high-contrast state, but rebuild the palette.
+      needs_redraw |= self.refresh_theme_from_system_theme(self.window.theme());
       needs_redraw = true;
     }
 
@@ -8462,7 +8492,7 @@ impl App {
       }
     }
 
-    let appearance_before = self.browser_state.appearance;
+    let appearance_before = self.browser_state.appearance.clone();
     let chrome_actions = fastrender::ui::chrome_ui_with_bookmarks(
       &ctx,
       &mut self.browser_state,
@@ -8480,7 +8510,7 @@ impl App {
       },
     );
     let zoom_after = self.browser_state.active_tab().map(|t| t.zoom);
-    let appearance_after = self.browser_state.appearance;
+    let appearance_after = self.browser_state.appearance.clone();
 
     #[cfg(target_os = "macos")]
     {

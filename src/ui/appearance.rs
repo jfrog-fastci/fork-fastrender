@@ -6,7 +6,10 @@
 
 use crate::debug::runtime::runtime_toggles;
 use crate::ui::motion;
-use crate::ui::theme_parsing::{parse_browser_theme_env, BrowserTheme, ENV_BROWSER_THEME};
+use crate::ui::theme_parsing::{
+  format_hex_color, parse_browser_accent_env, parse_hex_color, parse_browser_theme_env, BrowserTheme,
+  RgbaColor, ENV_BROWSER_ACCENT, ENV_BROWSER_THEME,
+};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable override for [`AppearanceSettings::ui_scale`].
@@ -65,11 +68,18 @@ fn parse_env_f32(raw: &str) -> Option<f32> {
   (value.is_finite() && value > 0.0).then_some(value)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppearanceSettings {
   /// Browser chrome theme selection (System/Light/Dark).
   #[serde(default, skip_serializing_if = "is_default_theme")]
   pub theme: BrowserTheme,
+
+  /// Optional browser chrome accent color override.
+  ///
+  /// Stored as a hex string (e.g. `#RRGGBB` or `#RRGGBBAA`) so the session file stays readable and
+  /// does not require any UI toolkit types.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub accent: Option<String>,
 
   /// Browser chrome UI scale multiplier (separate from per-tab page zoom).
   #[serde(default = "default_ui_scale", skip_serializing_if = "is_default_ui_scale")]
@@ -88,6 +98,7 @@ impl Default for AppearanceSettings {
   fn default() -> Self {
     Self {
       theme: BrowserTheme::System,
+      accent: None,
       ui_scale: DEFAULT_UI_SCALE,
       high_contrast: false,
       reduced_motion: false,
@@ -98,16 +109,23 @@ impl Default for AppearanceSettings {
 impl AppearanceSettings {
   pub fn sanitized(mut self) -> Self {
     self.ui_scale = sanitize_ui_scale(self.ui_scale);
+    self.accent = self
+      .accent
+      .take()
+      .and_then(|raw| parse_hex_color(&raw).map(format_hex_color));
     self
   }
 
   pub fn is_default(value: &Self) -> bool {
-    *value == Self::default()
+    value == &Self::default()
   }
 
   pub fn with_env_overrides(mut self, env: AppearanceEnvOverrides) -> Self {
     if let Some(theme) = env.theme {
       self.theme = theme;
+    }
+    if let Some(accent) = env.accent {
+      self.accent = Some(format_hex_color(accent));
     }
     if let Some(scale) = env.ui_scale {
       self.ui_scale = scale;
@@ -132,6 +150,7 @@ fn sanitize_ui_scale(raw: f32) -> f32 {
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct AppearanceEnvOverrides {
   pub theme: Option<BrowserTheme>,
+  pub accent: Option<RgbaColor>,
   pub ui_scale: Option<f32>,
   pub high_contrast: Option<bool>,
   pub reduced_motion: Option<bool>,
@@ -141,6 +160,7 @@ impl AppearanceEnvOverrides {
   pub fn from_env() -> Self {
     let toggles = runtime_toggles();
     let theme = parse_browser_theme_env(toggles.get(ENV_BROWSER_THEME));
+    let accent = parse_browser_accent_env(toggles.get(ENV_BROWSER_ACCENT));
 
     let ui_scale = toggles
       .get(ENV_BROWSER_UI_SCALE)
@@ -154,9 +174,47 @@ impl AppearanceEnvOverrides {
 
     Self {
       theme,
+      accent,
       ui_scale,
       high_contrast,
       reduced_motion,
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn sanitized_drops_invalid_accent() {
+    let settings = AppearanceSettings {
+      accent: Some("not-a-color".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(settings.sanitized().accent, None);
+  }
+
+  #[test]
+  fn sanitized_normalizes_valid_accent() {
+    let settings = AppearanceSettings {
+      accent: Some("#0f0".to_string()),
+      ..Default::default()
+    };
+    assert_eq!(settings.sanitized().accent, Some("#00ff00".to_string()));
+  }
+
+  #[test]
+  fn serializes_without_accent_when_none() {
+    let settings = AppearanceSettings {
+      theme: BrowserTheme::Dark,
+      accent: None,
+      ..Default::default()
+    };
+    let json = serde_json::to_string(&settings).expect("serialize AppearanceSettings");
+    assert!(
+      !json.contains("accent"),
+      "expected accent to be omitted when None, got: {json}"
+    );
   }
 }

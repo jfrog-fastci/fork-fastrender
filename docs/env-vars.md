@@ -110,6 +110,10 @@ Not all builds implement all of these toggles yet; unsupported values are expect
       default via `prefers-color-scheme` (implemented by installing `FASTR_PREFERS_COLOR_SCHEME`
       defaults into the renderer’s runtime toggles).
     - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` still take precedence.
+- `FASTR_BROWSER_ACCENT=#RRGGBB[AA]` – override the browser chrome accent color (links, selection, loading progress line, focus rings).
+  - Takes precedence over the in-app persisted accent color setting (session file).
+  - Accepted formats: `#RGB`, `#RRGGBB`, `#RRGGBBAA` (leading `#` optional).
+  - Invalid values are ignored.
 - `FASTR_BROWSER_UI_SCALE=<float>` – UI scale multiplier for browser chrome widgets.
   - Default: `1.0` (no additional scaling beyond the OS/window scale factor).
   - Must be a finite, positive float (e.g. `1.25`).
