@@ -173,6 +173,22 @@ fn range_input_keyboard_shift_variants_step_and_repaints() -> Result<()> {
   .expect("expected FrameReady after focusing the label");
   assert_eq!(rgba_at_css(&frame_after_focus, 10, 90), [255, 0, 0, 255]);
 
+  // Shift+ArrowUp should behave like ArrowUp for range inputs (step by one).
+  let frame_after_up = extract_frame(controller.handle_message(UiToWorker::KeyAction {
+    tab_id,
+    key: KeyAction::ShiftArrowUp,
+  })?)
+  .expect("expected FrameReady after ShiftArrowUp");
+  assert_eq!(rgba_at_css(&frame_after_up, 10, 90), [0, 255, 0, 255]);
+
+  // Shift+ArrowDown should behave like ArrowDown (step back by one).
+  let frame_after_down = extract_frame(controller.handle_message(UiToWorker::KeyAction {
+    tab_id,
+    key: KeyAction::ShiftArrowDown,
+  })?)
+  .expect("expected FrameReady after ShiftArrowDown");
+  assert_eq!(rgba_at_css(&frame_after_down, 10, 90), [255, 0, 0, 255]);
+
   // Shift+ArrowRight should behave like ArrowRight for range inputs (step by one).
   let frame_after_right = extract_frame(controller.handle_message(UiToWorker::KeyAction {
     tab_id,

@@ -12164,6 +12164,8 @@ impl InteractionEngine {
       match key {
         KeyAction::ShiftArrowLeft => KeyAction::ArrowLeft,
         KeyAction::ShiftArrowRight => KeyAction::ArrowRight,
+        KeyAction::ShiftArrowUp => KeyAction::ArrowUp,
+        KeyAction::ShiftArrowDown => KeyAction::ArrowDown,
         KeyAction::ShiftHome => KeyAction::Home,
         KeyAction::ShiftEnd => KeyAction::End,
         _ => key,
