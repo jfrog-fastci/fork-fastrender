@@ -63,6 +63,24 @@ bash scripts/cargo_agent.sh xtask perf-smoke --baseline ../baseline/perf_smoke.j
 run when any fixture metric exceeds the relative threshold, making the output suitable for
 lightweight CI or local preflight checks.
 
+## UI perf smoke (headless browser UI responsiveness)
+
+Run the headless browser UI responsiveness harness (writes a JSON report under `target/` by
+default; run with `--help` for details):
+
+```bash
+bash scripts/cargo_agent.sh xtask ui-perf-smoke -- --only ttfp_newtab
+```
+
+Like `xtask perf-smoke`, the wrapper forwards `--output`, `--baseline`, `--threshold`, and
+`--fail-on-regression` to support lightweight regression gating:
+
+```bash
+bash scripts/cargo_agent.sh xtask ui-perf-smoke \
+  --baseline baseline/ui_perf_smoke.json --threshold 0.05 --fail-on-regression \
+  -- --only ttfp_newtab
+```
+
 ## Pipeline benchmarks (Criterion)
 
 Run `bash scripts/cargo_agent.sh bench --bench perf_regressions -- --noplot` to exercise each stage of the rendering pipeline with fixed fixtures and bundled fonts (`tests/fixtures/fonts/DejaVuSans-subset.*`):

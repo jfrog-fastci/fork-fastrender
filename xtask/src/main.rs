@@ -76,6 +76,7 @@ fn main() -> Result<()> {
       validate_page_fixtures::run_validate_page_fixtures(args)
     }
     Commands::PerfSmoke(args) => run_perf_smoke(args),
+    Commands::UiPerfSmoke(args) => run_ui_perf_smoke(args),
     Commands::LintNoPanics(args) => {
       let repo_root = repo_root();
       lint_no_panics::run_lint_no_panics(&repo_root, args)
@@ -170,6 +171,8 @@ enum Commands {
   ),
   /// Run the offline perf smoke harness (`perf_smoke` binary) over curated fixtures
   PerfSmoke(PerfSmokeArgs),
+  /// Run the headless browser UI perf smoke harness (`ui_perf_smoke` binary)
+  UiPerfSmoke(UiPerfSmokeArgs),
   /// Ensure checked-in page fixtures do not reference network resources (offline invariant)
   ValidatePageFixtures(validate_page_fixtures::ValidatePageFixturesArgs),
   /// Regenerate the Unicode emoji property tables used by the renderer.
@@ -872,6 +875,31 @@ struct PerfSmokeArgs {
   debug: bool,
 
   /// Extra arguments forwarded to the `perf_smoke` binary (use `--` before these)
+  #[arg(last = true)]
+  extra: Vec<String>,
+}
+
+#[derive(Args)]
+struct UiPerfSmokeArgs {
+  /// Where to write the UI perf smoke JSON report
+  #[arg(long)]
+  output: Option<PathBuf>,
+
+  /// Baseline JSON path for regression detection
+  #[arg(long)]
+  baseline: Option<PathBuf>,
+
+  /// Relative regression threshold (e.g. 0.05 = 5%)
+  ///
+  /// Defaults to the `ui_perf_smoke` binary default.
+  #[arg(long)]
+  threshold: Option<f64>,
+
+  /// Fail when regressions are detected
+  #[arg(long)]
+  fail_on_regression: bool,
+
+  /// Extra arguments forwarded to the `ui_perf_smoke` binary (use `--` before these)
   #[arg(last = true)]
   extra: Vec<String>,
 }
@@ -2321,6 +2349,41 @@ fn run_perf_smoke(args: PerfSmokeArgs) -> Result<()> {
 
   cmd.current_dir(&repo_root);
   println!("Running perf_smoke...");
+  run_command(cmd)
+}
+
+fn run_ui_perf_smoke(args: UiPerfSmokeArgs) -> Result<()> {
+  if let Some(threshold) = args.threshold {
+    if threshold < 0.0 {
+      bail!("threshold must be >= 0");
+    }
+  }
+
+  let repo_root = repo_root();
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
+  // Keep render output deterministic across machines (matches `xtask perf-smoke`).
+  cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
+  cmd.arg("run");
+  cmd.arg("--release");
+  cmd.args(["--features", "browser_ui"]);
+  cmd.args(["--bin", "ui_perf_smoke", "--"]);
+
+  if let Some(output) = &args.output {
+    cmd.arg("--output").arg(output);
+  }
+  if let Some(baseline) = &args.baseline {
+    cmd.arg("--baseline").arg(baseline);
+  }
+  if let Some(threshold) = args.threshold {
+    cmd.arg("--threshold").arg(threshold.to_string());
+  }
+  if args.fail_on_regression {
+    cmd.arg("--fail-on-regression");
+  }
+  cmd.args(&args.extra);
+
+  cmd.current_dir(&repo_root);
+  println!("Running ui_perf_smoke...");
   run_command(cmd)
 }
 
