@@ -17,8 +17,9 @@ fn generator_compound_assignment_property_captures_old_value_before_yield() {
       var it = g();
       it.next();
       o.a = 100;
-      var r = it.next(5);
-      r.done === true && r.value === 6 && o.a === 6
+      var r = it.next(2);
+      // Must use the pre-yield old value (1), not the mutated value (100).
+      r.done === true && r.value === 3 && o.a === 3
     "#,
     )
     .unwrap();
@@ -66,3 +67,29 @@ fn generator_compound_assignment_property_captures_computed_key_before_yield() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_compound_assignment_property_captures_base_and_computed_key_before_yield() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      var o1 = { a: 1, b: 10 };
+      var o2 = { a: 100, b: 1000 };
+      var o = o1;
+      var k = 'a';
+      function* g(){ return o[k] += (yield 0); }
+      var it = g();
+      it.next();
+      // Rebind both base and key after the yield but before resuming.
+      o = o2;
+      k = 'b';
+      var r = it.next(2);
+      r.done === true && r.value === 3 &&
+      // Must still target the original base/key pair.
+      o1.a === 3 && o1.b === 10 &&
+      o2.a === 100 && o2.b === 1000
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
