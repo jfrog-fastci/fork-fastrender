@@ -12,11 +12,11 @@ with a deny-by-default posture:
 This repository includes **placeholder entitlement files** for that future
 packaging step:
 
-- `tools/macos/entitlements/browser.entitlements`
+- [`tools/macos/entitlements/browser.entitlements`](../../tools/macos/entitlements/browser.entitlements)
   - Intended for the trusted browser/UI process.
   - **Does not enable** `com.apple.security.app-sandbox` (i.e. not sandboxed in
     the first `.app` iteration).
-- `tools/macos/entitlements/renderer.entitlements`
+- [`tools/macos/entitlements/renderer.entitlements`](../../tools/macos/entitlements/renderer.entitlements)
   - Intended for the untrusted renderer helper process.
   - Enables `com.apple.security.app-sandbox`.
   - Intentionally does **not** request network or file entitlements.

@@ -52,7 +52,7 @@ boundary that works for:
 That said, when we eventually ship FastRender as a macOS `.app`, we may also apply App Sandbox
 entitlements to the renderer helper process as an additional enforcement layer for end-user builds.
 See [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md) and the placeholder
-entitlement files under `tools/macos/entitlements/`.
+entitlement files under [`tools/macos/entitlements/`](../tools/macos/entitlements/).
 
 ## Baseline policy: `pure-computation`
 
