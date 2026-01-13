@@ -33,7 +33,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(test)]
@@ -284,6 +284,21 @@ fn read_path_prefix_with_deadline(
   read_prefix_with_deadline(&mut file, stage, max_chunk_size, max_bytes)
 }
 
+fn read_path_range_with_deadline(
+  path: &Path,
+  stage: RenderStage,
+  max_chunk_size: usize,
+  offset: usize,
+  len: usize,
+) -> std::result::Result<Vec<u8>, ReadAllWithDeadlineError> {
+  if len == 0 {
+    return Ok(Vec::new());
+  }
+  let mut file = fs::File::open(path)?;
+  file.seek(SeekFrom::Start(offset as u64))?;
+  read_prefix_with_deadline(&mut file, stage, max_chunk_size, len)
+}
+
 #[derive(Debug)]
 enum WriteAllWithDeadlineError {
   Io,
@@ -429,6 +444,14 @@ enum SnapshotRead {
 }
 
 enum SnapshotPrefixRead {
+  Hit(FetchedResource),
+  Error(Error),
+  Miss,
+  Locked,
+  Timeout(RenderError),
+}
+
+enum SnapshotRangeRead {
   Hit(FetchedResource),
   Error(Error),
   Miss,
@@ -1705,6 +1728,242 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
   }
 
+  fn read_disk_entry_range(
+    &self,
+    kind: FetchContextKind,
+    url: &str,
+    request: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+    origin_key: Option<&str>,
+    credentials_partition: super::CacheCredentialsPartition,
+  ) -> Result<Option<(String, FetchedResource)>> {
+    let mut disk_timer = super::start_disk_cache_diagnostics();
+    let mut current = url.to_string();
+    let mut hops = 0usize;
+    let base_request = request;
+
+    loop {
+      if let Err(err) = render_control::check_active(DISK_META_READ_STAGE) {
+        super::finish_disk_cache_diagnostics(disk_timer.take());
+        return Err(Error::Render(err));
+      }
+
+      let request = FetchRequest {
+        url: &current,
+        destination: base_request.destination,
+        referrer_url: base_request.referrer_url,
+        client_origin: base_request.client_origin,
+        referrer_policy: base_request.referrer_policy,
+        credentials_mode: base_request.credentials_mode,
+      };
+      let credentials_partition_for_current = if current == url {
+        credentials_partition
+      } else {
+        super::CacheCredentialsPartition::for_request(&request)
+      };
+      let mut origin_key_owned = None::<String>;
+      let origin_key_for_current = if origin_key.is_some() && current != url {
+        origin_key_owned = super::cors_cache_partition_key(&request);
+        origin_key_owned.as_deref()
+      } else {
+        origin_key
+      };
+      let base_key = self.cache_key_with_partition(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+      );
+      let vary = self.read_vary_for_base_key(&base_key);
+      let request_sig = super::inflight_signature_for_request(&self.memory.inner, request);
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())
+      else {
+        // If we can't compute the vary key (e.g. unknown header values or Vary:*), treat as a miss
+        // rather than risking a poisoned reuse.
+        let Some(next) = self.read_alias_target(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+          &request_sig,
+        ) else {
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        };
+
+        if hops >= MAX_ALIAS_HOPS || next == current {
+          self.remove_alias_for(
+            kind,
+            &current,
+            origin_key_for_current,
+            credentials_partition_for_current,
+          );
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        }
+
+        current = next;
+        hops += 1;
+        continue;
+      };
+
+      enum RangeCandidate {
+        Hit(FetchedResource),
+        Error(Error),
+        Miss,
+      }
+
+      let read_range_candidate =
+        |key: &str, data_path: &PathBuf, meta_path: &PathBuf| -> Result<RangeCandidate> {
+          let attempt = |key: &str| {
+            self.try_read_resource_range(key, &current, data_path, meta_path, &range, max_bytes)
+          };
+
+          match attempt(key) {
+            SnapshotRangeRead::Hit(resource) => Ok(RangeCandidate::Hit(resource)),
+            SnapshotRangeRead::Error(err) => Ok(RangeCandidate::Error(err)),
+            SnapshotRangeRead::Timeout(err) => Err(Error::Render(err)),
+            SnapshotRangeRead::Miss => Ok(RangeCandidate::Miss),
+            SnapshotRangeRead::Locked => {
+              let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
+              if !max_wait.is_zero() {
+                let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
+                let unlocked = self.wait_for_unlock(data_path, max_wait);
+                super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
+                if unlocked {
+                  match attempt(key) {
+                    SnapshotRangeRead::Hit(resource) => return Ok(RangeCandidate::Hit(resource)),
+                    SnapshotRangeRead::Error(err) => return Ok(RangeCandidate::Error(err)),
+                    SnapshotRangeRead::Timeout(err) => return Err(Error::Render(err)),
+                    _ => {}
+                  }
+                }
+              }
+              Ok(RangeCandidate::Miss)
+            }
+          }
+        };
+
+      let validate_resource =
+        |key: &str, data_path: &PathBuf, meta_path: &PathBuf, resource: &FetchedResource| {
+          if let Some(vary) = resource.vary.as_deref() {
+            let allow_unhandled =
+              self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
+            if super::vary_contains_star(vary)
+              || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
+            {
+              self.remove_entry_files_best_effort_if_unlocked(key, data_path, meta_path);
+              self.remove_alias_for(kind, url, origin_key, credentials_partition);
+              return None;
+            }
+          }
+          Some(())
+        };
+
+      let canonical_key = self.variant_key_for_base_key(&base_key, &vary_key);
+      let canonical_data_path = self.data_path_for_key(&canonical_key);
+      let canonical_meta_path = self.meta_path_for_data(&canonical_data_path);
+
+      match read_range_candidate(&canonical_key, &canonical_data_path, &canonical_meta_path)? {
+        RangeCandidate::Hit(resource) => {
+          if validate_resource(
+            &canonical_key,
+            &canonical_data_path,
+            &canonical_meta_path,
+            &resource,
+          )
+          .is_some()
+          {
+            super::record_disk_cache_hit();
+            super::record_disk_cache_bytes(resource.bytes.len());
+            super::finish_disk_cache_diagnostics(disk_timer.take());
+            return Ok(Some((current, resource)));
+          }
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        }
+        RangeCandidate::Error(err) => {
+          super::record_disk_cache_hit();
+          super::record_disk_cache_bytes(0);
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Err(err);
+        }
+        RangeCandidate::Miss => {}
+      }
+
+      if let Some(legacy_vary_key) =
+        super::compute_vary_key_for_request_legacy(&self.memory.inner, request, vary.as_deref())
+      {
+        if legacy_vary_key != vary_key {
+          let legacy_key = self.variant_key_for_base_key(&base_key, &legacy_vary_key);
+          let legacy_data_path = self.data_path_for_key(&legacy_key);
+          let legacy_meta_path = self.meta_path_for_data(&legacy_data_path);
+
+          match read_range_candidate(&legacy_key, &legacy_data_path, &legacy_meta_path)? {
+            RangeCandidate::Hit(resource) => {
+              if validate_resource(&legacy_key, &legacy_data_path, &legacy_meta_path, &resource)
+                .is_some()
+              {
+                super::record_disk_cache_hit();
+                super::record_disk_cache_bytes(resource.bytes.len());
+                super::finish_disk_cache_diagnostics(disk_timer.take());
+                self.migrate_legacy_vary_variant_if_possible(
+                  &base_key,
+                  vary.as_deref(),
+                  &vary_key,
+                  &legacy_vary_key,
+                );
+                return Ok(Some((current, resource)));
+              }
+              super::record_disk_cache_miss();
+              super::finish_disk_cache_diagnostics(disk_timer.take());
+              return Ok(None);
+            }
+            RangeCandidate::Error(err) => {
+              super::record_disk_cache_hit();
+              super::record_disk_cache_bytes(0);
+              super::finish_disk_cache_diagnostics(disk_timer.take());
+              return Err(err);
+            }
+            RangeCandidate::Miss => {}
+          }
+        }
+      }
+
+      let Some(next) = self.read_alias_target(
+        kind,
+        &current,
+        origin_key_for_current,
+        credentials_partition_for_current,
+        &request_sig,
+      ) else {
+        super::record_disk_cache_miss();
+        super::finish_disk_cache_diagnostics(disk_timer.take());
+        return Ok(None);
+      };
+
+      if hops >= MAX_ALIAS_HOPS || next == current {
+        self.remove_alias_for(
+          kind,
+          &current,
+          origin_key_for_current,
+          credentials_partition_for_current,
+        );
+        super::record_disk_cache_miss();
+        super::finish_disk_cache_diagnostics(disk_timer.take());
+        return Ok(None);
+      }
+
+      current = next;
+      hops += 1;
+    }
+  }
+
   fn try_read_snapshot(
     &self,
     key: &str,
@@ -1975,6 +2234,160 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     });
 
     SnapshotPrefixRead::Hit(resource)
+  }
+
+  fn try_read_resource_range(
+    &self,
+    key: &str,
+    url: &str,
+    data_path: &Path,
+    meta_path: &Path,
+    range: &std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> SnapshotRangeRead {
+    if self.lock_is_active(data_path) {
+      return SnapshotRangeRead::Locked;
+    }
+
+    if !meta_path.exists() {
+      if data_path.exists() {
+        self.remove_entry_if_unlocked(key, data_path, meta_path);
+      }
+      return SnapshotRangeRead::Miss;
+    }
+
+    let meta_bytes =
+      match read_path_with_deadline(meta_path, DISK_META_READ_STAGE, DISK_META_READ_CHUNK_SIZE) {
+        Ok(bytes) => bytes,
+        Err(ReadAllWithDeadlineError::Timeout(err)) => return SnapshotRangeRead::Timeout(err),
+        Err(_) => {
+          self.remove_entry_if_unlocked(key, data_path, meta_path);
+          return SnapshotRangeRead::Miss;
+        }
+      };
+    let meta: StoredMetadata = match serde_json::from_slice(&meta_bytes) {
+      Ok(meta) => meta,
+      Err(_) => {
+        self.remove_entry_if_unlocked(key, data_path, meta_path);
+        return SnapshotRangeRead::Miss;
+      }
+    };
+
+    let data_len_ok = fs::metadata(data_path)
+      .ok()
+      .and_then(|m| usize::try_from(m.len()).ok())
+      .map(|len| len == meta.len)
+      .unwrap_or(false);
+    if !data_len_ok {
+      self.remove_entry_if_unlocked(key, data_path, meta_path);
+      return SnapshotRangeRead::Miss;
+    }
+
+    if let Some(message) = meta.error.clone() {
+      if error_entry_is_expired(meta.stored_at) {
+        self.remove_entry_files_best_effort_if_unlocked(key, data_path, meta_path);
+        return SnapshotRangeRead::Miss;
+      }
+      self
+        .index
+        .backfill_if_missing(key, meta.stored_at, meta.len as u64, data_path, meta_path);
+
+      let mut err = ResourceError::new(meta.url.clone(), message)
+        .with_content_type(meta.content_type.clone())
+        .with_validators(meta.etag.clone(), meta.last_modified.clone());
+      if let Some(status) = meta.status {
+        err = err.with_status(status);
+      }
+      if let Some(final_url) = meta.final_url.clone() {
+        err = err.with_final_url(final_url);
+      }
+
+      return SnapshotRangeRead::Error(Error::Resource(err));
+    }
+
+    let read_stage = stage_for_cached_content_type(meta.content_type.as_deref());
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return SnapshotRangeRead::Error(Error::Resource(ResourceError::new(
+        url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    // Honor the `max_bytes` cap even if the requested range is larger.
+    let range_len = end.saturating_sub(start).saturating_add(1);
+    let target_len_u64 = if max_bytes == 0 {
+      0
+    } else {
+      range_len.min(max_bytes as u64)
+    };
+    // Safe cast: `target_len_u64 <= max_bytes as u64 <= usize::MAX as u64`.
+    let target_len = usize::try_from(target_len_u64).unwrap_or(max_bytes);
+
+    let offset = usize::try_from(start).unwrap_or(meta.len);
+    let expected_len = if target_len == 0 || offset >= meta.len {
+      0
+    } else {
+      let remaining = meta.len.saturating_sub(offset);
+      target_len.min(remaining)
+    };
+
+    let bytes = if expected_len == 0 {
+      Vec::new()
+    } else {
+      match read_path_range_with_deadline(
+        data_path,
+        read_stage,
+        DISK_READ_CHUNK_SIZE,
+        offset,
+        expected_len,
+      ) {
+        Ok(bytes) => bytes,
+        Err(ReadAllWithDeadlineError::Timeout(err)) => return SnapshotRangeRead::Timeout(err),
+        Err(_) => {
+          self.remove_entry_if_unlocked(key, data_path, meta_path);
+          return SnapshotRangeRead::Miss;
+        }
+      }
+    };
+
+    if bytes.len() != expected_len {
+      self.remove_entry_if_unlocked(key, data_path, meta_path);
+      return SnapshotRangeRead::Miss;
+    }
+
+    self
+      .index
+      .backfill_if_missing(key, meta.stored_at, meta.len as u64, data_path, meta_path);
+
+    let mut resource = FetchedResource::with_final_url(
+      bytes,
+      meta.content_type.clone(),
+      meta.final_url.clone().or_else(|| Some(url.to_string())),
+    );
+    resource.content_encoding = meta.content_encoding.clone();
+    resource.nosniff = meta.nosniff;
+    resource.status = meta.status;
+    resource.etag = meta.etag.clone();
+    resource.last_modified = meta.last_modified.clone();
+    resource.vary = super::canonicalize_vary_header_value(meta.vary.as_deref());
+    resource.response_referrer_policy = meta
+      .response_referrer_policy
+      .as_deref()
+      .and_then(ReferrerPolicy::parse_value_list);
+    resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
+    resource.timing_allow_origin = meta.timing_allow_origin.clone();
+    resource.access_control_allow_credentials = meta.access_control_allow_credentials;
+    resource.response_headers = meta.response_headers.clone();
+    resource.cache_policy = meta.cache.as_ref().map(|c| c.to_policy()).or_else(|| {
+      self.disk_config.max_age.map(|max_age| HttpCachePolicy {
+        max_age: Some(max_age.as_secs()),
+        ..Default::default()
+      })
+    });
+
+    SnapshotRangeRead::Hit(resource)
   }
 
   fn read_alias_target(
@@ -4099,6 +4512,97 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     }
 
     self.memory.inner.fetch_partial_with_request(req, max_bytes)
+  }
+
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    let url = req.url;
+    if let Some(policy) = &self.policy {
+      policy.ensure_url_allowed(url)?;
+    }
+
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    let target_len_u64 = if max_bytes == 0 {
+      0
+    } else {
+      end.saturating_sub(start).saturating_add(1).min(max_bytes as u64)
+    };
+    let target_len = usize::try_from(target_len_u64).unwrap_or(max_bytes);
+
+    let origin_key = super::cors_cache_partition_key(&req);
+    let key = CacheKey::new_with_origin(
+      kind,
+      url.to_string(),
+      origin_key,
+      super::CacheCredentialsPartition::for_request(&req),
+    );
+
+    if let Some(snapshot) = self.memory.cached_entry(&key, Some(req)) {
+      let result = snapshot.value.as_result();
+      if let Ok(mut res) = result {
+        if target_len == 0 {
+          res.bytes.clear();
+        } else {
+          let start_idx = usize::try_from(start).unwrap_or(res.bytes.len());
+          if start_idx >= res.bytes.len() {
+            res.bytes.clear();
+          } else {
+            let available = res.bytes.len().saturating_sub(start_idx);
+            let slice_len = target_len.min(available);
+            res.bytes = res.bytes[start_idx..start_idx.saturating_add(slice_len)].to_vec();
+          }
+        }
+        super::record_cache_fresh_hit();
+        super::record_resource_cache_bytes(res.bytes.len());
+        super::reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
+      }
+      return result;
+    }
+
+    if let Some((_canonical, mut res)) = self.read_disk_entry_range(
+      kind,
+      url,
+      req,
+      range.clone(),
+      max_bytes,
+      key.origin_key.as_deref(),
+      key.credentials_partition,
+    )? {
+      if res.bytes.len() > max_bytes {
+        res.bytes.truncate(max_bytes);
+      }
+      super::record_cache_fresh_hit();
+      super::record_resource_cache_bytes(res.bytes.len());
+      super::reserve_policy_bytes(&self.policy, &res)?;
+      return Ok(res);
+    }
+
+    let mut res = self
+      .memory
+      .inner
+      .fetch_range_with_request(req, range, max_bytes)?;
+    // Do not trust downstream implementations to always respect `max_bytes`.
+    if max_bytes == 0 {
+      res.bytes.clear();
+    } else if res.bytes.len() > max_bytes {
+      res.bytes.truncate(max_bytes);
+    }
+    super::reserve_policy_bytes(&self.policy, &res)?;
+    Ok(res)
   }
 
   fn read_cache_artifact(
@@ -9150,6 +9654,115 @@ mod tests {
       fetcher.calls().len(),
       1,
       "fresh disk entries should be served without revalidation"
+    );
+  }
+
+  #[test]
+  fn disk_caching_fetcher_fetch_range_reads_from_disk_without_network() {
+    #[derive(Clone)]
+    struct SeedFetcher;
+
+    impl ResourceFetcher for SeedFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        let mut res = FetchedResource::new(b"abcdefghij".to_vec(), Some("application/octet-stream".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        Ok(res)
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let url = "https://example.com/range.bin";
+
+    {
+      let disk = DiskCachingFetcher::new(SeedFetcher, tmp.path());
+      let fetched = disk.fetch(url).expect("initial fetch");
+      assert_eq!(fetched.bytes, b"abcdefghij");
+    }
+
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let req = FetchRequest::new(url, FetchDestination::Other);
+    let fetched = disk
+      .fetch_range_with_request(req, 3..=6, 4)
+      .expect("range fetch");
+    assert_eq!(fetched.bytes, b"defg");
+  }
+
+  #[test]
+  fn disk_caching_fetcher_fetch_range_does_not_persist_partial_network_responses() {
+    #[derive(Clone)]
+    struct RangeFetcher {
+      count: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for RangeFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("unexpected fetch() call");
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        let start = *range.start();
+        let end = *range.end();
+        let mut res = FetchedResource::new(
+          format!("range:{start}-{end}").into_bytes(),
+          Some("application/octet-stream".to_string()),
+        );
+        res.status = Some(206);
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case("origin")
+          || header_name.eq_ignore_ascii_case("accept-encoding")
+          || header_name.eq_ignore_ascii_case("accept-language")
+          || header_name.eq_ignore_ascii_case("user-agent")
+          || header_name.eq_ignore_ascii_case("referer")
+        {
+          return Some(String::new());
+        }
+        None
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let url = "https://example.com/range-partial.bin";
+    let count = Arc::new(AtomicUsize::new(0));
+    let req = FetchRequest::new(url, FetchDestination::Other);
+
+    {
+      let disk = DiskCachingFetcher::new(
+        RangeFetcher {
+          count: Arc::clone(&count),
+        },
+        tmp.path(),
+      );
+      let first = disk
+        .fetch_range_with_request(req, 0..=3, 64)
+        .expect("first range");
+      assert_eq!(first.bytes, b"range:0-3");
+    }
+
+    let disk = DiskCachingFetcher::new(
+      RangeFetcher {
+        count: Arc::clone(&count),
+      },
+      tmp.path(),
+    );
+    let second = disk
+      .fetch_range_with_request(req, 0..=3, 64)
+      .expect("second range");
+    assert_eq!(second.bytes, b"range:0-3");
+    assert_eq!(
+      count.load(Ordering::SeqCst),
+      2,
+      "range responses must not be written to disk cache"
     );
   }
 

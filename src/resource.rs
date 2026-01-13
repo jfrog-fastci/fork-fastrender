@@ -4446,6 +4446,15 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
     (**self).fetch_partial_with_request(req, max_bytes)
   }
 
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    (**self).fetch_range_with_request(req, range, max_bytes)
+  }
+
   fn fetch_with_validation(
     &self,
     url: &str,
