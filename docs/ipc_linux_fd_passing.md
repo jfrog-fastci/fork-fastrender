@@ -139,6 +139,7 @@ When parsing `SCM_RIGHTS`:
 - Enforce a strict **maximum expected FD count** (per-message).
 - If more FDs are received than expected, **close the extras immediately** and treat the message as invalid (or at minimum treat it as “unexpected/ignore”).
 - Reject malformed control messages (e.g. `cmsg_len` that is not a multiple of `sizeof(int)` for `SCM_RIGHTS`).
+- On any validation/protocol failure *after receiving FDs*, **close all received FDs** before returning an error (avoid FD leaks in the browser).
 
 Even though the kernel enforces a hard ceiling (`SCM_MAX_FD`, currently 253), that is far larger than any sane protocol message. “Accepting whatever count arrives” is an easy DoS vector.
 
@@ -156,6 +157,9 @@ Before mapping or otherwise using a received FD:
   - Never `mmap()` “whatever size the sender picked” without bounds.
 
 Only after this validation should you call `mmap()`.
+
+When the buffer is intended to be read-only, map with `PROT_READ` (not `PROT_WRITE`), and if you
+require immutability, also require `F_SEAL_WRITE` (see below).
 
 References:
 - `fstat(2)`: https://man7.org/linux/man-pages/man2/fstat.2.html

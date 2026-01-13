@@ -49,10 +49,19 @@ STRACE_FLAGS="-ttt" bash scripts/trace_renderer_syscalls.sh
 `strace` outputs syscall **names** (e.g. `openat`, `futex`, `clock_gettime`). The seccomp filter
 usually needs syscall **numbers**, but in Rust you typically express them as `libc::SYS_*` constants.
 
+### IPC note: `SCM_RIGHTS` needs `sendmsg`/`recvmsg`
+
+If the renderer uses UNIX-domain sockets with FD passing (`SCM_RIGHTS`), expect to see `sendmsg` and
+`recvmsg` in the post-sandbox syscall set. (FD passing is per-message and uses `sendmsg(2)` /
+`recvmsg(2)`.)
+
+See [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md) for the IPC-side checklist and
+footguns.
+
 Workflow:
 1. Run the trace script to get a syscall set.
 2. Locate the renderer’s seccomp filter / allowlist in the codebase:
-   - `rg "SECCOMP_RET_ALLOW" -n src`
+    - `rg "SECCOMP_RET_ALLOW" -n src`
    - `rg "ALLOWED_SYSCALLS" -n src`
 3. For each syscall in `target/seccomp/renderer_syscalls.txt`:
    - If it’s required **after the sandbox is installed**, add it to the allowlist (prefer using
