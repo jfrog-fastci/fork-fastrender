@@ -15980,47 +15980,98 @@ pub fn string_prototype_replace_all(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
+  // 1. Let O be ? RequireObjectCoercible(this value).
+  //
+  // Important: do *not* call `ToString(O)` yet. `searchValue` (flags / @@replace) is observable
+  // before `ToString(this)` per ECMA-262 and test262.
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  scope.push_root(o)?;
 
   let search_value = args.get(0).copied().unwrap_or(Value::Undefined);
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[search_value, replace_value])?;
 
-  if let Value::Object(obj) = search_value {
-    if scope.heap().is_regexp_object(obj) {
-      let flags = scope.heap().regexp_flags(obj)?;
-      if !flags.global {
+  // 2. If searchValue is neither undefined nor null, then:
+  if !matches!(search_value, Value::Undefined | Value::Null) {
+    // 2.a. Let isRegExp be ? IsRegExp(searchValue).
+    let is_regexp = crate::spec_ops::is_regexp_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      search_value,
+    )?;
+
+    // 2.b. If isRegExp is true, validate `flags` is object-coercible and contains `"g"`.
+    if is_regexp {
+      let Value::Object(search_obj) = search_value else {
+        return Err(VmError::InvariantViolation(
+          "IsRegExp returned true for a non-object value",
+        ));
+      };
+
+      // `flags = ? Get(searchValue, "flags")`.
+      let flags_key = string_key(&mut scope, "flags")?;
+      let flags_val = scope.get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        search_obj,
+        flags_key,
+        Value::Object(search_obj),
+      )?;
+
+      // `RequireObjectCoercible(flags)`.
+      let flags_val = crate::spec_ops::require_object_coercible(flags_val)?;
+
+      // `flagsStr = ? ToString(flags)`.
+      let flags_s = scope.to_string(vm, host, hooks, flags_val)?;
+      scope.push_root(Value::String(flags_s))?;
+
+      // If flagsStr does not contain "g", throw.
+      let mut has_g = false;
+      let units = scope.heap().get_string(flags_s)?.as_code_units();
+      for (i, &u) in units.iter().enumerate() {
+        if i % 256 == 0 {
+          vm.tick()?;
+        }
+        if u == b'g' as u16 {
+          has_g = true;
+          break;
+        }
+      }
+      if !has_g {
         return Err(VmError::TypeError(
           "String.prototype.replaceAll called with a non-global RegExp argument",
         ));
       }
     }
-  }
 
-  if !matches!(search_value, Value::Undefined | Value::Null) {
-    // Per spec, primitives must skip the `GetMethod(searchValue, @@replace)` path (avoid boxing and
-    // consulting `Boolean/Number/String.prototype[Symbol.replace]`).
-    if let Value::Object(_) = search_value {
-      let method = crate::spec_ops::get_method_with_host_and_hooks(
-        vm,
-        &mut scope,
+    // 2.c. Let replacer be ? GetMethod(searchValue, @@replace).
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      search_value,
+      PropertyKey::from_symbol(intr.well_known_symbols().replace),
+    )?;
+    if let Some(method) = method {
+      // 2.d. Return ? Call(replacer, searchValue, « O, replaceValue »).
+      return vm.call_with_host_and_hooks(
         host,
+        &mut scope,
         hooks,
+        method,
         search_value,
-        PropertyKey::from_symbol(intr.well_known_symbols().replace),
-      )?;
-      if let Some(method) = method {
-        return vm.call_with_host_and_hooks(
-          host,
-          &mut scope,
-          hooks,
-          method,
-          search_value,
-          &[Value::String(s), replace_value],
-        );
-      }
+        &[o, replace_value],
+      );
     }
   }
+
+  // 3. Let string be ? ToString(O).
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
 
   let search_s = scope.to_string(vm, host, hooks, search_value)?;
   scope.push_root(Value::String(search_s))?;
@@ -24391,6 +24442,71 @@ mod proxy_tests {
         r.revoke();
         let threw = false;
         try { Reflect.ownKeys(r.proxy); } catch (e) { threw = true; }
+        threw
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod string_replace_all_tests {
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+
+  fn new_runtime() -> JsRuntime {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    JsRuntime::new(vm, heap).unwrap()
+  }
+
+  #[test]
+  fn replace_all_calls_symbol_replace_before_tostring() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const log = [];
+        const o = {
+          toString() {
+            log.push("this");
+            throw new Error("ToString(this) should not be called before @@replace");
+          }
+        };
+        const replaceValue = {
+          toString() {
+            log.push("replace");
+            throw new Error("ToString(replaceValue) should not be called before @@replace");
+          }
+        };
+        const searchValue = {
+          [Symbol.replace](str, repl) {
+            log.push("@@replace");
+            return "ok";
+          }
+        };
+        const result = String.prototype.replaceAll.call(o, searchValue, replaceValue);
+        result === "ok" && log.join(",") === "@@replace"
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn replace_all_non_global_regexp_throws_before_tostring() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        let threw = false;
+        try {
+          String.prototype.replaceAll.call(
+            { toString() { throw "thisToString"; } },
+            /a/,
+            { toString() { throw "replaceToString"; } }
+          );
+        } catch (e) {
+          threw = e instanceof TypeError;
+        }
         threw
       "#,
     )?;

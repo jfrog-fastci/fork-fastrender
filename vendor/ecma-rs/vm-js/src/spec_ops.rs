@@ -799,6 +799,52 @@ pub fn require_object_coercible(value: Value) -> Result<Value, VmError> {
   }
 }
 
+/// `IsRegExp(argument)` (ECMA-262).
+///
+/// Spec: <https://tc39.es/ecma262/#sec-isregexp>
+///
+/// This operation is observable for Proxy objects and can invoke user JS via:
+/// - `Get(argument, @@match)` (accessors / Proxy traps)
+///
+/// Important: Per spec, primitive values are **not** boxed during `IsRegExp`. This avoids observable
+/// prototype lookups like `Boolean.prototype[Symbol.match]` for primitive `argument`s.
+pub fn is_regexp_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<bool, VmError> {
+  // 1. If Type(argument) is not Object, return false.
+  let Value::Object(obj) = value else {
+    return Ok(false);
+  };
+
+  // Root `obj` across `Get` which can allocate and/or invoke user JS.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let sym = intr.well_known_symbols().match_;
+  scope.push_root(Value::Symbol(sym))?;
+  let key = PropertyKey::from_symbol(sym);
+
+  // 2. Let matcher be ? Get(argument, @@match).
+  let matcher = internal_get_with_host_and_hooks(vm, &mut scope, host, hooks, obj, key, Value::Object(obj))?;
+  scope.push_root(matcher)?;
+
+  // 3. If matcher is not undefined, return ToBoolean(matcher).
+  if !matches!(matcher, Value::Undefined) {
+    return scope.heap().to_boolean(matcher);
+  }
+
+  // 4. If argument has a [[RegExpMatcher]] internal slot, return true.
+  // 5. Return false.
+  Ok(scope.heap().is_regexp_object(obj))
+}
+
 fn get_internal_data_property(
   scope: &mut Scope<'_>,
   obj: GcObject,

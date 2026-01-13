@@ -1244,28 +1244,23 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-flags-no-g-throws.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-flags-null-undefined-throws.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-flags-toString-abrupt.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-get-flags-abrupt.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-isRegExp-abrupt.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement full IsRegExp/flags semantics (throws the wrong error types)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-RegExp-call-fn.js"
@@ -1279,23 +1274,19 @@ reason = "vm-js does not yet implement class inheritance."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-before-tostring.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet follow spec call order (incorrect ToString side effects)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-call-abrupt.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet follow spec call order (incorrect abrupt completion propagation)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-call.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet pass the correct this/arguments to @@replace."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-replacer-method-abrupt.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet follow spec call order (incorrect abrupt completion propagation)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-tostring-regexp.js"
@@ -1304,13 +1295,11 @@ reason = "vm-js: String.prototype.replaceAll does not yet fully implement the Re
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/this-is-null-throws.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement RequireObjectCoercible(this value)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/this-is-undefined-throws.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll does not yet implement RequireObjectCoercible(this value)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/split/argument-is-new-reg-exp-and-instance-is-string-hello.js"
