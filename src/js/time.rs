@@ -799,6 +799,43 @@ fn performance_entry_type_from_units(units: &[u16]) -> Option<PerformanceEntryTy
   }
 }
 
+// `navigation` ASCII in UTF-16.
+const PERFORMANCE_ENTRY_TYPE_NAVIGATION: &[u16] = &[
+  0x006E, 0x0061, 0x0076, 0x0069, 0x0067, 0x0061, 0x0074, 0x0069, 0x006F, 0x006E,
+];
+
+// Commonly probed `PerformanceNavigationTiming` fields (ASCII in UTF-16).
+const TIMING_FETCH_START: &[u16] = &[
+  0x0066, 0x0065, 0x0074, 0x0063, 0x0068, 0x0053, 0x0074, 0x0061, 0x0072, 0x0074,
+];
+const TIMING_REQUEST_START: &[u16] = &[
+  0x0072, 0x0065, 0x0071, 0x0075, 0x0065, 0x0073, 0x0074, 0x0053, 0x0074, 0x0061, 0x0072,
+  0x0074,
+];
+const TIMING_RESPONSE_START: &[u16] = &[
+  0x0072, 0x0065, 0x0073, 0x0070, 0x006F, 0x006E, 0x0073, 0x0065, 0x0053, 0x0074, 0x0061,
+  0x0072, 0x0074,
+];
+const TIMING_RESPONSE_END: &[u16] = &[
+  0x0072, 0x0065, 0x0073, 0x0070, 0x006F, 0x006E, 0x0073, 0x0065, 0x0045, 0x006E, 0x0064,
+];
+const TIMING_DOM_INTERACTIVE: &[u16] = &[
+  0x0064, 0x006F, 0x006D, 0x0049, 0x006E, 0x0074, 0x0065, 0x0072, 0x0061, 0x0063, 0x0074,
+  0x0069, 0x0076, 0x0065,
+];
+const TIMING_DOM_CONTENT_LOADED_EVENT_START: &[u16] = &[
+  0x0064, 0x006F, 0x006D, 0x0043, 0x006F, 0x006E, 0x0074, 0x0065, 0x006E, 0x0074, 0x004C,
+  0x006F, 0x0061, 0x0064, 0x0065, 0x0064, 0x0045, 0x0076, 0x0065, 0x006E, 0x0074, 0x0053,
+  0x0074, 0x0061, 0x0072, 0x0074,
+];
+const TIMING_DOM_COMPLETE: &[u16] = &[
+  0x0064, 0x006F, 0x006D, 0x0043, 0x006F, 0x006D, 0x0070, 0x006C, 0x0065, 0x0074, 0x0065,
+];
+const TIMING_LOAD_EVENT_END: &[u16] = &[
+  0x006C, 0x006F, 0x0061, 0x0064, 0x0045, 0x0076, 0x0065, 0x006E, 0x0074, 0x0045, 0x006E,
+  0x0064,
+];
+
 fn alloc_bounded_string_units(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -868,6 +905,19 @@ fn timing_offset_from_performance_timing(
   Ok(Some(if offset < 0.0 { 0.0 } else { offset }))
 }
 
+fn timing_offset_or_zero(
+  scope: &mut Scope<'_>,
+  performance_obj: Option<GcObject>,
+  field_units: &[u16],
+) -> Result<f64, VmError> {
+  Ok(
+    match performance_obj {
+      Some(obj) => timing_offset_from_performance_timing(scope, obj, field_units)?.unwrap_or(0.0),
+      None => 0.0,
+    },
+  )
+}
+
 fn perf_entry_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: true,
@@ -877,6 +927,170 @@ fn perf_entry_desc(value: Value) -> PropertyDescriptor {
       writable: true,
     },
   }
+}
+
+fn alloc_performance_navigation_timing_entry(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  performance_obj: Option<GcObject>,
+) -> Result<GcObject, VmError> {
+  let entry_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(entry_obj))?;
+
+  let entry_type_key_s = scope.alloc_string("entryType")?;
+  scope.push_root(Value::String(entry_type_key_s))?;
+  let entry_type_key = PropertyKey::from_string(entry_type_key_s);
+
+  let name_key_s = scope.alloc_string("name")?;
+  scope.push_root(Value::String(name_key_s))?;
+  let name_key = PropertyKey::from_string(name_key_s);
+
+  let start_time_key_s = scope.alloc_string("startTime")?;
+  scope.push_root(Value::String(start_time_key_s))?;
+  let start_time_key = PropertyKey::from_string(start_time_key_s);
+
+  let duration_key_s = scope.alloc_string("duration")?;
+  scope.push_root(Value::String(duration_key_s))?;
+  let duration_key = PropertyKey::from_string(duration_key_s);
+
+  let type_key_s = scope.alloc_string("type")?;
+  scope.push_root(Value::String(type_key_s))?;
+  let type_key = PropertyKey::from_string(type_key_s);
+
+  let dom_interactive_key_s = scope.alloc_string("domInteractive")?;
+  scope.push_root(Value::String(dom_interactive_key_s))?;
+  let dom_interactive_key = PropertyKey::from_string(dom_interactive_key_s);
+
+  let dom_content_loaded_event_start_key_s = scope.alloc_string("domContentLoadedEventStart")?;
+  scope.push_root(Value::String(dom_content_loaded_event_start_key_s))?;
+  let dom_content_loaded_event_start_key =
+    PropertyKey::from_string(dom_content_loaded_event_start_key_s);
+
+  let dom_complete_key_s = scope.alloc_string("domComplete")?;
+  scope.push_root(Value::String(dom_complete_key_s))?;
+  let dom_complete_key = PropertyKey::from_string(dom_complete_key_s);
+
+  let load_event_end_key_s = scope.alloc_string("loadEventEnd")?;
+  scope.push_root(Value::String(load_event_end_key_s))?;
+  let load_event_end_key = PropertyKey::from_string(load_event_end_key_s);
+
+  let response_start_key_s = scope.alloc_string("responseStart")?;
+  scope.push_root(Value::String(response_start_key_s))?;
+  let response_start_key = PropertyKey::from_string(response_start_key_s);
+
+  let response_end_key_s = scope.alloc_string("responseEnd")?;
+  scope.push_root(Value::String(response_end_key_s))?;
+  let response_end_key = PropertyKey::from_string(response_end_key_s);
+
+  let fetch_start_key_s = scope.alloc_string("fetchStart")?;
+  scope.push_root(Value::String(fetch_start_key_s))?;
+  let fetch_start_key = PropertyKey::from_string(fetch_start_key_s);
+
+  let request_start_key_s = scope.alloc_string("requestStart")?;
+  scope.push_root(Value::String(request_start_key_s))?;
+  let request_start_key = PropertyKey::from_string(request_start_key_s);
+
+  let entry_type_s = scope.alloc_string("navigation")?;
+  scope.push_root(Value::String(entry_type_s))?;
+  let name_s = scope.alloc_string("")?;
+  scope.push_root(Value::String(name_s))?;
+  let nav_type_s = scope.alloc_string("navigate")?;
+  scope.push_root(Value::String(nav_type_s))?;
+
+  let dom_interactive = timing_offset_or_zero(scope, performance_obj, TIMING_DOM_INTERACTIVE)?;
+  let dom_content_loaded_event_start =
+    timing_offset_or_zero(scope, performance_obj, TIMING_DOM_CONTENT_LOADED_EVENT_START)?;
+  let dom_complete = timing_offset_or_zero(scope, performance_obj, TIMING_DOM_COMPLETE)?;
+  let load_event_end = timing_offset_or_zero(scope, performance_obj, TIMING_LOAD_EVENT_END)?;
+  let response_start = timing_offset_or_zero(scope, performance_obj, TIMING_RESPONSE_START)?;
+  let response_end = timing_offset_or_zero(scope, performance_obj, TIMING_RESPONSE_END)?;
+  let fetch_start = timing_offset_or_zero(scope, performance_obj, TIMING_FETCH_START)?;
+  let request_start = timing_offset_or_zero(scope, performance_obj, TIMING_REQUEST_START)?;
+
+  // Use `loadEventEnd` as a coarse duration since `startTime` is always 0 for navigation entries.
+  let duration = if load_event_end.is_finite() && load_event_end >= 0.0 {
+    load_event_end
+  } else {
+    0.0
+  };
+
+  scope.define_property(
+    entry_obj,
+    entry_type_key,
+    perf_entry_desc(Value::String(entry_type_s)),
+  )?;
+  scope.define_property(entry_obj, name_key, perf_entry_desc(Value::String(name_s)))?;
+  scope.define_property(entry_obj, start_time_key, perf_entry_desc(Value::Number(0.0)))?;
+  scope.define_property(entry_obj, duration_key, perf_entry_desc(Value::Number(duration)))?;
+  scope.define_property(entry_obj, type_key, perf_entry_desc(Value::String(nav_type_s)))?;
+
+  scope.define_property(
+    entry_obj,
+    dom_interactive_key,
+    perf_entry_desc(Value::Number(dom_interactive)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    dom_content_loaded_event_start_key,
+    perf_entry_desc(Value::Number(dom_content_loaded_event_start)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    dom_complete_key,
+    perf_entry_desc(Value::Number(dom_complete)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    load_event_end_key,
+    perf_entry_desc(Value::Number(load_event_end)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    response_start_key,
+    perf_entry_desc(Value::Number(response_start)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    response_end_key,
+    perf_entry_desc(Value::Number(response_end)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    fetch_start_key,
+    perf_entry_desc(Value::Number(fetch_start)),
+  )?;
+  scope.define_property(
+    entry_obj,
+    request_start_key,
+    perf_entry_desc(Value::Number(request_start)),
+  )?;
+
+  Ok(entry_obj)
+}
+
+fn alloc_performance_navigation_entries_array(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  performance_obj: Option<GcObject>,
+) -> Result<Value, VmError> {
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let arr = scope.alloc_array(1)?;
+  scope.push_root(Value::Object(arr))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(arr, Some(intrinsics.array_prototype()))?;
+
+  let entry_obj = alloc_performance_navigation_timing_entry(vm, scope, performance_obj)?;
+
+  let idx_s = scope.alloc_u32_index_string(0)?;
+  scope.push_root(Value::String(idx_s))?;
+  let idx_key = PropertyKey::from_string(idx_s);
+  scope.define_property(arr, idx_key, perf_entry_desc(Value::Object(entry_obj)))?;
+
+  Ok(Value::Object(arr))
 }
 
 fn alloc_performance_entries_array(
@@ -1158,9 +1372,14 @@ fn performance_get_entries_native(
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  let perf_obj = match this {
+    Value::Object(o) => Some(o),
+    _ => None,
+  };
+
   let heap_key = scope.heap() as *const Heap as usize;
   let map = time_contexts()
     .lock()
@@ -1168,7 +1387,56 @@ fn performance_get_entries_native(
   let ctx = map.get(&heap_key).ok_or(VmError::Unimplemented(
     "time bindings not installed for this heap",
   ))?;
-  alloc_performance_entries_array(vm, scope, &ctx.performance_entries, None, None)
+
+  // Include a minimal `PerformanceNavigationTiming` entry (navigation) alongside user timing
+  // entries for better compatibility with real-world analytics.
+  let user_entries = alloc_performance_entries_array(vm, scope, &ctx.performance_entries, None, None)?;
+  let Value::Object(user_arr) = user_entries else {
+    return Err(VmError::Unimplemented("expected performance entries array"));
+  };
+  scope.push_root(Value::Object(user_arr))?;
+
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let out_len = ctx
+    .performance_entries
+    .len()
+    .saturating_add(1)
+    .min(u32::MAX as usize);
+
+  let out_arr = scope.alloc_array(out_len)?;
+  scope.push_root(Value::Object(out_arr))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out_arr, Some(intrinsics.array_prototype()))?;
+
+  let nav_entry = alloc_performance_navigation_timing_entry(vm, scope, perf_obj)?;
+  let idx0_s = scope.alloc_u32_index_string(0)?;
+  scope.push_root(Value::String(idx0_s))?;
+  let idx0_key = PropertyKey::from_string(idx0_s);
+  scope.define_property(
+    out_arr,
+    idx0_key,
+    perf_entry_desc(Value::Object(nav_entry)),
+  )?;
+
+  for i in 0..(out_len.saturating_sub(1)) {
+    let from_idx_s = scope.alloc_u32_index_string(i as u32)?;
+    scope.push_root(Value::String(from_idx_s))?;
+    let from_idx_key = PropertyKey::from_string(from_idx_s);
+    let v = scope
+      .heap()
+      .object_get_own_data_property_value(user_arr, &from_idx_key)?
+      .unwrap_or(Value::Undefined);
+
+    let to_idx_s = scope.alloc_u32_index_string((i + 1) as u32)?;
+    scope.push_root(Value::String(to_idx_s))?;
+    let to_idx_key = PropertyKey::from_string(to_idx_s);
+    scope.define_property(out_arr, to_idx_key, perf_entry_desc(v))?;
+  }
+
+  Ok(Value::Object(out_arr))
 }
 
 fn performance_get_entries_by_type_native(
@@ -1177,13 +1445,21 @@ fn performance_get_entries_by_type_native(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let perf_obj = match this {
+    Value::Object(o) => Some(o),
+    _ => None,
+  };
+
   let type_value = args.first().copied().unwrap_or(Value::Undefined);
   let type_s = scope.to_string(vm, host, hooks, type_value)?;
   scope.push_root(Value::String(type_s))?;
   let units = scope.heap().get_string(type_s)?.as_code_units();
+  if units == PERFORMANCE_ENTRY_TYPE_NAVIGATION {
+    return alloc_performance_navigation_entries_array(vm, scope, perf_obj);
+  }
   let Some(type_filter) = performance_entry_type_from_units(units) else {
     // Unknown entry types should return an empty array (not throw).
     return alloc_performance_entries_array(vm, scope, &[], None, None);
@@ -1910,6 +2186,143 @@ mod tests {
     assert!(
       heap.object_is_array(nav_arr).expect("object_is_array"),
       "expected navigation entries to be an array"
+    );
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_navigation_entries_are_usable() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings =
+      install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, WebTime::default())
+        .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    let get_entries_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+
+    let nav_entries = {
+      let mut scope = heap.scope();
+      let nav_str = Value::String(scope.alloc_string("navigation").expect("alloc navigation"));
+      drop(scope);
+      call(
+        &mut vm,
+        &mut heap,
+        get_entries_by_type,
+        Value::Object(performance_obj),
+        &[nav_str],
+      )
+    };
+
+    // Assert `Array.isArray(...)` and `length === 1`.
+    let array = get_global_property(&mut heap, &realm, "Array");
+    let array_obj = match array {
+      Value::Object(o) => o,
+      _ => panic!("Array should be an object"),
+    };
+    let is_array = get_object_property(&mut heap, array_obj, "isArray");
+    let is_arr = call(
+      &mut vm,
+      &mut heap,
+      is_array,
+      Value::Object(array_obj),
+      &[nav_entries],
+    );
+    assert_eq!(is_arr, Value::Bool(true));
+
+    let Value::Object(nav_arr) = nav_entries else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, nav_arr), 1);
+
+    let entry0 = get_array_elem(&mut heap, nav_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected navigation entry object");
+    };
+
+    let entry_type = get_object_property(&mut heap, entry0_obj, "entryType");
+    assert_eq!(string_value_to_utf8_lossy(&heap, entry_type), "navigation");
+    let nav_type = get_object_property(&mut heap, entry0_obj, "type");
+    assert_eq!(string_value_to_utf8_lossy(&heap, nav_type), "navigate");
+
+    for field in [
+      "domInteractive",
+      "domContentLoadedEventStart",
+      "domComplete",
+      "loadEventEnd",
+      "responseStart",
+      "responseEnd",
+      "fetchStart",
+      "requestStart",
+    ] {
+      let v = get_object_property(&mut heap, entry0_obj, field);
+      let Value::Number(n) = v else {
+        panic!("expected {field} to be a number");
+      };
+      assert!(n.is_finite(), "expected {field} to be finite");
+    }
+
+    // Overwrite `performance.timing.domInteractive` and ensure the navigation entry reflects the
+    // offset relative to `navigationStart`.
+    let timing = get_object_property(&mut heap, performance_obj, "timing");
+    let timing_obj = match timing {
+      Value::Object(o) => o,
+      _ => panic!("performance.timing should be an object"),
+    };
+    let nav_start = get_object_property(&mut heap, timing_obj, "navigationStart");
+    let Value::Number(nav_start_ms) = nav_start else {
+      panic!("navigationStart should be a number");
+    };
+
+    {
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(timing_obj)).unwrap();
+      let key_s = scope.alloc_string("domInteractive").expect("alloc domInteractive");
+      scope.push_root(Value::String(key_s)).unwrap();
+      let key = PropertyKey::from_string(key_s);
+      scope
+        .define_property(timing_obj, key, readonly_num_desc(nav_start_ms + 123.0))
+        .expect("define domInteractive");
+    }
+
+    let nav_entries2 = {
+      let mut scope = heap.scope();
+      let nav_str = Value::String(scope.alloc_string("navigation").expect("alloc navigation"));
+      drop(scope);
+      call(
+        &mut vm,
+        &mut heap,
+        get_entries_by_type,
+        Value::Object(performance_obj),
+        &[nav_str],
+      )
+    };
+    let Value::Object(nav_arr2) = nav_entries2 else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, nav_arr2), 1);
+    let entry0 = get_array_elem(&mut heap, nav_arr2, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected navigation entry object");
+    };
+    let dom_interactive = get_object_property(&mut heap, entry0_obj, "domInteractive");
+    let Value::Number(dom_interactive) = dom_interactive else {
+      panic!("expected domInteractive to be number");
+    };
+    assert!(
+      (dom_interactive - 123.0).abs() < 1e-9,
+      "unexpected domInteractive offset {dom_interactive}"
     );
 
     realm.teardown(&mut heap);
