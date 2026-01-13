@@ -435,6 +435,11 @@ pub struct FrameNode {
   pub url: Option<String>,
   pub origin: Option<DocumentOrigin>,
   pub csp: Option<CspPolicy>,
+  /// Effective base URL for resolving relative URLs in this document.
+  ///
+  /// This should reflect the document's `<base href>` when present; otherwise it defaults to the
+  /// committed document URL.
+  pub base_url: Option<String>,
   /// Mirror of the in-process `ResourceAccessPolicy::allow_file_from_http` knob for document loads.
   ///
   /// When `false` (default), `file://` navigations are blocked for HTTP(S) embedding documents.
@@ -452,6 +457,7 @@ impl FrameNode {
       url: None,
       origin: None,
       csp: None,
+      base_url: None,
       allow_file_from_http: false,
       block_mixed_content: false,
     }
@@ -460,8 +466,14 @@ impl FrameNode {
   /// Update the frame with the committed URL and raw CSP header/meta values.
   pub fn navigation_committed(&mut self, url: String, csp_values: Vec<String>) {
     self.origin = DocumentOrigin::from_url_str(&url);
+    self.base_url = Some(url.clone());
     self.url = Some(url);
     self.csp = CspPolicy::from_values(csp_values.iter().map(|s| s.as_str()));
+  }
+
+  /// Override the base URL used for resolving relative iframe URLs.
+  pub fn set_base_url(&mut self, base_url: String) {
+    self.base_url = Some(base_url);
   }
 
   /// Configure the subset of `ResourceAccessPolicy` needed to enforce embedder restrictions for
@@ -481,7 +493,7 @@ impl FrameNode {
   pub fn check_document_policy(&self, candidate: &str) -> Result<(), String> {
     check_document_policy(
       self.origin.as_ref(),
-      self.url.as_deref(),
+      self.base_url.as_deref().or(self.url.as_deref()),
       candidate,
       self.allow_file_from_http,
       self.block_mixed_content,
@@ -536,7 +548,7 @@ impl FrameNode {
   pub fn check_frame_src(&self, candidate: &str) -> Result<Url, String> {
     check_frame_src(
       self.csp.as_ref(),
-      self.url.as_deref(),
+      self.base_url.as_deref().or(self.url.as_deref()),
       self.origin.as_ref(),
       candidate,
     )
@@ -555,7 +567,7 @@ impl FrameNode {
   ) -> Result<Url, String> {
     check_frame_src_with_final(
       self.csp.as_ref(),
-      self.url.as_deref(),
+      self.base_url.as_deref().or(self.url.as_deref()),
       self.origin.as_ref(),
       requested_url,
       final_url,
@@ -961,5 +973,20 @@ mod tests {
       .check_iframe_navigation("http://example.com/insecure")
       .expect_err("expected mixed-content policy to win over CSP allowlist");
     assert_eq!(err, "Blocked mixed HTTP content from HTTPS document");
+  }
+
+  #[test]
+  fn iframe_src_resolution_uses_base_url_when_provided() {
+    let mut frame = FrameNode::new(FrameId(1));
+    frame.navigation_committed(
+      "https://example.com/page.html".to_string(),
+      vec!["frame-src https://allowed.example".to_string()],
+    );
+    frame.set_base_url("https://allowed.example/base/".to_string());
+
+    let resolved = frame
+      .check_frame_src("child")
+      .expect("expected base URL to influence iframe URL resolution");
+    assert_eq!(resolved.as_str(), "https://allowed.example/base/child");
   }
 }
