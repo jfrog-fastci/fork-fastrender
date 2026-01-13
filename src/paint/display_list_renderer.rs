@@ -12249,7 +12249,7 @@ impl DisplayListRenderer {
         paint_order: item.paint_order,
       })
       .collect();
-    let paint_order = depth_sort::depth_sort(&sort_items);
+    let paint_order = depth_sort::depth_sort_checked(&sort_items)?;
 
     let mut plane_pixmaps = self
       .should_rasterize_preserve_3d_planes_parallel(&scene_items)

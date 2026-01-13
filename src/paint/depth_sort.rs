@@ -1,10 +1,13 @@
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::error::{RenderError, RenderStage};
 use crate::paint::display_list::Transform3D;
 use crate::paint::homography::Homography;
+use crate::render_control::{check_active, check_active_periodic};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
+const DEADLINE_STRIDE: usize = 256;
 const EPSILON: f32 = 1e-5;
 
 /// A single plane participating in preserve-3d depth sorting.
@@ -102,18 +105,21 @@ pub fn eval_plane_z(plane: Plane, x: f32, y: f32) -> Option<f32> {
 /// Compute back-to-front draw order for a list of planes.
 ///
 /// Returns indices into the input slice in the order they should be painted.
-pub fn depth_sort(items: &[SceneItem]) -> Vec<usize> {
+pub fn depth_sort_checked(items: &[SceneItem]) -> Result<Vec<usize>, RenderError> {
+  check_active(RenderStage::Paint)?;
   let projections: Vec<_> = items.iter().map(project_item).collect();
   let n = items.len();
 
   let mut edges = vec![Vec::new(); n];
   let mut indegree = vec![0usize; n];
+  let mut deadline_counter = 0usize;
 
   for i in 0..n {
     let Some(pi) = &projections[i] else {
       continue;
     };
     for j in (i + 1)..n {
+      check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
       let Some(pj) = &projections[j] else {
         continue;
       };
@@ -145,7 +151,21 @@ pub fn depth_sort(items: &[SceneItem]) -> Vec<usize> {
     }
   }
 
-  stable_topological_sort(items, &edges, &mut indegree)
+  Ok(stable_topological_sort(items, &edges, &mut indegree))
+}
+
+/// Compute back-to-front draw order for a list of planes.
+///
+/// Returns indices into the input slice in the order they should be painted.
+pub fn depth_sort(items: &[SceneItem]) -> Vec<usize> {
+  depth_sort_checked(items).unwrap_or_else(|_| {
+    // Prefer `depth_sort_checked` when rendering so deadline/cancellation errors
+    // can be propagated. This fallback exists for callers (notably tests) that
+    // only need a best-effort stable ordering.
+    let mut indices: Vec<usize> = (0..items.len()).collect();
+    indices.sort_by_key(|&idx| (items[idx].paint_order, idx));
+    indices
+  })
 }
 
 fn project_item(item: &SceneItem) -> Option<ProjectedQuad> {
