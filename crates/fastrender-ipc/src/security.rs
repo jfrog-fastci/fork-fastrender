@@ -1,4 +1,4 @@
-use crate::{FrameBuffer, FrameId, RendererId, RendererToBrowser, SubframeInfo};
+use crate::{DiscoveredSubframe, FrameBuffer, FrameId, RendererId, RendererToBrowser, SubframeInfo, SubframeToken};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +25,10 @@ pub enum FrameOwnershipViolation {
     parent_frame_id: FrameId,
     count: usize,
     max: usize,
+  },
+  DuplicateSubframeToken {
+    parent_frame_id: FrameId,
+    token: SubframeToken,
   },
   InvalidSubframe {
     parent_frame_id: FrameId,
@@ -182,7 +186,7 @@ impl BrowserIpcSecurityState {
       }
       RendererToBrowser::SubframesDiscovered {
         parent_frame_id,
-        subframes: _,
+        subframes,
       } => {
         if !self.check_frame(
           sender,
@@ -191,6 +195,12 @@ impl BrowserIpcSecurityState {
         ) {
           return;
         }
+        let _ = self.check_discovered_subframes(
+          sender,
+          parent_frame_id,
+          &subframes,
+          RendererToBrowserKind::SubframesDiscovered,
+        );
       }
       RendererToBrowser::NavigationCommitted { frame_id, .. } => {
         let _ = self.check_frame(sender, frame_id, RendererToBrowserKind::NavigationCommitted);
@@ -296,6 +306,46 @@ impl BrowserIpcSecurityState {
         return false;
       }
     }
+    true
+  }
+
+  fn check_discovered_subframes(
+    &mut self,
+    sender: RendererId,
+    parent_frame_id: FrameId,
+    subframes: &[DiscoveredSubframe],
+    message: RendererToBrowserKind,
+  ) -> bool {
+    if subframes.len() > crate::MAX_SUBFRAMES_PER_FRAME {
+      self.protocol_violation(
+        sender,
+        parent_frame_id,
+        message,
+        FrameOwnershipViolation::TooManySubframes {
+          parent_frame_id,
+          count: subframes.len(),
+          max: crate::MAX_SUBFRAMES_PER_FRAME,
+        },
+      );
+      return false;
+    }
+
+    let mut seen = HashSet::<SubframeToken>::new();
+    for subframe in subframes {
+      if !seen.insert(subframe.token) {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::DuplicateSubframeToken {
+            parent_frame_id,
+            token: subframe.token,
+          },
+        );
+        return false;
+      }
+    }
+
     true
   }
 
@@ -653,6 +703,98 @@ mod tests {
     assert!(
       browser.take_events().is_empty(),
       "expected no protocol events for valid SubframesDiscovered"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_with_too_many_entries_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    let template = crate::DiscoveredSubframe {
+      token: crate::SubframeToken(1),
+      navigation: crate::IframeNavigation::AboutBlank,
+      rect: crate::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+      },
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: crate::SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![template; crate::MAX_SUBFRAMES_PER_FRAME + 1],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::TooManySubframes { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected TooManySubframes protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_with_duplicate_token_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    let template = crate::DiscoveredSubframe {
+      token: crate::SubframeToken(1),
+      navigation: crate::IframeNavigation::AboutBlank,
+      rect: crate::Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1.0,
+        height: 1.0,
+      },
+      hit_testable: true,
+      referrer_policy: None,
+      sandbox_flags: crate::SandboxFlags::NONE,
+      opaque_origin: false,
+    };
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![template.clone(), template],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::DuplicateSubframeToken { .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected DuplicateSubframeToken protocol event (events={events:?})"
     );
   }
 
