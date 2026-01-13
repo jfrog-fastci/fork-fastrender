@@ -145,8 +145,10 @@ The Windows renderer sandbox is **defense-in-depth**, layered as:
 1. **AppContainer token** (preferred): no capabilities → blocks network + most filesystem/registry.
 2. **Job object limits**: lifetime + process-count (and optional memory ceiling, when enabled).
 3. **CreateProcess handle allowlist**: only explicitly-approved handles are inherited.
-4. **Process mitigation policies**: reduce kernel / Win32 API attack surface.
-5. **Fallback mode** if AppContainer cannot be used: restricted token + Low IL (weaker; see below).
+4. **Spawn-time environment sanitization**: avoid leaking secrets from the broker environment into the
+   untrusted renderer (and override `TEMP`/`TMP` to a sandbox-accessible temp directory).
+5. **Process mitigation policies**: reduce kernel / Win32 API attack surface.
+6. **Fallback mode** if AppContainer cannot be used: restricted token + Low IL (weaker; see below).
 
 ### Windows version / environment constraints
 
