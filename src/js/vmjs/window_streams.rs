@@ -679,14 +679,49 @@ fn readable_stream_ctor_construct(
       None => Value::Undefined,
     };
 
-    vm.call_with_host_and_hooks(
+    let start_result = vm.call_with_host_and_hooks(
       host,
       scope,
       hooks,
       start_fn,
       receiver,
       &[Value::Object(controller_obj)],
-    )?;
+    );
+    if let Err(err) = start_result {
+      // Per WHATWG Streams `SetUpReadableStreamDefaultController`, exceptions thrown by the
+      // `startAlgorithm` should error the stream, but not throw from the `ReadableStream`
+      // constructor.
+      let msg: String = match err {
+        VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
+          // Root the thrown value across allocations in `to_string`.
+          scope.push_root(reason)?;
+          match scope.heap_mut().to_string(reason) {
+            Ok(reason_string) => match scope.heap().get_string(reason_string) {
+              Ok(s) => s.to_utf8_lossy(),
+              Err(_) => "ReadableStream start threw".to_string(),
+            },
+            Err(_) => "ReadableStream start threw".to_string(),
+          }
+        }
+        VmError::TypeError(message) => message.to_string(),
+        VmError::NotCallable => "value is not callable".to_string(),
+        VmError::NotConstructable => "value is not a constructor".to_string(),
+        other => return Err(other),
+      };
+
+      let pending = error_readable_stream(vm, scope, callee, obj, msg)?;
+      if let Some(pending) = pending {
+        settle_pending_read(
+          vm,
+          scope,
+          host,
+          hooks,
+          pending.reader,
+          pending.roots,
+          pending.outcome,
+        )?;
+      }
+    }
   }
 
   Ok(Value::Object(obj))

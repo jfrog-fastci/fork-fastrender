@@ -33,6 +33,7 @@ mod js_window_realm;
 mod macos_relaxed_sandbox_write_denied;
 mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
+mod readable_stream_start_throw;
 mod replaced_element_max_width_toggle;
 mod readable_stream_desired_size;
 mod sandbox_spawn_handle_inheritance_windows;
