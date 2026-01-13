@@ -1709,6 +1709,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
       with_env_state_mut(env_id, |state| {
         if let Some(ws) = state.sockets.get_mut(&ws_id) {
           ws.ready_state = WS_CLOSED;
+          ws.buffered_amount = 0;
         }
         Ok(())
       })
@@ -1740,6 +1741,7 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
         with_env_state_mut(env_id, |state| {
           if let Some(ws) = state.sockets.get_mut(&ws_id) {
             ws.ready_state = WS_CLOSED;
+            ws.buffered_amount = 0;
           }
           Ok(())
         })
