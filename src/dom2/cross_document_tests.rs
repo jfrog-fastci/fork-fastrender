@@ -140,6 +140,60 @@ fn build_shadow_host_source_document() -> (Document, NodeId) {
 }
 
 #[test]
+fn adopt_node_from_moves_live_range_state_for_detached_subtree() -> Result<(), vm_js::VmError> {
+  use super::RangeId;
+  use vm_js::{Heap, HeapLimits, Value};
+
+  let mut heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024));
+  let mut scope = heap.scope();
+
+  let wrapper = scope.alloc_object()?;
+  let _root = scope.heap_mut().add_root(Value::Object(wrapper))?;
+
+  let mut src = Document::new(QuirksMode::NoQuirks);
+
+  // Build a detached subtree (not appended under the document root) so `adopt_node_from` does not
+  // trigger the DOM "live range pre-remove steps" via `remove_child`.
+  let detached_root = src.create_element("div", HTML_NAMESPACE);
+  let text = src.create_text("hi");
+  src.append_child(detached_root, text).unwrap();
+
+  // Register a live range (with a JS wrapper) whose boundary points are inside the detached subtree.
+  let range: RangeId = src.register_live_range(scope.heap(), wrapper);
+  src.range_set_start(range, text, 0).unwrap();
+  src.range_set_end(range, text, 2).unwrap();
+
+  let mut dst = Document::new(QuirksMode::NoQuirks);
+  let adopted = dst.adopt_node_from(&mut src, detached_root).unwrap();
+  let mapping: std::collections::HashMap<NodeId, NodeId> = adopted.mapping.into_iter().collect();
+  let new_text = *mapping
+    .get(&text)
+    .expect("expected mapping to include adopted text node");
+
+  // Detached-subtree adoption should migrate live range state to the destination document and
+  // rewrite boundary point containers to the cloned node ids.
+  let moved = src.move_live_ranges_to_after_node_id_remap(scope.heap(), &mut dst, &mapping);
+  assert_eq!(moved.len(), 1, "expected exactly one migrated live range");
+  let moved = &moved[0];
+
+  assert_eq!(moved.wrapper, wrapper);
+  assert_eq!(moved.old_id, range);
+  assert_eq!(dst.range_start_container(moved.new_id).unwrap(), new_text);
+  assert_eq!(dst.range_start_offset(moved.new_id).unwrap(), 0);
+  assert_eq!(dst.range_end_container(moved.new_id).unwrap(), new_text);
+  assert_eq!(dst.range_end_offset(moved.new_id).unwrap(), 2);
+
+  // The old range id is removed from the source document; wrapper host slots are updated by the
+  // embedding layer using the returned `MovedLiveRange` mapping.
+  assert!(matches!(
+    src.range_start_container(range),
+    Err(super::DomError::NotFoundError)
+  ));
+
+  Ok(())
+}
+
+#[test]
 fn clone_basic_element_and_text_subtree_across_documents() {
   let mut src = Document::new(QuirksMode::NoQuirks);
   let div = src.create_element("div", HTML_NAMESPACE);
