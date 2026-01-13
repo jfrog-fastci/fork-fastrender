@@ -118,6 +118,45 @@ fn grid_intrinsic_sizing_tree(item_count: usize, columns: usize) -> BoxTree {
   BoxTree::new(root)
 }
 
+fn grid_minmax_zero_fr_tree(item_count: usize, columns: usize) -> BoxTree {
+  // Approximate the common "Bootstrap-like" grid pattern:
+  // - definite container inline size, and
+  // - `minmax(0, 1fr)` tracks to avoid intrinsic min sizing.
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(960.0));
+  grid_style.grid_template_columns = vec![
+    GridTrack::MinMax(
+      Box::new(GridTrack::Length(Length::px(0.0))),
+      Box::new(GridTrack::Fr(1.0)),
+    );
+    columns.max(1)
+  ];
+  let grid_style = Arc::new(grid_style);
+  let block_style = Arc::new(ComputedStyle::default());
+  let inline_style = Arc::new(ComputedStyle::default());
+  let text_style = Arc::new(ComputedStyle::default());
+
+  let mut children = Vec::with_capacity(item_count);
+  for idx in 0..item_count {
+    let text = format!("Cell {}: {} {}", idx, GRID_TEXT, GRID_TEXT);
+    let text_node = BoxNode::new_text(text_style.clone(), text);
+    let inline = BoxNode::new_block(
+      inline_style.clone(),
+      FormattingContextType::Inline,
+      vec![text_node],
+    );
+    children.push(BoxNode::new_block(
+      block_style.clone(),
+      FormattingContextType::Block,
+      vec![inline],
+    ));
+  }
+
+  let root = BoxNode::new_block(grid_style, FormattingContextType::Grid, children);
+  BoxTree::new(root)
+}
+
 fn synthetic_anonymous_fixup_tree() -> BoxNode {
   // Synthetic box tree designed to stress anonymous fixup traversal.
   //
@@ -548,6 +587,7 @@ fn bench_taffy_measure_call_counts(c: &mut Criterion) {
   // Synthetic workloads that trigger many min/max-content + definite probes inside Taffy.
   let flex_tree = flex_text_tree(128);
   let grid_tree = grid_intrinsic_sizing_tree(256, 16);
+  let minmax_tree = grid_minmax_zero_fr_tree(256, 12);
 
   group.bench_function("flex_layout_with_taffy_counts", |b| {
     b.iter(|| {
@@ -562,6 +602,15 @@ fn bench_taffy_measure_call_counts(c: &mut Criterion) {
     b.iter(|| {
       let _perf_guard = fastrender::layout::taffy_integration::TaffyPerfCountersGuard::new();
       engine.layout_tree(black_box(&grid_tree)).unwrap();
+      let perf = fastrender::layout::taffy_integration::taffy_perf_counters();
+      black_box(perf.grid_measure_calls);
+    })
+  });
+
+  group.bench_function("grid_layout_minmax0fr_with_taffy_counts", |b| {
+    b.iter(|| {
+      let _perf_guard = fastrender::layout::taffy_integration::TaffyPerfCountersGuard::new();
+      engine.layout_tree(black_box(&minmax_tree)).unwrap();
       let perf = fastrender::layout::taffy_integration::taffy_perf_counters();
       black_box(perf.grid_measure_calls);
     })
