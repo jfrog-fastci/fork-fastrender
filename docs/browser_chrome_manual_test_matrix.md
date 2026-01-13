@@ -104,6 +104,15 @@ Use `about:test-form` so you can easily switch focus between page inputs and chr
 - [ ] With the dropdown closed but address bar focused:
   - [ ] Esc blurs and restores the active tab URL.
 
+### Clipboard (copy / paste)
+
+- [ ] Copy/paste works in the address bar and uses the **OS clipboard**:
+  - [ ] Ctrl/Cmd+C copies the selection.
+  - [ ] Ctrl/Cmd+V pastes.
+  - [ ] Ctrl/Cmd+X cuts.
+  - [ ] Ctrl/Cmd+A selects all.
+- [ ] After pasting a URL into the address bar, pressing Enter navigates correctly.
+
 ---
 
 ## 2) Navigation controls (back / forward / reload / stop / home)
@@ -304,6 +313,19 @@ PY
 Platform caveat: in some sandboxed/headless environments, “Open/Reveal” may fail (no handler
 available). This should surface a user-visible error and must not crash the browser.
 
+### Downloads folder / directory configuration
+
+- [ ] “Show downloads folder” opens the current download directory in the OS file manager.
+- [ ] Overriding the downloads directory works:
+  - [ ] Run with `browser --download-dir <path>` (or `FASTR_BROWSER_DOWNLOAD_DIR=<path>`).
+  - [ ] Start a new download and verify the file lands in the configured directory.
+
+### Clear completed downloads (if implemented)
+
+- [ ] If the UI exposes a “Clear” / “Clear completed” action:
+  - [ ] Completed entries are removed from the list.
+  - [ ] In-progress downloads remain visible (not cleared).
+
 ---
 
 ## 6) Find in page (open / close / next / prev / case sensitivity)
@@ -386,6 +408,11 @@ For parity testing, it’s recommended to enable the menu bar on all platforms.
 - [ ] History panel toggle works:
   - Win/Linux: Ctrl+H
   - macOS: Cmd+Y (and optionally Cmd+Shift+H, Firefox-style)
+- [ ] History panel behaviour (when open):
+  - [ ] Shows recent visits after navigating across a few non-`about:` pages.
+  - [ ] Search filters results (and can be cleared).
+  - [ ] “Clear browsing data…” opens the clear-data dialog.
+  - [ ] Clicking an entry navigates (and focus returns to a sensible surface).
 
 ### Bookmarks
 
@@ -394,6 +421,10 @@ For parity testing, it’s recommended to enable the menu bar on all platforms.
   - macOS: Cmd+D
 - [ ] Bookmarks bar toggle works (Ctrl/Cmd+Shift+B).
 - [ ] Bookmarks manager opens (Ctrl/Cmd+Shift+O).
+- [ ] Bookmarks panel/manager behaviour (when open):
+  - [ ] Search filters bookmarks.
+  - [ ] Clicking a bookmark navigates (and can be opened in a new tab when offered).
+  - [ ] Removing a bookmark updates the bookmarks bar / new tab page snapshot.
 
 ### Window
 
