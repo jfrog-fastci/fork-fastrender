@@ -52,7 +52,9 @@ fn is_async_generator_syntax_unsupported(
 
 fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
   let intr = *rt.realm().intrinsics();
-  match rt.exec_script("async function* __ag_support() {}") {
+  // Detect runtime async-generator support, not just parsing/prototype wiring. vm-js may accept the
+  // syntax and create function objects before it implements the execution semantics.
+  match rt.exec_script("async function* __ag_support() {} void __ag_support();") {
     Ok(_) => Ok(true),
     Err(err) => {
       let mut scope = rt.heap.scope();
