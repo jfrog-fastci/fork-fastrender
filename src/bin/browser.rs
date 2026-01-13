@@ -6985,7 +6985,7 @@ struct PendingPageSubtreeAccessKitUpdate {
 #[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
-  window_title_cache: String,
+  window_title_cache: fastrender::ui::WindowTitleCache,
   event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
   chrome_a11y: ChromeA11yBackend,
   trace: fastrender::debug::trace::TraceHandle,
@@ -7884,7 +7884,7 @@ impl App {
 
     Ok(Self {
       window,
-      window_title_cache: String::new(),
+      window_title_cache: fastrender::ui::WindowTitleCache::default(),
       event_loop_proxy,
       chrome_a11y,
       trace,
@@ -8143,13 +8143,16 @@ impl App {
   }
 
   fn sync_window_title(&mut self) {
-    let title = match self.browser_state.active_tab() {
-      Some(tab) => format!("{} — FastRender", tab.display_title()),
-      None => "FastRender".to_string(),
-    };
-    if title != self.window_title_cache {
-      self.window.set_title(&title);
-      self.window_title_cache = title;
+    let active_tab_id = self.browser_state.active_tab_id();
+    let display_title_source = self
+      .browser_state
+      .active_tab()
+      .map(fastrender::ui::BrowserTabState::display_title);
+    if let Some(title) = self
+      .window_title_cache
+      .sync(active_tab_id, display_title_source)
+    {
+      self.window.set_title(title);
     }
   }
 
@@ -16641,10 +16644,10 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         .filter(|h| h.is_finite())
         .unwrap_or(80.0);
 
-      let window_name = if self.window_title_cache.trim().is_empty() {
+      let window_name = if self.window_title_cache.full_title().trim().is_empty() {
         compositor_a11y::DEFAULT_WINDOW_NAME.to_string()
       } else {
-        self.window_title_cache.clone()
+        self.window_title_cache.full_title().to_string()
       };
 
       let page_name = if let Some(tab) = self.browser_state.active_tab() {
