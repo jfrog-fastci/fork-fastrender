@@ -45,13 +45,11 @@ direct_websocket = ["dep:tungstenite"]
 # Used by CI (`--no-default-features --features renderer_minimal`) to ensure the renderer can be
 # built without linking reqwest/ureq/tungstenite.
 renderer_minimal = ["preserve3d_warp", "avif"]
-browser_ui = [
-  "audio_cpal",
+# Base desktop UI stack (winit + wgpu + AccessKit) that can be used by non-egui frontends (e.g. the
+# compositor UI backend).
+browser_ui_base = [
   "dep:winit",
   "dep:wgpu",
-  "dep:egui",
-  "dep:egui-winit",
-  "dep:egui-wgpu",
   "dep:pollster",
   "dep:arboard",
   "dep:accesskit",
@@ -59,6 +57,14 @@ browser_ui = [
   "dep:rfd",
   "dep:directories",
   "fs2",
+]
+# Full egui-based desktop UI stack used by `src/bin/browser.rs` (depends on `browser_ui_base`).
+browser_ui = [
+  "browser_ui_base",
+  "audio_cpal",
+  "dep:egui",
+  "dep:egui-winit",
+  "dep:egui-wgpu",
 ]
 browser_ui_wayland = [
   # Wayland backend support for the `browser` UI on Linux.

@@ -63,6 +63,10 @@ pub mod a11y_labels;
 #[cfg(feature = "browser_ui")]
 pub mod a11y;
 
+// Minimal AccessKit integration for the compositor (non-egui) browser UI backend.
+#[cfg(feature = "browser_ui_base")]
+pub mod compositor_accessibility;
+
 // Test-only helpers for extracting egui/AccessKit accessibility output.
 #[cfg(all(test, feature = "browser_ui"))]
 pub mod a11y_test_util;
