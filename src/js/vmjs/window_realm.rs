@@ -14165,6 +14165,21 @@ fn document_create_node_iterator_native(
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
 
+  // Wire up the correct prototype chain so:
+  // - `it instanceof NodeIterator` works
+  // - `Object.prototype.toString.call(it)` yields `[object NodeIterator]` (via @@toStringTag).
+  let proto_key = alloc_key(scope, NODE_ITERATOR_PROTOTYPE_KEY)?;
+  let proto_val = object_get_data_property_value(scope.heap(), document_obj, &proto_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(proto_obj) = proto_val else {
+    return Err(VmError::InvariantViolation(
+      "document.createNodeIterator missing NodeIterator prototype",
+    ));
+  };
+  scope
+    .heap_mut()
+    .object_set_prototype(obj, Some(proto_obj))?;
+
   // Expose only the core readonly attributes needed by curated traversal tests. Full NodeIterator
   // traversal semantics are implemented separately; for now we at least preserve WebIDL conversion
   // behavior for whatToShow.
@@ -53750,6 +53765,22 @@ mod tests {
         if (!(tw instanceof TreeWalker)) return 'instanceof';
         if (Object.getPrototypeOf(tw) !== TreeWalker.prototype) return 'proto';
         if (tw.constructor !== TreeWalker) return 'ctor';
+        return 'ok';
+      })()"#,
+    )?;
+    assert_eq!(get_string(realm.heap(), result), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn node_iterator_instances_are_instanceof_node_iterator() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = realm.exec_script(
+      r#"(() => {
+        const it = document.createNodeIterator(document);
+        if (!(it instanceof NodeIterator)) return 'instanceof';
+        if (Object.getPrototypeOf(it) !== NodeIterator.prototype) return 'proto';
+        if (it.constructor !== NodeIterator) return 'ctor';
         return 'ok';
       })()"#,
     )?;
