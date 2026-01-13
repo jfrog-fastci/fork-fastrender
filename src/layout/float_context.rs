@@ -604,6 +604,7 @@ impl FloatRangeCache {
     self.events_len = 0;
     self.segments.clear();
     self.sweep_state.reset(0, &[]);
+    self.block_min_cache = None;
   }
 
   fn ensure_current(&mut self, float_count: usize, events: &[FloatEvent]) {

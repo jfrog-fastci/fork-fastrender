@@ -3677,9 +3677,9 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // Transitional: return a stable per-element object so `element.classList` access does not
         // crash, and brand it enough to support `DOMTokenList.prototype.supports` dispatch.
         let key = key_from_str(scope, ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT)?;
+        let supports_key = key_from_str(scope, "supports")?;
         let mut ensure_supports =
           |scope: &mut Scope<'_>, token_list: GcObject| -> Result<(), VmError> {
-          let supports_key = key_from_str(scope, "supports")?;
           if scope
             .heap()
             .object_get_own_property(token_list, &supports_key)?
@@ -3720,7 +3720,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
           scope.define_property(
             token_list,
-            supports_key,
+            supports_key.clone(),
             data_property(Value::Object(func_obj), true, false, true),
           )?;
           Ok(())
