@@ -16389,6 +16389,7 @@ pub fn regexp_prototype_symbol_replace(
 
   let flags = scope.heap().regexp_flags(rx)?;
   let global = flags.global;
+  let has_indices = flags.has_indices;
 
   if global {
     regexp_set_last_index(vm, &mut scope, host, hooks, rx, Value::Number(0.0))?;
@@ -16398,6 +16399,11 @@ pub fn regexp_prototype_symbol_replace(
   let zero_key = string_key(&mut scope, "0")?;
   let index_key = string_key(&mut scope, "index")?;
   let groups_key = string_key(&mut scope, "groups")?;
+  let indices_key = if has_indices {
+    Some(string_key(&mut scope, "indices")?)
+  } else {
+    None
+  };
 
   // 11-15. Collect results first (per spec), keeping them rooted until substitution is complete.
   let mut results: Vec<GcObject> = Vec::new();
@@ -16555,9 +16561,15 @@ pub fn regexp_prototype_symbol_replace(
     iter_scope.push_root(named_captures)?;
 
     let replacement_units = if functional_replace {
-      // Build replacer arguments: (matched, ...captures, position, input, [groups])
+      // Build replacer arguments: (matched, ...captures, position, input, [indices], [groups])
       let mut args_vec: Vec<Value> = Vec::new();
-      let extra = if matches!(named_captures, Value::Undefined) { 0 } else { 1 };
+      let mut extra = 0usize;
+      if has_indices {
+        extra = extra.saturating_add(1);
+      }
+      if !matches!(named_captures, Value::Undefined) {
+        extra = extra.saturating_add(1);
+      }
       args_vec
         .try_reserve_exact(1 + captures.len() + 2 + extra)
         .map_err(|_| VmError::OutOfMemory)?;
@@ -16567,6 +16579,18 @@ pub fn regexp_prototype_symbol_replace(
       }
       args_vec.push(Value::Number(position as f64));
       args_vec.push(Value::String(input));
+      if has_indices {
+        let indices = iter_scope.get_with_host_and_hooks(
+          vm,
+          host,
+          hooks,
+          result_obj,
+          indices_key.expect("indices_key should be present when has_indices is true"),
+          Value::Object(result_obj),
+        )?;
+        iter_scope.push_root(indices)?;
+        args_vec.push(indices);
+      }
       if !matches!(named_captures, Value::Undefined) {
         args_vec.push(named_captures);
       }
@@ -29221,6 +29245,33 @@ mod regexp_prototype_tests {
         let ok = false;
         try {
           r[Symbol.replace]("a", "x");
+        } catch (e) {
+          ok = (e === "boom");
+        }
+        ok
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_replace_observes_result_indices_getter() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        const r = /a/d;
+        r.exec = function () {
+          return {
+            0: "a",
+            length: 1,
+            index: 0,
+            get indices() { throw "boom"; },
+          };
+        };
+        let ok = false;
+        try {
+          r[Symbol.replace]("a", function () { return "x"; });
         } catch (e) {
           ok = (e === "boom");
         }
