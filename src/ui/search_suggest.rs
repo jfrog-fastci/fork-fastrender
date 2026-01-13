@@ -36,6 +36,7 @@ pub const DEFAULT_ENDPOINT_BASE: &str = "https://duckduckgo.com/ac/";
 
 const MAX_SUGGESTIONS: usize = 10;
 const WORKER_DEBOUNCE: Duration = Duration::from_millis(150);
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Conservative UA string (avoids leaking host details).
 const USER_AGENT: &str = "fastrender/0.1 (search_suggest; +https://github.com/wilsonzlin/fastrender)";
@@ -50,6 +51,15 @@ pub struct SearchSuggestConfig {
   pub enabled: bool,
   /// Timeout applied to connect + overall request.
   pub timeout_ms: u64,
+  #[cfg(test)]
+  worker_test_hook: Option<SearchSuggestWorkerTestHook>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct SearchSuggestWorkerTestHook {
+  entered_request_tx: mpsc::Sender<()>,
+  sleep: Duration,
 }
 
 impl Default for SearchSuggestConfig {
@@ -58,6 +68,8 @@ impl Default for SearchSuggestConfig {
       endpoint_base: DEFAULT_ENDPOINT_BASE.to_string(),
       enabled: true,
       timeout_ms: 700,
+      #[cfg(test)]
+      worker_test_hook: None,
     }
   }
 }
@@ -160,7 +172,22 @@ impl Drop for SearchSuggestService {
     // Closing the request channel tells the worker to exit.
     self.request_tx.take();
     if let Some(join) = self.worker_join.take() {
-      let _ = join.join();
+      // Best-effort join: don't risk hanging the UI thread forever if the worker is stuck in a
+      // long/hung network request.
+      let (done_tx, done_rx) = mpsc::channel::<std::thread::Result<()>>();
+      // `JoinHandle` has no timeout API, so join on a helper thread and wait on a channel.
+      //
+      // If we fail to spawn the helper thread, dropping the closure drops `join`, which detaches
+      // the worker thread. (The worker will still observe channel closure and exit eventually.)
+      if std::thread::Builder::new()
+        .name("search_suggest_join".to_string())
+        .spawn(move || {
+          let _ = done_tx.send(join.join());
+        })
+        .is_ok()
+      {
+        let _ = done_rx.recv_timeout(WORKER_JOIN_TIMEOUT);
+      }
     }
   }
 }
@@ -178,6 +205,15 @@ fn worker_loop(
         Ok(newer) => req = newer,
         Err(mpsc::RecvTimeoutError::Timeout) => break,
         Err(mpsc::RecvTimeoutError::Disconnected) => return,
+      }
+    }
+
+    #[cfg(test)]
+    if let Some(hook) = config.worker_test_hook.as_ref() {
+      // Best-effort; tests should tolerate disconnects.
+      let _ = hook.entered_request_tx.send(());
+      if hook.sleep > Duration::ZERO {
+        std::thread::sleep(hook.sleep);
       }
     }
 
@@ -364,6 +400,7 @@ mod tests {
       endpoint_base,
       enabled: true,
       timeout_ms: 1000,
+      worker_test_hook: None,
     });
     service.request("rust".to_string());
 
@@ -403,6 +440,7 @@ mod tests {
       endpoint_base,
       enabled: true,
       timeout_ms: 2000,
+      worker_test_hook: None,
     });
 
     service.request("slow".to_string());
@@ -456,6 +494,7 @@ mod tests {
       endpoint_base,
       enabled: true,
       timeout_ms: 200,
+      worker_test_hook: None,
     });
 
     service.request("rust".to_string());
@@ -468,5 +507,37 @@ mod tests {
     assert!(update.is_none(), "expected redundant request to be suppressed");
 
     join.join().unwrap();
+  }
+
+  #[test]
+  fn drop_does_not_block_on_slow_worker() {
+    // Simulate a worker that is "stuck" doing something slow (e.g. a hung network request), and
+    // ensure dropping the service does not block indefinitely.
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+
+    let mut service = SearchSuggestService::new(SearchSuggestConfig {
+      endpoint_base: "not a url".to_string(),
+      enabled: true,
+      timeout_ms: 1000,
+      worker_test_hook: Some(SearchSuggestWorkerTestHook {
+        entered_request_tx: entered_tx,
+        sleep: Duration::from_secs(1),
+      }),
+    });
+
+    service.request("rust".to_string());
+    entered_rx
+      .recv_timeout(Duration::from_secs(2))
+      .expect("expected worker to start handling request");
+
+    let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+      drop(service);
+      let _ = dropped_tx.send(());
+    });
+
+    dropped_rx
+      .recv_timeout(Duration::from_millis(800))
+      .expect("expected SearchSuggestService::drop to return promptly");
   }
 }
