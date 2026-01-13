@@ -1050,8 +1050,8 @@ impl WorkerHarness {
   ///
   /// The worker may emit `ScrollStateUpdated` either before or after the corresponding frame (for
   /// example if scroll updates are forwarded immediately on input). This helper matches the scroll
-  /// update to the returned frame by comparing `scroll.viewport` with
-  /// `frame.scroll_state.viewport`.
+  /// update to the returned frame by comparing viewport + element scroll offsets (`scroll.viewport`
+  /// + `scroll.elements`) with the `frame.scroll_state` snapshot.
   pub fn wait_for_frame_and_scroll_state(
     &self,
     tab_id: TabId,
@@ -1060,13 +1060,19 @@ impl WorkerHarness {
     let start = Instant::now();
     let (frame, mut events) = self.wait_for_frame(tab_id, timeout);
     let expected_viewport = frame.scroll_state.viewport;
+    let expected_elements = frame.scroll_state.elements.clone();
 
     let find_matching_scroll = |events: &[WorkerToUiEvent]| {
       events.iter().rev().find_map(|ev| match ev {
         WorkerToUiEvent::ScrollStateUpdated {
           tab_id: got,
           scroll,
-        } if *got == tab_id && scroll.viewport == expected_viewport => Some(scroll.clone()),
+        } if *got == tab_id
+          && scroll.viewport == expected_viewport
+          && scroll.elements == expected_elements =>
+        {
+          Some(scroll.clone())
+        }
         _ => None,
       })
     };
@@ -1080,7 +1086,7 @@ impl WorkerHarness {
       WorkerToUiEvent::ScrollStateUpdated {
         tab_id: got,
         scroll,
-      } if *got == tab_id && scroll.viewport == expected_viewport => true,
+      } if *got == tab_id && scroll.viewport == expected_viewport && scroll.elements == expected_elements => true,
       _ => false,
     });
     events.extend(more);
