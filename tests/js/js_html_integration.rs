@@ -737,6 +737,51 @@ fn p2_dynamic_module_scripts_with_async_false_execute_in_insertion_order() -> Re
 }
 
 #[test]
+fn p2_dynamic_module_scripts_with_async_false_wait_for_top_level_await_before_next() -> Result<()> {
+  let js_options = JsExecutionOptions {
+    supports_module_scripts: true,
+    ..Default::default()
+  };
+  let mut h = Harness::new("https://example.invalid/p2_dynamic_module_tla_ordered.html", js_options)?;
+
+  // The first module uses top-level await to delay completion; the second module must not execute
+  // until the first one finishes evaluation.
+  h.register_script_source(
+    "https://example.invalid/a_tla.js",
+    "await Promise.resolve(); console.log('A');",
+  );
+  h.register_script_source("https://example.invalid/b_tla.js", "console.log('B');");
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        const a = document.createElement('script');
+        a.type = 'module';
+        a.src = 'https://example.invalid/a_tla.js';
+        a.async = false;
+        document.body.appendChild(a);
+
+        const b = document.createElement('script');
+        b.type = 'module';
+        b.src = 'https://example.invalid/b_tla.js';
+        b.async = false;
+        document.body.appendChild(b);
+
+        console.log('after');
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["after".to_string(), "A".to_string(), "B".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p2_module_top_level_await_works_when_it_settles_via_microtasks() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = true;
