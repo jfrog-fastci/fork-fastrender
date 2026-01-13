@@ -1495,9 +1495,13 @@ fn list_row(
   }
 
   let inner = rect.shrink2(egui::vec2(12.0, 8.0));
-  ui.allocate_ui_at_rect(inner, |ui| {
-    ui.set_width(inner.width());
-    add_contents(ui);
+  // Scope all nested widgets (buttons, etc.) under a stable per-row ID so their egui IDs (and thus
+  // AccessKit node IDs) do not shift when the list is reordered/filtered.
+  ui.push_id(row_id, |ui| {
+    ui.allocate_ui_at_rect(inner, |ui| {
+      ui.set_width(inner.width());
+      add_contents(ui);
+    });
   });
 
   response
@@ -1522,6 +1526,74 @@ mod tests {
     raw.time = Some(0.0);
     raw.focused = true;
     ctx.begin_frame(raw);
+  }
+
+  fn render_bookmarks_manager(
+    ctx: &egui::Context,
+    state: &mut BookmarksManagerState,
+    store: &mut BookmarkStore,
+  ) -> egui::FullOutput {
+    begin_frame(ctx);
+    let _ = bookmarks_manager_side_panel(ctx, state, store);
+    ctx.end_frame()
+  }
+
+  fn accesskit_node_id_by_name(output: &egui::FullOutput, name: &str) -> String {
+    let snapshot = a11y_test_util::accesskit_snapshot_from_full_output(output);
+    snapshot
+      .nodes
+      .iter()
+      .find(|node| node.name == name)
+      .map(|node| node.id.clone())
+      .unwrap_or_else(|| {
+        panic!(
+          "expected AccessKit node named {name:?}.\n\nsnapshot:\n{}",
+          a11y_test_util::accesskit_pretty_json_from_full_output(output)
+        )
+      })
+  }
+
+  #[test]
+  fn row_action_button_accesskit_id_is_stable_across_reorder() {
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+
+    let mut state = BookmarksManagerState::default();
+    let mut store = BookmarkStore::default();
+    let example_id = store
+      .add(
+        "https://example.com/".to_string(),
+        Some("Example".to_string()),
+        None,
+      )
+      .expect("failed to add Example bookmark");
+
+    let output_a = render_bookmarks_manager(&ctx, &mut state, &mut store);
+    let delete_id_a = accesskit_node_id_by_name(&output_a, "Delete bookmark: Example");
+
+    // Mutate the store so the Example row shifts position.
+    let first_id = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .expect("failed to add A bookmark");
+    store
+      .reorder_root(&[first_id, example_id])
+      .expect("failed to reorder roots");
+
+    let output_b = render_bookmarks_manager(&ctx, &mut state, &mut store);
+    let delete_id_b = accesskit_node_id_by_name(&output_b, "Delete bookmark: Example");
+
+    assert_eq!(
+      delete_id_a, delete_id_b,
+      "expected per-row action button AccessKit node ID to remain stable across list reorder.\n\nbefore:\n{}\n\nafter:\n{}",
+      a11y_test_util::accesskit_pretty_json_from_full_output(&output_a),
+      a11y_test_util::accesskit_pretty_json_from_full_output(&output_b)
+    );
   }
 
   #[test]
