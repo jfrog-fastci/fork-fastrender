@@ -41813,6 +41813,7 @@ mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
   use crate::js::window_env::FASTRENDER_USER_AGENT;
+  use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
   use crate::js::RunLimits;
   use crate::js::window::WindowHost;
   use crate::{FastRender, FontConfig, RenderOptions};
@@ -42051,6 +42052,19 @@ mod tests {
   ) -> Result<Value, VmError> {
     let dataset_ctx = realm.dataset_exotic_context();
     let mut hooks = DomShimHostHooks::new(host, dataset_ctx);
+    realm.exec_script_with_host_and_hooks(host, &mut hooks, source)
+  }
+
+  fn exec_script_with_dom_host_webidl(
+    realm: &mut WindowRealm,
+    host: &mut dyn VmHost,
+    source: &str,
+  ) -> Result<Value, VmError> {
+    let dataset_ctx = realm.dataset_exotic_context();
+    let mut hooks = DomShimHostHooks::new(host, dataset_ctx);
+    let mut webidl_host =
+      VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
+    hooks.set_webidl_bindings_host(&mut webidl_host);
     realm.exec_script_with_host_and_hooks(host, &mut hooks, source)
   }
 
@@ -47081,6 +47095,167 @@ mod tests {
   }
 
   #[test]
+  fn webidl_element_exposes_cssom_view_metrics_and_style() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let got = exec_script_with_dom_host_webidl(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        if (typeof Element.prototype.getBoundingClientRect !== 'function') {
+          return 'missing getBoundingClientRect';
+        }
+        const el = document.documentElement;
+        const props = [
+          'style',
+          'offsetWidth', 'offsetHeight', 'offsetLeft', 'offsetTop',
+          'clientWidth', 'clientHeight',
+          'scrollWidth', 'scrollHeight', 'scrollTop', 'scrollLeft',
+        ];
+        for (const p of props) {
+          if (!(p in el)) return 'missing ' + p;
+        }
+        return 'ok';
+      })()"#,
+    )?;
+
+    assert_eq!(get_string(realm.heap(), got), "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_element_get_bounding_client_rect_returns_dom_rect_read_only() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=x></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let ok = exec_script_with_dom_host_webidl(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const el = document.getElementById('x');\n\
+        const r = el.getBoundingClientRect();\n\
+        if (!(r instanceof DOMRectReadOnly)) return false;\n\
+        const props = ['x', 'y', 'width', 'height', 'top', 'left', 'right', 'bottom'];\n\
+        for (const p of props) { if (typeof r[p] !== 'number') return false; }\n\
+        // Non-rendered host documents return a deterministic dummy rect.\n\
+        if (!(r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0)) return false;\n\
+        let msg = null;\n\
+        try { Element.prototype.getBoundingClientRect.call(document); } catch (e) { msg = e && e.message; }\n\
+        return msg === 'Illegal invocation';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_element_get_bounding_client_rect_returns_zero_without_cached_layout_for_browser_document_dom2(
+  ) -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #x { width: 30px; height: 40px; }
+          </style>
+        </head>
+        <body>
+          <div id="x"></div>
+        </body>
+      </html>"#;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      html,
+      RenderOptions::new().with_viewport(200, 200),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+
+    // Intentionally do not call `render_frame()` / `ensure_layout_for_dom_queries()`.
+    // `getBoundingClientRect()` should not force layout and must return zeros when no cached layout
+    // exists yet.
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let ok = exec_script_with_dom_host_webidl(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         const r = document.getElementById('x').getBoundingClientRect();\n\
+         return r.x === 0 && r.y === 0 && r.width === 0 && r.height === 0 &&\n\
+                r.top === 0 && r.left === 0 && r.right === 0 && r.bottom === 0 &&\n\
+                r instanceof DOMRectReadOnly;\n\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_element_scroll_top_and_left_setters() -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #scroller { width: 100px; height: 100px; overflow: scroll; }
+            #spacer { width: 2000px; height: 2000px; }
+          </style>
+        </head>
+        <body>
+          <div id="scroller"><div id="spacer"></div></div>
+        </body>
+      </html>"#;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      html,
+      RenderOptions::new().with_viewport(200, 200),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+    document
+      .ensure_layout_for_dom_queries()
+      .expect("layout preparation should succeed");
+
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let got = exec_script_with_dom_host_webidl(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+         const el = document.getElementById('scroller');\n\
+         try {\n\
+           el.scrollTop = 5;\n\
+           el.scrollLeft = 6;\n\
+         } catch (e) {\n\
+           return 'threw';\n\
+         }\n\
+         if (el.scrollTop !== 5) return 'scrollTop=' + el.scrollTop;\n\
+         if (el.scrollLeft !== 6) return 'scrollLeft=' + el.scrollLeft;\n\
+         return 'ok';\n\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), got), "ok");
+    Ok(())
+  }
+
+  #[test]
   fn element_get_bounding_client_rect_returns_dom_rect_read_only() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html(
       "<!doctype html><html><body><div id=x></div></body></html>",
@@ -47789,11 +47964,52 @@ mod tests {
          try { el.scrollTop = 10; el.scrollLeft = 20; } catch (e) { return false; }\n\
          let r;\n\
          try { r = el.getBoundingClientRect(); } catch (e) { return false; }\n\
-         if (!(r instanceof DOMRectReadOnly)) return false;\n\
-         return r.width === 0 && r.height === 0 && r.x === 0 && r.y === 0;\n\
-       })()",
+          if (!(r instanceof DOMRectReadOnly)) return false;\n\
+          return r.width === 0 && r.height === 0 && r.x === 0 && r.y === 0;\n\
+        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_element_style_is_stable_and_mutates_dom2_document() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body><div id=t></div></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+
+    let mut realm = new_realm(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+
+    let ok = exec_script_with_dom_host_webidl(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const div = document.getElementById('t');\n\
+        const s = div.style;\n\
+        if (div.style !== s) return false;\n\
+ \n\
+        s.display = 'none';\n\
+        s.setProperty('cursor', 'pointer');\n\
+        s.height = '10px';\n\
+        s.setProperty('backgroundColor', 'red');\n\
+        const removed = s.removeProperty('display');\n\
+        return div.style === s\n\
+          && removed === 'none'\n\
+          && s.getPropertyValue('background-color') === 'red'\n\
+          && s.display === '';\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    let div = host.dom().get_element_by_id("t").expect("missing #t");
+    assert_eq!(
+      host.dom().get_attribute(div, "style").unwrap(),
+      Some("background-color: red; cursor: pointer; height: 10px;")
+    );
+
     Ok(())
   }
 
