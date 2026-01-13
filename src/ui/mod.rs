@@ -175,8 +175,8 @@ pub use bookmarks::{
   BOOKMARK_STORE_VERSION,
 };
 pub use notifications::{
-  classify_warning_toast, WarningToast, WarningToastIcon, WarningToastPresentation, WarningToastState,
-  WARNING_TOAST_DEFAULT_TTL,
+  classify_warning_toast, Toast, ToastKind, ToastState, WarningToast, WarningToastIcon,
+  WarningToastPresentation, WarningToastState, TOAST_DEFAULT_TTL, WARNING_TOAST_DEFAULT_TTL,
 };
 
 pub use frame_upload::FrameUploadCoalescer;

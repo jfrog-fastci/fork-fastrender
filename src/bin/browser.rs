@@ -2700,6 +2700,8 @@ struct App {
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
   warning_toast_rect: Option<egui::Rect>,
   error_infobar_rect: Option<egui::Rect>,
+  chrome_toast: fastrender::ui::ToastState,
+  chrome_toast_rect: Option<egui::Rect>,
 
   /// Deadline for the next egui-driven repaint (derived from `egui::FullOutput::repaint_after`).
   ///
@@ -2938,6 +2940,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .error_infobar_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .chrome_toast_rect
         .is_some_and(|rect| rect.contains(pos_points))
   }
 
@@ -3225,6 +3230,8 @@ impl App {
       tab_notifications: std::collections::HashMap::new(),
       warning_toast_rect: None,
       error_infobar_rect: None,
+      chrome_toast: fastrender::ui::ToastState::default(),
+      chrome_toast_rect: None,
       next_egui_repaint: None,
       last_egui_redraw_request: None,
       animation_tick_tab: None,
@@ -3486,6 +3493,14 @@ impl App {
       });
     }
 
+    // Chrome toast expiry (auto-dismiss).
+    if let Some(toast_deadline) = self.chrome_toast.next_deadline() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(toast_deadline),
+        None => toast_deadline,
+      });
+    }
+
     // Viewport debounce wakeups (resize settling).
     if let Some(vp_deadline) = self.viewport_throttle.next_deadline() {
       deadline = Some(match deadline {
@@ -3512,6 +3527,14 @@ impl App {
 
     if self
       .next_warning_toast_deadline_for_active_tab()
+      .is_some_and(|deadline| now >= deadline)
+    {
+      needs_redraw = true;
+    }
+
+    if self
+      .chrome_toast
+      .next_deadline()
       .is_some_and(|deadline| now >= deadline)
     {
       needs_redraw = true;
@@ -4574,6 +4597,111 @@ impl App {
     state.warning_toast.next_deadline()
   }
 
+  fn show_chrome_toast(&mut self, text: &str) {
+    use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+    let now = std::time::Instant::now();
+    self
+      .chrome_toast
+      .show(ToastKind::Info, text.to_string(), now, TOAST_DEFAULT_TTL);
+  }
+
+  fn render_chrome_toast(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::ToastKind;
+
+    let Some(toast) = self.chrome_toast.toast() else {
+      self.chrome_toast_rect = None;
+      return;
+    };
+
+    let toast_text = toast.text.clone();
+    let toast_kind = toast.kind;
+
+    let theme_colors = self.theme.colors.clone();
+    let theme_sizing = self.theme.sizing.clone();
+
+    // Position relative to the central content area so the toast doesn't cover the status bar.
+    let screen_rect = ctx.screen_rect();
+    let content_rect = self.content_rect_points.unwrap_or(screen_rect);
+    let bottom_inset = (screen_rect.max.y - content_rect.max.y).max(0.0);
+    let right_inset = (screen_rect.max.x - content_rect.max.x).max(0.0);
+    let margin = theme_sizing.padding.max(8.0) + 4.0;
+    // Nudge upward so it doesn't overlap the warning toast when both are visible.
+    let anchor_offset = egui::vec2(-margin - right_inset, -margin - bottom_inset - 56.0);
+
+    let (stroke_color, icon) = match toast_kind {
+      ToastKind::Info => (theme_colors.accent, fastrender::ui::BrowserIcon::Info),
+      ToastKind::Warning => (theme_colors.warn, fastrender::ui::BrowserIcon::WarningInsecure),
+      ToastKind::Error => (theme_colors.danger, fastrender::ui::BrowserIcon::Error),
+    };
+
+    let toast_id = egui::Id::new("fastr_chrome_toast");
+    let popup = egui::Area::new(toast_id)
+      .order(egui::Order::Foreground)
+      .anchor(egui::Align2::RIGHT_BOTTOM, anchor_offset)
+      .interactable(true)
+      .show(ctx, |ui| {
+        let mut dismiss = false;
+        let fill = egui::Color32::from_rgba_unmultiplied(
+          theme_colors.raised.r(),
+          theme_colors.raised.g(),
+          theme_colors.raised.b(),
+          240,
+        );
+        let stroke = egui::Stroke::new(theme_sizing.stroke_width, stroke_color);
+        let frame = egui::Frame::none()
+          .fill(fill)
+          .stroke(stroke)
+          .rounding(egui::Rounding::same(theme_sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(
+            theme_sizing.padding * 1.25,
+            theme_sizing.padding,
+          ));
+        frame.show(ui, |ui| {
+          ui.set_min_width(320.0);
+          ui.horizontal(|ui| {
+            let icon_side = ui.spacing().icon_width;
+            let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, stroke_color);
+            let title = Self::toast_title_from_text(&toast_text);
+            icon_resp.widget_info({
+              let label = format!("{title}");
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+            });
+
+            let msg = ui
+              .add(
+                egui::Label::new(
+                  egui::RichText::new(toast_text.clone()).color(theme_colors.text_primary),
+                )
+                .wrap(true),
+              )
+              .sense(egui::Sense::hover());
+            msg.widget_info({
+              let label = toast_text.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+              let close_resp =
+                fastrender::ui::icon_button(ui, fastrender::ui::BrowserIcon::Close, "Dismiss", true);
+              close_resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss")
+              });
+              if close_resp.clicked() {
+                dismiss = true;
+              }
+            });
+          });
+        });
+        dismiss
+      });
+
+    self.chrome_toast_rect = Some(popup.response.rect);
+    if popup.inner {
+      self.chrome_toast.dismiss();
+      self.window.request_redraw();
+    }
+  }
+
   fn render_warning_toast(&mut self, ctx: &egui::Context) {
     let Some(tab_id) = self.browser_state.active_tab_id() else {
       self.warning_toast_rect = None;
@@ -5233,6 +5361,29 @@ impl App {
     let [r, g, b, a] = color.to_array();
     let a = ((a as f32) * alpha).round().clamp(0.0, 255.0) as u8;
     egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+  }
+
+  fn toast_title_from_text(text: &str) -> String {
+    let first_line = text
+      .lines()
+      .map(str::trim)
+      .find(|line| !line.is_empty())
+      .unwrap_or("");
+    let title = first_line
+      .split_once(':')
+      .map(|(head, _)| head.trim())
+      .filter(|head| !head.is_empty())
+      .unwrap_or(first_line);
+    if title.is_empty() {
+      return "Notification".to_string();
+    }
+    // Keep the title compact so it fits in the toast header.
+    const MAX_CHARS: usize = 48;
+    if title.chars().count() > MAX_CHARS {
+      format!("{}…", title.chars().take(MAX_CHARS).collect::<String>())
+    } else {
+      title.to_string()
+    }
   }
 
   fn scaled_clip_rect(rect: egui::Rect, pivot: egui::Align2, scale: f32) -> egui::Rect {
@@ -7213,6 +7364,9 @@ impl App {
             .is_some_and(|rect| rect.contains(pos_points))
             || self
               .error_infobar_rect
+              .is_some_and(|rect| rect.contains(pos_points))
+            || self
+              .chrome_toast_rect
               .is_some_and(|rect| rect.contains(pos_points)))
         {
           return;
@@ -7669,28 +7823,21 @@ impl App {
                 return;
               }
 
+              ShortcutAction::SavePage => {
+                self.show_chrome_toast("Save not implemented yet");
+                self.window.request_redraw();
+                return;
+              }
+
+              ShortcutAction::PrintPage => {
+                self.show_chrome_toast("Print not implemented yet");
+                self.window.request_redraw();
+                return;
+              }
+
               // Chrome-level shortcuts are evaluated inside the egui frame (`ui::chrome_ui`) so we
               // can respect its editing focus rules. Ensure they never reach page input.
-              ShortcutAction::ToggleBookmarksManager
-              | ShortcutAction::ToggleDownloadsPanel
-              | ShortcutAction::NewWindow
-              | ShortcutAction::NewTab
-              | ShortcutAction::CloseTab
-              | ShortcutAction::ReopenClosedTab
-              | ShortcutAction::OpenTabSearch
-              | ShortcutAction::NextTab
-              | ShortcutAction::PrevTab
-              | ShortcutAction::Reload
-              | ShortcutAction::GoHome
-              | ShortcutAction::ToggleBookmark
-              | ShortcutAction::ShowHistory
-              | ShortcutAction::ShowBookmarksManager
-              | ShortcutAction::ToggleBookmarksBar
-              | ShortcutAction::OpenClearBrowsingDataDialog
-              | ShortcutAction::ActivateTabNumber(_)
-              | ShortcutAction::ZoomIn
-              | ShortcutAction::ZoomOut
-              | ShortcutAction::ZoomReset => {
+              action if fastrender::ui::shortcuts::shortcut_is_chrome_reserved(action) => {
                 return;
               }
 
@@ -9764,8 +9911,10 @@ impl App {
 
     let now = std::time::Instant::now();
     self.sync_tab_notifications(now);
+    self.chrome_toast.expire(now);
     self.render_error_infobar(&ctx);
     self.render_warning_toast(&ctx);
+    self.render_chrome_toast(&ctx);
 
     self.render_hud(&ctx);
     self.render_debug_log_overlay(&ctx);
@@ -9927,9 +10076,11 @@ fn map_winit_key_to_shortcuts_key(
     VirtualKeyCode::L => ShortcutKey::L,
     VirtualKeyCode::N => ShortcutKey::N,
     VirtualKeyCode::O => ShortcutKey::O,
+    VirtualKeyCode::P => ShortcutKey::P,
     VirtualKeyCode::LBracket => ShortcutKey::OpenBracket,
     VirtualKeyCode::RBracket => ShortcutKey::CloseBracket,
     VirtualKeyCode::R => ShortcutKey::R,
+    VirtualKeyCode::S => ShortcutKey::S,
     VirtualKeyCode::T => ShortcutKey::T,
     VirtualKeyCode::V => ShortcutKey::V,
     VirtualKeyCode::W => ShortcutKey::W,

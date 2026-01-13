@@ -43,6 +43,14 @@ pub enum ShortcutAction {
   ZoomReset,
   /// Toggle window fullscreen state.
   ToggleFullScreen,
+  /// Save the current page (Ctrl/Cmd+S).
+  ///
+  /// Not implemented yet; reserved so pages cannot intercept it.
+  SavePage,
+  /// Print the current page (Ctrl/Cmd+P).
+  ///
+  /// Not implemented yet; reserved so pages cannot intercept it.
+  PrintPage,
   Copy,
   Cut,
   Paste,
@@ -87,10 +95,12 @@ pub enum Key {
   L,
   N,
   O,
+  P,
   OpenBracket,
   CloseBracket,
   Minus,
   Num0,
+  S,
   T,
   R,
   V,
@@ -365,6 +375,10 @@ pub fn map_shortcut_with_platform(event: KeyEvent, platform: Platform) -> Option
     (Key::Minus, _) if cmd => Some(ShortcutAction::ZoomOut),
     (Key::Num0, _) if cmd => Some(ShortcutAction::ZoomReset),
 
+    // Save / Print.
+    (Key::S, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::SavePage),
+    (Key::P, Modifiers { shift: false, .. }) if cmd => Some(ShortcutAction::PrintPage),
+
     // Clipboard.
     // Windows/Linux also support the "IBM Common User Access" variants:
     // - Ctrl+Insert = Copy
@@ -479,11 +493,49 @@ pub fn shortcut_preempts_page_focus(action: ShortcutAction) -> bool {
   )
 }
 
+/// Returns true when the shortcut is reserved for browser chrome and should never be forwarded to
+/// page input handling.
+///
+/// This is used by the windowed browser UI to keep common browser shortcuts (tab management,
+/// navigation, zoom, save/print) from leaking into the rendered page.
+pub fn shortcut_is_chrome_reserved(action: ShortcutAction) -> bool {
+  matches!(
+    action,
+    ShortcutAction::FocusAddressBar
+      | ShortcutAction::FindInPage
+      | ShortcutAction::ToggleBookmarksManager
+      | ShortcutAction::ToggleDownloadsPanel
+      | ShortcutAction::NewWindow
+      | ShortcutAction::OpenTabSearch
+      | ShortcutAction::NewTab
+      | ShortcutAction::CloseTab
+      | ShortcutAction::ReopenClosedTab
+      | ShortcutAction::NextTab
+      | ShortcutAction::PrevTab
+      | ShortcutAction::Back
+      | ShortcutAction::Forward
+      | ShortcutAction::Reload
+      | ShortcutAction::GoHome
+      | ShortcutAction::ToggleBookmark
+      | ShortcutAction::ShowHistory
+      | ShortcutAction::ShowBookmarksManager
+      | ShortcutAction::ToggleBookmarksBar
+      | ShortcutAction::OpenClearBrowsingDataDialog
+      | ShortcutAction::ActivateTabNumber(_)
+      | ShortcutAction::ZoomIn
+      | ShortcutAction::ZoomOut
+      | ShortcutAction::ZoomReset
+      | ShortcutAction::ToggleFullScreen
+      | ShortcutAction::SavePage
+      | ShortcutAction::PrintPage
+  )
+}
+
 #[cfg(test)]
 mod tests {
   use super::{
-    map_shortcut_with_platform, shortcut_preempts_page_focus, Key, KeyEvent, Modifiers, Platform,
-    ShortcutAction,
+    map_shortcut_with_platform, shortcut_is_chrome_reserved, shortcut_preempts_page_focus, Key,
+    KeyEvent, Modifiers, Platform, ShortcutAction,
   };
 
   #[test]
@@ -1314,6 +1366,8 @@ mod tests {
       ShortcutAction::ZoomOut,
       ShortcutAction::ZoomReset,
       ShortcutAction::ToggleFullScreen,
+      ShortcutAction::SavePage,
+      ShortcutAction::PrintPage,
       ShortcutAction::Copy,
       ShortcutAction::Cut,
       ShortcutAction::Paste,
@@ -1329,5 +1383,67 @@ mod tests {
         "{action:?} should not preempt page focus"
       );
     }
+  }
+
+  #[test]
+  fn ctrl_s_saves_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::S, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::SavePage)
+    );
+  }
+
+  #[test]
+  fn ctrl_p_prints_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::P, Modifiers::new(true, false, false, false)),
+        Platform::Other
+      ),
+      Some(ShortcutAction::PrintPage)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_s_saves_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::S, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::SavePage)
+    );
+  }
+
+  #[test]
+  fn mac_cmd_p_prints_page() {
+    assert_eq!(
+      map_shortcut_with_platform(
+        KeyEvent::new(Key::P, Modifiers::new(false, false, false, true)),
+        Platform::Mac
+      ),
+      Some(ShortcutAction::PrintPage)
+    );
+  }
+
+  #[test]
+  fn save_and_print_shortcuts_are_chrome_reserved() {
+    for action in [ShortcutAction::SavePage, ShortcutAction::PrintPage] {
+      assert!(
+        shortcut_is_chrome_reserved(action),
+        "{action:?} should be reserved by browser chrome"
+      );
+    }
+  }
+
+  #[test]
+  fn downloads_panel_shortcut_is_chrome_reserved() {
+    assert!(
+      shortcut_is_chrome_reserved(ShortcutAction::ToggleDownloadsPanel),
+      "ToggleDownloadsPanel should be reserved by browser chrome"
+    );
   }
 }

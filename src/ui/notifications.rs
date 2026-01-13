@@ -40,6 +40,64 @@ pub fn derive_warning_toast_title(text: &str) -> String {
   split_warning_toast_text(text).title
 }
 
+/// Default duration for transient chrome notifications.
+pub const TOAST_DEFAULT_TTL: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+  Info,
+  Warning,
+  Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+  pub kind: ToastKind,
+  pub text: String,
+  pub expires_at: Instant,
+}
+
+/// Lifecycle state for a transient toast.
+///
+/// This is intentionally UI-framework agnostic (no egui types) so it can be unit tested without
+/// compiling optional GUI dependencies.
+#[derive(Debug, Default)]
+pub struct ToastState {
+  toast: Option<Toast>,
+}
+
+impl ToastState {
+  pub fn show(&mut self, kind: ToastKind, text: impl Into<String>, now: Instant, ttl: Duration) {
+    let text = text.into();
+    if text.trim().is_empty() {
+      return;
+    }
+    self.toast = Some(Toast {
+      kind,
+      text,
+      expires_at: now + ttl,
+    });
+  }
+
+  pub fn toast(&self) -> Option<&Toast> {
+    self.toast.as_ref()
+  }
+
+  pub fn dismiss(&mut self) {
+    self.toast = None;
+  }
+
+  pub fn expire(&mut self, now: Instant) {
+    if self.toast.as_ref().is_some_and(|toast| now >= toast.expires_at) {
+      self.toast = None;
+    }
+  }
+
+  pub fn next_deadline(&self) -> Option<Instant> {
+    self.toast.as_ref().map(|toast| toast.expires_at)
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct WarningToast {
   pub text: String,
@@ -254,6 +312,35 @@ mod tests {
   use super::*;
 
   #[test]
+  fn toast_state_shows_and_expires() {
+    let mut state = ToastState::default();
+    let ttl = Duration::from_secs(2);
+    let t0 = Instant::now();
+
+    state.show(ToastKind::Info, "Hello", t0, ttl);
+    let toast = state.toast().expect("toast should exist");
+    assert_eq!(toast.kind, ToastKind::Info);
+    assert_eq!(toast.text, "Hello");
+    assert_eq!(state.next_deadline(), Some(t0 + ttl));
+
+    state.expire(t0 + Duration::from_secs(1));
+    assert!(state.toast().is_some());
+
+    state.expire(t0 + ttl);
+    assert!(state.toast().is_none());
+  }
+
+  #[test]
+  fn toast_state_dismiss_clears() {
+    let mut state = ToastState::default();
+    let t0 = Instant::now();
+    state.show(ToastKind::Info, "Hello", t0, Duration::from_secs(1));
+    assert!(state.toast().is_some());
+    state.dismiss();
+    assert!(state.toast().is_none());
+  }
+
+  #[test]
   fn warning_toast_none_to_some_shows_then_expires() {
     let mut state = WarningToastState::default();
     let ttl = Duration::from_secs(3);
@@ -310,7 +397,6 @@ mod tests {
     assert!(state.update(Some("Viewport clamped"), t0 + Duration::from_secs(3), ttl));
     assert!(state.toast().is_some());
   }
-
   #[test]
   fn classify_warning_toast_none_or_empty_is_none() {
     assert_eq!(classify_warning_toast(None), None);
