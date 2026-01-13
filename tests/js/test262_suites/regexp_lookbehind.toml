@@ -6,4 +6,8 @@
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
   "built-ins/RegExp/lookBehind/**/*.js",
+  # Lookbehind + named capture group interaction (requires `regexp-named-groups` too).
+  "built-ins/RegExp/named-groups/lookbehind.js",
+  # Annex B non-Unicode parsing edge case involving lookbehind + named groups.
+  "annexB/built-ins/RegExp/named-groups/non-unicode-malformed-lookbehind.js",
 ]
