@@ -15,6 +15,18 @@ Code map (repo reality):
 
 - High-level renderer spawn sandboxing:
   - `src/sandbox/windows.rs` (`fastrender::sandbox::windows::spawn_sandboxed(...)`)
+    - AppContainer (preferred; zero capabilities) + Job object + handle-inheritance allowlisting.
+    - Spawn-time environment sanitization (explicit allowlisted env block; overrides `TEMP`/`TMP` to a
+      sandbox-accessible temp dir; debug escape hatch: `FASTR_WINDOWS_SANDBOX_INHERIT_ENV=1`).
+    - AppContainer temp/CWD setup + dev/CI executable relocation + ACL remediation on
+      `ERROR_ACCESS_DENIED` (copy to a temp dir and retry).
+    - Process mitigation policies (`win_sandbox::mitigations::renderer_mitigation_policy`; escape
+      hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`) and best-effort hardening via
+      `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (`SpawnConfig::all_application_packages_hardened`).
+    - Debug/compatibility escape hatches:
+      - Disable token/AppContainer sandboxing entirely (INSECURE): `FASTR_DISABLE_RENDERER_SANDBOX=1`
+        / `FASTR_WINDOWS_RENDERER_SANDBOX=off`
+      - Allow running without the full Windows sandbox (developer-only): `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`
   - `src/sandbox/windows/appcontainer.rs` (dynamic loader for AppContainer APIs in `userenv.dll`)
     - We resolve AppContainer APIs at runtime (via `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`
       + `GetProcAddress`) so the binary can still load on Windows versions that lack these exports;
@@ -23,10 +35,12 @@ Code map (repo reality):
       - Set `FASTR_ALLOW_UNSANDBOXED_RENDERER=1` to opt in to restricted-token / unsandboxed fallback.
 - Reusable Win32 wrappers + reusable spawner + tests:
   - `crates/win-sandbox/`
-    - `Job` (job object wrapper + limits)
-    - AppContainer SID helpers (`AppContainerProfile`, `derive_appcontainer_sid`)
-    - Restricted-token fallback builder (`RestrictedToken`)
-    - `CreateProcessW` spawner (`spawn_sandboxed`, `SpawnConfig`) → `ChildProcess`
+    - `Job` (job object wrapper + limits; `crates/win-sandbox/src/job.rs`)
+    - AppContainer SID helpers (`AppContainerProfile`, `derive_appcontainer_sid`;
+      `crates/win-sandbox/src/appcontainer.rs`)
+    - Restricted-token fallback builder (`RestrictedToken`; `crates/win-sandbox/src/restricted_token.rs`)
+    - `CreateProcessW` spawner (`spawn_sandboxed`, `SpawnConfig`; `crates/win-sandbox/src/spawn.rs`)
+      → `ChildProcess`
       - Can attach an AppContainer token (no capabilities) via `SECURITY_CAPABILITIES` when the
         caller provides an `AppContainerProfile`.
       - Can attach a Job object via `PROC_THREAD_ATTRIBUTE_JOB_LIST` when the caller provides a
@@ -55,7 +69,8 @@ Code map (repo reality):
         AppContainer token via `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY`
         (`SpawnConfig::all_application_packages_hardened`, best-effort / retried without on
         unsupported Windows builds).
-    - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
+    - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`;
+      `crates/win-sandbox/src/restricted_token.rs`)
       - Uses a low-integrity restricted primary token (from `RestrictedToken`).
       - Inherits the parent process environment by default (no environment sanitization).
       - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
@@ -64,7 +79,8 @@ Code map (repo reality):
         `ERROR_ACCESS_DENIED` (best-effort). It does **not** provide an automatic “jobless” mode.
       - Mitigation policies are best-effort: if the OS rejects
         `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`, the spawner retries without mitigations.
-    - High-level renderer sandbox wrapper (`win_sandbox::renderer::RendererSandbox`)
+    - High-level renderer sandbox wrapper (`win_sandbox::renderer::RendererSandbox`;
+      `crates/win-sandbox/src/renderer.rs`)
       - Sets up a Job object (kill-on-close + active-process limit; optional memory cap) and (when
         supported) an AppContainer profile with zero capabilities, then spawns the child suspended,
         assigns it to the job, and resumes it.
@@ -73,7 +89,8 @@ Code map (repo reality):
         retried without on unsupported Windows builds).
       - Used primarily by `crates/win-sandbox` tests/tooling; it does **not** include `fastrender`’s
         environment sanitization or executable relocation workarounds.
-    - AppContainer-only convenience spawner (`win_sandbox::RendererSandbox`)
+    - AppContainer-only convenience spawner (`win_sandbox::RendererSandbox`;
+      `crates/win-sandbox/src/renderer_sandbox.rs`)
       - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
       - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
       - Inherits the parent process environment by default (no environment sanitization).
@@ -90,14 +107,17 @@ Code map (repo reality):
       - Spawns a sandboxed copy of itself and prints observed sandbox state from inside the child
         (AppContainer + integrity level + `ALL APPLICATION PACKAGES` group presence + Job membership
         + selected mitigations), with optional filesystem/network probes for quick regression triage.
-    - Mitigation policy builder + verifier (`mitigations::*`)
-    - Capability detection helpers (`support::*`, `SandboxSupport`) and opt-in policy wrapper
-      (`RendererSandboxMode`) used to avoid silent sandbox downgrades on unsupported hosts.
+    - Mitigation policy builder + verifier (`mitigations::*`; `crates/win-sandbox/src/mitigations.rs`)
+    - Capability detection helpers (`support::*`, `SandboxSupport`; `crates/win-sandbox/src/support.rs`)
+      and opt-in policy wrapper (`RendererSandboxMode`) used to avoid silent sandbox downgrades on
+      unsupported hosts.
 
 Rule of thumb:
 
 - Use `fastrender::sandbox::windows::spawn_sandboxed(...)` when you want the **full renderer spawn
-  sandbox** (AppContainer/restricted token + Job + handle allowlisting).
+  sandbox** (AppContainer + Job + handle allowlisting + env sanitization + AppContainer temp/CWD +
+  mitigations; restricted-token / unsandboxed fallback only when explicitly opted in via
+  `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`).
 - Use `win_sandbox::spawn_sandboxed(&SpawnConfig)` when you want a **reusable `CreateProcessW` spawner**
   that can apply AppContainer/Job/handle-allowlist and (optionally) mitigations, but you do **not**
   need the extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env sanitization
