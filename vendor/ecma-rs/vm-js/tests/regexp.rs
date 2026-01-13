@@ -444,6 +444,20 @@ fn regexp_unicode_property_escape_is_enabled_for_v_flag() {
 }
 
 #[test]
+fn regexp_unicode_property_escape_inside_unicode_sets_class() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var r = new RegExp("[\\p{ASCII}]", "v");
+        [r.test("a"), r.test("é")].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,false");
+}
+
+#[test]
 fn regexp_invalid_character_class_range_throws_syntax_error() {
   let mut rt = new_runtime();
   let value = rt

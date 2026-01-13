@@ -4492,7 +4492,10 @@ impl<'a> Parser<'a> {
         }
 
         if negated {
-          if inner.may_contain_strings() {
+          // Negated nested classes compute a complement set. We currently only implement
+          // complement over the BMP `CharSet` universe; reject string elements and supplementary
+          // code points to avoid silently producing incorrect results.
+          if inner.may_contain_strings() || !inner.supplementary.is_empty() {
             return Err(RegExpSyntaxError {
               message: "Invalid regular expression",
             }
