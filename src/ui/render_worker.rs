@@ -794,13 +794,16 @@ fn js_dom_node_for_preorder_id(
   preorder_id: usize,
   element_id: Option<&str>,
   _js_dom_mapping_generation: &mut u64,
-  _js_dom_mapping: &mut Option<crate::dom2::RendererDomMapping>,
+  js_dom_mapping: &mut Option<crate::dom2::RendererDomMapping>,
 ) -> Option<crate::dom2::NodeId> {
-  if let Some(node_id) = element_id.and_then(|id| js_tab.dom().get_element_by_id(id)) {
-    return Some(node_id);
-  }
-
-  js_tab.dom2_node_for_renderer_preorder(preorder_id)
+  js_dom_mapping
+    .as_ref()
+    .and_then(|mapping| mapping.node_id_for_preorder(preorder_id))
+    .or_else(|| element_id.and_then(|id| js_tab.dom().get_element_by_id(id)))
+    // As a last resort (e.g. no mapping + no element id), fall back to indexing into the live dom2
+    // node list. This is not stable under DOM mutations (insertions/removals shift indices), so it
+    // must remain a best-effort fallback.
+    .or_else(|| js_tab.dom().node_id_from_index(preorder_id.saturating_sub(1)).ok())
 }
 
 fn js_dom_node_for_preorder_id_with_log(
