@@ -470,3 +470,20 @@ pub fn scroll_state_for_focus(
     None
   }
 }
+
+/// Returns a fragment-tree path to the first fragment associated with `styled_node_id`.
+///
+/// This is useful for interaction subsystems that need to build scroll chains for a focused element
+/// without relying on hit-testing (e.g. when the focused element is scrolled out of view and clipped
+/// by an overflow scroll container).
+pub fn fragment_path_for_styled_node_id(
+  box_tree: &BoxTree,
+  fragment_tree: &FragmentTree,
+  styled_node_id: usize,
+) -> Option<(HitTestRoot, Vec<usize>)> {
+  let box_ids = collect_box_ids_for_styled_node(box_tree, styled_node_id);
+  if box_ids.is_empty() {
+    return None;
+  }
+  find_fragment_path_for_box_ids(fragment_tree, &box_ids)
+}

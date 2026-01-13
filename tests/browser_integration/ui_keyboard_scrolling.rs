@@ -63,6 +63,44 @@ fn wait_for_scroll_response(
   (frame_y, frame_y)
 }
 
+fn wait_for_frame_with_scroll_state(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+  mut pred: impl FnMut(&fastrender::scroll::ScrollState) -> bool,
+) -> fastrender::ui::RenderedFrame {
+  let deadline = Instant::now() + timeout;
+  let mut seen: Vec<WorkerToUi> = Vec::new();
+  while Instant::now() < deadline {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(msg) => {
+        match msg {
+          WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
+            if pred(&frame.scroll_state) {
+              return frame;
+            }
+            if seen.len() < 64 {
+              seen.push(WorkerToUi::FrameReady { tab_id: got, frame });
+            }
+          }
+          other => {
+            if seen.len() < 64 {
+              seen.push(other);
+            }
+          }
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  panic!(
+    "timed out waiting for FrameReady satisfying predicate\nmessages:\n{}",
+    format_messages(&seen)
+  );
+}
+
 #[test]
 fn keyboard_scroll_actions_update_viewport_scroll_state() {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
@@ -140,6 +178,144 @@ fn keyboard_scroll_actions_update_viewport_scroll_state() {
     frame_y <= 1.0,
     "expected Home to scroll to top, got {frame_y}"
   );
+
+  drop(tx);
+  join.join().unwrap();
+}
+
+#[test]
+fn keyboard_scroll_keys_scroll_focused_scroll_container() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  // Nested overflow scroller with a focusable child plus tall outer content so the viewport *can*
+  // scroll (and we can detect regressions where keyboard scrolling incorrectly targets the viewport).
+  let site = TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #scroller {
+              width: 200px;
+              height: 120px;
+              overflow-y: scroll;
+              border: 0;
+              background: rgb(0,0,0);
+            }
+            #content {
+              position: relative;
+              height: 2000px;
+            }
+            #focus {
+              display: block;
+              padding: 8px;
+              color: rgb(255,255,255);
+            }
+            #outer-spacer {
+              height: 4000px;
+              background: linear-gradient(#eee, #ccc);
+            }
+          </style>
+        </head>
+        <body>
+          <div id="scroller">
+            <div id="content">
+              <a id="focus" href="about:blank">focus me</a>
+            </div>
+          </div>
+          <div id="outer-spacer">outer</div>
+        </body>
+      </html>
+    "#,
+  );
+
+  let fastrender::ui::BrowserWorkerHandle { tx, rx, join } =
+    spawn_browser_worker().expect("spawn browser worker");
+
+  let tab_id = TabId(1);
+  let cancel = CancelGens::new();
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  let viewport_css = (240, 180);
+  tx.send(viewport_changed_msg(tab_id, viewport_css, 1.0))
+    .unwrap();
+  tx.send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .unwrap();
+
+  let initial_frame = wait_for_initial_frame(&rx, tab_id);
+  assert!(
+    initial_frame.scroll_metrics.bounds_css.max_y > viewport_css.1 as f32,
+    "expected outer page to be scrollable, got scroll metrics {:?}",
+    initial_frame.scroll_metrics
+  );
+  let baseline_viewport = initial_frame.scroll_state.viewport;
+  assert!(
+    baseline_viewport.y.abs() < 1e-3,
+    "expected initial viewport scroll y to be 0, got {}",
+    baseline_viewport.y
+  );
+
+  // Focus the child inside the nested scroller.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Tab))
+    .unwrap();
+
+  // Space should scroll the *element* scroller, not the viewport.
+  tx.send(key_action(tab_id, fastrender::interaction::KeyAction::Space))
+    .unwrap();
+  let frame = wait_for_frame_with_scroll_state(&rx, tab_id, DEFAULT_TIMEOUT, |scroll| {
+    !scroll.elements.is_empty() && (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3
+  });
+  let mut element_scroll_y = frame
+    .scroll_state
+    .elements
+    .values()
+    .map(|p| p.y)
+    .fold(0.0, f32::max);
+  assert!(
+    element_scroll_y > 1.0,
+    "expected Space to scroll a focused element scroller, got elements={:?}",
+    frame.scroll_state.elements
+  );
+
+  // PageDown (sent as UiToWorker::Scroll with no pointer) should also scroll the focused element
+  // scroller, not the viewport.
+  let page_step = (viewport_css.1.max(1) as f32 * 0.9).max(1.0);
+  tx.send(scroll_msg(tab_id, (0.0, page_step), None)).unwrap();
+  let frame = wait_for_frame_with_scroll_state(&rx, tab_id, DEFAULT_TIMEOUT, |scroll| {
+    (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3
+      && scroll
+        .elements
+        .values()
+        .any(|offset| offset.y > element_scroll_y + 1.0)
+  });
+  element_scroll_y = frame
+    .scroll_state
+    .elements
+    .values()
+    .map(|p| p.y)
+    .fold(0.0, f32::max);
+  assert!(
+    element_scroll_y > 1.0,
+    "expected PageDown to scroll focused element scroller"
+  );
+
+  // ArrowDown should scroll the focused element scroller as well.
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ArrowDown,
+  ))
+  .unwrap();
+  let _frame = wait_for_frame_with_scroll_state(&rx, tab_id, DEFAULT_TIMEOUT, |scroll| {
+    (scroll.viewport.y - baseline_viewport.y).abs() < 1e-3
+      && scroll
+        .elements
+        .values()
+        .any(|offset| offset.y > element_scroll_y + 1.0)
+  });
 
   drop(tx);
   join.join().unwrap();

@@ -1131,6 +1131,126 @@ fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Poin
   }
 }
 
+fn sanitize_scroll_point(point: Point) -> Point {
+  Point::new(
+    if point.x.is_finite() { point.x } else { 0.0 },
+    if point.y.is_finite() { point.y } else { 0.0 },
+  )
+}
+
+/// Apply a scroll delta to the scroll chain associated with the focused DOM node.
+///
+/// This is used for "keyboard scrolling" where no pointer position is available (e.g. PageUp/Down,
+/// Space, Arrow keys). In browsers, when focus is inside a nested overflow scroll container,
+/// keyboard scroll keys typically scroll that nearest scrollable ancestor instead of always
+/// scrolling the viewport.
+///
+/// Returns `None` if we cannot resolve a fragment path for the focused node (e.g. no layout cache or
+/// the node isn't represented in the current box/fragment trees).
+fn apply_keyboard_scroll_delta_for_focus(
+  prepared: &crate::api::PreparedDocument,
+  scroll_state: &ScrollState,
+  focused_node_id: usize,
+  delta: Point,
+) -> Option<ScrollState> {
+  use crate::tree::fragment_tree::HitTestRoot;
+
+  let (root_kind, path) = crate::interaction::focus_scroll::fragment_path_for_styled_node_id(
+    prepared.box_tree(),
+    prepared.fragment_tree(),
+    focused_node_id,
+  )?;
+
+  let viewport_size = prepared.layout_viewport();
+  let options = crate::scroll::ScrollOptions {
+    source: crate::scroll::ScrollSource::User,
+    simulate_overscroll: false,
+    apply_snap: true,
+  };
+
+  let original_viewport = sanitize_scroll_point(scroll_state.viewport);
+  let mut next = scroll_state.clone();
+  next.viewport = original_viewport;
+
+  match root_kind {
+    HitTestRoot::Root => {
+      let mut chain =
+        crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &path);
+      if chain.is_empty() {
+        return Some(next);
+      }
+
+      let chain_len = chain.len();
+      for (idx, state) in chain.iter_mut().enumerate() {
+        if idx == chain_len - 1 {
+          state.scroll = original_viewport;
+        } else if let Some(id) = state.container.box_id() {
+          state.scroll = sanitize_scroll_point(scroll_state.element_offset(id));
+        } else {
+          state.scroll = Point::ZERO;
+        }
+      }
+
+      crate::scroll::apply_scroll_chain(&mut chain, delta, options);
+
+      for (idx, state) in chain.iter().enumerate() {
+        if idx == chain_len - 1 {
+          next.viewport = state.scroll;
+        } else if let Some(id) = state.container.box_id() {
+          if state.scroll == Point::ZERO {
+            next.elements.remove(&id);
+          } else {
+            next.elements.insert(id, state.scroll);
+          }
+        }
+      }
+    }
+    HitTestRoot::Additional(idx) => {
+      let Some(root) = prepared.fragment_tree().additional_fragments.get(idx) else {
+        return Some(next);
+      };
+      let mut chain =
+        crate::scroll::build_scroll_chain_with_root_mode(root, root.bounds.size, &path, false);
+
+      for state in chain.iter_mut() {
+        if let Some(id) = state.container.box_id() {
+          state.scroll = sanitize_scroll_point(scroll_state.element_offset(id));
+        } else {
+          state.scroll = Point::ZERO;
+        }
+      }
+
+      let result = crate::scroll::apply_scroll_chain(&mut chain, delta, options);
+
+      for state in chain.iter() {
+        if let Some(id) = state.container.box_id() {
+          if state.scroll == Point::ZERO {
+            next.elements.remove(&id);
+          } else {
+            next.elements.insert(id, state.scroll);
+          }
+        }
+      }
+
+      if result.remaining != Point::ZERO {
+        let mut viewport_chain =
+          crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport_size, &[]);
+        if let Some(viewport_state) = viewport_chain.first_mut() {
+          viewport_state.scroll = original_viewport;
+          crate::scroll::apply_scroll_chain(&mut viewport_chain, result.remaining, options);
+          if let Some(viewport_state) = viewport_chain.first() {
+            next.viewport = viewport_state.scroll;
+          }
+        }
+      }
+    }
+  }
+
+  // Canonicalize to keep "missing" and "zero" element offsets equivalent.
+  next.elements.retain(|_, offset| *offset != Point::ZERO);
+  Some(next)
+}
+
 fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but does
   // not treat all Unicode whitespace as ignorable (e.g. NBSP).
@@ -3659,14 +3779,14 @@ impl BrowserRuntime {
           let current_scroll = doc.scroll_state();
           let mut changed = false;
           let mut scroll_changed = false;
-          let mut wheel_handled = false;
           let mut emit_scroll_state_updated = false;
           let mut viewport_scrolled = false;
+          let mut scroll_handled = false;
 
           if let Some(pointer_css) = pointer_pos_css {
             // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
              // gesture for numeric stepping (instead of scrolling the page).
-             let scroll_snapshot = tab.scroll_state.clone();
+              let scroll_snapshot = tab.scroll_state.clone();
              let hit_tree = tab.hit_test_fragment_tree_for_scroll(doc, &scroll_snapshot);
              let engine = &mut tab.interaction;
              if let Ok(step_result) = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -3683,12 +3803,12 @@ impl BrowserRuntime {
               (changed, step_result)
             }) {
               if let Some(dom_changed) = step_result {
-                wheel_handled = true;
+                scroll_handled = true;
                 changed |= dom_changed;
               }
             }
 
-            if wheel_handled {
+            if scroll_handled {
               // Numeric stepping does not update scroll state.
             } else {
               // Apply scroll wheel deltas to the scroll container under the pointer (including element
@@ -3698,7 +3818,7 @@ impl BrowserRuntime {
                 (delta_x, delta_y),
               ) {
                 Ok(scrolled) => {
-                  wheel_handled = true;
+                  scroll_handled = true;
                   if scrolled {
                     // Do not apply scroll snap during wheel scrolling: small smooth-scroll deltas
                     // (trackpads) should accumulate across multiple wheel events. Scroll snap is
@@ -3725,9 +3845,51 @@ impl BrowserRuntime {
             }
           }
 
-          // If no pointer position was provided (or we couldn't apply wheel scrolling at all), treat
-          // this as a basic viewport scroll and clamp to the content bounds when possible.
-          if !wheel_handled {
+          if !scroll_handled {
+            // Keyboard scroll gestures (PageUp/Down, Space, Arrow keys, etc) do not have a pointer
+            // position. In browsers, they typically scroll the nearest overflow scroll container for
+            // the focused element (falling back to viewport scroll when no such ancestor exists).
+            //
+            // Try to apply the delta to the focus scroll chain when layout artifacts are available.
+            if pointer_pos_css.is_none() {
+              if let Some(focused_node_id) = tab.interaction.focused_node_id() {
+                let focus_scroll_next = doc.prepared().and_then(|prepared| {
+                  apply_keyboard_scroll_delta_for_focus(
+                    prepared,
+                    &current_scroll,
+                    focused_node_id,
+                    Point::new(delta_x, delta_y),
+                  )
+                });
+
+                if let Some(mut next_scroll) = focus_scroll_next {
+                  scroll_handled = true;
+                  if next_scroll.viewport != current_scroll.viewport
+                    || next_scroll.elements != current_scroll.elements
+                  {
+                    next_scroll.update_deltas_from(&current_scroll);
+                    doc.set_scroll_state(next_scroll.clone());
+                    tab.scroll_state = next_scroll;
+                    tab.sync_js_scroll_state();
+                    scroll_changed = true;
+                    emit_scroll_state_updated = true;
+                    changed = true;
+                    viewport_scrolled = tab.scroll_state.viewport != current_scroll.viewport;
+                  } else {
+                    // Preserve the historical "overscroll repaint" behaviour: even if the requested
+                    // delta clamps back to the current scroll offset, still schedule a repaint so
+                    // callers that expect a frame-per-scroll continue to receive one.
+                    tab.force_repaint = true;
+                    changed = true;
+                  }
+                };
+              }
+            }
+          }
+
+          // If we couldn't apply scrolling via layout-aware logic above (wheel-at-pointer or
+          // focus-based scroll chain), fall back to a basic viewport scroll.
+          if !scroll_handled {
             let mut next = current_scroll.clone();
 
             // Apply the raw delta first. When cached layout artifacts are available, we'll
@@ -9762,15 +9924,21 @@ impl BrowserRuntime {
             if allow_scroll {
               keyboard_scroll = match key {
                 crate::interaction::KeyAction::Home | crate::interaction::KeyAction::ShiftHome => {
-                  Some(UiToWorker::ScrollTo {
+                  // Use a large delta rather than `ScrollTo`: keyboard Home/End should scroll the
+                  // nearest overflow scroll container for the focused element (not always the
+                  // viewport), so we route through the generic scroll handler which can resolve the
+                  // focus scroll chain.
+                  Some(UiToWorker::Scroll {
                     tab_id,
-                    pos_css: (tab.scroll_state.viewport.x, 0.0),
+                    delta_css: (0.0, -1_000_000_000.0),
+                    pointer_css: None,
                   })
                 }
                 crate::interaction::KeyAction::End | crate::interaction::KeyAction::ShiftEnd => {
-                  Some(UiToWorker::ScrollTo {
+                  Some(UiToWorker::Scroll {
                     tab_id,
-                    pos_css: (tab.scroll_state.viewport.x, f32::MAX),
+                    delta_css: (0.0, 1_000_000_000.0),
+                    pointer_css: None,
                   })
                 }
                 crate::interaction::KeyAction::ArrowDown => Some(UiToWorker::Scroll {
