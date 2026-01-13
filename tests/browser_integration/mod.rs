@@ -160,6 +160,7 @@ mod ui_worker_dpr;
 mod ui_worker_favicon;
 mod ui_worker_focus_scroll;
 mod ui_worker_accesskit_scroll;
+mod ui_worker_image_map_area_click;
 mod ui_worker_image_input_submit;
 mod ui_worker_image_maps;
 mod ui_worker_form_submit;
