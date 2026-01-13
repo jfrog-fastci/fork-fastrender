@@ -19,23 +19,35 @@ Code map (repo reality):
     - We resolve AppContainer APIs at runtime (via `LoadLibraryExW(..., LOAD_LIBRARY_SEARCH_SYSTEM32)`
       + `GetProcAddress`) so the binary can still load on Windows versions that lack these exports;
       missing symbols are treated as “no AppContainer support” → fallback mode.
-- Reusable Win32 wrappers + tests (not yet fully wired into the renderer spawner):
+- Reusable Win32 wrappers + reusable spawner + tests:
   - `crates/win-sandbox/`
     - `Job` (job object wrapper + limits)
     - AppContainer SID helpers (`AppContainerProfile`, `derive_appcontainer_sid`)
+    - Restricted-token fallback builder (`RestrictedToken`)
+    - Generic sandbox spawner (`spawn_sandboxed`, `SpawnConfig`, `SandboxRequest`) → `ChildProcess`
+      - Supports AppContainer (no capabilities), restricted-token fallback, or no token sandboxing.
+      - Always uses a Job object for kill-on-close + active process limit.
+      - Supports handle inheritance allowlisting (`inherit_handles` / `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
+      - Can apply a mitigation policy bitmask (`mitigation_policy`) via
+        `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
+    - AppContainer-only convenience spawner (`RendererSandbox`)
+      - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
+      - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
+      - Does **not** assign the child to a Job object (callers must do that separately).
     - Mitigation policy builder + verifier (`mitigations::*`)
-    - A separate Windows spawn helper that applies **mitigation policies only**:
-      `win_sandbox::spawn_sandboxed(...)`
-      - Note: this helper does **not** currently apply the full renderer sandbox (no AppContainer,
-        no restricted token, no Job, no handle allowlist). It exists for targeted testing/bring-up
-        and should not be treated as a complete sandbox boundary.
+    - Capability detection helpers (`support::*`, `SandboxSupport`) and opt-in policy wrapper
+      (`RendererSandboxMode`) used to avoid silent sandbox downgrades on unsupported hosts.
 
 Rule of thumb:
 
 - Use `fastrender::sandbox::windows::spawn_sandboxed(...)` when you want the **full renderer spawn
   sandbox** (AppContainer/restricted token + Job + handle allowlisting).
-- Use `win_sandbox::spawn_sandboxed(...)` when you explicitly want “spawn a process with mitigation
-  policies applied” (primarily tests).
+- Use `win_sandbox::spawn_sandboxed(&SpawnConfig)` when you want a **reusable spawner** that can
+  apply AppContainer/restricted-token/Job/handle-allowlist and (optionally) mitigations, but you do
+  **not** need the extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env
+  sanitization and AppContainer executable relocation/current-dir workarounds).
+- Use `win_sandbox::RendererSandbox` when you specifically want “AppContainer-only spawn + stdio
+  allowlist + exe relocation” and will handle job assignment separately.
 
 Related docs:
 
@@ -235,6 +247,9 @@ If the parent process is already running inside a Windows Job (common in CI/supe
   case `SandboxedChild.job` is `None` and the code prints a warning: **kill-on-close + active
   process limit are not enforced**.
 
+Note: `crates/win-sandbox::spawn_sandboxed` is stricter here: it treats “cannot assign process to
+Job” as a hard error and will terminate + return an error rather than running jobless.
+
 ## Handle inheritance allowlisting (critical)
 
 On Windows, a sandbox boundary can be defeated if the child inherits **powerful handles** from the
@@ -303,6 +318,8 @@ In repo reality today:
 - `crates/win-sandbox/src/mitigations.rs` defines the renderer mitigation bitmask
   (`mitigations::renderer_mitigation_policy()`).
 - `crates/win-sandbox/src/spawn.rs` can apply it during process creation.
+- Mitigations are **opt-in per spawn**: `SpawnConfig::mitigation_policy` defaults to `0` (disabled)
+  unless the caller sets it.
 - Escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (useful for
   debugging/compatibility).
 
@@ -355,7 +372,11 @@ The builder adds only flags supported by the current OS (best-effort compatibili
 If AppContainer is unavailable or fails to initialize, we fall back to a “best-effort” sandbox:
 
 - Create a **restricted token** via
-  `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, /* no SID restrictions */ ...)`.
+  `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, ...)`.
+  - Repo reality: `src/sandbox/windows.rs` currently strips privileges but does **not** disable any
+    group SIDs (`DisableSidCount = 0`).
+  - `crates/win-sandbox` additionally disables a small set of broad local group SIDs (deny-only)
+    like `BUILTIN\\Users` as defense-in-depth against permissive filesystem ACLs.
 - Set the token’s **Integrity Level (IL)** to **Low** (`S-1-16-4096`).
 
 Then we spawn the child using `CreateProcessAsUserW` with the restricted primary token (see
@@ -366,9 +387,8 @@ This is meaningfully weaker than AppContainer:
 - **Network is not reliably blocked.** A restricted/low-IL process can usually still open outbound
   sockets unless additional OS policy/firewall rules exist. Do *not* assume “no network” in this
   mode.
-- The current restricted-token configuration primarily disables privileges; it does not attempt to
-  comprehensively remove group SIDs or implement a hardened “deny-only” token. Treat it as a
-  compatibility fallback.
+- Even with some group disabling (where used), this is not equivalent to AppContainer. Treat it as a
+  compatibility fallback rather than a production-grade “no network/no filesystem” boundary.
 - Filesystem access is reduced, but not eliminated: ACLs that allow read access to low-IL or “Everyone”
   may still be readable.
 - Many Windows resources are not designed around Low IL as a strict sandbox boundary.
@@ -396,9 +416,15 @@ From `src/sandbox/windows.rs` (spawn-time sandboxing):
     **Job object** and the **handle allowlist**. This is not a security boundary (no network/FS
     restrictions), but it keeps lifecycle/handle-leak invariants closer to the real configuration.
 
-From `crates/win-sandbox` (mitigation-only escape hatch):
+From `crates/win-sandbox` (mitigation policy escape hatch):
 
 - `FASTR_DISABLE_WIN_MITIGATIONS=1`: do not apply mitigation policies during process spawn.
+
+From `crates/win-sandbox` (strict “no silent downgrade” policy helper):
+
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`: allow `RendererSandboxMode::new_default()` to return
+  `Disabled` on hosts that do not support AppContainer and/or nested jobs. Without this opt-in,
+  `new_default()` returns an error so callers don’t accidentally ship a silently-unsandboxed renderer.
 
 ### Verify AppContainer / Job in Process Explorer
 
@@ -476,7 +502,13 @@ Windows-only tests that encode the intended boundary:
 - No child processes (active process job limit): `tests/sandbox/windows_no_child_process.rs`
 - Parent process handle escape attempt: `tests/sandbox/windows_process_handle_escape.rs`
 - AppContainer spawn smoke: `tests/windows_sandbox_appcontainer_spawn.rs`
+- Environment sanitization (no secret env inheritance): `tests/windows_sandbox_env_sanitization.rs`
+- Job kill-on-close semantics: `tests/sandbox/windows_job_kill_on_close.rs`
+- AppContainer blocks outbound network (end-to-end spawn helper): `tests/sandbox/windows_network_denial.rs`
+- AppContainer blocks user profile file reads (end-to-end spawn helper): `crates/win-sandbox/tests/filesystem_denied.rs`
+- AppContainer blocks outbound network (no capabilities): `crates/win-sandbox/tests/network_denied.rs`
 - Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
+- Restricted-token fallback invariants (low integrity, reduced filesystem access): `crates/win-sandbox/tests/restricted_token_mode.rs`
 - Mitigation policy verification: `crates/win-sandbox/src/lib.rs` tests +
   `crates/win-sandbox/src/mitigations.rs::verify_renderer_mitigations_current_process`
 

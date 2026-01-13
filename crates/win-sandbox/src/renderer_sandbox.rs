@@ -325,6 +325,7 @@ fn grant_read_execute_acl(path: &Path, sid: windows_sys::Win32::Security::PSID) 
   let mut ea: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
   ea.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
   ea.grfAccessMode = GRANT_ACCESS;
+  // `NO_INHERITANCE` is the default (0). We intentionally do not grant inheritance.
   ea.grfInheritance = NO_INHERITANCE;
   ea.Trustee = TRUSTEE_W {
     pMultipleTrustee: std::ptr::null_mut(),
@@ -428,9 +429,7 @@ impl AttributeList {
 impl Drop for AttributeList {
   fn drop(&mut self) {
     unsafe {
-      if !self.list.is_null() {
-        DeleteProcThreadAttributeList(self.list);
-      }
+      DeleteProcThreadAttributeList(self.list);
     }
     // `_buffer` is dropped automatically.
   }

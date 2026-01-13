@@ -60,13 +60,15 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Windows note: disabling token/AppContainer sandboxing does **not** remove all guardrails: the spawn
     helper still uses a Job Object (kill-on-close, active-process cap) and the handle-inheritance
     allowlist.
+- `FASTR_ALLOW_UNSANDBOXED_RENDERER=0|1` – **Windows-only**: allow running without the Windows renderer sandbox when the host does not support the required primitives.
+  - Used by `crates/win-sandbox` (`RendererSandboxMode::new_default`) to enforce “no silent downgrade”
+    on older Windows versions (must opt in to unsandboxed mode).
+  - This is separate from `FASTR_DISABLE_RENDERER_SANDBOX` (a debug escape hatch for the main
+    `fastrender::sandbox::windows::spawn_sandboxed` helper).
 - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` – **macOS-only**: override the Seatbelt renderer profile used by `src/sandbox/macos.rs`.
   - `pure-computation` is the strict default.
   - `system-fonts` enables the relaxed system-font allowlist profile.
 - `FASTR_MACOS_USE_SANDBOX_EXEC=0|1` – **macOS-only**: opt into wrapping spawned subprocesses with `/usr/bin/sandbox-exec` when using `macos_spawn` helpers (debug/legacy; deprecated by Apple).
-- `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable Win32 *process mitigation policies* applied at process creation (Win32k lockdown, dynamic code prohibition, etc).
-  - This does **not** disable AppContainer / restricted-token sandboxing or job-object limits; it only skips the optional mitigation policy attribute layer.
-  - Intended for debugging and compatibility with older/unusual Windows configurations.
 - `FASTR_LOG_SANDBOX=0|1` – **Windows-only**: enable verbose Windows sandbox spawn logging (useful when debugging AppContainer/restricted-token failures).
   - In debug builds, sandbox spawn debug logs are enabled by default; set this in release builds.
 - `FASTR_DISABLE_WIN_MITIGATIONS=0|1` – **Windows-only**: disable applying Windows process mitigation policies (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`) when spawning via `crates/win-sandbox`.
