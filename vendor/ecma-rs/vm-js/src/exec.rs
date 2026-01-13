@@ -7902,11 +7902,6 @@ impl<'a> Evaluator<'a> {
             VarDeclMode::Let => BindingKind::Let,
             VarDeclMode::Const => BindingKind::Const,
             VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-            _ => {
-              return Err(VmError::Unimplemented(
-                "for-in loop variable declaration kind",
-              ));
-            }
           };
           bind_pattern(
             self.vm,
@@ -8059,11 +8054,6 @@ impl<'a> Evaluator<'a> {
             VarDeclMode::Let => BindingKind::Let,
             VarDeclMode::Const => BindingKind::Const,
             VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-            _ => {
-              return Err(VmError::Unimplemented(
-                "for-of loop variable declaration kind",
-              ));
-            }
           };
           bind_pattern(
             self.vm,
@@ -17840,7 +17830,6 @@ fn async_for_in_loop_from(
           VarDeclMode::Let => BindingKind::Let,
           VarDeclMode::Const => BindingKind::Const,
           VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-          _ => return Err(VmError::Unimplemented("for-in loop variable declaration kind")),
         };
         async_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)
       }
@@ -18355,7 +18344,6 @@ fn async_for_await_of_handle_iter_value(
         VarDeclMode::Let => BindingKind::Let,
         VarDeclMode::Const => BindingKind::Const,
         VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-        _ => return Err(VmError::Unimplemented("for-await-of loop variable declaration kind")),
       };
       async_bind_pattern(evaluator, &mut bind_scope, &pat_decl.stx.pat.stx, value, kind)
     }
@@ -18927,7 +18915,6 @@ fn async_for_of_loop(
           VarDeclMode::Let => BindingKind::Let,
           VarDeclMode::Const => BindingKind::Const,
           VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-          _ => return Err(VmError::Unimplemented("for-of loop variable declaration kind")),
         };
         async_bind_pattern(evaluator, scope, &pat_decl.stx.pat.stx, value, kind)
       }
@@ -29047,7 +29034,6 @@ fn gen_for_of_loop(
           VarDeclMode::Let => BindingKind::Let,
           VarDeclMode::Const => BindingKind::Const,
           VarDeclMode::Using | VarDeclMode::AwaitUsing => BindingKind::Const,
-          _ => return Err(VmError::Unimplemented("for-of loop variable declaration kind")),
         };
         bind_pattern(
           evaluator.vm,

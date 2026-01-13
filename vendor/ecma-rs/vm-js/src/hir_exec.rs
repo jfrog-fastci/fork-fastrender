@@ -2619,9 +2619,6 @@ impl<'vm> HirEvaluator<'vm> {
         result
       }
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
-      other => Err(match other {
-        _ => VmError::Unimplemented("statement (hir-js compiled path)"),
-      }),
     }
   }
 
@@ -4964,7 +4961,6 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::AssignOp::LogicalAndAssign
       | hir_js::AssignOp::LogicalOrAssign
       | hir_js::AssignOp::NullishAssign => self.eval_logical_assignment(scope, body, op, target, value),
-      _ => Err(VmError::Unimplemented("assignment operator (hir-js compiled path)")),
     }
   }
 
@@ -7586,7 +7582,12 @@ impl<'vm> HirEvaluator<'vm> {
       self.early_error_missing_initializers_in_stmt_list(block_body, block_body.root_stmts.as_slice())?;
 
       self.instantiate_var_decls(&mut block_scope, block_body, block_body.root_stmts.as_slice())?;
-      self.instantiate_function_decls(&mut block_scope, block_body, block_body.root_stmts.as_slice())?;
+      self.instantiate_function_decls(
+        &mut block_scope,
+        block_body,
+        block_body.root_stmts.as_slice(),
+        /* annex_b */ false,
+      )?;
       self.instantiate_lexical_decls(
         &mut block_scope,
         block_body,
