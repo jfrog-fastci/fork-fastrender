@@ -672,8 +672,13 @@ impl FfmpegCliSession {
     let frame_index = self.video_frame_index;
     self.video_frame_index = self.video_frame_index.saturating_add(1);
 
+    let pts_ns = self.frame_pts_ns(frame_index);
+    let next_pts_ns = self.frame_pts_ns(frame_index.saturating_add(1));
+    let duration_ns = next_pts_ns.saturating_sub(pts_ns);
+
     Ok(Some(DecodedVideoFrame {
-      pts_ns: self.frame_pts_ns(frame_index),
+      pts_ns,
+      duration_ns,
       width: vmeta.info.width,
       height: vmeta.info.height,
       rgba,

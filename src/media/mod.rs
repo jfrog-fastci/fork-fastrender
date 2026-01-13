@@ -370,6 +370,12 @@ pub struct DecodedAudioChunk {
 #[derive(Debug, Clone)]
 pub struct DecodedVideoFrame {
   pub pts_ns: u64,
+  /// Duration to display this frame (nanoseconds), when known.
+  ///
+  /// This is derived from demuxer/container timing metadata (e.g. Matroska `DefaultDuration` or
+  /// per-frame `Frame.duration`) and can be used by scheduling code to decide when to advance to the
+  /// next frame.
+  pub duration_ns: u64,
   pub width: u32,
   pub height: u32,
   /// RGBA8 pixels, row-major, tightly packed.

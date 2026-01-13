@@ -145,6 +145,7 @@ impl VideoDecoder for super::codecs::vp9::Vp9Decoder {
         .into_iter()
         .map(|f| DecodedVideoFrame {
           pts_ns: f.pts_ns,
+          duration_ns: packet.duration_ns,
           width: f.width,
           height: f.height,
           rgba: f.rgba8,
@@ -269,6 +270,7 @@ impl VideoDecoder for H264Decoder {
 
     Ok(vec![DecodedVideoFrame {
       pts_ns: packet.pts_ns,
+      duration_ns: packet.duration_ns,
       width: w as u32,
       height: h as u32,
       rgba,

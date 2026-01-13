@@ -656,25 +656,24 @@ impl SessionAutosave {
           &save_fn,
         );
 
-        let path_for_fallback = path_for_struct.clone();
-        let save_fn_for_fallback = Arc::clone(&save_fn);
+        let sync_fallback = SyncFallback {
+          path: path_for_struct.clone(),
+          save_fn: Arc::clone(&save_fn),
+          write_count: Arc::clone(&write_count),
+          status: Arc::clone(&status),
+          state: Mutex::new(SyncFallbackState {
+            current_session,
+            pending_session: None,
+            last_write_result,
+            needs_corrupt_quarantine,
+          }),
+        };
 
         Self {
           path: path_for_struct,
           tx: None,
           join: None,
-          sync_fallback: Some(SyncFallback {
-            path: path_for_fallback,
-            save_fn: save_fn_for_fallback,
-            write_count: Arc::clone(&write_count),
-            status: Arc::clone(&status),
-            state: Mutex::new(SyncFallbackState {
-              current_session,
-              pending_session: None,
-              last_write_result,
-              needs_corrupt_quarantine,
-            }),
-          }),
+          sync_fallback: Some(sync_fallback),
           write_count,
           status: status_handle,
           save_fn,

@@ -52,6 +52,128 @@ fn check_webm_codec_private_size(track_id: u64, len: usize) -> MediaResult<()> {
   Ok(())
 }
 
+const MAX_PACKET_DURATION_NS: u64 = 10_000_000_000;
+
+#[inline]
+fn clamp_duration_ns(duration_ns: u64) -> u64 {
+  duration_ns.min(MAX_PACKET_DURATION_NS)
+}
+
+#[inline]
+fn delta_duration_ns(current_pts_ns: u64, next_pts_ns: u64) -> u64 {
+  if next_pts_ns <= current_pts_ns {
+    return 0;
+  }
+  clamp_duration_ns(next_pts_ns - current_pts_ns)
+}
+
+/// Minimal per-track duration estimation state.
+///
+/// This buffers at most one packet per track when duration metadata is absent so we can compute
+/// `next_pts - current_pts` (Matroska/WebM fallback when `Frame.duration` and `DefaultDuration`
+/// are missing).
+#[derive(Debug, Default)]
+struct DurationState {
+  /// Per-track `DefaultDuration` (already in nanoseconds).
+  track_default_duration_ns: HashMap<u64, u64>,
+  /// The last packet for each track that lacked duration information and is waiting for a future
+  /// PTS to compute `next_pts - current_pts`.
+  pending_by_track: HashMap<u64, MediaPacket>,
+  /// Last known non-zero duration per track (nanoseconds), used as a best-effort fallback when
+  /// flushing pending packets at EOF.
+  last_duration_by_track: HashMap<u64, u64>,
+  /// Packets ready to be emitted to the caller.
+  ready: VecDeque<MediaPacket>,
+}
+
+impl DurationState {
+  fn new(track_default_duration_ns: HashMap<u64, u64>) -> Self {
+    Self {
+      track_default_duration_ns,
+      pending_by_track: HashMap::new(),
+      last_duration_by_track: HashMap::new(),
+      ready: VecDeque::new(),
+    }
+  }
+
+  fn reset(&mut self) {
+    self.pending_by_track.clear();
+    self.last_duration_by_track.clear();
+    self.ready.clear();
+  }
+
+  fn push_packet(&mut self, mut packet: MediaPacket) {
+    // If we previously buffered a packet for this track, we can now compute its duration using this
+    // packet's PTS as the "next" timestamp.
+    if let Some(mut pending) = self.pending_by_track.remove(&packet.track_id) {
+      let mut duration_ns = delta_duration_ns(pending.pts_ns, packet.pts_ns);
+      if duration_ns == 0 {
+        duration_ns = self
+          .last_duration_by_track
+          .get(&pending.track_id)
+          .copied()
+          .unwrap_or(0);
+      }
+      duration_ns = clamp_duration_ns(duration_ns);
+      pending.duration_ns = duration_ns;
+      if duration_ns > 0 {
+        self.last_duration_by_track.insert(pending.track_id, duration_ns);
+      }
+      self.ready.push_back(pending);
+    }
+
+    // If the demuxer didn't populate `duration_ns`, try to fill it from `DefaultDuration`.
+    if packet.duration_ns == 0 {
+      if let Some(default_duration_ns) = self.track_default_duration_ns.get(&packet.track_id) {
+        packet.duration_ns = clamp_duration_ns(*default_duration_ns);
+      }
+    } else {
+      packet.duration_ns = clamp_duration_ns(packet.duration_ns);
+    }
+
+    if packet.duration_ns > 0 {
+      self
+        .last_duration_by_track
+        .insert(packet.track_id, packet.duration_ns);
+      self.ready.push_back(packet);
+    } else {
+      // Fall back to PTS deltas: buffer at most one packet per track.
+      self.pending_by_track.insert(packet.track_id, packet);
+    }
+  }
+
+  fn pop_ready(&mut self) -> Option<MediaPacket> {
+    self.ready.pop_front()
+  }
+
+  fn flush_pending(&mut self) {
+    if self.pending_by_track.is_empty() {
+      return;
+    }
+
+    let mut pending: Vec<(u64, MediaPacket)> = self.pending_by_track.drain().collect();
+    // Deterministic flush order helps keep tests stable and avoids surprising cross-track ordering.
+    pending.sort_by_key(|(_, pkt)| pkt.pts_ns);
+
+    for (track_id, mut pkt) in pending {
+      let mut duration_ns = self.last_duration_by_track.get(&track_id).copied().unwrap_or(0);
+      if duration_ns == 0 {
+        duration_ns = self
+          .track_default_duration_ns
+          .get(&track_id)
+          .copied()
+          .unwrap_or(0);
+      }
+      duration_ns = clamp_duration_ns(duration_ns);
+      pkt.duration_ns = duration_ns;
+      if duration_ns > 0 {
+        self.last_duration_by_track.insert(track_id, duration_ns);
+      }
+      self.ready.push_back(pkt);
+    }
+  }
+}
+
 struct DeadlineReader<R> {
   inner: R,
   deadline_counter: usize,
@@ -246,6 +368,12 @@ pub struct WebmDemuxer<R: Read + Seek> {
   seek_pre_roll_ns: HashMap<u64, u64>,
   /// Max seek preroll across supported tracks (nanoseconds).
   max_seek_pre_roll_ns: u64,
+  /// Per-track Matroska `DefaultDuration` (already nanoseconds) for active tracks.
+  track_default_duration_ns: HashMap<u64, u64>,
+  /// Last known non-zero duration per track (nanoseconds), used to fill the final packet at EOF.
+  last_duration_by_track: HashMap<u64, u64>,
+  /// Duration estimation state used when inter-track reordering is disabled.
+  duration_state: DurationState,
   /// Track IDs for which we will emit packets (currently VP9 + Opus only), in deterministic order.
   active_track_ids: Vec<u64>,
   /// Bounded per-track packet queues for optional inter-track reordering.
@@ -274,6 +402,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     let mut selection_infos = Vec::new();
     let mut supported_codec_delay_ns = HashMap::new();
     let mut supported_seek_pre_roll_ns = HashMap::new();
+    let mut supported_default_duration_ns = HashMap::new();
     let mut tracks = Vec::new();
 
     for track in mkv.tracks() {
@@ -286,6 +415,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       let codec_private = codec_private_bytes.to_vec();
       let codec_delay = track.codec_delay().unwrap_or(0);
       let seek_pre_roll = track.seek_pre_roll().unwrap_or(0);
+      let default_duration_ns = track.default_duration().map(|d| d.get()).unwrap_or(0);
 
       let (track_type, video, audio) = match track.track_type() {
         TrackType::Video => {
@@ -333,6 +463,9 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       if matches!(codec, MediaCodec::Vp9 | MediaCodec::Opus) {
         supported_codec_delay_ns.insert(id, codec_delay);
         supported_seek_pre_roll_ns.insert(id, seek_pre_roll);
+        if default_duration_ns > 0 {
+          supported_default_duration_ns.insert(id, default_duration_ns);
+        }
       }
 
       tracks.push(MediaTrackInfo {
@@ -383,6 +516,13 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         max_seek_pre_roll_ns = max_seek_pre_roll_ns.max(*preroll);
       }
     }
+    let mut track_default_duration_ns = HashMap::new();
+    for id in &active_track_ids {
+      if let Some(default_duration_ns) = supported_default_duration_ns.get(id) {
+        track_default_duration_ns.insert(*id, *default_duration_ns);
+      }
+    }
+    let duration_state = DurationState::new(track_default_duration_ns.clone());
 
     let mut packet_queues = HashMap::new();
     for &track_id in &active_track_ids {
@@ -403,6 +543,9 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       max_codec_delay_ns,
       seek_pre_roll_ns,
       max_seek_pre_roll_ns,
+      track_default_duration_ns,
+      last_duration_by_track: HashMap::new(),
+      duration_state,
       active_track_ids,
       packet_queues,
       frame: Frame::default(),
@@ -473,6 +616,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
             .min(u128::from(u64::MAX)) as u64
         })
         .unwrap_or(0);
+      let duration_ns = clamp_duration_ns(duration_ns);
 
       let data = std::mem::take(&mut self.frame.data);
       check_webm_packet_size(self.frame.track, data.len())?;
@@ -502,6 +646,123 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     }
   }
 
+  fn enqueue_reorder_packet(&mut self, mut pkt: MediaPacket) -> MediaResult<()> {
+    // Apply DefaultDuration to the packet itself if the container didn't provide a per-frame
+    // duration.
+    if pkt.duration_ns == 0 {
+      if let Some(default_duration_ns) = self.track_default_duration_ns.get(&pkt.track_id) {
+        pkt.duration_ns = clamp_duration_ns(*default_duration_ns);
+      }
+    } else {
+      pkt.duration_ns = clamp_duration_ns(pkt.duration_ns);
+    }
+
+    let q = self
+      .packet_queues
+      .get_mut(&pkt.track_id)
+      .expect("queue must exist for supported track"); // fastrender-allow-unwrap
+
+    // Update the previous packet's duration using PTS deltas when it had no duration metadata.
+    if let Some(prev) = q.back_mut() {
+      if prev.duration_ns == 0 {
+        let mut duration_ns = delta_duration_ns(prev.pts_ns, pkt.pts_ns);
+        if duration_ns == 0 {
+          duration_ns = self
+            .last_duration_by_track
+            .get(&prev.track_id)
+            .copied()
+            .unwrap_or_else(|| {
+              self
+                .track_default_duration_ns
+                .get(&prev.track_id)
+                .copied()
+                .unwrap_or(0)
+            });
+          duration_ns = clamp_duration_ns(duration_ns);
+        }
+        prev.duration_ns = duration_ns;
+        if duration_ns > 0 {
+          self.last_duration_by_track.insert(prev.track_id, duration_ns);
+        }
+      } else {
+        self
+          .last_duration_by_track
+          .insert(prev.track_id, prev.duration_ns);
+      }
+    }
+
+    if pkt.duration_ns > 0 {
+      self
+        .last_duration_by_track
+        .insert(pkt.track_id, pkt.duration_ns);
+    }
+
+    if q.len() >= self.options.per_track_queue_capacity {
+      return Err(MediaError::Demux(format!(
+        "WebM inter-track reorder buffer overflow (track {}, cap {})",
+        pkt.track_id, self.options.per_track_queue_capacity
+      )));
+    }
+    q.push_back(pkt);
+    Ok(())
+  }
+
+  fn finalize_reorder_durations_at_eof(&mut self) {
+    for (&track_id, q) in &mut self.packet_queues {
+      let Some(last) = q.back_mut() else {
+        continue;
+      };
+      if last.duration_ns != 0 {
+        continue;
+      }
+      let mut duration_ns = self.last_duration_by_track.get(&track_id).copied().unwrap_or(0);
+      if duration_ns == 0 {
+        duration_ns = self
+          .track_default_duration_ns
+          .get(&track_id)
+          .copied()
+          .unwrap_or(0);
+      }
+      duration_ns = clamp_duration_ns(duration_ns);
+      last.duration_ns = duration_ns;
+      if duration_ns > 0 {
+        self.last_duration_by_track.insert(track_id, duration_ns);
+      }
+    }
+  }
+
+  fn track_queue_needs_fill(&self, track_id: u64) -> bool {
+    let Some(q) = self.packet_queues.get(&track_id) else {
+      return false;
+    };
+    if q.is_empty() {
+      return true;
+    }
+    // If the front packet has no duration yet and we have capacity to read one more packet from
+    // this track, read ahead so we can compute `next_pts - current_pts` before emitting it.
+    !self.reached_eof
+      && self.options.per_track_queue_capacity >= 2
+      && q.len() == 1
+      && q.front().is_some_and(|pkt| pkt.duration_ns == 0)
+  }
+
+  fn next_packet_no_reorder(&mut self) -> MediaResult<Option<MediaPacket>> {
+    if let Some(pkt) = self.duration_state.pop_ready() {
+      return Ok(Some(pkt));
+    }
+
+    loop {
+      let Some(pkt) = self.read_next_supported_packet()? else {
+        self.duration_state.flush_pending();
+        return Ok(self.duration_state.pop_ready());
+      };
+      self.duration_state.push_packet(pkt);
+      if let Some(pkt) = self.duration_state.pop_ready() {
+        return Ok(Some(pkt));
+      }
+    }
+  }
+
   fn fill_reorder_queues(&mut self) -> MediaResult<()> {
     if self.reached_eof {
       return Ok(());
@@ -510,23 +771,16 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     while self
       .active_track_ids
       .iter()
-      .any(|id| self.packet_queues.get(id).is_some_and(|q| q.is_empty()))
+      .any(|&id| self.track_queue_needs_fill(id))
     {
       let Some(pkt) = self.read_next_supported_packet()? else {
         break;
       };
+      self.enqueue_reorder_packet(pkt)?;
+    }
 
-      let q = self
-        .packet_queues
-        .get_mut(&pkt.track_id)
-        .expect("queue must exist for supported track"); // fastrender-allow-unwrap
-      if q.len() >= self.options.per_track_queue_capacity {
-        return Err(MediaError::Demux(format!(
-          "WebM inter-track reorder buffer overflow (track {}, cap {})",
-          pkt.track_id, self.options.per_track_queue_capacity
-        )));
-      }
-      q.push_back(pkt);
+    if self.reached_eof {
+      self.finalize_reorder_durations_at_eof();
     }
 
     Ok(())
@@ -562,7 +816,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
     check_root(RenderStage::Paint).map_err(MediaError::from)?;
 
     if !self.options.inter_track_reordering || self.active_track_ids.len() <= 1 {
-      return self.read_next_supported_packet();
+      return self.next_packet_no_reorder();
     }
 
     self.fill_reorder_queues()?;
@@ -606,6 +860,8 @@ impl<R: Read + Seek> WebmDemuxer<R> {
       q.clear();
     }
     self.reached_eof = false;
+    self.last_duration_by_track.clear();
+    self.duration_state.reset();
 
     self.mkv.seek(seek_timestamp).map_err(|err| match err {
       // When seeking in damaged/unindexed files, the demuxer may not be able to locate clusters.
@@ -1048,6 +1304,44 @@ mod tests {
     }
   }
 
+  #[test]
+  fn duration_state_computes_pts_deltas_when_frame_duration_missing() {
+    let mut state = DurationState::new(HashMap::new());
+    let first_pts_ns = 1_000_000_000_u64;
+    let second_pts_ns = 1_040_000_000_u64;
+    let expected = second_pts_ns - first_pts_ns;
+ 
+    state.push_packet(MediaPacket {
+      track_id: 1,
+      dts_ns: first_pts_ns,
+      pts_ns: first_pts_ns,
+      duration_ns: 0,
+      data: Vec::new().into(),
+      is_keyframe: false,
+    });
+    assert!(state.pop_ready().is_none(), "first packet should be buffered");
+ 
+    state.push_packet(MediaPacket {
+      track_id: 1,
+      dts_ns: second_pts_ns,
+      pts_ns: second_pts_ns,
+      duration_ns: 0,
+      data: Vec::new().into(),
+      is_keyframe: false,
+    });
+ 
+    let first = state.pop_ready().expect("first packet ready after second arrives");
+    assert_eq!(first.pts_ns, first_pts_ns);
+    assert_eq!(first.duration_ns, expected);
+ 
+    // The second packet is pending (no next PTS yet); flushing should reuse the last known duration.
+    assert!(state.pop_ready().is_none());
+    state.flush_pending();
+    let second = state.pop_ready().expect("second packet flushed at EOF");
+    assert_eq!(second.pts_ns, second_pts_ns);
+    assert_eq!(second.duration_ns, expected);
+  }
+ 
   #[test]
   fn vp9_keyframe_detection_reports_keyframe() {
     // frame_marker=0b10, profile=0, show_existing_frame=0, frame_type=0 (keyframe)
