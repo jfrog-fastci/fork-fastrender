@@ -240,6 +240,10 @@ mod compiled_module_graph_tests;
 mod compound_assignment_arithmetic_tests;
 
 #[cfg(test)]
+#[path = "../tests/generators_compound_assignment_property_capture.rs"]
+mod generators_compound_assignment_property_capture_tests;
+
+#[cfg(test)]
 #[path = "../tests/unit/error_coercion.rs"]
 mod error_coercion_tests;
 
