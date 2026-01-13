@@ -500,6 +500,21 @@ impl TabState {
       find: FindInPageWorkerState::default(),
     }
   }
+
+  fn sync_js_viewport_state(&mut self) {
+    let Some(js_tab) = self.js_tab.as_mut() else {
+      return;
+    };
+    js_tab.set_viewport(self.viewport_css.0, self.viewport_css.1);
+    js_tab.set_device_pixel_ratio(self.dpr);
+  }
+
+  fn sync_js_scroll_state(&mut self) {
+    let Some(js_tab) = self.js_tab.as_mut() else {
+      return;
+    };
+    js_tab.set_scroll_state(self.scroll_state.clone());
+  }
 }
 
 fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) {
@@ -2575,11 +2590,7 @@ impl BrowserRuntime {
           doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
           doc.set_device_pixel_ratio(tab.dpr);
         }
-
-        if let Some(js_tab) = tab.js_tab.as_mut() {
-          js_tab.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
-          js_tab.set_device_pixel_ratio(tab.dpr);
-        }
+        tab.sync_js_viewport_state();
       }
       UiToWorker::Scroll {
         tab_id,
@@ -2610,6 +2621,7 @@ impl BrowserRuntime {
             if next.viewport != prev.viewport {
               next.update_deltas_from(&prev);
               tab.scroll_state = next;
+              tab.sync_js_scroll_state();
               if tab.loading {
                 tab
                   .history
@@ -2671,12 +2683,15 @@ impl BrowserRuntime {
                     let mut effective = if let Some(prepared) = doc.prepared() {
                       emit_scroll_state_updated = true;
                       Self::compute_effective_scroll_state_from_prepared(prepared, &next)
-                    } else {
-                      next
-                    };
+                     } else {
+                       next
+                     };
                     effective.update_deltas_from(&current_scroll);
                     doc.set_scroll_state(effective.clone());
                     tab.scroll_state = effective;
+                    if let Some(js_tab) = tab.js_tab.as_mut() {
+                      js_tab.set_scroll_state(tab.scroll_state.clone());
+                    }
                     scroll_changed = true;
                     changed = true;
                   }
@@ -2722,6 +2737,7 @@ impl BrowserRuntime {
                   effective.update_deltas_from(&current_scroll);
                   doc.set_scroll_state(effective.clone());
                   tab.scroll_state = effective;
+                  tab.sync_js_scroll_state();
                   scroll_changed = true;
                   emit_scroll_state_updated = true;
                   changed = true;
@@ -2738,6 +2754,7 @@ impl BrowserRuntime {
                 next.update_deltas_from(&current_scroll);
                 doc.set_scroll_state(next.clone());
                 tab.scroll_state = next;
+                tab.sync_js_scroll_state();
                 scroll_changed = true;
                 changed = true;
               }
@@ -2787,6 +2804,7 @@ impl BrowserRuntime {
               effective.update_deltas_from(&current);
               doc.set_scroll_state(effective.clone());
               tab.scroll_state = effective;
+              tab.sync_js_scroll_state();
               let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
                 tab_id,
                 scroll: tab.scroll_state.clone(),
@@ -2801,6 +2819,7 @@ impl BrowserRuntime {
             next.update_deltas_from(&current);
             doc.set_scroll_state(next.clone());
             tab.scroll_state = next;
+            tab.sync_js_scroll_state();
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
             tab.scroll_coalesce = true;
@@ -2813,6 +2832,7 @@ impl BrowserRuntime {
           if next.viewport != prev.viewport {
             next.update_deltas_from(&prev);
             tab.scroll_state = next;
+            tab.sync_js_scroll_state();
             if tab.loading {
               tab
                 .history
@@ -3726,6 +3746,9 @@ impl BrowserRuntime {
             next_scroll.update_deltas_from(&prev_scroll);
             tab.scroll_state = next_scroll.clone();
             doc.set_scroll_state(next_scroll);
+            if let Some(js_tab) = tab.js_tab.as_mut() {
+              js_tab.set_scroll_state(tab.scroll_state.clone());
+            }
 
             let title = find_document_title(doc.dom());
             if let Some(title) = title.as_deref() {
@@ -4157,6 +4180,7 @@ impl BrowserRuntime {
       next.update_deltas_from(&prev);
       doc.set_scroll_state(next.clone());
       tab.scroll_state = next;
+      tab.sync_js_scroll_state();
       tab
         .history
         .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -5129,6 +5153,7 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
+        tab.sync_js_scroll_state();
         scroll_changed = true;
         let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
           tab_id,
@@ -6769,11 +6794,13 @@ impl BrowserRuntime {
       if next_scroll != tab.scroll_state {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
+        tab.sync_js_scroll_state();
         scroll_changed = true;
         let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
           tab_id,
           scroll: tab.scroll_state.clone(),
         });
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
       }
     }
 
@@ -6820,10 +6847,12 @@ impl BrowserRuntime {
       if next != tab.scroll_state {
         tab.scroll_state = next;
         doc.set_scroll_state(tab.scroll_state.clone());
+        tab.sync_js_scroll_state();
         let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
           tab_id,
           scroll: tab.scroll_state.clone(),
         });
+        tab.last_reported_scroll_state = tab.scroll_state.clone();
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
         tab.scroll_coalesce = true;
@@ -7027,6 +7056,7 @@ impl BrowserRuntime {
       if let Some(next_scroll) = focus_scroll {
         tab.scroll_state = next_scroll;
         doc.set_scroll_state(tab.scroll_state.clone());
+        tab.sync_js_scroll_state();
         scroll_changed = true;
         let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
           tab_id,
@@ -7692,6 +7722,9 @@ impl BrowserRuntime {
         }
       } else {
         tab.js_dom_dirty = false;
+        // Keep the JS tab's view state (scroll) in sync with the UI worker so DOM APIs like
+        // `document.elementFromPoint` reflect the same viewport as the rendered document.
+        js_tab.set_scroll_state(tab.scroll_state.clone());
         tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
         prewarm_js_tab_renderer_preorder_mapping(tab_id, js_tab, debug_log_enabled, msgs);
       }
@@ -7740,6 +7773,7 @@ impl BrowserRuntime {
       }
       return;
     }
+    js_tab.set_scroll_state(tab.scroll_state.clone());
     prewarm_js_tab_renderer_preorder_mapping(tab_id, &mut js_tab, debug_log_enabled, msgs);
     let generation = js_tab.dom().mutation_generation();
     tab.js_tab = Some(js_tab);
@@ -8833,6 +8867,9 @@ impl BrowserRuntime {
 
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        js_tab.set_scroll_state(tab.scroll_state.clone());
+      }
       tab
         .history
         .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
