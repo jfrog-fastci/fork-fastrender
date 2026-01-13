@@ -102,6 +102,13 @@ fn array_map_large_length_does_not_abort_on_oom() {
 }
 
 #[test]
+fn job_queue_enqueue_does_not_abort_on_oom() {
+  // Enqueuing into the public JobQueue scaffolding should be fallible and must never abort the
+  // process when the underlying VecDeque needs to grow.
+  run_oom_harness("jobQueue", 0);
+}
+
+#[test]
 fn throw_string_formatting_does_not_abort_on_oom() {
   // Formatting a thrown string for host-visible reporting (Agent::format_vm_error) must not abort
   // when the UTF-16→UTF-8 conversion cannot allocate under RLIMIT_AS pressure.

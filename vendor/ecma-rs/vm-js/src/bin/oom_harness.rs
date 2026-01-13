@@ -2,7 +2,8 @@ use std::process;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vm_js::{
-  format_stack_trace, Agent, Budget, HeapLimits, Job, JobKind, LoadedModuleRequest, MicrotaskQueue,
+  format_stack_trace, job_queue::JobQueue, Agent, Budget, HeapLimits, Job, JobKind,
+  LoadedModuleRequest, MicrotaskQueue,
   ModuleGraph, ModuleId, ModuleRequest, ModuleStatus, PropertyDescriptor, PropertyKey, PropertyKind,
   RootId, SourceTextModuleRecord, StackFrame, Value, VmError, VmHostHooks, VmJobContext, VmOptions,
   MAX_PROTOTYPE_CHAIN,
@@ -55,7 +56,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
+    "  scenario: eval | function | generator | number | parseFloat | regexp_compile | regexp | arrayMap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
   );
   process::exit(2);
 }
@@ -113,6 +114,34 @@ fn main() {
       process::exit(1);
     }
     filler.resize(filler_bytes, 0);
+  }
+
+  if scenario == "jobQueue" {
+    // Keep `filler` alive for the duration of the run.
+    let _keep = &filler;
+
+    let mut queue = JobQueue::new();
+    let mut count: usize = 0;
+    // Bound the loop to avoid accidental infinite runtime if the address-space limit isn't enforced
+    // for some reason.
+    const MAX_JOBS: usize = 10_000_000;
+    while count < MAX_JOBS {
+      // Use a capture-less closure so `Job::new` does not allocate a heap box for it (ZST).
+      let job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()));
+      match queue.try_push(job) {
+        Ok(()) => count += 1,
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!(
+            "oom_harness: unexpected error from JobQueue::try_push after {count} jobs: {err:?}"
+          );
+          process::exit(1);
+        }
+      }
+    }
+
+    // If we somehow didn't OOM, treat that as success: the key invariant is that we didn't abort.
+    process::exit(0);
   }
 
   if scenario == "microtask_checkpoint_errors" {

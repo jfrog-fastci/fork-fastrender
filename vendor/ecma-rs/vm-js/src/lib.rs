@@ -152,6 +152,7 @@ mod import_meta;
 mod interrupt;
 mod intrinsics;
 pub mod iterator;
+pub mod job_queue;
 mod jobs;
 mod microtasks;
 mod module_graph;

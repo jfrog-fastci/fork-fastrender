@@ -6,6 +6,7 @@
 //! but having a concrete queue type is useful for tests and simple embeddings.
 
 use crate::jobs::Job;
+use crate::VmError;
 use std::collections::VecDeque;
 
 /// A queued microtask job.
@@ -24,8 +25,22 @@ impl JobQueue {
     Self::default()
   }
 
-  pub fn push(&mut self, job: MicrotaskJob) {
+  /// Attempts to enqueue `job` at the back of the queue.
+  ///
+  /// This uses a fallible reservation (`try_reserve`) so allocator OOM is surfaced as
+  /// [`VmError::OutOfMemory`] rather than aborting the process.
+  pub fn try_push(&mut self, job: MicrotaskJob) -> Result<(), VmError> {
+    self.queue.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    // `try_reserve(1)` guarantees `push_back` won't grow/reallocate the buffer.
     self.queue.push_back(job);
+    Ok(())
+  }
+
+  /// Enqueues `job` at the back of the queue.
+  ///
+  /// This is a convenience wrapper around [`JobQueue::try_push`].
+  pub fn push(&mut self, job: MicrotaskJob) -> Result<(), VmError> {
+    self.try_push(job)
   }
 
   pub fn pop(&mut self) -> Option<MicrotaskJob> {
