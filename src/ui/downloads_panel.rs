@@ -160,7 +160,7 @@ pub fn downloads_panel_ui(
             let row_height = (content_h + row_padding * 2.0).ceil();
 
             let row_id = egui::Id::new(("fastr_download_row", entry.download_id.0));
-            let (rect, response) = ui.allocate_exact_size(
+            let (rect, _response) = ui.allocate_exact_size(
               egui::vec2(ui.available_width(), row_height),
               egui::Sense::hover(),
             );
@@ -168,7 +168,11 @@ pub fn downloads_panel_ui(
             let hover_t = motion.animate_bool(
               ui.ctx(),
               row_id.with("hover"),
-              response.hovered(),
+              ui.ctx().input(|i| {
+                i.pointer
+                  .hover_pos()
+                  .is_some_and(|pos| rect.contains(pos))
+              }),
               motion.durations.hover_fade,
             );
 
