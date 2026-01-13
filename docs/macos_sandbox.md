@@ -276,6 +276,13 @@ The core Seatbelt tests live in `src/sandbox/macos.rs` and run on macOS as norma
 timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender sandbox::macos -- --nocapture
 ```
 
+FastRender also has an integration test that asserts the **relaxed renderer sandbox** still permits
+system font discovery via `fontdb` (important for early bring-up when bundled fonts are not used):
+
+```bash
+timeout -k 10 600 bash scripts/cargo_agent.sh test -p fastrender --test macos_sandbox_fontdb -- --nocapture
+```
+
 If your macOS environment does not have `timeout`, either install coreutils (`brew install
 coreutils`, then use `gtimeout`) or run without the outer timeout wrapper.
 
