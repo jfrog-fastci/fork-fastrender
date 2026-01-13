@@ -1,8 +1,9 @@
 use super::{
   web_fetch, CacheArtifactKind, DocumentOrigin, FetchContextKind, FetchCredentialsMode,
-  FetchDestination, FetchRequest, FetchedResource, HttpCachePolicy, HttpRequest, ReferrerPolicy,
-  ResourceFetcher,
+  FetchDestination, FetchRequest, FetchedResource, HttpCachePolicy, HttpRequest, ParsedContentRange,
+  ReferrerPolicy, ResourceFetcher,
 };
+use super::parse_content_range;
 use crate::error::{Error, ResourceError, Result};
 use base64::Engine as _;
 use http::header::HeaderName;
@@ -1052,6 +1053,50 @@ pub enum IpcResponse {
   Unit(IpcResult<()>),
 }
 
+fn validate_partial_content_range_start_zero(
+  resource: &FetchedResource,
+  requested_url: &str,
+) -> Result<()> {
+  if resource.status != Some(206) {
+    return Ok(());
+  }
+
+  let Some(content_range) = resource.header_get_joined("content-range") else {
+    return Err(super::response_resource_error(
+      resource,
+      requested_url,
+      "received 206 Partial Content response without Content-Range header",
+    ));
+  };
+  let parsed = parse_content_range(&content_range).ok_or_else(|| {
+    super::response_resource_error(
+      resource,
+      requested_url,
+      format!("invalid Content-Range header: {content_range:?}"),
+    )
+  })?;
+  match parsed {
+    ParsedContentRange::Range { start, .. } => {
+      if start != 0 {
+        return Err(super::response_resource_error(
+          resource,
+          requested_url,
+          format!("Content-Range start mismatch: expected 0 but received {start}"),
+        ));
+      }
+    }
+    ParsedContentRange::Unsatisfied { size } => {
+      return Err(super::response_resource_error(
+        resource,
+        requested_url,
+        format!("received unsatisfied Content-Range for 206 response (size={size:?})"),
+      ));
+    }
+  }
+
+  Ok(())
+}
+
 struct IpcResourceFetcherInner {
   endpoint: String,
   stream: Mutex<TcpStream>,
@@ -1570,14 +1615,16 @@ impl ResourceFetcher for IpcResourceFetcher {
     url: &str,
     max_bytes: usize,
   ) -> Result<FetchedResource> {
-    self.rpc_fetched(
+    let res = self.rpc_fetched(
       url,
       &IpcRequest::FetchPartialWithContext {
         kind,
         url: url.to_string(),
         max_bytes: max_bytes as u64,
       },
-    )
+    )?;
+    validate_partial_content_range_start_zero(&res, url)?;
+    Ok(res)
   }
 
   fn fetch_partial_with_request(
@@ -1586,13 +1633,15 @@ impl ResourceFetcher for IpcResourceFetcher {
     max_bytes: usize,
   ) -> Result<FetchedResource> {
     let url = req.url;
-    self.rpc_fetched(
+    let res = self.rpc_fetched(
       url,
       &IpcRequest::FetchPartialWithRequest {
         req: IpcFetchRequest::from_fetch_request(req),
         max_bytes: max_bytes as u64,
       },
-    )
+    )?;
+    validate_partial_content_range_start_zero(&res, url)?;
+    Ok(res)
   }
 
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
