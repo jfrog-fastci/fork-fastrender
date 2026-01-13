@@ -116,8 +116,9 @@ FastRender also has a small DOM interaction layer intended to support basic “n
 - hit-testing + link activation (`<a href=...>`, including same-document `#fragment` scrolling)
 - basic form interactions (text inputs, checkboxes, radios, select controls, file inputs, date/time
   inputs; limited keyboard activation via `Enter`/`Space`)
-- built-in `about:*` pages (`about:newtab`, `about:blank`, `about:error`, `about:help`,
-  `about:version`, `about:gpu`, `about:history`, `about:bookmarks`)
+- built-in `about:*` pages (see [about_pages.md](about_pages.md)): `about:newtab`, `about:settings`,
+  `about:blank`, `about:error`, `about:help`, `about:version`, `about:gpu`, `about:processes`,
+  `about:history`, `about:bookmarks`
 
 These interactions are exercised by the headless UI worker integration tests; the windowed `browser`
 app uses the same `UiToWorker`/`WorkerToUi` message protocol via the browser UI worker thread

@@ -629,9 +629,10 @@ Manual verification checklist:
     - `chrome_ui` builds the tab strip + toolbar + address bar and returns `ChromeAction` values for
       the front-end to translate into worker messages. The windowed `browser` app calls this helper
       each egui frame.
-- About pages (`about:blank`, `about:newtab`, `about:error`, `about:help`, `about:version`, `about:gpu`,
-  `about:history`, `about:bookmarks`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - Used by the canonical UI render worker runtime ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
+- About pages (`about:blank`, `about:newtab`, `about:settings`, `about:error`, `about:help`,
+  `about:version`, `about:gpu`, `about:processes`, `about:history`, `about:bookmarks`,
+  `about:test-scroll`, `about:test-heavy`, `about:test-form`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
+     - Used by the canonical UI render worker runtime ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
@@ -888,7 +889,15 @@ Tips:
   “prepare” and “paint” work; the lightweight wrapper in [`src/ui/worker.rs`](../src/ui/worker.rs)
   (`RenderWorker`) shows the minimal pattern.
 
-### Built-in `about:test-*` pages
+### Built-in `about:` pages
+
+FastRender includes several internal `about:` pages implemented in
+[`src/ui/about_pages.rs`](../src/ui/about_pages.rs).
+
+See [`docs/about_pages.md`](about_pages.md) for the canonical list and per-page expectations (notably
+`about:processes` for multiprocess/chrome debugging).
+
+### Test-only `about:test-*` pages
 
 For deterministic, offline repros (no network), the worker supports a few `about:` pages defined in
 [`src/ui/about_pages.rs`](../src/ui/about_pages.rs):
