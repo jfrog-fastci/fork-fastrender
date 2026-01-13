@@ -2118,13 +2118,8 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-<<<<<<< HEAD
-    if script.contains_async_generators {
-      // See `exec_compiled_script_with_host`: async generator functions are not yet supported in
-=======
     if script.requires_ast_fallback {
       // See `exec_compiled_script_with_host`: async/generator functions are not yet supported in
->>>>>>> 413ead1f (fix(vm-js): restore AST fallback for compiled async functions)
       // the compiled (HIR) executor.
       let source = script.source.clone();
       return self.exec_script_source_with_host_and_hooks(host, hooks, source);
