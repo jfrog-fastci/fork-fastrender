@@ -4319,6 +4319,166 @@ struct PointerClickSequence {
   click_count: u8,
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TouchGestureAction {
+  /// A long-press gesture was recognised and should open a page context menu.
+  ContextMenu { pos_points: (f32, f32) },
+  /// A tap gesture was recognised and should be treated as a primary click.
+  Tap { pos_points: (f32, f32) },
+}
+
+/// Minimal touch gesture recogniser used to emulate mouse interactions on touch devices.
+///
+/// This is intentionally self-contained (no winit/egui types) so it can be unit tested without the
+/// heavy `browser_ui` feature.
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone)]
+struct TouchGestureRecognizer {
+  active: Option<ActiveTouchGesture>,
+  long_press_threshold: std::time::Duration,
+  slop_radius_points: f32,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone)]
+struct ActiveTouchGesture {
+  id: u64,
+  start_pos_points: (f32, f32),
+  last_pos_points: (f32, f32),
+  start_instant: std::time::Instant,
+  long_press_deadline: std::time::Instant,
+  moved_too_far: bool,
+  long_press_triggered: bool,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl TouchGestureRecognizer {
+  const DEFAULT_LONG_PRESS_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+  const DEFAULT_SLOP_RADIUS_POINTS: f32 = 8.0;
+
+  fn new() -> Self {
+    Self::new_with_config(Self::DEFAULT_LONG_PRESS_THRESHOLD, Self::DEFAULT_SLOP_RADIUS_POINTS)
+  }
+
+  fn new_with_config(long_press_threshold: std::time::Duration, slop_radius_points: f32) -> Self {
+    Self {
+      active: None,
+      long_press_threshold,
+      slop_radius_points: slop_radius_points.max(0.0),
+    }
+  }
+
+  fn reset(&mut self) {
+    self.active = None;
+  }
+
+  fn next_deadline(&self) -> Option<std::time::Instant> {
+    self.active.as_ref().and_then(|gesture| {
+      if gesture.moved_too_far || gesture.long_press_triggered {
+        None
+      } else {
+        Some(gesture.long_press_deadline)
+      }
+    })
+  }
+
+  fn touch_start(&mut self, id: u64, now: std::time::Instant, pos_points: (f32, f32)) {
+    // Multi-touch is treated as a cancellation of the primary-touch gesture so we don't trigger
+    // context menus during pinch/zoom interactions.
+    if self.active.is_some() {
+      self.active = None;
+    }
+    self.active = Some(ActiveTouchGesture {
+      id,
+      start_pos_points: pos_points,
+      last_pos_points: pos_points,
+      start_instant: now,
+      long_press_deadline: now + self.long_press_threshold,
+      moved_too_far: false,
+      long_press_triggered: false,
+    });
+  }
+
+  fn touch_move(&mut self, id: u64, pos_points: (f32, f32)) {
+    let Some(active) = self.active.as_mut() else {
+      return;
+    };
+    if active.id != id {
+      return;
+    }
+
+    active.last_pos_points = pos_points;
+    if active.moved_too_far || active.long_press_triggered {
+      return;
+    }
+
+    let dx = pos_points.0 - active.start_pos_points.0;
+    let dy = pos_points.1 - active.start_pos_points.1;
+    let dist2 = dx * dx + dy * dy;
+    let max_dist2 = self.slop_radius_points * self.slop_radius_points;
+    if dist2 > max_dist2 {
+      active.moved_too_far = true;
+    }
+  }
+
+  fn touch_end(
+    &mut self,
+    id: u64,
+    now: std::time::Instant,
+    pos_points: (f32, f32),
+  ) -> Option<TouchGestureAction> {
+    let Some(active) = self.active.take() else {
+      return None;
+    };
+    if active.id != id {
+      // Different touch ended; keep the original gesture (best-effort) by restoring it.
+      self.active = Some(active);
+      return None;
+    }
+
+    if active.moved_too_far {
+      return None;
+    }
+
+    if active.long_press_triggered {
+      // Long-press was already emitted via `tick`; do not re-emit on release.
+      return None;
+    }
+
+    if now >= active.long_press_deadline {
+      // Treat a release after the deadline as a long-press even if the periodic tick didn't fire
+      // (e.g. event-loop scheduling delays).
+      return Some(TouchGestureAction::ContextMenu { pos_points });
+    }
+
+    Some(TouchGestureAction::Tap { pos_points })
+  }
+
+  fn touch_cancel(&mut self, id: u64) {
+    if self.active.as_ref().is_some_and(|active| active.id == id) {
+      self.active = None;
+    }
+  }
+
+  fn tick(&mut self, now: std::time::Instant) -> Option<TouchGestureAction> {
+    let Some(active) = self.active.as_mut() else {
+      return None;
+    };
+    if active.moved_too_far || active.long_press_triggered {
+      return None;
+    }
+    if now < active.long_press_deadline {
+      return None;
+    }
+
+    active.long_press_triggered = true;
+    Some(TouchGestureAction::ContextMenu {
+      pos_points: active.last_pos_points,
+    })
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Clone, Copy)]
 struct WgpuInitOptions {
@@ -4857,6 +5017,7 @@ struct App {
   pointer_captured: bool,
   captured_button: fastrender::ui::PointerButton,
   primary_click_sequence: Option<PointerClickSequence>,
+  touch_gesture: TouchGestureRecognizer,
   last_cursor_pos_points: Option<egui::Pos2>,
   cursor_in_page: bool,
   page_cursor_override: Option<fastrender::ui::CursorKind>,
@@ -5485,6 +5646,7 @@ impl App {
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
       primary_click_sequence: None,
+      touch_gesture: TouchGestureRecognizer::new(),
       last_cursor_pos_points: None,
       cursor_in_page: false,
       page_cursor_override: None,
@@ -5699,6 +5861,7 @@ impl App {
     self.drive_viewport_throttle();
     self.drive_egui_repaint();
     self.drive_page_upload_redraw();
+    self.drive_touch_long_press();
     self.update_control_flow_for_animation_ticks(control_flow);
   }
 
@@ -5937,6 +6100,14 @@ impl App {
       });
     }
 
+    // Touch long-press gesture deadline (context menu).
+    if let Some(touch_deadline) = self.touch_gesture.next_deadline() {
+      deadline = Some(match deadline {
+        Some(existing) => existing.min(touch_deadline),
+        None => touch_deadline,
+      });
+    }
+
     // Warning toast expiry (auto-dismiss).
     if let Some(toast_deadline) = self.next_warning_toast_deadline_for_active_tab() {
       deadline = Some(match deadline {
@@ -5970,6 +6141,60 @@ impl App {
     }
 
     deadline
+  }
+
+  fn drive_touch_long_press(&mut self) {
+    let now = std::time::Instant::now();
+    let Some(action) = self.touch_gesture.tick(now) else {
+      return;
+    };
+    if let TouchGestureAction::ContextMenu { pos_points } = action {
+      let pos_points = egui::pos2(pos_points.0, pos_points.1);
+
+      // Do not open context menus while stale page content is covered by the loading overlay.
+      if self.page_loading_overlay_blocks_input
+        && self
+          .page_rect_points
+          .is_some_and(|page_rect| page_rect.contains(pos_points))
+      {
+        return;
+      }
+
+      let Some(rect) = self.page_rect_points else {
+        return;
+      };
+      if !rect.contains(pos_points) {
+        return;
+      }
+      if self.cursor_over_egui_overlay(pos_points) || self.cursor_over_overlay_scrollbars(pos_points) {
+        return;
+      }
+
+      let Some(_viewport_css) = self.page_viewport_css else {
+        return;
+      };
+      let Some(tab_id) = self.page_input_tab else {
+        return;
+      };
+      let Some(mapping) = self.page_input_mapping else {
+        return;
+      };
+      let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+        return;
+      };
+
+      self.primary_click_sequence = None;
+      self.page_has_focus = true;
+      self.cursor_in_page = true;
+      self.close_context_menu();
+      self.pending_context_menu_request = Some(PendingContextMenuRequest {
+        tab_id,
+        pos_css,
+        anchor_points: pos_points,
+      });
+      self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest { tab_id, pos_css });
+      self.window.request_redraw();
+    }
   }
 
   fn maybe_request_redraw_for_ui_timers(&mut self) {
@@ -9990,6 +10215,7 @@ impl App {
         // Losing window focus should cancel temporary UI state such as `<select>` popups and active
         // pointer drags.
         self.debug_log_overlay_pointer_capture = false;
+        self.touch_gesture.reset();
         if self.open_select_dropdown.is_some() {
           self.cancel_select_dropdown();
           self.window.request_redraw();
@@ -10339,6 +10565,258 @@ impl App {
           pointer_css,
         });
         self.window.request_redraw();
+      }
+      WindowEvent::Touch(touch) => {
+        use winit::event::TouchPhase;
+
+        // While the tab search overlay is open, treat touch interactions as UI-only (handled by
+        // egui) and do not forward them to the page worker.
+        if self.browser_state.chrome.tab_search.open {
+          return;
+        }
+        if self.clear_browsing_data_dialog_open {
+          return;
+        }
+        let pos_points = egui::pos2(
+          touch.location.x as f32 / self.pixels_per_point,
+          touch.location.y as f32 / self.pixels_per_point,
+        );
+        // Keep `last_cursor_pos_points` updated so helper logic (e.g. file drops, keyboard context
+        // menu anchoring) can reuse the most recent touch position.
+        self.last_cursor_pos_points = Some(pos_points);
+        let now = std::time::Instant::now();
+
+        match touch.phase {
+          TouchPhase::Started => {
+            // Mirror the mouse-input behaviour: touching outside the page should clear page focus
+            // immediately.
+            if fastrender::ui::input_routing::should_clear_page_focus_on_pointer_press(
+              self.page_rect_points,
+              pos_points,
+            ) {
+              self.page_has_focus = false;
+            }
+
+            // If a popup is open, touches inside it are handled by egui. Any touch outside should
+            // dismiss it before we start a new page gesture.
+            if self.open_context_menu.is_some() {
+              if self
+                .open_context_menu_rect
+                .is_some_and(|rect| rect.contains(pos_points))
+              {
+                return;
+              }
+              self.close_context_menu();
+              self.window.request_redraw();
+            }
+
+            if self.open_select_dropdown.is_some() {
+              if self
+                .open_select_dropdown_rect
+                .is_some_and(|rect| rect.contains(pos_points))
+              {
+                return;
+              }
+              let clicked_select_control =
+                self.open_select_dropdown.as_ref().is_some_and(|dropdown| {
+                  dropdown.anchor_css.is_some_and(|anchor_css| {
+                    self
+                      .page_input_mapping
+                      .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(anchor_css))
+                      .is_some_and(|rect_points| rect_points.contains(pos_points))
+                  })
+                });
+              self.cancel_select_dropdown();
+              self.window.request_redraw();
+              if clicked_select_control {
+                return;
+              }
+            }
+
+            if self.open_date_time_picker.is_some() {
+              if self
+                .open_date_time_picker_rect
+                .is_some_and(|rect| rect.contains(pos_points))
+              {
+                return;
+              }
+              let clicked_input_control = self.open_date_time_picker.as_ref().is_some_and(|picker| {
+                self
+                  .page_input_mapping
+                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
+                  .is_some_and(|rect_points| rect_points.contains(pos_points))
+              });
+              self.cancel_date_time_picker();
+              self.window.request_redraw();
+              if clicked_input_control {
+                return;
+              }
+            }
+
+            if self.open_file_picker.is_some() {
+              if self
+                .open_file_picker_rect
+                .is_some_and(|rect| rect.contains(pos_points))
+              {
+                return;
+              }
+              let clicked_input_control = self.open_file_picker.as_ref().is_some_and(|picker| {
+                self
+                  .page_input_mapping
+                  .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(picker.anchor_css))
+                  .is_some_and(|rect_points| rect_points.contains(pos_points))
+              });
+              self.cancel_file_picker();
+              self.window.request_redraw();
+              if clicked_input_control {
+                return;
+              }
+            }
+
+            if self.cursor_over_egui_overlay(pos_points) {
+              return;
+            }
+
+            if self.page_loading_overlay_blocks_input
+              && self
+                .page_rect_points
+                .is_some_and(|page_rect| page_rect.contains(pos_points))
+            {
+              // While a navigation is loading we show a scrim/spinner over the last frame. Ignore
+              // new pointer interactions so users can't interact with stale content.
+              return;
+            }
+
+            // Only start touch gestures that began on the rendered page (i.e. not on browser
+            // chrome/widgets).
+            let Some(page_rect) = self.page_rect_points else {
+              return;
+            };
+            if !page_rect.contains(pos_points) {
+              return;
+            }
+            if self.cursor_over_overlay_scrollbars(pos_points) {
+              return;
+            }
+            if self.page_input_tab.is_none() || self.page_input_mapping.is_none() {
+              return;
+            }
+
+            self.touch_gesture.touch_start(touch.id, now, (pos_points.x, pos_points.y));
+          }
+          TouchPhase::Moved => {
+            self
+              .touch_gesture
+              .touch_move(touch.id, (pos_points.x, pos_points.y));
+          }
+          TouchPhase::Ended => {
+            let action =
+              self
+                .touch_gesture
+                .touch_end(touch.id, now, (pos_points.x, pos_points.y));
+            let Some(action) = action else {
+              return;
+            };
+
+            match action {
+              TouchGestureAction::Tap { pos_points } => {
+                let pos_points = egui::pos2(pos_points.0, pos_points.1);
+                let Some(rect) = self.page_rect_points else {
+                  return;
+                };
+                if !rect.contains(pos_points) {
+                  return;
+                }
+                if self.cursor_over_egui_overlay(pos_points)
+                  || self.cursor_over_overlay_scrollbars(pos_points)
+                {
+                  return;
+                }
+                let Some(_viewport_css) = self.page_viewport_css else {
+                  return;
+                };
+                let Some(tab_id) = self.page_input_tab else {
+                  return;
+                };
+                let Some(mapping) = self.page_input_mapping else {
+                  return;
+                };
+                let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+                  return;
+                };
+
+                self.page_has_focus = true;
+                self.cursor_in_page = true;
+                // Touch taps are always single-clicks.
+                self.send_worker_msg(fastrender::ui::UiToWorker::PointerDown {
+                  tab_id,
+                  pos_css,
+                  button: fastrender::ui::PointerButton::Primary,
+                  modifiers: map_modifiers(self.modifiers),
+                  click_count: 1,
+                });
+                self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
+                  tab_id,
+                  pos_css,
+                  button: fastrender::ui::PointerButton::Primary,
+                  modifiers: map_modifiers(self.modifiers),
+                });
+                self.window.request_redraw();
+              }
+              TouchGestureAction::ContextMenu { pos_points } => {
+                let pos_points = egui::pos2(pos_points.0, pos_points.1);
+                if self.page_loading_overlay_blocks_input
+                  && self
+                    .page_rect_points
+                    .is_some_and(|page_rect| page_rect.contains(pos_points))
+                {
+                  return;
+                }
+                let Some(rect) = self.page_rect_points else {
+                  return;
+                };
+                if !rect.contains(pos_points) {
+                  return;
+                }
+                if self.cursor_over_egui_overlay(pos_points)
+                  || self.cursor_over_overlay_scrollbars(pos_points)
+                {
+                  return;
+                }
+                let Some(_viewport_css) = self.page_viewport_css else {
+                  return;
+                };
+                let Some(tab_id) = self.page_input_tab else {
+                  return;
+                };
+                let Some(mapping) = self.page_input_mapping else {
+                  return;
+                };
+                let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+                  return;
+                };
+
+                self.primary_click_sequence = None;
+                self.page_has_focus = true;
+                self.cursor_in_page = true;
+                self.close_context_menu();
+                self.pending_context_menu_request = Some(PendingContextMenuRequest {
+                  tab_id,
+                  pos_css,
+                  anchor_points: pos_points,
+                });
+                self.send_worker_msg(fastrender::ui::UiToWorker::ContextMenuRequest {
+                  tab_id,
+                  pos_css,
+                });
+                self.window.request_redraw();
+              }
+            }
+          }
+          TouchPhase::Cancelled => {
+            self.touch_gesture.touch_cancel(touch.id);
+          }
+        }
       }
       WindowEvent::DroppedFile(path) => {
         // OS-level file drop.
@@ -14166,6 +14644,50 @@ mod pending_scroll_drag_tests {
       }
       other => panic!("expected UiToWorker::Scroll, got {other:?}"),
     }
+  }
+}
+
+#[cfg(test)]
+mod touch_long_press_tests {
+  use super::{TouchGestureAction, TouchGestureRecognizer};
+  use std::time::{Duration, Instant};
+
+  #[test]
+  fn held_past_threshold_triggers_context_menu() {
+    let mut recognizer = TouchGestureRecognizer::new_with_config(Duration::from_millis(500), 4.0);
+    let t0 = Instant::now();
+    recognizer.touch_start(1, t0, (10.0, 20.0));
+    assert_eq!(recognizer.tick(t0 + Duration::from_millis(499)), None);
+    assert_eq!(
+      recognizer.tick(t0 + Duration::from_millis(500)),
+      Some(TouchGestureAction::ContextMenu {
+        pos_points: (10.0, 20.0)
+      })
+    );
+  }
+
+  #[test]
+  fn movement_beyond_slop_cancels_long_press() {
+    let mut recognizer = TouchGestureRecognizer::new_with_config(Duration::from_millis(500), 4.0);
+    let t0 = Instant::now();
+    recognizer.touch_start(1, t0, (0.0, 0.0));
+    recognizer.touch_move(1, (10.0, 0.0));
+    assert_eq!(recognizer.tick(t0 + Duration::from_millis(600)), None);
+  }
+
+  #[test]
+  fn long_press_suppresses_tap_on_release() {
+    let mut recognizer = TouchGestureRecognizer::new_with_config(Duration::from_millis(500), 4.0);
+    let t0 = Instant::now();
+    recognizer.touch_start(1, t0, (5.0, 5.0));
+    assert!(matches!(
+      recognizer.tick(t0 + Duration::from_millis(600)),
+      Some(TouchGestureAction::ContextMenu { .. })
+    ));
+    assert_eq!(
+      recognizer.touch_end(1, t0 + Duration::from_millis(650), (5.0, 5.0)),
+      None
+    );
   }
 }
 
