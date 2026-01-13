@@ -475,7 +475,7 @@ fn collect_subgrid_virtual_items_recursive<
     col_explicit,
   );
 
-  let mut subgrid_items: Vec<GridItem> = Vec::new();
+  let mut subgrid_items: Vec<GridItem> = Vec::with_capacity(tree.child_count(container_item.node));
   let row_counts = TrackCounts {
     negative_implicit: 0,
     explicit: row_explicit,
@@ -689,7 +689,9 @@ fn collect_subgrid_virtual_items<
   // Track/line-name storage is already transposed into physical space by the wrapper. Treat the
   // Taffy inline axis as physical X (columns vector) and the Taffy block axis as physical Y (rows
   // vector), independent of `axes_swapped`.
-  let mut virtuals = Vec::new();
+  // Subgrid virtual items are usually proportional to the number of in-flow grid items. Preallocate
+  // to avoid repeated growth in common cases.
+  let mut virtuals = Vec::with_capacity(items.len());
 
   let parent_gap = parent_style
     .gap
@@ -790,7 +792,7 @@ fn record_subgrid_overrides<
     if record_rows && subgrid_rows {
       let span_start = item.row.start;
       let row_span = item.row.span();
-      let mut track_sizes = Vec::new();
+      let mut track_sizes = Vec::with_capacity(row_span as usize);
       let mut gap = 0.0;
       for track in rows[item.track_range_excluding_lines(AbstractAxis::Block)].iter() {
         if track.kind == GridTrackKind::Track {
@@ -812,7 +814,7 @@ fn record_subgrid_overrides<
     if record_columns && subgrid_columns {
       let span_start = item.column.start;
       let col_span = item.column.span();
-      let mut track_sizes = Vec::new();
+      let mut track_sizes = Vec::with_capacity(col_span as usize);
       let mut gap = 0.0;
       for track in columns[item.track_range_excluding_lines(AbstractAxis::Inline)].iter() {
         if track.kind == GridTrackKind::Track {
