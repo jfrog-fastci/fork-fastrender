@@ -637,6 +637,122 @@ where
   write_text(&update.text);
   true
 }
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn elide_accessible_name(raw: &str, max_chars: usize) -> String {
+  let raw = raw.trim();
+  if raw.is_empty() || max_chars == 0 {
+    return String::new();
+  }
+
+  let mut out = String::new();
+  let mut chars = raw.chars();
+  for _ in 0..max_chars {
+    match chars.next() {
+      Some(ch) => out.push(ch),
+      None => return out,
+    }
+  }
+
+  if chars.next().is_some() {
+    out.pop();
+    out.push('…');
+  }
+  out
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn collapse_whitespace(raw: &str) -> String {
+  let mut out = String::new();
+  for part in raw.split_whitespace() {
+    if !out.is_empty() {
+      out.push(' ');
+    }
+    out.push_str(part);
+  }
+  out
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn page_host_label_url_host_path(raw: &str) -> Option<String> {
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+
+  let Ok(parsed) = url::Url::parse(raw) else {
+    return Some(raw.to_string());
+  };
+
+  let scheme = parsed.scheme();
+  if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https") {
+    let Some(host) = parsed.host_str() else {
+      return Some(raw.to_string());
+    };
+    let mut host = host.to_string();
+    if host.contains(':') && !host.starts_with('[') {
+      // Likely an IPv6 literal.
+      host = format!("[{host}]");
+    }
+
+    if let Some(port) = parsed.port() {
+      host.push(':');
+      host.push_str(&port.to_string());
+    }
+
+    let path = parsed.path();
+    if path != "/" && !path.is_empty() {
+      host.push_str(path);
+    }
+    return Some(host);
+  }
+
+  // `about:` and other non-host URLs are best-effort displayed as-is; the outer label truncation
+  // keeps this from becoming too verbose.
+  Some(parsed.to_string())
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn page_host_a11y_label_for_tab(tab: Option<&fastrender::ui::BrowserTabState>) -> String {
+  const MAX_NAME_CHARS: usize = 80;
+
+  let mut loading = false;
+  let mut base = None::<String>;
+
+  if let Some(tab) = tab {
+    loading = tab.loading;
+
+    base = tab
+      .committed_title
+      .as_deref()
+      .map(collapse_whitespace)
+      .filter(|t| !t.is_empty());
+
+    if base.is_none() {
+      base = tab
+        .current_url
+        .as_deref()
+        .and_then(page_host_label_url_host_path)
+        .map(|t| collapse_whitespace(&t))
+        .filter(|t| !t.is_empty());
+    }
+  }
+
+  let base = base.unwrap_or_else(|| "Web page".to_string());
+  let label = if loading {
+    format!("Loading: {base}")
+  } else {
+    base
+  };
+
+  let label = collapse_whitespace(&label);
+  let label = if label.is_empty() {
+    "Web page".to_string()
+  } else {
+    label
+  };
+  elide_accessible_name(&label, MAX_NAME_CHARS)
+}
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
 #[cfg(any(test, feature = "browser_ui"))]
@@ -9935,6 +10051,31 @@ struct TrustedAboutPrepared {
   dpr: f32,
   prepared: fastrender::PreparedDocument,
   scroll_bounds: fastrender::scroll::ScrollBounds,
+}
+
+#[cfg(feature = "browser_ui")]
+const PAGE_HOST_ID_SOURCE: &str = "fastr_page_host";
+
+#[cfg(feature = "browser_ui")]
+fn add_page_host_image_widget(
+  ui: &mut egui::Ui,
+  texture: egui::TextureId,
+  size_points: egui::Vec2,
+  a11y_label: String,
+) -> egui::Response {
+  ui
+    .push_id(PAGE_HOST_ID_SOURCE, move |ui| {
+      let response =
+        ui.add(egui::Image::new((texture, size_points)).sense(egui::Sense::click()));
+      // Ensure assistive tech sees a meaningful label for the page container rather than a generic
+      // "image" name.
+      response.widget_info({
+        let label = a11y_label;
+        move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+      });
+      response
+    })
+    .inner
 }
 
 #[cfg(feature = "browser_ui")]
@@ -22406,7 +22547,11 @@ impl App {
         };
 
         tex.set_filter_mode(&self.device, &mut self.egui_renderer, desired_filter);
-        let (page_rect, response) = ui.allocate_exact_size(size_points, egui::Sense::click());
+        let (page_rect, response) = ui
+          .push_id(PAGE_HOST_ID_SOURCE, |ui| {
+            ui.allocate_exact_size(size_points, egui::Sense::click())
+          })
+          .inner;
         let painter = ui.painter().with_clip_rect(page_rect);
         painter.rect_filled(
           page_rect,
@@ -22429,12 +22574,18 @@ impl App {
         };
         painter.image(tex.id(), image_rect, tex.uv_rect(), egui::Color32::WHITE);
         // Expose the page viewport as an accessibility container (`WebView`) so we can attach the
-        // page document subtree as children in AccessKit (screen reader traversal).
-        let page_title = self
-          .browser_state
-          .tab(active_tab)
-          .and_then(|tab| tab.title.as_deref().or(tab.committed_title.as_deref()));
-        fastrender::ui::a11y::configure_page_viewport_accessibility(&response, page_title);
+        // page document subtree as children in AccessKit (screen reader traversal) with a stable,
+        // up-to-date accessible name.
+        let page_a11y_label = page_host_a11y_label_for_tab(self.browser_state.tab(active_tab));
+        response.widget_info({
+          let label = page_a11y_label.clone();
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+        });
+        let _ = response.ctx.accesskit_node_builder(response.id, move |builder| {
+          builder.set_role(accesskit::Role::WebView);
+          // Some assistive tech expects `Focus` to be explicitly exposed for focusable container nodes.
+          builder.add_action(accesskit::Action::Focus);
+        });
         self.page_rect_points = Some(response.rect);
         self.page_viewport_css = Some(viewport_css_for_mapping);
         let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);
@@ -24773,6 +24924,99 @@ mod page_subtree_accesskit_merge_tests {
       update.focus,
       Some(node_id),
       "expected synthesized AccessKit update to include focus when provided"
+    );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod page_host_a11y_tests {
+  use super::{add_page_host_image_widget, page_host_a11y_label_for_tab};
+  use fastrender::ui::{BrowserTabState, TabId};
+
+  fn accesskit_update_from_platform_output(
+    output: &egui::PlatformOutput,
+  ) -> &accesskit::TreeUpdate {
+    output.accesskit_update.as_ref().expect(
+      "egui did not emit an AccessKit update. Ensure `ctx.enable_accesskit()` was called for the frame under test.",
+    )
+  }
+
+  fn accesskit_names_from_full_output(output: &egui::FullOutput) -> Vec<String> {
+    let update = accesskit_update_from_platform_output(&output.platform_output);
+    let mut names: Vec<String> = update
+      .nodes
+      .iter()
+      .map(|(_id, node)| node.name().unwrap_or("").trim().to_string())
+      .filter(|name| !name.is_empty())
+      .collect();
+    names.sort();
+    names.dedup();
+    names
+  }
+
+  fn run_page_host_frame(
+    ctx: &egui::Context,
+    tab: &BrowserTabState,
+  ) -> (egui::FullOutput, egui::Id) {
+    let mut raw = egui::RawInput::default();
+    raw.focused = true;
+    raw.time = Some(0.0);
+    raw.pixels_per_point = Some(1.0);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::pos2(0.0, 0.0),
+      egui::vec2(640.0, 480.0),
+    ));
+
+    ctx.begin_frame(raw);
+    let mut page_id = None;
+    egui::CentralPanel::default().show(ctx, |ui| {
+      let label = page_host_a11y_label_for_tab(Some(tab));
+      let resp = add_page_host_image_widget(
+        ui,
+        egui::TextureId::User(0),
+        ui.available_size(),
+        label,
+      );
+      page_id = Some(resp.id);
+    });
+    let output = ctx.end_frame();
+    (output, page_id.expect("page host response id should be captured"))
+  }
+
+  #[test]
+  fn page_host_accesskit_name_updates_and_id_stays_stable() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let tab_id = TabId(1);
+    let mut tab = BrowserTabState::new(tab_id, "https://example.com/".to_string());
+    tab.committed_title = Some("Example Domain".to_string());
+    tab.loading = false;
+
+    let (output_a, page_id_a) = run_page_host_frame(&ctx, &tab);
+    let names_a = accesskit_names_from_full_output(&output_a);
+    assert!(
+      names_a.iter().any(|n| n == "Example Domain"),
+      "expected page host AccessKit name to include committed title.\n\nnames: {names_a:#?}"
+    );
+
+    // Update the active-tab state to force a different accessible label (URL fallback + loading).
+    tab.committed_title = None;
+    tab.title = None;
+    tab.current_url = Some("https://rust-lang.org/learn".to_string());
+    tab.loading = true;
+
+    let (output_b, page_id_b) = run_page_host_frame(&ctx, &tab);
+    let names_b = accesskit_names_from_full_output(&output_b);
+    assert_eq!(
+      page_id_b, page_id_a,
+      "expected page host egui id to remain stable across label changes"
+    );
+    assert!(
+      names_b
+        .iter()
+        .any(|n| n == "Loading: rust-lang.org/learn"),
+      "expected page host AccessKit name to update based on URL/loading state.\n\nnames: {names_b:#?}"
     );
   }
 }
