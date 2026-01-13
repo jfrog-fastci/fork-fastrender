@@ -843,4 +843,32 @@ mod tests {
     to_renderer_tx.send(BrowserToRenderer::Shutdown).unwrap();
     join.join().unwrap();
   }
+
+  #[test]
+  fn reports_iframe_sandbox_flags_and_opaque_origin() {
+    let html = r#"<!doctype html>
+      <iframe sandbox></iframe>
+      <iframe sandbox="allow-same-origin allow-scripts"></iframe>
+    "#;
+
+    let subframes = subframes_from_html(FrameId(1), html);
+    assert_eq!(subframes.len(), 2);
+
+    assert_eq!(subframes[0].sandbox_flags, SandboxFlags::NONE);
+    assert!(
+      subframes[0].opaque_origin,
+      "sandbox without allow-same-origin should force opaque origin"
+    );
+
+    assert!(subframes[1]
+      .sandbox_flags
+      .contains(SandboxFlags::ALLOW_SAME_ORIGIN));
+    assert!(subframes[1]
+      .sandbox_flags
+      .contains(SandboxFlags::ALLOW_SCRIPTS));
+    assert!(
+      !subframes[1].opaque_origin,
+      "allow-same-origin should disable opaque-origin forcing"
+    );
+  }
 }
