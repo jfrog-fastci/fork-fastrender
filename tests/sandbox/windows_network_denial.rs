@@ -11,56 +11,255 @@
 #![cfg(windows)]
 
 use std::ffi::OsString;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, RawHandle};
 use std::time::Duration;
 
 use fastrender::sandbox::windows::spawn_sandboxed;
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Security::{GetTokenInformation, OpenProcessToken};
+use windows_sys::Win32::Foundation::{
+  CloseHandle, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE, HANDLE_FLAG_INHERIT,
+  INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows_sys::Win32::Security::{
+  GetTokenInformation, OpenProcessToken, TokenCapabilities, TokenIntegrityLevel, TokenIsAppContainer,
+  TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
+use windows_sys::Win32::System::Console::{
+  GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+};
+use windows_sys::Win32::System::Memory::LocalFree;
 use windows_sys::Win32::System::Threading::{
   GetExitCodeProcess, GetCurrentProcess, TerminateProcess, WaitForSingleObject,
 };
 
 const ENV_PORT: &str = "FASTR_TEST_WIN_SANDBOX_NETWORK_PORT";
 
-const TOKEN_QUERY: u32 = 0x0008;
-const TOKEN_IS_APPCONTAINER: u32 = 29;
+/// The well-known capability SID for `internetClient`.
+///
+/// See: https://learn.microsoft.com/en-us/windows/security/identity-protection/access-control/security-identifiers#capability-sids
+const INTERNET_CLIENT_CAPABILITY_SID: &str = "S-1-15-3-1";
 
 const WAIT_OBJECT_0: u32 = 0x0000_0000;
 const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
-fn is_running_in_appcontainer() -> Result<bool, String> {
+#[derive(Debug)]
+struct TokenState {
+  is_app_container: bool,
+  integrity_sid: String,
+  integrity_rid: u32,
+  capability_sids: Vec<String>,
+}
+
+impl TokenState {
+  fn is_low_or_untrusted_integrity(&self) -> bool {
+    matches!(self.integrity_rid, 0 | 4096)
+  }
+
+  fn has_internet_client_capability(&self) -> bool {
+    self
+      .capability_sids
+      .iter()
+      .any(|sid| sid.eq_ignore_ascii_case(INTERNET_CLIENT_CAPABILITY_SID))
+  }
+}
+
+fn query_current_process_token_state() -> Result<TokenState, String> {
   let mut token: HANDLE = 0;
   let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
   if ok == 0 || token == 0 || token == INVALID_HANDLE_VALUE {
     return Err(format!(
-      "OpenProcessToken(GetCurrentProcess) failed: {}",
-      std::io::Error::last_os_error()
+      "OpenProcessToken(GetCurrentProcess, TOKEN_QUERY) failed: {}",
+      io::Error::last_os_error()
     ));
   }
 
-  let mut is_appcontainer: u32 = 0;
+  struct TokenGuard(HANDLE);
+  impl Drop for TokenGuard {
+    fn drop(&mut self) {
+      unsafe {
+        let _ = CloseHandle(self.0);
+      }
+    }
+  }
+  let token = TokenGuard(token);
+
+  let is_app_container = query_token_is_app_container(token.0)?;
+  let (integrity_sid, integrity_rid) = query_token_integrity_level(token.0)?;
+  let capability_sids = if is_app_container {
+    query_token_capabilities(token.0)?
+  } else {
+    Vec::new()
+  };
+  Ok(TokenState {
+    is_app_container,
+    integrity_sid,
+    integrity_rid,
+    capability_sids,
+  })
+}
+
+fn query_token_is_app_container(token: HANDLE) -> Result<bool, String> {
+  let mut value: u32 = 0;
   let mut returned: u32 = 0;
   let ok = unsafe {
     GetTokenInformation(
       token,
-      TOKEN_IS_APPCONTAINER,
-      &mut is_appcontainer as *mut _ as *mut _,
+      TokenIsAppContainer as TOKEN_INFORMATION_CLASS,
+      std::ptr::addr_of_mut!(value).cast(),
       std::mem::size_of::<u32>() as u32,
-      &mut returned,
+      std::ptr::addr_of_mut!(returned),
     )
   };
-  unsafe {
-    let _ = CloseHandle(token);
-  }
   if ok == 0 {
     return Err(format!(
       "GetTokenInformation(TokenIsAppContainer) failed: {}",
-      std::io::Error::last_os_error()
+      io::Error::last_os_error()
     ));
   }
-  Ok(is_appcontainer != 0)
+  Ok(value != 0)
+}
+
+fn query_token_integrity_level(token: HANDLE) -> Result<(String, u32), String> {
+  let buf = get_token_information(token, TokenIntegrityLevel as TOKEN_INFORMATION_CLASS)?;
+  if buf.len() < std::mem::size_of::<TOKEN_MANDATORY_LABEL>() {
+    return Err(format!(
+      "TokenIntegrityLevel buffer too small ({} bytes)",
+      buf.len()
+    ));
+  }
+
+  // SAFETY: buffer is large enough to contain TOKEN_MANDATORY_LABEL.
+  let label = unsafe { &*(buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()) };
+  let sid = label.Label.Sid;
+  if sid.is_null() {
+    return Err("TokenIntegrityLevel returned null SID".to_string());
+  }
+  let sid_string = sid_to_string(sid)?;
+  let rid = sid_string
+    .rsplit('-')
+    .next()
+    .and_then(|tail| tail.parse::<u32>().ok())
+    .ok_or_else(|| format!("unexpected integrity SID format: {sid_string}"))?;
+  Ok((sid_string, rid))
+}
+
+fn query_token_capabilities(token: HANDLE) -> Result<Vec<String>, String> {
+  let buf = get_token_information(token, TokenCapabilities as TOKEN_INFORMATION_CLASS)?;
+  if buf.is_empty() {
+    return Ok(Vec::new());
+  }
+  if buf.len() < std::mem::size_of::<TOKEN_GROUPS>() {
+    return Err(format!(
+      "TokenCapabilities buffer too small ({} bytes)",
+      buf.len()
+    ));
+  }
+
+  // SAFETY: buffer is large enough for TOKEN_GROUPS header.
+  let groups = unsafe { &*(buf.as_ptr().cast::<TOKEN_GROUPS>()) };
+  let count = groups.GroupCount as usize;
+  let first = groups.Groups.as_ptr();
+  let mut out = Vec::new();
+  for idx in 0..count {
+    // SAFETY: buffer returned by GetTokenInformation is sized for `count` entries.
+    let entry = unsafe { &*first.add(idx) };
+    if entry.Sid.is_null() {
+      continue;
+    }
+    out.push(sid_to_string(entry.Sid)?);
+  }
+  Ok(out)
+}
+
+fn get_token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u8>, String> {
+  let mut needed: u32 = 0;
+  let ok = unsafe {
+    GetTokenInformation(
+      token,
+      class,
+      std::ptr::null_mut(),
+      0,
+      std::ptr::addr_of_mut!(needed),
+    )
+  };
+  if ok != 0 {
+    // Unexpected but possible for fixed-size token info classes.
+    return Ok(Vec::new());
+  }
+
+  let err = io::Error::last_os_error();
+  if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+    return Err(format!(
+      "GetTokenInformation(size query) failed: {err} (raw_os_error={:?})",
+      err.raw_os_error()
+    ));
+  }
+  if needed == 0 {
+    return Err("GetTokenInformation returned ERROR_INSUFFICIENT_BUFFER but length was 0".to_string());
+  }
+
+  let mut buf = vec![0u8; needed as usize];
+  let ok = unsafe {
+    GetTokenInformation(
+      token,
+      class,
+      buf.as_mut_ptr().cast(),
+      needed,
+      std::ptr::addr_of_mut!(needed),
+    )
+  };
+  if ok == 0 {
+    return Err(format!(
+      "GetTokenInformation(data) failed: {}",
+      io::Error::last_os_error()
+    ));
+  }
+  buf.truncate(needed as usize);
+  Ok(buf)
+}
+
+fn sid_to_string(sid: *mut std::ffi::c_void) -> Result<String, String> {
+  let mut wide: *mut u16 = std::ptr::null_mut();
+  let ok = unsafe { ConvertSidToStringSidW(sid, std::ptr::addr_of_mut!(wide)) };
+  if ok == 0 {
+    return Err(format!(
+      "ConvertSidToStringSidW failed: {}",
+      io::Error::last_os_error()
+    ));
+  }
+  if wide.is_null() {
+    return Err("ConvertSidToStringSidW succeeded but returned null pointer".to_string());
+  }
+
+  // SAFETY: pointer is NUL-terminated per Win32 contract.
+  let mut len = 0usize;
+  unsafe {
+    while *wide.add(len) != 0 {
+      len += 1;
+    }
+    let slice = std::slice::from_raw_parts(wide, len);
+    let s = String::from_utf16_lossy(slice);
+    LocalFree(wide as isize);
+    Ok(s)
+  }
+}
+
+fn collect_stdio_handles_for_inheritance() -> Vec<RawHandle> {
+  let std_in = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+  let std_out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+  let std_err = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+
+  let mut inherit = Vec::new();
+  for h in [std_in, std_out, std_err] {
+    if h == 0 || h == INVALID_HANDLE_VALUE {
+      continue;
+    }
+    let _ = unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    inherit.push(h as RawHandle);
+  }
+  inherit
 }
 
 #[test]
@@ -87,8 +286,9 @@ fn appcontainer_denies_outbound_tcp_connect() {
   ];
 
   let port_str = port.to_string();
+  let inherit = collect_stdio_handles_for_inheritance();
   let child = crate::common::with_env_vars(&[(ENV_PORT, &port_str)], || {
-    spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child")
+    spawn_sandboxed(&exe, &args, &inherit).expect("spawn sandboxed child")
   });
 
   let handle = child.process.as_raw_handle() as HANDLE;
@@ -132,18 +332,25 @@ fn appcontainer_network_denied_child() {
     .and_then(|v| v.parse().ok())
     .expect("missing/invalid FASTR_TEST_WIN_SANDBOX_NETWORK_PORT");
 
-  match is_running_in_appcontainer() {
-    Ok(true) => {}
-    Ok(false) => {
+  let token = query_current_process_token_state()
+    .unwrap_or_else(|err| panic!("failed to query sandbox token state in child: {err}"));
+  eprintln!("sandbox: token_state={token:?}");
+
+  if token.is_app_container {
+    assert!(
+      !token.has_internet_client_capability(),
+      "SECURITY BUG: AppContainer token has internetClient capability ({INTERNET_CLIENT_CAPABILITY_SID}): {token:?}"
+    );
+  } else {
+    if token.is_low_or_untrusted_integrity() {
       eprintln!(
-        "skipping AppContainer network denial check: child is not running in an AppContainer token (sandbox fallback?)"
+        "skipping AppContainer network denial check: child is not running in an AppContainer token (sandbox fallback?): {token:?}"
       );
       return;
     }
-    Err(err) => {
-      eprintln!("skipping AppContainer network denial check: failed to query TokenIsAppContainer: {err}");
-      return;
-    }
+    panic!(
+      "sandbox fallback did not produce a low/untrusted integrity token; expected restricted-token fallback, got token_state={token:?}"
+    );
   }
 
   let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
@@ -156,4 +363,3 @@ fn appcontainer_network_denied_child() {
     }
   }
 }
-
