@@ -1032,6 +1032,16 @@ fn processes_html(full_url: &str) -> String {
   };
   let site_isolation_enabled =
     matches!(process_model, crate::ui::process_assignment::ProcessModel::PerSiteKey);
+  let network_mode_html = if cfg!(feature = "direct_network") {
+    "<code>direct</code> <span class=\"muted\">(direct_network)</span>"
+  } else {
+    "<code>ipc</code> <span class=\"muted\">(direct_network disabled)</span>"
+  };
+  let websocket_mode_html = if cfg!(feature = "direct_websocket") {
+    "<code>direct</code> <span class=\"muted\">(direct_websocket)</span>"
+  } else {
+    "<code>ipc</code> <span class=\"muted\">(direct_websocket disabled)</span>"
+  };
   let process_model_env_html = {
     let raw = std::env::var(crate::ui::process_assignment_config::ENV_PROCESS_MODEL)
       .ok()
@@ -1108,6 +1118,11 @@ fn processes_html(full_url: &str) -> String {
       let renderer = match tab.renderer_process {
         Some(id) => format!("<code>{id}</code>"),
         None => "<span class=\"muted\">(unassigned)</span>".to_string(),
+      };
+      let network_cell = if cfg!(feature = "direct_network") {
+        "<span class=\"muted\">in-process</span>".to_string()
+      } else {
+        "<span class=\"muted\">(not implemented)</span>".to_string()
       };
       if !tokens.is_empty() {
         use std::fmt::Write;
@@ -1207,7 +1222,7 @@ fn processes_html(full_url: &str) -> String {
           <td>{site_cell}</td>
           <td>{renderer}</td>
           <td>{state}</td>
-          <td class=\"muted\">(not implemented)</td>
+          <td>{network_cell}</td>
         </tr>",
         tab.tab_id, safe_url, safe_url
       ));
@@ -1419,6 +1434,7 @@ fn processes_html(full_url: &str) -> String {
 
       <p class=\"summary\">
         Process model: <code>{process_model_label}</code> {process_model_env_html}<br>
+        Networking: {network_mode_html} · WebSocket: {websocket_mode_html}<br>
         Tabs: <code>{visible_tabs}</code>{tabs_suffix}
         · Windows: <code>{window_count}</code>
         · Renderer processes: <code>{renderer_process_count}</code>
