@@ -16,10 +16,10 @@ use crate::paint::display_list::ImageData;
 use std::sync::Arc;
 use thiserror::Error;
 
+pub mod av_sync;
 pub mod audio;
 pub mod audio_clock;
 pub mod audio_engine;
-pub mod av_sync;
 pub mod clock;
 pub mod codecs;
 pub mod demux;
