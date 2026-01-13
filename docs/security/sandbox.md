@@ -139,7 +139,23 @@ Policy:
 - Close everything else (prefer `close_range` where available).
 - Prefer `CLOEXEC` on IPC fds to prevent accidental leaks across exec boundaries.
 
-### 3) Landlock (filesystem defense in depth)
+### 3) Linux namespaces (best-effort hardening)
+
+Linux namespaces can provide additional defense-in-depth isolation (for example, a fresh network
+namespace with no interfaces configured).
+
+Repo reality:
+
+- Namespace isolation is best-effort and currently applied (when enabled) by:
+  - `sandbox::apply_renderer_sandbox` (`src/sandbox/mod.rs`), and
+  - the Linux spawn-time sandboxing path (`src/sandbox/spawn.rs`).
+- This must run **before** seccomp, since the renderer seccomp policy may deny `unshare(2)`/`setns(2)`.
+- In many environments (notably containers or hosts with user namespaces disabled), this may fail.
+  That is expected; the sandbox still relies on seccomp as the primary syscall boundary.
+
+Implementation: `src/sandbox/linux_namespaces.rs`.
+
+### 4) Landlock (filesystem defense in depth)
 
 Landlock is an LSM that enforces a **path-based** filesystem policy.
 
@@ -166,7 +182,7 @@ Why Landlock at all if seccomp blocks `openat`?
 - Landlock still provides defense-in-depth if the seccomp policy evolves or a filesystem-related
   syscall slips through the filter.
 
-### 4) seccomp-bpf (syscall filter: hybrid allowlist + denylist)
+### 5) seccomp-bpf (syscall filter: hybrid allowlist + denylist)
 
 Implementation: `src/sandbox/linux_seccomp.rs`.
 
