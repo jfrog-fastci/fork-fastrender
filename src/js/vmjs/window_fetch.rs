@@ -1652,6 +1652,8 @@ const FETCH_MODE_TOO_LONG_ERROR: &str = "Request.mode exceeds maximum length";
 const FETCH_REDIRECT_TOO_LONG_ERROR: &str = "Request.redirect exceeds maximum length";
 const FETCH_REFERRER_TOO_LONG_ERROR: &str = "Request.referrer exceeds maximum length";
 const FETCH_REFERRER_POLICY_TOO_LONG_ERROR: &str = "Request.referrerPolicy exceeds maximum length";
+const FETCH_CACHE_TOO_LONG_ERROR: &str = "Request.cache exceeds maximum length";
+const FETCH_INTEGRITY_TOO_LONG_ERROR: &str = "Request.integrity exceeds maximum length";
 const FETCH_STATUS_TEXT_TOO_LONG_ERROR: &str = "Response statusText exceeds maximum length";
 
 fn js_string_to_rust_string_limited(
@@ -3366,9 +3368,21 @@ fn apply_request_init(
   limits: &WebFetchLimits,
   request: &mut CoreRequest,
   body_stream_out: &mut Option<GcObject>,
+  cache_out: &mut String,
+  integrity_out: &mut String,
+  keepalive_out: &mut bool,
   init: Value,
 ) -> Result<bool, VmError> {
   if matches!(init, Value::Undefined | Value::Null) {
+    if cache_out.as_str() == "only-if-cached" && request.mode != RequestMode::SameOrigin {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host,
+        host_hooks,
+        "Request.cache \"only-if-cached\" requires Request.mode \"same-origin\"",
+      ));
+    }
     return Ok(false);
   }
 
@@ -3404,6 +3418,56 @@ fn apply_request_init(
       request.set_mode(mode);
       mode_changed = true;
     }
+  }
+
+  // RequestInit `cache`/`integrity`/`keepalive` are wrapper-only attributes (the core request type
+  // does not currently represent them). They still need to be parsed and validated to match spec
+  // behavior and WPT expectations.
+  let cache_key = alloc_key(scope, "cache")?;
+  let cache_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, cache_key)?;
+  if !matches!(cache_val, Value::Undefined) {
+    let cache_s = to_rust_string_limited(scope.heap_mut(), cache_val, 64, FETCH_CACHE_TOO_LONG_ERROR)?;
+    match cache_s.as_str() {
+      "default" | "no-store" | "reload" | "no-cache" | "force-cache" | "only-if-cached" => {
+        *cache_out = cache_s;
+      }
+      _ => {
+        return Err(throw_type_error(
+          vm,
+          scope,
+          host,
+          host_hooks,
+          "Request.cache must be \"default\", \"no-store\", \"reload\", \"no-cache\", \"force-cache\", or \"only-if-cached\"",
+        ));
+      }
+    }
+  }
+
+  if cache_out.as_str() == "only-if-cached" && request.mode != RequestMode::SameOrigin {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host,
+      host_hooks,
+      "Request.cache \"only-if-cached\" requires Request.mode \"same-origin\"",
+    ));
+  }
+
+  let integrity_key = alloc_key(scope, "integrity")?;
+  let integrity_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, integrity_key)?;
+  if !matches!(integrity_val, Value::Undefined) {
+    *integrity_out = to_rust_string_limited(
+      scope.heap_mut(),
+      integrity_val,
+      limits.max_url_bytes,
+      FETCH_INTEGRITY_TOO_LONG_ERROR,
+    )?;
+  }
+
+  let keepalive_key = alloc_key(scope, "keepalive")?;
+  let keepalive_val = vm.get_with_host_and_hooks(host, scope, host_hooks, init_obj, keepalive_key)?;
+  if !matches!(keepalive_val, Value::Undefined) {
+    *keepalive_out = scope.heap().to_boolean(keepalive_val)?;
   }
 
   // `headers` replaces the existing header list.
@@ -3828,6 +3892,35 @@ fn request_ctor_construct(
   let mut signal: Option<Value> = None;
   let mut init_specified_signal = false;
 
+  // Wrapper-only Request attributes that are not stored in the core request type.
+  let mut cache = "default".to_string();
+  let mut integrity = String::new();
+  let mut keepalive = false;
+  if let Some(input_obj) = input_request_obj {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(input_obj))?;
+
+    let cache_val = get_data_prop(&mut scope, input_obj, "cache")?;
+    if !matches!(cache_val, Value::Undefined) {
+      cache = to_rust_string_limited(scope.heap_mut(), cache_val, 64, FETCH_CACHE_TOO_LONG_ERROR)?;
+    }
+
+    let integrity_val = get_data_prop(&mut scope, input_obj, "integrity")?;
+    if !matches!(integrity_val, Value::Undefined) {
+      integrity = to_rust_string_limited(
+        scope.heap_mut(),
+        integrity_val,
+        limits.max_url_bytes,
+        FETCH_INTEGRITY_TOO_LONG_ERROR,
+      )?;
+    }
+
+    let keepalive_val = get_data_prop(&mut scope, input_obj, "keepalive")?;
+    if !matches!(keepalive_val, Value::Undefined) {
+      keepalive = scope.heap().to_boolean(keepalive_val)?;
+    }
+  }
+
   let mut body_stream: Option<GcObject> = None;
   let init_body_provided = apply_request_init(
     vm,
@@ -3838,6 +3931,9 @@ fn request_ctor_construct(
     &limits,
     &mut request,
     &mut body_stream,
+    &mut cache,
+    &mut integrity,
+    &mut keepalive,
     init,
   )?;
 
@@ -3981,6 +4077,13 @@ fn request_ctor_construct(
     }
   };
   let obj = make_request_wrapper(scope, env_id, headers_proto, proto, request_id)?;
+
+  let cache_s = scope.alloc_string(&cache)?;
+  set_data_prop(scope, obj, "cache", Value::String(cache_s), false)?;
+  let integrity_s = scope.alloc_string(&integrity)?;
+  set_data_prop(scope, obj, "integrity", Value::String(integrity_s), false)?;
+  set_data_prop(scope, obj, "keepalive", Value::Bool(keepalive), false)?;
+
   set_data_prop(
     scope,
     obj,
@@ -4019,6 +4122,9 @@ fn request_clone_native(
     Value::Undefined => Value::Null,
     other => other,
   };
+  let cache = get_data_prop(scope, original_obj, "cache")?;
+  let integrity = get_data_prop(scope, original_obj, "integrity")?;
+  let keepalive = get_data_prop(scope, original_obj, "keepalive")?;
   if request_wrapper_cached_body_stream_is_locked(vm, scope, host, host_hooks, original_obj)? {
     return Err(throw_type_error(
       vm,
@@ -4102,6 +4208,17 @@ fn request_clone_native(
       "Request.prototype missing on instance",
     ))?;
   let obj = make_request_wrapper(scope, env_id, headers_proto, proto, new_request_id)?;
+
+  if !matches!(cache, Value::Undefined) {
+    set_data_prop(scope, obj, "cache", cache, false)?;
+  }
+  if !matches!(integrity, Value::Undefined) {
+    set_data_prop(scope, obj, "integrity", integrity, false)?;
+  }
+  if !matches!(keepalive, Value::Undefined) {
+    set_data_prop(scope, obj, "keepalive", keepalive, false)?;
+  }
+
   set_data_prop(scope, obj, "signal", signal, /* writable */ false)?;
 
   if let Some(stream_obj) = cloned_body_stream {
@@ -6593,6 +6710,20 @@ fn make_request_wrapper(
     false,
   )?;
 
+  // Fetch-only Request attributes that are not currently represented in `CoreRequest`.
+  //
+  // These are WebIDL `readonly` attributes in the platform API; we expose them as per-instance
+  // non-writable data properties for now.
+  let destination_s = scope.alloc_string("")?;
+  set_data_prop(scope, obj, "destination", Value::String(destination_s), false)?;
+  let cache_s = scope.alloc_string("default")?;
+  set_data_prop(scope, obj, "cache", Value::String(cache_s), false)?;
+  let integrity_s = scope.alloc_string("")?;
+  set_data_prop(scope, obj, "integrity", Value::String(integrity_s), false)?;
+  set_data_prop(scope, obj, "keepalive", Value::Bool(false), false)?;
+  set_data_prop(scope, obj, "isReloadNavigation", Value::Bool(false), false)?;
+  set_data_prop(scope, obj, "isHistoryNavigation", Value::Bool(false), false)?;
+
   let headers_obj = make_headers_wrapper(
     scope,
     env_id,
@@ -7773,6 +7904,35 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     CoreRequest::new_with_limits("GET", url, &limits)
   };
 
+  // Wrapper-only Request attributes that are not stored in the core request type.
+  let mut cache = "default".to_string();
+  let mut integrity = String::new();
+  let mut keepalive = false;
+  if let Some(input_obj) = input_request_obj {
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(input_obj))?;
+
+    let cache_val = get_data_prop(&mut scope, input_obj, "cache")?;
+    if !matches!(cache_val, Value::Undefined) {
+      cache = to_rust_string_limited(scope.heap_mut(), cache_val, 64, FETCH_CACHE_TOO_LONG_ERROR)?;
+    }
+
+    let integrity_val = get_data_prop(&mut scope, input_obj, "integrity")?;
+    if !matches!(integrity_val, Value::Undefined) {
+      integrity = to_rust_string_limited(
+        scope.heap_mut(),
+        integrity_val,
+        limits.max_url_bytes,
+        FETCH_INTEGRITY_TOO_LONG_ERROR,
+      )?;
+    }
+
+    let keepalive_val = get_data_prop(&mut scope, input_obj, "keepalive")?;
+    if !matches!(keepalive_val, Value::Undefined) {
+      keepalive = scope.heap().to_boolean(keepalive_val)?;
+    }
+  }
+
   let mut body_stream: Option<GcObject> = None;
   let init_body_provided = apply_request_init(
     vm,
@@ -7783,6 +7943,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     &limits,
     &mut request,
     &mut body_stream,
+    &mut cache,
+    &mut integrity,
+    &mut keepalive,
     init,
   )?;
 
@@ -9321,6 +9484,112 @@ mod tests {
       "new Request('https://example.invalid/', { method: 'POST', body: 'hi', headers: { 'Content-Type': 'application/custom' } }).headers.get('content-type')",
     )?;
     assert_eq!(get_string(window.heap(), ct_val), "application/custom");
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn request_exposes_cache_integrity_keepalive_and_navigation_flags() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let destination = window.exec_script("new Request('https://example.invalid/').destination")?;
+    assert_eq!(get_string(window.heap(), destination), "");
+
+    let cache = window.exec_script("new Request('https://example.invalid/').cache")?;
+    assert_eq!(get_string(window.heap(), cache), "default");
+
+    let integrity = window.exec_script("new Request('https://example.invalid/').integrity")?;
+    assert_eq!(get_string(window.heap(), integrity), "");
+
+    let keepalive = window.exec_script("new Request('https://example.invalid/').keepalive")?;
+    assert!(matches!(keepalive, Value::Bool(false)));
+
+    let is_reload_navigation =
+      window.exec_script("new Request('https://example.invalid/').isReloadNavigation")?;
+    assert!(matches!(is_reload_navigation, Value::Bool(false)));
+
+    let is_history_navigation =
+      window.exec_script("new Request('https://example.invalid/').isHistoryNavigation")?;
+    assert!(matches!(is_history_navigation, Value::Bool(false)));
+
+    let overridden_cache = window.exec_script(
+      "new Request('https://example.invalid/', { cache: 'no-cache' }).cache",
+    )?;
+    assert_eq!(get_string(window.heap(), overridden_cache), "no-cache");
+
+    let invalid_cache = window.exec_script(
+      "(() => {\
+         try { new Request('https://example.invalid/', { cache: 'bad' }); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), invalid_cache), "TypeError");
+
+    let only_if_cached_wrong_mode = window.exec_script(
+      "(() => {\
+         try { new Request('https://example.invalid/', { cache: 'only-if-cached', mode: 'cors' }); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(
+      get_string(window.heap(), only_if_cached_wrong_mode),
+      "TypeError"
+    );
+
+    let clone_preserves = window.exec_script(
+      "(() => {\
+         const r1 = new Request('https://example.invalid/', { cache:'reload', integrity:'x', keepalive:true });\
+         const r2 = r1.clone();\
+         return r2.cache === r1.cache && r2.integrity === r1.integrity && r2.keepalive === r1.keepalive;\
+       })()",
+    )?;
+    assert!(matches!(clone_preserves, Value::Bool(true)));
+
+    let new_from_existing_overrides_cache = window.exec_script(
+      "(() => {\
+         const r1 = new Request('https://example.invalid/', { cache:'reload', integrity:'x', keepalive:true });\
+         const r2 = new Request(r1, { cache:'no-cache' });\
+         return r2.cache === 'no-cache' && r2.integrity === 'x' && r2.keepalive === true;\
+       })()",
+    )?;
+    assert!(matches!(new_from_existing_overrides_cache, Value::Bool(true)));
+
+    drop(fetch_bindings);
+    window.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_validates_request_init_cache() -> Result<(), VmError> {
+    let mut window = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))?;
+    let fetch_bindings = {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_fetch_bindings_with_guard::<DummyHost>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+      )?
+    };
+
+    let invalid_cache = window.exec_script(
+      "(() => {\
+         try { fetch('https://example.invalid/', { cache: 'bad' }); return 'no'; }\
+         catch (e) { return e.name; }\
+       })()",
+    )?;
+    assert_eq!(get_string(window.heap(), invalid_cache), "TypeError");
 
     drop(fetch_bindings);
     window.teardown();
