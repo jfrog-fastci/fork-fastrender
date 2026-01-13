@@ -2753,6 +2753,79 @@ mod tests {
   }
 
   #[test]
+  fn flex_max_content_probe_uses_other_axis_estimate_prefix_sums() {
+    // When intrinsic track sizing is skipped (because there are no intrinsic tracks in the axis),
+    // `expand_flexible_tracks` can still need to probe max-content contributions for items crossing
+    // flexible tracks under an indefinite (max-content) sizing constraint.
+    //
+    // Those probes require an estimate of the item's available space in the other axis. Ensure we
+    // still preserve Option-sum semantics (None if any spanned other-axis track estimate is None)
+    // in this code path.
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        // Place the item in the first row/column.
+        grid_column: Line {
+          start: line(1),
+          end: span(1),
+        },
+        grid_row: Line {
+          start: line(1),
+          end: span(1),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          // minmax(0, 1fr): no intrinsic track sizing functions in the inline axis, so intrinsic
+          // sizing is skipped and `available_space_cache` is not pre-filled.
+          grid_template_columns: vec![minmax(length(0.0), fr(1.0)); 1],
+          // Max-content row: other-axis track-size estimate is `None`.
+          grid_template_rows: vec![max_content(); 1],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let saw_max_content_probe = std::cell::Cell::new(false);
+    taffy
+      .compute_layout_with_measure(
+        root,
+        Size {
+          width: AvailableSpace::MaxContent,
+          height: AvailableSpace::Definite(100.0),
+        },
+        |_known_dimensions, available_space, node_id, _, _| {
+          // `max-content` probes in `expand_flexible_tracks` supply `AvailableSpace::MaxContent`
+          // for the axis being sized. If the spanned other-axis track estimate sum is `None` then
+          // the other axis should also be treated as `MaxContent`.
+          if node_id == child && matches!(available_space.width, AvailableSpace::MaxContent) {
+            saw_max_content_probe.set(true);
+            assert!(
+              matches!(available_space.height, AvailableSpace::MaxContent),
+              "expected other-axis available space to be MaxContent when any spanned track estimate is None (got {available_space:?})",
+            );
+          }
+
+          MeasureOutput::from_size(Size { width: 10.0, height: 10.0 })
+        },
+      )
+      .unwrap();
+
+    assert!(
+      saw_max_content_probe.get(),
+      "expected max-content probe to run during flexible track expansion"
+    );
+  }
+
+  #[test]
   fn update_item_crosses_intrinsic_tracks_is_skipped_without_percentage_tracks() {
     super::UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(0));
 
