@@ -11,6 +11,7 @@ use super::{
 };
 use super::convert::sanitize_sample;
 use crate::media::audio_clock::InterpolatedAudioClock;
+use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use cpal::traits::{HostTrait, StreamTrait};
 
@@ -53,7 +54,11 @@ impl CpalAudioBackend {
   }
 
   pub fn new_with_config(engine_cfg: &AudioEngineConfig) -> Result<Self, AudioError> {
-    let max_buffered_duration = engine_cfg.per_stream_max_buffered_duration;
+    // This comes from process-wide configuration (env vars), so clamp it defensively. The queue and
+    // sink buffers must never be able to allocate unbounded memory.
+    let max_buffered_duration = engine_cfg
+      .per_stream_max_buffered_duration
+      .min(MAX_BUFFERED_DURATION);
 
     // `cpal::Stream` is not `Send`/`Sync`, so it cannot live inside a `Send + Sync`
     // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its
@@ -359,7 +364,10 @@ impl AudioSink for CpalAudioSink {
   fn push_interleaved_f32(&self, samples: &[f32]) -> usize {
     let channels = usize::from(self.state.config.channels.max(1));
     let usable_len = samples.len() - (samples.len() % channels);
-    self.state.buffer.push(&samples[..usable_len])
+    let frames = usable_len / channels;
+    let frames = frames.min(MAX_FRAMES_PER_PUSH);
+    let capped_len = frames * channels;
+    self.state.buffer.push(&samples[..capped_len])
   }
 
   fn set_volume(&self, volume: f32) {
@@ -387,6 +395,9 @@ fn select_output_stream_config(
       }
 
       let channels = range.channels();
+      if channels == 0 || channels > MAX_CHANNELS {
+        continue;
+      }
       let channel_score = match channels {
         2 => 2,
         1 => 1,
@@ -400,8 +411,15 @@ fn select_output_stream_config(
       } else if min_rate <= 44_100 && 44_100 <= max_rate {
         44_100
       } else {
-        max_rate
+        let capped_max = max_rate.min(MAX_SAMPLE_RATE_HZ);
+        if capped_max < min_rate {
+          continue;
+        }
+        capped_max
       };
+      if chosen_rate == 0 {
+        continue;
+      }
       let rate_score = if chosen_rate == 48_000 {
         2
       } else if chosen_rate == 44_100 {
@@ -430,6 +448,18 @@ fn select_output_stream_config(
 
   let sample_format = supported.sample_format();
   let config: cpal::StreamConfig = supported.into();
+  if config.channels == 0 || config.channels > MAX_CHANNELS {
+    return Err(AudioError::invalid_spec(format!(
+      "unsupported output channel count {}",
+      config.channels
+    )));
+  }
+  if config.sample_rate.0 == 0 || config.sample_rate.0 > MAX_SAMPLE_RATE_HZ {
+    return Err(AudioError::invalid_spec(format!(
+      "unsupported output sample rate {}",
+      config.sample_rate.0
+    )));
+  }
   Ok((config, sample_format))
 }
 

@@ -471,7 +471,7 @@ mod tests {
 
     // Generous capacity so the test never triggers queue drops.
     let capacity_frames = 48_000usize * 4;
-    let (mut prod, mut cons) = pcm_f32_queue(channels, src_rate_hz, capacity_frames);
+    let (mut prod, mut cons) = pcm_f32_queue(channels, src_rate_hz, capacity_frames).unwrap();
 
     // Pre-fill to target buffered duration so the controller starts in steady state.
     let target_frames = (target_buffer_s * f64::from(src_rate_hz)) as usize;
@@ -565,7 +565,7 @@ mod tests {
     };
 
     // Set up a queue with two frames: smallest normal, then zero.
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 16).unwrap();
     prod.push(&[f32::MIN_POSITIVE, 0.0], Duration::ZERO);
 
     let mut resampler = DriftResampler::new(1, 48_000, 48_000, cfg);

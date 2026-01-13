@@ -29,6 +29,7 @@ mod config;
 #[cfg(feature = "audio_cpal")]
 mod cpal_backend;
 mod latency;
+pub mod limits;
 mod null_backend;
 mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
@@ -225,7 +226,6 @@ mod tests {
     let _ = clock.time();
   }
 }
-
 #[derive(Debug, Error)]
 pub enum AudioError {
   // --------------------------------------------------------------------------
@@ -247,6 +247,12 @@ pub enum AudioError {
   // --------------------------------------------------------------------------
   // Decoder-facing buffer validation/conversion errors
   // --------------------------------------------------------------------------
+  #[error("invalid audio spec: {reason}")]
+  InvalidSpec { reason: String },
+
+  #[error("invalid audio buffer: {reason}")]
+  InvalidBuffer { reason: String },
+
   #[error("invalid channel count {channels}")]
   InvalidChannels { channels: usize },
 
@@ -289,6 +295,20 @@ pub enum AudioError {
     channels: usize,
     sample_rate_hz: u32,
   },
+}
+
+impl AudioError {
+  pub fn invalid_spec(reason: impl Into<String>) -> Self {
+    Self::InvalidSpec {
+      reason: reason.into(),
+    }
+  }
+
+  pub fn invalid_buffer(reason: impl Into<String>) -> Self {
+    Self::InvalidBuffer {
+      reason: reason.into(),
+    }
+  }
 }
 
 pub trait AudioSink: Send + Sync {
@@ -406,6 +426,23 @@ impl PcmF32QueueProducer {
   ///
   /// Input is validated and normalized to interleaved `f32` internally before enqueueing.
   pub fn push_audio(&mut self, buffer: AudioBuffer<'_>) -> Result<(), AudioError> {
+    // Treat decoder-provided metadata as untrusted; reject absurd values early before any
+    // conversion/normalization work.
+    let max_channels = usize::from(limits::MAX_CHANNELS);
+    if buffer.channels == 0 || buffer.channels > max_channels {
+      return Err(AudioError::invalid_spec(format!(
+        "channels {} is outside supported range 1..={}",
+        buffer.channels, max_channels
+      )));
+    }
+    if buffer.sample_rate == 0 || buffer.sample_rate > limits::MAX_SAMPLE_RATE_HZ {
+      return Err(AudioError::invalid_spec(format!(
+        "sample_rate {} is outside supported range 1..={}",
+        buffer.sample_rate,
+        limits::MAX_SAMPLE_RATE_HZ
+      )));
+    }
+
     let expected_channels = self.channels();
     let expected_sample_rate_hz = self.sample_rate_hz();
     if buffer.channels != expected_channels || buffer.sample_rate != expected_sample_rate_hz {
@@ -436,13 +473,22 @@ impl PcmF32QueueProducer {
   pub fn push_pcm_f32(&mut self, samples: &[f32], pts: Option<Duration>) -> Result<(), AudioError> {
     let channels = self.channels();
     if channels == 0 {
-      return Err(AudioError::InvalidChannels { channels });
+      return Err(AudioError::invalid_spec("queue channel count must be non-zero"));
     }
     if samples.len() % channels != 0 {
-      return Err(AudioError::InvalidInterleavedLength {
-        len_samples: samples.len(),
-        channels,
-      });
+      return Err(AudioError::invalid_buffer(format!(
+        "interleaved sample buffer length {} is not divisible by channels {}",
+        samples.len(),
+        channels
+      )));
+    }
+    let frames = samples.len() / channels;
+    if frames > limits::MAX_FRAMES_PER_PUSH {
+      return Err(AudioError::invalid_buffer(format!(
+        "audio buffer has {} frames which exceeds MAX_FRAMES_PER_PUSH {}",
+        frames,
+        limits::MAX_FRAMES_PER_PUSH
+      )));
     }
     if let Some(pts) = pts {
       self.push(samples, pts);

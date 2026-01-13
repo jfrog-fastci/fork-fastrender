@@ -1,4 +1,5 @@
 use super::types::{AudioBuffer, AudioSamples};
+use super::limits::{MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use super::AudioError;
 
 fn i16_to_f32(sample: i16) -> f32 {
@@ -10,15 +11,18 @@ fn u16_to_f32(sample: u16) -> f32 {
 }
 
 pub fn convert_to_f32_interleaved(buffer: &AudioBuffer<'_>) -> Result<Vec<f32>, AudioError> {
-  if buffer.channels == 0 {
-    return Err(AudioError::InvalidChannels {
-      channels: buffer.channels,
-    });
+  let max_channels = usize::from(MAX_CHANNELS);
+  if buffer.channels == 0 || buffer.channels > max_channels {
+    return Err(AudioError::invalid_spec(format!(
+      "channels {} is outside supported range 1..={}",
+      buffer.channels, max_channels
+    )));
   }
-  if buffer.sample_rate == 0 {
-    return Err(AudioError::InvalidSampleRate {
-      sample_rate: buffer.sample_rate,
-    });
+  if buffer.sample_rate == 0 || buffer.sample_rate > MAX_SAMPLE_RATE_HZ {
+    return Err(AudioError::invalid_spec(format!(
+      "sample_rate {} is outside supported range 1..={}",
+      buffer.sample_rate, MAX_SAMPLE_RATE_HZ
+    )));
   }
 
   let data_format = buffer.data.format();
@@ -35,14 +39,17 @@ pub fn convert_to_f32_interleaved(buffer: &AudioBuffer<'_>) -> Result<Vec<f32>, 
   match buffer.data {
     AudioSamples::InterleavedF32(samples) => {
       validate_interleaved_len(samples.len(), buffer.channels)?;
+      validate_frames_limit(samples.len() / buffer.channels)?;
       Ok(samples.to_vec())
     }
     AudioSamples::InterleavedI16(samples) => {
       validate_interleaved_len(samples.len(), buffer.channels)?;
+      validate_frames_limit(samples.len() / buffer.channels)?;
       Ok(samples.iter().copied().map(i16_to_f32).collect())
     }
     AudioSamples::InterleavedU16(samples) => {
       validate_interleaved_len(samples.len(), buffer.channels)?;
+      validate_frames_limit(samples.len() / buffer.channels)?;
       Ok(samples.iter().copied().map(u16_to_f32).collect())
     }
     AudioSamples::PlanarF32(planes) => planar_to_f32_interleaved(planes, buffer.channels, |s| s),
@@ -61,6 +68,16 @@ fn validate_interleaved_len(len_samples: usize, channels: usize) -> Result<(), A
       len_samples,
       channels,
     });
+  }
+  Ok(())
+}
+
+fn validate_frames_limit(frames: usize) -> Result<(), AudioError> {
+  if frames > MAX_FRAMES_PER_PUSH {
+    return Err(AudioError::invalid_buffer(format!(
+      "audio buffer has {} frames which exceeds MAX_FRAMES_PER_PUSH {}",
+      frames, MAX_FRAMES_PER_PUSH
+    )));
   }
   Ok(())
 }
@@ -91,7 +108,13 @@ fn planar_to_f32_interleaved<T: Copy>(
     }
   }
 
-  let mut out = Vec::with_capacity(frames * channels);
+  validate_frames_limit(frames)?;
+
+  let len_samples = frames
+    .checked_mul(channels)
+    .ok_or_else(|| AudioError::invalid_buffer("audio sample count overflow"))?;
+
+  let mut out = Vec::with_capacity(len_samples);
   for frame in 0..frames {
     for chan in 0..channels {
       out.push(to_f32(planes[chan][frame]));
@@ -197,6 +220,47 @@ mod tests {
 
     let err = convert_to_f32_interleaved(&buffer).unwrap_err();
     assert!(matches!(err, AudioError::InvalidInterleavedLength { .. }));
+  }
+
+  #[test]
+  fn rejects_buffers_exceeding_max_frames_per_push() {
+    let samples = vec![0i16; MAX_FRAMES_PER_PUSH + 1];
+    let buffer = AudioBuffer::new(
+      1,
+      48_000,
+      None,
+      AudioSamples::InterleavedI16(&samples),
+    );
+
+    let err = convert_to_f32_interleaved(&buffer).unwrap_err();
+    assert!(matches!(err, AudioError::InvalidBuffer { .. }));
+  }
+
+  #[test]
+  fn rejects_absurd_specs() {
+    let empty: [i16; 0] = [];
+    let too_many_channels = usize::from(MAX_CHANNELS) + 1;
+    let buffer = AudioBuffer::new(
+      too_many_channels,
+      48_000,
+      None,
+      AudioSamples::InterleavedI16(&empty),
+    );
+    assert!(matches!(
+      convert_to_f32_interleaved(&buffer),
+      Err(AudioError::InvalidSpec { .. })
+    ));
+
+    let buffer = AudioBuffer::new(
+      1,
+      MAX_SAMPLE_RATE_HZ + 1,
+      None,
+      AudioSamples::InterleavedI16(&empty),
+    );
+    assert!(matches!(
+      convert_to_f32_interleaved(&buffer),
+      Err(AudioError::InvalidSpec { .. })
+    ));
   }
 
   #[test]

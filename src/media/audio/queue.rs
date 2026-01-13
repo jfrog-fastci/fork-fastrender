@@ -32,6 +32,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::convert::sanitize_buffer_in_place;
+use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
+use super::AudioError;
 
 const NO_PTS_NS: u64 = u64::MAX;
 
@@ -44,18 +46,18 @@ pub fn pcm_f32_queue(
   channels: usize,
   sample_rate_hz: u32,
   max_buffered_frames: usize,
-) -> (PcmF32QueueProducer, PcmF32QueueConsumer) {
+) -> Result<(PcmF32QueueProducer, PcmF32QueueConsumer), AudioError> {
   let inner = Arc::new(PcmF32QueueInner::new(
     channels,
     sample_rate_hz,
     max_buffered_frames,
-  ));
-  (
+  )?);
+  Ok((
     PcmF32QueueProducer {
       inner: Arc::clone(&inner),
     },
     PcmF32QueueConsumer { inner },
-  )
+  ))
 }
 
 /// A bounded PCM `f32` queue suitable for:
@@ -72,11 +74,19 @@ pub struct PcmF32Queue {
 impl PcmF32Queue {
   /// Create a new bounded queue with capacity measured in **frames**.
   #[must_use]
-  pub fn new(channels: usize, sample_rate_hz: u32, max_buffered_frames: usize) -> Self {
-    Self {
-      inner: Arc::new(PcmF32QueueInner::new(channels, sample_rate_hz, max_buffered_frames)),
+  pub fn new(
+    channels: usize,
+    sample_rate_hz: u32,
+    max_buffered_frames: usize,
+  ) -> Result<Self, AudioError> {
+    Ok(Self {
+      inner: Arc::new(PcmF32QueueInner::new(
+        channels,
+        sample_rate_hz,
+        max_buffered_frames,
+      )?),
       push_lock: Mutex::new(()),
-    }
+    })
   }
 
   /// Push interleaved PCM samples.
@@ -255,21 +265,49 @@ struct PcmF32QueueInner {
 }
 
 impl PcmF32QueueInner {
-  fn new(channels: usize, sample_rate_hz: u32, max_buffered_frames: usize) -> Self {
-    // Avoid panicking on invalid configuration; treat zero values as 1 so we never divide/mod by 0.
-    let channels = channels.max(1);
-    let sample_rate_hz = sample_rate_hz.max(1);
-    let max_buffered_frames = max_buffered_frames.max(1);
+  fn new(channels: usize, sample_rate_hz: u32, max_buffered_frames: usize) -> Result<Self, AudioError> {
+    if channels == 0 {
+      return Err(AudioError::invalid_spec("channels must be non-zero"));
+    }
+    let max_channels = usize::from(MAX_CHANNELS);
+    if channels > max_channels {
+      return Err(AudioError::invalid_spec(format!(
+        "channels {} exceeds MAX_CHANNELS {}",
+        channels, max_channels
+      )));
+    }
 
-    // Prevent `frames * channels` overflow.
-    let max_frames_by_mul = (usize::MAX / channels).max(1);
-    let max_buffered_frames = cmp::min(max_buffered_frames, max_frames_by_mul);
-    let len_samples = max_buffered_frames * channels;
+    if sample_rate_hz == 0 {
+      return Err(AudioError::invalid_spec("sample_rate_hz must be non-zero"));
+    }
+    if sample_rate_hz > MAX_SAMPLE_RATE_HZ {
+      return Err(AudioError::invalid_spec(format!(
+        "sample_rate_hz {} exceeds MAX_SAMPLE_RATE_HZ {}",
+        sample_rate_hz, MAX_SAMPLE_RATE_HZ
+      )));
+    }
+
+    if max_buffered_frames == 0 {
+      return Err(AudioError::invalid_spec("max_buffered_frames must be non-zero"));
+    }
+
+    let max_frames_cap_u64 = super::duration_to_frames_floor(sample_rate_hz, MAX_BUFFERED_DURATION);
+    let max_frames_cap = usize::try_from(max_frames_cap_u64).unwrap_or(usize::MAX);
+    if max_buffered_frames > max_frames_cap {
+      return Err(AudioError::invalid_spec(format!(
+        "max_buffered_frames {} exceeds MAX_BUFFERED_DURATION cap {} frames",
+        max_buffered_frames, max_frames_cap
+      )));
+    }
+
+    let len_samples = max_buffered_frames
+      .checked_mul(channels)
+      .ok_or_else(|| AudioError::invalid_spec("buffer length overflow"))?;
 
     let mut buf = Vec::with_capacity(len_samples);
     buf.resize_with(len_samples, || UnsafeCell::new(0.0));
 
-    Self {
+    Ok(Self {
       channels,
       sample_rate_hz,
       capacity_frames: max_buffered_frames as u64,
@@ -278,7 +316,7 @@ impl PcmF32QueueInner {
       write_frame: AtomicU64::new(0),
       pts_base_frame: AtomicU64::new(0),
       pts_base_ns: AtomicU64::new(NO_PTS_NS),
-    }
+    })
   }
 
   fn capacity_frames(&self) -> usize {
@@ -350,7 +388,10 @@ impl PcmF32QueueInner {
     let buffered = write.saturating_sub(read);
     let capacity = self.capacity_frames;
     let free = capacity.saturating_sub(buffered);
-    let frames_to_write = cmp::min(input_frames, free);
+    let frames_to_write = cmp::min(
+      cmp::min(input_frames, free),
+      MAX_FRAMES_PER_PUSH as u64,
+    );
     if frames_to_write == 0 {
       return 0;
     }
@@ -526,7 +567,7 @@ mod tests {
 
   #[test]
   fn wraparound_preserves_order() {
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 8);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 8).expect("queue");
 
     let a: Vec<f32> = (0..6).map(|v| v as f32).collect();
     assert_eq!(prod.push(&a, Duration::from_secs(0)), 6);
@@ -548,7 +589,7 @@ mod tests {
 
   #[test]
   fn capacity_drops_newest() {
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 4);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 4).expect("queue");
 
     let input: Vec<f32> = (0..6).map(|v| v as f32).collect();
     assert_eq!(prod.push(&input, Duration::from_secs(0)), 4);
@@ -578,7 +619,7 @@ mod tests {
 
   #[test]
   fn concurrent_spsc_roundtrip() {
-    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 256);
+    let (mut prod, mut cons) = pcm_f32_queue(1, 48_000, 256).expect("queue");
     let done = Arc::new(AtomicBool::new(false));
     let done2 = Arc::clone(&done);
 
@@ -629,7 +670,7 @@ mod tests {
 
   #[test]
   fn pts_is_reported_for_head_when_set_on_empty_push() {
-    let (mut prod, cons) = pcm_f32_queue(2, 48_000, 16);
+    let (mut prod, cons) = pcm_f32_queue(2, 48_000, 16).expect("queue");
     assert_eq!(cons.head_pts(), None);
 
     assert_eq!(
@@ -641,7 +682,7 @@ mod tests {
 
   #[test]
   fn queue_enforces_frame_alignment() {
-    let (mut prod, mut cons) = pcm_f32_queue(2, 48_000, 8);
+    let (mut prod, mut cons) = pcm_f32_queue(2, 48_000, 8).expect("queue");
     // 3 samples = 1 full frame (2 samples) + 1 trailing sample dropped.
     assert_eq!(prod.push(&[1.0, 2.0, 3.0], Duration::from_secs(0)), 2);
     let mut out = [0.0f32; 4];
@@ -651,11 +692,59 @@ mod tests {
 
   #[test]
   fn shared_queue_pop_add_into_applies_gain_and_consumes() {
-    let q = PcmF32Queue::new(1, 48_000, 8);
+    let q = PcmF32Queue::new(1, 48_000, 8).unwrap();
     assert_eq!(q.push_without_pts(&[1.0, 1.0, 1.0, 1.0]), 4);
     let mut out = [0.0f32; 4];
     assert_eq!(q.pop_add_into(&mut out, 0.5), 4);
     assert_eq!(out, [0.5, 0.5, 0.5, 0.5]);
     assert_eq!(q.buffered_frames(), 0);
+  }
+
+  #[test]
+  fn rejects_invalid_queue_specs() {
+    assert!(matches!(
+      pcm_f32_queue(0, 48_000, 8),
+      Err(AudioError::InvalidSpec { .. })
+    ));
+
+    let too_many_channels = usize::from(MAX_CHANNELS) + 1;
+    assert!(matches!(
+      pcm_f32_queue(too_many_channels, 48_000, 8),
+      Err(AudioError::InvalidSpec { .. })
+    ));
+
+    assert!(matches!(
+      pcm_f32_queue(1, 0, 8),
+      Err(AudioError::InvalidSpec { .. })
+    ));
+
+    assert!(matches!(
+      pcm_f32_queue(1, MAX_SAMPLE_RATE_HZ + 1, 8),
+      Err(AudioError::InvalidSpec { .. })
+    ));
+
+    assert!(matches!(
+      pcm_f32_queue(1, 48_000, 0),
+      Err(AudioError::InvalidSpec { .. })
+    ));
+  }
+
+  #[test]
+  fn rejects_capacity_above_buffered_duration_cap() {
+    let cap_frames_u64 = crate::media::audio::duration_to_frames_floor(48_000, MAX_BUFFERED_DURATION);
+    let cap_frames = usize::try_from(cap_frames_u64).unwrap();
+    let err = pcm_f32_queue(1, 48_000, cap_frames + 1).unwrap_err();
+    assert!(matches!(err, AudioError::InvalidSpec { .. }));
+  }
+
+  #[test]
+  fn rejects_buffers_larger_than_max_frames_per_push() {
+    let cap_frames_u64 = crate::media::audio::duration_to_frames_floor(48_000, MAX_BUFFERED_DURATION);
+    let cap_frames = usize::try_from(cap_frames_u64).unwrap();
+    let (mut prod, _cons) = pcm_f32_queue(1, 48_000, cap_frames).unwrap();
+
+    let samples = vec![0.0f32; MAX_FRAMES_PER_PUSH + 1];
+    let err = prod.push_pcm_f32(&samples, None).unwrap_err();
+    assert!(matches!(err, AudioError::InvalidBuffer { .. }));
   }
 }

@@ -6,6 +6,8 @@ use std::sync::OnceLock;
 use std::sync::RwLock;
 use std::time::Duration;
 
+use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_SAMPLE_RATE_HZ};
+
 /// Centralized configuration for the audio output/mixing pipeline.
 ///
 /// This struct is intentionally small and copyable so it can be:
@@ -129,6 +131,14 @@ impl AudioEngineConfig {
       Self::ENV_IDLE_TIMEOUT_MS,
       cfg.idle_timeout,
     );
+
+    // Clamp configuration sourced from env vars (untrusted input surface) so the audio backend
+    // cannot allocate unbounded memory even if the user/environment is hostile.
+    cfg.per_stream_max_buffered_duration = cfg.per_stream_max_buffered_duration.min(MAX_BUFFERED_DURATION);
+    cfg.default_sample_rate_hz = cfg
+      .default_sample_rate_hz
+      .clamp(1, MAX_SAMPLE_RATE_HZ);
+    cfg.default_channels = cfg.default_channels.clamp(1, MAX_CHANNELS);
 
     cfg
   }
@@ -416,5 +426,26 @@ mod tests {
 
     assert_eq!(cfg.global_buffer_budget_bytes, 64 * 1024 * 1024);
   }
-}
 
+  #[test]
+  fn env_parsing_clamps_untrusted_limits() {
+    let cfg = AudioEngineConfig::from_env_map(&HashMap::from([
+      (
+        AudioEngineConfig::ENV_PER_STREAM_MAX_BUFFERED_MS.to_string(),
+        "60000".to_string(), // 60s (above MAX_BUFFERED_DURATION)
+      ),
+      (
+        AudioEngineConfig::ENV_DEFAULT_SAMPLE_RATE_HZ.to_string(),
+        (u64::from(MAX_SAMPLE_RATE_HZ) + 1).to_string(),
+      ),
+      (
+        AudioEngineConfig::ENV_DEFAULT_CHANNELS.to_string(),
+        (u32::from(MAX_CHANNELS) + 1).to_string(),
+      ),
+    ]));
+
+    assert_eq!(cfg.per_stream_max_buffered_duration, MAX_BUFFERED_DURATION);
+    assert_eq!(cfg.default_sample_rate_hz, MAX_SAMPLE_RATE_HZ);
+    assert_eq!(cfg.default_channels, MAX_CHANNELS);
+  }
+}
