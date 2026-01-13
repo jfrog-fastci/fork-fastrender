@@ -20881,9 +20881,6 @@ fn node_iterator_next_node_native(
         next
       };
 
-      // Update live iterator state even for skipped nodes (spec: the reference moves as we traverse).
-      dom.set_node_iterator_reference_and_pointer(iter_id, candidate, false);
-
       let kind = &dom.node(candidate).kind;
       if !what_to_show_includes_kind(what_to_show, kind) {
         continue;
@@ -20892,6 +20889,10 @@ fn node_iterator_next_node_native(
       let node_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), candidate)?;
       let filter_result = call_node_filter(vm, scope, host, hooks, filter_value, node_value)?;
       if filter_result == TraversalFilterResult::Accept {
+        // Spec: https://dom.spec.whatwg.org/#concept-nodeiterator-traverse
+        //
+        // Update the iterator's reference/pointer state only when returning an accepted node.
+        dom.set_node_iterator_reference_and_pointer(iter_id, candidate, pointer_before);
         let ref_key = alloc_key(scope, NODE_ITERATOR_REFERENCE_KEY)?;
         let _ = scope
           .heap_mut()
@@ -21013,8 +21014,6 @@ fn node_iterator_previous_node_native(
         prev
       };
 
-      dom.set_node_iterator_reference_and_pointer(iter_id, candidate, true);
-
       let kind = &dom.node(candidate).kind;
       if !what_to_show_includes_kind(what_to_show, kind) {
         continue;
@@ -21023,6 +21022,8 @@ fn node_iterator_previous_node_native(
       let node_value = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), candidate)?;
       let filter_result = call_node_filter(vm, scope, host, hooks, filter_value, node_value)?;
       if filter_result == TraversalFilterResult::Accept {
+        // Spec: https://dom.spec.whatwg.org/#concept-nodeiterator-traverse
+        dom.set_node_iterator_reference_and_pointer(iter_id, candidate, pointer_before);
         let ref_key = alloc_key(scope, NODE_ITERATOR_REFERENCE_KEY)?;
         let _ = scope
           .heap_mut()
@@ -21042,7 +21043,7 @@ fn document_create_node_iterator_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -21072,10 +21073,14 @@ fn document_create_node_iterator_native(
   let root_handle = node_handle_from_wrapper_obj(vm, scope, root_obj, "Illegal invocation")?;
   scope.push_root(Value::Object(root_handle.document_obj))?;
 
-  let what_to_show_value = args.get(1).copied().unwrap_or(Value::Number(4294967295.0));
+  // WebIDL optional argument defaulting: `undefined` uses the default value.
+  let what_to_show_value = match args.get(1).copied() {
+    None | Some(Value::Undefined) => Value::Number(4294967295.0),
+    Some(v) => v,
+  };
   let n = match what_to_show_value {
     Value::Number(n) => n,
-    other => scope.heap_mut().to_number(other)?,
+    other => scope.to_number(vm, host, hooks, other)?,
   };
   let what_to_show = to_uint32_from_f64(n);
 
@@ -21083,6 +21088,15 @@ fn document_create_node_iterator_native(
     Value::Undefined => Value::Null,
     other => other,
   };
+  // WebIDL callback interface conversion: `NodeFilter?` must be callable or an object (or null).
+  if !matches!(filter_value, Value::Null) {
+    let is_callable = scope.heap().is_callable(filter_value).unwrap_or(false);
+    if !is_callable && !matches!(filter_value, Value::Object(_)) {
+      return Err(VmError::TypeError(
+        "Document.createNodeIterator filter is not a function",
+      ));
+    }
+  }
 
   let iter_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(iter_obj))?;
