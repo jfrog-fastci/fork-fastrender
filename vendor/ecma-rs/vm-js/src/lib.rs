@@ -303,6 +303,10 @@ mod class_field_initializers_super_tests;
 #[path = "../tests/unit/compiled_derived_constructor.rs"]
 mod compiled_derived_constructor_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/symbol_constructor.rs"]
+mod symbol_constructor_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

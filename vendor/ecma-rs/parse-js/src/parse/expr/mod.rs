@@ -317,7 +317,7 @@ impl<'a> Parser<'a> {
 
   /// Parses a parenthesised expression like `(a + b)`.
   pub fn grouping(&mut self, ctx: ParseCtx, asi: &mut Asi) -> SyntaxResult<Node<Expr>> {
-    self.require(TT::ParenthesisOpen)?;
+    let open = self.require(TT::ParenthesisOpen)?;
     // TypeScript-style recovery: Allow empty parenthesized expressions `()` and
     // comma operators with missing operands like `(, x)` or `(x, )`.
     let mut expr = if self.should_recover() {
@@ -335,7 +335,10 @@ impl<'a> Parser<'a> {
     } else {
       self.expr_with_min_prec(ctx, 1, [TT::ParenthesisClose], asi)?
     };
-    self.require(TT::ParenthesisClose)?;
+    let close = self.require(TT::ParenthesisClose)?;
+    // Preserve the full span of the parenthesized expression (including the parentheses) so
+    // downstream consumers can slice and reparse syntax like `(() => 1)()` reliably.
+    expr.loc = open.loc + close.loc;
     expr.assoc.set(ParenthesizedExpr);
     Ok(expr)
   }

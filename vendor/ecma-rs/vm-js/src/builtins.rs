@@ -26001,6 +26001,24 @@ pub fn symbol_constructor_call(
   Ok(Value::Symbol(sym))
 }
 
+/// `new Symbol(...)` throws (ECMA-262).
+///
+/// Note that `%Symbol%` is considered a constructor (it has a `[[Construct]]` internal method) even
+/// though the construct operation always throws. This is observable via `IsConstructor(Symbol)` (and
+/// thus test262's `isConstructor(Symbol)` helper, which uses `Reflect.construct` with `Symbol` as the
+/// `newTarget`).
+pub fn symbol_constructor_construct(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError("Symbol is not a constructor"))
+}
+
 /// `Symbol.for(key)`.
 pub fn symbol_for(
   vm: &mut Vm,

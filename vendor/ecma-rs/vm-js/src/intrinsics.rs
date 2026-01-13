@@ -5151,9 +5151,10 @@ impl Intrinsics {
 
     // `%Symbol%`
     let symbol_call = vm.register_native_call(builtins::symbol_constructor_call)?;
+    let symbol_construct = vm.register_native_construct(builtins::symbol_constructor_construct)?;
     let symbol_name = scope.alloc_string("Symbol")?;
     let symbol_constructor =
-      alloc_rooted_native_function(scope, roots, symbol_call, None, symbol_name, 0)?;
+      alloc_rooted_native_function(scope, roots, symbol_call, Some(symbol_construct), symbol_name, 0)?;
     scope
       .heap_mut()
       .object_set_prototype(symbol_constructor, Some(function_prototype))?;
