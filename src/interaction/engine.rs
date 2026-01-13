@@ -1802,7 +1802,7 @@ fn is_disabled_or_inert(index: &DomIndexMut, node_id: usize) -> bool {
 
 /// MVP focusable predicate for pointer focus / blur decisions.
 ///
-/// This covers native interactive elements we currently support, plus `tabindex>=0` focusability.
+/// This covers native interactive elements we currently support, plus `tabindex` focusability.
 fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool {
   let Some(node) = index.node(node_id) else {
     return false;
@@ -1812,12 +1812,10 @@ fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool
     return false;
   }
 
-  // MVP tabindex support: treat `tabindex < 0` as not focusable via pointer, and `tabindex >= 0`
-  // as focusable (even for non-interactive elements).
-  if let Some(tabindex) = parse_tabindex(node) {
-    if tabindex < 0 {
-      return false;
-    }
+  // HTML tabindex support: any parsed `tabindex` value makes the element focusable via pointer and
+  // programmatic focus, even when `tabindex < 0`. (Sequential Tab navigation is handled separately
+  // by `tab_stop_tabindex`, which excludes `tabindex < 0`.)
+  if parse_tabindex(node).is_some() {
     // `input type=hidden` is never focusable, even if tabindex is set.
     if is_input(node) && input_type(node).eq_ignore_ascii_case("hidden") {
       return false;
