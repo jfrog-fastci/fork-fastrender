@@ -53,6 +53,9 @@ fn non_throw_vm_error_message(err: &VmError) -> &'static str {
     VmError::NotCallable => "value is not callable",
     VmError::NotConstructable => "value is not a constructor",
     VmError::Throw(_) | VmError::ThrowWithStack { .. } => "exception",
+    // Internal-only completion used by async generator resumption; should never be observable from
+    // module loading, but handle defensively.
+    VmError::InternalReturn(_) => "internal return completion",
     VmError::Termination(term) => match term.reason {
       crate::TerminationReason::OutOfFuel => "execution terminated: out of fuel",
       crate::TerminationReason::DeadlineExceeded => "execution terminated: deadline exceeded",
@@ -3921,7 +3924,7 @@ pub(crate) fn module_tla_on_rejected(
 ) -> Result<Value, VmError> {
   let module = module_id_from_native_slot(scope, callee)?;
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  module_tla_resume_inner(vm, scope, host, hooks, module, Err(reason))?;
+  module_tla_resume_inner(vm, scope, host, hooks, module, Err(VmError::Throw(reason)))?;
   Ok(Value::Undefined)
 }
 
@@ -3931,7 +3934,7 @@ fn module_tla_resume_inner(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   module: ModuleId,
-  resume_value: Result<Value, Value>,
+  resume_value: Result<Value, VmError>,
 ) -> Result<(), VmError> {
   let Some(ptr) = vm.module_graph_ptr() else {
     // If the embedding cleared the module graph pointer, treat this as a no-op.

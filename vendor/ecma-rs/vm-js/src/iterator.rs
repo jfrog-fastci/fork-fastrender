@@ -21,11 +21,16 @@ pub enum CloseCompletionKind {
   ///
   /// Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` and
   /// `Call(return, iterator)` are still performed when possible. However, if the incoming
-  /// completion is itself a throw completion, any error thrown while getting/calling
+  /// completion is itself a throw completion, any error thrown while **calling**
   /// `iterator.return` is **suppressed** in favour of the original throw completion.
   ///
+  /// Errors thrown while **getting** `iterator.return` (including observable getter side effects)
+  /// are still propagated and therefore override the incoming completion (since the spec's
+  /// `completion.[[Type]] is throw` check happens *after* `GetMethod` / `Call`).
+  ///
   /// This is observable in user code because the `return` getter is still invoked, but its thrown
-  /// value does not replace the original exception.
+  /// value does not replace the original exception when the getter completes normally and the
+  /// *call* to `return` throws.
   ///
   /// The non-object return-result TypeError check is also skipped for throw completions (because
   /// the incoming throw completion is returned before that check is performed).
@@ -134,6 +139,13 @@ pub fn get_iterator_from_method(
     next_key,
     Value::Object(iterator_obj),
   )?;
+
+  // `GetIteratorFromMethod` must return an iterator record with a callable `next` method.
+  if !scope.heap().is_callable(next)? {
+    return Err(VmError::TypeError(
+      "GetIteratorFromMethod: iterator.next is not callable",
+    ));
+  }
 
   Ok(IteratorRecord {
     iterator,
@@ -781,6 +793,7 @@ fn async_from_sync_iterator_continuation(
             scope.push_root(thrown)?;
           }
         }
+
         let record = IteratorRecord {
           iterator: sync_iterator,
           next_method: Value::Undefined,

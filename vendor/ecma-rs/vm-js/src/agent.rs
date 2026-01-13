@@ -580,6 +580,9 @@ impl Agent {
       }
       VmError::NotCallable => string_from_str_best_effort("value is not callable"),
       VmError::NotConstructable => string_from_str_best_effort("value is not a constructor"),
+      // Internal-only completion used by async generator resumption; should never be observable to
+      // host embeddings, but handle defensively.
+      VmError::InternalReturn(_) => string_from_str_best_effort("internal return completion"),
       VmError::Syntax(_) => string_from_str_best_effort("syntax error"),
     }
   }
@@ -801,6 +804,16 @@ impl Agent {
       VmError::NotConstructable => VmErrorReport {
         kind: "not_constructable",
         message: string_from_str_best_effort("value is not a constructor"),
+        exception_name: None,
+        exception_message: None,
+        stack: Vec::new(),
+        termination_reason: None,
+      },
+      // Internal-only completion used by async generator resumption; should never be observable to
+      // host embeddings, but handle defensively.
+      VmError::InternalReturn(_) => VmErrorReport {
+        kind: "internal_return",
+        message: string_from_str_best_effort("internal return completion"),
         exception_name: None,
         exception_message: None,
         stack: Vec::new(),

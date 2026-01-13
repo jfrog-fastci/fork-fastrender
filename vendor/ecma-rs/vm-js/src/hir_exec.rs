@@ -4319,7 +4319,9 @@ impl<'vm> HirEvaluator<'vm> {
             // Module linking pre-creates an immutable `*default*` binding; module instantiation is
             // responsible for creating the function object and initializing that binding.
             if !def.is_default_export {
-              return Err(VmError::Unimplemented("anonymous function declaration (hir-js compiled path)"));
+              return Err(VmError::Unimplemented(
+                "anonymous function declaration (hir-js compiled path)",
+              ));
             }
             let func_obj = self.alloc_user_function_object(
               scope,
@@ -4331,6 +4333,7 @@ impl<'vm> HirEvaluator<'vm> {
               /* name_binding */ None,
               EcmaFunctionKind::Decl,
             )?;
+
             // Root the function object while initializing the module's `*default*` binding.
             let mut init_scope = scope.reborrow();
             init_scope.push_root(Value::Object(func_obj))?;
@@ -4340,21 +4343,20 @@ impl<'vm> HirEvaluator<'vm> {
                 "export default function declaration missing *default* binding",
               ));
             }
-            init_scope.heap_mut().env_initialize_binding(binding_env, "*default*", Value::Object(func_obj))?;
+            init_scope
+              .heap_mut()
+              .env_initialize_binding(binding_env, "*default*", Value::Object(func_obj))?;
             continue;
           }
+
           if annex_b {
-            // Annex B: block-level ordinary function declarations create a var binding, but do not
-            // initialize it unless the declaration is actually executed.
-            //
-            // This ensures:
-            // - `if (false) { function g(){} } typeof g` yields `"undefined"`, and
-            // - executing the block/case later updates the var binding.
-            //
-            // The declaration statement performs initialization in `eval_stmt_labelled`.
+            // Sloppy block function declarations (Annex B) must not initialize their var binding
+            // until the containing block/case executes. We still create the binding up-front so
+            // early reads (e.g. `g === undefined`) observe the declared name.
             self.env.declare_var(self.vm, scope, name.as_str())?;
             continue;
           }
+
           let func_obj = self.alloc_user_function_object(
             scope,
             body_id,

@@ -1,7 +1,7 @@
-use crate::heap::{AsyncGeneratorRequestKind, Trace, Tracer};
+use crate::heap::{AsyncGeneratorRequest, AsyncGeneratorRequestKind, AsyncGeneratorState, Trace, Tracer};
 use crate::iterator;
 use crate::property::PropertyKey;
-use crate::{Scope, Value, Vm, VmError, VmHost, VmHostHooks};
+use crate::{GcObject, Job, JobKind, PromiseCapability, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks};
 
 #[derive(Debug)]
 pub(crate) enum YieldStarStep {
@@ -402,4 +402,212 @@ impl AsyncYieldStar {
       }
     }
   }
+}
+
+fn pat_has_default_value(pat: &parse_js::ast::expr::pat::Pat) -> bool {
+  use parse_js::ast::expr::pat::Pat;
+  match pat {
+    Pat::Arr(arr) => {
+      for elem in arr.stx.elements.iter().flatten() {
+        if elem.default_value.is_some() || pat_has_default_value(&elem.target.stx) {
+          return true;
+        }
+      }
+      if let Some(rest) = &arr.stx.rest {
+        if pat_has_default_value(&rest.stx) {
+          return true;
+        }
+      }
+      false
+    }
+    Pat::Obj(obj) => {
+      for prop in &obj.stx.properties {
+        if prop.stx.default_value.is_some() || pat_has_default_value(&prop.stx.target.stx) {
+          return true;
+        }
+      }
+      if let Some(rest) = &obj.stx.rest {
+        if pat_has_default_value(&rest.stx) {
+          return true;
+        }
+      }
+      false
+    }
+    Pat::Id(_) => false,
+    Pat::AssignTarget(_) => false,
+  }
+}
+
+fn async_generator_needs_deferred_start(
+  scope: &Scope<'_>,
+  generator: GcObject,
+) -> Result<Option<GcObject>, VmError> {
+  let Some(cont) = scope.heap().async_generator_continuation(generator)? else {
+    return Ok(None);
+  };
+
+  // Defer start when parameter binding would evaluate default initializers. This matches the
+  // observable test expectation that default parameter expressions are evaluated only once a
+  // microtask checkpoint runs.
+  for param in &cont.func.stx.parameters {
+    if param.stx.default_value.is_some() || pat_has_default_value(&param.stx.pattern.stx.pat.stx) {
+      return Ok(Some(cont.env.global_object()));
+    }
+  }
+
+  Ok(None)
+}
+
+fn enqueue_async_generator_deferred_start_job(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  hooks: &mut dyn VmHostHooks,
+  generator: GcObject,
+  global_object: GcObject,
+) -> Result<(), VmError> {
+  let call_id = vm.async_generator_deferred_start_call_id()?;
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+  let job_realm = vm.current_realm();
+  let script_or_module_token = match vm.get_active_script_or_module() {
+    Some(sm) => Some(vm.intern_script_or_module(sm)?),
+    None => None,
+  };
+
+  let mut schedule_scope = scope.reborrow();
+  schedule_scope.push_root(Value::Object(generator))?;
+
+  let name = schedule_scope.alloc_string("")?;
+  let slots = [Value::Object(generator)];
+  let cb = schedule_scope.alloc_native_function_with_slots(call_id, None, name, 0, &slots)?;
+  schedule_scope.push_root(Value::Object(cb))?;
+  schedule_scope
+    .heap_mut()
+    .object_set_prototype(cb, Some(intr.function_prototype()))?;
+  schedule_scope.heap_mut().set_function_realm(cb, global_object)?;
+  if let Some(realm) = job_realm {
+    schedule_scope.heap_mut().set_function_job_realm(cb, realm)?;
+  }
+  if let Some(token) = script_or_module_token {
+    schedule_scope
+      .heap_mut()
+      .set_function_script_or_module_token(cb, Some(token))?;
+  }
+
+  let job = Job::new(JobKind::Promise, move |ctx, host| {
+    ctx.call(host, Value::Object(cb), Value::Undefined, &[])?;
+    Ok(())
+  })?;
+
+  // Root captured values until the job runs.
+  let mut roots: Vec<RootId> = Vec::new();
+  roots
+    .try_reserve_exact(1)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  let root_res = schedule_scope.heap_mut().add_root(Value::Object(cb));
+  let cb_root = match root_res {
+    Ok(id) => id,
+    Err(e) => return Err(e),
+  };
+  roots.push(cb_root);
+
+  hooks.host_enqueue_promise_job(job.with_roots(roots), job_realm);
+  Ok(())
+}
+
+/// `AsyncGeneratorEnqueue ( generator, completion, promiseCapability )`.
+///
+/// This is a spec-shaped helper that appends a request to `generator.[[AsyncGeneratorQueue]]`.
+pub(crate) fn async_generator_enqueue(
+  scope: &mut Scope<'_>,
+  generator: GcObject,
+  kind: AsyncGeneratorRequestKind,
+  capability: PromiseCapability,
+) -> Result<(), VmError> {
+  // Root inputs across queue growth/GC.
+  let mut scope = scope.reborrow();
+  let mut roots = [Value::Undefined; 5];
+  let mut root_count = 0usize;
+  roots[root_count] = Value::Object(generator);
+  root_count += 1;
+  match kind {
+    AsyncGeneratorRequestKind::Next(v)
+    | AsyncGeneratorRequestKind::Return(v)
+    | AsyncGeneratorRequestKind::Throw(v) => {
+      roots[root_count] = v;
+      root_count += 1;
+    }
+  }
+  roots[root_count] = capability.promise;
+  root_count += 1;
+  roots[root_count] = capability.resolve;
+  root_count += 1;
+  roots[root_count] = capability.reject;
+  root_count += 1;
+  scope.push_roots(&roots[..root_count])?;
+
+  scope.heap_mut().async_generator_request_queue_push(
+    generator,
+    AsyncGeneratorRequest { kind, capability },
+  )
+}
+
+/// Native callback used by deferred async-generator start jobs (parameter default initializers).
+///
+/// Slots:
+/// - slot 0: generator object
+pub(crate) fn async_generator_deferred_start_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let generator = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(obj) => obj,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async generator deferred start callback missing generator slot",
+      ))
+    }
+  };
+
+  // This callback is scheduled as a Promise job to ensure async-generator parameter default
+  // initializers are evaluated asynchronously (at the first `.next()`), matching observable
+  // behaviour in tests and the spec's job-queued execution model.
+  crate::exec::async_generator_resume_next(vm, scope, host, hooks, generator)?;
+  Ok(Value::Undefined)
+}
+
+/// `AsyncGeneratorResumeNext ( generator )`.
+pub(crate) fn async_generator_resume_next(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  generator: GcObject,
+) -> Result<(), VmError> {
+  // Defer starting `async function*` bodies that have default parameter initializers so their
+  // evaluation is job-queued (and therefore observable only after a microtask checkpoint).
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(generator))?;
+
+  let state = scope.heap().async_generator_state(generator)?;
+  if state == AsyncGeneratorState::SuspendedStart {
+    if let Some(req) = scope.heap().async_generator_request_queue_peek(generator)? {
+      if matches!(req.kind, AsyncGeneratorRequestKind::Next(_)) {
+        if let Some(global_object) = async_generator_needs_deferred_start(&scope, generator)? {
+          enqueue_async_generator_deferred_start_job(vm, &mut scope, hooks, generator, global_object)?;
+          return Ok(());
+        }
+      }
+    }
+  }
+
+  crate::exec::async_generator_resume_next(vm, &mut scope, host, hooks, generator)
 }

@@ -6,7 +6,7 @@ use crate::function::{
 };
 use crate::meta_properties::MetaPropertyContext;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
-use crate::promise::{PromiseCapability, PromiseReaction, PromiseReactionType, PromiseState};
+use crate::promise::{PromiseReaction, PromiseReactionType, PromiseState};
 use crate::regexp::{RegExpFlags, RegExpProgram};
 use crate::bigint::JsBigInt;
 use crate::string::JsString;
@@ -15,7 +15,7 @@ use crate::CompiledFunctionRef;
 use crate::handle::GcModuleNamespaceExports;
 use crate::{
   EnvRootId, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, HeapId, Job, JobKind, RealmId, RootId,
-  Value, Vm, WellKnownSymbols,
+  PromiseCapability, Value, Vm, WellKnownSymbols,
   VmError, VmHost, VmHostHooks, VmJobContext, WeakGcObject,
   WeakGcSymbol,
 };
@@ -107,17 +107,21 @@ struct InternalSymbols {
 /// about over-allocation.
 const MIN_VEC_CAPACITY: usize = 1;
 
-/// Size of the small-integer string cache (`"0".."9999"`).
-///
-/// This is tuned for test262's `regExpUtils.js::buildString`, which frequently uses indices in
-/// `[0, 10000)` when chunking Unicode code points for `String.fromCodePoint.apply(...)`.
-const SMALL_INT_STRING_CACHE_SIZE: usize = 10_000;
-
 /// Maximum array index stored in the fast elements table for Array exotic objects.
 ///
 /// Larger indices are represented in the ordinary property table to avoid allocating enormous
 /// sparse vectors for hostile inputs like `a[2**32-2] = 1`.
 pub(crate) const MAX_FAST_ARRAY_INDEX: u32 = 100_000;
+
+/// Size of the small-integer string cache (`"0"..MAX_FAST_ARRAY_INDEX`).
+///
+/// This is primarily a performance optimization for:
+/// - `ToString` on small integer `Number` values used as array indices, and
+/// - `[[OwnPropertyKeys]]` / other algorithms that need to allocate index strings.
+///
+/// The size is chosen so `Array` exotic objects can represent dense element keys (stored in the
+/// fast elements table) without having to allocate new `GcString` handles during key enumeration.
+const SMALL_INT_STRING_CACHE_SIZE: usize = MAX_FAST_ARRAY_INDEX as usize + 1;
 
 /// Per-object host slots for embeddings (e.g. DOM/WebIDL bindings).
 ///
@@ -5984,12 +5988,21 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
   /// 2. other string keys, in insertion order,
   /// 3. symbol keys, in insertion order.
   pub fn own_property_keys(&self, obj: GcObject) -> Result<Vec<PropertyKey>, VmError> {
-    let props = &self.get_object_base(obj)?.properties;
+    let base = self.get_object_base(obj)?;
+    let props = &base.properties;
+
+    let (fast_indices, fast_index_count) = match &base.kind {
+      ObjectKind::Array(arr) => {
+        let count = arr.elements.iter().filter(|e| e.is_some()).count();
+        (Some(&arr.elements), count)
+      }
+      _ => (None, 0usize),
+    };
 
     // This operation allocates temporary vectors sized proportionally to the number of properties.
     //
     // Use `try_reserve*` so hostile inputs cannot trigger a process abort via allocator OOM.
-    let (mut array_count, mut string_count, mut symbol_count) = (0usize, 0usize, 0usize);
+    let (mut array_count, mut string_count, mut symbol_count) = (fast_index_count, 0usize, 0usize);
     for prop in props.iter() {
       match prop.key {
         PropertyKey::String(s) => {
@@ -6017,6 +6030,19 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     symbol_keys
       .try_reserve_exact(symbol_count)
       .map_err(|_| VmError::OutOfMemory)?;
+
+    // Add array-index keys from the fast elements table.
+    if let Some(elements) = fast_indices {
+      for (idx, desc) in elements.iter().enumerate() {
+        if desc.is_none() {
+          continue;
+        }
+        // Fast elements are bounded by `MAX_FAST_ARRAY_INDEX`, which also bounds the cache size.
+        let key_s = self.small_int_strings[idx]
+          .ok_or(VmError::InvariantViolation("missing cached fast array index string"))?;
+        array_keys.push((idx as u32, PropertyKey::String(key_s)));
+      }
+    }
 
     for prop in props.iter() {
       match prop.key {
@@ -6694,20 +6720,11 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     Ok(())
   }
 
-  pub(crate) fn async_generator_vm_continuation_id(
+  pub(crate) fn async_generator_continuation(
     &self,
     gen: GcObject,
-  ) -> Result<Option<u32>, VmError> {
-    Ok(self.get_async_generator(gen)?.vm_continuation_id)
-  }
-
-  pub(crate) fn async_generator_set_vm_continuation_id(
-    &mut self,
-    gen: GcObject,
-    id: Option<u32>,
-  ) -> Result<(), VmError> {
-    self.get_async_generator_mut(gen)?.vm_continuation_id = id;
-    Ok(())
+  ) -> Result<Option<&AsyncGeneratorContinuation>, VmError> {
+    Ok(self.get_async_generator(gen)?.continuation.as_deref())
   }
 
   /// Takes the async generator continuation out of the generator object.
@@ -7724,9 +7741,21 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     obj: GcObject,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<Vec<PropertyKey>, VmError> {
-    let properties = &self.get_object_base(obj)?.properties;
+    let base = self.get_object_base(obj)?;
+    let properties = &base.properties;
+
+    let (fast_indices, fast_index_count) = match &base.kind {
+      ObjectKind::Array(arr) => {
+        let count = arr.elements.iter().filter(|e| e.is_some()).count();
+        (Some(&arr.elements), count)
+      }
+      _ => (None, 0usize),
+    };
 
     let property_count = properties.len();
+    let total_count = property_count
+      .checked_add(fast_index_count)
+      .ok_or(VmError::OutOfMemory)?;
 
     // `[[OwnPropertyKeys]]` can be invoked from native builtins (`Object.keys`,
     // destructuring/object spread) and can traverse very large property tables. Budget it so the
@@ -7736,8 +7765,22 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     // 1. Array indices (String keys that are array indices) in ascending numeric order.
     let mut index_keys: Vec<(u32, PropertyKey)> = Vec::new();
     index_keys
-      .try_reserve_exact(property_count)
+      .try_reserve_exact(total_count)
       .map_err(|_| VmError::OutOfMemory)?;
+
+    if let Some(elements) = fast_indices {
+      for (i, elem) in elements.iter().enumerate() {
+        if i % TICK_EVERY == 0 {
+          tick()?;
+        }
+        if elem.is_none() {
+          continue;
+        }
+        let key_s = self.small_int_strings[i]
+          .ok_or(VmError::InvariantViolation("missing cached fast array index string"))?;
+        index_keys.push((i as u32, PropertyKey::String(key_s)));
+      }
+    }
     for (i, prop) in properties.iter().enumerate() {
       if i % TICK_EVERY == 0 {
         tick()?;
@@ -7763,7 +7806,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     // 3. Symbol keys, in chronological creation order.
     let mut out: Vec<PropertyKey> = Vec::new();
     out
-      .try_reserve_exact(property_count)
+      .try_reserve_exact(total_count)
       .map_err(|_| VmError::OutOfMemory)?;
 
     for (i, (_, key)) in index_keys.iter().enumerate() {
@@ -8217,9 +8260,9 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     desc: PropertyDescriptor,
   ) -> Result<(), VmError> {
     let key_is_length = self.property_key_is_length(&key);
-    let key_array_index = match key {
-      PropertyKey::String(s) => self.string_to_array_index(s),
-      PropertyKey::Symbol(_) => None,
+    let (key_array_index, key_array_index_string) = match key {
+      PropertyKey::String(s) => (self.string_to_array_index(s), Some(s)),
+      PropertyKey::Symbol(_) => (None, None),
     };
 
     let idx = self
@@ -8256,6 +8299,18 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
             let ObjectKind::Array(arr) = &mut obj.base.kind else {
               return Err(VmError::InvariantViolation("expected array object kind"));
             };
+
+            // Array index keys stored in the fast elements table do not carry their key strings.
+            // Cache them so `[[OwnPropertyKeys]]` can return stable `PropertyKey` handles without
+            // allocating new strings.
+            if let Some(s) = key_array_index_string {
+              // The cache is sized to cover all fast indices.
+              if let Some(slot) = self.small_int_strings.get_mut(index as usize) {
+                if slot.is_none() {
+                  *slot = Some(s);
+                }
+              }
+            }
 
             let needed_len = index as usize + 1;
             if arr.elements.len() < needed_len {

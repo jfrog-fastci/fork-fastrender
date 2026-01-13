@@ -1195,15 +1195,31 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Stmt::FunctionDecl(func) => self.visit_func_decl(ctx, &func.stx),
       Stmt::VarDecl(var) => self.visit_var_decl(ctx, &var.stx),
 
-      // Module-only statement forms; still traverse nested expressions where present.
-      Stmt::ExportDefaultExpr(export) => self.visit_expr(ctx, &export.stx.expression),
+      // Module-only statement forms.
+      //
+      // These are rejected in Script goal contexts (`opts.is_module == false`). Most parse entry
+      // points rely on parse-js to reject them syntactically for scripts, but vm-js can also parse
+      // Script source using the module grammar as a fallback for "async scripts" (top-level
+      // `await` / `for await...of`). In that case we must still enforce Script restrictions.
+      Stmt::ExportDefaultExpr(export) => {
+        if !ctx.is_module {
+          self.push_error(stmt.loc, "export not allowed in scripts")?;
+        }
+        self.visit_expr(ctx, &export.stx.expression)
+      }
       Stmt::ExportList(export) => {
+        if !ctx.is_module {
+          self.push_error(stmt.loc, "export not allowed in scripts")?;
+        }
         if let Some(attrs) = &export.stx.attributes {
           self.visit_expr(ctx, attrs)?;
         }
         Ok(())
       }
       Stmt::Import(import) => {
+        if !ctx.is_module {
+          self.push_error(stmt.loc, "import not allowed in scripts")?;
+        }
         // Import declarations require local binding identifiers, not binding patterns.
         if let Some(default) = &import.stx.default {
           if !matches!(&*default.stx.pat.stx, Pat::Id(_)) {

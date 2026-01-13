@@ -56,8 +56,8 @@ fn iterator_close_get_method_throw_takes_precedence_over_throw_completion_in_asy
 
     let out = rt.exec_script("out")?;
     // Per ECMA-262 `IteratorClose(iteratorRecord, completion)`, `GetMethod(iterator, "return")` is
-    // still performed, but any error thrown while getting/calling `iterator.return` is ignored for
-    // throw completions (the original throw is preserved).
+    // still performed, but when the incoming completion is a throw completion, errors thrown while
+    // getting/calling `iterator.return` are ignored and the original throw is preserved.
     assert_eq!(value_to_string(&rt, out), "body1");
 
     let closed = rt.exec_script("closed")?;

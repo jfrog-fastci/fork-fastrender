@@ -17772,19 +17772,23 @@ pub fn async_generator_prototype_next(
     "AsyncGenerator.prototype.next called on non-object",
     "AsyncGenerator.prototype.next called on incompatible receiver",
   )?;
-
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // Root receiver/args while creating the Promise capability.
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(this_obj), arg0])?;
+
   // Async generator iteration methods use `NewPromiseCapability(%Promise%)` and must not consult the
   // mutable global `Promise` binding.
-  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
-  let req = crate::heap::AsyncGeneratorRequest {
-    kind: crate::heap::AsyncGeneratorRequestKind::Next(arg0),
-    capability: cap,
-  };
-  scope
-    .heap_mut()
-    .async_generator_request_queue_push(this_obj, req)?;
-  crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
+  let cap =
+    crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+  crate::async_generator::async_generator_enqueue(
+    &mut scope,
+    this_obj,
+    crate::heap::AsyncGeneratorRequestKind::Next(arg0),
+    cap,
+  )?;
+  crate::async_generator::async_generator_resume_next(vm, &mut scope, host, hooks, this_obj)?;
   Ok(cap.promise)
 }
 
@@ -17803,17 +17807,20 @@ pub fn async_generator_prototype_return(
     "AsyncGenerator.prototype.return called on non-object",
     "AsyncGenerator.prototype.return called on incompatible receiver",
   )?;
-
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
-  let req = crate::heap::AsyncGeneratorRequest {
-    kind: crate::heap::AsyncGeneratorRequestKind::Return(arg0),
-    capability: cap,
-  };
-  scope
-    .heap_mut()
-    .async_generator_request_queue_push(this_obj, req)?;
-  crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(this_obj), arg0])?;
+
+  let cap =
+    crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+  crate::async_generator::async_generator_enqueue(
+    &mut scope,
+    this_obj,
+    crate::heap::AsyncGeneratorRequestKind::Return(arg0),
+    cap,
+  )?;
+  crate::async_generator::async_generator_resume_next(vm, &mut scope, host, hooks, this_obj)?;
   Ok(cap.promise)
 }
 
@@ -17832,17 +17839,20 @@ pub fn async_generator_prototype_throw(
     "AsyncGenerator.prototype.throw called on non-object",
     "AsyncGenerator.prototype.throw called on incompatible receiver",
   )?;
-
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, scope, host, hooks)?;
-  let req = crate::heap::AsyncGeneratorRequest {
-    kind: crate::heap::AsyncGeneratorRequestKind::Throw(arg0),
-    capability: cap,
-  };
-  scope
-    .heap_mut()
-    .async_generator_request_queue_push(this_obj, req)?;
-  crate::exec::async_generator_resume_next(vm, scope, host, hooks, this_obj)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_roots(&[Value::Object(this_obj), arg0])?;
+
+  let cap =
+    crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
+  crate::async_generator::async_generator_enqueue(
+    &mut scope,
+    this_obj,
+    crate::heap::AsyncGeneratorRequestKind::Throw(arg0),
+    cap,
+  )?;
+  crate::async_generator::async_generator_resume_next(vm, &mut scope, host, hooks, this_obj)?;
   Ok(cap.promise)
 }
 
@@ -20828,6 +20838,65 @@ pub fn string_prototype_value_of(
     "String.prototype.valueOf called on incompatible receiver",
   )?;
   Ok(Value::String(s))
+}
+
+/// `String.prototype[Symbol.toPrimitive]` (ECMA-262).
+pub fn string_prototype_to_primitive(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+  let s = this_string_value(
+    vm,
+    &mut scope,
+    this,
+    "String.prototype[Symbol.toPrimitive] called on incompatible receiver",
+  )?;
+
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+  let units = scope.heap().get_string(hint)?.as_code_units();
+
+  if units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ]
+    || units
+      == [
+        b's' as u16,
+        b't' as u16,
+        b'r' as u16,
+        b'i' as u16,
+        b'n' as u16,
+        b'g' as u16,
+      ]
+    || units
+      == [
+        b'n' as u16,
+        b'u' as u16,
+        b'm' as u16,
+        b'b' as u16,
+        b'e' as u16,
+        b'r' as u16,
+      ]
+  {
+    Ok(Value::String(s))
+  } else {
+    Err(VmError::TypeError("Invalid hint"))
+  }
 }
 
 fn this_string_value(
@@ -23965,6 +24034,66 @@ pub fn number_prototype_value_of(
     this,
     "Number.prototype.valueOf called on incompatible receiver",
   )?))
+}
+
+/// `Number.prototype[Symbol.toPrimitive]` (ECMA-262).
+pub fn number_prototype_to_primitive(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let n = this_number_value(
+    scope,
+    this,
+    "Number.prototype[Symbol.toPrimitive] called on incompatible receiver",
+  )?;
+
+  let hint = match args.get(0).copied() {
+    Some(Value::String(s)) => s,
+    _ => return Err(VmError::TypeError("Invalid hint")),
+  };
+  let units = scope.heap().get_string(hint)?.as_code_units();
+
+  if units
+    == [
+      b's' as u16,
+      b't' as u16,
+      b'r' as u16,
+      b'i' as u16,
+      b'n' as u16,
+      b'g' as u16,
+    ]
+  {
+    let s = scope.to_string(vm, host, hooks, Value::Number(n))?;
+    Ok(Value::String(s))
+  } else if units
+    == [
+      b'd' as u16,
+      b'e' as u16,
+      b'f' as u16,
+      b'a' as u16,
+      b'u' as u16,
+      b'l' as u16,
+      b't' as u16,
+    ]
+    || units
+      == [
+        b'n' as u16,
+        b'u' as u16,
+        b'm' as u16,
+        b'b' as u16,
+        b'e' as u16,
+        b'r' as u16,
+      ]
+  {
+    Ok(Value::Number(n))
+  } else {
+    Err(VmError::TypeError("Invalid hint"))
+  }
 }
 
 fn digit_to_ascii(digit: u32) -> u8 {
