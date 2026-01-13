@@ -38,6 +38,7 @@ pub mod high_contrast;
 // does **not** implement a separate UI worker loop.
 pub mod cancel;
 pub mod context_menu;
+pub mod frame_ready_bridge_coalescer;
 pub mod frame_upload;
 pub mod worker_wake;
 pub mod global_history;
@@ -293,7 +294,8 @@ pub use notifications::{
 pub use clear_browsing_data_toast::format_clear_browsing_data_toast;
 
 pub use frame_upload::{FrameUploadCoalescer, FrameUploadCoalescerStats};
-pub use worker_wake::WorkerWakeCoalescer;
+pub use frame_ready_bridge_coalescer::FrameReadyBridgeCoalescer;
+  pub use worker_wake::WorkerWakeCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};
 pub use chrome_action::ChromeAction;
 pub use chrome_action_url::ChromeActionUrl;

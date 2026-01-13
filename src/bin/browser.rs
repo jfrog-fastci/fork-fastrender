@@ -65,6 +65,9 @@ const ENV_PERF_LOG: &str = "FASTR_PERF_LOG";
 #[cfg(feature = "browser_ui")]
 const ENV_PERF_LOG_OUT: &str = "FASTR_PERF_LOG_OUT";
 
+#[cfg(feature = "browser_ui")]
+use fastrender::ui::FrameReadyBridgeCoalescer;
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn parse_env_bool(raw: Option<&str>) -> bool {
   let Some(raw) = raw else {
@@ -5832,6 +5835,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       match spawn_worker_ui_bridge(
         window_id,
         renderer_backend,
+        self.app.frame_ready_bridge_coalescer.clone(),
         self.app.event_loop_proxy.clone(),
         worker_wake_coalescer,
         worker_wake_counters,
@@ -5856,6 +5860,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   fn spawn_worker_ui_bridge(
     window_id: WindowId,
     renderer_backend: fastrender::ui::RendererBackendHandle,
+    frame_ready_bridge_coalescer: FrameReadyBridgeCoalescer,
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     worker_wake_coalescer: Arc<fastrender::ui::WorkerWakeCoalescer>,
     worker_wake_counters: Option<Arc<WorkerWakeHudCounters>>,
@@ -5867,23 +5872,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .name(format!("browser_worker_bridge_{window_id:?}"))
       .spawn({
         let renderer_backend = renderer_backend.clone();
+        let frame_ready_bridge_coalescer = frame_ready_bridge_coalescer.clone();
         let worker_wake_coalescer = Arc::clone(&worker_wake_coalescer);
         let worker_wake_pending = Arc::clone(&worker_wake_pending);
         let worker_wake_counters = worker_wake_counters.clone();
         move || {
           while let Ok(msg) = renderer_backend.recv() {
-            let enqueued = match sanitize_worker_to_ui_for_bridge_queue(msg) {
-              BridgeSanitizedMsgs::Drop => Ok(false),
-              BridgeSanitizedMsgs::One(item) => worker_msgs_pusher.push(item).map(|_| true),
-              BridgeSanitizedMsgs::Two(a, b) => worker_msgs_pusher
-                .push(a)
-                .and_then(|_| worker_msgs_pusher.push(b))
-                .map(|_| true),
-            };
-            match enqueued {
-              Ok(false) => continue,
-              Ok(true) => {}
-              Err(_) => break,
+            match msg {
+              fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
+                frame_ready_bridge_coalescer.insert(tab_id, frame);
+              }
+              msg => {
+                let enqueued = match sanitize_worker_to_ui_for_bridge_queue(msg) {
+                  BridgeSanitizedMsgs::Drop => Ok(false),
+                  BridgeSanitizedMsgs::One(item) => worker_msgs_pusher.push(item).map(|_| true),
+                  BridgeSanitizedMsgs::Two(a, b) => worker_msgs_pusher
+                    .push(a)
+                    .and_then(|_| worker_msgs_pusher.push(b))
+                    .map(|_| true),
+                };
+                match enqueued {
+                  Ok(false) => continue,
+                  Ok(true) => {}
+                  Err(_) => break,
+                }
+              }
             }
             // Coalesce wakes:
             // - the per-window `worker_wake_pending` flag ensures we only request a wake once per
@@ -6229,11 +6242,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       path: download_dir.clone(),
     })?;
 
+    let frame_ready_bridge_coalescer = FrameReadyBridgeCoalescer::new();
     let mut app = App::new(
       window,
       &event_loop,
       event_loop_proxy.clone(),
       renderer_backend.clone(),
+      frame_ready_bridge_coalescer.clone(),
       &gpu,
       browser_trace.clone(),
       perf_log_start,
@@ -6297,6 +6312,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (worker_msgs, worker_wake_pending, bridge_join) = spawn_worker_ui_bridge(
       window_id,
       renderer_backend.clone(),
+      frame_ready_bridge_coalescer.clone(),
       event_loop_proxy.clone(),
       Arc::clone(&worker_wake_coalescer),
       worker_wake_counters,
@@ -6787,6 +6803,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             span.arg_u64("messages", outcome.drained as u64);
 
+            let window_is_active = active_window_id == Some(window_id);
+            for (tab_id, frame) in win.app.frame_ready_bridge_coalescer.drain() {
+              let result = win.app.handle_worker_message(
+                fastrender::ui::WorkerToUi::FrameReady { tab_id, frame },
+                window_is_active,
+              );
+              request_redraw |= result.request_redraw;
+              history_deltas.extend(result.history_deltas);
+            }
+
             if request_redraw {
               win.app.schedule_worker_redraw(std::time::Instant::now());
             }
@@ -6803,7 +6829,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut drained = win.worker_msgs.drain();
             win.worker_msg_backlog.append(&mut drained);
 
-            if !win.worker_msg_backlog.is_empty() {
+            let has_pending_frames = !win.app.frame_ready_bridge_coalescer.is_empty();
+            if !win.worker_msg_backlog.is_empty() || has_pending_frames {
               win.worker_wake_pending.store(true, Ordering::Release);
               if needs_follow_up_wake {
                 needs_follow_up_wake_any = true;
@@ -7126,11 +7153,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           return;
         }
 
+        let frame_ready_bridge_coalescer = FrameReadyBridgeCoalescer::new();
         let mut app = match App::new(
           window,
           event_loop_target,
           event_loop_proxy.clone(),
           renderer_backend.clone(),
+          frame_ready_bridge_coalescer.clone(),
           &gpu,
           browser_trace.clone(),
           perf_log_start,
@@ -7203,6 +7232,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
           window_id,
           renderer_backend.clone(),
+          frame_ready_bridge_coalescer.clone(),
           event_loop_proxy.clone(),
           Arc::clone(&worker_wake_coalescer),
           worker_wake_counters,
@@ -7320,11 +7350,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           return;
         }
 
+        let frame_ready_bridge_coalescer = FrameReadyBridgeCoalescer::new();
         let mut app = match App::new(
           window,
           event_loop_target,
           event_loop_proxy.clone(),
           renderer_backend.clone(),
+          frame_ready_bridge_coalescer.clone(),
           &gpu,
           browser_trace.clone(),
           perf_log_start,
@@ -7391,6 +7423,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let (worker_msgs, worker_wake_pending, bridge_join) = match spawn_worker_ui_bridge(
           window_id,
           renderer_backend.clone(),
+          frame_ready_bridge_coalescer.clone(),
           event_loop_proxy.clone(),
           Arc::clone(&worker_wake_coalescer),
           worker_wake_counters,
@@ -11006,6 +11039,11 @@ struct App {
   /// When restoring a session we only know the persisted scroll offset; applying it must wait until
   /// the tab has a known viewport (after the first `ViewportChanged` for this window/tab).
   pending_scroll_restores: std::collections::HashMap<fastrender::ui::TabId, (f32, f32)>,
+  /// Latest frames coalesced in the worker→UI bridge thread.
+  ///
+  /// This keeps the bridge from queueing an unbounded number of multi-megabyte pixmaps when the UI
+  /// thread is busy.
+  frame_ready_bridge_coalescer: FrameReadyBridgeCoalescer,
   /// Pending `FrameReady` pixmaps coalesced until the next window redraw.
   ///
   /// Uploading a pixmap into a wgpu texture is expensive; the UI worker can produce multiple frames
@@ -11703,6 +11741,7 @@ impl App {
     event_loop: &winit::event_loop::EventLoopWindowTarget<UserEvent>,
     event_loop_proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     renderer_backend: fastrender::ui::RendererBackendHandle,
+    frame_ready_bridge_coalescer: FrameReadyBridgeCoalescer,
     gpu: &GpuContext,
     trace: fastrender::debug::trace::TraceHandle,
     perf_log_start: std::time::Instant,
@@ -11998,6 +12037,7 @@ impl App {
       closing_tab_favicons: std::collections::VecDeque::new(),
       tab_cancel: std::collections::HashMap::new(),
       pending_scroll_restores: std::collections::HashMap::new(),
+      frame_ready_bridge_coalescer,
       pending_frame_uploads: fastrender::ui::FrameUploadCoalescer::new(),
       max_pending_frame_bytes: max_pending_frame_bytes_from_env(),
       last_page_upload_at: None,
@@ -12983,6 +13023,7 @@ impl App {
         self.pending_scroll_drag = None;
         self.cancel_scrollbar_drag();
       }
+      self.frame_ready_bridge_coalescer.remove_tab(*tab_id);
     }
 
     // Navigations invalidate page-scoped UI (including media controls anchored to DOM nodes).
