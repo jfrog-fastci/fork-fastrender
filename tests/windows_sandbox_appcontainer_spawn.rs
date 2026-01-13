@@ -41,10 +41,14 @@ fn appcontainer_child_smoke() {
 fn disable_renderer_sandbox_logs_warning() {
   const CHILD_ENV: &str = "FASTR_TEST_DISABLE_RENDERER_SANDBOX_LOG_CHILD";
   const DISABLE_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
+  const LEGACY_ENV: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
 
   if std::env::var_os(CHILD_ENV).is_some() {
     // This runs in the child process; the parent captures stderr to ensure the warning is printed.
-    std::env::set_var(DISABLE_ENV, "1");
+    assert!(
+      std::env::var_os(DISABLE_ENV).is_some() || std::env::var_os(LEGACY_ENV).is_some(),
+      "child process missing sandbox disable env var; test harness bug"
+    );
 
     let exe = std::env::current_exe().expect("current test exe path");
     let args = vec![
@@ -62,28 +66,32 @@ fn disable_renderer_sandbox_logs_warning() {
 
   let exe = std::env::current_exe().expect("current test exe path");
   let test_name = "disable_renderer_sandbox_logs_warning";
-  let output = Command::new(exe)
-    .env(CHILD_ENV, "1")
-    .env(DISABLE_ENV, "1")
-    .env("RUST_TEST_THREADS", "1")
-    .arg("--exact")
-    .arg(test_name)
-    .arg("--nocapture")
-    .output()
-    .expect("spawn child test process");
+  let run_child = |env: (&str, &str)| {
+    Command::new(&exe)
+      .env(CHILD_ENV, "1")
+      .env(env.0, env.1)
+      .env("RUST_TEST_THREADS", "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process")
+  };
 
-  assert!(
-    output.status.success(),
-    "child process should exit successfully (stdout={}, stderr={})",
-    String::from_utf8_lossy(&output.stdout),
-    String::from_utf8_lossy(&output.stderr)
-  );
+  for output in [run_child((DISABLE_ENV, "1")), run_child((LEGACY_ENV, "off"))] {
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
 
-  let stderr = String::from_utf8_lossy(&output.stderr);
-  assert!(
-    stderr.contains("Windows renderer sandbox is DISABLED"),
-    "expected sandbox disable warning in stderr (stderr={stderr})"
-  );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+      stderr.contains("Windows renderer sandbox is DISABLED"),
+      "expected sandbox disable warning in stderr (stderr={stderr})"
+    );
+  }
 }
 
 #[test]
