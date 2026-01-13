@@ -8,7 +8,10 @@
 //! - storing worker-provided strings in the UI state model, and
 //! - forwarding worker-provided payloads into OS/platform APIs (clipboard, window title, etc).
 
-use crate::ui::messages::{TabId, WorkerToUi};
+use crate::geometry::Point;
+use crate::scroll::{ScrollBounds, ScrollState};
+use crate::ui::messages::{ScrollMetrics, TabId, WorkerToUi};
+use std::collections::HashMap;
 
 /// Maximum bytes kept for a URL shown in chrome state (address bar, hover URL, downloads, etc).
 pub const MAX_URL_BYTES: usize = 16 * 1024; // 16 KiB
@@ -24,6 +27,9 @@ pub const MAX_WARNING_BYTES: usize = 8 * 1024; // 8 KiB
 
 /// Maximum bytes kept for a single worker debug log line stored in tab state.
 pub const MAX_DEBUG_LOG_BYTES: usize = 8 * 1024; // 8 KiB
+
+/// Maximum number of worker debug log lines retained per tab.
+pub const MAX_DEBUG_LOG_LINES: usize = 256;
 
 /// Maximum bytes kept for a find-in-page query echoed back by the worker.
 pub const MAX_FIND_QUERY_BYTES: usize = 8 * 1024; // 8 KiB
@@ -99,6 +105,128 @@ pub const MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_VALUE_BYTES: usize = 8 * 1024; // 8
 /// This is intentionally bounded: the UI forwards the body back to the worker over an in-memory
 /// channel, so extremely large payloads could cause OOM or long GC/allocator pauses.
 pub const MAX_OPEN_IN_NEW_TAB_REQUEST_BODY_BYTES: usize = 512 * 1024; // 512 KiB
+
+// -----------------------------------------------------------------------------
+// Numeric sanitizers (worker → UI)
+// -----------------------------------------------------------------------------
+
+/// Minimum DPR accepted from worker messages.
+///
+/// Keep aligned with `src/api.rs`'s `MIN_EFFECTIVE_SCALE`.
+pub const MIN_WORKER_DPR: f32 = 0.1;
+
+/// Maximum DPR accepted from worker messages.
+///
+/// Keep aligned with `src/api.rs`'s `MAX_EFFECTIVE_SCALE`.
+pub const MAX_WORKER_DPR: f32 = 10.0;
+
+/// Sanitize a worker-supplied device pixel ratio (DPR).
+///
+/// - Replaces NaN/inf/≤0 values with 1.0.
+/// - Clamps to a sane range so UI pixel math does not overflow.
+pub fn sanitize_worker_dpr(dpr: f32) -> f32 {
+  if dpr.is_finite() && dpr > 0.0 {
+    dpr.clamp(MIN_WORKER_DPR, MAX_WORKER_DPR)
+  } else {
+    1.0
+  }
+}
+
+fn sanitize_f32_finite(value: f32) -> f32 {
+  if value.is_finite() { value } else { 0.0 }
+}
+
+fn sanitize_f32_nonneg(value: f32) -> f32 {
+  let value = sanitize_f32_finite(value);
+  if value < 0.0 { 0.0 } else { value }
+}
+
+fn sanitize_point_nonneg(p: Point) -> Point {
+  Point::new(sanitize_f32_nonneg(p.x), sanitize_f32_nonneg(p.y))
+}
+
+fn sanitize_point_finite(p: Point) -> Point {
+  Point::new(sanitize_f32_finite(p.x), sanitize_f32_finite(p.y))
+}
+
+/// Sanitize a worker-supplied scroll state.
+///
+/// - Replaces NaN/inf with 0.0.
+/// - Clamps scroll offsets (viewport + element offsets) to ≥ 0.0.
+/// - Leaves deltas signed but finite.
+pub fn sanitize_worker_scroll_state(state: ScrollState) -> ScrollState {
+  let ScrollState {
+    viewport,
+    elements,
+    viewport_delta,
+    elements_delta,
+  } = state;
+
+  let elements = elements
+    .into_iter()
+    .map(|(id, p)| (id, sanitize_point_nonneg(p)))
+    .collect::<HashMap<usize, Point>>();
+  let elements_delta = elements_delta
+    .into_iter()
+    .map(|(id, p)| (id, sanitize_point_finite(p)))
+    .collect::<HashMap<usize, Point>>();
+
+  ScrollState {
+    viewport: sanitize_point_nonneg(viewport),
+    elements,
+    viewport_delta: sanitize_point_finite(viewport_delta),
+    elements_delta,
+  }
+}
+
+/// Sanitize a worker-supplied scroll bounds struct.
+///
+/// - Replaces NaN/inf with 0.0.
+/// - Clamps values to ≥ 0.0.
+/// - Ensures `max_* >= min_*`.
+pub fn sanitize_worker_scroll_bounds(bounds: ScrollBounds) -> ScrollBounds {
+  let mut min_x = sanitize_f32_nonneg(bounds.min_x);
+  let mut min_y = sanitize_f32_nonneg(bounds.min_y);
+  let mut max_x = sanitize_f32_nonneg(bounds.max_x);
+  let mut max_y = sanitize_f32_nonneg(bounds.max_y);
+
+  if max_x < min_x {
+    max_x = min_x;
+  }
+  if max_y < min_y {
+    max_y = min_y;
+  }
+
+  ScrollBounds {
+    min_x,
+    min_y,
+    max_x,
+    max_y,
+  }
+}
+
+/// Sanitize a worker-supplied scroll metrics struct.
+///
+/// - Replaces NaN/inf with 0.0.
+/// - Clamps offsets/sizes to ≥ 0.0.
+/// - Ensures viewport dims are non-zero.
+pub fn sanitize_worker_scroll_metrics(mut metrics: ScrollMetrics) -> ScrollMetrics {
+  metrics.viewport_css = (metrics.viewport_css.0.max(1), metrics.viewport_css.1.max(1));
+  metrics.scroll_css = (
+    sanitize_f32_nonneg(metrics.scroll_css.0),
+    sanitize_f32_nonneg(metrics.scroll_css.1),
+  );
+  metrics.bounds_css = sanitize_worker_scroll_bounds(metrics.bounds_css);
+  metrics.content_css = (
+    sanitize_f32_nonneg(metrics.content_css.0),
+    sanitize_f32_nonneg(metrics.content_css.1),
+  );
+  metrics
+}
+
+// -----------------------------------------------------------------------------
+// Clipboard worker → UI clamping
+// -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardTextLimitResult {

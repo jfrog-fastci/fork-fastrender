@@ -1,5 +1,6 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
+use crate::multiprocess::{RendererProcessId, SiteKey};
 use crate::ui::about_pages;
 use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_limits::BrowserLimits;
@@ -8,7 +9,6 @@ use crate::ui::messages::{
   CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason, RenderedFrame,
   ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
-use crate::multiprocess::{RendererProcessId, SiteKey};
 use crate::ui::protocol_limits::{
   MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
   MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
@@ -21,7 +21,7 @@ use crate::ui::renderer_ipc::{
   validate_rendered_frame_ready, FrameReadyLimits, FrameReadyViolation,
 };
 use crate::ui::{
-  resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistorySearcher,
+  protocol_limits, resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistorySearcher,
   GlobalHistoryStore, OmniboxSuggestion, VisitedUrlStore,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use url::Url;
 
-const DEBUG_LOG_CAPACITY: usize = 256;
+const DEBUG_LOG_CAPACITY: usize = protocol_limits::MAX_DEBUG_LOG_LINES;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 /// Maximum number of download entries stored in the browser UI state.
 ///
@@ -817,6 +817,8 @@ impl BrowserTabState {
   }
 
   fn push_debug_log(&mut self, line: String) {
+    // Treat worker debug lines as untrusted: `apply_worker_msg` bounds each line, and we bound the
+    // total retained lines per tab here.
     if self.debug_log.len() >= DEBUG_LOG_CAPACITY {
       self.debug_log.pop_front();
     }
@@ -2437,6 +2439,11 @@ impl BrowserAppState {
           scroll_metrics,
           next_tick,
         } = frame;
+        let viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
+        let dpr = protocol_limits::sanitize_worker_dpr(dpr);
+        let scroll_state = protocol_limits::sanitize_worker_scroll_state(scroll_state);
+        let mut scroll_metrics = protocol_limits::sanitize_worker_scroll_metrics(scroll_metrics);
+        scroll_metrics.viewport_css = viewport_css;
         let pixmap_px = (pixmap.width(), pixmap.height());
 
         // The renderer process is treated as untrusted in multiprocess builds. Validate payload
@@ -2813,6 +2820,7 @@ impl BrowserAppState {
         update.request_redraw = true;
       }
       WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
+        let scroll = protocol_limits::sanitize_worker_scroll_state(scroll);
         if let Some(tab) = self.tab_mut(tab_id) {
           if tab.scroll_state != scroll {
             tab.scroll_state = scroll;
@@ -4365,6 +4373,7 @@ mod renderer_ipc_violation_tests {
 #[cfg(test)]
 mod address_bar_tests {
   use super::*;
+  use crate::geometry::Point;
 
   #[test]
   fn sync_address_bar_to_active_does_not_clobber_while_editing() {
@@ -4459,6 +4468,87 @@ mod address_bar_tests {
       app.chrome.address_bar_text, "https://after.example/",
       "after commit, address bar should follow tab display_url again"
     );
+  }
+
+  #[test]
+  fn worker_frame_ready_sanitizes_dpr_and_scroll_floats() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let mut elements = HashMap::new();
+    elements.insert(1, Point::new(-10.0, f32::NAN));
+
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(f32::NAN, f32::INFINITY),
+      elements,
+      Point::new(f32::INFINITY, f32::NAN),
+      HashMap::new(),
+    );
+
+    let scroll_metrics = ScrollMetrics {
+      viewport_css: (0, 0),
+      scroll_css: (f32::NAN, f32::INFINITY),
+      bounds_css: crate::scroll::ScrollBounds {
+        min_x: f32::NAN,
+        min_y: -1.0,
+        max_x: f32::INFINITY,
+        max_y: f32::NAN,
+      },
+      content_css: (f32::INFINITY, -5.0),
+    };
+
+    let pixmap = tiny_skia::Pixmap::new(1, 1).expect("pixmap");
+    let update = app.apply_worker_msg(WorkerToUi::FrameReady {
+      tab_id,
+      frame: RenderedFrame {
+        pixmap,
+        viewport_css: (0, 0),
+        dpr: f32::NAN,
+        scroll_state,
+        scroll_metrics,
+        wants_ticks: false,
+      },
+    });
+
+    assert!(update.request_redraw);
+    let tab = app.active_tab().unwrap();
+    let meta = tab.latest_frame_meta.expect("expected latest_frame_meta");
+    assert_eq!(meta.viewport_css, (1, 1));
+    assert_eq!(meta.dpr, 1.0);
+
+    assert_eq!(tab.scroll_state.viewport.x, 0.0);
+    assert_eq!(tab.scroll_state.viewport.y, 0.0);
+    assert!(tab.scroll_state.elements.get(&1).unwrap().x >= 0.0);
+    assert!(tab.scroll_state.elements.get(&1).unwrap().y >= 0.0);
+
+    let metrics = tab.scroll_metrics.expect("expected scroll_metrics");
+    assert_eq!(metrics.viewport_css, (1, 1));
+    assert_eq!(metrics.scroll_css, (0.0, 0.0));
+    assert_eq!(metrics.content_css, (0.0, 0.0));
+    assert!(metrics.bounds_css.min_x >= 0.0);
+    assert!(metrics.bounds_css.min_y >= 0.0);
+    assert!(metrics.bounds_css.max_x >= metrics.bounds_css.min_x);
+    assert!(metrics.bounds_css.max_y >= metrics.bounds_css.min_y);
+  }
+
+  #[test]
+  fn worker_debug_log_is_bounded() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    for _ in 0..(protocol_limits::MAX_DEBUG_LOG_LINES + 10) {
+      app.apply_worker_msg(WorkerToUi::DebugLog {
+        tab_id,
+        line: "x".repeat(protocol_limits::MAX_DEBUG_LOG_BYTES + 100),
+      });
+    }
+
+    let tab = app.active_tab().unwrap();
+    let lines: Vec<&str> = tab.debug_log().collect();
+    assert_eq!(lines.len(), protocol_limits::MAX_DEBUG_LOG_LINES);
+    assert!(lines
+      .iter()
+      .all(|line| line.len() <= protocol_limits::MAX_DEBUG_LOG_BYTES));
   }
 }
 
