@@ -2437,21 +2437,6 @@ impl<'vm> HirEvaluator<'vm> {
                     catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
                   }
                 }
-
-                // Catch bindings accept any binding pattern (identifier, object/array destructuring,
-                // rest, etc).
-                //
-                // Catch parameters allow default initializers. Per spec, all bound names must be
-                // created in TDZ before default initializers run, so defaults like
-                // `catch ({x = x}) {}` observe the TDZ rather than resolving `x` from an outer scope.
-                let mut names: Vec<hir_js::NameId> = Vec::new();
-                self.collect_pat_idents(body, param_pat_id, &mut names)?;
-                for name_id in names {
-                  let name = self.resolve_name(name_id)?;
-                  if !catch_scope.heap().env_has_binding(catch_env, name.as_str())? {
-                    catch_scope.env_create_mutable_binding(catch_env, name.as_str())?;
-                  }
-                }
                 self.bind_pattern(
                   &mut catch_scope,
                   body,
