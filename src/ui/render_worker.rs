@@ -7776,11 +7776,12 @@ impl BrowserRuntime {
         );
 
         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
-        let mouseup_target_element_id = up_hit.as_ref().and_then(|hit| hit.element_id.clone());
+        let mouseup_target_element_id: Option<String> =
+          up_hit.as_ref().and_then(|hit| hit.element_id.clone());
 
         let (click_target, engine_click_target_element_id) =
           engine.take_last_click_target_with_element_id();
-        let click_target_element_id =
+        let click_target_element_id: Option<String> =
           if click_target.is_some() && click_target == mouseup_target {
             mouseup_target_element_id.clone()
           } else {
@@ -7791,7 +7792,7 @@ impl BrowserRuntime {
 
         let (form_submitter, engine_form_submitter_element_id) =
           engine.take_last_form_submitter_with_element_id();
-        let form_submitter_element_id =
+        let form_submitter_element_id: Option<String> =
           if form_submitter.is_some() && form_submitter == mouseup_target {
             mouseup_target_element_id.clone()
           } else if form_submitter.is_some() && form_submitter == click_target {
@@ -7800,7 +7801,7 @@ impl BrowserRuntime {
             engine_form_submitter_element_id
           };
 
-        let picker_value = match &action {
+        let picker_value: Option<String> = match &action {
           InteractionAction::OpenDateTimePicker {
             input_node_id,
             kind,

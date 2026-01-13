@@ -73029,6 +73029,51 @@ mod tests {
   }
 
   #[test]
+  fn node_iterator_wrapper_is_registered_and_pruned_after_gc() -> Result<(), VmError> {
+    use vm_js::{Value, WeakGcObject};
+
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    assert_eq!(host.dom().node_iterator_state_len(), 0);
+
+    // Return the iterator wrapper so we can explicitly root/unroot it from Rust and verify GC + sweep.
+    let it_val = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const root = document.getElementById('root');\n\
+        return document.createNodeIterator(root, 1);\n\
+      })()",
+    )?;
+    let Value::Object(it_obj) = it_val else {
+      panic!("expected NodeIterator wrapper object");
+    };
+
+    let weak = WeakGcObject::from(it_obj);
+    let root = realm.heap_mut().add_root(Value::Object(it_obj))?;
+
+    assert_eq!(host.dom().node_iterator_state_len(), 1);
+
+    // Drop the last strong root and force a GC; the weak registry must not keep the wrapper alive.
+    realm.heap_mut().remove_root(root);
+    realm.heap_mut().collect_garbage();
+    assert!(weak.upgrade(realm.heap()).is_none());
+
+    // After a GC run, sweeping should prune both the weak registry entry and the Document's
+    // NodeIterator traversal state.
+    host
+      .dom_mut()
+      .sweep_dead_live_traversals_if_needed(realm.heap());
+    assert_eq!(host.dom().node_iterator_state_len(), 0);
+    Ok(())
+  }
+
+  #[test]
   fn node_iterator_pre_remove_steps_run_for_text_content() -> Result<(), VmError> {
     // Ensure `Node.textContent = ""` removes nodes via DOM remove steps so active NodeIterators
     // update their reference/pointer state.

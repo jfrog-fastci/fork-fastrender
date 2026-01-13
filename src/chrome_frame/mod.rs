@@ -1238,7 +1238,7 @@ pub fn sync_browser_state_to_chrome_frame(app: &mut BrowserAppState, chrome: &mu
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::VirtualClock;
+  use crate::clock::VirtualClock;
   use crate::text::font_db::FontConfig;
   use crate::ui::messages::CursorKind;
   use crate::ui::{BrowserTabState, OmniboxAction, OmniboxSuggestionSource, OmniboxUrlSource, TabId};

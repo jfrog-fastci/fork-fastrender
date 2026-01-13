@@ -880,6 +880,11 @@ impl Document {
     self.node_iterators.remove(&id);
   }
 
+  #[cfg(test)]
+  pub(crate) fn node_iterator_state_len(&self) -> usize {
+    self.node_iterators.len()
+  }
+
   /// Spec: <https://dom.spec.whatwg.org/#nodeiterator-pre-removing-steps>
   pub(crate) fn node_iterator_pre_remove_steps(&mut self, to_be_removed: NodeId) {
     if self.node_iterators.is_empty() {
