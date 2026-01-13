@@ -12,6 +12,14 @@ However, the render worker already emits a page accessibility snapshot as part o
 protocol: `WorkerToUi::PageAccessibility` contains the semantic tree plus best-effort per-node bounds
 in viewport-local CSS pixels. The windowed UI stores that snapshot (for future AccessKit subtree
 injection and other UI features), but not every build wires it into the OS-facing tree yet.
+via **AccessKit**. Page content is still *visually* rendered as a pixel buffer; wiring the page
+semantics tree into the OS-facing AccessKit tree is **in progress**.
+
+However, the render worker already emits a page accessibility snapshot as part of the UI↔worker
+protocol: `WorkerToUi::PageAccessibility` contains the semantic tree plus best-effort per-node bounds
+in viewport-local CSS pixels. The windowed UI stores that snapshot as
+`ui::browser_app::PageAccessibilitySnapshot` (for future AccessKit subtree injection and other UI
+features), but not every build wires it into the OS-facing tree yet.
 
 For deeper details on the browser chrome’s AccessKit wiring (including the experimental non-egui
 backend), see [chrome_accessibility.md](chrome_accessibility.md).
@@ -110,6 +118,8 @@ High-level flow:
 
 - The worker builds a `RenderedFrame` (pixmap + scroll state + viewport metadata) and sends it to the
   UI via `WorkerToUi::FrameReady` (see `src/ui/messages.rs`).
+- The worker can also send a semantic page accessibility snapshot via `WorkerToUi::PageAccessibility`
+  (stored on each tab as `PageAccessibilitySnapshot`).
 - The windowed UI renders the pixmap as an egui image widget.
 - When layout artifacts exist, the worker also computes a **page accessibility snapshot** and sends
   it as `WorkerToUi::PageAccessibility { tree, bounds_css }`:
@@ -136,8 +146,9 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
   `src/ui/chrome.rs`, `src/ui/menu_bar.rs`, etc).
 - Page/content in the windowed UI is still drawn as a single **egui image widget**, with a stable
   accessible label (“Web page content (rendered image)”).
-- There is scaffolding to inject a web content subtree into the AccessKit tree, but not every build
-  wires up a page subtree yet (see “Browser UI worker protocol” above).
+- There is scaffolding to inject a web content subtree (from `WorkerToUi::PageAccessibility`) into
+  the AccessKit tree, but not every build/config wires up a page subtree yet (see “Browser UI worker
+  protocol” above).
 - Future-facing (page/chrome rendered by FastRender rather than egui):
   - AccessKit update gating (avoid building trees/bounds when no AT is connected):
     [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)
@@ -304,8 +315,9 @@ bash scripts/run_limited.sh --as 64G -- \
 ```
 
 This tool only snapshots the egui widget tree (tabs/address bar/menus). It does **not** run the
-render worker, so it will not include any page/content subtree update (if/when that is wired); use
-the real windowed browser + a platform accessibility inspector to validate page content exposure.
+render worker, so it will not include any page/content subtree update (from
+`WorkerToUi::PageAccessibility`, if/when that is wired); use the real windowed browser + a platform
+accessibility inspector to validate page content exposure.
 
 See [chrome_accessibility.md](chrome_accessibility.md) for recommended `dump_accesskit` invocations
 and how to interpret the output.
@@ -467,8 +479,9 @@ exposed, instead of relying on screen reader speech alone.
 - Windows: **Inspect.exe** (Windows SDK, UI Automation tree)
 - Linux: **Accerciser** (AT-SPI tree)
 
-Note: if/when the browser UI merges a page content subtree into AccessKit output, these tools should
-show both the chrome tree (egui widgets) and the injected page subtree.
+Note: if/when the browser UI merges a page content subtree (derived from
+`WorkerToUi::PageAccessibility`) into AccessKit output, these tools should show both the chrome tree
+(egui widgets) and the injected page subtree.
 
 ### macOS: VoiceOver
 

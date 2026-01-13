@@ -7,7 +7,14 @@ FastRender has two accessibility-related layers:
    - **Default backend:** egui’s AccessKit integration (the egui widget tree becomes the OS accessibility tree).
    - **Renderer-chrome backend (experimental):** `FASTR_BROWSER_RENDERER_CHROME=1` switches the browser to a custom `accesskit_winit::Adapter` (`ui::compositor_accessibility::CompositorAccessibility`) intended for when the chrome is rendered by FastRender (HTML/CSS) instead of egui. Today this provides a minimal Window/Chrome/Page region tree so platform assistive tech can still discover the main UI regions.
 
-Visually, the rendered page content is still a pixmap. The worker-produced page snapshot (`WorkerToUi::PageAccessibility`) is already part of the UI↔worker protocol, but wiring that snapshot into egui’s `PlatformOutput.accesskit_update` as a full per-element page subtree is still in progress. This document describes the current AccessKit wiring and the conventions to follow so it stays maintainable, plus notes on how the renderer’s `accessibility.rs` output feeds into AccessKit for page content and will eventually do the same when chrome/content are rendered by FastRender.
+Visually, the rendered page content is still a pixmap. The worker-produced page snapshot
+(`WorkerToUi::PageAccessibility`) is already part of the UI↔worker protocol, but wiring that
+snapshot into egui’s `PlatformOutput.accesskit_update` as a full per-element page subtree is still
+in progress.
+
+This document describes the current AccessKit wiring and the conventions to follow so it stays
+maintainable, plus notes on how the renderer’s `accessibility.rs` output feeds into AccessKit for
+page content and will eventually do the same when chrome/content are rendered by FastRender.
 
 For a page-focused workflow doc (inspecting the renderer’s accessibility tree via `dump_a11y`, how
 viewport CSS bounds are computed/mapped, and manual screen reader testing), see
@@ -401,8 +408,8 @@ Limitations:
 - `dump_accesskit` only snapshots the **egui** backend (`egui::PlatformOutput::accesskit_update`). It
   does not exercise the renderer-chrome backend (`ui::compositor_accessibility::CompositorAccessibility`).
 - `dump_accesskit` does **not** run the browser worker, so it will not include any injected page
-  content subtree update (if/when wired). Use the real windowed `browser` + a platform accessibility
-  inspector when debugging page nodes.
+  content subtree update (from `WorkerToUi::PageAccessibility`, if/when wired). Use the real windowed
+  `browser` + a platform accessibility inspector when debugging page nodes.
 
 Note: on Linux, building with `--features browser_ui` requires system GUI development headers
 (X11/Wayland headers, EGL/Vulkan, etc). Real-time audio output via `--features audio_cpal`
@@ -473,9 +480,9 @@ If you need a lower-level view than a screen reader, use platform accessibility 
 - **Linux:** Accerciser / other AT-SPI inspection tools
 
 Scope note: the rendered page is still a pixmap. The windowed UI has scaffolding to inject a page
-content subtree into the OS-facing AccessKit tree so screen readers can traverse basic document
-content, but per-element page exposure is still in progress. Action/bounds completeness is still
-evolving; see
+content subtree (derived from `WorkerToUi::PageAccessibility`) into the OS-facing AccessKit tree so
+screen readers can traverse basic document content, but per-element page exposure is still in
+progress. Action/bounds completeness is still evolving; see
 [`docs/browser_ui.md`](browser_ui.md) for the current limitations checklist.
 
 To smoke-test the **renderer-chrome AccessKit adapter path** (even before a real chrome document is
