@@ -521,6 +521,12 @@ pub struct BrowserTabState {
   pub cursor: CursorKind,
   pub find: FindInPageState,
   pub scroll_state: ScrollState,
+  /// Scroll state corresponding to the currently uploaded page texture.
+  ///
+  /// The windowed UI can translate the already-uploaded texture based on `scroll_state` updates
+  /// to provide smooth async scrolling without waiting for a new paint. This field tracks the
+  /// scroll offset that was used when rendering/uploading the last frame.
+  pub rendered_scroll_state: ScrollState,
   pub scroll_metrics: Option<ScrollMetrics>,
   pub latest_frame_meta: Option<LatestFrameMeta>,
   pub favicon_meta: Option<FaviconMeta>,
@@ -563,6 +569,7 @@ impl BrowserTabState {
       cursor: CursorKind::Default,
       find: FindInPageState::default(),
       scroll_state: ScrollState::default(),
+      rendered_scroll_state: ScrollState::default(),
       scroll_metrics: None,
       latest_frame_meta: None,
       favicon_meta: None,
@@ -2402,7 +2409,8 @@ impl BrowserAppState {
               tab.crash_reason = None;
               tab.error = None;
             }
-            tab.scroll_state = scroll_state;
+            tab.scroll_state = scroll_state.clone();
+            tab.rendered_scroll_state = scroll_state;
             tab.scroll_metrics = Some(scroll_metrics);
             tab.latest_frame_meta = Some(LatestFrameMeta {
               pixmap_px,

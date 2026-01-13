@@ -17336,11 +17336,28 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         };
 
         tex.set_filter_mode(&self.device, &mut self.egui_renderer, desired_filter);
-        let response = ui.add(
-          egui::Image::new((tex.id(), size_points))
-            .uv(tex.uv_rect())
-            .sense(egui::Sense::click()),
+        let (page_rect, response) = ui.allocate_exact_size(size_points, egui::Sense::click());
+        let painter = ui.painter().with_clip_rect(page_rect);
+        painter.rect_filled(
+          page_rect,
+          egui::Rounding::same(0.0),
+          ui.visuals().panel_fill,
         );
+
+        let translation_points = self.browser_state.tab(active_tab).and_then(|tab| {
+          fastrender::ui::async_scroll::async_scroll_translation_points(
+            tab.rendered_scroll_state.viewport,
+            tab.scroll_state.viewport,
+            viewport_css_for_mapping,
+            (page_rect.width(), page_rect.height()),
+          )
+        });
+        let image_rect = if let Some(translation) = translation_points {
+          page_rect.translate(egui::vec2(translation.x, translation.y))
+        } else {
+          page_rect
+        };
+        painter.image(tex.id(), image_rect, tex.uv_rect(), egui::Color32::WHITE);
         // The page is currently presented as a rendered image (no document accessibility yet). Give
         // it a stable label so screen readers can identify what this focusable region represents.
         response.widget_info(|| {
