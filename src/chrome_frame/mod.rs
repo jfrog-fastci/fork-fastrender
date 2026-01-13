@@ -148,7 +148,7 @@ impl ChromeFrameDocument {
 
   /// Render a new chrome frame only when something is invalidated (DOM mutations, scroll, etc).
   ///
-  /// Returns `Ok(None)` when no dirty flags are set and no animation frame is required.
+  /// Returns `Ok(None)` when no dirty flags are set and no time-based tick is required.
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
     if self.dirty {
       return Ok(Some(self.render()?));
@@ -167,8 +167,8 @@ impl ChromeFrameDocument {
     Ok(rendered)
   }
 
-  /// Returns `true` when the most recently prepared fragment tree contains any CSS animations or
-  /// transitions that require time-based sampling.
+  /// Returns `true` when the most recently prepared fragment tree contains any time-based effects
+  /// (currently CSS animations/transitions) that require periodic ticking.
   pub fn wants_ticks(&self) -> bool {
     self.document.prepared().is_some_and(|prepared| {
       let tree = prepared.fragment_tree();

@@ -175,8 +175,8 @@ impl ChromeFrameDocument {
       .map(|frame| frame.pixmap)
   }
 
-  /// Returns `true` when the most recently prepared fragment tree contains any CSS animations or
-  /// transitions that require time-based sampling.
+  /// Returns `true` when the most recently prepared fragment tree contains any time-based effects
+  /// (currently CSS animations/transitions) that require periodic ticking.
   pub fn wants_ticks(&self) -> bool {
     self.document.prepared().is_some_and(|prepared| {
       let tree = prepared.fragment_tree();
