@@ -8,11 +8,12 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use image::{ImageFormat, Rgba, RgbaImage};
 use resvg::usvg;
-use std::fs;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
-use url::Url;
+
+#[cfg(feature = "direct_network")]
+use std::fs;
 
 #[test]
 fn usvg_options_for_url_does_not_enable_filesystem_resource_dir() {
@@ -111,6 +112,67 @@ impl ResourceFetcher for RecordingFetcher {
 }
 
 #[test]
+fn image_cache_with_fetcher_loads_image_from_mock_fetcher() {
+  use std::sync::atomic::{AtomicUsize, Ordering};
+
+  struct PngFetcher {
+    bytes: Vec<u8>,
+    calls: AtomicUsize,
+  }
+
+  impl ResourceFetcher for PngFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      assert_eq!(url, "https://example.com/red.png");
+      self.calls.fetch_add(1, Ordering::SeqCst);
+      Ok(FetchedResource::new(
+        self.bytes.clone(),
+        Some("image/png".to_string()),
+      ))
+    }
+  }
+
+  let img = RgbaImage::from_pixel(2, 2, Rgba([255, 0, 0, 255]));
+  let mut png = Vec::new();
+  img
+    .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+    .expect("encode png");
+
+  let fetcher = Arc::new(PngFetcher {
+    bytes: png,
+    calls: AtomicUsize::new(0),
+  });
+  let cache = ImageCache::with_fetcher(Arc::clone(&fetcher) as Arc<dyn ResourceFetcher>);
+
+  let loaded = cache.load("https://example.com/red.png").expect("load image");
+  let rgba = loaded.image.to_rgba8();
+  assert_eq!(rgba.dimensions(), (2, 2));
+  assert_eq!(*rgba.get_pixel(0, 0), Rgba([255, 0, 0, 255]));
+
+  // Second load should hit the decoded cache (no additional fetch).
+  let _ = cache.load("https://example.com/red.png").expect("load again");
+  assert_eq!(fetcher.calls.load(Ordering::SeqCst), 1);
+}
+
+#[cfg(not(feature = "direct_network"))]
+#[test]
+fn image_cache_new_requires_injected_fetcher_in_sandboxed_builds() {
+  let cache = ImageCache::new();
+  let err = cache
+    .fetcher()
+    .fetch("https://example.com/image.png")
+    .expect_err("expected sandboxed ImageCache to reject network fetches");
+  match err {
+    Error::Resource(res) => {
+      assert_eq!(
+        res.message,
+        "ImageCache requires an injected ResourceFetcher in sandboxed builds"
+      );
+    }
+    other => panic!("expected Error::Resource, got {other:?}"),
+  }
+}
+
+#[test]
 fn svg_root_viewport_resolves_percent_lengths_for_rasterization() {
   // Regression test for SVG-as-image rasterization: when the outermost <svg> omits width/height,
   // SVG defaults them to 100%. Percent-based sizes (like <image width="100%">) must then resolve
@@ -196,6 +258,7 @@ fn resvg_ignores_css_transform_translate_percent() {
   );
 }
 
+#[cfg(feature = "direct_network")]
 #[test]
 fn svg_image_href_resolves_against_svg_url() {
   let dir = tempfile::tempdir().expect("temp dir");
@@ -211,7 +274,7 @@ fn svg_image_href_resolves_against_svg_url() {
   "#;
   fs::write(&svg_path, svg_content).expect("write svg");
 
-  let svg_url = Url::from_file_path(&svg_path).unwrap().to_string();
+  let svg_url = url::Url::from_file_path(&svg_path).unwrap().to_string();
 
   let mut cache = ImageCache::new();
   cache.set_base_url("file:///not-used-for-svg-base/");

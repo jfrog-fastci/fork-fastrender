@@ -2,10 +2,14 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use fastrender::image_loader::ImageCache;
 use image::{ImageFormat, Rgba, RgbaImage};
-use std::fs;
 use std::io::Cursor;
+
+#[cfg(feature = "direct_network")]
+use std::fs;
+#[cfg(feature = "direct_network")]
 use url::Url;
 
+#[cfg(feature = "direct_network")]
 #[test]
 fn svg_image_href_resolves_against_svg_url() {
   let dir = tempfile::tempdir().expect("temp dir");

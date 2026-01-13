@@ -17,6 +17,7 @@ use crate::resource::FetchCredentialsMode;
 use crate::resource::FetchDestination;
 use crate::resource::FetchRequest;
 use crate::resource::FetchedResource;
+#[cfg(feature = "direct_network")]
 use crate::resource::HttpFetcher;
 use crate::resource::ReferrerPolicy;
 use crate::resource::ResourceFetcher;
@@ -6496,13 +6497,18 @@ impl ProbeInFlight {
 ///
 /// ```rust,no_run
 /// # use fastrender::image_loader::ImageCache;
-/// # use fastrender::resource::HttpFetcher;
 /// # use std::sync::Arc;
 /// # fn main() -> fastrender::Result<()> {
+/// # #[cfg(feature = "direct_network")]
+/// # use fastrender::resource::HttpFetcher;
 ///
+/// # #[cfg(feature = "direct_network")]
+/// # {
 /// let fetcher = Arc::new(HttpFetcher::new());
 /// let cache = ImageCache::with_fetcher(fetcher);
 /// let image = cache.load("https://example.com/image.png")?;
+/// # let _ = image;
+/// # }
 /// # Ok(())
 /// # }
 /// ```
@@ -6646,6 +6652,28 @@ impl AsRef<str> for SvgPreprocessedMarkup<'_> {
   }
 }
 
+#[cfg(not(feature = "direct_network"))]
+#[derive(Debug, Default)]
+struct SandboxedImageCacheFetcher;
+
+#[cfg(not(feature = "direct_network"))]
+impl ResourceFetcher for SandboxedImageCacheFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    if url
+      .get(..5)
+      .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+      .unwrap_or(false)
+    {
+      crate::resource::data_url::decode_data_url(url)
+    } else {
+      Err(Error::Resource(crate::error::ResourceError::new(
+        url,
+        "ImageCache requires an injected ResourceFetcher in sandboxed builds",
+      )))
+    }
+  }
+}
+
 impl ImageCache {
   fn content_type_looks_like_image(content_type: Option<&str>) -> bool {
     let Some(content_type) = content_type else {
@@ -6698,7 +6726,27 @@ impl ImageCache {
     Self::decoded_bitmap_is_single_transparent_pixel(img, has_alpha)
   }
 
-  /// Create a new ImageCache with the default HTTP fetcher
+  #[cfg(feature = "direct_network")]
+  fn default_fetcher() -> Arc<dyn ResourceFetcher> {
+    Arc::new(CachingFetcher::with_config(
+      HttpFetcher::new(),
+      CachingFetcherConfig::default(),
+    ))
+  }
+
+  #[cfg(not(feature = "direct_network"))]
+  fn default_fetcher() -> Arc<dyn ResourceFetcher> {
+    Arc::new(SandboxedImageCacheFetcher::default())
+  }
+
+  /// Create a new ImageCache.
+  ///
+  /// When built with the `direct_network` feature (default), this uses the built-in `HttpFetcher`
+  /// wrapped in a `CachingFetcher`.
+  ///
+  /// When `direct_network` is disabled (sandboxed renderer builds), this returns an `ImageCache`
+  /// that rejects `http://`, `https://`, and `file://` fetches until a real [`ResourceFetcher`] is
+  /// injected via [`ImageCache::with_fetcher`] or [`ImageCache::set_fetcher`].
   pub fn new() -> Self {
     Self::with_config(ImageCacheConfig::default())
   }
@@ -6708,16 +6756,11 @@ impl ImageCache {
     Self::with_fetcher_and_config(fetcher, ImageCacheConfig::default())
   }
 
-  /// Create a new ImageCache with the default HTTP fetcher and custom limits.
+  /// Create a new ImageCache with custom limits.
+  ///
+  /// See [`ImageCache::new`] for `direct_network` feature behavior.
   pub fn with_config(config: ImageCacheConfig) -> Self {
-    Self::with_base_url_fetcher_and_config(
-      None,
-      Arc::new(CachingFetcher::with_config(
-        HttpFetcher::new(),
-        CachingFetcherConfig::default(),
-      )),
-      config,
-    )
+    Self::with_base_url_fetcher_and_config(None, Self::default_fetcher(), config)
   }
 
   /// Create a new ImageCache with a custom fetcher and limits.
@@ -6728,21 +6771,18 @@ impl ImageCache {
     Self::with_base_url_fetcher_and_config(None, fetcher, config)
   }
 
-  /// Create a new ImageCache with a base URL and the default HTTP fetcher
+  /// Create a new ImageCache with a base URL.
+  ///
+  /// See [`ImageCache::new`] for `direct_network` feature behavior.
   pub fn with_base_url(base_url: String) -> Self {
     Self::with_base_url_and_config(base_url, ImageCacheConfig::default())
   }
 
-  /// Create a new ImageCache with a base URL, default fetcher, and custom limits.
+  /// Create a new ImageCache with a base URL and custom limits.
+  ///
+  /// See [`ImageCache::new`] for `direct_network` feature behavior.
   pub fn with_base_url_and_config(base_url: String, config: ImageCacheConfig) -> Self {
-    Self::with_base_url_fetcher_and_config(
-      Some(base_url),
-      Arc::new(CachingFetcher::with_config(
-        HttpFetcher::new(),
-        CachingFetcherConfig::default(),
-      )),
-      config,
-    )
+    Self::with_base_url_fetcher_and_config(Some(base_url), Self::default_fetcher(), config)
   }
 
   /// Create a new ImageCache with both a base URL and a custom fetcher
@@ -12512,6 +12552,7 @@ mod tests_inline {
     );
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn svg_image_href_resolves_against_svg_url() {
     let dir = tempdir().expect("temp dir");
@@ -12919,6 +12960,7 @@ mod tests_inline {
     assert_eq!(px, [200, 231, 250, 255]);
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_cache_preserves_gif_alpha_metadata() {
     let cache = ImageCache::new();
@@ -12946,6 +12988,7 @@ mod tests_inline {
     );
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_cache_preserves_webp_alpha_metadata() {
     let cache = ImageCache::new();
@@ -12971,7 +13014,7 @@ mod tests_inline {
     );
   }
 
-  #[cfg(feature = "avif")]
+  #[cfg(all(feature = "direct_network", feature = "avif"))]
   #[test]
   fn image_cache_decodes_avif_pixels() {
     let cache = ImageCache::new();
@@ -13050,6 +13093,7 @@ mod tests_inline {
     );
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_cache_load_empty_file_url_returns_shared_placeholder_image() {
     // Offline fixtures frequently represent missing images as empty files. Our file fetcher
@@ -13079,6 +13123,7 @@ mod tests_inline {
     );
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_cache_load_file_url_1x1_transparent_png_with_non_image_content_type_maps_to_placeholder()
   {
@@ -13628,6 +13673,7 @@ mod tests_inline {
     });
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_decode_uses_root_deadline_instead_of_nested_budget() {
     // The paint pipeline installs nested deadlines to allocate small time budgets to internal
@@ -14256,6 +14302,7 @@ mod tests_inline {
     );
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn http_403_image_reports_resource_error_with_status() {
     use std::io::{Read, Write};
@@ -14324,6 +14371,7 @@ mod tests_inline {
     server.join().unwrap();
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn http_200_html_for_jpg_is_reported_as_resource_error() {
     use std::io::{Read, Write};
@@ -14399,6 +14447,7 @@ mod tests_inline {
     server.join().unwrap();
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn http_200_html_for_jpg_with_image_mime_is_reported_as_resource_error() {
     use std::io::{Read, Write};
@@ -14474,6 +14523,7 @@ mod tests_inline {
     server.join().unwrap();
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn http_200_html_for_jpg_probe_is_reported_as_resource_error() {
     use std::io::{Read, Write};
@@ -14551,6 +14601,7 @@ mod tests_inline {
     server.join().unwrap();
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn http_200_html_for_jpg_with_image_mime_probe_is_reported_as_resource_error() {
     use std::io::{Read, Write};
@@ -15601,6 +15652,7 @@ mod tests_inline {
     trim_http_whitespace(end).parse::<usize>().ok()
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_probe_uses_http_range_requests() {
     use std::io::Write;
@@ -15652,6 +15704,7 @@ mod tests_inline {
     server.join().unwrap();
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_probe_partial_fetch_handles_range_ignored() {
     use std::io::Write;
@@ -15711,6 +15764,7 @@ mod tests_inline {
     server.join().unwrap();
   }
 
+  #[cfg(feature = "direct_network")]
   #[test]
   fn image_probe_partial_fetch_falls_back_on_http_405() {
     use std::io::Write;
