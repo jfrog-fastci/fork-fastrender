@@ -16,31 +16,32 @@
     "layout": 7.039264836065573,
     "paint": 32.17949639344262
   },
-  "notes": "Visually good. Remaining diffs are dominated by text rasterization differences (font hinting/AA causing slightly different glyph edge pixels and line wraps) plus minor blur falloff differences in the header's `box-shadow`.",
+  "notes": "Visually good. This page is extremely text-dense, so tiny glyph edge / hinting differences accumulate and inflate diff_percent/SSIM (perceptual) despite matching layout. Minor header `box-shadow` blur falloff differences remain.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 145118,
-    "diff_percent": 15.1165,
-    "perceptual": 0.2601,
+    "diff_pixels": 124586,
+    "diff_percent": 12.9777,
+    "perceptual": 0.1684,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
-      "x": 53,
+      "x": 96,
       "y": 7,
       "baseline_rgba": [
-        2,
-        2,
-        2,
+        0,
+        0,
+        0,
         255
       ],
       "rendered_rgba": [
-        0,
-        0,
-        0,
+        60,
+        60,
+        60,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "a51c11d0aadd6d2e7bea64b6dd92a15d18875c00"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
