@@ -128,6 +128,8 @@ This means:
 
 - **No network capabilities** (including no loopback access).
 - No opt-in device or library capabilities.
+- We are **not** using LPAC or capability-based allowlists yet; the current design is “pure
+  computation” and relies on brokered IPC for anything privileged.
 
 If a future change wants to add a capability, it must be treated as a security-sensitive change
 (and this doc must be updated).
