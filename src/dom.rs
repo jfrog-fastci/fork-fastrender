@@ -9884,6 +9884,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children,
     }
@@ -11122,6 +11123,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![],
     };
@@ -14055,6 +14057,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element("div", vec![element("span", vec![])])],
     };
@@ -14103,6 +14106,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element(
         "div",
@@ -14328,6 +14332,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![
         element("div", vec![text("abc")]),
@@ -14658,6 +14663,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element("html", vec![element("body", vec![])])],
     };
@@ -14736,6 +14742,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![html],
     };
@@ -14812,6 +14819,7 @@ mod tests {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
         scripting_enabled: true,
+        is_html_document: true,
       },
       children: vec![element("html", vec![element("body", vec![])])],
     };

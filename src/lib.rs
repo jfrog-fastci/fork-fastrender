@@ -210,6 +210,7 @@ pub mod html;
 pub mod image_compare;
 pub mod image_loader;
 pub mod image_output;
+pub mod ipc;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod js;
