@@ -4598,7 +4598,7 @@ mod unicode_set_vm_tests {
       single,
       has_empty: true,
     };
-
+ 
     let program = RegExpProgram {
       insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'b' as u32), Inst::Match],
       capture_count: 1,
@@ -4648,7 +4648,7 @@ mod unicode_set_vm_tests {
       single,
       has_empty: false,
     };
-
+ 
     let program = RegExpProgram {
       insts: vec![Inst::UnicodeSet(cls), Inst::Char(b'c' as u32), Inst::Match],
       capture_count: 1,

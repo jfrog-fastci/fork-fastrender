@@ -8,6 +8,108 @@ const OOM_PLACEHOLDER: &str = "<oom>";
 const INVALID_STRING_PLACEHOLDER: &str = "<invalid string>";
 const UNCAUGHT_EXCEPTION_PLACEHOLDER: &str = "uncaught exception";
 
+fn format_value_debug_best_effort(value: Value) -> String {
+  #[inline]
+  fn push_u32(out: &mut String, value: u32) -> bool {
+    fallible_format::try_write_u32(out, value).is_ok()
+  }
+
+  #[inline]
+  fn push_handle(out: &mut String, ty: &str, index: u32, generation: u32) -> bool {
+    if !push_str_best_effort(out, ty) || !push_char_best_effort(out, '(') {
+      return false;
+    }
+    if !push_str_best_effort(out, "HeapId { index: ") {
+      return false;
+    }
+    if !push_u32(out, index) {
+      return false;
+    }
+    if !push_str_best_effort(out, ", generation: ") {
+      return false;
+    }
+    if !push_u32(out, generation) {
+      return false;
+    }
+    if !push_str_best_effort(out, " }") {
+      return false;
+    }
+    push_char_best_effort(out, ')')
+  }
+
+  #[inline]
+  fn push_f64(out: &mut String, n: f64) -> bool {
+    if n.is_nan() {
+      return push_str_best_effort(out, "NaN");
+    }
+    if n.is_infinite() {
+      return push_str_best_effort(out, if n.is_sign_negative() { "-inf" } else { "inf" });
+    }
+    if n == 0.0 && n.is_sign_negative() {
+      return push_str_best_effort(out, "-0.0");
+    }
+    // Avoid `format_args!("{n:?}")` which may allocate infallibly under the hood. `ryu` formats into
+    // a stack buffer.
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format_finite(n);
+    push_str_best_effort(out, s)
+  }
+
+  let mut out = String::new();
+  // Best-effort preallocation; keep this small (this path is a fallback when ToString fails).
+  let _ = out.try_reserve(128);
+
+  match value {
+    Value::Undefined => {
+      let _ = push_str_best_effort(&mut out, "Undefined");
+    }
+    Value::Null => {
+      let _ = push_str_best_effort(&mut out, "Null");
+    }
+    Value::Bool(b) => {
+      if push_str_best_effort(&mut out, "Bool(") {
+        let _ = push_str_best_effort(&mut out, if b { "true" } else { "false" });
+        let _ = push_char_best_effort(&mut out, ')');
+      }
+    }
+    Value::Number(n) => {
+      if push_str_best_effort(&mut out, "Number(") {
+        let _ = push_f64(&mut out, n);
+        let _ = push_char_best_effort(&mut out, ')');
+      }
+    }
+    Value::BigInt(b) => {
+      if push_str_best_effort(&mut out, "BigInt(") {
+        let _ = push_handle(&mut out, "GcBigInt", b.index(), b.generation());
+        let _ = push_char_best_effort(&mut out, ')');
+      }
+    }
+    Value::String(s) => {
+      if push_str_best_effort(&mut out, "String(") {
+        let _ = push_handle(&mut out, "GcString", s.index(), s.generation());
+        let _ = push_char_best_effort(&mut out, ')');
+      }
+    }
+    Value::Symbol(sym) => {
+      if push_str_best_effort(&mut out, "Symbol(") {
+        let _ = push_handle(&mut out, "GcSymbol", sym.index(), sym.generation());
+        let _ = push_char_best_effort(&mut out, ')');
+      }
+    }
+    Value::Object(obj) => {
+      if push_str_best_effort(&mut out, "Object(") {
+        let _ = push_handle(&mut out, "GcObject", obj.index(), obj.generation());
+        let _ = push_char_best_effort(&mut out, ')');
+      }
+    }
+  };
+
+  if out.is_empty() {
+    return string_from_str_best_effort(UNCAUGHT_EXCEPTION_PLACEHOLDER);
+  }
+  out
+}
+
 #[inline]
 fn string_from_str_best_effort(s: &str) -> String {
   let mut out = String::new();
@@ -204,9 +306,9 @@ impl Agent {
       Err(VmError::Throw(v) | VmError::ThrowWithStack { value: v, .. }) => {
         return self.value_to_error_string(v);
       }
-      // Best-effort: avoid debug formatting (`format_args!` into a `String`) since it may allocate
-      // infallibly and abort on OOM. Return a small placeholder instead.
-      Err(_) => return string_from_str_best_effort(UNCAUGHT_EXCEPTION_PLACEHOLDER),
+      Err(VmError::OutOfMemory) => return string_from_str_best_effort(OOM_PLACEHOLDER),
+      // Best-effort: fallback to a bounded debug-style representation without invoking user code.
+      Err(_) => return format_value_debug_best_effort(value),
     };
 
     let Ok(js) = self.heap().get_string(s) else {
@@ -323,7 +425,9 @@ impl Agent {
     match value {
       Value::Object(obj) if self.heap().is_error_object(obj) => self
         .try_format_error_object_message(obj)
-        .unwrap_or_else(|| self.value_to_error_string(value)),
+        // If we can't safely extract `"name"`/`"message"` (e.g. accessor properties), fall back to a
+        // debug-style representation rather than `ToString`, which could invoke user code.
+        .unwrap_or_else(|| format_value_debug_best_effort(value)),
       _ => self.value_to_error_string(value),
     }
   }
@@ -354,7 +458,8 @@ impl Agent {
     // Convert a JS String value to a bounded UTF-8 `String`.
     //
     // This is best-effort: on OOM it returns a small placeholder rather than bubbling up `None`,
-    // since `format_vm_error` would otherwise fall back to `"uncaught exception"` for thrown objects.
+    // since `format_vm_error` would otherwise fall back to the debug-style representation of the
+    // thrown object.
     let to_utf8_bounded = |s: crate::GcString, max: usize| -> Option<(String, bool)> {
       let js = heap.get_string(s).ok()?;
       match crate::string::utf16_to_utf8_lossy_bounded(js.as_code_units(), max) {
@@ -363,6 +468,12 @@ impl Agent {
       }
     };
 
+    // Prefer the own `"name"`/`"message"` data properties used by `error_object::new_error`, but
+    // also consult the prototype chain so `new TypeError("boom")`-style errors can use the builtin
+    // prototype `"name"` (e.g. `%TypeError.prototype%.name === "TypeError"`).
+    //
+    // This intentionally avoids `Error.prototype.toString` since it is user-overridable and can
+    // allocate or re-enter user code.
     let name_value = Self::get_data_string_property_from_chain(heap, obj, &name_key);
     let message_value = Self::get_data_string_property_from_chain(heap, obj, &message_key);
 
