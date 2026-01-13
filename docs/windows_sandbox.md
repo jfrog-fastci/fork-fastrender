@@ -35,6 +35,8 @@ Code map (repo reality):
     - AppContainer-only convenience spawner (`RendererSandbox`)
       - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
       - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
+      - Applies the default renderer mitigation policy via `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`
+        (best-effort; escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
       - Does **not** assign the child to a Job object (callers must do that separately).
     - Mitigation policy builder + verifier (`mitigations::*`)
     - Capability detection helpers (`support::*`, `SandboxSupport`) and opt-in policy wrapper

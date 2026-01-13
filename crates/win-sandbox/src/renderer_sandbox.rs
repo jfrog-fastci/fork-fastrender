@@ -32,6 +32,8 @@ use windows_sys::Win32::Security::ACL;
 // exporting the constants.
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
+// ProcThreadAttributeValue(7, FALSE, TRUE, FALSE) → 0x0002_0007.
+const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: usize = 0x0002_0007;
 
 /// Sandbox configuration for spawning untrusted renderer processes.
 ///
@@ -87,21 +89,66 @@ fn spawn_appcontainer_no_capabilities(
   };
 
   let mut handles = standard_handle_list();
-  let attribute_count = 1 + u32::from(!handles.is_empty());
-  let mut attrs = AttributeList::new(attribute_count)?;
-  attrs.update_raw(
+
+  fn mitigation_policy_unsupported(err: &WinSandboxError) -> bool {
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+    const ERROR_NOT_SUPPORTED: u32 = windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
+    matches!(
+      err,
+      WinSandboxError::Win32 { code, .. }
+        if *code == ERROR_INVALID_PARAMETER || *code == ERROR_NOT_SUPPORTED
+    )
+  }
+
+  let mitigation_policy = crate::mitigations::renderer_mitigation_policy();
+  let mut mitigation_policy_value = mitigation_policy;
+
+  let base_attribute_count = 1 + u32::from(!handles.is_empty());
+  let mut attrs_without_mitigations = AttributeList::new(base_attribute_count)?;
+  attrs_without_mitigations.update_raw(
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
     std::ptr::addr_of_mut!(capabilities).cast::<c_void>(),
     std::mem::size_of::<SECURITY_CAPABILITIES>(),
   )?;
-
   if !handles.is_empty() {
-    attrs.update_raw(
+    attrs_without_mitigations.update_raw(
       PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
       handles.as_mut_ptr().cast::<c_void>(),
       handles.len() * std::mem::size_of::<windows_sys::Win32::Foundation::HANDLE>(),
     )?;
   }
+
+  let attrs_with_mitigations = if mitigation_policy_value != 0 {
+    let mut attrs = AttributeList::new(base_attribute_count + 1)?;
+    attrs.update_raw(
+      PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+      std::ptr::addr_of_mut!(capabilities).cast::<c_void>(),
+      std::mem::size_of::<SECURITY_CAPABILITIES>(),
+    )?;
+    if !handles.is_empty() {
+      attrs.update_raw(
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        handles.as_mut_ptr().cast::<c_void>(),
+        handles.len() * std::mem::size_of::<windows_sys::Win32::Foundation::HANDLE>(),
+      )?;
+    }
+    match attrs.update_raw(
+      PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+      std::ptr::addr_of_mut!(mitigation_policy_value).cast::<c_void>(),
+      std::mem::size_of::<u64>(),
+    ) {
+      Ok(()) => Some(attrs),
+      Err(err) if mitigation_policy_unsupported(&err) => {
+        eprintln!(
+          "warning: win-sandbox RendererSandbox: mitigation policy attribute unsupported ({err}); continuing without mitigations"
+        );
+        None
+      }
+      Err(err) => return Err(err),
+    }
+  } else {
+    None
+  };
 
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
   let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
@@ -109,36 +156,60 @@ fn spawn_appcontainer_no_capabilities(
   let system32 = system32_dir();
   let system32_w = wide_null(system32.as_os_str());
 
+  let attrs_without_list = attrs_without_mitigations.list;
+  let attrs_with_list = attrs_with_mitigations.as_ref().map(|attrs| attrs.list);
+
   let create_process = |image: &Path, current_dir: Option<&[u16]>| -> Result<PROCESS_INFORMATION> {
     let application_name = wide_null(image.as_os_str());
-    let mut cmdline = build_command_line(image, args);
     let current_dir_ptr = current_dir
       .map(|wide| wide.as_ptr())
       .unwrap_or(std::ptr::null());
 
-    let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
-    startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-    startup.lpAttributeList = attrs.list;
+    let create_process_with_attrs = |attr_list| -> Result<PROCESS_INFORMATION> {
+      let mut cmdline = build_command_line(image, args);
 
-    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-    let ok = unsafe {
-      CreateProcessW(
-        application_name.as_ptr(),
-        cmdline.as_mut_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        inherit,
-        flags,
-        std::ptr::null(),
-        current_dir_ptr,
-        std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
-        &mut pi,
-      )
+      let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
+      startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+      startup.lpAttributeList = attr_list;
+
+      let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+      let ok = unsafe {
+        CreateProcessW(
+          application_name.as_ptr(),
+          cmdline.as_mut_ptr(),
+          std::ptr::null(),
+          std::ptr::null(),
+          inherit,
+          flags,
+          std::ptr::null(),
+          current_dir_ptr,
+          std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
+          &mut pi,
+        )
+      };
+      if ok == 0 {
+        return Err(WinSandboxError::last("CreateProcessW"));
+      }
+      Ok(pi)
     };
-    if ok == 0 {
-      return Err(WinSandboxError::last("CreateProcessW"));
+
+    if let Some(attr_list) = attrs_with_list {
+      match create_process_with_attrs(attr_list) {
+        Ok(pi) => Ok(pi),
+        Err(err) => {
+          if mitigation_policy_unsupported(&err) {
+            eprintln!(
+              "warning: win-sandbox RendererSandbox: CreateProcessW rejected mitigation policy attribute ({err}); retrying without mitigations"
+            );
+            create_process_with_attrs(attrs_without_list)
+          } else {
+            Err(err)
+          }
+        }
+      }
+    } else {
+      create_process_with_attrs(attrs_without_list)
     }
-    Ok(pi)
   };
 
   match create_process(exe, Some(&system32_w)) {
