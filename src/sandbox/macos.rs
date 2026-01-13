@@ -35,6 +35,10 @@ pub const ENV_DISABLE_RENDERER_SANDBOX: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
 /// - `pure-computation`, `pure`, `strict` => strict sandbox (default)
 /// - `system-fonts`, `fonts`, `relaxed` => renderer-friendly sandbox that allows reading system font paths
 /// - `off`, `0`, `false`, `no` => disable sandbox (equivalent to `FASTR_DISABLE_RENDERER_SANDBOX=1`)
+///
+/// Note: multiprocess renderer entrypoints should prefer `FASTR_RENDERER_SANDBOX=strict|relaxed|off`;
+/// this env var remains as a macOS-only legacy alias and is only consulted when
+/// `FASTR_RENDERER_SANDBOX` is unset.
 pub const ENV_MACOS_RENDERER_SANDBOX: &str = "FASTR_MACOS_RENDERER_SANDBOX";
 
 fn env_var_truthy(raw: Option<&std::ffi::OsStr>) -> bool {
