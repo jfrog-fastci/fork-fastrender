@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::style::display::{Display, FormattingContextType};
-use crate::style::types::{AlignItems, BreakBetween, GridTrack, IntrinsicSizeKeyword};
+use crate::style::types::{AlignItems, BreakBetween, BreakInside, GridTrack, IntrinsicSizeKeyword};
 use crate::style::values::Length;
 use crate::{
   BoxNode, BoxTree, ComputedStyle, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
@@ -649,5 +649,253 @@ fn grid_pagination_continuation_available_accounts_for_container_offset() {
     (fill_fragment.bounds.height() - 100.0).abs() < EPSILON,
     "expected fill-available child to resolve against a full page (100px) in the continuation fragment; got {}",
     fill_fragment.bounds.height()
+  );
+}
+
+#[test]
+fn grid_item_break_inside_avoid_page_pushes_item_to_next_page_when_it_fits() {
+  fn make_tree(avoid: bool) -> (FragmentTree, usize, usize) {
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    grid_style.width = Some(Length::px(100.0));
+    grid_style.height = Some(Length::px(280.0));
+    grid_style.grid_template_rows = vec![
+      // Ends at 80px: close enough to the 100px page height that the early-sibling-break heuristic
+      // prefers slicing the next row instead of breaking early.
+      GridTrack::Length(Length::px(80.0)),
+      // Too tall to be treated as an atomic row track on a 100px page.
+      GridTrack::Length(Length::px(200.0)),
+    ];
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+    grid_style.align_items = AlignItems::Start;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_a_style = ComputedStyle::default();
+    item_a_style.display = Display::Block;
+    item_a_style.height = Some(Length::px(80.0));
+    item_a_style.grid_row_start = 1;
+    item_a_style.grid_row_end = 2;
+    let item_a = BoxNode::new_block(Arc::new(item_a_style), FormattingContextType::Block, vec![]);
+
+    let mut item_b_style = ComputedStyle::default();
+    item_b_style.display = Display::Block;
+    item_b_style.height = Some(Length::px(40.0));
+    item_b_style.grid_row_start = 2;
+    item_b_style.grid_row_end = 3;
+    if avoid {
+      item_b_style.break_inside = BreakInside::AvoidPage;
+    }
+    let item_b = BoxNode::new_block(Arc::new(item_b_style), FormattingContextType::Block, vec![]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item_a, item_b]);
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![grid],
+    );
+    let box_tree = BoxTree::new(root);
+
+    let item_a_id = box_tree.root.children[0].children[0].id;
+    let item_b_id = box_tree.root.children[0].children[1].id;
+
+    let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+    let tree = engine.layout_tree(&box_tree).expect("layout");
+    (tree, item_a_id, item_b_id)
+  }
+
+  // Baseline: without `break-inside: avoid-page`, the second-row item should be sliced.
+  let (tree, item_a_id, item_b_id) = make_tree(false);
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "expected the grid to span at least two pages"
+  );
+  let pages = paginated_pages(&tree);
+  assert!(
+    fragments_with_id(pages[0], item_a_id).len() == 1
+      && fragments_with_id(pages[0], item_b_id).len() == 1,
+    "expected the second-row item to be present (sliced) on page 1 when not avoided"
+  );
+  assert!(
+    fragments_with_id(pages[1], item_b_id).len() == 1,
+    "expected the second-row item continuation on page 2 when not avoided"
+  );
+
+  // With `break-inside: avoid-page`, the second-row item should be pushed entirely to page 2.
+  let (tree, item_a_id, item_b_id) = make_tree(true);
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "expected the grid to span at least two pages"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert_eq!(
+    fragments_with_id(first_page, item_a_id).len(),
+    1,
+    "expected first-row content to remain on page 1"
+  );
+  assert!(
+    fragments_with_id(first_page, item_b_id).is_empty(),
+    "expected avoided grid item to be moved wholly off page 1"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, item_b_id).len(),
+    1,
+    "expected avoided grid item to appear exactly once on page 2"
+  );
+}
+
+#[test]
+fn grid_item_break_inside_avoid_page_still_fragments_when_item_is_too_tall() {
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  grid_style.height = Some(Length::px(250.0));
+  grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(250.0))];
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.align_items = AlignItems::Start;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.height = Some(Length::px(250.0));
+  item_style.grid_row_start = 1;
+  item_style.grid_row_end = 2;
+  item_style.break_inside = BreakInside::AvoidPage;
+  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![grid],
+  );
+  let box_tree = BoxTree::new(root);
+  let item_id = box_tree.root.children[0].children[0].id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+  let pages = paginated_pages(&tree);
+
+  assert_eq!(
+    pages.len(),
+    3,
+    "expected a 250px-tall grid item to span three 100px pages"
+  );
+  let occurrences: Vec<usize> = pages
+    .iter()
+    .map(|page| fragments_with_id(page, item_id).len())
+    .collect();
+  assert_eq!(
+    occurrences,
+    vec![1, 1, 1],
+    "expected the oversized avoided grid item to fragment across pages"
+  );
+}
+
+#[test]
+fn grid_item_break_inside_avoid_page_does_not_force_other_items_in_same_row() {
+  fn make_tree(avoid: bool) -> (FragmentTree, usize, usize) {
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    grid_style.width = Some(Length::px(200.0));
+    grid_style.height = Some(Length::px(150.0));
+    grid_style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(100.0)),
+      GridTrack::Length(Length::px(100.0)),
+    ];
+    // Taller than the 100px page, so row-track atomicity is disabled and items can fragment.
+    grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(150.0))];
+    grid_style.align_items = AlignItems::Start;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_a_style = ComputedStyle::default();
+    item_a_style.display = Display::Block;
+    item_a_style.height = Some(Length::px(60.0));
+    item_a_style.grid_column_start = 1;
+    item_a_style.grid_column_end = 2;
+    item_a_style.grid_row_start = 1;
+    item_a_style.grid_row_end = 2;
+    item_a_style.align_self = Some(AlignItems::End);
+    if avoid {
+      item_a_style.break_inside = BreakInside::AvoidPage;
+    }
+    let item_a = BoxNode::new_block(Arc::new(item_a_style), FormattingContextType::Block, vec![]);
+
+    let mut item_b_style = ComputedStyle::default();
+    item_b_style.display = Display::Block;
+    item_b_style.height = Some(Length::px(20.0));
+    item_b_style.grid_column_start = 2;
+    item_b_style.grid_column_end = 3;
+    item_b_style.grid_row_start = 1;
+    item_b_style.grid_row_end = 2;
+    item_b_style.align_self = Some(AlignItems::Start);
+    let item_b = BoxNode::new_block(Arc::new(item_b_style), FormattingContextType::Block, vec![]);
+
+    // Order the avoid candidate first so the only in-window sibling break opportunity is the very
+    // early one at item B's end (20px), forcing pagination to slice at the page limit (100px).
+    let grid = BoxNode::new_block(
+      grid_style,
+      FormattingContextType::Grid,
+      vec![item_a, item_b],
+    );
+    let root = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![grid],
+    );
+    let box_tree = BoxTree::new(root);
+
+    let item_a_id = box_tree.root.children[0].children[0].id;
+    let item_b_id = box_tree.root.children[0].children[1].id;
+
+    let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+    let tree = engine.layout_tree(&box_tree).expect("layout");
+    (tree, item_a_id, item_b_id)
+  }
+
+  // Baseline: without avoid, the first item should be sliced across the page boundary.
+  let (tree, item_a_id, item_b_id) = make_tree(false);
+  assert_eq!(
+    tree.additional_fragments.len(),
+    1,
+    "expected the 150px-tall row to span exactly two pages"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+  assert_eq!(fragments_with_id(first_page, item_b_id).len(), 1);
+  assert_eq!(
+    fragments_with_id(first_page, item_a_id).len(),
+    1,
+    "expected the avoid candidate to be sliced on page 1 without avoid"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, item_a_id).len(),
+    1,
+    "expected the avoid candidate continuation on page 2 without avoid"
+  );
+
+  // With avoid, only the avoided item should move; the sibling must remain on the first page.
+  let (tree, item_a_id, item_b_id) = make_tree(true);
+  assert_eq!(tree.additional_fragments.len(), 1);
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+  assert_eq!(
+    fragments_with_id(first_page, item_b_id).len(),
+    1,
+    "expected the sibling grid item to remain on page 1"
+  );
+  assert!(
+    fragments_with_id(first_page, item_a_id).is_empty(),
+    "expected the avoided grid item to be moved off page 1"
+  );
+  assert!(
+    fragments_with_id(second_page, item_b_id).is_empty(),
+    "expected the sibling grid item to not be forced onto page 2"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, item_a_id).len(),
+    1,
+    "expected the avoided grid item to appear once on page 2"
   );
 }
