@@ -27,9 +27,49 @@ use tiny_skia::{Mask, PathBuilder, Pixmap, SpreadMode, Transform};
 pub struct FloatShape {
   start_y: f32,
   spans: Vec<Option<(f32, f32)>>,
+  /// For each sampled row `i`, stores the next row index `j > i` where the span differs,
+  /// or `spans.len()` when the span does not change again.
+  ///
+  /// This is precomputed so `next_change_after` is O(1) instead of scanning runs.
+  next_change_idx: Vec<usize>,
+  /// Index of the first row whose span is `Some(..)`, or `spans.len()` if none.
+  ///
+  /// This supports the `y < start_y` semantics in `next_change_after`, where the "current"
+  /// span is treated as `None` and we return the first row where the shape becomes non-empty.
+  first_non_none_idx: usize,
 }
 
 impl FloatShape {
+  fn from_spans(start_y: f32, spans: Vec<Option<(f32, f32)>>) -> Self {
+    let len = spans.len();
+    let first_non_none_idx = spans.iter().position(|span| span.is_some()).unwrap_or(len);
+
+    let mut next_change_idx = Vec::new();
+    next_change_idx.resize(len, len);
+    if len > 0 {
+      next_change_idx[len - 1] = len;
+      for i in (0..len.saturating_sub(1)).rev() {
+        next_change_idx[i] = if spans[i] == spans[i + 1] {
+          next_change_idx[i + 1]
+        } else {
+          i + 1
+        };
+      }
+    }
+
+    Self {
+      start_y,
+      spans,
+      next_change_idx,
+      first_non_none_idx,
+    }
+  }
+
+  #[cfg(test)]
+  pub(crate) fn from_spans_for_test(start_y: f32, spans: Vec<Option<(f32, f32)>>) -> Self {
+    Self::from_spans(start_y, spans)
+  }
+
   /// Horizontal span at a particular y coordinate.
   pub fn span_at(&self, y: f32) -> Option<(f32, f32)> {
     let idx = ((y - self.start_y).floor()) as isize;
@@ -80,18 +120,32 @@ impl FloatShape {
   /// This is used by float layout to find the next vertical boundary that could
   /// alter available inline space when a `shape-outside` float is active.
   pub fn next_change_after(&self, y: f32) -> Option<f32> {
-    if self.spans.is_empty() {
+    let len = self.spans.len();
+    if len == 0 {
       return None;
     }
-    let mut idx = ((y - self.start_y).floor() as isize + 1).max(0) as usize;
-    let current = self.span_at(y);
-    while idx < self.spans.len() {
-      if self.spans[idx] != current {
-        return Some(self.start_y + idx as f32);
+
+    // Preserve legacy semantics:
+    // - y < start_y: treat current span as `None` and return the first `Some(..)` row.
+    // - y >= bottom: no further changes.
+    if y < self.start_y {
+      if self.first_non_none_idx < len {
+        return Some(self.start_y + self.first_non_none_idx as f32);
       }
-      idx += 1;
+      return None;
     }
-    None
+    if y >= self.bottom() {
+      return None;
+    }
+
+    let row = ((y - self.start_y).floor()) as isize;
+    let row = row.clamp(0, len.saturating_sub(1) as isize) as usize;
+    let next_idx = self.next_change_idx[row];
+    if next_idx < len {
+      Some(self.start_y + next_idx as f32)
+    } else {
+      None
+    }
   }
 }
 
@@ -283,10 +337,7 @@ fn rect_span(rect: Rect) -> Option<SpanBuffer> {
 
 fn expand_spans(base: SpanBuffer, margin: f32) -> Option<FloatShape> {
   if margin <= 0.0 {
-    return Some(FloatShape {
-      start_y: base.start_y,
-      spans: base.spans,
-    });
+    return Some(FloatShape::from_spans(base.start_y, base.spans));
   }
 
   let start_y = base.start_y - margin;
@@ -322,7 +373,7 @@ fn expand_spans(base: SpanBuffer, margin: f32) -> Option<FloatShape> {
     }
   }
 
-  Some(FloatShape { start_y, spans })
+  Some(FloatShape::from_spans(start_y, spans))
 }
 
 fn rasterize_clip_shape(shape: &ResolvedClipPath) -> Option<(Mask, Point)> {
