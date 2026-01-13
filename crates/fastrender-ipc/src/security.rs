@@ -34,7 +34,7 @@ pub enum IpcSecurityEvent {
   },
 }
 
-/// Minimal browser-side state to enforce the `FrameId -> RendererProcessId` capability boundary.
+/// Minimal browser-side state to enforce the `FrameId -> renderer process` capability boundary.
 ///
 /// In the real browser, `frame_owner` is part of the FrameTree/registry and `terminate_process`
 /// should kill/disconnect the renderer. This type exists to make the security boundary explicit and
@@ -265,6 +265,84 @@ mod tests {
           if *process_id == attacker && *frame_id == frame
       )),
       "expected protocol violation to be recorded (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn unknown_frame_id_kills_sender_and_marks_its_frames_crashed() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let attacker = RendererId(42);
+
+    // Attacker owns one legitimate frame.
+    let owned = FrameId(10);
+    browser.assign_frame(owned, attacker);
+
+    // But attempts to send a message for an unknown frame id.
+    let unknown = FrameId(999);
+    browser.handle_renderer_message(
+      attacker,
+      RendererToBrowser::NavigationCommitted {
+        frame_id: unknown,
+        url: "https://example.test/".to_string(),
+      },
+    );
+
+    assert!(browser.is_process_terminated(attacker));
+    assert!(
+      browser.is_frame_crashed(owned),
+      "all frames owned by the terminated process should be marked crashed"
+    );
+
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::NavigationCommitted,
+          ..
+        } if *process_id == attacker && *frame_id == unknown
+      )),
+      "expected protocol violation to be recorded (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn messages_from_terminated_process_are_ignored() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let attacker = RendererId(7);
+    let owned = FrameId(1);
+    browser.assign_frame(owned, attacker);
+
+    // Trigger termination by spoofing another frame id.
+    browser.handle_renderer_message(
+      attacker,
+      RendererToBrowser::InputAck {
+        frame_id: FrameId(999),
+        seq: 1,
+      },
+    );
+    assert!(browser.is_process_terminated(attacker));
+    browser.take_events();
+
+    // A subsequent message from the terminated process should be ignored (no new events).
+    browser.handle_renderer_message(
+      attacker,
+      RendererToBrowser::FrameReady {
+        frame_id: owned,
+        buffer: FrameBuffer {
+          width: 1,
+          height: 1,
+          rgba8: vec![1, 2, 3, 4],
+        },
+        subframes: vec![],
+      },
+    );
+
+    assert!(
+      browser.take_events().is_empty(),
+      "expected terminated process messages to be ignored"
     );
   }
 }
