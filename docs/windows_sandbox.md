@@ -632,6 +632,8 @@ Windows-only tests that encode the intended boundary:
 - AppContainer spawn smoke: `tests/sandbox/windows_sandbox_appcontainer_spawn.rs`
 - AppContainer token does not include `ALL APPLICATION PACKAGES` when hardening is enabled:
   `tests/sandbox/windows_all_application_packages_hardening.rs`
+- `win_sandbox::spawn_sandboxed` can remove `ALL APPLICATION PACKAGES` when hardening is enabled:
+  `crates/win-sandbox/tests/all_application_packages_hardening.rs`
 - Sandboxed renderer smoke (can initialize FastRender + render minimal HTML under AppContainer + mitigations): `tests/sandbox/windows_renderer_smoke.rs`
 - Environment sanitization (no secret env inheritance): `tests/sandbox/windows_sandbox_env_sanitization.rs`
 - AppContainer temp dir is writable (override parent TEMP/TMP): `tests/sandbox/windows_appcontainer_temp_dir.rs`
