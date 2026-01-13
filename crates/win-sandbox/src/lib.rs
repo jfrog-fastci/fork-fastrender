@@ -318,6 +318,55 @@ mod spawn;
 #[cfg(windows)]
 pub use spawn::{spawn_sandboxed, SandboxedChild};
 
+pub mod support;
+pub use support::{is_appcontainer_supported, is_nested_job_supported, SandboxSupport};
+
+/// Runtime sandbox configuration for the Windows renderer sandbox.
+///
+/// `RendererSandbox::new_default()` enforces a "no silent downgrade" policy:
+/// - If the host supports the required primitives, the sandbox is enabled.
+/// - Otherwise, `new_default()` returns an error unless the caller has explicitly opted in to
+///   running unsandboxed via `FASTR_ALLOW_UNSANDBOXED_RENDERER=1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererSandbox {
+  /// Full sandboxing is enabled (AppContainer + nested job objects).
+  Enabled,
+  /// The caller explicitly opted in to running without a sandbox.
+  ///
+  /// This is intended for developer convenience on unsupported Windows versions.
+  Disabled,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RendererSandboxError {
+  #[error(
+    "windows renderer sandbox is unavailable ({support}); set FASTR_ALLOW_UNSANDBOXED_RENDERER=1 to allow running without a sandbox"
+  )]
+  Unsupported { support: SandboxSupport },
+}
+
+impl RendererSandbox {
+  pub fn new_default() -> std::result::Result<Self, RendererSandboxError> {
+    let support = SandboxSupport::detect();
+    if support == SandboxSupport::Full {
+      return Ok(RendererSandbox::Enabled);
+    }
+
+    if allow_unsandboxed_renderer() {
+      return Ok(RendererSandbox::Disabled);
+    }
+
+    Err(RendererSandboxError::Unsupported { support })
+  }
+}
+
+fn allow_unsandboxed_renderer() -> bool {
+  matches!(
+    std::env::var("FASTR_ALLOW_UNSANDBOXED_RENDERER"),
+    Ok(val) if val == "1"
+  )
+}
+
 #[cfg(test)]
 mod tests {
   #[cfg(windows)]
