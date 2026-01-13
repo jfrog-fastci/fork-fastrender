@@ -40,7 +40,11 @@ pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};
 pub use pipeline::MediaDecodePipeline;
 pub use timestamp::MediaTimestamp;
 pub use timebase::{
-  duration_to_ticks, ticks_to_duration, ticks_to_timestamp, timestamp_to_ticks, Timebase,
+  duration_to_ticks,
+  ticks_to_duration,
+  ticks_to_timestamp,
+  timestamp_to_ticks,
+  Timebase,
 };
 
 /// Size information that can help a [`MediaFrameProvider`] choose an appropriate decode/scale

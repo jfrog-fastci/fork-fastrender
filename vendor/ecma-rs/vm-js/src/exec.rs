@@ -11,17 +11,10 @@ use crate::iterator;
 use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
-<<<<<<< HEAD
   EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
   GcSymbol, HostDefined, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
   PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
   StackFrame, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, ToPrimitiveHint,
-=======
-  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, Heap, ModuleGraph,
-  ModuleId, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind,
-  Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, StackFrame, ToPrimitiveHint, Value,
-  Vm, VmError, VmHost, VmHostHooks, VmJobContext,
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 };
 use core::cmp::Ordering;
 use diagnostics::{Diagnostic, FileId};
@@ -2168,7 +2161,6 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-<<<<<<< HEAD
     let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
       .and_then(arc_try_new_vm)
     {
@@ -2185,10 +2177,6 @@ impl JsRuntime {
       hooks,
       source,
     )
-=======
-    let source = Arc::new(SourceText::new_charged(&mut self.heap, "<inline>", source)?);
-    self.exec_script_source_with_host_and_hooks(host, hooks, source)
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
   }
 
   /// Parse and execute a classic script, using a custom host hook implementation.
@@ -2332,28 +2320,10 @@ impl JsRuntime {
             )?;
           }
 
-<<<<<<< HEAD
           let mut scope = self.heap.scope();
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
             let global_this = Value::Object(global_object);
-=======
-      if !has_await {
-        let mut evaluator = Evaluator {
-          vm: &mut *vm_frame,
-          host,
-          hooks: &mut hooks,
-          env: &mut self.env,
-          strict,
-          this: global_this,
-          new_target: Value::Undefined,
-          home_object: None,
-          class_constructor: None,
-          derived_constructor: false,
-          this_initialized: true,
-          this_root_idx: None,
-        };
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
             if !has_await {
               let mut evaluator = Evaluator {
@@ -2364,6 +2334,7 @@ impl JsRuntime {
                 strict,
                 this: global_this,
                 new_target: Value::Undefined,
+                home_object: None,
                 class_constructor: None,
                 derived_constructor: false,
                 this_initialized: true,
@@ -2524,7 +2495,6 @@ impl JsRuntime {
             return Err(err);
           }
 
-<<<<<<< HEAD
           let resolve_res = promise_resolve_for_await_with_host_and_hooks(
             &mut *vm_frame,
             &mut root_scope,
@@ -2534,44 +2504,6 @@ impl JsRuntime {
           );
           let resolve_res =
             resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
-=======
-          let resolve_res = (|| -> Result<Value, VmError> {
-            if let Value::Object(obj) = await_value {
-              if root_scope.heap().is_promise_object(obj) {
-                let ctor_key_s = root_scope.alloc_string("constructor")?;
-                root_scope.push_root(Value::String(ctor_key_s))?;
-                let ctor_key = PropertyKey::from_string(ctor_key_s);
-                let _ = root_scope.ordinary_get_with_host_and_hooks(
-                  &mut *vm_frame,
-                  host,
-                  &mut hooks,
-                  obj,
-                  ctor_key,
-                  Value::Object(obj),
-                )?;
-                Ok(await_value)
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut root_scope,
-                  host,
-                  &mut hooks,
-                  await_value,
-                )
-              }
-            } else {
-              crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut root_scope,
-                host,
-                &mut hooks,
-                await_value,
-              )
-            }
-          })();
-          let resolve_res = resolve_res
-            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -3032,49 +2964,10 @@ impl JsRuntime {
             return Err(err);
           }
 
-<<<<<<< HEAD
           let resolve_res =
             promise_resolve_for_await_with_host_and_hooks(&mut *vm_frame, &mut root_scope, host, hooks, await_value);
           let resolve_res =
             resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
-=======
-          let resolve_res = (|| -> Result<Value, VmError> {
-            if let Value::Object(obj) = await_value {
-              if root_scope.heap().is_promise_object(obj) {
-                let ctor_key_s = root_scope.alloc_string("constructor")?;
-                root_scope.push_root(Value::String(ctor_key_s))?;
-                let ctor_key = PropertyKey::from_string(ctor_key_s);
-                let _ = root_scope.ordinary_get_with_host_and_hooks(
-                  &mut *vm_frame,
-                  host,
-                  hooks,
-                  obj,
-                  ctor_key,
-                  Value::Object(obj),
-                )?;
-                Ok(await_value)
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut root_scope,
-                  host,
-                  hooks,
-                  await_value,
-                )
-              }
-            } else {
-              crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut root_scope,
-                host,
-                hooks,
-                await_value,
-              )
-            }
-          })();
-          let resolve_res = resolve_res
-            .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
           let awaited_promise = match resolve_res {
             Ok(p) => p,
@@ -6995,9 +6888,7 @@ impl<'a> Evaluator<'a> {
             }
           }
         }
-<<<<<<< HEAD
-      }
-    };
+      };
 
     // Keep the superclass value alive across subsequent allocations/GC until it becomes reachable
     // from the class constructor object (via its native `super` slot).
@@ -7081,76 +6972,16 @@ impl<'a> Evaluator<'a> {
 
       let ClassOrObjVal::Method(method) = &member.stx.val else {
         continue;
-=======
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
       };
 
-      // Count instance **public** fields so the class constructor wrapper can preallocate its hidden
-      // native-slot storage.
-      let mut instance_field_count: usize = 0;
-      for member in members {
-        if member.stx.static_ {
-          continue;
-        }
-        if !matches!(&member.stx.val, ClassOrObjVal::Prop(_)) {
-          continue;
-        }
-        let is_private_field = matches!(
-          &member.stx.key,
-          ClassOrObjKey::Direct(direct) if direct.stx.tt == TT::PrivateMember
-        );
-        if is_private_field {
-          continue;
-        }
-        instance_field_count = instance_field_count
-          .checked_add(1)
-          .ok_or(VmError::OutOfMemory)?;
+      if ctor_method.is_some() {
+        return Err(syntax_error(
+          member.loc,
+          "A class may only have one constructor",
+        ));
       }
-
-      // Find an explicit `constructor(...) { ... }` method, if present.
-      let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
-      for member in members {
-        self.tick()?;
-        if !member.stx.decorators.is_empty() {
-          return Err(VmError::Unimplemented("class member decorators"));
-        }
-        if member.stx.declare || member.stx.abstract_ {
-          return Err(VmError::Unimplemented("class member modifiers"));
-        }
-        if member.stx.readonly
-          || member.stx.accessor
-          || member.stx.optional
-          || member.stx.override_
-          || member.stx.definite_assignment
-        {
-          return Err(VmError::Unimplemented("class member modifiers"));
-        }
-        if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
-          return Err(VmError::Unimplemented("class member type annotations"));
-        }
-
-        if member.stx.static_ {
-          continue;
-        }
-        let ClassOrObjKey::Direct(direct) = &member.stx.key else {
-          continue;
-        };
-        if direct.stx.key != "constructor" {
-          continue;
-        }
-
-        let ClassOrObjVal::Method(method) = &member.stx.val else {
-          continue;
-        };
-
-        if ctor_method.is_some() {
-          return Err(syntax_error(
-            member.loc,
-            "A class may only have one constructor",
-          ));
-        }
-        ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
-      }
+      ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+    }
 
       let mut ctor_length: u32 = 0;
       let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
@@ -14854,10 +14685,7 @@ fn async_handle_body_result(
       res.map(|_| Value::Undefined)
     }
     Ok(AsyncBodyResult::Await {
-<<<<<<< HEAD
       kind: _,
-=======
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
       await_value,
       frames,
     }) => {
@@ -14877,40 +14705,9 @@ fn async_handle_body_result(
       // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
       // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
       // undefined)` is sufficient and avoids Promise species side effects.
-<<<<<<< HEAD
       let resolve_res =
         promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
       let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
-=======
-      let resolve_res = (|| -> Result<Value, VmError> {
-        if let Value::Object(obj) = await_value {
-          if await_scope.heap().is_promise_object(obj) {
-            let ctor_key_s = await_scope.alloc_string("constructor")?;
-            await_scope.push_root(Value::String(ctor_key_s))?;
-            let ctor_key = PropertyKey::from_string(ctor_key_s);
-            let _ = await_scope.ordinary_get_with_host_and_hooks(
-              vm,
-              host,
-              hooks,
-              obj,
-              ctor_key,
-              Value::Object(obj),
-            )?;
-            return Ok(await_value);
-          }
-        }
-
-        crate::promise_ops::promise_resolve_with_host_and_hooks(
-          vm,
-          &mut await_scope,
-          host,
-          hooks,
-          await_value,
-        )
-      })();
-      let resolve_res =
-        resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
@@ -15217,10 +15014,7 @@ enum AsyncBodyResult {
   CompleteOk(Value),
   CompleteThrow(Value),
   Await {
-<<<<<<< HEAD
     kind: AsyncSuspendKind,
-=======
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
     await_value: Value,
     frames: VecDeque<AsyncFrame>,
   },
@@ -16370,13 +16164,9 @@ fn async_eval_throw_stmt(
   stmt: &Node<ThrowStmt>,
 ) -> Result<AsyncEval<Completion>, VmError> {
   match async_eval_expr(evaluator, scope, &stmt.stx.value) {
-<<<<<<< HEAD
-    Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(evaluator, scope, stmt, v))),
-=======
     Ok(AsyncEval::Complete(v)) => Ok(AsyncEval::Complete(async_throw_completion(
-      evaluator, stmt, v,
+      evaluator, scope, stmt, v,
     ))),
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
     Ok(AsyncEval::Suspend(mut suspend)) => {
       async_frames_push(
         &mut suspend.frames,
@@ -17483,11 +17273,7 @@ fn async_eval_class_expr(
         ClassBinding::None,
         "",
         &expr.stx.members,
-<<<<<<< HEAD
         expr.stx.extends.as_ref(),
-=======
-        extends_null,
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
       );
     };
 
@@ -17559,7 +17345,6 @@ fn async_eval_class(
           ));
         }
         scope.env_create_immutable_binding(class_env, name)?;
-<<<<<<< HEAD
       }
     }
 
@@ -17687,104 +17472,50 @@ fn async_eval_class_after_super(
     }
     if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
       return Err(VmError::Unimplemented("class member type annotations"));
-=======
-      }
     }
 
-    // Find an explicit `constructor(...) { ... }` method, if present.
-    let mut ctor_method: Option<(&Node<Func>, u32, parse_js::loc::Loc)> = None;
-    for member in members {
-      evaluator.tick()?;
-      if !member.stx.decorators.is_empty() {
-        return Err(VmError::Unimplemented("class member decorators"));
-      }
-      if member.stx.declare || member.stx.abstract_ {
-        return Err(VmError::Unimplemented("class member modifiers"));
-      }
-      if member.stx.readonly
-        || member.stx.accessor
-        || member.stx.optional
-        || member.stx.override_
-        || member.stx.definite_assignment
-      {
-        return Err(VmError::Unimplemented("class member modifiers"));
-      }
-      if member.stx.accessibility.is_some() || member.stx.type_annotation.is_some() {
-        return Err(VmError::Unimplemented("class member type annotations"));
-      }
-
-      if member.stx.static_ {
-        continue;
-      }
-      let ClassOrObjKey::Direct(direct) = &member.stx.key else {
-        continue;
-      };
-      if direct.stx.key != "constructor" {
-        continue;
-      }
-
-      let ClassOrObjVal::Method(method) = &member.stx.val else {
-        continue;
-      };
-
-      if ctor_method.is_some() {
-        return Err(syntax_error(
-          member.loc,
-          "A class may only have one constructor",
-        ));
-      }
-      ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
+    if member.stx.static_ {
+      continue;
+    }
+    let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+      continue;
+    };
+    if direct.stx.key != "constructor" {
+      continue;
     }
 
-    let mut ctor_length: u32 = 0;
-    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-      if func_node.stx.generator {
-        return Err(syntax_error(
-          loc,
-          "Class constructor may not be a generator",
-        ));
-      }
+    let ClassOrObjVal::Method(method) = &member.stx.val else {
+      continue;
+    };
 
-      ctor_length = evaluator.function_length(&func_node.stx)?;
+    if ctor_method.is_some() {
+      return Err(syntax_error(
+        member.loc,
+        "A class may only have one constructor",
+      ));
+    }
+    ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+  }
 
-      let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
-      let rel_end = func_node
-        .loc
-        .end_u32()
-        .saturating_sub(evaluator.env.prefix_len());
-      let span_start = evaluator.env.base_offset().saturating_add(rel_start);
-      let span_end = evaluator.env.base_offset().saturating_add(rel_end);
+  let mut ctor_length: u32 = 0;
+  let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+    if func_node.stx.generator {
+      return Err(syntax_error(
+        loc,
+        "Class constructor may not be a generator",
+      ));
+    }
 
-      let code = evaluator.vm.register_ecma_function(
-        evaluator.env.source(),
-        span_start,
-        span_end,
-        EcmaFunctionKind::ClassMember,
-      )?;
+    ctor_length = evaluator.function_length(&func_node.stx)?;
 
-      // Class constructor bodies are always strict mode.
-      let is_strict = true;
-      let this_mode = if func_node.stx.arrow {
-        ThisMode::Lexical
-      } else {
-        ThisMode::Strict
-      };
-      let closure_env = Some(evaluator.env.lexical_env);
+    let rel_start = member_loc_start.saturating_sub(evaluator.env.prefix_len());
+    let rel_end = func_node
+      .loc
+      .end_u32()
+      .saturating_sub(evaluator.env.prefix_len());
+    let span_start = evaluator.env.base_offset().saturating_add(rel_start);
+    let span_end = evaluator.env.base_offset().saturating_add(rel_end);
 
-      let mut ctor_scope = scope.reborrow();
-      let name_string = ctor_scope.alloc_string("constructor")?;
-      let func_obj = ctor_scope.alloc_ecma_function(
-        code,
-        /* is_constructable */ true,
-        name_string,
-        ctor_length,
-        this_mode,
-        is_strict,
-        closure_env,
-      )?;
-
-<<<<<<< HEAD
     let code = evaluator.vm.register_ecma_function(
       evaluator.env.source(),
       span_start,
@@ -17899,91 +17630,6 @@ fn async_eval_class_after_super(
       proto_scope.push_root(Value::String(prototype_key_s))?;
       let prototype_key = PropertyKey::from_string(prototype_key_s);
       let Some(prototype_desc) = proto_scope.heap().get_own_property(func_obj, prototype_key)? else {
-=======
-      let intr = evaluator
-        .vm
-        .intrinsics()
-        .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-      ctor_scope
-        .heap_mut()
-        .object_set_prototype(func_obj, Some(intr.function_prototype()))?;
-      ctor_scope
-        .heap_mut()
-        .set_function_realm(func_obj, evaluator.env.global_object())?;
-      if let Some(realm) = evaluator.vm.current_realm() {
-        ctor_scope
-          .heap_mut()
-          .set_function_job_realm(func_obj, realm)?;
-      }
-      if let Some(script_or_module) = evaluator.vm.get_active_script_or_module() {
-        let token = evaluator.vm.intern_script_or_module(script_or_module)?;
-        ctor_scope
-          .heap_mut()
-          .set_function_script_or_module_token(func_obj, Some(token))?;
-      }
-      Some(func_obj)
-    } else {
-      None
-    };
-
-    let super_value = if extends_null {
-      Value::Null
-    } else {
-      Value::Undefined
-    };
-    let func_obj = evaluator.create_class_constructor_object(
-      scope,
-      func_name,
-      ctor_length,
-      ctor_body_func,
-      super_value,
-      /* instance_field_count */ 0,
-    )?;
-
-    // Create a persistent root for the class constructor object so it remains GC-safe across `await`
-    // suspensions during computed member key evaluation.
-    let func_root = {
-      let mut root_scope = scope.reborrow();
-      root_scope.push_root(Value::Object(func_obj))?;
-      root_scope.heap_mut().add_root(Value::Object(func_obj))?
-    };
-
-    // Initialize the requested binding now that the class constructor object exists.
-    if let Some(binding_name) = match binding {
-      ClassBinding::None => None,
-      ClassBinding::Immutable(name) => Some(name),
-    } {
-      let init_res = (|| -> Result<(), VmError> {
-        // Root the class constructor object during initialization so if the operation grows the root
-        // stack (and triggers GC) we don't collect the class constructor before it becomes reachable
-        // from its binding.
-        let mut init_scope = scope.reborrow();
-        init_scope.push_root(Value::Object(func_obj))?;
-        init_scope.heap_mut().env_initialize_binding(
-          class_env,
-          binding_name,
-          Value::Object(func_obj),
-        )?;
-        Ok(())
-      })();
-      if let Err(err) = init_res {
-        scope.heap_mut().remove_root(func_root);
-        return Err(err);
-      }
-    }
-
-    // Extract the prototype object created by `make_constructor`.
-    let (prototype_key, prototype_obj) = match (|| -> Result<(PropertyKey, GcObject), VmError> {
-      let mut class_scope = scope.reborrow();
-      class_scope.push_root(Value::Object(func_obj))?;
-      let prototype_key_s = class_scope.alloc_string("prototype")?;
-      class_scope.push_root(Value::String(prototype_key_s))?;
-      let prototype_key = PropertyKey::from_string(prototype_key_s);
-      let Some(prototype_desc) = class_scope
-        .heap()
-        .get_own_property(func_obj, prototype_key)?
-      else {
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         return Err(VmError::InvariantViolation(
           "class constructor missing prototype property",
         ));
@@ -18007,7 +17653,18 @@ fn async_eval_class_after_super(
       }
     };
 
-<<<<<<< HEAD
+  // Class constructor bodies use the prototype object as their `[[HomeObject]]` so `super.prop`
+  // can resolve against `super.prototype`.
+  if let Some(body_func) = ctor_body_func {
+    if let Err(err) = class_scope
+      .heap_mut()
+      .set_function_home_object(body_func, Some(prototype_obj))
+    {
+      class_scope.heap_mut().remove_root(func_root);
+      return Err(err);
+    }
+  }
+
   // Per ECMAScript, class constructors have a non-writable `prototype` property.
   let patch_res = (|| -> Result<(), VmError> {
     let mut patch_scope = class_scope.reborrow();
@@ -18096,87 +17753,6 @@ fn async_eval_class_after_super(
 
   // Define prototype and static methods.
   async_eval_class_members_from(evaluator, &mut class_scope, members, 0, func_root)
-=======
-    // Class constructor bodies use the prototype object as their `[[HomeObject]]` so `super.prop`
-    // can resolve against `super.prototype`.
-    if let Some(body_func) = ctor_body_func {
-      if let Err(err) = scope
-        .heap_mut()
-        .set_function_home_object(body_func, Some(prototype_obj))
-      {
-        scope.heap_mut().remove_root(func_root);
-        return Err(err);
-      }
-    }
-
-    // `extends null` means the prototype object inherits from `null` (not `%Object.prototype%`).
-    if extends_null {
-      if let Err(err) = scope.heap_mut().object_set_prototype(prototype_obj, None) {
-        scope.heap_mut().remove_root(func_root);
-        return Err(err);
-      }
-    }
-
-    // Per ECMAScript, class constructors have a non-writable `prototype` property.
-    let patch_res = (|| -> Result<(), VmError> {
-      let mut class_scope = scope.reborrow();
-      class_scope.push_root(Value::Object(func_obj))?;
-      class_scope.push_root(Value::Object(prototype_obj))?;
-      match prototype_key {
-        PropertyKey::String(s) => class_scope.push_root(Value::String(s))?,
-        PropertyKey::Symbol(s) => class_scope.push_root(Value::Symbol(s))?,
-      };
-      class_scope
-        .define_property_or_throw(
-          func_obj,
-          prototype_key,
-          PropertyDescriptorPatch {
-            writable: Some(false),
-            ..Default::default()
-          },
-        )
-        .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut class_scope, err))?;
-      Ok(())
-    })();
-    if let Err(err) = patch_res {
-      scope.heap_mut().remove_root(func_root);
-      return Err(err);
-    }
-
-    // Define prototype and static methods.
-    match async_eval_class_members_from(evaluator, scope, members, 0, func_root)? {
-      AsyncEval::Complete(v) => Ok(AsyncEval::Complete(v)),
-      AsyncEval::Suspend(suspend) => Ok(AsyncEval::Suspend(suspend)),
-    }
-  })();
-
-  match result {
-    Ok(AsyncEval::Complete(v)) => {
-      evaluator.strict = saved_strict;
-      Ok(AsyncEval::Complete(v))
-    }
-    Ok(AsyncEval::Suspend(mut suspend)) => {
-      // Preserve strict-mode semantics across the suspension; restore strictness only after the
-      // class definition evaluation completes.
-      if let Err(err) = async_frames_push(
-        &mut suspend.frames,
-        AsyncFrame::RestoreStrict { saved_strict },
-      ) {
-        // Best-effort cleanup: tear down any rooted frames so we don't leak GC roots on OOM.
-        for mut frame in suspend.frames {
-          async_teardown_frame(scope.heap_mut(), &mut frame);
-        }
-        evaluator.strict = saved_strict;
-        return Err(err);
-      }
-      Ok(AsyncEval::Suspend(suspend))
-    }
-    Err(err) => {
-      evaluator.strict = saved_strict;
-      Err(err)
-    }
-  }
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 }
 
 fn async_eval_class_members_from(
@@ -24826,7 +24402,6 @@ fn async_apply_binary_operator(
       Ok(Value::Bool(ok))
     }
     // Assignment operators are handled separately (they require reference semantics).
-<<<<<<< HEAD
     OperatorName::Assignment
     | OperatorName::AssignmentAddition
     | OperatorName::AssignmentSubtraction
@@ -24835,13 +24410,6 @@ fn async_apply_binary_operator(
     | OperatorName::AssignmentRemainder => Err(VmError::InvariantViolation(
       "internal error: assignment operator in async_apply_binary_operator",
     )),
-=======
-    OperatorName::Assignment | OperatorName::AssignmentAddition => {
-      Err(VmError::InvariantViolation(
-        "internal error: assignment operator in async_apply_binary_operator",
-      ))
-    }
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
     _ => Err(VmError::Unimplemented("binary operator")),
   }
 }
@@ -25670,7 +25238,6 @@ fn async_resume_from_frames(
       },
 
       AsyncFrame::YieldStarAfterOperand => match state {
-<<<<<<< HEAD
         AsyncState::Expr(Ok(iterable)) => match async_yield_star_begin(evaluator, scope, iterable) {
           Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
           Ok(AsyncEval::Suspend(mut suspend)) => {
@@ -25680,24 +25247,12 @@ fn async_resume_from_frames(
               await_value: suspend.await_value,
               frames: suspend.frames,
             });
-=======
-        AsyncState::Expr(Ok(iterable)) => {
-          match async_yield_star_begin(evaluator, scope, iterable) {
-            Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
-            Ok(AsyncEval::Suspend(mut suspend)) => {
-              suspend.frames.append(&mut frames);
-              return Ok(AsyncBodyResult::Await {
-                await_value: suspend.await_value,
-                frames: suspend.frames,
-              });
-            }
-            Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
-              state = AsyncState::Expr(Err(err))
-            }
-            Err(err) => return Err(err),
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
           }
-        }
+          Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+            state = AsyncState::Expr(Err(err))
+          }
+          Err(err) => return Err(err),
+        },
         AsyncState::Expr(Err(err)) => state = AsyncState::Expr(Err(err)),
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
@@ -28134,7 +27689,6 @@ fn async_resume_from_frames(
                   }
                 };
 
-<<<<<<< HEAD
                 let mut compound_scope = scope.reborrow();
                 compound_scope.push_roots(&[left, right])?;
 
@@ -28236,20 +27790,6 @@ fn async_resume_from_frames(
                   .put_value_to_reference(&mut compound_scope, &reference, value)
                   .map_err(|err| {
                     coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
-=======
-                let mut add_scope = scope.reborrow();
-                add_scope.push_roots(&[left, right])?;
-                let value = evaluator
-                  .addition_operator(&mut add_scope, left, right)
-                  .map_err(|err| {
-                    coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err)
-                  })?;
-                add_scope.push_root(value)?;
-                evaluator
-                  .put_value_to_reference(&mut add_scope, &reference, value)
-                  .map_err(|err| {
-                    coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err)
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
                   })?;
                 Ok(value)
               })();
@@ -34408,14 +33948,7 @@ pub(crate) fn run_ecma_function(
         evaluator.env.teardown(call_scope.heap_mut());
         res.map(|_| (promise, evaluator.this))
       }
-<<<<<<< HEAD
       Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
-=======
-      Ok(AsyncBodyResult::Await {
-        await_value,
-        frames,
-      }) => {
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         // `this` / `new.target` can be temporarily overridden by nested constructs that can suspend
         // (e.g. class static blocks). Capture their current values at the suspension point so the
         // continuation resumes with the correct execution context.
@@ -34441,7 +33974,6 @@ pub(crate) fn run_ecma_function(
           return Err(err);
         }
 
-<<<<<<< HEAD
         let resolve_res = promise_resolve_for_await_with_host_and_hooks(
           evaluator.vm,
           &mut root_scope,
@@ -34451,44 +33983,6 @@ pub(crate) fn run_ecma_function(
         );
         let resolve_res =
           resolve_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
-=======
-        let resolve_res = (|| -> Result<Value, VmError> {
-          if let Value::Object(obj) = await_value {
-            if root_scope.heap().is_promise_object(obj) {
-              let ctor_key_s = root_scope.alloc_string("constructor")?;
-              root_scope.push_root(Value::String(ctor_key_s))?;
-              let ctor_key = PropertyKey::from_string(ctor_key_s);
-              let _ = root_scope.ordinary_get_with_host_and_hooks(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                obj,
-                ctor_key,
-                Value::Object(obj),
-              )?;
-              Ok(await_value)
-            } else {
-              crate::promise_ops::promise_resolve_with_host_and_hooks(
-                evaluator.vm,
-                &mut root_scope,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                await_value,
-              )
-            }
-          } else {
-            crate::promise_ops::promise_resolve_with_host_and_hooks(
-              evaluator.vm,
-              &mut root_scope,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              await_value,
-            )
-          }
-        })();
-        let resolve_res = resolve_res
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
 
         let awaited_promise = match resolve_res {
           Ok(p) => p,
@@ -35017,15 +34511,7 @@ pub(crate) fn start_module_tla_evaluation(
     // If `PromiseResolve(%Promise%, awaitValue)` throws, treat it as a rejection at the await site
     // (i.e. resume immediately with a throw completion so `try/catch` around `await` can observe it).
     loop {
-<<<<<<< HEAD
       let AsyncBodyResult::Await { await_value, frames, .. } = next else {
-=======
-      let AsyncBodyResult::Await {
-        await_value,
-        frames,
-      } = next
-      else {
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
         env.teardown(scope.heap_mut());
         return match next {
           AsyncBodyResult::CompleteOk(_) => Ok(ModuleTlaStepResult::Completed),
@@ -35256,14 +34742,7 @@ pub(crate) fn resume_module_tla_evaluation(
           async_teardown_continuation(scope, cont);
           return Err(VmError::Throw(reason));
         }
-<<<<<<< HEAD
         Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
-=======
-        Ok(AsyncBodyResult::Await {
-          await_value,
-          frames,
-        }) => {
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
           // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
           let awaited_promise_res = promise_resolve_for_await_with_host_and_hooks(
             evaluator.vm,
@@ -35656,18 +35135,8 @@ pub(crate) fn run_module_async_resume(
         module_async_teardown_continuation(scope, cont);
         Ok(ModuleAsyncStep::Completed)
       }
-<<<<<<< HEAD
-      AsyncBodyResult::CompleteThrow(reason) => {
-        Err(VmError::Throw(reason))
-      }
-      AsyncBodyResult::Await { await_value, frames, .. } => {
-=======
       AsyncBodyResult::CompleteThrow(reason) => Err(VmError::Throw(reason)),
-      AsyncBodyResult::Await {
-        await_value,
-        frames,
-      } => {
->>>>>>> 87fec70c (feat(vm-js): add function [[HomeObject]] metadata plumbing)
+      AsyncBodyResult::Await { await_value, frames, .. } => {
         cont
           .as_mut()
           .expect("module async continuation missing")
