@@ -2871,7 +2871,7 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
   };
   let parse_table_values = || {
     let attr = truncate_str_to_utf8_boundary(
-      node.attribute("tableValues").unwrap_or(""),
+      attribute_ci(node, "tableValues").unwrap_or(""),
       MAX_SVG_FILTER_NUMBER_LIST_BYTES,
     );
     attr
@@ -2961,7 +2961,7 @@ fn parse_fe_drop_shadow(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(node.attribute("in"));
   let dx = SvgLength::parse(node.attribute("dx"), SvgLength::Number(0.0));
   let dy = SvgLength::parse(node.attribute("dy"), SvgLength::Number(0.0));
-  let (sx, sy) = parse_number_pair(node.attribute("stdDeviation"));
+  let (sx, sy) = parse_number_pair(attribute_ci(node, "stdDeviation"));
   let std_dev = (sx.max(0.0), sy.max(0.0));
   let color = parse_color(node.attribute("flood-color")).unwrap_or(Rgba::BLACK);
   let opacity = node
@@ -3023,7 +3023,7 @@ fn parse_fe_tile(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 }
 
 fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
-  let (raw_fx, raw_fy) = parse_number_pair(node.attribute("baseFrequency"));
+  let (raw_fx, raw_fy) = parse_number_pair(attribute_ci(node, "baseFrequency"));
   let sanitize_freq = |v: f32| -> f32 {
     if v.is_finite() {
       v.max(0.0)
@@ -3047,13 +3047,11 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   } else {
     0
   };
-  let octaves = node
-    .attribute("numOctaves")
+  let octaves = attribute_ci(node, "numOctaves")
     .and_then(|v| v.parse::<i32>().ok())
     .unwrap_or(1)
     .clamp(0, MAX_TURBULENCE_OCTAVES as i32) as u32;
-  let stitch_tiles = node
-    .attribute("stitchTiles")
+  let stitch_tiles = attribute_ci(node, "stitchTiles")
     .map(|v| {
       let v = trim_ascii_whitespace(v).to_ascii_lowercase();
       v == "stitch" || v == "true" || v == "1"
@@ -3114,7 +3112,7 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   // expected so hostile markup cannot force an unbounded allocation for mismatched lists.
   let max_kernel_tokens = total_taps.saturating_mul(4).saturating_add(1);
   let kernel_attr = truncate_str_to_utf8_boundary(
-    node.attribute("kernelMatrix").unwrap_or(""),
+    attribute_ci(node, "kernelMatrix").unwrap_or(""),
     MAX_SVG_FILTER_NUMBER_LIST_BYTES,
   );
   let kernel = kernel_attr
@@ -3162,17 +3160,15 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     }
     (x.max(0.0), y.max(0.0))
   });
-  let target_x = node
-    .attribute("targetX")
+  let target_x = attribute_ci(node, "targetX")
     .and_then(|v| v.parse::<i32>().ok())
     .unwrap_or((order_x / 2) as i32)
     .clamp(0, order_x.saturating_sub(1) as i32);
-  let target_y = node
-    .attribute("targetY")
+  let target_y = attribute_ci(node, "targetY")
     .and_then(|v| v.parse::<i32>().ok())
     .unwrap_or((order_y / 2) as i32)
     .clamp(0, order_y.saturating_sub(1) as i32);
-  let edge_mode_raw = trim_ascii_whitespace(node.attribute("edgeMode").unwrap_or("duplicate"));
+  let edge_mode_raw = trim_ascii_whitespace(attribute_ci(node, "edgeMode").unwrap_or("duplicate"));
   let edge_mode_raw = if edge_mode_raw.len() > 32 {
     "duplicate"
   } else {
@@ -3185,8 +3181,7 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   } else {
     EdgeMode::Duplicate
   };
-  let preserve_alpha = node
-    .attribute("preserveAlpha")
+  let preserve_alpha = attribute_ci(node, "preserveAlpha")
     .map(|v| {
       let v = trim_ascii_whitespace(v);
       if v.len() > 16 {
@@ -7081,6 +7076,112 @@ mod unit_tests {
       );
     };
     assert_eq!(prim.preserve_aspect_ratio, PreserveAspectRatio::None);
+  }
+
+  #[test]
+  fn fe_component_transfer_table_values_attribute_name_is_case_insensitive() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feComponentTransfer>
+          <feFuncR type="table" tablevalues="0 1" />
+        </feComponentTransfer>
+      </filter>
+    </svg>"#;
+
+    let cache = ImageCache::new();
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
+
+    let FilterPrimitive::ComponentTransfer { r, .. } = &filter.steps[0].primitive else {
+      panic!(
+        "expected feComponentTransfer primitive, got {:?}",
+        filter.steps[0].primitive
+      );
+    };
+    let TransferFn::Table { values } = r else {
+      panic!("expected table transfer function, got {r:?}");
+    };
+    assert_eq!(values, &vec![0.0, 1.0]);
+  }
+
+  #[test]
+  fn fe_drop_shadow_std_deviation_attribute_name_is_case_insensitive() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feDropShadow stddeviation="3 1" />
+      </filter>
+    </svg>"#;
+
+    let cache = ImageCache::new();
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
+
+    let FilterPrimitive::DropShadow { std_dev, .. } = &filter.steps[0].primitive else {
+      panic!(
+        "expected feDropShadow primitive, got {:?}",
+        filter.steps[0].primitive
+      );
+    };
+    assert_eq!(*std_dev, (3.0, 1.0));
+  }
+
+  #[test]
+  fn fe_turbulence_attributes_are_case_insensitive() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feTurbulence basefrequency="0.1 0.2" numoctaves="2" stitchtiles="stitch" />
+      </filter>
+    </svg>"#;
+
+    let cache = ImageCache::new();
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
+
+    let FilterPrimitive::Turbulence {
+      base_frequency,
+      octaves,
+      stitch_tiles,
+      ..
+    } = &filter.steps[0].primitive
+    else {
+      panic!(
+        "expected feTurbulence primitive, got {:?}",
+        filter.steps[0].primitive
+      );
+    };
+    assert!((base_frequency.0 - 0.1).abs() < 1e-6);
+    assert!((base_frequency.1 - 0.2).abs() < 1e-6);
+    assert_eq!(*octaves, 2);
+    assert!(*stitch_tiles);
+  }
+
+  #[test]
+  fn fe_convolve_matrix_attributes_are_case_insensitive() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f">
+        <feConvolveMatrix order="1" kernelmatrix="1" targetx="0" targety="0" edgemode="wrap" preservealpha="true" />
+      </filter>
+    </svg>"#;
+
+    let cache = ImageCache::new();
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
+
+    let FilterPrimitive::ConvolveMatrix {
+      kernel,
+      target_x,
+      target_y,
+      edge_mode,
+      preserve_alpha,
+      ..
+    } = &filter.steps[0].primitive
+    else {
+      panic!(
+        "expected feConvolveMatrix primitive, got {:?}",
+        filter.steps[0].primitive
+      );
+    };
+    assert_eq!(kernel, &vec![1.0]);
+    assert_eq!(*target_x, 0);
+    assert_eq!(*target_y, 0);
+    assert!(matches!(edge_mode, EdgeMode::Wrap));
+    assert!(*preserve_alpha);
   }
 
   #[test]
