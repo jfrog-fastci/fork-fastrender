@@ -22,6 +22,18 @@ fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   None
 }
 
+fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
+  if node.node.has_id(id) {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_by_id(child, id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 #[test]
 fn supports_selector_true_for_supported_selector() {
   let dom = dom::parse_html(r#"<div class="foo"></div>"#).unwrap();
@@ -96,12 +108,36 @@ fn supports_declaration_rejects_invalid_text_orientation() {
 
 #[test]
 fn supports_declaration_accepts_valid_writing_mode() {
-  let dom = dom::parse_html(r#"<div></div>"#).unwrap();
-  let css = r#"@supports (writing-mode: sideways-lr) { div { display: inline; } }"#;
+  // Chrome stable currently evaluates `@supports (writing-mode: sideways-lr)` as true (i.e. it
+  // accepts `writing-mode: sideways-lr` as a supported declaration). MDN uses that probe to gate
+  // example table rows, so keep the end-to-end cascade result aligned with Chrome to avoid
+  // visibility flips in the fixture.
+  let dom = dom::parse_html(
+    r#"
+      <table>
+        <tbody>
+          <tr id="notice" class="notice"><td>notice</td></tr>
+          <tr id="experimental" class="experimental"><td>experimental</td></tr>
+        </tbody>
+      </table>
+    "#,
+  )
+  .unwrap();
+  let css = r#"
+    .experimental { display: none; }
+    .notice { display: table-row; }
+    @supports (writing-mode: sideways-lr) {
+      .experimental { display: table-row; }
+      .notice { display: none; }
+    }
+  "#;
   let stylesheet = parse_stylesheet(css).unwrap();
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
-  let div = find_first(&styled, "div").expect("div");
-  assert_eq!(display(div), "inline");
+
+  let notice = find_by_id(&styled, "notice").expect("#notice");
+  let experimental = find_by_id(&styled, "experimental").expect("#experimental");
+  assert_eq!(display(notice), "none");
+  assert_eq!(display(experimental), "table-row");
 }
 
 #[test]
