@@ -1917,6 +1917,9 @@ fn data_fastr_open_state(node: &DomNode) -> Option<(bool, bool)> {
 }
 
 fn dialog_state(node: &DomNode) -> Option<(bool, bool)> {
+  if !node_is_html_element(node) {
+    return None;
+  }
   if !node
     .tag_name()
     .map(|t| t.eq_ignore_ascii_case("dialog"))
@@ -1951,7 +1954,9 @@ fn popover_open_assuming_popover(node: &DomNode) -> bool {
 }
 
 fn popover_open(node: &DomNode) -> bool {
-  node.get_attribute_ref("popover").is_some() && popover_open_assuming_popover(node)
+  node_is_html_element(node)
+    && node.get_attribute_ref("popover").is_some()
+    && popover_open_assuming_popover(node)
 }
 
 /// Bench helper: determine whether the DOM contains an open modal `<dialog>`.
@@ -2011,7 +2016,8 @@ fn apply_top_layer_open_state_with_deadline(node: &mut DomNode) -> Result<bool> 
       modal_open |= modal;
     }
 
-    let has_popover = current.get_attribute_ref("popover").is_some();
+    let is_html_namespace = node_is_html_element(current);
+    let has_popover = is_html_namespace && current.get_attribute_ref("popover").is_some();
     let popover_is_open = has_popover && popover_open_assuming_popover(current);
 
     if let DomNodeType::Element {
@@ -2020,7 +2026,7 @@ fn apply_top_layer_open_state_with_deadline(node: &mut DomNode) -> Result<bool> 
       ..
     } = &mut current.node_type
     {
-      let is_dialog = tag_name.eq_ignore_ascii_case("dialog");
+      let is_dialog = is_html_namespace && tag_name.eq_ignore_ascii_case("dialog");
       let should_open = if is_dialog {
         dialog_info.is_some()
       } else if has_popover {
@@ -2063,7 +2069,8 @@ fn apply_top_layer_open_state(node: &mut DomNode) -> bool {
       modal_open |= modal;
     }
 
-    let has_popover = current.get_attribute_ref("popover").is_some();
+    let is_html_namespace = node_is_html_element(current);
+    let has_popover = is_html_namespace && current.get_attribute_ref("popover").is_some();
     let popover_is_open = has_popover && popover_open_assuming_popover(current);
 
     if let DomNodeType::Element {
@@ -2072,7 +2079,7 @@ fn apply_top_layer_open_state(node: &mut DomNode) -> bool {
       ..
     } = &mut current.node_type
     {
-      let is_dialog = tag_name.eq_ignore_ascii_case("dialog");
+      let is_dialog = is_html_namespace && tag_name.eq_ignore_ascii_case("dialog");
       let should_open = if is_dialog {
         dialog_info.is_some()
       } else if has_popover {
@@ -2111,6 +2118,9 @@ pub fn apply_top_layer_state(node: &mut DomNode, modal_open: bool) {
 }
 
 fn open_modal_dialog_after_open_state(node: &DomNode) -> bool {
+  if !node_is_html_element(node) {
+    return false;
+  }
   let is_dialog = node
     .tag_name()
     .map(|t| t.eq_ignore_ascii_case("dialog"))
@@ -8437,7 +8447,7 @@ impl<'a> Element for ElementRef<'a> {
         // defined set of HTML elements.
         if let Some(tag) = self.node.tag_name() {
           if tag.eq_ignore_ascii_case("details") {
-            return self.node.get_attribute_ref("open").is_some();
+            return node_is_html_element(self.node) && self.node.get_attribute_ref("open").is_some();
           }
           if tag.eq_ignore_ascii_case("dialog") {
             return dialog_state(self.node).is_some();
@@ -9727,6 +9737,24 @@ mod tests {
         attributes: vec![],
       },
       children: vec![],
+    }
+  }
+
+  fn svg_element_with_attrs(
+    tag: &str,
+    attrs: Vec<(&str, &str)>,
+    children: Vec<DomNode>,
+  ) -> DomNode {
+    DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: tag.to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: attrs
+          .into_iter()
+          .map(|(k, v)| (k.to_string(), v.to_string()))
+          .collect(),
+      },
+      children,
     }
   }
 
@@ -14130,6 +14158,34 @@ mod tests {
     assert!(
       !selector_matches(&ElementRef::with_ancestors(&popover_open, &[]), &selector),
       "popover open state should match :popover-open, not :open"
+    );
+  }
+
+  #[test]
+  fn open_and_popover_open_pseudos_do_not_match_non_html_namespace_elements() {
+    let open_selector = parse_selector(":open");
+    let popover_selector = parse_selector(":popover-open");
+
+    let svg_dialog_open = svg_element_with_attrs("dialog", vec![("open", "")], vec![]);
+    assert!(
+      !selector_matches(&ElementRef::with_ancestors(&svg_dialog_open, &[]), &open_selector),
+      "SVG <dialog> must not match :open"
+    );
+
+    let svg_details_open = svg_element_with_attrs("details", vec![("open", "")], vec![]);
+    assert!(
+      !selector_matches(&ElementRef::with_ancestors(&svg_details_open, &[]), &open_selector),
+      "SVG <details> must not match :open"
+    );
+
+    let svg_popover_open =
+      svg_element_with_attrs("g", vec![("popover", ""), ("open", "")], vec![]);
+    assert!(
+      !selector_matches(
+        &ElementRef::with_ancestors(&svg_popover_open, &[]),
+        &popover_selector
+      ),
+      "SVG elements must not match :popover-open"
     );
   }
 
@@ -19027,6 +19083,95 @@ mod tests {
     assert!(
       popover_closed.get_attribute_ref("open").is_none(),
       "data-fastr-open=false should remove popover open"
+    );
+  }
+
+  #[test]
+  fn top_layer_state_does_not_mutate_open_for_non_html_namespace_elements() {
+    let mut dom = document(vec![DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "dialog".to_string(),
+            namespace: SVG_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "svg-dialog-open".to_string()),
+              ("open".to_string(), "".to_string()),
+              ("data-fastr-open".to_string(), "false".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "g".to_string(),
+            namespace: SVG_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "svg-popover-open".to_string()),
+              ("popover".to_string(), "".to_string()),
+              ("open".to_string(), "".to_string()),
+              ("data-fastr-open".to_string(), "false".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "dialog".to_string(),
+            namespace: SVG_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "svg-dialog-closed".to_string()),
+              ("data-fastr-open".to_string(), "open".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "g".to_string(),
+            namespace: SVG_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "svg-popover-closed".to_string()),
+              ("popover".to_string(), "".to_string()),
+              ("data-fastr-open".to_string(), "open".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+      ],
+    }]);
+
+    apply_top_layer_state_with_deadline(&mut dom).expect("apply top-layer state");
+
+    let svg_dialog_open = find_element_by_id(&dom, "svg-dialog-open").expect("svg dialog open");
+    assert!(
+      svg_dialog_open.get_attribute_ref("open").is_some(),
+      "top-layer state must not remove open from SVG <dialog>"
+    );
+
+    let svg_popover_open = find_element_by_id(&dom, "svg-popover-open").expect("svg popover open");
+    assert!(
+      svg_popover_open.get_attribute_ref("open").is_some(),
+      "top-layer state must not remove open from SVG [popover]"
+    );
+
+    let svg_dialog_closed =
+      find_element_by_id(&dom, "svg-dialog-closed").expect("svg dialog closed");
+    assert!(
+      svg_dialog_closed.get_attribute_ref("open").is_none(),
+      "top-layer state must not add open to SVG <dialog>"
+    );
+
+    let svg_popover_closed =
+      find_element_by_id(&dom, "svg-popover-closed").expect("svg popover closed");
+    assert!(
+      svg_popover_closed.get_attribute_ref("open").is_none(),
+      "top-layer state must not add open to SVG [popover]"
     );
   }
 
