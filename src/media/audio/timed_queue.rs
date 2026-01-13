@@ -586,4 +586,41 @@ mod tests {
     .unwrap_err();
     assert_eq!(err, PushError::FormatMismatch);
   }
+
+  #[test]
+  fn read_into_frames_can_seek_and_skip_audio() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(10));
+    q.push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+      .unwrap();
+
+    let mut out1 = vec![0.0; 2];
+    q.read_into_frames(&mut out1, 0, 2);
+    assert_eq!(out1, vec![1.0, 2.0]);
+
+    // Jump forward by one frame (target=3 instead of expected=2). Because this uses a frame-based
+    // clock, any mismatch is treated as a real discontinuity and the skipped frame is dropped.
+    let mut out2 = vec![0.0; 2];
+    q.read_into_frames(&mut out2, 3, 2);
+    assert_eq!(out2, vec![4.0, 5.0]);
+  }
+
+  #[test]
+  fn backpressure_enforced_by_buffered_frames() {
+    let mut q = TimedAudioQueue::new(1, 10, Duration::from_secs(1)); // 10 frames max.
+    q.push_segment(seg(0, &[1.0; 10])).unwrap();
+
+    // Exceeds capacity by 1 frame.
+    assert_eq!(
+      q.push_segment(seg(1000, &[2.0])),
+      Err(PushError::Backpressure)
+    );
+
+    // Consume half the buffer, then pushing additional frames should succeed.
+    let mut out = vec![0.0; 5];
+    q.read_into(&mut out, Duration::ZERO, 5);
+    assert_eq!(out, vec![1.0; 5]);
+
+    q.push_segment(seg(1000, &[2.0; 5])).unwrap();
+    assert_eq!(q.buffered_frames(), 10);
+  }
 }
