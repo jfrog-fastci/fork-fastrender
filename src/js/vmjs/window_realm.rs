@@ -2515,6 +2515,8 @@ const EVENT_COMPOSED_PATH_KEY: &str = "__fastrender_event_composed_path";
 const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
 const EVENT_HANDLER_WRAPPERS_KEY: &str = "__fastrender_event_handler_wrappers";
 const EVENT_HANDLER_WRAPPER_HANDLER_KEY: &str = "__fastrender_event_handler_wrapper_handler";
+const EVENT_HANDLER_WRAPPER_WINDOW_ONERROR_KEY: &str =
+  "__fastrender_event_handler_wrapper_window_onerror";
 const EVENT_TARGET_ADD_EVENT_LISTENER_KEY: &str = "__fastrender_event_target_add_event_listener";
 const EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY: &str =
   "__fastrender_event_target_remove_event_listener";
@@ -23264,6 +23266,18 @@ fn event_handler_set_native(
   let handler_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_HANDLER_KEY)?;
   scope.define_property(wrapper, handler_key, data_desc(handler))?;
 
+  // `window.onerror` has legacy signature + cancellation semantics that differ from other
+  // EventHandler attributes (it receives 5 arguments and cancels on returning `true`). Tag the
+  // wrapper so the shared trampoline can preserve those semantics.
+  let window_onerror_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_WINDOW_ONERROR_KEY)?;
+  let is_window_onerror =
+    resolved.target_id == web_events::EventTargetId::Window && type_name == "error";
+  scope.define_property(
+    wrapper,
+    window_onerror_key,
+    data_desc(Value::Bool(is_window_onerror)),
+  )?;
+
   // Register the wrapper as a normal DOM listener (so capture/bubble semantics match).
   let listener_id = web_events::ListenerId::from_gc_object(wrapper);
   let dom = unsafe { dom_ptr.as_mut() };
@@ -23307,8 +23321,95 @@ fn event_handler_wrapper_native(
     return Ok(Value::Undefined);
   };
 
+  let window_onerror_key = alloc_key(scope, EVENT_HANDLER_WRAPPER_WINDOW_ONERROR_KEY)?;
+  let cancel_on_true = matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(callee, &window_onerror_key)?,
+    Some(Value::Bool(true))
+  );
+
   let event_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let ret = if scope.heap().is_callable(handler)? {
+  let ret = if cancel_on_true && scope.heap().is_callable(handler)? {
+    // `window.onerror`: OnErrorEventHandler signature:
+    //   (message, filename, lineno, colno, error) -> boolean
+    //
+    // Best-effort extract fields from the dispatched ErrorEvent instance (if it looks like one),
+    // otherwise fall back to empty/zero values.
+    let (message_v, filename_v, lineno_v, colno_v, error_v) = match event_value {
+      Value::Object(event_obj) => {
+        // Root the object while doing key allocations + `Get`: this can allocate and/or invoke user
+        // code.
+        let mut scope = scope.reborrow();
+        scope.push_root(Value::Object(event_obj))?;
+
+        let message_key = alloc_key(&mut scope, "message")?;
+        let filename_key = alloc_key(&mut scope, "filename")?;
+        let lineno_key = alloc_key(&mut scope, "lineno")?;
+        let colno_key = alloc_key(&mut scope, "colno")?;
+        let error_key = alloc_key(&mut scope, "error")?;
+
+        let message_v =
+          vm.get_with_host_and_hooks(host, &mut scope, hooks, event_obj, message_key).unwrap_or(Value::Undefined);
+        let filename_v =
+          vm.get_with_host_and_hooks(host, &mut scope, hooks, event_obj, filename_key).unwrap_or(Value::Undefined);
+        let lineno_v =
+          vm.get_with_host_and_hooks(host, &mut scope, hooks, event_obj, lineno_key).unwrap_or(Value::Undefined);
+        let colno_v =
+          vm.get_with_host_and_hooks(host, &mut scope, hooks, event_obj, colno_key).unwrap_or(Value::Undefined);
+        let error_v =
+          vm.get_with_host_and_hooks(host, &mut scope, hooks, event_obj, error_key).unwrap_or(Value::Undefined);
+        (message_v, filename_v, lineno_v, colno_v, error_v)
+      }
+      _ => (
+        Value::Undefined,
+        Value::Undefined,
+        Value::Undefined,
+        Value::Undefined,
+        Value::Undefined,
+      ),
+    };
+
+    let message_s = match message_v {
+      Value::Undefined | Value::Null => scope.alloc_string("")?,
+      Value::String(s) => s,
+      other => match scope.heap_mut().to_string(other) {
+        Ok(s) => s,
+        Err(_) => scope.alloc_string("")?,
+      },
+    };
+    scope.push_root(Value::String(message_s))?;
+    let filename_s = match filename_v {
+      Value::Undefined | Value::Null => scope.alloc_string("")?,
+      Value::String(s) => s,
+      other => match scope.heap_mut().to_string(other) {
+        Ok(s) => s,
+        Err(_) => scope.alloc_string("")?,
+      },
+    };
+    scope.push_root(Value::String(filename_s))?;
+
+    let lineno = scope
+      .heap_mut()
+      .to_number(lineno_v)
+      .map(|n| if n.is_finite() { n } else { 0.0 })
+      .unwrap_or(0.0);
+    let colno = scope
+      .heap_mut()
+      .to_number(colno_v)
+      .map(|n| if n.is_finite() { n } else { 0.0 })
+      .unwrap_or(0.0);
+
+    let onerror_args = [
+      Value::String(message_s),
+      Value::String(filename_s),
+      Value::Number(lineno),
+      Value::Number(colno),
+      error_v,
+    ];
+
+    vm.call_with_host_and_hooks(host, scope, hooks, handler, this, &onerror_args)?
+  } else if scope.heap().is_callable(handler)? {
     vm.call_with_host_and_hooks(host, scope, hooks, handler, this, &[event_value])?
   } else {
     let handle_event_key = alloc_key(scope, "handleEvent")?;
@@ -23321,8 +23422,15 @@ fn event_handler_wrapper_native(
     vm.call_with_host_and_hooks(host, scope, hooks, handle_event, handler, &[event_value])?
   };
 
-  // HTML EventHandler semantics: returning `false` cancels the event.
-  if matches!(ret, Value::Bool(false)) {
+  // HTML EventHandler semantics:
+  // - returning `false` cancels most EventHandlers
+  // - `window.onerror` cancels on returning `true`.
+  let should_cancel = match (cancel_on_true, ret) {
+    (true, Value::Bool(true)) => true,
+    (false, Value::Bool(false)) => true,
+    _ => false,
+  };
+  if should_cancel {
     if let Value::Object(event_obj) = event_value {
       let _ = event_prototype_prevent_default_native(
         vm,
@@ -36993,6 +37101,17 @@ fn init_window_globals(
     ("onchange", "change"),
     // Storage events.
     ("onstorage", "storage"),
+    // Media events.
+    ("onplay", "play"),
+    ("onpause", "pause"),
+    ("ontimeupdate", "timeupdate"),
+    ("onended", "ended"),
+    ("onerror", "error"),
+    ("onvolumechange", "volumechange"),
+    ("onratechange", "ratechange"),
+    ("onseeking", "seeking"),
+    ("onseeked", "seeked"),
+    ("onloadedmetadata", "loadedmetadata"),
   ] {
     let type_s = scope.alloc_string(type_)?;
     scope.push_root(Value::String(type_s))?;
@@ -47100,6 +47219,27 @@ mod tests {
       get_string(realm.heap(), result),
       "11,true,false,true,true,true,true"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn event_handler_onplay_fires_for_video_element() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const video = document.createElement('video');\n\
+        globalThis.__fired = false;\n\
+        video.onplay = () => { globalThis.__fired = true; };\n\
+        video.dispatchEvent(new Event('play'));\n\
+        return globalThis.__fired;\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
     Ok(())
   }
 
