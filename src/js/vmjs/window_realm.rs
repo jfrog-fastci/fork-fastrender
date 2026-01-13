@@ -2279,6 +2279,41 @@ fn dispatch_storage_event_task<Host: WindowRealmHost + 'static>(
     let storage_obj =
       vm.get_with_host_and_hooks(vm_host, &mut scope, &mut hooks, window_obj, storage_obj_key)?;
     scope.push_root(storage_obj)?;
+    // Keep the storage object properties in sync with the underlying `StorageArea` so enumeration
+    // (`Object.keys`, `for...in`, etc.) in other window hosts reflects mutations.
+    if let Value::Object(storage_obj) = storage_obj {
+      let storage_brand_key = alloc_key(&mut scope, STORAGE_BRAND_KEY)?;
+      let is_storage = matches!(
+        scope
+          .heap()
+          .object_get_own_data_property_value(storage_obj, &storage_brand_key)?,
+        Some(Value::Bool(true))
+      );
+      if is_storage {
+        match (event.key.as_deref(), event.new_value.as_deref()) {
+          (Some(key), Some(new_value)) => {
+            let key_s = scope.alloc_string(key)?;
+            scope.push_root(Value::String(key_s))?;
+            let value_s = scope.alloc_string(new_value)?;
+            scope.push_root(Value::String(value_s))?;
+            storage_sync_key_property(
+              &mut scope,
+              storage_obj,
+              PropertyKey::from_string(key_s),
+              Value::String(value_s),
+            )?;
+          }
+          (Some(key), None) => {
+            let key_s = scope.alloc_string(key)?;
+            scope.push_root(Value::String(key_s))?;
+            storage_delete_key_property(&mut scope, storage_obj, PropertyKey::from_string(key_s))?;
+          }
+          (None, _) => {
+            storage_clear_key_properties(&mut scope, storage_obj)?;
+          }
+        }
+      }
+    }
     let storage_area_key = alloc_key(&mut scope, "storageArea")?;
     scope.define_property(init_obj, storage_area_key, data_desc(storage_obj))?;
 
@@ -2409,6 +2444,9 @@ fn storage_set_item_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
+  let Value::Object(storage_obj) = this else {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+  };
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let value_v = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -2427,6 +2465,12 @@ fn storage_set_item_native(
     }
   };
 
+  storage_sync_key_property(
+    scope,
+    storage_obj,
+    PropertyKey::from_string(key_s),
+    Value::String(value_s),
+  )?;
   maybe_queue_storage_event_from_change(vm, kind, change);
   Ok(Value::Undefined)
 }
@@ -2441,11 +2485,17 @@ fn storage_remove_item_native(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
+  let Value::Object(storage_obj) = this else {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+  };
   let area = storage_area_from_kind(vm, kind)?;
   let key_v = args.get(0).copied().unwrap_or(Value::Undefined);
   let key_s = storage_to_string(scope, key_v)?;
   let key = scope.heap().get_string(key_s)?.to_utf8_lossy();
   let change = area.lock().remove_item(&key);
+  if change.did_mutate {
+    storage_delete_key_property(scope, storage_obj, PropertyKey::from_string(key_s))?;
+  }
   maybe_queue_storage_event_from_change(vm, kind, change);
   Ok(Value::Undefined)
 }
@@ -2460,8 +2510,14 @@ fn storage_clear_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let kind = storage_require_this(scope, this)?;
+  let Value::Object(storage_obj) = this else {
+    return Err(VmError::TypeError(STORAGE_ILLEGAL_INVOCATION_ERROR));
+  };
   let area = storage_area_from_kind(vm, kind)?;
   let change = area.lock().clear();
+  if change.did_mutate {
+    storage_clear_key_properties(scope, storage_obj)?;
+  }
   maybe_queue_storage_event_from_change(vm, kind, change);
   Ok(Value::Undefined)
 }
@@ -2489,6 +2545,100 @@ fn storage_key_native(
   Ok(Value::String(key_s))
 }
 
+fn storage_key_data_desc(value: Value) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value,
+      writable: true,
+    },
+  }
+}
+
+fn storage_key_is_visible(
+  heap: &Heap,
+  storage_obj: GcObject,
+  key: &PropertyKey,
+) -> Result<bool, VmError> {
+  Ok(!proto_chain_has_own_property(heap, storage_obj, key)?)
+}
+
+fn storage_sync_key_property(
+  scope: &mut Scope<'_>,
+  storage_obj: GcObject,
+  key: PropertyKey,
+  value: Value,
+) -> Result<(), VmError> {
+  if !storage_key_is_visible(scope.heap(), storage_obj, &key)? {
+    return Ok(());
+  }
+  // Root the receiver while defining properties: `define_property` can allocate.
+  scope.push_root(Value::Object(storage_obj))?;
+  scope.define_property(storage_obj, key, storage_key_data_desc(value))?;
+  Ok(())
+}
+
+fn storage_delete_key_property(
+  scope: &mut Scope<'_>,
+  storage_obj: GcObject,
+  key: PropertyKey,
+) -> Result<(), VmError> {
+  if !storage_key_is_visible(scope.heap(), storage_obj, &key)? {
+    return Ok(());
+  }
+  scope.push_root(Value::Object(storage_obj))?;
+  let _ = scope.ordinary_delete(storage_obj, key)?;
+  Ok(())
+}
+
+fn storage_clear_key_properties(scope: &mut Scope<'_>, storage_obj: GcObject) -> Result<(), VmError> {
+  // Delete all enumerable own string-keyed properties, which correspond to visible storage keys.
+  // Keep non-enumerable branding/internal state intact.
+  let keys = scope.heap().own_property_keys(storage_obj)?;
+  for key in keys {
+    let PropertyKey::String(_) = key else {
+      continue;
+    };
+    let Some(desc) = scope.heap().object_get_own_property(storage_obj, &key)? else {
+      continue;
+    };
+    if !desc.enumerable {
+      continue;
+    }
+    // Root the receiver while deleting: `ordinary_delete` can allocate.
+    scope.push_root(Value::Object(storage_obj))?;
+    let _ = scope.ordinary_delete(storage_obj, key)?;
+  }
+  Ok(())
+}
+
+fn storage_sync_all_key_properties_from_area(
+  scope: &mut Scope<'_>,
+  storage_obj: GcObject,
+  area: &web_storage::StorageArea,
+) -> Result<(), VmError> {
+  for idx in 0..area.len() {
+    let Some(key) = area.key(idx) else {
+      continue;
+    };
+    let Some(value) = area.get_item(&key) else {
+      continue;
+    };
+    let key_s = scope.alloc_string(&key)?;
+    scope.push_root(Value::String(key_s))?;
+    let value_s = scope.alloc_string(&value)?;
+    scope.push_root(Value::String(value_s))?;
+    storage_sync_key_property(
+      scope,
+      storage_obj,
+      PropertyKey::from_string(key_s),
+      Value::String(value_s),
+    )?;
+  }
+  Ok(())
+}
+
 fn install_storage_object(
   scope: &mut Scope<'_>,
   global: GcObject,
@@ -2497,7 +2647,7 @@ fn install_storage_object(
   kind: web_storage::StorageKind,
   storage_brand_key: PropertyKey,
   storage_kind_key: PropertyKey,
-) -> Result<(), VmError> {
+) -> Result<GcObject, VmError> {
   let storage_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(storage_obj))?;
   scope
@@ -2524,7 +2674,7 @@ fn install_storage_object(
   // Install the storage object on the global as a read-only data property.
   scope.define_property(global, global_key, read_only_data_desc(Value::Object(storage_obj)))?;
 
-  Ok(())
+  Ok(storage_obj)
 }
 
 static NEXT_CONSOLE_SINK_ID: AtomicU64 = AtomicU64::new(1);
@@ -46094,7 +46244,7 @@ fn init_window_globals(
     data_desc(Value::Object(storage_ctor_func)),
   )?;
 
-  install_storage_object(
+  let local_storage_obj = install_storage_object(
     &mut scope,
     global,
     local_storage_key,
@@ -46103,7 +46253,7 @@ fn init_window_globals(
     storage_brand_key,
     storage_kind_key,
   )?;
-  install_storage_object(
+  let session_storage_obj = install_storage_object(
     &mut scope,
     global,
     session_storage_key,
@@ -46112,6 +46262,18 @@ fn init_window_globals(
     storage_brand_key,
     storage_kind_key,
   )?;
+  // Ensure any persisted keys (from other realms) are immediately visible as enumerable own
+  // properties so common enumeration patterns (`Object.keys(localStorage)`) behave like browsers.
+  let local_area = storage_area_from_kind(vm, web_storage::StorageKind::Local)?;
+  {
+    let area = local_area.lock();
+    storage_sync_all_key_properties_from_area(&mut scope, local_storage_obj, &area)?;
+  }
+  let session_area = storage_area_from_kind(vm, web_storage::StorageKind::Session)?;
+  {
+    let area = session_area.lock();
+    storage_sync_all_key_properties_from_area(&mut scope, session_storage_obj, &area)?;
+  }
 
   // --- WindowOrWorkerGlobalScope primitives ---------------------------------
   //
@@ -48645,6 +48807,44 @@ mod tests {
     assert_eq!(get_string(realm.heap(), s), "s");
     let l = realm.exec_script("localStorage.getItem('x')")?;
     assert_eq!(get_string(realm.heap(), l), "l");
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
+  fn window_storage_key_properties_enumerate_like_browsers() -> Result<(), VmError> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    realm.exec_script("localStorage.setItem('a','1'); localStorage.setItem('b','2');")?;
+    let keys = realm.exec_script("JSON.stringify(Object.keys(localStorage))")?;
+    assert_eq!(get_string(realm.heap(), keys), "[\"a\",\"b\"]");
+    assert_eq!(realm.exec_script("'a' in localStorage")?, Value::Bool(true));
+    assert_eq!(realm.exec_script("'missing' in localStorage")?, Value::Bool(false));
+
+    // Updating an existing key must not change enumeration order.
+    realm.exec_script("localStorage.setItem('a','3')")?;
+    let keys = realm.exec_script("JSON.stringify(Object.keys(localStorage))")?;
+    assert_eq!(get_string(realm.heap(), keys), "[\"a\",\"b\"]");
+
+    // Removing + reinserting must move the key to the end.
+    realm.exec_script("localStorage.removeItem('a'); localStorage.setItem('a','4');")?;
+    let keys = realm.exec_script("JSON.stringify(Object.keys(localStorage))")?;
+    assert_eq!(get_string(realm.heap(), keys), "[\"b\",\"a\"]");
+
+    // Stored keys must not shadow prototype properties.
+    realm.exec_script("localStorage.setItem('getItem','x')")?;
+    assert_eq!(
+      realm.exec_script("localStorage.getItem === Storage.prototype.getItem")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("Object.keys(localStorage).includes('getItem')")?,
+      Value::Bool(false)
+    );
+    let stored = realm.exec_script("localStorage.getItem('getItem')")?;
+    assert_eq!(get_string(realm.heap(), stored), "x");
 
     crate::js::web_storage::reset_default_web_storage_hub_for_tests();
     Ok(())
