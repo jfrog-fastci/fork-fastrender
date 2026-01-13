@@ -1344,6 +1344,20 @@ impl FloatContext {
             );
           }
         }
+        match cache.block_min_cache.as_ref() {
+          Some(block_cache) => {
+            eprintln!(
+              "  range_cache_block_min: block_size={} covered_segments={} span=[{:.2}, {:.2}]",
+              block_cache.block_size,
+              block_cache.covered_segments_len,
+              block_cache.containing_left,
+              block_cache.containing_right
+            );
+          }
+          None => {
+            eprintln!("  range_cache_block_min: none");
+          }
+        }
 
         if seg_count > 0 && max_segs > 0 {
           let focus_idx = if focus_y.is_finite() {
