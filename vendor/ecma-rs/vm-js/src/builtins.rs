@@ -13145,6 +13145,8 @@ fn get_substitution(
   let replace_units = scope.heap().get_string(replace)?.as_code_units();
   let input_units = scope.heap().get_string(input)?.as_code_units();
   let (match_start, match_end) = match_range;
+  // `captureLen` in the spec: number of capturing groups (excludes capture 0 / full match).
+  let capture_len = capture_count.saturating_sub(1);
 
   let mut out: Vec<u16> = Vec::new();
   // Best-effort pre-reserve: replacement length + match length.
@@ -13152,10 +13154,15 @@ fn get_substitution(
     .try_reserve(replace_units.len().saturating_add(match_end.saturating_sub(match_start)))
     .map_err(|_| VmError::OutOfMemory)?;
 
+  // Tick based on the amount of input processed, not on the current `i` value modulo a constant.
+  // `i` can advance by 2 or 3 for replacement patterns like `$&`/`$10`; using `i % N == 0` can
+  // miss ticks entirely for long templates whose pattern lengths do not align with `N`.
+  let mut next_tick = 0usize;
   let mut i = 0usize;
   while i < replace_units.len() {
-    if i % 128 == 0 {
+    if i >= next_tick {
       vm.tick()?;
+      next_tick = i.saturating_add(128);
     }
     let u = replace_units[i];
     if u != (b'$' as u16) || i + 1 >= replace_units.len() {
@@ -13182,36 +13189,50 @@ fn get_substitution(
         i += 2;
       }
       x if (b'0' as u16..=b'9' as u16).contains(&x) => {
+        // GetSubstitution step 5.f (ECMA-262):
+        // - Prefer 2-digit `$nn` only if it is within the capture count.
+        // - Otherwise, treat as `$n` followed by a literal digit.
         let d1 = (x - (b'0' as u16)) as usize;
-        let mut n = d1;
-        let mut consumed = 2usize;
+
+        // Default to a 1-digit capture reference.
+        let mut digit_count = 1usize;
+        let mut index = d1;
+
+        // If there are >=2 digits, prefer the 2-digit form (unless it exceeds `capture_len`).
         if i + 2 < replace_units.len() {
           let x2 = replace_units[i + 2];
           if (b'0' as u16..=b'9' as u16).contains(&x2) {
+            digit_count = 2;
             let d2 = (x2 - (b'0' as u16)) as usize;
-            let two = d1.saturating_mul(10).saturating_add(d2);
-            if two > 0 {
-              n = two;
-              consumed = 3;
+            index = d1.saturating_mul(10).saturating_add(d2);
+
+            if index > capture_len {
+              // Fall back to the 1-digit form (`$n` + literal digit).
+              digit_count = 1;
+              index = d1;
             }
           }
         }
-        if n == 0 || n >= capture_count {
-          // Not a valid capture reference: emit `$` literally.
-          vec_try_push(&mut out, b'$' as u16)?;
-          i += 1;
-          continue;
+
+        let ref_len = 1usize.saturating_add(digit_count);
+        debug_assert!(ref_len == 2 || ref_len == 3);
+
+        if index >= 1 && index <= capture_len {
+          let start_slot = index.saturating_mul(2);
+          let end_slot = start_slot.saturating_add(1);
+          let (cap_start, cap_end) = (
+            captures.get(start_slot).copied().unwrap_or(usize::MAX),
+            captures.get(end_slot).copied().unwrap_or(usize::MAX),
+          );
+          if cap_start != usize::MAX && cap_end != usize::MAX && cap_end >= cap_start {
+            vec_try_extend_from_slice(&mut out, &input_units[cap_start..cap_end], || vm.tick())?;
+          }
+        } else {
+          // Not a valid capture reference: append the replacement pattern literally.
+          vec_try_extend_from_slice(&mut out, &replace_units[i..i + ref_len], || vm.tick())?;
         }
-        let start_slot = n.saturating_mul(2);
-        let end_slot = start_slot.saturating_add(1);
-        let (cap_start, cap_end) = (
-          captures.get(start_slot).copied().unwrap_or(usize::MAX),
-          captures.get(end_slot).copied().unwrap_or(usize::MAX),
-        );
-        if cap_start != usize::MAX && cap_end != usize::MAX && cap_end >= cap_start {
-          vec_try_extend_from_slice(&mut out, &input_units[cap_start..cap_end], || vm.tick())?;
-        }
-        i += consumed;
+
+        i += ref_len;
       }
       _ => {
         // Treat `$` as a literal.

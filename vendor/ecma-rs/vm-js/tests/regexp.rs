@@ -113,6 +113,17 @@ fn regexp_s_and_s_match_full_ecma262_whitespace_and_lineterminators() {
 }
 
 #[test]
+fn string_replace_get_substitution_two_digit_fallback() {
+  // Regression test for GetSubstitution `$nn` parsing: `$11` should be treated as `$1` + `1` when
+  // capture 11 does not exist (ECMA-262 GetSubstitution step 5.f.vi).
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#""uid=31".replace(/(uid=)(\d+)/, "$11" + 15)"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "uid=115");
+}
+
+#[test]
 fn match_all_iterator_is_iterable() {
   let mut rt = new_runtime();
   let value = rt

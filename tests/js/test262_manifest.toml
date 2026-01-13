@@ -1190,18 +1190,15 @@ reason = "vm-js: String.prototype.search does not yet implement RequireObjectCoe
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T1.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution `$nn` parsing is incomplete (e.g. `$11` should be treated as `$1` + `1` when capture 11 is absent)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T2.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution `$nn` parsing is incomplete (e.g. `$11` should be treated as `$1` + `1` when capture 11 is absent)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T3.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution `$nn` parsing is incomplete (e.g. `$11` should be treated as `$1` + `1` when capture 11 is absent)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/cstm-replace-on-bigint-primitive.js"
@@ -1225,8 +1222,7 @@ reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primiti
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution capture index parsing is incomplete (e.g. `$10`)."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag.js"
