@@ -586,9 +586,37 @@ pub fn apply_high_contrast_if_enabled(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::ui::contrast;
   use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use std::collections::HashMap;
   use std::sync::Arc;
+
+  fn hex_rgba(color: Color32) -> String {
+    format!(
+      "#{:02X}{:02X}{:02X}{:02X}",
+      color.r(),
+      color.g(),
+      color.b(),
+      color.a()
+    )
+  }
+
+  fn assert_min_contrast(
+    theme_name: &str,
+    fg_name: &str,
+    fg: Color32,
+    bg_name: &str,
+    bg: Color32,
+    min_ratio: f32,
+  ) {
+    let ratio = contrast::contrast_ratio(fg, bg);
+    assert!(
+      ratio >= min_ratio,
+      "{theme_name}: expected contrast({fg_name} {} over {bg_name} {}) >= {min_ratio:.2}, got {ratio:.2}",
+      hex_rgba(fg),
+      hex_rgba(bg)
+    );
+  }
 
   #[test]
   fn parse_browser_theme_env() {
@@ -751,5 +779,59 @@ mod tests {
       high_stroke.color.a(),
       normal_stroke.color.a()
     );
+  }
+
+  #[test]
+  fn browser_theme_palette_meets_minimum_contrast() {
+    // WCAG 2.1 AA thresholds:
+    // - Normal body text: 4.5:1
+    // - Non-text UI components / focus indicators: 3.0:1 (SC 1.4.11)
+    const MIN_PRIMARY_TEXT: f32 = 4.5;
+    const MIN_SECONDARY_TEXT: f32 = 3.0;
+    const MIN_FOCUS_STROKE: f32 = 3.0;
+
+    let cases: [(&str, BrowserTheme); 4] = [
+      ("light", BrowserTheme::light(None)),
+      ("dark", BrowserTheme::dark(None)),
+      ("light_high_contrast", BrowserTheme::light_high_contrast(None)),
+      ("dark_high_contrast", BrowserTheme::dark_high_contrast(None)),
+    ];
+
+    for (name, theme) in cases {
+      let c = &theme.colors;
+      let surfaces: [(&str, Color32); 3] =
+        [("bg", c.bg), ("surface", c.surface), ("raised", c.raised)];
+
+      for (surface_name, surface) in surfaces {
+        assert_min_contrast(
+          name,
+          "text_primary",
+          c.text_primary,
+          surface_name,
+          surface,
+          MIN_PRIMARY_TEXT,
+        );
+        assert_min_contrast(
+          name,
+          "text_secondary",
+          c.text_secondary,
+          surface_name,
+          surface,
+          MIN_SECONDARY_TEXT,
+        );
+      }
+
+      let focus_stroke = selection_stroke(&theme).color;
+      for (surface_name, surface) in surfaces {
+        assert_min_contrast(
+          name,
+          "focus/selection_stroke",
+          focus_stroke,
+          surface_name,
+          surface,
+          MIN_FOCUS_STROKE,
+        );
+      }
+    }
   }
 }

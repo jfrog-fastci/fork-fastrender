@@ -77,6 +77,10 @@ pub mod menu_bar;
 #[cfg(feature = "browser_ui")]
 pub mod icons;
 
+// WCAG-style contrast helpers used by chrome theme tests.
+#[cfg(feature = "browser_ui")]
+pub mod contrast;
+
 #[cfg(feature = "browser_ui")]
 pub mod theme;
 
