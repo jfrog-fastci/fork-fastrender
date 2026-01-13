@@ -3097,7 +3097,7 @@ pub(crate) fn compile_regexp_with_budget(
   }
   let capture_count = parser.capture_count as usize + 1;
   let named_capture_groups = mem::take(&mut parser.named_capture_groups);
-  let mut builder = ProgramBuilder::new(capture_count, named_capture_groups);
+  let mut builder = ProgramBuilder::new(capture_count, named_capture_groups, flags.has_either_unicode_flag());
   builder.compile_disjunction(&mut ctx, disj)?;
   builder.emit(&mut ctx, Inst::Match)?;
   Ok(builder.finish())
@@ -4637,10 +4637,22 @@ impl<'a> Parser<'a> {
         Ok(Atom::Literal(0x0000))
       }
       x if x == (b'k' as u16) => {
+        let unicode_mode = self.flags.has_either_unicode_flag();
+        let before_lt = self.idx;
         if self.eat(b'<' as u16) {
-          let name = self.parse_group_name(ctx)?;
-          Ok(Atom::NamedBackRef(name))
-        } else if self.flags.has_either_unicode_flag() {
+          match self.parse_group_name(ctx) {
+            Ok(name) => Ok(Atom::NamedBackRef(name)),
+            Err(RegExpCompileError::Syntax(_)) if !unicode_mode => {
+              // Annex B: If `\k<...` is not a valid named backreference syntax, fall back to
+              // `IdentityEscape` (`\k`) and leave `<...` to be parsed as literal pattern text.
+              //
+              // This preserves compatibility for patterns like `/\k<4>/` and `/\k<a/`.
+              self.idx = before_lt;
+              Ok(Atom::Literal(x as u32))
+            }
+            Err(e) => Err(e),
+          }
+        } else if unicode_mode {
           Err(RegExpSyntaxError {
             message: "Invalid regular expression",
           }
@@ -5065,15 +5077,21 @@ struct ProgramBuilder {
   repeat_count: usize,
   capture_count: usize,
   named_capture_groups: Vec<NamedCaptureGroup>,
+  unicode_mode: bool,
 }
 
 impl ProgramBuilder {
-  fn new(capture_count: usize, named_capture_groups: Vec<NamedCaptureGroup>) -> Self {
+  fn new(
+    capture_count: usize,
+    named_capture_groups: Vec<NamedCaptureGroup>,
+    unicode_mode: bool,
+  ) -> Self {
     Self {
       insts: Vec::new(),
       repeat_count: 0,
       capture_count,
       named_capture_groups,
+      unicode_mode,
     }
   }
 
@@ -5253,7 +5271,7 @@ impl ProgramBuilder {
         // Compile lookahead into a nested program that shares the outer capture slot numbering.
         let cloned_named =
           ProgramBuilder::try_clone_named_capture_groups(ctx, &self.named_capture_groups)?;
-        let mut nested = ProgramBuilder::new(self.capture_count, cloned_named);
+        let mut nested = ProgramBuilder::new(self.capture_count, cloned_named, self.unicode_mode);
         nested.compile_disjunction(ctx, disj)?;
         nested.emit(ctx, Inst::Match)?;
         let nested_prog = nested.finish();
@@ -5271,7 +5289,7 @@ impl ProgramBuilder {
         // The nested program is compiled and executed with -1 direction semantics.
         let cloned_named =
           ProgramBuilder::try_clone_named_capture_groups(ctx, &self.named_capture_groups)?;
-        let mut nested = ProgramBuilder::new(self.capture_count, cloned_named);
+        let mut nested = ProgramBuilder::new(self.capture_count, cloned_named, self.unicode_mode);
         nested.compile_disjunction_dir(ctx, disj, MatchDir::Backward)?;
         nested.emit(ctx, Inst::Match)?;
         let nested_prog = nested.finish();
@@ -5380,10 +5398,40 @@ impl ProgramBuilder {
           }
         }
         let Some(name_id) = found else {
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
+          if self.unicode_mode {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
           }
-          .into());
+
+          // Annex B: in non-UnicodeMode, a named backreference to an unresolved group name falls
+          // back to `IdentityEscape` (`\k`) and literal `<name>`.
+          //
+          // The parser has already consumed the full `\k<name>` sequence as a `NamedBackRef` atom,
+          // so emit the literal equivalent `k<name>` here.
+          if dir.is_forward() {
+            self.emit(ctx, Inst::Char(b'k' as u32))?;
+            self.emit(ctx, Inst::Char(b'<' as u32))?;
+            for (i, &u) in name.iter().enumerate() {
+              if i != 0 {
+                ctx.tick_every(i)?;
+              }
+              self.emit(ctx, Inst::Char(u as u32))?;
+            }
+            self.emit(ctx, Inst::Char(b'>' as u32))?;
+          } else {
+            self.emit(ctx, Inst::Char(b'>' as u32))?;
+            for (i, &u) in name.iter().rev().enumerate() {
+              if i != 0 {
+                ctx.tick_every(i)?;
+              }
+              self.emit(ctx, Inst::Char(u as u32))?;
+            }
+            self.emit(ctx, Inst::Char(b'<' as u32))?;
+            self.emit(ctx, Inst::Char(b'k' as u32))?;
+          }
+          return Ok(());
         };
         self.emit(ctx, Inst::NamedBackRef(name_id))?;
       }
