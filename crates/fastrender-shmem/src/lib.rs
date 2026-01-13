@@ -48,6 +48,20 @@
 //!
 //! The renderer then reads `FASTR_RENDER_SHMEM_FD`/`_LEN` and maps the region via
 //! [`ShmemRegion::map`].
+//!
+//! ## Linux memfd seals (defense-in-depth)
+//!
+//! When the Linux memfd backend is used and the kernel supports sealing, FastRender applies
+//! `F_SEAL_SHRINK | F_SEAL_GROW` and then locks the seal set with `F_SEAL_SEAL`.
+//!
+//! This prevents an untrusted renderer from *persistently* mutating seals (e.g. adding
+//! `F_SEAL_WRITE`) in a way that would break pooled/shared buffers across subsequent frames.
+//! Sealing is best-effort: if seals are unavailable due to kernel limitations or sandbox policy,
+//! buffer creation still succeeds.
+//!
+//! If you also run a file-descriptor sanitizer in the child (e.g. "close all fds except stdio +
+//! IPC"), remember to whitelist this memfd as well, otherwise the renderer will inherit the fd
+//! number but find it closed by the time it tries to `mmap` it.
 
 use memmap2::{MmapMut, MmapOptions};
 use std::ffi::CString;
@@ -381,9 +395,25 @@ fn create_linux_memfd_file(len: usize) -> io::Result<File> {
 
   // SAFETY: `memfd_create` is a syscall/FFI boundary; we pass a valid NUL-terminated string and
   // Linux-defined flags.
-  let fd = unsafe { libc::memfd_create(c_name.as_ptr(), libc::MFD_CLOEXEC) };
+  let mut fd =
+    unsafe { libc::memfd_create(c_name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING) };
+  if fd < 0 {
+    let err = io::Error::last_os_error();
+    // Older kernels may reject `MFD_ALLOW_SEALING` with EINVAL. Fall back to an unsealable memfd so
+    // we can still allocate anonymous shared memory.
+    if err.raw_os_error() == Some(libc::EINVAL) {
+      fd = unsafe { libc::memfd_create(c_name.as_ptr(), libc::MFD_CLOEXEC) };
+    }
+  }
+
   if fd >= 0 {
     truncate_fd(fd, len)?;
+    // Defense-in-depth: prevent untrusted peers from resizing the buffer and lock the seal set so
+    // they cannot later add `F_SEAL_WRITE` (persistent DoS when buffers are pooled/reused).
+    //
+    // If seals are unsupported (e.g. unsealable memfd fallback or restrictive sandbox), this is a
+    // best-effort no-op so allocation can still succeed.
+    let _ = lock_linux_memfd_seals(fd);
     // SAFETY: we just created `fd` and transfer ownership to `File`.
     return Ok(unsafe { File::from_raw_fd(fd) });
   }
@@ -402,6 +432,24 @@ fn create_linux_memfd_file(len: usize) -> io::Result<File> {
   truncate_fd(fallback_fd, len)?;
   // SAFETY: we just created `fallback_fd` and transfer ownership to `File`.
   Ok(unsafe { File::from_raw_fd(fallback_fd) })
+}
+
+#[cfg(target_os = "linux")]
+fn lock_linux_memfd_seals(fd: RawFd) -> io::Result<()> {
+  // If the fd doesn't support sealing (e.g. memfd created without MFD_ALLOW_SEALING), `F_ADD_SEALS`
+  // will fail with EPERM and `F_GET_SEALS` may fail with EINVAL. Treat those as best-effort
+  // unsupported rather than hard errors.
+  let seals: libc::c_int = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_SEAL;
+  // SAFETY: `fcntl(F_ADD_SEALS)` takes the fd and an int seal mask.
+  let rc = unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) };
+  if rc == 0 {
+    return Ok(());
+  }
+  let err = io::Error::last_os_error();
+  match err.raw_os_error() {
+    Some(code) if code == libc::EPERM || code == libc::EINVAL => Ok(()),
+    _ => Err(err),
+  }
 }
 
 #[cfg(target_os = "linux")]
@@ -467,6 +515,14 @@ mod tests {
     let initial_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     assert!(initial_flags & libc::FD_CLOEXEC != 0);
 
+    // If sealing is supported, we lock the seal set (F_SEAL_SEAL) and prevent resizing.
+    let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
+    if seals >= 0 {
+      assert!(seals & libc::F_SEAL_SHRINK != 0);
+      assert!(seals & libc::F_SEAL_GROW != 0);
+      assert!(seals & libc::F_SEAL_SEAL != 0);
+    }
+
     handle.clear_cloexec().expect("clear cloexec on memfd");
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     assert_eq!(flags & libc::FD_CLOEXEC, 0);
@@ -480,4 +536,3 @@ mod tests {
     assert_eq!(&region.as_slice()[0..4], b"F!SH");
   }
 }
-
