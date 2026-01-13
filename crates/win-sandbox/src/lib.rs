@@ -50,6 +50,18 @@
 //! The [`mitigations`] module provides a default mitigation policy bitmask suitable for headless
 //! renderer processes, and [`spawn_sandboxed`] can apply that policy at process creation time via
 //! `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`.
+//!
+//! ## Environment inheritance
+//!
+//! The process creation helpers in this crate (`spawn_sandboxed`, `restricted_token::spawn_with_token`,
+//! and the higher-level sandbox spawners) inherit the current process environment by default.
+//! `SpawnConfig.env` is an *override list* applied on top of `std::env::vars_os()`; this crate does
+//! **not** implement environment sanitization.
+//!
+//! Callers that treat the child process as untrusted (for example a renderer process in a
+//! multiprocess browser) should ensure secrets from the broker process environment are not leaked
+//! into the child. The root `fastrender` crate’s Windows sandbox spawner (`src/sandbox/windows.rs`)
+//! includes a sanitized environment allowlist for this reason.
 
 #[cfg(windows)]
 mod job;
