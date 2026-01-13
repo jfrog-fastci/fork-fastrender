@@ -1823,6 +1823,7 @@ fn marker_text_shadow_is_rendered_in_display_list() {
     shaped: None,
     is_marker: true,
     emphasis_offset: Default::default(),
+    document_selection: None,
   };
   marker.style = Some(style);
 

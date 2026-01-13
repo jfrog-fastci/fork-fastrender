@@ -91,6 +91,10 @@ fn serialized_inline_svg_content_from_html(html: &str, width: f32, height: f32) 
   find_svg(&box_tree.root)
 }
 
+fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Option<SvgContent> {
+  serialized_inline_svg_content_from_html(html, width, height)
+}
+
 fn count_object_replacements(node: &BoxNode) -> usize {
   let mut count = 0;
   if let BoxType::Replaced(repl) = &node.box_type {

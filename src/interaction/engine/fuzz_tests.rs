@@ -22,6 +22,7 @@ fn doc(children: Vec<DomNode>) -> DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children,
   }

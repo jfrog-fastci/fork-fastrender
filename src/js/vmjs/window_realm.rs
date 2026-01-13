@@ -41839,7 +41839,8 @@ mod tests {
         platform.register_wrapper(
           scope.heap(),
           doc2_obj,
-          DomNodeKey::new(doc2_id, NodeId::from_index(0)),
+          WeakGcObject::from(doc2_obj),
+          NodeId::from_index(0),
           DomInterface::Document,
         );
 
@@ -46170,7 +46171,8 @@ mod tests {
     // through to the WebIDL exotic hooks.
     let dom = crate::dom2::parse_html(
       "<!doctype html><html><body><div id=target class=\"a b\" data-foo=\"bar\"></div></body></html>",
-    )?;
+    )
+    .expect("parse html");
     let target = dom.get_element_by_id("target").expect("missing #target");
     let mut host = crate::js::HostDocumentState::new(dom);
     let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;

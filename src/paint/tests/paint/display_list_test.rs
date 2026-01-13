@@ -377,8 +377,7 @@ fn background_attachment_local_anchors_to_padding_box() {
   let mut style = ComputedStyle::default();
   style.set_background_layers(vec![BackgroundLayer {
     image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
-      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='2'%3E%3Crect width='1' height='1' fill='red'/%3E%3Crect y='1' width='1' height='1' fill='blue'/%3E%3C/svg%3E"
-        .into(),
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1' height='2'%3E%3Crect width='1' height='1' fill='red'/%3E%3Crect y='1' width='1' height='1' fill='blue'/%3E%3C/svg%3E",
     ))),
     attachment: BackgroundAttachment::Local,
     repeat: BackgroundRepeat::repeat_y(),
@@ -462,8 +461,7 @@ fn fragment_background_image_emits_image_item() {
   style.background_color = Rgba::TRANSPARENT;
   style.set_background_layers(vec![BackgroundLayer {
     image: Some(BackgroundImage::Url(BackgroundImageUrl::new(
-      "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"blue\"/></svg>"
-        .into(),
+      "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\" fill=\"blue\"/></svg>",
     ))),
     repeat: BackgroundRepeat::no_repeat(),
     ..Default::default()
@@ -1934,7 +1932,7 @@ fn preserve_3d_flattens_with_grouping_effects() {
       .push(crate::style::types::MaskLayer::default());
   }
   mask_style.mask_layers[0].image =
-    Some(BackgroundImage::Url(BackgroundImageUrl::new("mask.png".into())));
+    Some(BackgroundImage::Url(BackgroundImageUrl::new("mask.png")));
   assert_eq!(
     stacking_context_transform_style(mask_style),
     TransformStyle::Flat

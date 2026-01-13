@@ -6796,7 +6796,7 @@ fn document_selection_drag_creates_range_and_suppresses_click() {
     Point::new(199.0, 10.0),
   );
   assert!(
-    engine.interaction_state().document_has_selection,
+    engine.interaction_state().document_selection.is_some(),
     "dragging over text should create a document selection"
   );
 

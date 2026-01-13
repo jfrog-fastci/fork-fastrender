@@ -17577,7 +17577,7 @@ mod tests {
 
     let mut child_style = ComputedStyle::default();
     let mut layer = crate::style::types::MaskLayer::default();
-    layer.image = Some(BackgroundImage::Url(BackgroundImageUrl::new("#missing".into())));
+    layer.image = Some(BackgroundImage::Url(BackgroundImageUrl::new("#missing")));
     child_style.set_mask_layers(vec![layer]);
     let child_style = Arc::new(child_style);
 
@@ -19568,7 +19568,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(svg.into()))),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(svg))),
       size: BackgroundSize::Explicit(
         BackgroundSizeComponent::Length(Length::px(20.0)),
         BackgroundSizeComponent::Length(Length::px(20.0)),
@@ -19610,7 +19610,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.background_color = Rgba::TRANSPARENT;
     style.set_background_layers(vec![BackgroundLayer {
-      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(svg.into()))),
+      image: Some(BackgroundImage::Url(BackgroundImageUrl::new(svg))),
       ..BackgroundLayer::default()
     }]);
 
@@ -19705,7 +19705,7 @@ mod tests {
 
     let chosen = match content {
       ContentValue::Items(items) if items.len() == 1 => match &items[0] {
-        ContentItem::Url(url) => url.url.clone(),
+        ContentItem::Url(url) => url.clone(),
         other => panic!("unexpected content item: {other:?}"),
       },
       other => panic!("unexpected content value: {other:?}"),

@@ -14,9 +14,11 @@ fn new_xml_defaults_to_no_quirks_and_scripting_disabled() {
     DomNodeType::Document {
       quirks_mode,
       scripting_enabled,
+      is_html_document,
     } => {
       assert_eq!(*quirks_mode, QuirksMode::NoQuirks);
       assert!(!*scripting_enabled);
+      assert!(!*is_html_document);
     }
     other => panic!("expected document root, got {other:?}"),
   }

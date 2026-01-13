@@ -31892,7 +31892,7 @@ mod tests {
       .first()
       .and_then(|layer| layer.image.clone());
     let url = match image {
-      Some(BackgroundImage::Url(url)) => url.url,
+      Some(BackgroundImage::Url(url)) => url,
       other => panic!("unexpected background image: {:?}", other),
     };
 

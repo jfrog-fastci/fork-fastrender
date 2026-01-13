@@ -503,6 +503,7 @@ pub fn serialize_document_selection(
         shaped: None,
         is_marker: false,
         emphasis_offset: TextEmphasisOffset::default(),
+        document_selection: None,
       },
       vec![],
       style.clone(),

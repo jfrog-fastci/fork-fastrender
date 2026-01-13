@@ -30,6 +30,7 @@ fn marker_underline_paints_with_text() {
       shaped: None,
       is_marker: true,
       emphasis_offset: Default::default(),
+      document_selection: None,
     },
     vec![],
     style,

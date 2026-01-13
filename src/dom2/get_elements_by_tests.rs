@@ -76,6 +76,7 @@ fn get_elements_by_tag_name_matches_html_case_insensitively_and_other_namespaces
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![
       DomNode {
@@ -124,6 +125,7 @@ fn get_elements_by_tag_name_ns_supports_wildcards_and_html_namespace_equivalence
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![
       DomNode {
@@ -195,6 +197,7 @@ fn get_elements_by_class_name_tokenizes_by_dom_ascii_whitespace() {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {
@@ -286,6 +289,7 @@ fn get_elements_by_name_matches_name_attribute() {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![
       DomNode {

@@ -4938,7 +4938,7 @@ mod dom_dispatch_tests {
     let key = key_from_str(&mut scope, WRAPPER_DOCUMENT_KEY)?;
     match scope
       .heap_mut()
-      .object_set_existing_data_property_value(wrapper, key, Value::Object(document_obj))
+      .object_set_existing_data_property_value(wrapper, &key, Value::Object(document_obj))
     {
       Ok(()) => return Ok(()),
       Err(VmError::PropertyNotFound | VmError::PropertyNotData) => {}
@@ -5026,7 +5026,7 @@ mod dom_dispatch_tests {
 
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
-      .and_then(|data| data.document_obj)
+      .and_then(|data| data.document_obj())
       .ok_or(VmError::TypeError("missing window.document"))?;
     let document_key = WeakGcObject::from(document_obj);
 
@@ -5130,7 +5130,7 @@ mod dom_dispatch_tests {
 
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
-      .and_then(|data| data.document_obj)
+      .and_then(|data| data.document_obj())
       .ok_or(VmError::TypeError("missing window.document"))?;
     let document_key = WeakGcObject::from(document_obj);
 
@@ -5188,7 +5188,7 @@ mod dom_dispatch_tests {
 
     let document_obj = vm
       .user_data::<WindowRealmUserData>()
-      .and_then(|data| data.document_obj)
+      .and_then(|data| data.document_obj())
       .ok_or(VmError::TypeError("missing window.document"))?;
     let document_key = WeakGcObject::from(document_obj);
 

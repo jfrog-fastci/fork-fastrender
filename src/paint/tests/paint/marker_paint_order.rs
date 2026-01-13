@@ -26,6 +26,7 @@ fn marker_paints_after_background() {
       shaped: None,
       is_marker: true,
       emphasis_offset: Default::default(),
+      document_selection: None,
     },
     vec![],
     style,

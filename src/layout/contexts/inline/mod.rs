@@ -10595,6 +10595,11 @@ fn lowercase_word(word: &str, turkic: bool) -> String {
       continue;
     }
 
+    if turkic && *ch == '\u{0130}' {
+      out.push('i');
+      continue;
+    }
+
     if *ch == '\u{03A3}' {
       let has_prev = chars[..idx].iter().rev().any(|c| c.is_alphabetic());
       let has_next = chars[idx + 1..].iter().any(|c| c.is_alphabetic());
@@ -29978,7 +29983,23 @@ mod tests {
     let node = BoxNode::new_text(Arc::new(style), text.to_string());
     let item = ifc.create_text_item(&node, text).unwrap();
 
-    assert_eq!(item.text, "ıi̇ı");
+    assert_eq!(item.text, "ıiı");
+  }
+
+  #[test]
+  fn locale_lowercase_turkic_dotted_capital_i() {
+    assert_eq!(locale_lowercase("İSTANBUL", "tr"), "istanbul");
+  }
+
+  #[test]
+  fn locale_lowercase_turkic_dotless_capital_i() {
+    assert_eq!(locale_lowercase("I", "tr"), "\u{0131}");
+  }
+
+  #[test]
+  fn locale_lowercase_default_dotted_capital_i() {
+    // Rust/Unicode's default mapping lowercases İ to i + COMBINING DOT ABOVE.
+    assert_eq!(locale_lowercase("İ", ""), "i\u{0307}");
   }
 
   #[test]

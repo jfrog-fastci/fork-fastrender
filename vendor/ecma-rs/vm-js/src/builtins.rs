@@ -2158,7 +2158,7 @@ pub fn reflect_set_prototype_of(
   };
   scope.push_root(proto_val)?;
   Ok(Value::Bool(
-    scope.set_prototype_of_with_host_and_hooks(vm, host, hooks, target, proto)?,
+    scope.set_prototype_of_with_host_and_hooks(_vm, _host, _hooks, target, proto)?,
   ))
 }
 fn create_array_object(vm: &mut Vm, scope: &mut Scope<'_>, len: u32) -> Result<GcObject, VmError> {

@@ -191,6 +191,7 @@ fn list_marker_builder_preserves_run_metadata() {
       shaped: Some(Arc::new(vec![run.clone()])),
       is_marker: true,
       emphasis_offset: Default::default(),
+      document_selection: None,
     },
     Vec::new(),
     style,

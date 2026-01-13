@@ -66,6 +66,7 @@ fn make_dom_div_target() -> (Document, NodeId) {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {
@@ -3315,6 +3316,7 @@ fn transfer_node_listeners_moves_listeners_between_registries_and_remaps_node_id
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
       scripting_enabled: true,
+      is_html_document: true,
     },
     children: vec![element(
       "a",
