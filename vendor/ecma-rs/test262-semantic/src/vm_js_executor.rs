@@ -22,8 +22,12 @@ use vm_js::{
   StackFrame, TerminationReason, Value, Vm, VmError, VmOptions,
 };
   
-const DEFAULT_HEAP_MAX_BYTES: usize = 64 * 1024 * 1024;
-const DEFAULT_HEAP_GC_THRESHOLD_BYTES: usize = 32 * 1024 * 1024;
+// Some test262 cases intentionally construct very large strings (e.g. using
+// `"0".repeat(2 ** 24)` to stress parser scanning logic). Keep the default heap
+// large enough that those tests exercise the VM rather than failing with OOM in
+// the harness.
+const DEFAULT_HEAP_MAX_BYTES: usize = 512 * 1024 * 1024;
+const DEFAULT_HEAP_GC_THRESHOLD_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 struct AsyncDoneError {

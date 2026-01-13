@@ -3,8 +3,7 @@ use crate::exec::{generator_resume, GeneratorResumeInput, GeneratorResumeOutcome
 use crate::function::{CallHandler, FunctionData, ThisMode};
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::regexp::{
-  advance_string_index, compile_regexp_with_budget, estimated_regexp_compilation_bytes,
-  RegExpCompileError, RegExpExecMemoryBudget, RegExpFlags,
+  advance_string_index, compile_regexp_with_budget, RegExpCompileError, RegExpExecMemoryBudget, RegExpFlags,
 };
 use crate::string::{utf16_to_utf8_lossy_with_tick, JsString};
 use crate::{
@@ -14693,22 +14692,12 @@ fn regexp_constructor_impl(
 
   // Compile pattern.
   let program = {
-    // Preflight heap limits **before** allocating large off-heap compilation buffers.
-    let pat_len = {
-      let js = scope.heap().get_string(source_s)?;
-      js.len_code_units()
-    };
-    let estimated_bytes = estimated_regexp_compilation_bytes(pat_len);
-    // Avoid compiling patterns that would require more memory than we have headroom for under the
-    // configured heap limits. The compilation itself uses fallible allocations, but this check
-    // ensures hostile patterns cannot bypass `HeapLimits` by allocating large off-heap buffers.
+    // `compile_regexp_with_budget` uses fallible allocations and charges off-heap compilation
+    // buffers against `HeapLimits` via `CompileCtx`, so we can attempt compilation directly rather
+    // than rejecting purely based on `pattern.length` (which would incorrectly fail for patterns
+    // like `\\u{000...01234}` that are huge but compile to a tiny program).
     let heap = scope.heap();
-    let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
-    if estimated_bytes > headroom {
-      return Err(VmError::OutOfMemory);
-    }
-
-    let js = scope.heap().get_string(source_s)?;
+    let js = heap.get_string(source_s)?;
     let mut tick = || vm.tick();
     match compile_regexp_with_budget(js.as_code_units(), parsed_flags, heap, &mut tick) {
       Ok(p) => p,
@@ -19003,21 +18992,12 @@ pub fn string_prototype_repeat(
   }
   let count = n as usize;
 
-  let units: Vec<u16> = {
-    let js = scope.heap().get_string(s)?;
-    let slice = js.as_code_units();
-    let mut units: Vec<u16> = Vec::new();
-    units
-      .try_reserve_exact(slice.len())
-      .map_err(|_| VmError::OutOfMemory)?;
-    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
-    units
-  };
-  if units.is_empty() {
+  let slice_len = scope.heap().get_string(s)?.len_code_units();
+  if slice_len == 0 {
     return Ok(Value::String(scope.alloc_string("")?));
   }
 
-  let total_len = match units.len().checked_mul(count) {
+  let total_len = match slice_len.checked_mul(count) {
     Some(n) => n,
     None => {
       let intr = require_intrinsics(vm)?;
@@ -19026,16 +19006,26 @@ pub fn string_prototype_repeat(
     }
   };
 
+  // Ensure we can allocate the final string in the GC heap before allocating a large intermediate
+  // buffer. This also allows the collector to run before we reserve host memory.
+  scope.ensure_can_alloc_string_units(total_len)?;
+
   let mut out: Vec<u16> = Vec::new();
   out
     .try_reserve_exact(total_len)
     .map_err(|_| VmError::OutOfMemory)?;
 
-  for i in 0..count {
-    if i % 1024 == 0 {
-      vm.tick()?;
-    }
-    vec_try_extend_from_slice(&mut out, &units, || vm.tick())?;
+  // Fast path: build by doubling the already-written prefix. This avoids `O(count)` loop overhead
+  // for large `count` values (e.g. `"0".repeat(2 ** 24)` in test262), while still performing only
+  // `O(total_len)` element copies.
+  let slice = scope.heap().get_string(s)?.as_code_units();
+  vec_try_extend_from_slice(&mut out, slice, || vm.tick())?;
+  while out.len() < total_len {
+    vm.tick()?;
+    let len = out.len();
+    let copy_len = len.min(total_len.saturating_sub(len));
+    // `extend_from_within` will not allocate because we reserved `total_len` above.
+    out.extend_from_within(0..copy_len);
   }
 
   let out = scope.alloc_string_from_u16_vec(out)?;

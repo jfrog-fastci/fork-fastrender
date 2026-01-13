@@ -190,12 +190,53 @@ fn eval_string_to_utf8_lossy_with_tick(
 ) -> Result<String, VmError> {
   let units = heap.get_string(source_string)?.as_code_units();
 
-  let mut out = String::new();
-  // Worst-case UTF-8 expansion is 3 bytes per UTF-16 code unit (surrogates become U+FFFD).
-  let reserve = units.len().checked_mul(3).ok_or(VmError::OutOfMemory)?;
-  out.try_reserve(reserve).map_err(|_| VmError::OutOfMemory)?;
-
   const TICK_EVERY: usize = 1024;
+
+  // Compute the exact UTF-8 length up-front so we can pre-reserve without over-allocating.
+  //
+  // This keeps large ASCII eval sources (like huge RegExp literals) from reserving 3x more memory
+  // than needed, while still ensuring all allocations remain fallible (no `String` growth during
+  // `push`).
+  let mut needed_bytes: usize = 0;
+  {
+    let mut i = 0usize;
+    while i < units.len() {
+      if i % TICK_EVERY == 0 {
+        vm.tick()?;
+      }
+      let u = units[i];
+      let (ch, consumed) = if (0xD800..=0xDBFF).contains(&u) {
+        if let Some(&u2) = units.get(i + 1) {
+          if (0xDC00..=0xDFFF).contains(&u2) {
+            let hi = (u as u32) - 0xD800;
+            let lo = (u2 as u32) - 0xDC00;
+            let cp = (hi << 10) + lo + 0x10000;
+            (char::from_u32(cp).unwrap_or('\u{FFFD}'), 2)
+          } else {
+            ('\u{FFFD}', 1)
+          }
+        } else {
+          ('\u{FFFD}', 1)
+        }
+      } else if (0xDC00..=0xDFFF).contains(&u) {
+        ('\u{FFFD}', 1)
+      } else {
+        (char::from_u32(u as u32).unwrap_or('\u{FFFD}'), 1)
+      };
+
+      needed_bytes = needed_bytes
+        .checked_add(ch.len_utf8())
+        .ok_or(VmError::OutOfMemory)?;
+      i = i.saturating_add(consumed);
+    }
+  }
+
+  let mut out = String::new();
+  out
+    .try_reserve_exact(needed_bytes)
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  // Second pass: write the actual UTF-8 text.
   let mut i = 0usize;
   while i < units.len() {
     if i % TICK_EVERY == 0 {
