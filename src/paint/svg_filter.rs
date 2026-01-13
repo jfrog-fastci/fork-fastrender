@@ -3119,7 +3119,7 @@ pub(crate) fn apply_svg_filter_with_cache(
             let inferred_paint = if should_infer_paint {
               let mut clipped = pixmap.clone();
               clip_to_region(&mut clipped, filter_region)?;
-              infer_solid_opaque_paint(&clipped)
+              infer_solid_opaque_paint(&clipped)?
             } else {
               None
             };
@@ -3303,9 +3303,11 @@ pub(crate) fn apply_svg_filter_with_cache(
   let uses_stroke_paint = def.uses_stroke_paint_input();
   let should_infer_paint = (uses_fill_paint && inputs.fill_paint.is_none())
     || (uses_stroke_paint && inputs.stroke_paint.is_none());
-  let inferred_paint = should_infer_paint
-    .then(|| infer_solid_opaque_paint(pixmap))
-    .flatten();
+  let inferred_paint = if should_infer_paint {
+    infer_solid_opaque_paint(pixmap)?
+  } else {
+    None
+  };
   let fill_paint = if uses_fill_paint {
     inputs.fill_paint.or(inferred_paint)
   } else {
@@ -3736,9 +3738,11 @@ fn apply_svg_filter_scaled(
 
   let should_infer_paint = (uses_fill_paint && inputs.fill_paint.is_none())
     || (uses_stroke_paint && inputs.stroke_paint.is_none());
-  let inferred_paint = should_infer_paint
-    .then(|| infer_solid_opaque_paint(pixmap))
-    .flatten();
+  let inferred_paint = if should_infer_paint {
+    infer_solid_opaque_paint(pixmap)?
+  } else {
+    None
+  };
   let fill_paint = if uses_fill_paint {
     inputs.fill_paint.or(inferred_paint)
   } else {
@@ -4640,29 +4644,37 @@ struct ResolvedStandardInputs<'a> {
   stroke_paint: Option<Rgba>,
 }
 
-fn infer_solid_opaque_paint(pixmap: &Pixmap) -> Option<Rgba> {
+fn infer_solid_opaque_paint(pixmap: &Pixmap) -> RenderResult<Option<Rgba>> {
   let mut base: Option<(u8, u8, u8)> = None;
-  for px in pixmap.pixels().iter() {
+  for (idx, px) in pixmap.pixels().iter().enumerate() {
+    if idx % FILTER_DEADLINE_STRIDE == 0 {
+      check_active(RenderStage::Paint)?;
+    }
     if px.alpha() != 255 {
       continue;
     }
     base = Some((px.red(), px.green(), px.blue()));
     break;
   }
-  let (r, g, b) = base?;
+  let Some((r, g, b)) = base else {
+    return Ok(None);
+  };
 
   // Only accept a paint when all non-transparent pixels share the same unpremultiplied RGB.
-  for px in pixmap.pixels().iter() {
+  for (idx, px) in pixmap.pixels().iter().enumerate() {
+    if idx % FILTER_DEADLINE_STRIDE == 0 {
+      check_active(RenderStage::Paint)?;
+    }
     let a = px.alpha();
     if a == 0 {
       continue;
     }
     let unpremul = |c: u8| -> u8 { ((c as u16 * 255 + (a as u16 / 2)) / a as u16) as u8 };
     if unpremul(px.red()) != r || unpremul(px.green()) != g || unpremul(px.blue()) != b {
-      return None;
+      return Ok(None);
     }
   }
-  Some(Rgba::new(r, g, b, 1.0))
+  Ok(Some(Rgba::new(r, g, b, 1.0)))
 }
 
 fn render_fe_image(
@@ -7329,6 +7341,27 @@ mod unit_tests {
     let calls_cb = Arc::clone(&calls);
     let cancel = Arc::new(move || calls_cb.fetch_add(1, Ordering::SeqCst) >= 1);
     (RenderDeadline::new(None, Some(cancel)), calls)
+  }
+
+  #[test]
+  fn infer_solid_opaque_paint_respects_cancel_callback() {
+    let (deadline, calls) = deadline_after_first_check();
+    let mut pixmap = new_pixmap(1024, 1024).unwrap();
+    pixmap.data_mut().fill(0);
+
+    let result = with_deadline(Some(&deadline), || infer_solid_opaque_paint(&pixmap));
+
+    assert!(
+      matches!(
+        result,
+        Err(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
+      "expected timeout, got {result:?}"
+    );
+    assert!(calls.load(Ordering::SeqCst) >= 2);
   }
 
   #[test]
