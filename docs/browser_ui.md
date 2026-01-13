@@ -514,6 +514,10 @@ Notes:
   - page focus → page context menu
   - focused tab group chip → tab group context menu (rename/color/ungroup)
 
+For a cross-platform, end-to-end **manual regression checklist** (address bar, tabs, downloads,
+menus, accessibility), see
+[`docs/browser_chrome_manual_test_matrix.md`](browser_chrome_manual_test_matrix.md).
+
 ## Menu bar
 
 The windowed `browser` UI can optionally show a browser-style **in-window** menu bar for
