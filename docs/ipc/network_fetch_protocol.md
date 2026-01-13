@@ -390,6 +390,27 @@ Request body note:
 - `body_b64` is base64-encoded and hard-limited: decoded bytes must be `<= IPC_MAX_REQUEST_BODY_BYTES`
   (1 MiB). Larger uploads need a future chunked request-body extension.
 
+### `FetchHttpRequest` header semantics (security boundary)
+
+`IpcRequest::FetchHttpRequest` is the only request type that carries **user-specified** HTTP headers
+(`IpcHttpRequest.headers`). This is a security-sensitive surface: a compromised renderer must not be
+able to spoof privileged headers like `Cookie`, `Host`, `Origin`, `Referer`, or `Sec-Fetch-*`.
+
+Protocol/implementation expectations:
+
+- `headers` is an ordered list of `(name, value)` pairs and may contain duplicates.
+- The network process must:
+  - validate header tokens and reject NUL/CR/LF in names/values (already enforced by
+    `validate_ipc_request`),
+  - drop/ignore **forbidden Fetch request headers** (including `Cookie`, `Host`, `Origin`,
+    `Referer`, `User-Agent`, and any `Sec-*`/`Proxy-*` headers), and
+  - synthesize/overwrite security-relevant headers based on `IpcFetchRequest` metadata (destination,
+    origin/referrer, credentials mode) and its own policy.
+- In-tree reference: `HttpFetcher` enforces this when executing `fetch_http_request` via:
+  - `merge_user_request_headers(...)` and
+  - `fetch_http_request_header_forbidden(...)`
+  in `src/resource.rs`.
+
 ### Request → response mapping (what peers should accept)
 
 The protocol is “RPC-like”: each request results in exactly one logical response for the same
