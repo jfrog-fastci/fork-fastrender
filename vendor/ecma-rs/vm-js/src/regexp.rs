@@ -332,6 +332,7 @@ impl RegExpFlags {
     }
     out
   }
+
   /// True when either the Unicode (`u`) or Unicode sets (`v`) flags are enabled.
   ///
   /// The RegExp parser has a handful of early-error restrictions that apply in "UnicodeMode",

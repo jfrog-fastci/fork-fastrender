@@ -6618,57 +6618,6 @@ impl Intrinsics {
       )?;
     }
 
-    // Promise.all / Promise.race / Promise.allSettled / Promise.any
-    {
-      let all_call = vm.register_native_call(builtins::promise_all)?;
-      let all_name = scope.alloc_string("all")?;
-      let all = alloc_rooted_native_function(scope, roots, all_call, None, all_name, 1)?;
-      scope
-        .heap_mut()
-        .object_set_prototype(all, Some(function_prototype))?;
-      let key = PropertyKey::from_string(scope.alloc_string("all")?);
-      scope.define_property(promise, key, data_desc(Value::Object(all), true, false, true))?;
-
-      let race_call = vm.register_native_call(builtins::promise_race)?;
-      let race_name = scope.alloc_string("race")?;
-      let race = alloc_rooted_native_function(scope, roots, race_call, None, race_name, 1)?;
-      scope
-        .heap_mut()
-        .object_set_prototype(race, Some(function_prototype))?;
-      let key = PropertyKey::from_string(scope.alloc_string("race")?);
-      scope.define_property(promise, key, data_desc(Value::Object(race), true, false, true))?;
-
-      let all_settled_call = vm.register_native_call(builtins::promise_all_settled)?;
-      let all_settled_name = scope.alloc_string("allSettled")?;
-      let all_settled = alloc_rooted_native_function(
-        scope,
-        roots,
-        all_settled_call,
-        None,
-        all_settled_name,
-        1,
-      )?;
-      scope.heap_mut().object_set_prototype(
-        all_settled,
-        Some(function_prototype),
-      )?;
-      let key = PropertyKey::from_string(scope.alloc_string("allSettled")?);
-      scope.define_property(
-        promise,
-        key,
-        data_desc(Value::Object(all_settled), true, false, true),
-      )?;
-
-      let any_call = vm.register_native_call(builtins::promise_any)?;
-      let any_name = scope.alloc_string("any")?;
-      let any = alloc_rooted_native_function(scope, roots, any_call, None, any_name, 1)?;
-      scope
-        .heap_mut()
-        .object_set_prototype(any, Some(function_prototype))?;
-      let key = PropertyKey::from_string(scope.alloc_string("any")?);
-      scope.define_property(promise, key, data_desc(Value::Object(any), true, false, true))?;
-    }
-
     // Promise.prototype.then / Promise.prototype.catch / Promise.prototype.finally
     let promise_prototype_then;
     {
