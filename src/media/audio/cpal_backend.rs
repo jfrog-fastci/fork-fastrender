@@ -13,7 +13,7 @@ use super::{
 use super::convert::sanitize_sample;
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
-use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy};
+use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy, RestartState};
 use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
 use crate::media::audio_clock::InterpolatedAudioClock;
 use cpal::traits::{HostTrait, StreamTrait};
@@ -70,6 +70,11 @@ const STREAM_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const STREAM_RESTART_MAX_ATTEMPTS: usize = 5;
 const STREAM_RESTART_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
 const STREAM_RESTART_MAX_BACKOFF: Duration = Duration::from_millis(500);
+// If CPAL stops invoking the output callback without triggering the error callback (can happen on
+// some platforms during device loss), `InterpolatedAudioClock` will clamp and eventually stall the
+// audio master clock. Detect this and force a restart.
+const STREAM_STALL_TIMEOUT_MIN: Duration = Duration::from_millis(100);
+const STREAM_STALL_TIMEOUT_MAX: Duration = Duration::from_secs(1);
 
 static FALLBACK_WARN_ONCE: Once = Once::new();
 
@@ -291,9 +296,11 @@ impl CpalAudioBackend {
 
       let _ = ready_tx.send(Ok(ready.clone()));
 
-      let (config, _fixed_callback_frames, last_callback_frames, estimated_latency_nanos, mixer, clock) =
+      let (config, fixed_callback_frames, last_callback_frames, estimated_latency_nanos, mixer, clock) =
         ready;
+      let sample_rate_hz = config.sample_rate_hz;
       let clock_for_fallback = clock.clone();
+      let last_callback_frames_watchdog = last_callback_frames.clone();
       let policy = RestartPolicy {
         max_attempts: STREAM_RESTART_MAX_ATTEMPTS,
         initial_backoff: STREAM_RESTART_INITIAL_BACKOFF,
@@ -311,14 +318,53 @@ impl CpalAudioBackend {
       };
       let mut manager = ResilientStreamManager::new_running(factory, policy, stream);
 
+      let mut last_frames_written = clock_for_fallback.frames_written();
+      let mut last_progress_at = Instant::now();
+
       loop {
         let now = Instant::now();
 
+        // Detect output callback stalls even if CPAL never invokes the error callback (e.g. some
+        // device-loss/hotplug scenarios). Without this, `InterpolatedAudioClock` will clamp and
+        // eventually stop advancing, hanging media playback.
+        if matches!(manager.state(), RestartState::Running) {
+          let frames_written = clock_for_fallback.frames_written();
+          if frames_written != last_frames_written {
+            last_frames_written = frames_written;
+            last_progress_at = now;
+          } else {
+            let callback_frames_hint = fixed_callback_frames.or_else(|| {
+              let v = last_callback_frames_watchdog.load(Ordering::Relaxed);
+              (v != 0).then_some(v)
+            });
+            let callback_duration = callback_frames_hint
+              .map(|frames| frames_to_duration(sample_rate_hz, frames as u64))
+              .unwrap_or(STREAM_RESTART_POLL_INTERVAL);
+            let mut stall_timeout = callback_duration.saturating_mul(10);
+            if stall_timeout < STREAM_STALL_TIMEOUT_MIN {
+              stall_timeout = STREAM_STALL_TIMEOUT_MIN;
+            }
+            if stall_timeout > STREAM_STALL_TIMEOUT_MAX {
+              stall_timeout = STREAM_STALL_TIMEOUT_MAX;
+            }
+            if now.duration_since(last_progress_at) >= stall_timeout {
+              manager.request_restart(now);
+              last_progress_at = now;
+            }
+          }
+        }
+
         if errors.pending.swap(false, Ordering::AcqRel) {
           manager.request_restart(now);
+          last_progress_at = now;
         }
 
         let out = manager.tick(now);
+        if out.opened_stream {
+          // Give the new stream time to start invoking callbacks before the stall watchdog kicks in.
+          last_progress_at = now;
+          last_frames_written = clock_for_fallback.frames_written();
+        }
         if out.entered_fallback {
           let played = clock_for_fallback.now_at(now);
           let start = now.checked_sub(played).unwrap_or(now);
