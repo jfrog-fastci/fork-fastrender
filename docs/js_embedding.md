@@ -114,6 +114,9 @@ capabilities via a privileged `globalThis.chrome` object.
 This privileged bridge must **never** be installed in untrusted content realms. See
 [`docs/chrome_js_bridge.md`](chrome_js_bridge.md) for the API surface and installation model.
 
+Renderer-chrome also reserves privileged internal URL schemes (`chrome://` assets and
+`chrome-action:` actions); see [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md).
+
 ### Minimal Rust example (create doc → run loop → render)
 
 This example uses the production `vm-js` runtime via the convenience constructors on `BrowserTab`
