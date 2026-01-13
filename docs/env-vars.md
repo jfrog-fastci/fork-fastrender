@@ -235,8 +235,11 @@ scroll/resize smoothness, and input latency). See [`docs/perf-logging.md#browser
 and [`instructions/browser_responsiveness.md`](../instructions/browser_responsiveness.md) for how to
 interpret the metrics.
 
-For an interactive capture helper (sets `FASTR_PERF_LOG=1`, runs under `run_limited`, and tees the
-stdout JSONL stream to a file), see
+CLI equivalents (override env vars): `browser --perf-log` (stdout) and
+`browser --perf-log-out <path>` (write JSONL to a file).
+
+For an interactive capture helper (runs under `run_limited`, passes `browser --perf-log`, and tees
+the stdout JSONL stream to a file), see
 [`scripts/capture_browser_perf_log.sh`](../scripts/capture_browser_perf_log.sh).
 
 - `FASTR_PERF_LOG=0|1` – enable JSONL (“JSON Lines”) perf logging in the windowed `browser` UI.
@@ -259,6 +262,12 @@ stdout JSONL stream to a file), see
     FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
       timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
       bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
+    ```
+    - CLI equivalent (preferred):
+    ```bash
+    timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+      bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+      --perf-log-out target/browser_perf.jsonl about:test-layout-stress
     ```
 - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – output path for `FASTR_PERF_LOG` JSONL events.
   - When unset/empty, events go to **stdout**.

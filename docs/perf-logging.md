@@ -44,13 +44,22 @@ Quick start (HUD + JSONL perf log enabled):
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --perf-log about:test-layout-stress
 ```
 
-### Windowed JSONL perf logging (`FASTR_PERF_LOG=1`)
+### Windowed JSONL perf logging (`browser --perf-log` / `FASTR_PERF_LOG=1`)
 
-Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
-line) describing UI responsiveness events.
+The windowed `browser` UI can emit a lightweight **JSON Lines** perf log (one JSON object per line)
+describing UI responsiveness events.
 
-For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1`, runs under the
-repo guardrails, and writes the JSONL stream to a file):
+Enable it via either:
+
+- CLI (preferred):
+  - `browser --perf-log` emits JSONL events to **stdout**.
+  - `browser --perf-log-out <path>` writes JSONL events to a file (creates parent directories).
+- Environment variables (legacy / wrapper-friendly):
+  - `FASTR_PERF_LOG=1` enables perf logging.
+  - `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` redirects output to a file instead of stdout.
+
+For interactive captures, prefer the convenience wrapper (runs under the repo guardrails, passes
+`browser --perf-log`, and tees the stdout JSONL stream to a file):
 
 ```bash
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
@@ -59,7 +68,15 @@ timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layo
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
 ```
 
-Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
+Typical run (CLI; writes a JSONL log you can post-process with `jq`, pandas, etc.):
+
+```bash
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+  --perf-log-out target/browser_perf.jsonl about:test-layout-stress
+```
+
+Legacy env-var equivalent:
 
 ```bash
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \

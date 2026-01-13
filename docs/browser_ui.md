@@ -1125,19 +1125,19 @@ For machine-readable UI responsiveness metrics (frame times during scroll/resize
 navigation TTFP), enable JSONL perf logging:
 
 ```bash
-# Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1, and tees stdout JSONL to a file.
+# Convenience wrapper: runs under run_limited, passes `browser --perf-log`, and tees stdout JSONL to a file.
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
 # Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
 timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary --url about:test-layout-stress --out target/browser_perf.jsonl
 ```
 
-Manual invocation (equivalent, but requires setting env vars / output paths yourself):
+Manual invocation (write perf JSONL directly to a file):
 
 ```bash
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+  --perf-log-out target/browser_perf.jsonl about:test-layout-stress
 ```
 
 For automated/headless runs, use the `ui_perf_smoke` harness:

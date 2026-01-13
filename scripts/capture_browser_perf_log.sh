@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Capture the windowed browser's JSONL perf log (`FASTR_PERF_LOG`) under the repo-mandated
+# Capture the windowed browser's JSONL perf log (`browser --perf-log`) under the repo-mandated
 # guardrails.
 #
 # Guardrails (mandatory):
@@ -25,7 +25,7 @@ usage:
   scripts/capture_browser_perf_log.sh [--summary] <out.jsonl> [url] [browser args...]
   scripts/capture_browser_perf_log.sh --out <out.jsonl> [--url <url>] [--summary] [-- <browser args...>]
 
-Capture the windowed `browser` perf JSONL log (FASTR_PERF_LOG=1) to <out.jsonl>.
+Capture the windowed `browser` perf JSONL log (`browser --perf-log`) to <out.jsonl>.
 
 Examples:
   # Positional:
@@ -38,7 +38,7 @@ Examples:
   bash scripts/capture_browser_perf_log.sh --summary target/browser.perf.jsonl about:test-layout-stress
 
 Notes:
-  - Perf logs are emitted on stdout and also written to <out.jsonl> via `tee`.
+  - Perf logs are emitted on stdout (via `browser --perf-log`) and also written to <out.jsonl> via `tee`.
   - Script progress messages (including optional summaries) are written to stderr.
 EOF
 }
@@ -164,6 +164,25 @@ else
     bash "${repo_root}/scripts/cargo_agent.sh" run --release --features browser_ui --bin browser --
   )
 fi
+
+# This script expects perf events on stdout so it can tee to the output file. Disallow passing
+# `--perf-log-out` (which would redirect output away from stdout).
+for arg in "${extra_browser_args[@]}"; do
+  case "${arg}" in
+    --perf-log-out|--perf-log-out=*)
+      echo "capture_browser_perf_log: error: do not pass ${arg}; this script captures stdout JSONL via tee." >&2
+      echo "hint: run the browser directly with: browser --perf-log-out <path> ..." >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Prefer the CLI flag so callers do not need to set env vars. Allow overriding if the caller passed
+# `--perf-log` explicitly in forwarded args.
+if ! printf '%s\n' "${extra_browser_args[@]}" | grep -q -- '^--perf-log$'; then
+  browser_cmd+=("--perf-log")
+fi
+
 if [[ -n "${url}" ]]; then
   browser_cmd+=("${url}")
 fi
@@ -174,7 +193,7 @@ fi
 echo "capture_browser_perf_log: capturing perf JSONL (stdout → tee → ${out_path})" >&2
 
 set +e
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= "${browser_cmd[@]}" | tee -- "${out_path}"
+"${browser_cmd[@]}" | tee -- "${out_path}"
 # NOTE: `PIPESTATUS` is updated after *every* command (including simple assignments). Capture both
 # pipeline statuses in a single assignment statement so `set -u` doesn't explode mid-script.
 browser_status=${PIPESTATUS[0]:-0} tee_status=${PIPESTATUS[1]:-0}

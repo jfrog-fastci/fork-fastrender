@@ -182,10 +182,11 @@ binary)”). Notably:
   `wgpu` to use a fallback (software) adapter when selecting a GPU for the windowed UI.
 - `FASTR_BROWSER_WGPU_BACKENDS=...` / `browser --wgpu-backends ...` (alias: `--wgpu-backend`) – restrict
   the `wgpu` backend set (for example `gl`) when the default backend selection fails.
-- `FASTR_PERF_LOG=1` – enable JSONL responsiveness logging for the windowed UI (frame times, input
-  latency, TTFP, CPU usage). See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
-- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` – optional output path for `FASTR_PERF_LOG` events (when unset,
-  logs are written to stdout so they can be piped/tee'd).
+- `FASTR_PERF_LOG=1` / `browser --perf-log` – enable JSONL responsiveness logging for the windowed UI
+  (frame times, input latency, TTFP, CPU usage). See
+  [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness).
+- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` / `browser --perf-log-out <path>` – write the responsiveness
+  JSONL log to a file (instead of stdout).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).
@@ -237,10 +238,10 @@ timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud \
   --perf-log --perf-log-out target/browser_perf.jsonl \
   about:test-layout-stress
 
-# Manual invocation:
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
-  timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
+# Manual invocation (write JSONL directly to a file):
+timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+  --perf-log-out target/browser_perf.jsonl about:test-layout-stress
 ```
 
 Summarize a captured log with:
@@ -273,7 +274,7 @@ metrics map to the workstream targets.
 Most `browser` output is written to stdout/stderr (run it from a terminal). The main exceptions are
 the optional file outputs:
 
-- `FASTR_PERF_LOG_OUT=/path/to/log.jsonl` (responsiveness JSONL)
+- `browser --perf-log-out /path/to/log.jsonl` (or `FASTR_PERF_LOG_OUT=...` + `FASTR_PERF_LOG=1`)
 - `FASTR_BROWSER_TRACE_OUT=/path/to/trace.json` (Perfetto/Chrome trace)
 
 If the window opens but nothing renders, check for:

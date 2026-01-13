@@ -80,9 +80,8 @@ timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --summary \
 
 # Manual run: write perf JSONL directly to a file.
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
-    about:test-layout-stress
+  --perf-log-out target/browser_perf.jsonl about:test-layout-stress
 
 # Or summarize later (supports --from-ms/--to-ms windowing):
 timeout -k 10 600 bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- \
