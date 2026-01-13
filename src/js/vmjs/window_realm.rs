@@ -37187,32 +37187,44 @@ fn init_window_globals(
     scope.push_root(Value::Object(previous_element_sibling_get_func))?;
 
     let next_element_sibling_key = alloc_key(&mut scope, "nextElementSibling")?;
-    scope.define_property(
-      element_proto,
-      next_element_sibling_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(next_element_sibling_get_func),
-          set: Value::Undefined,
+    if scope
+      .heap()
+      .object_get_own_property(element_proto, &next_element_sibling_key)?
+      .is_none()
+    {
+      scope.define_property(
+        element_proto,
+        next_element_sibling_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(next_element_sibling_get_func),
+            set: Value::Undefined,
+          },
         },
-      },
-    )?;
+      )?;
+    }
 
     let previous_element_sibling_key = alloc_key(&mut scope, "previousElementSibling")?;
-    scope.define_property(
-      element_proto,
-      previous_element_sibling_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: true,
-        kind: PropertyKind::Accessor {
-          get: Value::Object(previous_element_sibling_get_func),
-          set: Value::Undefined,
+    if scope
+      .heap()
+      .object_get_own_property(element_proto, &previous_element_sibling_key)?
+      .is_none()
+    {
+      scope.define_property(
+        element_proto,
+        previous_element_sibling_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Accessor {
+            get: Value::Object(previous_element_sibling_get_func),
+            set: Value::Undefined,
+          },
         },
-      },
-    )?;
+      )?;
+    }
 
     // Element.clientTop
     let client_top_get_call_id = vm.register_native_call(element_client_top_get_native)?;

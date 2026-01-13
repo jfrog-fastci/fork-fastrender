@@ -1644,6 +1644,50 @@ mod tests {
   }
 
   #[test]
+  fn window_realm_webidl_dom_backend_does_not_clobber_element_sibling_accessors() -> Result<()> {
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+
+    let mut exec = |source: &str| -> Result<Value> {
+      match realm.exec_script(source) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
+      }
+    };
+
+    // The WebIDL-generated installer defines these accessors as enumerable, while the legacy
+    // handwritten WindowRealm shim uses `enumerable: false`. If WindowRealm overwrites the
+    // WebIDL-defined property, this assertion will fail (guarding migration correctness).
+    let ok = exec(
+      "(() => {\n\
+        const nextDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'nextElementSibling');\n\
+        const prevDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'previousElementSibling');\n\
+        if (!nextDesc || !prevDesc) return false;\n\
+        if (nextDesc.enumerable !== true) return false;\n\
+        if (prevDesc.enumerable !== true) return false;\n\
+\n\
+        const parent = document.createElement('div');\n\
+        const a = document.createElement('span');\n\
+        const b = document.createElement('span');\n\
+        parent.appendChild(a);\n\
+        parent.appendChild(b);\n\
+        return (\n\
+          a.nextElementSibling === b &&\n\
+          b.previousElementSibling === a &&\n\
+          a.previousElementSibling === null &&\n\
+          b.nextElementSibling === null\n\
+        );\n\
+      })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    Ok(())
+  }
+
+  #[test]
   fn window_host_state_can_boot_with_webidl_dom_backend_and_call_webidl_document_prototype_methods(
   ) -> Result<()> {
     // Build a tiny DOM with a single element so `Document.prototype.getElementById` can find it.
