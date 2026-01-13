@@ -3032,14 +3032,21 @@ impl<'vm> HirEvaluator<'vm> {
         // `hir-js` stores regexp literals verbatim including the leading `/` and any flags (matching
         // the parse-js AST representation).
         if !literal.starts_with('/') {
-          return Err(VmError::Unimplemented("invalid RegExp literal"));
+          let err_obj = crate::error_object::new_syntax_error_object(
+            scope,
+            &intr,
+            "Invalid regular expression literal",
+          )?;
+          return Err(VmError::Throw(err_obj));
         }
 
-        let mut in_class = false;
-        let mut escaped = false;
-        let mut end_pat: Option<usize> = None;
+        // Stage 1: scan using classic RegExp character-class termination rules to extract flags.
+        //
         // Budget scanning for the closing `/` so enormous regexp literals can't monopolize CPU.
         const TICK_EVERY: usize = 1024;
+        let mut escaped = false;
+        let mut class_depth: usize = 0;
+        let mut end_pat: Option<usize> = None;
         let mut steps = 0usize;
         for (i, ch) in literal.char_indices().skip(1) {
           if steps % TICK_EVERY == 0 {
@@ -3052,18 +3059,75 @@ impl<'vm> HirEvaluator<'vm> {
           }
           match ch {
             '\\' => escaped = true,
-            '[' => in_class = true,
-            ']' => in_class = false,
-            '/' if !in_class => {
+            '[' if class_depth == 0 => class_depth = 1,
+            ']' if class_depth > 0 => class_depth = 0,
+            '/' if class_depth == 0 => {
               end_pat = Some(i);
               break;
             }
             _ => {}
           }
         }
-        let Some(end_pat) = end_pat else {
-          return Err(VmError::Unimplemented("unterminated RegExp literal"));
+
+        let Some(mut end_pat) = end_pat else {
+          let err_obj = crate::error_object::new_syntax_error_object(
+            scope,
+            &intr,
+            "Unterminated regular expression literal",
+          )?;
+          return Err(VmError::Throw(err_obj));
         };
+
+        // If the literal flags contain `v`, do a nested character-class aware scan to avoid
+        // mis-detecting the closing `/` for UnicodeSets-mode patterns with nested character classes
+        // (e.g. `/[[0-9]\\/]/v`).
+        //
+        // If the nested scan fails to find a terminator (e.g. the pattern contains unbalanced
+        // `[`/`]` pairs under nesting semantics), fall back to the classic terminator position; the
+        // RegExp constructor will report the pattern error.
+        let mut has_v_flag = false;
+        for (i, b) in literal[end_pat + 1..].bytes().enumerate() {
+          // Avoid ticking on the first iteration so short flag strings don't effectively
+          // double-charge fuel (the surrounding expression evaluation already ticks).
+          if i != 0 && i % TICK_EVERY == 0 {
+            self.vm.tick()?;
+          }
+          if b == b'v' {
+            has_v_flag = true;
+            break;
+          }
+        }
+
+        if has_v_flag {
+          let mut escaped = false;
+          let mut depth: usize = 0;
+          let mut nested_end: Option<usize> = None;
+          let mut steps = 0usize;
+          for (i, ch) in literal.char_indices().skip(1) {
+            if steps % TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+            steps += 1;
+            if escaped {
+              escaped = false;
+              continue;
+            }
+            match ch {
+              '\\' => escaped = true,
+              '[' => depth = depth.saturating_add(1),
+              ']' if depth > 0 => depth -= 1,
+              '/' if depth == 0 => {
+                nested_end = Some(i);
+                break;
+              }
+              _ => {}
+            }
+          }
+          if let Some(i) = nested_end {
+            end_pat = i;
+          }
+        }
+
         let pattern = &literal[1..end_pat];
         let flags = &literal[end_pat + 1..];
 

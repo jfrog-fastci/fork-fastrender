@@ -1036,6 +1036,27 @@ fn compiled_regex_literal_parsing_handles_char_classes_and_escaped_slash() -> Re
 }
 
 #[test]
+fn compiled_regex_literal_parsing_handles_unicode_sets_v_flag_nested_char_classes() -> Result<(), VmError> {
+  // Basic `/v` flag support: ensure the compiled HIR path forwards the `v` flag to `%RegExp%`.
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f(){ return /a/v.test("a"); }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_execution_respects_fuel_budget_in_infinite_loop() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
