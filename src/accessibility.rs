@@ -3414,8 +3414,9 @@ fn compute_description(
   let mut parts: Vec<String> = Vec::new();
   let mut seen: HashSet<String> = HashSet::new();
 
-  let has_describedby_attr = node.node.get_attribute_ref("aria-describedby").is_some();
-  if let Some(desc_attr) = node.node.get_attribute_ref("aria-describedby") {
+  let describedby_attr = node.node.get_attribute_ref("aria-describedby");
+  let has_describedby_attr = describedby_attr.is_some();
+  if let Some(desc_attr) = describedby_attr {
     let mut visited = HashSet::new();
     visited.insert(node.node_id);
     let desc = referenced_text_attr(
