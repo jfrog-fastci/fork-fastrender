@@ -33,6 +33,7 @@ mod js_window_realm;
 mod preserve3d_env_var_disable_warp_test;
 mod rayon_global_pool_test;
 mod readable_stream_start_throw;
+mod readable_stream_start_throw_symbol;
 mod readable_stream_start_promise_reject;
 mod readable_stream_start_promise_reject_symbol;
 mod readable_stream_start_thenable_reject;
