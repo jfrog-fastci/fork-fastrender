@@ -4073,60 +4073,101 @@ impl<'a> Evaluator<'a> {
     }
 
     for stmt in stmts {
-      self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx)?;
+      self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, true)?;
     }
     Ok(())
+  }
+
+  #[inline]
+  fn is_annex_b_eligible_sloppy_function_decl(decl: &Node<FuncDecl>) -> bool {
+    // Annex B block-level function hoisting only applies to *ordinary* function declarations.
+    // Generator/async/async-generator declarations are always block-scoped, even in non-strict mode.
+    let func = &decl.stx.function.stx;
+    !func.async_ && !func.generator
+  }
+
+  #[inline]
+  fn is_non_annex_b_hoistable_decl(decl: &Node<FuncDecl>) -> bool {
+    let func = &decl.stx.function.stx;
+    func.async_ || func.generator
   }
 
   fn instantiate_var_scoped_function_decls_in_stmt(
     &mut self,
     scope: &mut Scope<'_>,
     stmt: &Stmt,
+    in_stmt_list: bool,
   ) -> Result<(), VmError> {
     self.tick()?;
     match stmt {
-      Stmt::FunctionDecl(decl) => self.instantiate_function_decl(scope, decl),
+      Stmt::FunctionDecl(decl) => {
+        // In non-strict mode, Annex B allows certain block-level *ordinary* function declarations to
+        // be instantiated in the var environment. Non-Annex-B hoistables (generator/async) must not
+        // be treated as var-scoped when they appear in nested statement lists.
+        if in_stmt_list || Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+          self.instantiate_function_decl(scope, decl)
+        } else {
+          Ok(())
+        }
+      }
       Stmt::Block(block) => {
-        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &block.stx.body)
+        for stmt in &block.stx.body {
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx, false)?;
+        }
+        Ok(())
       }
       Stmt::If(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.consequent.stx)?;
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.consequent.stx, false)?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.instantiate_var_scoped_function_decls_in_stmt(scope, &alt.stx)?;
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &alt.stx, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
-        self
-          .instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.wrapped.stx.body)?;
+        for s in &stmt.stx.wrapped.stx.body {
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+        }
         if let Some(catch) = &stmt.stx.catch {
-          self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &catch.stx.body)?;
+          for s in &catch.stx.body {
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          }
         }
         if let Some(finally) = &stmt.stx.finally {
-          self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &finally.stx.body)?;
+          for s in &finally.stx.body {
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          }
         }
         Ok(())
       }
       Stmt::With(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
       }
       Stmt::While(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
       }
       Stmt::DoWhile(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.body.stx, false)
       }
       Stmt::ForTriple(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body)
+        for s in &stmt.stx.body.stx.body {
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+        }
+        Ok(())
       }
       Stmt::ForIn(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body)
+        for s in &stmt.stx.body.stx.body {
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+        }
+        Ok(())
       }
       Stmt::ForOf(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &stmt.stx.body.stx.body)
+        for s in &stmt.stx.body.stx.body {
+          self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+        }
+        Ok(())
       }
       Stmt::Label(stmt) => {
-        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx)
+        self.instantiate_var_scoped_function_decls_in_stmt(scope, &stmt.stx.statement.stx, false)
       }
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
@@ -4134,7 +4175,9 @@ impl<'a> Evaluator<'a> {
           if i % BRANCH_TICK_EVERY == 0 {
             self.tick()?;
           }
-          self.instantiate_var_scoped_function_decls_in_stmt_list(scope, &branch.stx.body)?;
+          for s in &branch.stx.body {
+            self.instantiate_var_scoped_function_decls_in_stmt(scope, &s.stx, false)?;
+          }
         }
         Ok(())
       }
@@ -4147,66 +4190,79 @@ impl<'a> Evaluator<'a> {
     stmt: &Stmt,
     out: &mut HashSet<String>,
   ) -> Result<(), VmError> {
+    self.collect_sloppy_function_decl_names_in_stmt(stmt, out, true)
+  }
+
+  fn collect_sloppy_function_decl_names_in_stmt(
+    &mut self,
+    stmt: &Stmt,
+    out: &mut HashSet<String>,
+    in_stmt_list: bool,
+  ) -> Result<(), VmError> {
     self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
-        let Some(name) = &decl.stx.name else {
-          return Err(VmError::Unimplemented("anonymous function declaration"));
-        };
-        out.insert(name.stx.name.clone());
+        // In non-strict mode, only *ordinary* function declarations participate in Annex B
+        // block-level var-scoping. Generator/async declarations are always block-scoped.
+        if in_stmt_list || Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+          let Some(name) = &decl.stx.name else {
+            return Err(VmError::Unimplemented("anonymous function declaration"));
+          };
+          out.insert(name.stx.name.clone());
+        }
         Ok(())
       }
       Stmt::Block(block) => {
         for stmt in &block.stx.body {
-          self.collect_sloppy_function_decl_names(&stmt.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::If(stmt) => {
-        self.collect_sloppy_function_decl_names(&stmt.stx.consequent.stx, out)?;
+        self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.consequent.stx, out, false)?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.collect_sloppy_function_decl_names(&alt.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&alt.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
         for s in &stmt.stx.wrapped.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         if let Some(catch) = &stmt.stx.catch {
           for s in &catch.stx.body {
-            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+            self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
           }
         }
         if let Some(finally) = &stmt.stx.finally {
           for s in &finally.stx.body {
-            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+            self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
           }
         }
         Ok(())
       }
-      Stmt::With(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
-      Stmt::While(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
-      Stmt::DoWhile(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.body.stx, out),
+      Stmt::With(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.body.stx, out, false),
+      Stmt::While(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.body.stx, out, false),
+      Stmt::DoWhile(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.body.stx, out, false),
       Stmt::ForTriple(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::ForIn(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::ForOf(stmt) => {
         for s in &stmt.stx.body.stx.body {
-          self.collect_sloppy_function_decl_names(&s.stx, out)?;
+          self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
         }
         Ok(())
       }
-      Stmt::Label(stmt) => self.collect_sloppy_function_decl_names(&stmt.stx.statement.stx, out),
+      Stmt::Label(stmt) => self.collect_sloppy_function_decl_names_in_stmt(&stmt.stx.statement.stx, out, false),
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
@@ -4214,7 +4270,7 @@ impl<'a> Evaluator<'a> {
             self.tick()?;
           }
           for s in &branch.stx.body {
-            self.collect_sloppy_function_decl_names(&s.stx, out)?;
+            self.collect_sloppy_function_decl_names_in_stmt(&s.stx, out, false)?;
           }
         }
         Ok(())
@@ -4519,7 +4575,7 @@ impl<'a> Evaluator<'a> {
             return Err(syntax_error(stmt.loc, "Identifier has already been declared"));
           }
         }
-        Stmt::FunctionDecl(decl) if self.strict => {
+        Stmt::FunctionDecl(decl) if self.strict || Self::is_non_annex_b_hoistable_decl(decl) => {
           let Some(name) = &decl.stx.name else {
             return Err(VmError::Unimplemented("anonymous function declaration"));
           };
@@ -4532,9 +4588,7 @@ impl<'a> Evaluator<'a> {
     }
 
     self.instantiate_lexical_decls_in_stmt_list(scope, env, stmts)?;
-    if self.strict {
-      self.instantiate_block_scoped_function_decls_in_stmt_list(scope, env, stmts)?;
-    }
+    self.instantiate_block_scoped_function_decls_in_stmt_list(scope, env, stmts)?;
     Ok(())
   }
 
@@ -4552,7 +4606,9 @@ impl<'a> Evaluator<'a> {
       let Stmt::FunctionDecl(decl) = &*stmt.stx else {
         continue;
       };
-      self.instantiate_block_scoped_function_decl(scope, env, decl)?;
+      if self.strict || Self::is_non_annex_b_hoistable_decl(decl) {
+        self.instantiate_block_scoped_function_decl(scope, env, decl)?;
+      }
     }
     Ok(())
   }
@@ -4786,7 +4842,7 @@ impl<'a> Evaluator<'a> {
     }
 
     for stmt in stmts {
-      self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out)?;
+      self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out, true)?;
     }
     Ok(())
   }
@@ -4795,48 +4851,77 @@ impl<'a> Evaluator<'a> {
     &mut self,
     stmt: &'s Stmt,
     out: &mut Vec<&'s Node<FuncDecl>>,
+    in_stmt_list: bool,
   ) -> Result<(), VmError> {
     self.tick()?;
     match stmt {
       Stmt::FunctionDecl(decl) => {
-        out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
-        out.push(decl);
+        if in_stmt_list || Self::is_annex_b_eligible_sloppy_function_decl(decl) {
+          out.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+          out.push(decl);
+        }
         Ok(())
       }
-      Stmt::Block(block) => self.collect_var_scoped_function_decls_in_stmt_list(&block.stx.body, out),
+      Stmt::Block(block) => {
+        for stmt in &block.stx.body {
+          self.collect_var_scoped_function_decls_in_stmt(&stmt.stx, out, false)?;
+        }
+        Ok(())
+      }
       Stmt::If(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.consequent.stx, out)?;
+        self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.consequent.stx, out, false)?;
         if let Some(alt) = &stmt.stx.alternate {
-          self.collect_var_scoped_function_decls_in_stmt(&alt.stx, out)?;
+          self.collect_var_scoped_function_decls_in_stmt(&alt.stx, out, false)?;
         }
         Ok(())
       }
       Stmt::Try(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.wrapped.stx.body, out)?;
+        for s in &stmt.stx.wrapped.stx.body {
+          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+        }
         if let Some(catch) = &stmt.stx.catch {
-          self.collect_var_scoped_function_decls_in_stmt_list(&catch.stx.body, out)?;
+          for s in &catch.stx.body {
+            self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          }
         }
         if let Some(finally) = &stmt.stx.finally {
-          self.collect_var_scoped_function_decls_in_stmt_list(&finally.stx.body, out)?;
+          for s in &finally.stx.body {
+            self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          }
         }
         Ok(())
       }
-      Stmt::With(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out),
-      Stmt::While(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out),
-      Stmt::DoWhile(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out),
+      Stmt::With(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out, false),
+      Stmt::While(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out, false),
+      Stmt::DoWhile(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.body.stx, out, false),
       Stmt::ForTriple(stmt) => {
-        self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.body.stx.body, out)
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+        }
+        Ok(())
       }
-      Stmt::ForIn(stmt) => self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.body.stx.body, out),
-      Stmt::ForOf(stmt) => self.collect_var_scoped_function_decls_in_stmt_list(&stmt.stx.body.stx.body, out),
-      Stmt::Label(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.statement.stx, out),
+      Stmt::ForIn(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+        }
+        Ok(())
+      }
+      Stmt::ForOf(stmt) => {
+        for s in &stmt.stx.body.stx.body {
+          self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+        }
+        Ok(())
+      }
+      Stmt::Label(stmt) => self.collect_var_scoped_function_decls_in_stmt(&stmt.stx.statement.stx, out, false),
       Stmt::Switch(stmt) => {
         const BRANCH_TICK_EVERY: usize = 32;
         for (i, branch) in stmt.stx.branches.iter().enumerate() {
           if i % BRANCH_TICK_EVERY == 0 {
             self.tick()?;
           }
-          self.collect_var_scoped_function_decls_in_stmt_list(&branch.stx.body, out)?;
+          for s in &branch.stx.body {
+            self.collect_var_scoped_function_decls_in_stmt(&s.stx, out, false)?;
+          }
         }
         Ok(())
       }
@@ -5180,7 +5265,7 @@ impl<'a> Evaluator<'a> {
     let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
-      Stmt::FunctionDecl(_) => self.strict,
+      Stmt::FunctionDecl(decl) => self.strict || Self::is_non_annex_b_hoistable_decl(decl),
       _ => false,
     });
     if !needs_lexical_env {
@@ -12789,7 +12874,7 @@ fn async_eval_block_stmt(
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => evaluator.strict,
+    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
   });
   if !needs_lexical_env {
@@ -25846,7 +25931,7 @@ fn gen_eval_block_stmt(
   let needs_lexical_env = block.body.iter().any(|stmt| match &*stmt.stx {
     Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
     Stmt::ClassDecl(_) => true,
-    Stmt::FunctionDecl(_) => evaluator.strict,
+    Stmt::FunctionDecl(decl) => evaluator.strict || Evaluator::is_non_annex_b_hoistable_decl(decl),
     _ => false,
   });
   if !needs_lexical_env {
