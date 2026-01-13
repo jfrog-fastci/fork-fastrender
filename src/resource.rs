@@ -3941,6 +3941,73 @@ pub trait ResourceFetcher: Send + Sync {
           return Ok(res);
         }
 
+        // For partial responses, validate the returned range so callers can rely on the bytes being
+        // from the requested offset (critical for media seek correctness and cache safety).
+        if res.status == Some(206) {
+          let Some(content_range) = res.header_get_joined("content-range") else {
+            return Err(Error::Resource(ResourceError::new(
+              req.url,
+              "received 206 Partial Content response without Content-Range header".to_string(),
+            )));
+          };
+          let parsed = parse_content_range(&content_range).ok_or_else(|| {
+            Error::Resource(ResourceError::new(
+              req.url,
+              format!("invalid Content-Range header: {content_range:?}"),
+            ))
+          })?;
+          match parsed {
+            ParsedContentRange::Range {
+              start: response_start,
+              end: response_end,
+              size: _,
+            } => {
+              if response_start != start {
+                return Err(Error::Resource(ResourceError::new(
+                  req.url,
+                  format!(
+                    "Content-Range start mismatch: requested {start} but received {response_start}"
+                  ),
+                )));
+              }
+
+              let desired_end = capped_end.min(response_end);
+              let desired_len = desired_end
+                .checked_sub(start)
+                .and_then(|delta| delta.checked_add(1))
+                .ok_or_else(|| {
+                  Error::Resource(ResourceError::new(
+                    req.url,
+                    "byte range length overflow".to_string(),
+                  ))
+                })?;
+              let desired_len = usize::try_from(desired_len).map_err(|_| {
+                Error::Resource(ResourceError::new(
+                  req.url,
+                  format!("byte range length {desired_len} is too large to slice in memory"),
+                ))
+              })?;
+              if res.bytes.len() < desired_len {
+                return Err(Error::Resource(ResourceError::new(
+                  req.url,
+                  format!(
+                    "received truncated range body: expected at least {desired_len} bytes, got {}",
+                    res.bytes.len()
+                  ),
+                )));
+              }
+              res.bytes.truncate(desired_len);
+              return Ok(res);
+            }
+            ParsedContentRange::Unsatisfied { size } => {
+              return Err(Error::Resource(ResourceError::new(
+                req.url,
+                format!("received unsatisfied Content-Range for 206 response (size={size:?})"),
+              )));
+            }
+          }
+        }
+
         if res.bytes.len() > max_bytes {
           res.bytes.truncate(max_bytes);
         }
@@ -20945,6 +21012,57 @@ mod tests {
     assert!(
       req.contains("accept-encoding: identity"),
       "expected Accept-Encoding identity for capped range fetch, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_fetch_range_with_request_rejects_content_range_mismatch() {
+    let Some(listener) = try_bind_localhost(
+      "http_fetcher_fetch_range_with_request_rejects_content_range_mismatch",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      // Return a 206 response, but for the wrong range start. The client must reject this instead
+      // of returning bytes from an unexpected offset.
+      let body = b"abc";
+      let headers = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nContent-Range: bytes 0-2/10\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.bin", addr);
+    let err = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
+      .expect_err("expected mismatched content-range to be rejected");
+    handle.join().unwrap();
+
+    assert!(
+      matches!(err, Error::Resource(_)),
+      "expected Error::Resource, got: {err:?}"
+    );
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("range: bytes=5-7"),
+      "expected Range header to be sent, got: {req}"
     );
   }
 
