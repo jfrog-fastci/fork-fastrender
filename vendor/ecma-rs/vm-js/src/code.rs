@@ -46,17 +46,14 @@ pub struct CompiledScript {
   ///
   /// This is used by high-level entry points like [`crate::JsRuntime::exec_compiled_script`] to
   /// conservatively fall back to the AST interpreter when the compiled executor cannot model the
-  /// script body.
+  /// program.
   ///
   /// Notes:
   /// - Generator bodies (`yield` / `yield*`) are not supported in the compiled executor.
-  /// - Private-name syntax is not supported in the compiled executor.
-  /// - Async function bodies execute via the AST interpreter at call-time (see
-  ///   [`crate::Vm::call_user_function`]).
-  ///
-  /// Classic-script top-level await is handled by the compiled async-script executor for a limited
-  /// subset of patterns; unsupported forms are tracked separately in
-  /// [`CompiledScript::top_level_await_requires_ast_fallback`].
+  /// - Private names (`#x`) are not supported in the compiled executor.
+  /// - Some top-level `await` patterns (classic scripts) and all module top-level await currently
+  ///   require falling back to the AST interpreter (see
+  ///   [`CompiledScript::top_level_await_requires_ast_fallback`]).
   pub requires_ast_fallback: bool,
   /// Whether this script/module contains a top-level `await` (or `for await..of`) that requires
   /// async evaluation.
@@ -172,13 +169,7 @@ impl CompiledScript {
     // example `await` nested inside class static blocks, or `for await..of` bodies that themselves
     // contain `await`).
     let requires_ast_fallback =
-      contains_private_names
-        || contains_generators
-        || parsed
-          .stx
-          .body
-          .iter()
-          .any(stmt_contains_unsupported_await_for_hir_async_scripts);
+      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
 
     let hir = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed)
@@ -337,13 +328,7 @@ impl CompiledScript {
     let contains_async_functions = feature_flags.contains_async_functions;
     let contains_private_names = feature_flags.contains_private_names;
     let requires_ast_fallback =
-      contains_private_names
-        || contains_generators
-        || parsed
-          .stx
-          .body
-          .iter()
-          .any(stmt_contains_unsupported_await_for_hir_async_scripts);
+      contains_private_names || contains_generators || top_level_await_requires_ast_fallback;
 
     let hir = hir_js::lower_file(FileId(0), hir_js::FileKind::Js, &parsed);
     let estimated_hir_bytes = source.text.len().saturating_mul(8);

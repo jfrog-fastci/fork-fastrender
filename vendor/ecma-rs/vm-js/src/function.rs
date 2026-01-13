@@ -64,12 +64,12 @@ pub(crate) enum FunctionData {
   None,
   /// A compiled HIR function whose body is executed via the AST interpreter.
   ///
-  /// This is currently used for `async` functions:
-  /// - Compiled/HIR execution does not yet support async/await semantics.
-  /// - We still allocate async functions as compiled user functions so the surrounding compiled
-  ///   script can execute without falling back entirely.
-  /// - When the async function is invoked, the VM delegates execution to the AST interpreter using
-  ///   this cached [`EcmaFunctionId`].
+  /// This is a best-effort escape hatch for features that are not yet supported by the compiled
+  /// (HIR) executor while still allowing the surrounding script/module to execute in the compiled
+  /// path.
+  ///
+  /// When the function is invoked, the VM delegates execution to the AST interpreter using this
+  /// cached [`EcmaFunctionId`].
   EcmaFallback { code_id: EcmaFunctionId },
   /// ECMAScript function object that represents the user-written `constructor(...) { ... }` body
   /// for a class definition.

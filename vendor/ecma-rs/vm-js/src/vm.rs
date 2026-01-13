@@ -4423,9 +4423,10 @@ impl Vm {
       }
     };
 
-    // Some compiled functions are executed via the AST interpreter (currently async functions).
-    // These are still allocated as compiled user functions (CallHandler::User) so compiled script
-    // execution can proceed without falling back to the interpreter for the entire script.
+    // Some compiled functions may be executed via the AST interpreter when the compiled (HIR)
+    // executor does not yet support some feature. These are still allocated as compiled user
+    // functions (CallHandler::User) so surrounding compiled script execution can proceed without
+    // falling back to the interpreter for the entire script.
     if let FunctionData::EcmaFallback { code_id } = func_data {
       // Ensure the function has a realm/global object set (see `global_object` synthesis above).
       return self.call_ecma_function(scope, host, hooks, code_id, callee, this, args);
