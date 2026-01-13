@@ -253,18 +253,42 @@ if [[ "${has_manifest_path}" -eq 0 ]]; then
       if [[ "${argv[$i]}" == "--" ]]; then
         break
       fi
-      case "${argv[$i]}" in
-        -p|--package)
-          pkg="${argv[$((i + 1))]:-}"
-          ;;
-        --package=*)
-          pkg="${argv[$i]#--package=}"
-          ;;
-      esac
-      if [[ -n "${pkg}" ]]; then
-        # Prefer monorepo workspace packages when there is a name collision with
-        # the nested `vendor/ecma-rs` workspace.
-        #
+       case "${argv[$i]}" in
+         -p|--package)
+           pkg="${argv[$((i + 1))]:-}"
+           ;;
+         --package=*)
+           pkg="${argv[$i]#--package=}"
+           ;;
+       esac
+
+       # `cargo-fuzz` generates a standalone workspace under `fuzz/` (package name:
+       # `fastrender-fuzz`). Our CI/agent docs frequently refer to it as `-p fuzz`, so accept that
+       # as a convenient alias and automatically scope the invocation to `fuzz/Cargo.toml`.
+       if [[ "${pkg}" == "fuzz" ]]; then
+         case "${argv[$i]}" in
+           -p|--package)
+             argv[$((i + 1))]="fastrender-fuzz"
+             ;;
+           --package=*)
+             argv[$i]="--package=fastrender-fuzz"
+             ;;
+         esac
+
+         insert_pos=$((subcmd_pos + 1))
+         argv=(
+           "${argv[@]:0:${insert_pos}}"
+           --manifest-path "${repo_root}/fuzz/Cargo.toml"
+           "${argv[@]:${insert_pos}}"
+         )
+         set -- "${argv[@]}"
+         break
+       fi
+
+       if [[ -n "${pkg}" ]]; then
+         # Prefer monorepo workspace packages when there is a name collision with
+         # the nested `vendor/ecma-rs` workspace.
+         #
         # Example: During WebIDL consolidation, `webidl-js-runtime` existed both
         # as a monorepo workspace crate (under `crates/`) and as a vendored
         # package (located at `vendor/ecma-rs/webidl-runtime/`; the Cargo package

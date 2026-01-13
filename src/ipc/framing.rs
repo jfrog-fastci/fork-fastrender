@@ -5,7 +5,10 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use super::error::IpcError;
 
-/// Maximum payload size accepted by `read_frame` / `write_frame`.
+/// Number of bytes in the length prefix header.
+pub const IPC_LENGTH_PREFIX_BYTES: usize = 4;
+
+/// Maximum payload size accepted by the IPC framing layer.
 ///
 /// This is intentionally small to cap memory usage and avoid unbounded allocations when parsing a
 /// length-prefixed protocol.
@@ -86,7 +89,7 @@ pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), IpcEr
 ///
 /// Returns an error on EOF, invalid lengths, or I/O failure.
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
-  let mut len_prefix = [0u8; 4];
+  let mut len_prefix = [0u8; IPC_LENGTH_PREFIX_BYTES];
   reader.read_exact(&mut len_prefix)?;
   let bytes_len = u32::from_le_bytes(len_prefix);
   let len = validate_frame_len(bytes_len)?;
@@ -94,6 +97,53 @@ pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
   let mut payload = vec![0u8; len];
   reader.read_exact(&mut payload)?;
   Ok(payload)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DecodedFrame<'a> {
+  pub declared_len: usize,
+  pub message_bytes: &'a [u8],
+  pub remaining: &'a [u8],
+}
+
+/// Decode a single length-prefixed frame from a prefix and the currently available payload bytes.
+///
+/// This helper is useful for fuzzing and for in-memory decoding paths: it never allocates based on
+/// the declared length; it only returns borrowed slices.
+pub fn decode_frame_from_parts(prefix: [u8; 4], payload: &[u8]) -> Result<DecodedFrame<'_>, IpcError> {
+  let declared_len = u32::from_le_bytes(prefix) as usize;
+  if declared_len == 0 {
+    return Err(IpcError::ZeroLength);
+  }
+  if declared_len > MAX_IPC_MESSAGE_BYTES {
+    return Err(IpcError::FrameTooLarge {
+      len: declared_len,
+      max: MAX_IPC_MESSAGE_BYTES,
+    });
+  }
+  if payload.len() < declared_len {
+    return Err(IpcError::UnexpectedEof);
+  }
+
+  let (message_bytes, remaining) = payload.split_at(declared_len);
+  Ok(DecodedFrame {
+    declared_len,
+    message_bytes,
+    remaining,
+  })
+}
+
+/// Decode a single length-prefixed frame from a raw byte slice.
+///
+/// The first four bytes are interpreted as the length prefix (little-endian), and the remaining
+/// bytes are treated as the payload.
+pub fn decode_frame_from_bytes(data: &[u8]) -> Result<DecodedFrame<'_>, IpcError> {
+  if data.len() < IPC_LENGTH_PREFIX_BYTES {
+    return Err(IpcError::UnexpectedEof);
+  }
+  let (prefix_bytes, payload) = data.split_at(IPC_LENGTH_PREFIX_BYTES);
+  let prefix = [prefix_bytes[0], prefix_bytes[1], prefix_bytes[2], prefix_bytes[3]];
+  decode_frame_from_parts(prefix, payload)
 }
 
 #[cfg(test)]

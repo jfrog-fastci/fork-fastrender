@@ -1,11 +1,15 @@
 //! JSON IPC connection built on top of the framing layer.
 //!
-//! This module provides [`IpcConnection`], a small wrapper that sends/receives length-prefixed JSON
-//! messages while enforcing [`crate::ipc::MAX_IPC_MESSAGE_BYTES`] both before sending and before
-//! decoding.
+//! This module provides:
+//! - [`IpcConnection`], a small wrapper that sends/receives length-prefixed JSON messages while
+//!   enforcing [`crate::ipc::framing::MAX_IPC_MESSAGE_BYTES`] (both before sending and before
+//!   decoding).
+//! - In-memory decode helpers that operate on borrowed byte slices (useful for fuzzing and other
+//!   non-streaming contexts).
 
 use super::error::IpcError;
-use super::framing::{read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
+use super::framing::{self, read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
+use super::protocol;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{Read, Write};
@@ -52,6 +56,41 @@ impl<R: Read, W: Write> IpcConnection<R, W> {
     let payload = read_frame(&mut self.reader)?;
     serde_json::from_slice(&payload).map_err(IpcError::Deserialize)
   }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeError {
+  #[error(transparent)]
+  Frame(#[from] IpcError),
+
+  #[error(transparent)]
+  Json(#[from] serde_json::Error),
+}
+
+/// Decode a length-prefixed frame from `data` and deserialize it as a [`protocol::RendererToBrowser`]
+/// message.
+pub fn decode_renderer_to_browser_from_bytes(
+  data: &[u8],
+) -> Result<protocol::RendererToBrowser, DecodeError> {
+  let frame = framing::decode_frame_from_bytes(data)?;
+  decode_renderer_to_browser_json(frame.message_bytes).map_err(DecodeError::from)
+}
+
+/// Decode a frame from a prefix + payload byte slice and deserialize it as a
+/// [`protocol::RendererToBrowser`] message.
+pub fn decode_renderer_to_browser_from_parts(
+  prefix: [u8; 4],
+  payload: &[u8],
+) -> Result<protocol::RendererToBrowser, DecodeError> {
+  let frame = framing::decode_frame_from_parts(prefix, payload)?;
+  decode_renderer_to_browser_json(frame.message_bytes).map_err(DecodeError::from)
+}
+
+/// Deserialize a JSON payload as a [`protocol::RendererToBrowser`] message.
+pub fn decode_renderer_to_browser_json(
+  json: &[u8],
+) -> Result<protocol::RendererToBrowser, serde_json::Error> {
+  serde_json::from_slice(json)
 }
 
 #[cfg(test)]
