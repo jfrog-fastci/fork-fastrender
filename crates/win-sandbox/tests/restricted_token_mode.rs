@@ -13,7 +13,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::{
   GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TokenIntegrityLevel,
-  NO_INHERITANCE, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
+  TOKEN_MANDATORY_LABEL, TOKEN_QUERY, PSID,
 };
 use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
