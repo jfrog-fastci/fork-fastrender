@@ -253,8 +253,11 @@ includes (non-exhaustive):
 Additionally, `socket(2)` / `socketpair(2)` are special-cased via `NetworkPolicy`:
 
 - Default (`NetworkPolicy::DenyAllSockets`): deny all socket creation (including `AF_UNIX`) and deny
-  socket operations (`connect`/`sendmsg`/`recvmsg`/etc) with `EPERM`. This forces the renderer to use
-  **non-socket IPC** (e.g. inherited pipes) plus shared memory.
+  socket-specific operations (`connect`/`bind`/`sendmsg`/`recvmsg`/etc) with `EPERM`.
+  - IPC must use **inherited file descriptors** created by the browser (pipes or pre-created Unix
+    socketpairs) and should stick to `read(2)`/`write(2)` for steady-state messaging.
+  - This mode intentionally blocks `sendmsg`/`recvmsg`, so **FD passing after sandbox install** is
+    not available (do it before the sandbox, or switch to `AllowUnixSocketsOnly`).
 - Optional (`NetworkPolicy::AllowUnixSocketsOnly`): allow `socket(AF_UNIX, ...)`,
   `socketpair(AF_UNIX, ...)`, and Unix-socket operations (including FD passing via `SCM_RIGHTS`)
   while denying creation of other domains (`AF_INET`, `AF_INET6`, …) with `EPERM`.
