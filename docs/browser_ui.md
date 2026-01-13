@@ -595,6 +595,9 @@ isolation. The intended seam is the `UiToWorker`/`WorkerToUi` protocol
 `spawn_browser_ui_worker`). The headless smoke modes (`--headless-smoke` / `--headless-crash-smoke`)
 are intended to remain stable as that swap happens.
 
+For OS sandboxing details (including the Windows AppContainer + Job Object design and the
+Windows-only debug escape hatch), see [sandboxing.md](sandboxing.md).
+
 The worker boundary keeps the UI responsive under slow network/layout and provides a place to add
 browser-style behaviors over time:
 
