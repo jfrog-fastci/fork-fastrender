@@ -67,9 +67,8 @@ fn blocks_high_risk_syscalls() {
     // `io_uring_setup` should be blocked (returning EPERM) even though the arguments are invalid.
     // Without the seccomp filter, this would return something like `EFAULT`.
     if let Some(nr) = SYS_IO_URING_SETUP {
-      let rc = unsafe {
-        libc::syscall(nr, 2 as libc::c_long, std::ptr::null_mut::<libc::c_void>())
-      };
+      let rc =
+        unsafe { libc::syscall(nr, 2 as libc::c_long, std::ptr::null_mut::<libc::c_void>()) };
       assert_syscall_fails_with_errno("io_uring_setup", rc, libc::EPERM);
     }
 

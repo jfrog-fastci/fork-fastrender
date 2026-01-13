@@ -6,13 +6,6 @@ use crate::tree::fragment_tree::ScrollbarReservation;
 
 use super::{FastRender, PreparedDocument};
 
-fn sanitize_viewport_scroll(scroll: Point) -> Point {
-  Point::new(
-    if scroll.x.is_finite() { scroll.x } else { 0.0 },
-    if scroll.y.is_finite() { scroll.y } else { 0.0 },
-  )
-}
-
 /// Scroll- and sticky-aware DOM2 geometry queries.
 ///
 /// This context is intended for DOM geometry APIs that need to mirror how the renderer positions
@@ -40,9 +33,11 @@ impl<'a> Dom2GeometryContext<'a> {
 
     // Mirror the paint pipeline: apply scroll snap before sticky offsets so sticky positioning is
     // computed against the snapped scroll state.
-    let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
-    let mut scroll_state = scroll_result.state;
-    scroll_state.viewport = sanitize_viewport_scroll(scroll_state.viewport);
+    let scroll_state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
+      &mut fragment_tree,
+      scroll_state,
+      prepared.layout_viewport(),
+    );
 
     renderer.apply_sticky_offsets_to_tree_with_scroll_state(&mut fragment_tree, &scroll_state);
     crate::scroll::apply_scroll_offsets(&mut fragment_tree, &scroll_state);
@@ -93,7 +88,8 @@ impl<'a> Dom2GeometryContext<'a> {
 
     let mut out: Option<Rect> = None;
     for box_node in boxes {
-      let Some(border_box_page) = crate::interaction::absolute_bounds_for_box_id(&self.fragment_tree, box_node.id)
+      let Some(border_box_page) =
+        crate::interaction::absolute_bounds_for_box_id(&self.fragment_tree, box_node.id)
       else {
         continue;
       };
@@ -113,7 +109,8 @@ impl<'a> Dom2GeometryContext<'a> {
 
     let mut out: Option<Rect> = None;
     for box_node in boxes {
-      let Some(border_box_page) = crate::interaction::absolute_bounds_for_box_id(&self.fragment_tree, box_node.id)
+      let Some(border_box_page) =
+        crate::interaction::absolute_bounds_for_box_id(&self.fragment_tree, box_node.id)
       else {
         continue;
       };
@@ -138,13 +135,17 @@ impl<'a> Dom2GeometryContext<'a> {
 
     let mut out: Option<Rect> = None;
     for box_node in boxes {
-      let Some(border_box_page) = crate::interaction::absolute_bounds_for_box_id(&self.fragment_tree, box_node.id)
+      let Some(border_box_page) =
+        crate::interaction::absolute_bounds_for_box_id(&self.fragment_tree, box_node.id)
       else {
         continue;
       };
       let border_box = self.translate_to_viewport(border_box_page);
-      let content_box =
-        crate::interaction::content_rect_for_border_rect(border_box, &box_node.style, self.viewport_size);
+      let content_box = crate::interaction::content_rect_for_border_rect(
+        border_box,
+        &box_node.style,
+        self.viewport_size,
+      );
       out = Some(match out {
         Some(existing) => existing.union(content_box),
         None => content_box,

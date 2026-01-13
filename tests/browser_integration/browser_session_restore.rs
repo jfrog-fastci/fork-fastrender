@@ -72,7 +72,7 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
 
   // Seed the session via the headless override hook, including a non-default appearance payload to
   // ensure appearance settings are persisted/restored alongside tabs.
-  let expected_json = r#"{
+  let expected_json = r##"{
     "version": 2,
     "windows": [{
       "tabs": [
@@ -102,7 +102,7 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
       "reduced_motion": true,
       "ui_scale": 1.25
     }
-  }"#;
+  }"##;
   let expected_session = fastrender::ui::session::parse_session_json(expected_json)
     .expect("parse expected session JSON");
 
@@ -142,7 +142,11 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     .and_then(|v| v.as_array())
     .expect("expected tabs array");
   assert!(
-    tabs.first().and_then(|v| v.get("pinned")).and_then(|v| v.as_bool()) == Some(true),
+    tabs
+      .first()
+      .and_then(|v| v.get("pinned"))
+      .and_then(|v| v.as_bool())
+      == Some(true),
     "expected first tab to be pinned, got: {tabs:?}"
   );
   // `pinned=false` and `group=null` should be omitted for cleanliness/backwards compatibility.
@@ -219,9 +223,7 @@ fn browser_persists_and_restores_session_tabs_and_active_tab_across_runs() {
     Some(777)
   );
   assert_eq!(
-    window_state
-      .get("maximized")
-      .and_then(|v| v.as_bool()),
+    window_state.get("maximized").and_then(|v| v.as_bool()),
     Some(true)
   );
   // Legacy v1 top-level keys should never be written.

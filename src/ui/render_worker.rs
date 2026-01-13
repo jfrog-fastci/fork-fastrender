@@ -1886,31 +1886,11 @@ impl BrowserRuntime {
     // Mirror `api::paint_fragment_tree_with_state` scroll adjustments so the UI's scroll model can
     // stay in sync with the eventual painted frame.
     let mut fragment_tree = prepared.fragment_tree().clone();
-    let result = crate::scroll::apply_scroll_snap(&mut fragment_tree, scroll_state);
-    let mut state = result.state;
-
-    // Paint clamps/sanitizes viewport scroll even for programmatic scroll updates.
-    state.viewport = Point::new(
-      if state.viewport.x.is_finite() {
-        state.viewport.x
-      } else {
-        0.0
-      },
-      if state.viewport.y.is_finite() {
-        state.viewport.y
-      } else {
-        0.0
-      },
+    let mut state = crate::scroll::resolve_effective_scroll_state_for_paint_mut(
+      &mut fragment_tree,
+      scroll_state.clone(),
+      prepared.layout_viewport(),
     );
-
-    // Clamp to the root scroll bounds using the same viewport used for scroll calculations.
-    if let Some(bounds) =
-      crate::scroll::build_scroll_chain(&fragment_tree.root, prepared.layout_viewport(), &[])
-        .first()
-        .map(|state| state.bounds)
-    {
-      state.viewport = bounds.clamp(state.viewport);
-    }
 
     // Keep element scroll offsets stable (wheel interaction already clamps), but canonicalize the
     // representation so NaNs/inf and explicit zero offsets don't cause spurious diffs.
