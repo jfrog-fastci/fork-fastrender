@@ -7305,7 +7305,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       if let Some(win) = windows.get_mut(&target_id) {
         win
           .app
-          .show_chrome_toast_with_kind(fastrender::ui::ToastKind::Warning, &toast_text);
+          .show_chrome_toast_kind(fastrender::ui::ToastKind::Warning, toast_text);
         win.app.window.request_redraw();
       }
     }
@@ -8955,7 +8955,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       for win in windows.values_mut() {
         win
           .app
-          .show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &text);
+          .show_chrome_toast_kind(fastrender::ui::ToastKind::Error, text.clone());
         win.app.window.request_redraw();
       }
     }
@@ -16288,7 +16288,7 @@ impl App {
     let url = match fastrender::ui::untrusted::validate_untrusted_navigation_url(&url) {
       Ok(url) => url,
       Err(_) => {
-        self.show_chrome_toast_with_kind(
+        self.show_chrome_toast_kind(
           fastrender::ui::ToastKind::Warning,
           "Blocked attempt to open an invalid URL",
         );
@@ -16328,7 +16328,7 @@ impl App {
     let request = match fastrender::ui::untrusted::validate_untrusted_form_submission_for_open_in_new_tab_request(request) {
       Ok(request) => request,
       Err(err) => {
-        self.show_chrome_toast_with_kind(
+        self.show_chrome_toast_kind(
           fastrender::ui::ToastKind::Warning,
           err.toast_message(),
         );
@@ -17042,7 +17042,7 @@ impl App {
 
       if let Some(event) = download_event {
         let (kind, text) = coalesce_download_toast(self.chrome_toast.toast(), event);
-        self.show_chrome_toast_with_kind(kind, &text);
+        self.show_chrome_toast_kind(kind, text);
         request_redraw = true;
       }
     }
@@ -17600,16 +17600,14 @@ impl App {
     self.window.request_redraw();
   }
 
-  fn show_chrome_toast(&mut self, text: &str) {
-    self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Info, text);
-  }
-
-  fn show_chrome_toast_with_kind(&mut self, kind: fastrender::ui::ToastKind, text: &str) {
+  fn show_chrome_toast_kind(&mut self, kind: fastrender::ui::ToastKind, text: impl Into<String>) {
     use fastrender::ui::TOAST_DEFAULT_TTL;
     let now = std::time::Instant::now();
-    self
-      .chrome_toast
-      .show(kind, text.to_string(), now, TOAST_DEFAULT_TTL);
+    self.chrome_toast.show(kind, text, now, TOAST_DEFAULT_TTL);
+  }
+
+  fn show_chrome_toast(&mut self, text: impl Into<String>) {
+    self.show_chrome_toast_kind(fastrender::ui::ToastKind::Info, text);
   }
 
   fn chrome_toast_style(
@@ -19746,7 +19744,7 @@ impl App {
         match check_download_path_exists_for_ui(&path) {
           Ok(()) => {
             if let Err(err) = open_file_with_os_default(&path) {
-              self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+              self.show_chrome_toast_kind(fastrender::ui::ToastKind::Error, err);
             }
           }
           Err(toast_text) => {
@@ -19754,7 +19752,7 @@ impl App {
               "download open requested but file no longer exists: {}",
               path.display()
             );
-            self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Warning, &toast_text);
+            self.show_chrome_toast_kind(fastrender::ui::ToastKind::Warning, toast_text);
           }
         }
       } else {
@@ -19770,7 +19768,7 @@ impl App {
         match check_download_path_exists_for_ui(&path) {
           Ok(()) => {
             if let Err(err) = reveal_file_in_os_file_manager(&path) {
-              self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &err);
+              self.show_chrome_toast_kind(fastrender::ui::ToastKind::Error, err);
             }
           }
           Err(toast_text) => {
@@ -19778,7 +19776,7 @@ impl App {
               "download reveal requested but file no longer exists: {}",
               path.display()
             );
-            self.show_chrome_toast_with_kind(fastrender::ui::ToastKind::Warning, &toast_text);
+            self.show_chrome_toast_kind(fastrender::ui::ToastKind::Warning, toast_text);
           }
         }
       } else {
@@ -21441,7 +21439,7 @@ impl App {
     let removed = before.saturating_sub(after);
     self.sync_history_after_mutation(true);
     let toast = fastrender::ui::format_clear_browsing_data_toast(range, Some(removed));
-    self.show_chrome_toast(&toast);
+    self.show_chrome_toast(toast);
   }
 
   fn clear_history(&mut self) {
@@ -23863,7 +23861,7 @@ impl App {
           let mut deltas = Vec::new();
           if let Err(err) = self.bookmarks.reorder_root_with_deltas(&order, &mut deltas) {
             let (kind, text) = bookmark_reorder_failure_toast(&err);
-            self.show_chrome_toast_with_kind(kind, &text);
+            self.show_chrome_toast_kind(kind, text);
             // Ensure the toast (and the original bookmark ordering) is rendered immediately.
             self.window.request_redraw();
             continue;
