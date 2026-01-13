@@ -4511,6 +4511,283 @@ fn is_labelable(node: &DomNode) -> bool {
   }
 }
 
+// -----------------------------------------------------------------------------
+// AccessKit export (best-effort; optional `browser_ui` feature)
+// -----------------------------------------------------------------------------
+//
+// FastRender's renderer/UI uses AccessKit (via `accesskit_winit`) to expose accessibility metadata
+// to native assistive technologies. When available, propagate HTML language (`lang`) and direction
+// (`dir`) into AccessKit nodes so screen readers can pronounce text correctly and present the right
+// navigation order.
+//
+// This is intentionally best-effort:
+// - If an attribute is missing/invalid, the corresponding AccessKit property is left unset.
+// - If we cannot resolve `dir=auto` to a computed direction, we default to LTR.
+#[cfg(feature = "browser_ui")]
+pub fn build_accesskit_tree_update(root: &StyledNode) -> accesskit::TreeUpdate {
+  use crate::style::types::Direction as CssDirection;
+  use std::num::NonZeroU128;
+
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum DirAttr {
+    Ltr,
+    Rtl,
+    Auto,
+  }
+
+  /// Index enabling efficient ancestor traversal by `node_id`.
+  struct DomIndex<'a> {
+    node_by_id: Vec<Option<&'a StyledNode>>,
+    parent_by_id: Vec<usize>,
+  }
+
+  impl<'a> DomIndex<'a> {
+    fn build(root: &'a StyledNode) -> Self {
+      let mut node_by_id: Vec<Option<&'a StyledNode>> = Vec::new();
+      let mut parent_by_id: Vec<usize> = Vec::new();
+      // Keep index 0 unused so `node_id` can be used directly (ids are 1-based).
+      node_by_id.push(None);
+      parent_by_id.push(0);
+
+      let mut stack: Vec<(&'a StyledNode, usize)> = vec![(root, 0)];
+      while let Some((node, parent)) = stack.pop() {
+        let id = node.node_id;
+        if node_by_id.len() <= id {
+          node_by_id.resize(id + 1, None);
+          parent_by_id.resize(id + 1, 0);
+        }
+        node_by_id[id] = Some(node);
+        parent_by_id[id] = parent;
+
+        for child in node.children.iter().rev() {
+          stack.push((child, id));
+        }
+      }
+
+      Self {
+        node_by_id,
+        parent_by_id,
+      }
+    }
+
+    fn node(&self, id: usize) -> Option<&'a StyledNode> {
+      self.node_by_id.get(id).and_then(|n| *n)
+    }
+
+    fn parent(&self, id: usize) -> usize {
+      self.parent_by_id.get(id).copied().unwrap_or(0)
+    }
+  }
+
+  fn accesskit_node_id(node_id: usize) -> accesskit::NodeId {
+    // Best-effort: `node_id` is 1-based in normal operation. If it is ever 0, fall back to 1.
+    let raw = if node_id == 0 { 1 } else { node_id as u128 };
+    let raw = NonZeroU128::new(raw).unwrap_or_else(|| NonZeroU128::new(1).unwrap());
+    accesskit::NodeId(raw)
+  }
+
+  fn resolve_effective_lang(node_id: usize, index: &DomIndex<'_>) -> Option<String> {
+    let mut current = node_id;
+    while current != 0 {
+      let node = index.node(current)?;
+      if let Some(lang) = node.node.get_attribute_ref("lang") {
+        let normalized = crate::style::normalize_language_tag(lang);
+        if !normalized.is_empty() {
+          return Some(normalized);
+        }
+      }
+
+      let parent = index.parent(current);
+      if parent == current {
+        break;
+      }
+      current = parent;
+    }
+    None
+  }
+
+  fn nearest_dir_attr(node_id: usize, index: &DomIndex<'_>) -> Option<DirAttr> {
+    let mut current = node_id;
+    while current != 0 {
+      let node = index.node(current)?;
+      if let Some(dir) = node.node.get_attribute_ref("dir") {
+        let dir = trim_ascii_whitespace(dir);
+        if dir.eq_ignore_ascii_case("ltr") {
+          return Some(DirAttr::Ltr);
+        }
+        if dir.eq_ignore_ascii_case("rtl") {
+          return Some(DirAttr::Rtl);
+        }
+        if dir.eq_ignore_ascii_case("auto") {
+          return Some(DirAttr::Auto);
+        }
+      }
+
+      let parent = index.parent(current);
+      if parent == current {
+        break;
+      }
+      current = parent;
+    }
+    None
+  }
+
+  fn resolve_text_direction(node_id: usize, index: &DomIndex<'_>) -> Option<accesskit::TextDirection> {
+    let attr = nearest_dir_attr(node_id, index)?;
+    match attr {
+      DirAttr::Ltr => Some(accesskit::TextDirection::LeftToRight),
+      DirAttr::Rtl => Some(accesskit::TextDirection::RightToLeft),
+      DirAttr::Auto => {
+        // `dir=auto` does not directly encode the resolved direction; consult FastRender's computed
+        // direction if available, else fall back to LTR.
+        let computed = index
+          .node(node_id)
+          .map(|node| node.styles.direction)
+          .unwrap_or(CssDirection::Ltr);
+        Some(match computed {
+          CssDirection::Rtl => accesskit::TextDirection::RightToLeft,
+          CssDirection::Ltr => accesskit::TextDirection::LeftToRight,
+        })
+      }
+    }
+  }
+
+  fn direct_text_name(node: &StyledNode) -> Option<String> {
+    // Use *direct* text-node children to avoid assigning the same name to high-level containers
+    // (html/body/document) while still surfacing simple text-only elements in tests and debug
+    // tooling.
+    let mut raw = String::new();
+    for child in &node.children {
+      if let DomNodeType::Text { content } = &child.node.node_type {
+        raw.push_str(content);
+      }
+    }
+    let normalized = normalize_whitespace(&raw);
+    (!normalized.is_empty()).then_some(normalized)
+  }
+
+  fn should_include(node: &StyledNode) -> bool {
+    if is_node_hidden(node) {
+      return false;
+    }
+    matches!(
+      node.node.node_type,
+      DomNodeType::Document { .. }
+        | DomNodeType::Element { .. }
+        | DomNodeType::Slot { .. }
+        | DomNodeType::ShadowRoot { .. }
+    )
+  }
+
+  fn role_for_node(node: &StyledNode) -> accesskit::Role {
+    match node.node.node_type {
+      DomNodeType::Document { .. } => accesskit::Role::Document,
+      _ => accesskit::Role::GenericContainer,
+    }
+  }
+
+  // Precompute an index for ancestor lookups.
+  let index = DomIndex::build(root);
+
+  struct Frame<'a> {
+    node: &'a StyledNode,
+    next_child: usize,
+    child_ids: Vec<accesskit::NodeId>,
+  }
+
+  let mut classes = accesskit::NodeClassSet::default();
+  let mut nodes: Vec<(accesskit::NodeId, accesskit::Node)> = Vec::new();
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+
+  if should_include(root) {
+    stack.push(Frame {
+      node: root,
+      next_child: 0,
+      child_ids: Vec::new(),
+    });
+  }
+
+  while let Some(frame) = stack.last_mut() {
+    if frame.next_child < frame.node.children.len() {
+      let child = &frame.node.children[frame.next_child];
+      frame.next_child += 1;
+
+      if should_include(child) {
+        stack.push(Frame {
+          node: child,
+          next_child: 0,
+          child_ids: Vec::new(),
+        });
+      }
+      continue;
+    }
+
+    let finished = stack.pop().expect("frame must exist");
+    let node = finished.node;
+    let id = accesskit_node_id(node.node_id);
+
+    let mut builder = accesskit::NodeBuilder::new(role_for_node(node));
+    if let Some(name) = direct_text_name(node) {
+      builder.set_name(name);
+    }
+    if !finished.child_ids.is_empty() {
+      builder.set_children(finished.child_ids.clone());
+    }
+
+    if let Some(lang) = resolve_effective_lang(node.node_id, &index) {
+      builder.set_language(lang);
+    }
+    if let Some(dir) = resolve_text_direction(node.node_id, &index) {
+      builder.set_text_direction(dir);
+    }
+
+    let built = builder.build(&mut classes);
+    nodes.push((id, built));
+
+    if let Some(parent) = stack.last_mut() {
+      parent.child_ids.push(id);
+    }
+  }
+
+  let root_id = accesskit_node_id(root.node_id);
+  accesskit::TreeUpdate {
+    nodes,
+    tree: Some(accesskit::Tree {
+      root: root_id,
+      root_scroller: Some(root_id),
+    }),
+    focus: None,
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod accesskit_lang_dir_tests {
+  use super::*;
+
+  fn find_node_by_name<'a>(update: &'a accesskit::TreeUpdate, name: &str) -> Option<&'a accesskit::Node> {
+    update
+      .nodes
+      .iter()
+      .find_map(|(_id, node)| node.name().is_some_and(|n| n.trim() == name).then_some(node))
+  }
+
+  #[test]
+  fn accesskit_nodes_include_lang_attribute() {
+    let fixture = crate::testing::styled_tree(r#"<div lang="fr">Bonjour</div>"#, "", (800.0, 600.0));
+    let update = build_accesskit_tree_update(&fixture.styled);
+    let node = find_node_by_name(&update, "Bonjour").expect("expected node with name 'Bonjour'");
+    assert_eq!(node.language(), Some("fr"));
+  }
+
+  #[test]
+  fn accesskit_nodes_include_dir_attribute() {
+    let fixture = crate::testing::styled_tree(r#"<div dir="rtl">مرحبا</div>"#, "", (800.0, 600.0));
+    let update = build_accesskit_tree_update(&fixture.styled);
+    let node = find_node_by_name(&update, "مرحبا").expect("expected node with name 'مرحبا'");
+    assert_eq!(node.text_direction(), Some(accesskit::TextDirection::RightToLeft));
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
