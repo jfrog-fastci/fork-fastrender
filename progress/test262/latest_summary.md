@@ -70,9 +70,7 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 - JSON report (not committed): `target/js/test262.json`
 - Note: running `target/debug/test262-semantic` (or `target/release/test262-semantic`) directly requires
-  building it first (e.g. `CARGO_TARGET_DIR=target bash scripts/cargo_agent.sh build --manifest-path vendor/ecma-rs/Cargo.toml -p test262-semantic`,
-  plus `--release` for `target/release/...`)
-  to avoid accidentally using a stale binary.
+  building it first (e.g. `CARGO_TARGET_DIR=target bash scripts/cargo_agent.sh build --manifest-path vendor/ecma-rs/Cargo.toml -p test262-semantic`).
 - Note: `test262-semantic` runs each case on a fresh large-stack thread (see
   `vendor/ecma-rs/test262-semantic/src/vm_js_executor.rs`) so deep-recursion tests should fail
   cleanly with `execution terminated: stack overflow` rather than aborting the host process.
@@ -84,8 +82,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | Metric | Count |
 | --- | ---: |
 | Total cases | 17318 |
-| Matched upstream expected | 15988 (92.32%) |
-| Mismatched upstream expected | 1330 (7.68%) |
+| Matched upstream expected | 16002 (92.40%) |
+| Mismatched upstream expected | 1316 (7.60%) |
 | Timeouts | 0 |
 | Skipped | 40 |
 | Unexpected mismatches | 664 |
@@ -94,8 +92,8 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 15948 |
-| failed | 1330 |
+| passed | 15962 |
+| failed | 1316 |
 | timed_out | 0 |
 | skipped | 40 |
 
@@ -114,36 +112,41 @@ LIMIT_STACK=64M timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
 | --- | ---: |
 | PASS | 8042 |
 | FAIL (unexpected) | 664 |
-| XFAIL | 666 |
-| XPASS | 7906 |
+| XFAIL | 652 |
+| XPASS | 7920 |
 | SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| built-ins | 7185 | 6871 | 314 | 4.37% | 6249 | 0 | 314 | 582 | 40 |
-| language | 10128 | 9112 | 1016 | 10.03% | 1788 | 664 | 352 | 7324 | 0 |
+| built-ins | 7185 | 6873 | 312 | 4.34% | 6249 | 0 | 312 | 584 | 40 |
+| language | 10128 | 9124 | 1004 | 9.91% | 1788 | 664 | 340 | 7336 | 0 |
 | staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7161 | 989 | 13.81% | 756 | 664 | 325 | 5416 | 0 |
+| `language/statements` | 7161 | 985 | 13.76% | 756 | 664 | 321 | 5420 | 0 |
 | `built-ins/Set` | 764 | 304 | 39.79% | 390 | 0 | 304 | 70 | 0 |
-| `language/expressions` | 2337 | 27 | 1.16% | 1032 | 0 | 27 | 1278 | 0 |
+| `language/expressions` | 2337 | 19 | 0.81% | 1032 | 0 | 19 | 1286 | 0 |
 | `built-ins/Array` | 1503 | 6 | 0.40% | 1457 | 0 | 6 | 0 | 40 |
 | `built-ins/Map` | 405 | 2 | 0.49% | 403 | 0 | 2 | 0 | 0 |
-| `built-ins/Symbol` | 184 | 2 | 1.09% | 44 | 0 | 2 | 138 | 0 |
+| `built-ins/Boolean` | 101 | 0 | 0.00% | 101 | 0 | 0 | 0 | 0 |
+| `built-ins/Error` | 2 | 0 | 0.00% | 2 | 0 | 0 | 0 | 0 |
+| `built-ins/Function` | 96 | 0 | 0.00% | 96 | 0 | 0 | 0 | 0 |
+| `built-ins/JSON` | 330 | 0 | 0.00% | 330 | 0 | 0 | 0 | 0 |
+| `built-ins/Math` | 654 | 0 | 0.00% | 654 | 0 | 0 | 0 | 0 |
 
-(Total buckets: 22; buckets with 0 mismatches: 16)
+(Total buckets: 22; buckets with 0 mismatches: 17)
 
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 858 (64.51%)
-- VmError::Unimplemented: 472 (35.49%)
+- exception/other: 844 (64.13%)
+- VmError::Unimplemented: 472 (35.87%)
+- termination: 0 (0.00%)
 
 ### Top 20
 
@@ -160,9 +163,9 @@ Mismatched cases by high-level bucket:
 | 9 | exception/other | 36 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
 | 10 | exception/other | 23 | `Maximum call stack size exceeded` |
 | 11 | exception/other | 14 | `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true` |
-| 12 | exception/other | 14 | `Expected true but got false` |
-| 13 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
-| 14 | exception/other | 14 | `isConstructor invoked with a non-function value` |
+| 12 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
+| 13 | exception/other | 14 | `isConstructor invoked with a non-function value` |
+| 14 | exception/other | 12 | `Expected true but got false` |
 | 15 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
 | 16 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
 | 17 | exception/other | 10 | `TypedArray view out of bounds` |
@@ -170,19 +173,15 @@ Mismatched cases by high-level bucket:
 | 19 | exception/other | 8 | `#0: result === "value". Actual:  result ===myObj_value` |
 | 20 | exception/other | 8 | `BigInt64Array is not defined` |
 
-Note: `invalid handle (vm-js/src/heap.rs:1911:16)` no longer appears in the curated report (0 occurrences in `target/js/test262*.json`). The previous snapshot had 24 such mismatches. This was fixed by the vm-js GC-rooting work in `6a155a00` (`fix(vm-js): root ArrayBuffer/DataView/TypedArray args across GC`).
-
-To sanity-check for nondeterminism, a `--jobs 1` run also had 0 `invalid handle` occurrences (report: `target/js/test262_curated_jobs1.json`), but hit 1 timeout: `language/statements/for-of/dstr/const-obj-ptrn-prop-id.js#strict`.
-
 ## Timed-out tests
 
 _None._
 
 ## Appendix: top failing tests (IDs + first-line error)
 
-Sample mismatched cases (ID + first non-empty `error` line), grouped by the largest mismatch buckets.
+At least 50 mismatched cases, grouped by the largest mismatch buckets.
 
-### `language/statements` (10 shown / 989 mismatches)
+### `language/statements` (10 shown / 985 mismatches)
 
 - `language/statements/async-function/dflt-params-abrupt.js#non_strict`: `at language/statements/async-function/dflt-params-abrupt.js:207:36`
 - `language/statements/async-function/dflt-params-abrupt.js#strict`: `at language/statements/async-function/dflt-params-abrupt.js:209:36`
@@ -208,7 +207,7 @@ Sample mismatched cases (ID + first non-empty `error` line), grouped by the larg
 - `built-ins/Set/prototype/difference/combines-Map.js#non_strict`: `value is not callable`
 - `built-ins/Set/prototype/difference/combines-Map.js#strict`: `value is not callable`
 
-### `language/expressions` (10 shown / 27 mismatches)
+### `language/expressions` (10 shown / 19 mismatches)
 
 - `language/expressions/comma/tco-final.js#strict`: `Maximum call stack size exceeded`
 - `language/expressions/logical-and/tco-right.js#strict`: `Maximum call stack size exceeded`
@@ -219,7 +218,7 @@ Sample mismatched cases (ID + first non-empty `error` line), grouped by the larg
 - `language/expressions/new/non-ctor-err-realm.js#strict`: `production including Arguments Expected a TypeError but got a different error constructor with the same name`
 - `language/expressions/super/call-proto-not-ctor.js#non_strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
 - `language/expressions/super/call-proto-not-ctor.js#strict`: `Expected SameValue(«"undefined"», «"object"») to be true`
-- `language/expressions/super/prop-dot-cls-val-from-eval.js#non_strict`: `expected super property access not allowed outside methods and class elements`
+- `language/expressions/super/prop-expr-getsuperbase-before-topropertykey-getvalue.js#non_strict`: `Expected SameValue(«"bad"», «"ok"») to be true`
 
 ### `built-ins/Array` (6 shown / 6 mismatches)
 
@@ -234,8 +233,3 @@ Sample mismatched cases (ID + first non-empty `error` line), grouped by the larg
 
 - `built-ins/Map/valid-keys.js#non_strict`: `BigInt64Array is not defined`
 - `built-ins/Map/valid-keys.js#strict`: `BigInt64Array is not defined`
-
-### `built-ins/Symbol` (2 shown / 2 mismatches)
-
-- `built-ins/Symbol/is-constructor.js#non_strict`: `Expected true but got false`
-- `built-ins/Symbol/is-constructor.js#strict`: `Expected true but got false`
