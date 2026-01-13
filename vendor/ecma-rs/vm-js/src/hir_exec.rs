@@ -212,6 +212,34 @@ enum NumericValue {
   BigInt(GcBigInt),
 }
 
+/// RAII guard that truncates the heap root stack back to a prior length.
+///
+/// This is used to keep temporarily-rooted values alive across allocations/GC without leaking roots
+/// into the caller's scope when evaluation returns early.
+struct RootStackTruncateGuard {
+  heap: *mut crate::Heap,
+  len: usize,
+}
+
+impl RootStackTruncateGuard {
+  fn new(heap: &mut crate::Heap, len: usize) -> Self {
+    Self {
+      heap: heap as *mut _,
+      len,
+    }
+  }
+}
+
+impl Drop for RootStackTruncateGuard {
+  fn drop(&mut self) {
+    // Safety: the guard is only created from a live `Scope` borrow; the heap pointer remains valid
+    // until the scope is dropped, which must happen after this guard (declared in the same scope).
+    unsafe {
+      (*self.heap).root_stack.truncate(self.len);
+    }
+  }
+}
+
 /// A minimal reference representation used for assignment evaluation.
 ///
 /// This intentionally mirrors the interpreter (`exec.rs`) evaluation strategy:
@@ -7397,11 +7425,17 @@ impl<'vm> HirEvaluator<'vm> {
           }
         };
 
-      let class_env = self.env.lexical_env();
+        // Keep the superclass value alive across subsequent allocations/GC until it becomes
+        // reachable from the class constructor object (via its native `super` slot).
+        let super_root_len = scope.heap().root_stack.len();
+        scope.push_root(super_value)?;
+        let _super_root_guard = RootStackTruncateGuard::new(scope.heap_mut(), super_root_len);
 
-      // Ensure the requested class binding exists before creating any class element closures.
-      if let Some(name) = binding_name {
-        if scope.heap().env_has_binding(class_env, name)? {
+       let class_env = self.env.lexical_env();
+
+       // Ensure the requested class binding exists before creating any class element closures.
+       if let Some(name) = binding_name {
+         if scope.heap().env_has_binding(class_env, name)? {
           return Err(VmError::InvariantViolation(
             "class binding already exists in class environment",
           ));

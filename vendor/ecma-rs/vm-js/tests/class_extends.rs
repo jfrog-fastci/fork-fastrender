@@ -6,6 +6,14 @@ fn new_runtime() -> JsRuntime {
   JsRuntime::new(vm, heap).unwrap()
 }
 
+fn new_runtime_aggressive_gc() -> JsRuntime {
+  let vm = Vm::new(VmOptions::default());
+  // Force frequent GC cycles so we catch missing rooting of temporary values during class
+  // definition (e.g. ephemeral `extends (class A {})` super constructors).
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  JsRuntime::new(vm, heap).unwrap()
+}
+
 fn exec_compiled(rt: &mut JsRuntime, source: &str) -> Result<Value, VmError> {
   let script = CompiledScript::compile_script(rt.heap_mut(), "<class_extends>", source)?;
   rt.exec_compiled_script(script)
@@ -77,3 +85,35 @@ fn class_extends_non_constructor_throws_type_error_compiled() -> Result<(), VmEr
   Ok(())
 }
 
+#[test]
+fn class_extends_ephemeral_super_survives_gc() -> Result<(), VmError> {
+  let mut rt = new_runtime_aggressive_gc();
+  let value = rt.exec_script(
+    r#"
+    class B extends (class A {}) {}
+    const A = Object.getPrototypeOf(B);
+    Object.getPrototypeOf(B) === A &&
+      Object.getPrototypeOf(B.prototype) === A.prototype &&
+      (new B() instanceof A)
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn class_extends_ephemeral_super_survives_gc_compiled() -> Result<(), VmError> {
+  let mut rt = new_runtime_aggressive_gc();
+  let value = exec_compiled(
+    &mut rt,
+    r#"
+    class B extends (class A {}) {}
+    const A = Object.getPrototypeOf(B);
+    Object.getPrototypeOf(B) === A &&
+      Object.getPrototypeOf(B.prototype) === A.prototype &&
+      (new B() instanceof A)
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
