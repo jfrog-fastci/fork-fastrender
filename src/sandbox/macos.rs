@@ -256,6 +256,7 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
   use std::net::{TcpListener, TcpStream, UdpSocket};
   use std::process::Command;
   use std::time::{Instant, SystemTime};
+  use std::io::Write;
 
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
   const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_PORT";
@@ -605,6 +606,49 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
     assert!(
       output.status.success(),
       "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
+  fn pure_computation_sandbox_allows_inherited_stdout_pipe() {
+    const SENTINEL: &[u8] = b"fastrender-seatbelt-stdout-ok";
+
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      apply_pure_computation_sandbox().expect("apply Seatbelt pure-computation sandbox");
+      std::io::stdout()
+        .write_all(SENTINEL)
+        .and_then(|_| std::io::stdout().flush())
+        .expect("write sentinel to stdout after sandbox");
+      std::process::exit(0);
+    }
+
+    // Run in a child process so the parent test runner is unaffected by the sandbox.
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name = "sandbox::macos::tests::pure_computation_sandbox_allows_inherited_stdout_pipe";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn sandbox child process");
+
+    assert!(
+      output.status.success(),
+      "sandbox child should exit 0 (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+      output
+        .stdout
+        .windows(SENTINEL.len())
+        .any(|window| window == SENTINEL),
+      "expected sandbox child to write sentinel to stdout; got stdout={}, stderr={}",
       String::from_utf8_lossy(&output.stdout),
       String::from_utf8_lossy(&output.stderr)
     );

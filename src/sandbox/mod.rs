@@ -29,6 +29,11 @@ use std::io;
 #[cfg(target_os = "linux")]
 pub mod linux_landlock;
 
+// macOS Seatbelt sandbox support lives in `macos.rs`. Keep it behind a cfg so the crate still
+// builds on non-macOS targets without linking against `libsandbox`.
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
   Applied,

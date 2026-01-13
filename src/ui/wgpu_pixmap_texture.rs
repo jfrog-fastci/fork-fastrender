@@ -683,7 +683,7 @@ mod tests {
     assert_eq!(alloc_size_px, (128, 128));
     let mut id = egui::TextureId::User(1);
 
-    let recreated = recreate_on_capacity_exceeded(
+    let recreated: Option<()> = recreate_on_capacity_exceeded(
       &mut registry,
       &mut content_size_px,
       &mut alloc_size_px,
@@ -748,7 +748,7 @@ mod tests {
     assert_eq!(alloc_size_px, (192, 128));
 
     // Updating again within the same bucket should not free/recreate again.
-    let recreated = recreate_on_capacity_exceeded(
+    let recreated: Option<()> = recreate_on_capacity_exceeded(
       &mut registry,
       &mut content_size_px,
       &mut alloc_size_px,
