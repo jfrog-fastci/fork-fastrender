@@ -120,3 +120,52 @@ fn generator_shadowed_eval_is_not_direct_even_with_yield_argument() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_yield_in_later_argument_is_direct() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // `var` creates a global binding visible to indirect eval.
+          var x = 2;
+          function* g(){ let x = 1; return eval("x", yield 0); }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next("ignored");
+          // The `yield` occurs while evaluating the *second* argument, so the continuation must
+          // still treat this as a direct eval.
+          ok = r1.done === false && r1.value === 0 && r2.done === true && r2.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_spread_argument_is_direct() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          // `yield` suspends while evaluating a spread argument; the resumed iterable provides the
+          // argument list for `eval`.
+          function* g(){ let x = 1; return eval(...(yield 0)); }
+          var it = g();
+          var r1 = it.next();
+          var r2 = it.next(["x"]);
+          ok = r1.done === false && r1.value === 0 && r2.done === true && r2.value === 1;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
