@@ -1261,6 +1261,39 @@ fn p2_import_maps_support_scoped_mappings() -> Result<()> {
 }
 
 #[test]
+fn p2_importmap_processing_does_not_clobber_current_script_of_enclosing_classic_script() -> Result<()> {
+  let mut js_options = JsExecutionOptions::default();
+  js_options.supports_module_scripts = true;
+  let mut h = Harness::new(
+    "https://example.invalid/p2_importmap_current_script_clobber.html",
+    js_options,
+  )?;
+
+  h.register_html_source(
+    r#"<!doctype html><html><head></head><body>
+      <script id="outer">
+        console.log("before:" + document.currentScript.id);
+        const s = document.createElement("script");
+        s.type = "importmap";
+        s.id = "importmap";
+        s.textContent = '{"imports":{}}';
+        document.head.appendChild(s);
+        console.log("after:" + document.currentScript.id);
+      </script>
+    </body></html>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["before:outer".to_string(), "after:outer".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p2_import_map_parse_errors_surface_in_diagnostics() -> Result<()> {
   let mut js_options = JsExecutionOptions::default();
   js_options.supports_module_scripts = true;
