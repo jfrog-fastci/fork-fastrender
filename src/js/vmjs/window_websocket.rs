@@ -20,9 +20,12 @@ use crate::js::window_timers::{
   event_loop_mut_from_hooks, vm_error_to_event_loop_error, VmJsEventLoopHooks,
 };
 use crate::ipc::websocket::{
-  WebSocketCommand, WebSocketConnectParams, WebSocketEvent, MAX_WEBSOCKET_CLOSE_REASON_BYTES,
-  MAX_WEBSOCKET_MESSAGE_BYTES, MAX_WEBSOCKET_PROTOCOL_BYTES, MAX_WEBSOCKET_PROTOCOLS,
-  MAX_WEBSOCKET_URL_BYTES,
+  WebSocketCommand, WebSocketConnectParams, WebSocketEvent,
+  MAX_WEBSOCKET_CLOSE_REASON_BYTES as MAX_WEBSOCKET_CLOSE_REASON_BYTES_U32,
+  MAX_WEBSOCKET_MESSAGE_BYTES as MAX_WEBSOCKET_MESSAGE_BYTES_U32,
+  MAX_WEBSOCKET_PROTOCOL_BYTES as MAX_WEBSOCKET_PROTOCOL_BYTES_U32,
+  MAX_WEBSOCKET_PROTOCOLS as MAX_WEBSOCKET_PROTOCOLS_U32,
+  MAX_WEBSOCKET_URL_BYTES as MAX_WEBSOCKET_URL_BYTES_U32,
 };
 use crate::resource::ResourceFetcher;
 use crate::ipc::IpcError;
@@ -43,6 +46,15 @@ use vm_js::{
   PropertyKey, PropertyKind, Realm, RealmId, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
   WeakGcObject,
 };
+
+// IPC validation limits are defined as `u32` in `crate::ipc::websocket` because they are part of the
+// multiprocess framing contract. The JS bindings and VM helpers typically operate on `usize` byte
+// counts, so normalize them here to avoid pervasive casts at call sites.
+const MAX_WEBSOCKET_URL_BYTES: usize = MAX_WEBSOCKET_URL_BYTES_U32 as usize;
+const MAX_WEBSOCKET_PROTOCOLS: usize = MAX_WEBSOCKET_PROTOCOLS_U32 as usize;
+const MAX_WEBSOCKET_PROTOCOL_BYTES: usize = MAX_WEBSOCKET_PROTOCOL_BYTES_U32 as usize;
+const MAX_WEBSOCKET_MESSAGE_BYTES: usize = MAX_WEBSOCKET_MESSAGE_BYTES_U32 as usize;
+const MAX_WEBSOCKET_CLOSE_REASON_BYTES: usize = MAX_WEBSOCKET_CLOSE_REASON_BYTES_U32 as usize;
 
 const SLOT_ENV_ID: usize = 0;
 
