@@ -115,6 +115,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use ttf_parser::Tag;
 use unicode_bidi::BidiInfo;
+use unicode_bidi::BidiClass;
 use unicode_bidi::Level;
 use unicode_bidi_mirroring::get_mirrored;
 use unicode_general_category::{get_general_category, GeneralCategory};
@@ -1537,6 +1538,28 @@ pub struct BidiAnalysis {
   needs_reordering: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+  static BIDI_INFO_NEW_CALLS: Cell<usize> = Cell::new(0);
+}
+
+#[cfg(test)]
+pub(crate) fn debug_reset_bidi_info_calls() {
+  BIDI_INFO_NEW_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn debug_bidi_info_calls() -> usize {
+  BIDI_INFO_NEW_CALLS.with(|calls| calls.get())
+}
+
+#[inline]
+fn new_bidi_info(text: &str, base_level: Option<Level>) -> BidiInfo<'_> {
+  #[cfg(test)]
+  BIDI_INFO_NEW_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+  BidiInfo::new(text, base_level)
+}
+
 /// Paragraph boundaries derived from bidi analysis.
 #[derive(Debug, Clone, Copy)]
 pub struct ParagraphBoundary {
@@ -1568,6 +1591,47 @@ impl BidiRun {
   pub fn text_slice<'a>(&self, text: &'a str) -> &'a str {
     &text[self.start.min(text.len())..self.end.min(text.len())]
   }
+}
+
+fn paragraph_boundaries_for_overridden_levels(
+  text: &str,
+  level: Level,
+) -> Vec<ParagraphBoundary> {
+  if text.is_empty() {
+    return Vec::new();
+  }
+
+  let mut paragraphs = Vec::new();
+  let mut start_byte = 0usize;
+  for (idx, ch) in text.char_indices() {
+    if unicode_bidi::bidi_class(ch) == BidiClass::B {
+      let end_byte = idx.saturating_add(ch.len_utf8()).min(text.len());
+      paragraphs.push(ParagraphBoundary {
+        start_byte,
+        end_byte,
+        level,
+      });
+      start_byte = end_byte;
+    }
+  }
+
+  if start_byte < text.len() {
+    paragraphs.push(ParagraphBoundary {
+      start_byte,
+      end_byte: text.len(),
+      level,
+    });
+  }
+
+  if paragraphs.is_empty() {
+    paragraphs.push(ParagraphBoundary {
+      start_byte: 0,
+      end_byte: text.len(),
+      level,
+    });
+  }
+
+  paragraphs
 }
 
 impl BidiAnalysis {
@@ -1641,48 +1705,117 @@ impl BidiAnalysis {
       false
     };
 
-    // Run Unicode bidi algorithm
-    let base_override = match style.unicode_bidi {
-      // unicode-bidi: plaintext normally resolves the paragraph base direction from the first
-      // strong character in the shaped slice (UAX#9). When layout provides an explicit bidi
-      // context, preserve its embedding depth so sub-range shaping cannot "flip" by re-running
-      // first-strong resolution on a slice that starts with neutrals.
-      crate::style::types::UnicodeBidi::Plaintext if has_explicit_context => Some(base_level),
-      crate::style::types::UnicodeBidi::Plaintext => None,
-      _ => Some(base_level),
-    };
-    let bidi_info = BidiInfo::new(text.as_ref(), base_override);
-
-    // Check if any RTL content exists
-    let mut needs_reordering = bidi_info.levels.iter().any(|&level| level.is_rtl());
-
-    let mut levels = bidi_info.levels.clone();
-    let para_level = bidi_info
-      .paragraphs
-      .first()
-      .map(|p| p.level)
-      .unwrap_or(base_level);
-    let base_level = match style.unicode_bidi {
-      crate::style::types::UnicodeBidi::Plaintext => para_level,
-      _ => base_level,
-    };
-
-    // CSS bidi overrides force all characters to the element's direction.
     use crate::style::types::UnicodeBidi;
+    // CSS bidi overrides force all characters to the element's direction and are trivially
+    // resolved without running the full Unicode algorithm.
     if override_all
       || matches!(
         style.unicode_bidi,
         UnicodeBidi::BidiOverride | UnicodeBidi::IsolateOverride
       )
     {
-      levels = vec![base_level; levels.len()];
-      needs_reordering = false;
+      let levels = vec![base_level; text.len()];
+      let paragraphs = paragraph_boundaries_for_overridden_levels(text.as_ref(), base_level);
+      return Self {
+        text,
+        levels,
+        paragraphs,
+        base_level,
+        needs_reordering: false,
+      };
     }
 
+    // Common-case LTR fast path: skip bidi analysis entirely when we know the result is
+    // `needs_reordering = false` and all bytes will have the same LTR embedding level.
+    //
+    // This avoids the heavy `unicode_bidi::BidiInfo::new` work on typical Latin-heavy pages.
+    let resolved_base_level = if matches!(style.unicode_bidi, UnicodeBidi::Plaintext)
+      && !has_explicit_context
+    {
+      // `unicode-bidi: plaintext` resolves the paragraph base direction from first-strong when the
+      // layout engine has not provided an explicit embedding context. When our fast-path checks
+      // below succeed, the first-strong resolution will be LTR.
+      Level::ltr()
+    } else {
+      base_level
+    };
+    if resolved_base_level.is_ltr() {
+      let mut can_fast_path = true;
+      if text.is_ascii() {
+        // ASCII cannot contain bidi format controls or strong RTL characters.
+        if text.as_bytes().iter().any(|b| matches!(b, b'\n' | b'\r')) {
+          can_fast_path = false;
+        }
+      } else {
+        for ch in text.chars() {
+          if is_bidi_format_char(ch) {
+            can_fast_path = false;
+            break;
+          }
+          let cls = unicode_bidi::bidi_class(ch);
+          if matches!(cls, BidiClass::R | BidiClass::AL) {
+            can_fast_path = false;
+            break;
+          }
+          // Paragraph separators/newlines require full paragraph processing; they are rare in the
+          // hot LTR path so just fall back to the full algorithm.
+          if cls == BidiClass::B {
+            can_fast_path = false;
+            break;
+          }
+        }
+      }
+
+      if can_fast_path {
+        let levels = vec![resolved_base_level; text.len()];
+        let paragraphs = vec![ParagraphBoundary {
+          start_byte: 0,
+          end_byte: text.len(),
+          level: resolved_base_level,
+        }];
+        return Self {
+          text,
+          levels,
+          paragraphs,
+          base_level: resolved_base_level,
+          needs_reordering: false,
+        };
+      }
+    }
+
+    // Run Unicode bidi algorithm (slow path).
+    let base_override = match style.unicode_bidi {
+      // unicode-bidi: plaintext normally resolves the paragraph base direction from the first
+      // strong character in the shaped slice (UAX#9). When layout provides an explicit bidi
+      // context, preserve its embedding depth so sub-range shaping cannot "flip" by re-running
+      // first-strong resolution on a slice that starts with neutrals.
+      UnicodeBidi::Plaintext if has_explicit_context => Some(base_level),
+      UnicodeBidi::Plaintext => None,
+      _ => Some(base_level),
+    };
+    let bidi_info = new_bidi_info(text.as_ref(), base_override);
+    let BidiInfo {
+      levels,
+      paragraphs: info_paragraphs,
+      ..
+    } = bidi_info;
+
+    // Check if any RTL content exists.
+    let needs_reordering = levels.iter().any(|&level| level.is_rtl());
+
     let text_len = text.len();
-    let paragraphs = bidi_info
-      .paragraphs
-      .iter()
+
+    let para_level = info_paragraphs
+      .first()
+      .map(|p| p.level)
+      .unwrap_or(base_level);
+    let base_level = match style.unicode_bidi {
+      UnicodeBidi::Plaintext => para_level,
+      _ => base_level,
+    };
+
+    let paragraphs = info_paragraphs
+      .into_iter()
       .map(|p| ParagraphBoundary {
         start_byte: p.range.start.min(text_len),
         end_byte: p.range.end.min(text_len),

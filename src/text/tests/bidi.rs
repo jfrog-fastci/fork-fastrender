@@ -1,10 +1,12 @@
 //! Bidirectional text analysis using the shaping pipeline.
 
 use crate::style::ComputedStyle;
+use crate::style::types::UnicodeBidi;
 use crate::text::pipeline::BidiAnalysis;
 use crate::text::pipeline::BidiRun;
 use crate::text::pipeline::Direction;
 use crate::text::pipeline::ShapingPipeline;
+use crate::text::pipeline::{debug_bidi_info_calls, debug_reset_bidi_info_calls};
 use crate::FontConfig;
 use crate::FontContext;
 use std::sync::Arc;
@@ -20,7 +22,13 @@ fn run_texts<'a>(runs: &[BidiRun], text: &'a str) -> Vec<&'a str> {
 
 #[test]
 fn pure_ltr_has_single_run() {
+  debug_reset_bidi_info_calls();
   let analysis = analyze("Hello world", Direction::LeftToRight);
+  assert_eq!(
+    debug_bidi_info_calls(),
+    0,
+    "ASCII-only LTR text should not invoke the full Unicode bidi algorithm"
+  );
   assert!(!analysis.needs_reordering());
 
   let runs = analysis.logical_runs();
@@ -30,8 +38,24 @@ fn pure_ltr_has_single_run() {
 }
 
 #[test]
+fn pure_rtl_uses_slow_path() {
+  debug_reset_bidi_info_calls();
+  let analysis = analyze("שלום", Direction::LeftToRight);
+  assert!(
+    debug_bidi_info_calls() > 0,
+    "RTL text requires the Unicode bidi algorithm"
+  );
+  assert!(analysis.needs_reordering());
+}
+
+#[test]
 fn mixed_text_produces_rtl_and_ltr_runs() {
+  debug_reset_bidi_info_calls();
   let analysis = analyze("Hello שלום world", Direction::LeftToRight);
+  assert!(
+    debug_bidi_info_calls() > 0,
+    "mixed-direction text should require the Unicode bidi algorithm"
+  );
   assert!(analysis.needs_reordering());
 
   let runs = analysis.logical_runs();
@@ -41,7 +65,9 @@ fn mixed_text_produces_rtl_and_ltr_runs() {
 
 #[test]
 fn visual_runs_reorder_mixed_content() {
+  debug_reset_bidi_info_calls();
   let analysis = analyze("ABC שלום GHI", Direction::LeftToRight);
+  assert!(debug_bidi_info_calls() > 0);
   let runs = analysis.visual_runs();
 
   assert!(runs.len() >= 3);
@@ -54,8 +80,10 @@ fn visual_runs_reorder_mixed_content() {
 
 #[test]
 fn paragraph_boundaries_split_runs() {
+  debug_reset_bidi_info_calls();
   let text = "\u{202E}ABC\u{202C}\n\u{202A}DEF\u{202C}";
   let analysis = analyze(text, Direction::LeftToRight);
+  assert!(debug_bidi_info_calls() > 0);
   let runs = analysis.visual_runs();
 
   // Runs should stay within their paragraphs.
@@ -146,4 +174,20 @@ fn rtl_measure_width_is_physical_and_advances_are_sane() {
     sum_advances,
     item.advance
   );
+}
+
+#[test]
+fn unicode_bidi_override_skips_bidi_info_new() {
+  debug_reset_bidi_info_calls();
+  let mut style = ComputedStyle::default();
+  style.direction = crate::style::types::Direction::Rtl;
+  style.unicode_bidi = UnicodeBidi::BidiOverride;
+
+  let analysis = BidiAnalysis::analyze("abc", &style);
+  assert_eq!(
+    debug_bidi_info_calls(),
+    0,
+    "unicode-bidi:bidi-override should not invoke BidiInfo::new"
+  );
+  assert!(!analysis.needs_reordering());
 }
