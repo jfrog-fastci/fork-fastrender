@@ -65,99 +65,98 @@ CARGO_TARGET_DIR=../../target timeout -k 10 600 bash scripts/cargo_agent.sh run 
 
 | Metric | Count |
 | --- | ---: |
-| Total cases | 15378 |
-| Matched upstream expected | 12701 (82.59%) |
-| Mismatched upstream expected | 2677 (17.41%) |
-| Timeouts | 2 |
-| Skipped | 8 |
-| Unexpected mismatches | 0 |
+| Total cases | 17318 |
+| Matched upstream expected | 15665 (90.46%) |
+| Mismatched upstream expected | 1653 (9.54%) |
+| Timeouts | 0 |
+| Skipped | 40 |
+| Unexpected mismatches | 672 |
 
 ### Outcomes (runner)
 
 | Outcome | Count |
 | --- | ---: |
-| passed | 11587 |
-| failed | 3781 |
-| timed_out | 2 |
-| skipped | 8 |
+| passed | 15625 |
+| failed | 1653 |
+| timed_out | 0 |
+| skipped | 40 |
 
 ### Expectations (manifest)
 
 | Kind | Count |
 | --- | ---: |
-| pass | 1768 |
-| xfail | 13602 |
-| skip | 8 |
+| pass | 8696 |
+| xfail | 8582 |
+| skip | 40 |
 | flaky | 0 |
 
 ### Results vs expectations
 
 | Status | Count |
 | --- | ---: |
-| PASS | 1768 |
-| FAIL (unexpected) | 0 |
-| XFAIL | 2677 |
-| XPASS | 10925 |
-| SKIP | 8 |
+| PASS | 8024 |
+| FAIL (unexpected) | 672 |
+| XFAIL | 981 |
+| XPASS | 7601 |
+| SKIP | 40 |
 
 ## Breakdown by major area
 
 | Area | Total | Matched | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| language | 10086 | 7993 | 2093 | 20.75% | 1028 | 0 | 2093 | 6965 | 0 |
-| built-ins | 5291 | 4707 | 584 | 11.04% | 740 | 0 | 584 | 3959 | 8 |
-| staging | 1 | 1 | 0 | 0.00% | 0 | 0 | 0 | 1 | 0 |
+| language | 10128 | 8907 | 1221 | 12.06% | 1786 | 666 | 555 | 7121 | 0 |
+| built-ins | 7185 | 6753 | 432 | 6.01% | 6233 | 6 | 426 | 480 | 40 |
+| staging | 5 | 5 | 0 | 0.00% | 5 | 0 | 0 | 0 | 0 |
 
 ## Top failing buckets (by mismatched cases)
 
 | Bucket | Total | Mismatched | Mismatch rate | PASS | FAIL | XFAIL | XPASS | SKIP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `language/statements` | 7131 | 1687 | 23.66% | 0 | 0 | 1687 | 5444 | 0 |
-| `language/expressions` | 2325 | 207 | 8.90% | 1028 | 0 | 207 | 1090 | 0 |
-| `language/block-scope` | 287 | 191 | 66.55% | 0 | 0 | 191 | 96 | 0 |
-| `built-ins/Array` | 1124 | 163 | 14.50% | 0 | 0 | 163 | 953 | 8 |
-| `built-ins/String` | 768 | 134 | 17.45% | 82 | 0 | 134 | 552 | 0 |
-| `built-ins/Object` | 1664 | 130 | 7.81% | 538 | 0 | 130 | 996 | 0 |
-| `built-ins/JSON` | 330 | 92 | 27.88% | 0 | 0 | 92 | 238 | 0 |
-| `built-ins/Math` | 654 | 46 | 7.03% | 0 | 0 | 46 | 608 | 0 |
-| `built-ins/Symbol` | 184 | 18 | 9.78% | 42 | 0 | 18 | 124 | 0 |
+| `language/statements` | 7161 | 1110 | 15.50% | 754 | 666 | 444 | 5297 | 0 |
+| `built-ins/Set` | 764 | 306 | 40.05% | 388 | 2 | 304 | 70 | 0 |
+| `built-ins/Object` | 1692 | 110 | 6.50% | 1330 | 2 | 108 | 252 | 0 |
+| `language/expressions` | 2337 | 103 | 4.41% | 1032 | 0 | 103 | 1202 | 0 |
+| `built-ins/Array` | 1503 | 6 | 0.40% | 1453 | 0 | 6 | 4 | 40 |
 | `language/directive-prologue` | 62 | 6 | 9.68% | 0 | 0 | 6 | 56 | 0 |
+| `built-ins/Map` | 405 | 4 | 0.99% | 401 | 2 | 2 | 0 | 0 |
+| `built-ins/String` | 820 | 4 | 0.49% | 814 | 0 | 4 | 2 | 0 |
+| `built-ins/Symbol` | 184 | 2 | 1.09% | 44 | 0 | 2 | 138 | 0 |
+| `language/block-scope` | 287 | 2 | 0.70% | 0 | 0 | 2 | 285 | 0 |
 
-(Total buckets: 18; buckets with 0 mismatches: 6)
+(Total buckets: 22; buckets with 0 mismatches: 12)
 
 ## Top mismatch reasons (first line of `error`)
 
 Mismatched cases by high-level bucket:
-- exception/other: 2027 (75.72%)
-- VmError::Unimplemented: 646 (24.13%)
-- termination: 4 (0.15%)
+- exception/other: 1017 (61.52%)
+- VmError::Unimplemented: 613 (37.08%)
+- termination: 23 (1.39%)
 
 ### Top 20
 
 | # | Kind | Count | Reason |
 | ---: | --- | ---: | --- |
-| 1 | exception/other | 528 | `async generator functions` |
-| 2 | VmError::Unimplemented | 447 | `unimplemented: class inheritance` |
-| 3 | exception/other | 396 | `negative expectation mismatch: expected parse SyntaxError, got runtime <unknown error type>` |
-| 4 | exception/other | 158 | `Cannot convert undefined or null to object` |
-| 5 | exception/other | 66 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
-| 6 | exception/other | 66 | `Expected a Test262Error to be thrown but no exception was thrown at all` |
-| 7 | exception/other | 60 | `Expected SameValue(«"xCover"», «"xCover"») to be false` |
-| 8 | VmError::Unimplemented | 58 | `unimplemented: unary operator` |
-| 9 | exception/other | 55 | `Expected a TypeError to be thrown but no exception was thrown at all` |
-| 10 | exception/other | 52 | `value is not callable` |
-| 11 | VmError::Unimplemented | 48 | `unimplemented: expression type` |
-| 12 | exception/other | 45 | `negative expectation mismatch: expected parse SyntaxError, got runtime SyntaxError` |
-| 13 | exception/other | 42 | `GetIterator: value is not iterable` |
-| 14 | exception/other | 39 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
-| 15 | VmError::Unimplemented | 34 | `unimplemented: binary operator` |
-| 16 | exception/other | 24 | `invalid handle (vm-js/src/heap.rs:1911:16)` |
-| 17 | exception/other | 23 | `f is not defined` |
-| 18 | exception/other | 16 | `should not be called` |
-| 19 | VmError::Unimplemented | 16 | `unimplemented: BigInt literal out of range` |
-| 20 | exception/other | 14 | `Expected true but got false` |
+| 1 | VmError::Unimplemented | 413 | `unimplemented: async generator functions` |
+| 2 | exception/other | 208 | `value is not callable` |
+| 3 | exception/other | 116 | `Expected a Test262Error to be thrown but no exception was thrown at all` |
+| 4 | VmError::Unimplemented | 106 | `unimplemented: expression type` |
+| 5 | exception/other | 84 | `Expected a TypeError to be thrown but no exception was thrown at all` |
+| 6 | exception/other | 76 | `Cannot convert undefined or null to object` |
+| 7 | exception/other | 66 | `Expected SameValue(«"xCls2"», «"xCls2"») to be false` |
+| 8 | exception/other | 60 | `Expected SameValue(«"xCover"», «"xCover"») to be false` |
+| 9 | VmError::Unimplemented | 48 | `unimplemented: yield in for-of binding pattern` |
+| 10 | exception/other | 44 | `GetIterator: value is not iterable` |
+| 11 | exception/other | 42 | `Expected SameValue(«"undefined"», «"function"») to be true` |
+| 12 | exception/other | 35 | `Expected a ReferenceError to be thrown but no exception was thrown at all` |
+| 13 | termination | 23 | `execution terminated: stack overflow` |
+| 14 | VmError::Unimplemented | 20 | `unimplemented: binary operator` |
+| 15 | exception/other | 16 | `Expected true but got false` |
+| 16 | exception/other | 16 | `desc.writable Expected SameValue(«true», «false») to be true` |
+| 17 | exception/other | 14 | `Built-in objects must be extensible. Expected SameValue(«false», «true») to be true` |
+| 18 | exception/other | 14 | `GetSetRecord coerces size Expected SameValue(«0», «1») to be true` |
+| 19 | exception/other | 14 | `isConstructor invoked with a non-function value` |
+| 20 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
 
 ## Timed-out tests
 
-- `built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js#non_strict`
-- `built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js#strict`
+_None._
