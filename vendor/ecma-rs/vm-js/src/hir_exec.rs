@@ -3600,7 +3600,7 @@ impl<'vm> HirEvaluator<'vm> {
         let _ = self.eval_expr(scope, body, expr)?;
         Ok(Value::Undefined)
       }
-      _ => Err(VmError::Unimplemented("unary operator (hir-js compiled path)")),
+      hir_js::UnaryOp::Await => Err(VmError::Unimplemented("await (hir-js compiled path)")),
     }
   }
 
