@@ -176,19 +176,6 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
     ));
   }
 
-  if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
-    return Err(io::Error::new(
-      io::ErrorKind::InvalidData,
-      "control message truncated while receiving fd",
-    ));
-  }
-  if (msg.msg_flags & libc::MSG_TRUNC) != 0 {
-    return Err(io::Error::new(
-      io::ErrorKind::InvalidData,
-      "payload truncated while receiving fd",
-    ));
-  }
-
   if msg.msg_controllen < cmsg_len(FD_LEN) {
     return Err(io::Error::new(
       io::ErrorKind::InvalidData,
@@ -231,6 +218,21 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
 
   // SAFETY: `received_fd` came from the kernel via SCM_RIGHTS; we now own it.
   let owned = unsafe { OwnedFd::from_raw_fd(received_fd) };
+  // Check truncation after parsing so any received fds are reliably closed on error.
+  if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
+    drop(owned);
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "control message truncated while receiving fd",
+    ));
+  }
+  if (msg.msg_flags & libc::MSG_TRUNC) != 0 {
+    drop(owned);
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "payload truncated while receiving fd",
+    ));
+  }
   if need_manual_cloexec {
     let flags = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFD) };
     if flags < 0 {
