@@ -24320,7 +24320,6 @@ impl App {
         self.cancel_date_time_picker();
         self.cancel_media_controls();
         self.cancel_file_picker();
-        self.close_media_controls();
         self.cancel_scrollbar_drag();
         self.cancel_pointer_capture();
         self.close_context_menu();
