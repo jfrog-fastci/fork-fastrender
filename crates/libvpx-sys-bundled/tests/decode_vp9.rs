@@ -19,11 +19,12 @@ fn decodes_vp9_frame_from_webm_fixture() {
         .expect("VP9 track not found in fixture");
 
     let mut frame = Frame::default();
-    loop {
+    let mut vp9_frames = Vec::new();
+    while vp9_frames.len() < 2 {
         let has_frame = mkv.next_frame(&mut frame).expect("read Matroska frame");
-        assert!(has_frame, "fixture contained no frames");
+        assert!(has_frame, "fixture contained fewer than 2 frames");
         if frame.track == video_track {
-            break;
+            vp9_frames.push(std::mem::take(&mut frame.data));
         }
     }
 
@@ -48,8 +49,8 @@ fn decodes_vp9_frame_from_webm_fixture() {
     let peek_err = unsafe {
         libvpx_sys_bundled::vpx_codec_peek_stream_info(
             iface,
-            frame.data.as_ptr(),
-            frame.data.len().try_into().unwrap(),
+            vp9_frames[0].as_ptr(),
+            vp9_frames[0].len().try_into().unwrap(),
             &mut si,
         )
     };
@@ -61,31 +62,65 @@ fn decodes_vp9_frame_from_webm_fixture() {
     );
     assert_eq!((si.w, si.h), (64, 64), "unexpected stream dimensions");
 
-    let err = unsafe {
-        libvpx_sys_bundled::vpx_codec_decode(
-            &mut codec.ctx,
-            frame.data.as_ptr(),
-            frame.data.len().try_into().expect("frame too large"),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    assert_eq!(
-        err,
-        libvpx_sys_bundled::VPX_CODEC_OK,
-        "vpx_codec_decode failed: {}",
-        codec_error_string(&mut codec.ctx, err)
-    );
+    let mut samples = Vec::new();
 
-    let mut iter: libvpx_sys_bundled::vpx_codec_iter_t = std::ptr::null();
-    let img = unsafe { libvpx_sys_bundled::vpx_codec_get_frame(&mut codec.ctx, &mut iter) };
+    for (idx, frame_bytes) in vp9_frames.iter().enumerate() {
+        let err = unsafe {
+            libvpx_sys_bundled::vpx_codec_decode(
+                &mut codec.ctx,
+                frame_bytes.as_ptr(),
+                frame_bytes.len().try_into().expect("frame too large"),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(
+            err,
+            libvpx_sys_bundled::VPX_CODEC_OK,
+            "vpx_codec_decode failed for frame {}: {}",
+            idx,
+            codec_error_string(&mut codec.ctx, err)
+        );
+
+        let mut iter: libvpx_sys_bundled::vpx_codec_iter_t = std::ptr::null();
+        let img = unsafe { libvpx_sys_bundled::vpx_codec_get_frame(&mut codec.ctx, &mut iter) };
+        assert!(
+            !img.is_null(),
+            "vpx_codec_get_frame returned NULL after decoding VP9 frame {}",
+            idx
+        );
+
+        let (dw, dh) = unsafe { ((*img).d_w, (*img).d_h) };
+        assert_eq!(
+            (dw, dh),
+            (64, 64),
+            "unexpected decoded frame dimensions for frame {idx}"
+        );
+
+        let (u, v) = sample_uv(img);
+        samples.push((u, v));
+
+        // Drain any additional frames that libvpx might expose for the decode call.
+        let extra = unsafe { libvpx_sys_bundled::vpx_codec_get_frame(&mut codec.ctx, &mut iter) };
+        assert!(
+            extra.is_null(),
+            "expected exactly one decoded image for frame {idx}"
+        );
+    }
+
+    let (u0, v0) = samples[0];
+    let (u1, v1) = samples[1];
+
+    // The fixture is generated as two solid frames: red then blue.
+    // In YUV, red should have V > U, and blue should have U > V.
     assert!(
-        !img.is_null(),
-        "vpx_codec_get_frame returned NULL after decoding a VP9 frame"
+        v0 > u0,
+        "expected first frame to be red-ish (V > U); got U={u0}, V={v0}"
     );
-
-    let (dw, dh) = unsafe { ((*img).d_w, (*img).d_h) };
-    assert_eq!((dw, dh), (64, 64), "unexpected decoded frame dimensions");
+    assert!(
+        u1 > v1,
+        "expected second frame to be blue-ish (U > V); got U={u1}, V={v1}"
+    );
 }
 
 fn err_to_string(err: libvpx_sys_bundled::vpx_codec_err_t) -> String {
@@ -114,6 +149,25 @@ fn codec_error_string(
                 CStr::from_ptr(detail_ptr).to_string_lossy()
             )
         }
+    }
+}
+
+fn sample_uv(img: *const libvpx_sys_bundled::vpx_image_t) -> (u8, u8) {
+    unsafe {
+        let img = &*img;
+        let (u_plane, v_plane) = match img.fmt {
+            // YV12 stores planes as Y, V, U.
+            libvpx_sys_bundled::VPX_IMG_FMT_YV12 | libvpx_sys_bundled::VPX_IMG_FMT_VPXYV12 => (2, 1),
+            _ => (1, 2),
+        };
+
+        let u_ptr = img.planes[u_plane];
+        let v_ptr = img.planes[v_plane];
+        assert!(!u_ptr.is_null(), "decoded image had null U plane");
+        assert!(!v_ptr.is_null(), "decoded image had null V plane");
+        let u = *u_ptr;
+        let v = *v_ptr;
+        (u, v)
     }
 }
 
