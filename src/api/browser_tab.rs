@@ -4174,6 +4174,10 @@ impl BrowserTab {
       history: TabHistory::new(),
     };
     tab
+      .host
+      .document
+      .set_animation_clock(tab.event_loop.clock());
+    tab
       .event_loop
       .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
 
@@ -4405,6 +4409,10 @@ impl BrowserTab {
       history: TabHistory::new(),
     };
     tab
+      .host
+      .document
+      .set_animation_clock(tab.event_loop.clock());
+    tab
       .event_loop
       .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
     let options_for_parse = options.clone();
@@ -4526,6 +4534,10 @@ impl BrowserTab {
       history: TabHistory::new(),
     };
     tab
+      .host
+      .document
+      .set_animation_clock(tab.event_loop.clock());
+    tab
       .event_loop
       .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
     Ok(tab)
@@ -4607,6 +4619,10 @@ impl BrowserTab {
       pending_frame: None,
       history: TabHistory::new(),
     };
+    tab
+      .host
+      .document
+      .set_animation_clock(tab.event_loop.clock());
     tab
       .event_loop
       .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
@@ -4719,6 +4735,10 @@ impl BrowserTab {
       pending_frame: None,
       history: TabHistory::new(),
     };
+    tab
+      .host
+      .document
+      .set_animation_clock(tab.event_loop.clock());
     tab
       .event_loop
       .register_microtask_checkpoint_hook(BrowserTabHost::executor_microtask_checkpoint_hook)?;
@@ -5963,7 +5983,7 @@ mod tests {
 
   use crate::api::FastRender;
   use crate::js::window_timers::{event_loop_mut_from_hooks, VmJsEventLoopHooks};
-  use crate::js::{WindowRealm, WindowRealmConfig, WindowRealmHost};
+  use crate::js::{Clock, VirtualClock, WindowRealm, WindowRealmConfig, WindowRealmHost};
   use crate::resource::{FetchedResource, ResourceFetcher};
 
   use std::cell::RefCell;
@@ -6967,6 +6987,61 @@ mod tests {
     let idx = (y as usize * width as usize + x as usize) * 4;
     let data = pixmap.data();
     [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
+  }
+
+  #[test]
+  fn realtime_animations_sample_event_loop_clock() -> Result<()> {
+    use std::time::Duration;
+
+    let clock: Arc<VirtualClock> = Arc::new(VirtualClock::new());
+    let event_loop = EventLoop::with_clock(clock.clone() as Arc<dyn Clock>);
+
+    let html = r#"<!doctype html>
+      <style>
+        html, body { margin: 0; width: 100%; height: 100%; background: rgb(255, 255, 255); }
+        #box {
+          width: 100%;
+          height: 100%;
+          background: rgb(0, 0, 0);
+          animation: fade 1s linear forwards;
+        }
+        @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+      </style>
+      <div id="box"></div>"#;
+
+    let options = RenderOptions::new().with_viewport(1, 1);
+    let mut tab =
+      BrowserTab::from_html_with_event_loop(html, options, NoopExecutor::default(), event_loop)?;
+    tab.host.document.set_realtime_animations_enabled(true);
+
+    let start = rgba_at(&tab.render_frame()?, 0, 0);
+    assert!(
+      start[0] >= 250 && start[1] >= 250 && start[2] >= 250 && start[3] == 255,
+      "expected animation start frame to be opaque white, got {start:?}"
+    );
+
+    clock.advance(Duration::from_millis(500));
+    let mid = rgba_at(&tab.render_frame()?, 0, 0);
+    assert!(
+      mid[0] < 240 && mid[1] < 240 && mid[2] < 240,
+      "expected 500ms frame to be visibly mid-animation (not white), got {mid:?}"
+    );
+    assert!(
+      mid[0] > 10 && mid[1] > 10 && mid[2] > 10,
+      "expected 500ms frame to be visibly mid-animation (not black), got {mid:?}"
+    );
+
+    // Advance far past the 1s animation duration so the fill-mode forwards state should be
+    // completely black. This makes the test robust against slow wall-clock rendering when the
+    // document's animation clock is misconfigured.
+    clock.advance(Duration::from_secs(10));
+    let end = rgba_at(&tab.render_frame()?, 0, 0);
+    assert!(
+      end[0] <= 10 && end[1] <= 10 && end[2] <= 10 && end[3] == 255,
+      "expected animation end frame to be opaque black, got {end:?}"
+    );
+
+    Ok(())
   }
 
   #[test]
