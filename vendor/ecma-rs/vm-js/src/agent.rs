@@ -426,8 +426,7 @@ impl Agent {
     }
 
     let remaining = max_bytes.saturating_sub(out.len());
-    let Some((mut message, message_truncated)) =
-      message_value.and_then(|s| to_utf8_bounded(s, remaining))
+    let Some((message, message_truncated)) = message_value.and_then(|s| to_utf8_bounded(s, remaining))
     else {
       return Some(out);
     };
