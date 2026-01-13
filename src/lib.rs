@@ -191,6 +191,7 @@ pub mod clock;
 pub mod compat;
 pub mod error;
 pub mod geometry;
+pub mod media;
 
 // ============================================================================
 // Pipeline Modules
