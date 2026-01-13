@@ -29,6 +29,7 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
+globset = "0.4"
 sha2 = "0.10"
 url = "2.5"
 walkdir = "2.5"
@@ -37,3 +38,4 @@ cssparser = "0.35"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pathdiff = "0.2"
 toml = "0.8"
+serde_yaml = "0.9"

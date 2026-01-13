@@ -2,8 +2,9 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 mod test262;
-mod test262_report;
+mod test262_negative_parse;
 mod test262_parser;
+mod test262_report;
 mod wpt_dom;
 
 #[derive(Args, Debug)]
@@ -17,6 +18,9 @@ pub struct JsArgs {
 enum JsCommand {
   /// Run a curated subset of tc39/test262 language semantics tests.
   Test262(test262::Test262Args),
+  /// Run only negative parse SyntaxError tests from the curated suite and list parse-vs-runtime mismatches.
+  #[command(name = "test262-negative-parse", alias = "test262_negative_parse")]
+  Test262NegativeParse(test262_negative_parse::Test262NegativeParseArgs),
   /// Run the tc39/test262-parser-tests harness (via ecma-rs `test262`).
   #[command(name = "test262-parser", alias = "test262_parser")]
   Test262Parser(test262_parser::Test262ParserArgs),
@@ -28,6 +32,9 @@ enum JsCommand {
 pub fn run_js(args: JsArgs) -> Result<()> {
   match args.command {
     JsCommand::Test262(args) => test262::run_test262(args),
+    JsCommand::Test262NegativeParse(args) => {
+      test262_negative_parse::run_test262_negative_parse(args)
+    }
     JsCommand::Test262Parser(args) => test262_parser::run_test262_parser(args),
     JsCommand::WptDom(args) => wpt_dom::run_wpt_dom(args),
   }

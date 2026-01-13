@@ -103,6 +103,8 @@ pub struct TestResult {
   pub id: String,
   pub variant: Variant,
   pub outcome: TestOutcome,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub error: Option<String>,
   pub expectation: ExpectationOutcome,
   #[serde(default)]
   pub mismatched: bool,
@@ -230,8 +232,7 @@ pub fn write_baseline(path: &Path, baseline: &Baseline) -> Result<()> {
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
   }
-  let json =
-    serde_json::to_string_pretty(baseline).context("serialize test262 baseline JSON")?;
+  let json = serde_json::to_string_pretty(baseline).context("serialize test262 baseline JSON")?;
   fs::write(path, format!("{json}\n").as_bytes())
     .with_context(|| format!("write {}", path.display()))?;
   Ok(())
@@ -375,7 +376,10 @@ pub fn compare_to_baseline(baseline: &Baseline, report: &Report) -> Result<Compa
     let key = ResultKey { id, variant };
     let previous = baseline_keys.insert(key.clone(), *entry);
     if previous.is_some() {
-      bail!("test262 baseline contains duplicate result key `{}`", raw_key);
+      bail!(
+        "test262 baseline contains duplicate result key `{}`",
+        raw_key
+      );
     }
   }
 
@@ -520,8 +524,14 @@ pub fn render_markdown(
   out.push_str("| Metric | Count |\n");
   out.push_str("| --- | ---: |\n");
   out.push_str(&format!("| Total cases | {} |\n", report.summary.total));
-  out.push_str(&format!("| Matched upstream expected | {} |\n", matched_total));
-  out.push_str(&format!("| Mismatched upstream expected | {} |\n", mismatched_total));
+  out.push_str(&format!(
+    "| Matched upstream expected | {} |\n",
+    matched_total
+  ));
+  out.push_str(&format!(
+    "| Mismatched upstream expected | {} |\n",
+    mismatched_total
+  ));
   out.push_str(&format!("| Timeouts | {} |\n", report.summary.timed_out));
   out.push_str("\n");
 
@@ -537,11 +547,20 @@ pub fn render_markdown(
   out.push_str("### Results vs expectations\n\n");
   out.push_str("| Status | Count |\n");
   out.push_str("| --- | ---: |\n");
-  out.push_str(&format!("| PASS (pass+matched) | {} |\n", stats.overall.pass));
-  out.push_str(&format!("| XFAIL (xfail+mismatched) | {} |\n", stats.overall.xfail));
+  out.push_str(&format!(
+    "| PASS (pass+matched) | {} |\n",
+    stats.overall.pass
+  ));
+  out.push_str(&format!(
+    "| XFAIL (xfail+mismatched) | {} |\n",
+    stats.overall.xfail
+  ));
   out.push_str(&format!("| SKIP | {} |\n", stats.overall.skip));
   if stats.overall.flaky > 0 || stats.overall.flaky_pass > 0 {
-    out.push_str(&format!("| FLAKY (flaky+mismatched) | {} |\n", stats.overall.flaky));
+    out.push_str(&format!(
+      "| FLAKY (flaky+mismatched) | {} |\n",
+      stats.overall.flaky
+    ));
   }
   if stats.overall.unexpected_fail > 0 {
     out.push_str(&format!(
@@ -550,7 +569,10 @@ pub fn render_markdown(
     ));
   }
   if stats.overall.xpass > 0 {
-    out.push_str(&format!("| XPASS (xfail+matched) | {} |\n", stats.overall.xpass));
+    out.push_str(&format!(
+      "| XPASS (xfail+matched) | {} |\n",
+      stats.overall.xpass
+    ));
   }
   if stats.overall.flaky_pass > 0 {
     out.push_str(&format!(
@@ -643,7 +665,11 @@ pub fn render_markdown(
         out.push_str(&format!(
           "- `{}`: {}{} -> {}{}\n",
           change.key,
-          if baseline.mismatched { "mismatched" } else { "matched" },
+          if baseline.mismatched {
+            "mismatched"
+          } else {
+            "matched"
+          },
           format!(" ({})", baseline.outcome),
           if change.current.mismatched {
             "mismatched"
@@ -673,7 +699,11 @@ pub fn render_markdown(
         out.push_str(&format!(
           "- `{}`: {}{} -> {}{}\n",
           change.key,
-          if baseline.mismatched { "mismatched" } else { "matched" },
+          if baseline.mismatched {
+            "mismatched"
+          } else {
+            "matched"
+          },
           format!(" ({})", baseline.outcome),
           if change.current.mismatched {
             "mismatched"
@@ -778,7 +808,10 @@ pub fn take_comparison(mut comparison: Comparison) -> Comparison {
   comparison
 }
 
-pub fn merge_bucket_stats(a: &mut BTreeMap<String, BucketCounts>, b: BTreeMap<String, BucketCounts>) {
+pub fn merge_bucket_stats(
+  a: &mut BTreeMap<String, BucketCounts>,
+  b: BTreeMap<String, BucketCounts>,
+) {
   for (bucket, counts) in b {
     let entry = a.entry(bucket).or_default();
     // Merge field-by-field (only used for future extensions; keep explicit for clarity).

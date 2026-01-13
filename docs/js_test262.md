@@ -185,6 +185,33 @@ bash scripts/cargo_agent.sh xtask js test262 --suite curated --filter 'built-ins
 bash scripts/cargo_agent.sh xtask js test262 --suite language_statements --filter 'language/statements/for-of/**'
 ```
 
+## Debugging negative parse (early error) mismatches quickly
+
+When working on the parser / early-error pipeline, a common regression is:
+
+```
+negative expectation mismatch: expected parse SyntaxError, got runtime ...
+```
+
+Running the full curated suite can take several minutes, so `xtask` provides a fast path that:
+
+1. Expands the curated suite globs to concrete ids
+2. Filters to tests with `negative: { phase: parse, type: SyntaxError }`
+3. Writes a temporary suite TOML under `target/js/`
+4. Runs `test262-semantic` under `timeout -k 10 600` and writes a JSON report
+5. Prints a deterministic list of mismatching ids
+
+From the FastRender repo root:
+
+```bash
+bash scripts/cargo_agent.sh xtask js test262-negative-parse
+```
+
+Artifacts:
+
+- Generated suite: `target/js/test262_negative_parse_suite.toml`
+- JSON report: `target/js/test262_negative_parse.json`
+
 ## Interpreting the output (expected vs unexpected)
 
 The suite contains tests with an **expected outcome**. The runner records the **actual outcome**
