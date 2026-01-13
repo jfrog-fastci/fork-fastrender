@@ -2300,6 +2300,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut session_dirty = false;
         let mut needs_follow_up_wake = false;
         if let Some(win) = windows.get_mut(&window_id) {
+          let hud_enabled = win.app.hud.is_some();
           // Clear the pending wake flag up-front so any messages that arrive while we're draining
           // can schedule another wake (avoids getting stuck with messages in the queue but no wake
           // event queued).
@@ -2329,6 +2330,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
           };
           needs_follow_up_wake = outcome.stop_reason == DrainStopReason::Budget;
+
+          if hud_enabled {
+            if let Some(hud) = win.app.hud.as_mut() {
+              hud.record_worker_wake(outcome.drained as u64);
+            }
+          }
 
           if request_redraw {
             win.app.window.request_redraw();
@@ -3563,6 +3570,23 @@ struct BrowserHud {
   last_frame_start: Option<std::time::Instant>,
   last_frame_cpu_ms: Option<f32>,
   fps: Option<f32>,
+  worker_stats_sample_start: std::time::Instant,
+  worker_msgs_since_sample: u64,
+  worker_wakes_since_sample: u64,
+  worker_empty_wakes_since_sample: u64,
+  worker_max_drain_since_sample: u64,
+  worker_msgs_per_sec: Option<f32>,
+  worker_wakes_per_sec: Option<f32>,
+  worker_empty_wakes_per_sec: Option<f32>,
+  /// Estimated number of wake events suppressed/coalesced (per second).
+  ///
+  /// With "wake coalescing" enabled, multiple worker messages can be serviced by a single wake
+  /// event. In that case, `worker_msgs_since_sample` may exceed `worker_wakes_since_sample`, and
+  /// the difference is reported here.
+  worker_suppressed_wakes_per_sec: Option<f32>,
+  worker_msgs_per_nonempty_wake: Option<f32>,
+  worker_last_drain: u64,
+  worker_max_drain_recent: u64,
   text_buf: String,
 }
 
@@ -3573,8 +3597,65 @@ impl BrowserHud {
       last_frame_start: None,
       last_frame_cpu_ms: None,
       fps: None,
-      text_buf: String::with_capacity(256),
+      worker_stats_sample_start: std::time::Instant::now(),
+      worker_msgs_since_sample: 0,
+      worker_wakes_since_sample: 0,
+      worker_empty_wakes_since_sample: 0,
+      worker_max_drain_since_sample: 0,
+      worker_msgs_per_sec: None,
+      worker_wakes_per_sec: None,
+      worker_empty_wakes_per_sec: None,
+      worker_suppressed_wakes_per_sec: None,
+      worker_msgs_per_nonempty_wake: None,
+      worker_last_drain: 0,
+      worker_max_drain_recent: 0,
+      text_buf: String::with_capacity(384),
     }
+  }
+
+  fn record_worker_wake(&mut self, drained_msgs: u64) {
+    self.worker_wakes_since_sample = self.worker_wakes_since_sample.saturating_add(1);
+    self.worker_msgs_since_sample = self.worker_msgs_since_sample.saturating_add(drained_msgs);
+    self.worker_last_drain = drained_msgs;
+    self.worker_max_drain_since_sample = self.worker_max_drain_since_sample.max(drained_msgs);
+    if drained_msgs == 0 {
+      self.worker_empty_wakes_since_sample = self.worker_empty_wakes_since_sample.saturating_add(1);
+    }
+  }
+
+  fn maybe_sample_worker_rates(&mut self, now: std::time::Instant) {
+    const MIN_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+    let dt = now.saturating_duration_since(self.worker_stats_sample_start);
+    if dt < MIN_SAMPLE_INTERVAL {
+      return;
+    }
+    let secs = dt.as_secs_f32();
+    if !secs.is_finite() || secs <= 0.0 {
+      return;
+    }
+
+    let msgs = self.worker_msgs_since_sample;
+    let wakes = self.worker_wakes_since_sample;
+    let empty = self.worker_empty_wakes_since_sample;
+    let suppressed = msgs.saturating_sub(wakes);
+    let nonempty_wakes = wakes.saturating_sub(empty);
+
+    self.worker_msgs_per_sec = Some((msgs as f32 / secs).min(10_000_000.0));
+    self.worker_wakes_per_sec = Some((wakes as f32 / secs).min(10_000_000.0));
+    self.worker_empty_wakes_per_sec = Some((empty as f32 / secs).min(10_000_000.0));
+    self.worker_suppressed_wakes_per_sec = Some((suppressed as f32 / secs).min(10_000_000.0));
+    self.worker_msgs_per_nonempty_wake = if nonempty_wakes > 0 {
+      Some((msgs as f32 / nonempty_wakes as f32).min(10_000_000.0))
+    } else {
+      None
+    };
+    self.worker_max_drain_recent = self.worker_max_drain_since_sample;
+
+    self.worker_stats_sample_start = now;
+    self.worker_msgs_since_sample = 0;
+    self.worker_wakes_since_sample = 0;
+    self.worker_empty_wakes_since_sample = 0;
+    self.worker_max_drain_since_sample = 0;
   }
 }
 
@@ -6872,6 +6953,7 @@ impl App {
     let Some(hud) = self.hud.as_mut() else {
       return;
     };
+    hud.maybe_sample_worker_rates(std::time::Instant::now());
 
     let pos = if let Some(page_rect) = self.page_rect_points {
       egui::pos2(page_rect.min.x + 6.0, page_rect.min.y + 6.0)
@@ -6912,6 +6994,47 @@ impl App {
       }
       _ => {
         let _ = writeln!(&mut hud.text_buf, "ui: - ms  - fps");
+      }
+    }
+
+    match (
+      hud.worker_msgs_per_sec,
+      hud.worker_wakes_per_sec,
+      hud.worker_empty_wakes_per_sec,
+      hud.worker_suppressed_wakes_per_sec,
+    ) {
+      (Some(msgs), Some(wakes), Some(empty), Some(suppressed))
+        if msgs.is_finite() && wakes.is_finite() && empty.is_finite() && suppressed.is_finite() =>
+      {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "worker: {msgs:.0} msg/s  {wakes:.0} wake/s  {empty:.0} empty/s  {suppressed:.0} sup/s"
+        );
+      }
+      _ => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "worker: - msg/s  - wake/s  - empty/s  - sup/s"
+        );
+      }
+    }
+
+    match (hud.worker_msgs_per_nonempty_wake, hud.worker_max_drain_recent) {
+      (Some(msg_per_wake), max_drain) if msg_per_wake.is_finite() => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "drain: last {}  max {}  msg/nonempty_wake {msg_per_wake:.2}",
+          hud.worker_last_drain,
+          max_drain
+        );
+      }
+      _ => {
+        let _ = writeln!(
+          &mut hud.text_buf,
+          "drain: last {}  max {}  msg/nonempty_wake -",
+          hud.worker_last_drain,
+          hud.worker_max_drain_recent
+        );
       }
     }
 
