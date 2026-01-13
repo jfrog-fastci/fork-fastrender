@@ -117,6 +117,16 @@ fn context_menu_urls_reject_disallowed_schemes() {
 }
 
 #[test]
+fn context_menu_urls_drop_overlong_inputs() {
+  let url = make_overlong_url(MAX_URL_BYTES);
+  assert_eq!(
+    sanitize_worker_url_for_ui(&url),
+    None,
+    "expected overlong context menu URLs to be dropped"
+  );
+}
+
+#[test]
 fn favicon_with_mismatched_rgba_len_is_rejected() {
   let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
   let tab_id = app.active_tab_id().unwrap();
