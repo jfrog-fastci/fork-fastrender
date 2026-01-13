@@ -51,3 +51,15 @@ fn rejects_out_of_order_class_ranges_all_modes() {
   parse_err(r#"let r = /[z-a]/;"#);
   parse_err(r#"let r = /[\u{1F438}-\u{1F418}]/u;"#);
 }
+
+#[test]
+fn rejects_invalid_unicode_sets_mode_braced_class_escapes() {
+  parse_err(r#"let r = /[\u{}]/v;"#);
+  parse_err(r#"let r = /[\u{110000}]/v;"#);
+  parse_err(r#"let r = /[\q{\u{110000}}]/v;"#);
+}
+
+#[test]
+fn rejects_out_of_order_class_ranges_in_unicode_sets_mode() {
+  parse_err(r#"let r = /[z-a]/v;"#);
+}
