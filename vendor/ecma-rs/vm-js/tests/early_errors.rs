@@ -218,6 +218,20 @@ fn await_as_binding_identifier_in_nested_function_in_module_is_syntax_error() {
 }
 
 #[test]
+fn await_identifier_reference_in_destructuring_in_module_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "({ await } = {});").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn let_newline_await_disambiguates_to_lexical_decl_syntax_error_in_module() {
+  let mut rt = new_runtime();
+  let err = SourceTextModuleRecord::parse(&mut rt.heap, "let\nawait 0;").unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn escaped_await_as_import_binding_identifier_is_syntax_error() {
   let mut rt = new_runtime();
   let err = SourceTextModuleRecord::parse(&mut rt.heap, r#"import { \u0061wait } from "m";"#).unwrap_err();
@@ -332,6 +346,15 @@ fn strict_mode_yield_identifier_reference_in_destructuring_is_syntax_error() {
   let mut rt = new_runtime();
   let err = rt
     .exec_script(r#""use strict"; for ({ yield } in [{}]) ;"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
+fn await_identifier_reference_in_destructuring_in_async_fn_is_syntax_error() {
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script("async function f(){ ({ await } = {}); }")
     .unwrap_err();
   assert!(matches!(err, VmError::Syntax(_)));
 }
