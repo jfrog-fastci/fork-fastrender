@@ -28,6 +28,7 @@ pub use form_submit::{
   FormSubmissionMethod,
 };
 pub use fragment_geometry::absolute_bounds_for_box_id;
+pub use fragment_geometry::absolute_bounds_by_styled_node_id;
 pub use fragment_geometry::content_rect_for_border_rect;
 pub use fragment_geometry::padding_rect_for_border_rect;
 pub use fragment_geometry::scrollbar_reservation_for_box_id;
