@@ -22,8 +22,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use windows_sys::Win32::Foundation::{
-  CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER,
-  HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+  CloseHandle, GetHandleInformation, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED,
+  ERROR_INSUFFICIENT_BUFFER, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
@@ -71,6 +71,45 @@ const APP_CONTAINER_NAME: &str = "fastrender.sandbox.process-handle-escape-test"
 // acceptable as long as `OpenProcess` fails.
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
+
+struct HandleInheritGuard {
+  saved: Vec<(HANDLE, u32)>,
+}
+
+impl HandleInheritGuard {
+  fn new(handles: &[HANDLE]) -> Self {
+    let mut saved = Vec::with_capacity(handles.len());
+    for handle in handles {
+      if *handle == 0 || *handle == INVALID_HANDLE_VALUE {
+        continue;
+      }
+      let mut flags: u32 = 0;
+      // SAFETY: Win32 call; `flags` points to valid memory.
+      let ok = unsafe { GetHandleInformation(*handle, &mut flags) };
+      if ok == 0 {
+        continue;
+      }
+      saved.push((*handle, flags));
+      // SAFETY: Win32 call; valid handle value.
+      let _ = unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    Self { saved }
+  }
+}
+
+impl Drop for HandleInheritGuard {
+  fn drop(&mut self) {
+    for (handle, flags) in self.saved.drain(..) {
+      let inherit = if (flags & HANDLE_FLAG_INHERIT) != 0 {
+        HANDLE_FLAG_INHERIT
+      } else {
+        0
+      };
+      // SAFETY: Win32 call; valid handle value.
+      let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, inherit) };
+    }
+  }
+}
 
 #[derive(Debug)]
 struct TokenState {
@@ -503,12 +542,11 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
       if h == 0 || h == INVALID_HANDLE_VALUE {
         continue;
       }
-      // Ensure the handle is inheritable so it can be included in the handle list.
-      let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
       if !handles.contains(&h) {
         handles.push(h);
       }
     }
+    let _inherit_guard = HandleInheritGuard::new(&handles);
 
     let attribute_count: u32 = if handles.is_empty() { 1 } else { 2 };
     let mut attr_size: usize = 0;
@@ -780,11 +818,11 @@ fn spawn_restricted_token_child(parent_pid: u32, test_filter: &str) -> Result<u3
       if h == 0 || h == INVALID_HANDLE_VALUE {
         continue;
       }
-      let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
       if !handles.contains(&h) {
         handles.push(h);
       }
     }
+    let _inherit_guard = HandleInheritGuard::new(&handles);
 
     // Optional attribute list restricting inherited handles.
     struct AttrListGuard(*mut PROC_THREAD_ATTRIBUTE_LIST);
