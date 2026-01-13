@@ -48441,6 +48441,14 @@ fn init_window_globals(
     ("onseeking", "seeking"),
     ("onseeked", "seeked"),
     ("onloadedmetadata", "loadedmetadata"),
+    ("onplaying", "playing"),
+    ("onloadeddata", "loadeddata"),
+    ("oncanplay", "canplay"),
+    ("oncanplaythrough", "canplaythrough"),
+    ("ondurationchange", "durationchange"),
+    ("onwaiting", "waiting"),
+    ("onloadstart", "loadstart"),
+    ("onprogress", "progress"),
   ] {
     let type_s = scope.alloc_string(type_)?;
     scope.push_root(Value::String(type_s))?;
@@ -57417,6 +57425,101 @@ mod tests {
     )?;
 
     let fired = exec_script_with_dom_host(&mut realm, &mut host, "globalThis.__mediaPlayFired")?;
+    assert_eq!(fired, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn dispatch_media_event_runs_onplaying_event_handler_for_video_and_audio() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><head></head><body><video id=\"v\"></video><audio id=\"a\"></audio></body></html>",
+    )
+    .expect("parse_html should succeed");
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let handler_types = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        globalThis.__videoPlayingCount = 0;
+        globalThis.__audioPlayingCount = 0;
+        const v = document.querySelector('video');
+        const a = document.querySelector('audio');
+        if (!v) throw new Error('missing <video>');
+        if (!a) throw new Error('missing <audio>');
+
+        const t1 = typeof v.onplaying;
+        const t2 = typeof a.onplaying;
+        v.onplaying = () => { globalThis.__videoPlayingCount++; };
+        a.onplaying = () => { globalThis.__audioPlayingCount++; };
+        const t3 = typeof v.onplaying;
+        const t4 = typeof a.onplaying;
+        return [t1, t2, t3, t4].join(',');
+      })()"#,
+    )?;
+    assert_eq!(
+      get_string(realm.heap(), handler_types),
+      "object,object,function,function"
+    );
+
+    let (video_node_id, audio_node_id) = {
+      let dom = host.dom();
+      let mut video_node_id = None;
+      let mut audio_node_id = None;
+      for (idx, node) in dom.nodes().iter().enumerate() {
+        match &node.kind {
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("video") => {
+            video_node_id = dom.node_id_from_index(idx).ok();
+          }
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("audio") => {
+            audio_node_id = dom.node_id_from_index(idx).ok();
+          }
+          _ => {}
+        }
+      }
+      (
+        video_node_id.expect("expected <video> element"),
+        audio_node_id.expect("expected <audio> element"),
+      )
+    };
+
+    let document_obj = {
+      let (vm, realm_ref, heap) = realm.vm_realm_and_heap_mut();
+      let global = realm_ref.global_object();
+      let mut scope = heap.scope();
+      let Value::Object(document_obj) = get_prop(vm, &mut scope, global, "document")? else {
+        panic!("expected window.document to be an object");
+      };
+      document_obj
+    };
+
+    let dataset_ctx = realm.dataset_exotic_context();
+    let mut hooks = DomShimHostHooks::new(
+      &mut host,
+      dataset_ctx,
+      realm.js_execution_options().webidl_limits,
+    );
+    realm.dispatch_media_event(
+      &mut host,
+      &mut hooks,
+      document_obj,
+      video_node_id,
+      "playing",
+    )?;
+    realm.dispatch_media_event(
+      &mut host,
+      &mut hooks,
+      document_obj,
+      audio_node_id,
+      "playing",
+    )?;
+
+    let fired = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "globalThis.__videoPlayingCount === 1 && globalThis.__audioPlayingCount === 1",
+    )?;
     assert_eq!(fired, Value::Bool(true));
     Ok(())
   }
