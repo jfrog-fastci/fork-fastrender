@@ -1,5 +1,6 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::network_process::{ipc, spawn_network_process, NetworkProcessConfig};
+use std::io;
 use std::net::TcpStream;
 use std::time::Duration;
 
@@ -52,3 +53,53 @@ fn network_process_denies_download_start_for_renderer_role() {
   ));
 }
 
+#[test]
+fn network_process_rejects_browser_role_when_auth_token_is_renderer_token() {
+  let _net_guard = net_test_lock();
+  if try_bind_localhost("network_process_rejects_browser_role_when_auth_token_is_renderer_token").is_none()
+  {
+    return;
+  };
+
+  let handle = spawn_network_process(NetworkProcessConfig {
+    inherit_stderr: false,
+    ..NetworkProcessConfig::default()
+  });
+
+  let mut stream =
+    TcpStream::connect_timeout(&handle.addr(), Duration::from_secs(2)).expect("connect to network");
+  stream.set_nodelay(true).unwrap();
+  stream
+    .set_read_timeout(Some(Duration::from_millis(200)))
+    .unwrap();
+  stream
+    .set_write_timeout(Some(Duration::from_millis(200)))
+    .unwrap();
+
+  let mut conn = ipc::NetworkClient::new(stream);
+  conn
+    .send_request(&ipc::NetworkRequest::Hello {
+      // Renderer token, but trying to claim Browser role.
+      token: handle.auth_token().to_string(),
+      role: ipc::ClientRole::Browser,
+    })
+    .expect("send hello");
+
+  let err = conn
+    .recv_response::<ipc::NetworkResponse>()
+    .expect_err("expected hello to be rejected");
+  assert!(
+    matches!(
+      err.kind(),
+      io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::BrokenPipe
+    ),
+    "expected connection to be closed, got: {err:?}"
+  );
+  assert!(
+    conn.is_closed(),
+    "connection should be marked closed after handshake rejection"
+  );
+}
