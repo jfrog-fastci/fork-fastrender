@@ -506,6 +506,8 @@ pub enum UiToWorker {
     ///
     /// For deterministic harnesses, this can be an injected delta (e.g. exactly 16ms) instead of
     /// being derived from wall-clock time.
+    ///
+    /// The worker may coalesce back-to-back ticks by summing their deltas.
     delta: Duration,
   },
   ViewportChanged {

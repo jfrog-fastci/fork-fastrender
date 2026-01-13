@@ -165,7 +165,7 @@ is no stable CLI toggle to disable it yet). In `--headless-smoke` mode,
 - DOM mutations can invalidate style/layout/paint and trigger repaints (today this is generally a
   full rerender, not an incremental damaged-rect compositor).
 - Time-based behavior is driven by an explicit UI tick loop:
-  - Each rendered frame reports `RenderedFrame.next_tick` (in
+  - Each rendered frame reports `RenderedFrame.next_tick: Option<Duration>` (in
     [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
   - While `next_tick` is `Some(delay)`, the UI sends `UiToWorker::Tick { tab_id, delta }` messages to
     advance time-based effects (CSS animations/transitions, animated images, JS timers, and

@@ -4,6 +4,10 @@ use super::PointerModifiers;
 use std::collections::HashMap;
 use std::time::Duration;
 
+// When the router coalesces multiple `Tick` messages into one, sum their deltas but clamp to a
+// reasonable upper bound to avoid pathological "catch-up" work after long stalls.
+const MAX_COALESCED_TICK_DELTA: Duration = Duration::from_secs(1);
+
 /// Coalesce high-frequency `UiToWorker` messages *before* they enter the worker runtime queue.
 ///
 /// The render worker has a dedicated router thread (`render_worker::spawn_worker_with_factory_inner`)
@@ -153,9 +157,16 @@ impl UiToWorkerRouterCoalescer {
       UiToWorker::Tick { tab_id, delta } => {
         let seq = self.next_seq();
         let tab = self.tab_mut(tab_id);
+        let delta = delta.min(MAX_COALESCED_TICK_DELTA);
         match tab.tick.as_mut() {
           Some(pending) => {
-            pending.value = pending.value.checked_add(delta).unwrap_or(Duration::MAX);
+            pending.value = pending
+              .value
+              .checked_add(delta)
+              .unwrap_or(MAX_COALESCED_TICK_DELTA);
+            if pending.value > MAX_COALESCED_TICK_DELTA {
+              pending.value = MAX_COALESCED_TICK_DELTA;
+            }
             pending.seq = seq;
           }
           None => {

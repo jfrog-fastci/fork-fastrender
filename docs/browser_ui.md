@@ -871,6 +871,7 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
     [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)). If ticks are delayed/suppressed,
     animations will pause and then jump when ticks resume. Do not treat UI ticks as a master clock
     for media playback; see [`docs/media_clocking.md`](media_clocking.md).
+  - Workers may coalesce back-to-back ticks by summing their deltas when overloaded.
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
@@ -964,6 +965,7 @@ Front-ends drive time-based behavior by sending periodic
 
 - The worker reports a per-frame scheduling hint: `RenderedFrame.next_tick: Option<Duration>` (on
   [`WorkerToUi::FrameReady`](../src/ui/messages.rs)).
+  - `None` means the worker does not currently need ticks for the tab.
 - While `next_tick` is `Some(delay)`, front-ends should send `Tick { tab_id, delta }` for the
   active/visible tab after approximately that delay.
   - The windowed `browser` app does this with a small scheduler in
@@ -982,6 +984,7 @@ Front-ends drive time-based behavior by sending periodic
   [`docs/media_clocking.md`](media_clocking.md).
   - The canonical worker loop typically requests ~`DEFAULT_TICK_INTERVAL` by setting
     `RenderedFrame.next_tick` accordingly (see [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
+- Workers may coalesce back-to-back ticks by summing their deltas when overloaded.
 
 ### Worker-owned history semantics
 

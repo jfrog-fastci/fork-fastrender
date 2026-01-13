@@ -56,6 +56,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "browser_ui")]
 use std::sync::atomic::AtomicUsize;
+#[cfg(feature = "browser_ui")]
+use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -102,6 +104,58 @@ pub fn scroll_hover_sync_count_for_test() -> usize {
 #[cfg(feature = "browser_ui")]
 pub fn reset_scroll_hover_sync_count_for_test() {
   UI_WORKER_SCROLL_HOVER_SYNC_COUNT.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy, Default)]
+struct UiWorkerTickStats {
+  handle_count: usize,
+  delta_total: Duration,
+}
+
+/// Per-tab stats for how the worker handled `UiToWorker::Tick` messages (integration-test hook).
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_TICK_STATS: OnceLock<Mutex<HashMap<TabId, UiWorkerTickStats>>> = OnceLock::new();
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_TICK_STATS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "browser_ui")]
+fn ui_worker_tick_stats() -> &'static Mutex<HashMap<TabId, UiWorkerTickStats>> {
+  UI_WORKER_TICK_STATS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reset the per-process tick stats map (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_tick_stats_for_test() {
+  UI_WORKER_TICK_STATS_ENABLED.store(true, Ordering::Relaxed);
+  let mut stats = ui_worker_tick_stats()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  stats.clear();
+}
+
+/// Returns how many times the worker handled a tick for the given tab (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn tick_handle_count_for_test(tab_id: TabId) -> usize {
+  if !UI_WORKER_TICK_STATS_ENABLED.load(Ordering::Relaxed) {
+    return 0;
+  }
+  let stats = ui_worker_tick_stats()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  stats.get(&tab_id).map(|s| s.handle_count).unwrap_or(0)
+}
+
+/// Returns the total tick delta processed for the given tab (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn tick_delta_total_for_test(tab_id: TabId) -> Duration {
+  if !UI_WORKER_TICK_STATS_ENABLED.load(Ordering::Relaxed) {
+    return Duration::ZERO;
+  }
+  let stats = ui_worker_tick_stats()
+    .lock()
+    .unwrap_or_else(|err| err.into_inner());
+  stats.get(&tab_id).map(|s| s.delta_total).unwrap_or_default()
 }
 
 /// Navigation URL that triggers the UI worker crash test when opted in.
@@ -193,6 +247,9 @@ fn site_key_for_navigation(url: &str, parent_site: Option<&SiteKey>) -> SiteKey 
 // Do not treat ticks as a master clock for media playback: audio/video must be driven from a real
 // master clock (audio device time when available) to avoid A/V drift. See `docs/media_clocking.md`.
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_millis(16);
+
+// Clamp for coalesced tick bursts to avoid pathological "catch-up" work after long stalls.
+const MAX_COALESCED_TICK_DELTA: Duration = Duration::from_secs(1);
 
 // -----------------------------------------------------------------------------
 // Crash-isolation test hooks
@@ -2568,6 +2625,22 @@ impl BrowserRuntime {
       }
     }
 
+    fn flush_ticks(runtime: &mut BrowserRuntime, pending_ticks: &mut HashMap<TabId, Duration>) {
+      if pending_ticks.is_empty() {
+        return;
+      }
+
+      // Deterministic ordering avoids test flakiness when multiple tabs are ticking.
+      let mut tab_ids: Vec<TabId> = pending_ticks.keys().copied().collect();
+      tab_ids.sort_by_key(|tab_id| tab_id.0);
+
+      for tab_id in tab_ids {
+        if let Some(delta) = pending_ticks.remove(&tab_id) {
+          runtime.handle_message(UiToWorker::Tick { tab_id, delta });
+        }
+      }
+    }
+
     // Coalesce viewport updates so we only apply the latest viewport/dpr per tab before the next
     // paint. UI-side throttling exists, but if the worker is busy (layout/paint), multiple viewport
     // updates can still queue up.
@@ -2599,12 +2672,19 @@ impl BrowserRuntime {
     // scroll state changes in a deterministic order.
     let mut pending_scroll_to: HashMap<TabId, (f32, f32)> = HashMap::new();
     let mut pending_scroll_delta: HashMap<TabId, (f32, f32)> = HashMap::new();
-    // Coalesce tick bursts so a backlog of ticks does not trigger redundant paints.
+
+    // Coalesce back-to-back tick bursts so we only run the tick handler once per tab before the
+    // next paint job.
+    //
+    // When the UI sends ticks faster than we can paint (heavy pages, video playback), the channel
+    // can accumulate many `Tick` messages. Processing each tick individually is wasted work: the
+    // tick handler only needs the *total* elapsed time since the last paint.
     let mut pending_ticks: HashMap<TabId, Duration> = HashMap::new();
 
     while let Some(msg) = self.try_recv_message() {
       match msg {
         UiToWorker::ScrollTo { tab_id, pos_css } => {
+          flush_ticks(self, &mut pending_ticks);
           flush_pending(
             self,
             &mut pending_viewport,
@@ -2620,6 +2700,7 @@ impl BrowserRuntime {
           delta_css,
           pointer_css,
         } => {
+          flush_ticks(self, &mut pending_ticks);
           if pointer_css.is_some() {
             flush_pending(
               self,
@@ -2651,6 +2732,7 @@ impl BrowserRuntime {
           viewport_css,
           dpr,
         } => {
+          flush_ticks(self, &mut pending_ticks);
           flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_viewport.insert(tab_id, (viewport_css, dpr));
         }
@@ -2660,6 +2742,7 @@ impl BrowserRuntime {
           button,
           modifiers,
         } => {
+          flush_ticks(self, &mut pending_ticks);
           flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
@@ -2668,19 +2751,24 @@ impl BrowserRuntime {
           query,
           case_sensitive,
         } => {
+          flush_ticks(self, &mut pending_ticks);
           flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_find_queries.insert(tab_id, (query, case_sensitive));
         }
         UiToWorker::Tick { tab_id, delta } => {
-          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           flush_pending(
             self,
             &mut pending_viewport,
             &mut pending_pointer_moves,
             &mut pending_find_queries,
           );
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
+
           let entry = pending_ticks.entry(tab_id).or_insert(Duration::ZERO);
-          *entry = entry.checked_add(delta).unwrap_or(Duration::MAX);
+          *entry = entry.checked_add(delta).unwrap_or(MAX_COALESCED_TICK_DELTA);
+          if *entry > MAX_COALESCED_TICK_DELTA {
+            *entry = MAX_COALESCED_TICK_DELTA;
+          }
         }
         other => {
           flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
@@ -2690,9 +2778,7 @@ impl BrowserRuntime {
             &mut pending_pointer_moves,
             &mut pending_find_queries,
           );
-          for (tab_id, delta) in pending_ticks.drain() {
-            self.handle_tick(tab_id, delta);
-          }
+          flush_ticks(self, &mut pending_ticks);
           self.handle_message(other);
         }
       }
@@ -2705,9 +2791,7 @@ impl BrowserRuntime {
       &mut pending_pointer_moves,
       &mut pending_find_queries,
     );
-    for (tab_id, delta) in pending_ticks.drain() {
-      self.handle_tick(tab_id, delta);
-    }
+    flush_ticks(self, &mut pending_ticks);
   }
 
   fn drain_scroll_burst(&mut self) {
@@ -2726,6 +2810,9 @@ impl BrowserRuntime {
       TabId,
       ((f32, f32), PointerButton, crate::ui::PointerModifiers),
     > = HashMap::new();
+    // Coalesce back-to-back tick bursts so we only run the tick handler once per tab while the
+    // worker is coalescing scroll input.
+    let mut pending_ticks: HashMap<TabId, Duration> = HashMap::new();
 
     fn flush_pending(
       runtime: &mut BrowserRuntime,
@@ -2749,6 +2836,12 @@ impl BrowserRuntime {
           button,
           modifiers,
         });
+      }
+    }
+
+    fn flush_ticks(runtime: &mut BrowserRuntime, pending_ticks: &mut HashMap<TabId, Duration>) {
+      for (tab_id, delta) in pending_ticks.drain() {
+        runtime.handle_message(UiToWorker::Tick { tab_id, delta });
       }
     }
 
@@ -2779,6 +2872,7 @@ impl BrowserRuntime {
           viewport_css,
           dpr,
         } => {
+          flush_ticks(self, &mut pending_ticks);
           pending_viewport.insert(tab_id, (viewport_css, dpr));
         }
         UiToWorker::PointerMove {
@@ -2787,16 +2881,27 @@ impl BrowserRuntime {
           button,
           modifiers,
         } => {
+          flush_ticks(self, &mut pending_ticks);
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
+        }
+        UiToWorker::Tick { tab_id, delta } => {
+          flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+          let entry = pending_ticks.entry(tab_id).or_insert(Duration::ZERO);
+          *entry = entry.checked_add(delta).unwrap_or(MAX_COALESCED_TICK_DELTA);
+          if *entry > MAX_COALESCED_TICK_DELTA {
+            *entry = MAX_COALESCED_TICK_DELTA;
+          }
         }
         UiToWorker::Scroll { .. }
         | UiToWorker::ScrollTo { .. }
         | UiToWorker::TestQueryJsDomAttribute { .. } => {
           flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+          flush_ticks(self, &mut pending_ticks);
           self.handle_message(msg);
         }
         other => {
           flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+          flush_ticks(self, &mut pending_ticks);
           // Defer non-coalescible messages (clicks, navigations, etc) until after we render the
           // coalesced scroll frame.
           self.deferred_msgs.push_front(other);
@@ -2806,6 +2911,7 @@ impl BrowserRuntime {
     }
 
     flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+    flush_ticks(self, &mut pending_ticks);
   }
 
   fn drain_tick_burst(&mut self) {
@@ -4905,6 +5011,8 @@ impl BrowserRuntime {
   }
 
   fn handle_tick(&mut self, tab_id: TabId, delta: Duration) {
+    let delta = delta.min(MAX_COALESCED_TICK_DELTA);
+
     {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
         return;
@@ -4968,6 +5076,18 @@ impl BrowserRuntime {
       // Advance media playback scheduling based on a real clock. `UiToWorker::Tick` is a wake-up
       // signal; media state must not treat it as a fixed-time-step update.
       tab.media.on_tick(Instant::now());
+
+      #[cfg(feature = "browser_ui")]
+      {
+        if UI_WORKER_TICK_STATS_ENABLED.load(Ordering::Relaxed) {
+          let mut stats = ui_worker_tick_stats()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+          let entry = stats.entry(tab_id).or_default();
+          entry.handle_count = entry.handle_count.saturating_add(1);
+          entry.delta_total = entry.delta_total.checked_add(delta).unwrap_or(Duration::MAX);
+        }
+      }
     }
 
     // Media wakeups should be rescheduled after *any* tick handling path (including tick

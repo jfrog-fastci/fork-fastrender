@@ -249,6 +249,7 @@ mod ui_worker_download_filename_collision_suffix;
 mod ui_worker_find_query_coalescing;
 mod ui_worker_find_in_page;
 mod ui_worker_link_download;
+mod ui_tick_coalescing;
 mod ui_worker_unsupported_scheme;
 mod ui_worker_untrusted_chrome_schemes;
 mod ui_worker_visited_links;
