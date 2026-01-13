@@ -3152,7 +3152,6 @@ impl BrowserRuntime {
       }
       UiToWorker::Tick { tab_id, delta } => {
         self.handle_tick(tab_id, delta);
-        self.maybe_request_media_wakeup(tab_id);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -4694,68 +4693,74 @@ impl BrowserRuntime {
   }
 
   fn handle_tick(&mut self, tab_id: TabId, delta: Duration) {
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return;
-    };
+    {
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return;
+      };
 
-    // ---------------------------------------------------------------------------
-    // CSS animations/transitions
-    // ---------------------------------------------------------------------------
-    //
-    // Only schedule animation sampling when the document contains time-dependent primitives.
-    // `BrowserDocument` resolves time-based CSS animations/transitions to a deterministic settled
-    // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
-    // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
-    if let Some(doc) = tab.document.as_mut() {
-      if document_wants_ticks(doc) && delta != Duration::ZERO {
-        tab.tick_time = tab.tick_time.checked_add(delta).unwrap_or(Duration::MAX);
+      // ---------------------------------------------------------------------------
+      // CSS animations/transitions
+      // ---------------------------------------------------------------------------
+      //
+      // Only schedule animation sampling when the document contains time-dependent primitives.
+      // `BrowserDocument` resolves time-based CSS animations/transitions to a deterministic settled
+      // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
+      // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
+      if let Some(doc) = tab.document.as_mut() {
+        if document_wants_ticks(doc) && delta != Duration::ZERO {
+          tab.tick_time = tab.tick_time.checked_add(delta).unwrap_or(Duration::MAX);
 
-        // `BrowserDocument` consumes time in milliseconds as `f32` today. Keep the UI worker's
-        // timeline as a `Duration` to avoid cumulative float drift, then convert at the API
-        // boundary.
-        let time_ms = tab.tick_time.as_secs_f64() * 1000.0;
-        let time_ms = if time_ms.is_finite() {
-          (time_ms.min(f32::MAX as f64)) as f32
-        } else {
-          f32::MAX
-        };
-        doc.set_animation_time_ms(time_ms);
-        tab.needs_repaint = true;
-        tab.tick_coalesce = true;
-      }
-    }
-
-    // Drive JS timers + requestAnimationFrame callbacks when the tab has a JS runtime.
-    if let Some(js_tab) = tab.js_tab.as_mut() {
-      let generation_before = js_tab.dom().mutation_generation();
-      let prev_generation = tab.js_dom_mutation_generation;
-      let cancel_snapshot = tab.cancel.snapshot_paint();
-      let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
-      let deadline = deadline_for(cancel_callback.clone(), None);
-      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
-      if !cancel_callback() {
-        if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
-          if self.debug_log_enabled && !cancel_callback() {
-            let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-              tab_id,
-              line: format!("js tick failed: {err}"),
-            });
-          }
+          // `BrowserDocument` consumes time in milliseconds as `f32` today. Keep the UI worker's
+          // timeline as a `Duration` to avoid cumulative float drift, then convert at the API
+          // boundary.
+          let time_ms = tab.tick_time.as_secs_f64() * 1000.0;
+          let time_ms = if time_ms.is_finite() {
+            (time_ms.min(f32::MAX as f64)) as f32
+          } else {
+            f32::MAX
+          };
+          doc.set_animation_time_ms(time_ms);
+          tab.needs_repaint = true;
+          tab.tick_coalesce = true;
         }
       }
-      let generation_after = js_tab.dom().mutation_generation();
-      if generation_before != prev_generation || generation_after != generation_before {
-        tab.js_dom_dirty = true;
-        tab.cancel.bump_paint();
-        tab.needs_repaint = true;
-        tab.tick_coalesce = true;
+
+      // Drive JS timers + requestAnimationFrame callbacks when the tab has a JS runtime.
+      if let Some(js_tab) = tab.js_tab.as_mut() {
+        let generation_before = js_tab.dom().mutation_generation();
+        let prev_generation = tab.js_dom_mutation_generation;
+        let cancel_snapshot = tab.cancel.snapshot_paint();
+        let cancel_callback = cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
+        let deadline = deadline_for(cancel_callback.clone(), None);
+        let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+        if !cancel_callback() {
+          if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
+            if self.debug_log_enabled && !cancel_callback() {
+              let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                tab_id,
+                line: format!("js tick failed: {err}"),
+              });
+            }
+          }
+        }
+        let generation_after = js_tab.dom().mutation_generation();
+        if generation_before != prev_generation || generation_after != generation_before {
+          tab.js_dom_dirty = true;
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
+          tab.tick_coalesce = true;
+        }
+        tab.js_dom_mutation_generation = generation_after;
       }
-      tab.js_dom_mutation_generation = generation_after;
+
+      // Advance media playback scheduling based on a real clock. `UiToWorker::Tick` is a wake-up
+      // signal; media state must not treat it as a fixed-time-step update.
+      tab.media.on_tick(Instant::now());
     }
 
-    // Advance media playback scheduling based on a real clock. `UiToWorker::Tick` is a wake-up
-    // signal; media state must not treat it as a fixed-time-step update.
-    tab.media.on_tick(Instant::now());
+    // Media wakeups should be rescheduled after *any* tick handling path (including tick
+    // coalescing, which calls `handle_tick` directly).
+    self.maybe_request_media_wakeup(tab_id);
   }
 
   fn maybe_request_media_wakeup(&mut self, tab_id: TabId) {
