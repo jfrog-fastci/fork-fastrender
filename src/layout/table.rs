@@ -4370,29 +4370,30 @@ fn build_table_collapsed_borders_metadata(
   //
   // Coordinate convention:
   // - `column_line_pos` / `row_line_pos` are **grid line center** coordinates in the table
-  //   fragment's local space (i.e. relative to the table fragment origin). For collapsed-border
-  //   tables the fragment origin is aligned with the left/top outer grid line center
-  //   (`*_line_pos[0]`), which is also the table border box edge used for sizing. The baseline
-  //   outer border stroke is centered on that line, so half of it paints into negative coordinates
-  //   (the margin area).
+  //   fragment's local space (i.e. relative to the table fragment origin). These are the same
+  //   coordinates used when positioning child cell fragments.
+  // - In the collapsed-border model the table fragment is sized/positioned in terms of the *outer*
+  //   grid line centers (CSS 2.1 §17.6.2), so border strokes can legitimately extend outside the
+  //   table fragment rect.
   // - `vertical_line_max` / `horizontal_line_max` are the **layout baseline** line widths: the
   //   widths that were used to position the grid in layout. In particular, the outer left/right
-  //   edges are based on the first row per CSS 2.1 §17.6.2.
+  //   edges are based on the first row per §17.6.2.
   //
   // Baseline-vs-spill:
-  // Per §17.6.2 the table's used width/height include only *half* of the outer border; the other
-  // half paints into the margin. Additionally, later rows/columns can resolve thicker *outer-edge*
-  // segments than the baseline without affecting layout; the excess thickness must "spill" outward
-  // (see WPT `border-collapse-basic-001`). This is why `paint_bounds` must be computed from the
-  // maximum outer-edge segment widths (and corner join widths) rather than only the baseline line
-  // widths.
+  // - Border strokes are centered on grid lines. Layout therefore accounts for only *half* of the
+  //   baseline outer border on each side; the remaining half paints outside the fragment (into the
+  //   margin area).
+  // - Later rows/columns can still resolve thicker winning *outer-edge* segments than the baseline
+  //   without affecting layout. When that happens, the inside edge of the grid must not move
+  //   (otherwise the table would "widen"); instead the extra thickness is painted on the outside
+  //   (spills outward into the margin). See the paint-time `inside` clamping in
+  //   `render_table_collapsed_borders`. WPT `border-collapse-basic-001` is a useful sanity check
+  //   that collapsed border geometry behaves as paint overflow rather than affecting table sizing.
   //
-  // Note: `paint_bounds` can have a negative origin because collapsed border strokes are centered
-  // on the outer grid lines. That means even the baseline outer border paints half outside the
-  // table border box, and later rows/columns can increase that outward spill without affecting
-  // layout (§17.6.2; WPT `border-collapse-basic-001`). The negative coordinates are intentional and
-  // relied upon by the display list bounds/culling logic (see
-  // `collapsed_border_paint_bounds_include_thick_outer_segment`).
+  // `paint_bounds` is computed from the maximum painted extent of the outer-edge segments (and
+  // corner joins). It may extend outside the table fragment rect (including into negative
+  // coordinates on the start edges) and must not be clamped during display list build/culling,
+  // otherwise thick outer-edge winners can be clipped.
   let mut outer_left_half = 0.0f32;
   let mut outer_right_half = 0.0f32;
   if let (Some(left), Some(right)) = (
@@ -8500,23 +8501,26 @@ impl FormattingContext for TableFormattingContext {
 
       // Collapsed border model geometry (CSS 2.1 §17.6.2).
       //
-      // Coordinate convention (important for avoiding negative-origin clipping):
+      // Coordinate convention (important for avoiding negative-origin clipping in paint/culling):
       //
-      // - `column_line_pos` / `row_line_pos` store **grid line center** positions, measured from
-      //   the table fragment origin (`FragmentNode.bounds.origin == (0,0)` for the table grid
-      //   box). `*_line_pos[0]` is the left/top outer grid line center, and `*_line_pos.last()` is
-      //   the right/bottom outer grid line center. Outer border strokes are centered on these
-      //   lines, so half of the baseline outer border paints into negative coordinates (the margin
-      //   area).
-      // - `col_offsets` / `row_offsets` are the **cell slot starts** (inside edges): for index
-      //   `i`, `offsets[i] == line_pos[i] + 0.5*line_width[i]`.
+      // - `column_line_pos` / `row_line_pos` store **grid line center** positions measured from the
+      //   table fragment origin. `*_line_pos[0]` is the start outer grid line center and
+      //   `*_line_pos.last()` is the end outer grid line center.
+      //   - Note: for collapsed-border tables the fragment origin is aligned with the table grid
+      //     box border edge used for sizing (the outer grid line centers), *not* with the outer
+      //     paint edge. Since strokes are centered on the grid lines, the painted border can
+      //     legitimately extend outside the fragment rect (including into negative coordinates on
+      //     the start edges).
+      // - `col_offsets` / `row_offsets` are the **inside edges** of each cell slot:
+      //   `offsets[i] = line_pos[i] + 0.5 * line_width[i]`.
       //
-      // In the collapsed model, border strokes are centered on these grid lines; only **half** of
-      // the outer border contributes to the table's used width/height, and the other half paints
-      // into the margin area. Outer edge widths used for *layout* are "baselined" (e.g. left/right
-      // come from the first row per §17.6.2); if later rows/columns resolve a thicker winning outer
-      // border, the excess must *spill outward* instead of widening the table (WPT:
-      // `border-collapse-basic-001`).
+      // Baseline-vs-spill: §17.6.2 defines special baseline outer widths used for *layout* (e.g.
+      // left/right come from the first row). If later rows/columns resolve a thicker winning
+      // outer-edge segment, the inside edge of the grid must not move (otherwise the table would
+      // widen); instead the extra thickness must paint outward into the margin (see
+      // `render_table_collapsed_borders`; WPT `border-collapse-basic-001`). This is why
+      // `TableCollapsedBorders.paint_bounds` can extend beyond the fragment rect and must not be
+      // clamped during display list construction/culling.
       let (content_width, content_height, content_origin_x, content_origin_y) =
         match collapsed_borders.as_ref() {
           Some(collapsed_borders) => {

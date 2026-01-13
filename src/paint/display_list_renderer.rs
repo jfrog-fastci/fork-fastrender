@@ -15079,14 +15079,16 @@ impl DisplayListRenderer {
         // Interior grid lines are centered: the stroke extends `width/2` to either side of the
         // grid line center.
         //
-        // Outer edges are special (CSS 2.1 §17.6.2): the table grid is positioned using a
-        // "baseline" outer border width (recorded in `*_line_base`; for left/right this comes from
-        // the first row). Later rows/columns can resolve thicker winning border segments on the
-        // outer edge, but those must not move the inside edge of the table; the excess thickness
-        // spills outward into the margin (WPT `border-collapse-basic-001`).
+        // Outer edges are special (CSS 2.1 §17.6.2): layout positions the grid using "baseline"
+        // outer line widths (recorded in `*_line_base`; for left/right this comes from the first
+        // row). A later row/column may still resolve a thicker winning segment on the outer edge,
+        // but that must not move the inside edge of the table; the extra thickness is painted on
+        // the outside (spills outward into the margin).
         //
-        // `inside` is therefore capped to the baseline half-width so any extra thickness paints
-        // outward only.
+        // `inside` is therefore capped to the baseline half-width so any excess thickness paints
+        // outward only. When changing this logic, keep `TableCollapsedBorders.paint_bounds` in
+        // sync: display list culling relies on it and it may legitimately have a negative origin
+        // (WPT `border-collapse-basic-001`).
         let baseline_edge = if is_left_edge || is_right_edge {
           base_edge_width
         } else {
