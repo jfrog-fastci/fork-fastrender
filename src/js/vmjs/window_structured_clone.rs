@@ -2368,6 +2368,102 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_maps_sets_prototype_and_instanceof() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const m = new Map();\
+         const cm = structuredClone(m);\
+         if (cm === m) return false;\
+         if (!(cm instanceof Map)) return false;\
+         if (Object.getPrototypeOf(cm) !== Map.prototype) return false;\
+         const s = new Set();\
+         const cs = structuredClone(s);\
+         if (cs === s) return false;\
+         if (!(cs instanceof Set)) return false;\
+         if (Object.getPrototypeOf(cs) !== Set.prototype) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_map_preserves_shared_identity() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const shared = {x: 1};\
+         const m = new Map([['a', shared], ['b', shared]]);\
+         const c = structuredClone(m);\
+         if (c === m) return false;\
+         if (!(c instanceof Map)) return false;\
+         if (Object.getPrototypeOf(c) !== Map.prototype) return false;\
+         const a = c.get('a');\
+         const b = c.get('b');\
+         if (a !== b) return false;\
+         if (a === shared) return false;\
+         if (b === shared) return false;\
+         return a.x === 1;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_maps_sets_support_cycles() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const m = new Map();\
+         m.set('self', m);\
+         const cm = structuredClone(m);\
+         if (cm === m) return false;\
+         if (!(cm instanceof Map)) return false;\
+         if (Object.getPrototypeOf(cm) !== Map.prototype) return false;\
+         if (cm.get('self') !== cm) return false;\
+         const s = new Set();\
+         s.add(s);\
+         const cs = structuredClone(s);\
+         if (cs === s) return false;\
+         if (!(cs instanceof Set)) return false;\
+         if (Object.getPrototypeOf(cs) !== Set.prototype) return false;\
+         if (!cs.has(cs)) return false;\
+         return !cs.has(s);\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_map_clones_object_keys() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const k = {k: 1};\
+         const m = new Map([[k, 2]]);\
+         const c = structuredClone(m);\
+         if (!(c instanceof Map)) return false;\
+         if (Object.getPrototypeOf(c) !== Map.prototype) return false;\
+         const ck = Array.from(c.keys())[0];\
+         if (ck === k) return false;\
+         if (ck.k !== 1) return false;\
+         if (c.get(ck) !== 2) return false;\
+         return c.get(k) === undefined;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_clones_regexp() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
