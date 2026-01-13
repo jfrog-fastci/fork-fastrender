@@ -1100,7 +1100,7 @@ fn group_chip_ui(
       .map(|g| g.title.clone())
       .unwrap_or_default();
     let resp = ui.text_edit_singleline(&mut new_title);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Group name"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Tab group name"));
     if resp.changed() {
       app.set_group_title(group_id, new_title);
     }

@@ -2907,6 +2907,10 @@ pub fn chrome_ui_with_bookmarks(
               ui.painter().rect_stroke(rect, swatch_rounding, stroke);
             }
             let resp = resp.on_hover_text(label);
+            resp.widget_info({
+              let a11y_label = format!("Accent: {label}");
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+            });
             if resp.clicked() {
               app.appearance.accent_color = Some(format_hex_color(rgba));
             }
@@ -2923,6 +2927,9 @@ pub fn chrome_ui_with_bookmarks(
             &mut custom,
             egui::color_picker::Alpha::BlendOrAdditive,
           );
+          resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Custom accent color")
+          });
           if resp.changed() {
             app.appearance.accent_color = Some(format_hex_color(RgbaColor::from(custom)));
           }
@@ -3453,11 +3460,15 @@ pub fn hover_status_overlay_ui(
       }
 
       frame.show(ui, |ui| {
-        ui.add(
+        let resp = ui.add(
           egui::Label::new(egui::RichText::new(url.as_str()).small())
             .wrap(false)
             .truncate(true),
         );
+        resp.widget_info({
+          let label = format!("Hovered link: {url}");
+          move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+        });
       });
     });
 }
