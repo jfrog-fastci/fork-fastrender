@@ -1011,6 +1011,29 @@ fn regexp_lookbehind_nested_lookaround_sanity() {
 }
 
 #[test]
+fn regexp_lookbehind_sliced_strings_do_not_read_before_start() {
+  // Adapted from test262 `built-ins/RegExp/lookBehind/sliced-strings.js`.
+  //
+  // When a string is produced via `slice` / `substring`, engines often share the backing storage.
+  // Lookbehind must treat the sliced string's logical start as index 0 and never read earlier
+  // code units, even if they are adjacent in memory.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var oob_subject = "abcdefghijklmnabcdefghijklmn".slice(14);
+        [
+          oob_subject.match(/(?=(abcdefghijklmn))(?<=\1)a/i) === null,
+          oob_subject.match(/(?=(abcdefghijklmn))(?<=\1)a/) === null,
+          "abcdefgabcdefg".slice(1).match(/(?=(abcdefg))(?<=\1)/) === null,
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "true,true,true");
+}
+
+#[test]
 fn regexp_unicode_mode_rejects_legacy_octal_and_oob_backrefs() {
   let mut rt = new_runtime();
 
