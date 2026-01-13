@@ -249,11 +249,11 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
   }
 }
 
-#[cfg(test)]
-mod tests {
+  #[cfg(test)]
+  mod tests {
   use super::*;
   use std::io::{self, Write};
-  use std::net::{TcpListener, TcpStream};
+  use std::net::{TcpListener, TcpStream, UdpSocket};
   use std::process::Command;
   use std::time::{Instant, SystemTime};
 
@@ -324,6 +324,20 @@ mod tests {
       );
 
       // 3) Network access should fail, even to localhost.
+      let bind_err = TcpListener::bind("127.0.0.1:0")
+        .expect_err("expected network bind to be denied by sandbox");
+      assert!(
+        is_permission_error(&bind_err),
+        "expected network bind to be denied by sandbox, got {bind_err:?}"
+      );
+
+      let udp_bind_err = UdpSocket::bind("127.0.0.1:0")
+        .expect_err("expected UDP bind to be denied by sandbox");
+      assert!(
+        is_permission_error(&udp_bind_err),
+        "expected UDP bind to be denied by sandbox, got {udp_bind_err:?}"
+      );
+
       let connect_err = TcpStream::connect(("127.0.0.1", port))
         .expect_err("expected network connect to be denied by sandbox");
       assert!(

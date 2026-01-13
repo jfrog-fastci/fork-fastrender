@@ -61,6 +61,7 @@ fn run_child() {
 
   // Network should be denied in both modes.
   assert_permission_denied(std::net::TcpListener::bind("127.0.0.1:0"), "bind localhost");
+  assert_permission_denied(std::net::UdpSocket::bind("127.0.0.1:0"), "bind UDP localhost");
 
   // System fonts should only be readable in the relaxed profile.
   let font_read = std::fs::read(&font_path);
