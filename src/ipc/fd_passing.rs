@@ -59,6 +59,9 @@ pub enum RecvMsgError {
 
   #[error("invalid SCM_RIGHTS fd value: {fd}")]
   InvalidFd { fd: RawFd },
+
+  #[error("received SCM_RIGHTS file descriptors without any payload bytes")]
+  FdWithoutPayload,
 }
 
 #[cfg(unix)]
@@ -266,6 +269,9 @@ fn recv_msg_inner(
   }
   if let Some(err) = parsed.error {
     return Err(err);
+  }
+  if !owned_fds.is_empty() && data_buf.is_empty() {
+    return Err(RecvMsgError::FdWithoutPayload);
   }
   if owned_fds.len() > max_fds {
     return Err(RecvMsgError::TooManyFds {
