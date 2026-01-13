@@ -574,23 +574,33 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
       );
 
       // Also ensure we can't open existing files for writing (defense-in-depth: deny modifying).
-      let temp_open_err = std::fs::OpenOptions::new()
+      let temp_modify_err = match std::fs::OpenOptions::new()
         .append(true)
         .open(&temp_existing_target)
-        .expect_err("expected sandbox to deny opening existing temp file for writing");
+      {
+        Ok(mut file) => file
+          .write_all(b"append")
+          .expect_err("expected sandbox to deny appending to an existing temp file"),
+        Err(err) => err,
+      };
       assert!(
-        is_permission_error(&temp_open_err),
-        "expected sandbox to deny opening existing temp file for writing (path={}, err={temp_open_err:?})",
+        is_permission_error(&temp_modify_err),
+        "expected sandbox to deny modifying existing temp file (path={}, err={temp_modify_err:?})",
         temp_existing_target.display()
       );
 
-      let home_open_err = std::fs::OpenOptions::new()
+      let home_modify_err = match std::fs::OpenOptions::new()
         .append(true)
         .open(&home_existing_target)
-        .expect_err("expected sandbox to deny opening existing home file for writing");
+      {
+        Ok(mut file) => file
+          .write_all(b"append")
+          .expect_err("expected sandbox to deny appending to an existing home file"),
+        Err(err) => err,
+      };
       assert!(
-        is_permission_error(&home_open_err),
-        "expected sandbox to deny opening existing home file for writing (path={}, err={home_open_err:?})",
+        is_permission_error(&home_modify_err),
+        "expected sandbox to deny modifying existing home file (path={}, err={home_modify_err:?})",
         home_existing_target.display()
       );
 
