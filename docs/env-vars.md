@@ -87,6 +87,10 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - By default `src/sandbox/windows.rs` builds a sanitized environment block to avoid leaking secrets
     (and to ensure TEMP/TMP point at an AppContainer-writable location).
   - This is intended for local debugging only.
+- `FASTR_RENDERER_JOB_MEM_LIMIT_MB=<MiB>` – **Windows-only**: apply a Job Object committed-memory cap when spawning a renderer via `win_sandbox::renderer::RendererSandbox::new_default()`.
+  - This sets `JOB_OBJECT_LIMIT_JOB_MEMORY` / `JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit` (total committed memory across all processes in the job).
+  - Intended as a defense-in-depth guardrail for runaway allocations in sandboxed renderer processes.
+  - Note: the production Windows sandbox launcher in `src/sandbox/windows.rs` does **not** currently set this limit.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
 ## Renderer sandboxing (macOS)
