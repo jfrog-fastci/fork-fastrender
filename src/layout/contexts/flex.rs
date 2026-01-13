@@ -347,6 +347,46 @@ fn record_flex_measure_inline_hint_call() {
 
 #[cfg(test)]
 thread_local! {
+  // Count how often flex intrinsic inline sizing evaluates a direct child's contribution. This is
+  // used by unit tests to ensure the combined min/max intrinsic sizing path only walks children
+  // once (rather than scanning them separately for min-content and max-content).
+  static FLEX_INTRINSIC_CHILD_CONTRIBUTION_COUNTING: Cell<bool> = const { Cell::new(false) };
+  static FLEX_INTRINSIC_CHILD_CONTRIBUTION_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+struct FlexIntrinsicChildContributionCounterGuard;
+
+#[cfg(test)]
+impl Drop for FlexIntrinsicChildContributionCounterGuard {
+  fn drop(&mut self) {
+    FLEX_INTRINSIC_CHILD_CONTRIBUTION_COUNTING.with(|flag| flag.set(false));
+  }
+}
+
+#[cfg(test)]
+fn start_flex_intrinsic_child_contribution_counter() -> FlexIntrinsicChildContributionCounterGuard {
+  FLEX_INTRINSIC_CHILD_CONTRIBUTION_CALLS.with(|cell| cell.set(0));
+  FLEX_INTRINSIC_CHILD_CONTRIBUTION_COUNTING.with(|flag| flag.set(true));
+  FlexIntrinsicChildContributionCounterGuard
+}
+
+#[cfg(test)]
+fn flex_intrinsic_child_contribution_calls() -> usize {
+  FLEX_INTRINSIC_CHILD_CONTRIBUTION_CALLS.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+fn record_flex_intrinsic_child_contribution_call() {
+  FLEX_INTRINSIC_CHILD_CONTRIBUTION_COUNTING.with(|enabled| {
+    if enabled.get() {
+      FLEX_INTRINSIC_CHILD_CONTRIBUTION_CALLS.with(|cell| cell.set(cell.get() + 1));
+    }
+  });
+}
+
+#[cfg(test)]
+thread_local! {
   // Track how often the flex measure callback falls back to the expensive `FormattingContext::layout`
   // path for each flex item.
   static FLEX_MEASURE_LAYOUT_CALLS: RefCell<FxHashMap<usize, usize>> =
@@ -5915,20 +5955,19 @@ impl FormattingContext for FlexFormattingContext {
     Ok(last)
   }
 
-  /// Computes intrinsic size by running Taffy with appropriate constraints
-  fn compute_intrinsic_inline_size(
-    &self,
-    box_node: &BoxNode,
-    mode: IntrinsicSizingMode,
-  ) -> Result<f32, LayoutError> {
+  fn compute_intrinsic_inline_sizes(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
     count_flex_intrinsic_call();
-    let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    if let Some(cached) = intrinsic_cache_lookup(box_node, mode) {
-      return Ok(cached);
+    let min_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MinContent);
+    let max_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MaxContent);
+    if let (Some(min), Some(max)) = (min_cached, max_cached) {
+      return Ok((min, max));
     }
+
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
+
     if style.containment.isolates_inline_size() {
       let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
       let edges = if inline_is_horizontal {
@@ -5950,8 +5989,9 @@ impl FormattingContext for FlexFormattingContext {
         style.root_font_size,
       );
       let size = (edges + fallback).max(0.0);
-      intrinsic_cache_store(box_node, mode, size);
-      return Ok(size);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, size);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, size);
+      return Ok((size, size));
     }
 
     // Honor definite preferred sizes that resolve without needing a containing block. This matches
@@ -5977,8 +6017,9 @@ impl FormattingContext for FlexFormattingContext {
           } else {
             px.max(0.0)
           };
-          intrinsic_cache_store(box_node, mode, border_box);
-          return Ok(border_box);
+          intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, border_box);
+          intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, border_box);
+          return Ok((border_box, border_box));
         }
       }
     }
@@ -5993,45 +6034,54 @@ impl FormattingContext for FlexFormattingContext {
     );
     let container_inline_is_horizontal = inline_is_horizontal;
 
-    let compute_child_contribution = |child: &BoxNode| -> Result<Option<f32>, LayoutError> {
-      let style_override = crate::layout::style_override::style_override_for(child.id);
-      let style: &ComputedStyle = style_override
-        .as_deref()
-        .unwrap_or_else(|| child.style.as_ref());
-      if matches!(style.position, Position::Absolute | Position::Fixed) {
-        return Ok(None);
-      }
+    let compute_child_contribution =
+      |child: &BoxNode| -> Result<Option<(f32, f32)>, LayoutError> {
+        #[cfg(test)]
+        record_flex_intrinsic_child_contribution_call();
 
-      let fc_type = child
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let fc = factory.get(fc_type);
-      let child_inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-      let child_inline = if child_inline_is_horizontal == container_inline_is_horizontal {
-        fc.compute_intrinsic_inline_size(child, mode)?
-      } else {
-        fc.compute_intrinsic_block_size(child, mode)?
-      };
+        let style_override = crate::layout::style_override::style_override_for(child.id);
+        let style: &ComputedStyle = style_override
+          .as_deref()
+          .unwrap_or_else(|| child.style.as_ref());
+        if matches!(style.position, Position::Absolute | Position::Fixed) {
+          return Ok(None);
+        }
 
-      // Include margins along the container's inline axis when they resolve without a containing
-      // block. In vertical writing modes the inline axis is physical Y, so `margin-top/bottom`
-      // contribute to intrinsic inline size.
-      let (margin_start, margin_end) = if container_inline_is_horizontal {
-        (style.margin_left, style.margin_right)
-      } else {
-        (style.margin_top, style.margin_bottom)
+        let fc_type = child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let fc = factory.get(fc_type);
+        let child_inline_is_horizontal =
+          crate::style::inline_axis_is_horizontal(style.writing_mode);
+        let (child_min, child_max) = if child_inline_is_horizontal == container_inline_is_horizontal
+        {
+          fc.compute_intrinsic_inline_sizes(child)?
+        } else {
+          (
+            fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent)?,
+            fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent)?,
+          )
+        };
+
+        // Include margins along the container's inline axis when they resolve without a containing
+        // block. In vertical writing modes the inline axis is physical Y, so `margin-top/bottom`
+        // contribute to intrinsic inline size.
+        let (margin_start, margin_end) = if container_inline_is_horizontal {
+          (style.margin_left, style.margin_right)
+        } else {
+          (style.margin_top, style.margin_bottom)
+        };
+        let margin_start = margin_start
+          .as_ref()
+          .map(|l| self.resolve_length_for_width(*l, 0.0, style))
+          .unwrap_or(0.0);
+        let margin_end = margin_end
+          .as_ref()
+          .map(|l| self.resolve_length_for_width(*l, 0.0, style))
+          .unwrap_or(0.0);
+        let margin_total = margin_start + margin_end;
+        Ok(Some((child_min + margin_total, child_max + margin_total)))
       };
-      let margin_start = margin_start
-        .as_ref()
-        .map(|l| self.resolve_length_for_width(*l, 0.0, style))
-        .unwrap_or(0.0);
-      let margin_end = margin_end
-        .as_ref()
-        .map(|l| self.resolve_length_for_width(*l, 0.0, style))
-        .unwrap_or(0.0);
-      let child_total = child_inline + margin_start + margin_end;
-      Ok(Some(child_total))
-    };
 
     let mut deadline_counter = 0usize;
     let contributions = if self.parallelism.should_parallelize(box_node.children.len()) {
@@ -6082,7 +6132,7 @@ impl FormattingContext for FlexFormattingContext {
           debug_assert_eq!(idx, expected_idx, "parallel flex intrinsic index mismatch");
           value
         })
-        .collect()
+        .collect::<Vec<_>>()
     } else {
       box_node
         .children
@@ -6095,24 +6145,31 @@ impl FormattingContext for FlexFormattingContext {
     };
 
     // For intrinsic inline sizing we can treat `flex-direction: row` containers as:
-    // - max-content (and nowrap min-content): a single line, so widths sum
-    // - wrapping min-content: items may be placed on separate lines, so min-content width is
-    //   driven by the largest item contribution rather than the sum.
-    let row_axis_sums_items = is_row_axis
-      && (mode == IntrinsicSizingMode::MaxContent || matches!(style.flex_wrap, FlexWrap::NoWrap));
+    // - max-content: a single line, so widths sum (even for wrapping containers)
+    // - min-content: wrapping containers can place items on separate lines, so the min-content width
+    //   is driven by the largest item contribution rather than the sum.
+    let min_row_axis_sums_items = is_row_axis && matches!(style.flex_wrap, FlexWrap::NoWrap);
+    let max_row_axis_sums_items = is_row_axis;
 
-    let mut contribution = 0.0f32;
+    let mut min_contribution = 0.0f32;
+    let mut max_contribution = 0.0f32;
     let mut in_flow_items = 0usize;
-    for child_total in contributions.into_iter().flatten() {
+    for (child_min_total, child_max_total) in contributions.into_iter().flatten() {
       check_layout_deadline(&mut deadline_counter)?;
       in_flow_items += 1;
-      if row_axis_sums_items {
-        contribution += child_total;
+      if min_row_axis_sums_items {
+        min_contribution += child_min_total;
       } else {
-        contribution = contribution.max(child_total);
+        min_contribution = min_contribution.max(child_min_total);
+      }
+      if max_row_axis_sums_items {
+        max_contribution += child_max_total;
+      } else {
+        max_contribution = max_contribution.max(child_max_total);
       }
     }
-    if row_axis_sums_items && in_flow_items > 1 {
+
+    if in_flow_items > 1 && (min_row_axis_sums_items || max_row_axis_sums_items) {
       // Taffy's flexbox algorithm accounts for `gap` between items, but our intrinsic sizing fast
       // path approximates the inline size by summing child contributions. Include the column-gap
       // so that flex base-size resolution matches full layout and avoids spurious wrapping.
@@ -6123,7 +6180,13 @@ impl FormattingContext for FlexFormattingContext {
       let gap_len = style.grid_column_gap;
       let gap = self.resolve_length_for_width(gap_len, 0.0, style);
       if gap.is_finite() && gap > 0.0 {
-        contribution += gap * (in_flow_items as f32 - 1.0);
+        let total_gap = gap * (in_flow_items as f32 - 1.0);
+        if min_row_axis_sums_items {
+          min_contribution += total_gap;
+        }
+        if max_row_axis_sums_items {
+          max_contribution += total_gap;
+        }
       }
     }
 
@@ -6132,9 +6195,28 @@ impl FormattingContext for FlexFormattingContext {
     } else {
       self.vertical_edges_px(style).unwrap_or(0.0)
     };
-    let width = (contribution + edges).max(0.0);
-    intrinsic_cache_store(box_node, mode, width);
-    Ok(width)
+    let min_width = (min_contribution + edges).max(0.0);
+    let max_width = (max_contribution + edges).max(0.0);
+    intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, min_width);
+    intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, max_width);
+    Ok((min_width, max_width))
+  }
+
+  fn compute_intrinsic_inline_size(
+    &self,
+    box_node: &BoxNode,
+    mode: IntrinsicSizingMode,
+  ) -> Result<f32, LayoutError> {
+    if let Some(cached) = intrinsic_cache_lookup(box_node, mode) {
+      count_flex_intrinsic_call();
+      return Ok(cached);
+    }
+
+    let (min, max) = self.compute_intrinsic_inline_sizes(box_node)?;
+    Ok(match mode {
+      IntrinsicSizingMode::MinContent => min,
+      IntrinsicSizingMode::MaxContent => max,
+    })
   }
 
   fn compute_intrinsic_block_size(
@@ -20231,6 +20313,109 @@ mod tests {
     assert!(
       (max_intrinsic - 23.0).abs() < 0.5,
       "expected max-content intrinsic width to honor the definite child width (got {max_intrinsic:.2})",
+    );
+  }
+
+  #[test]
+  fn flex_intrinsic_inline_sizes_combines_min_and_max_child_scan() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().saturating_add(1);
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let flex_fc = fc.factory.get(FormattingContextType::Flex);
+
+    // Build a flex container whose intrinsic sizing depends on many children.
+    let child_count = 32usize;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let mut inline_style = ComputedStyle::default();
+    inline_style.display = Display::Block;
+    let inline_style = Arc::new(inline_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    let item_style = Arc::new(item_style);
+
+    let mut children = Vec::with_capacity(child_count);
+    for idx in 0..child_count {
+      let text = BoxNode::new_text(
+        text_style.clone(),
+        format!("item-{idx} lorem ipsum dolor sit amet"),
+      );
+      let inline = BoxNode::new_block(
+        inline_style.clone(),
+        FormattingContextType::Inline,
+        vec![text],
+      );
+      let mut item = BoxNode::new_block(
+        item_style.clone(),
+        FormattingContextType::Block,
+        vec![inline],
+      );
+      item.id = 96_000 + idx;
+      children.push(item);
+    }
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.flex_wrap = FlexWrap::Wrap;
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      children,
+    );
+    container.id = 95_999;
+
+    // The combined API should traverse children once while computing both min and max.
+    let (combined_min, combined_max) = {
+      let _counter_guard = start_flex_intrinsic_child_contribution_counter();
+      let sizes = flex_fc
+        .compute_intrinsic_inline_sizes(&container)
+        .expect("intrinsic inline sizes");
+      assert_eq!(
+        flex_intrinsic_child_contribution_calls(),
+        child_count,
+        "expected exactly one child contribution evaluation per flex item"
+      );
+      sizes
+    };
+
+    // Reset caches and ensure sequential min/max calls do not re-walk children on the second call.
+    let epoch = crate::layout::formatting_context::intrinsic_cache_epoch().saturating_add(1);
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(epoch, true);
+    let _counter_guard = start_flex_intrinsic_child_contribution_counter();
+    let min = flex_fc
+      .compute_intrinsic_inline_size(&container, IntrinsicSizingMode::MinContent)
+      .expect("min-content intrinsic inline size");
+    assert_eq!(
+      flex_intrinsic_child_contribution_calls(),
+      child_count,
+      "min-content intrinsic sizing should walk children once"
+    );
+    let max = flex_fc
+      .compute_intrinsic_inline_size(&container, IntrinsicSizingMode::MaxContent)
+      .expect("max-content intrinsic inline size");
+    assert_eq!(
+      flex_intrinsic_child_contribution_calls(),
+      child_count,
+      "max-content intrinsic sizing should hit cache and avoid walking children again"
+    );
+
+    let eps = 1e-3;
+    assert!(
+      (combined_min - min).abs() < eps,
+      "combined min-content result mismatch (combined={combined_min:.4} single={min:.4})"
+    );
+    assert!(
+      (combined_max - max).abs() < eps,
+      "combined max-content result mismatch (combined={combined_max:.4} single={max:.4})"
     );
   }
 
