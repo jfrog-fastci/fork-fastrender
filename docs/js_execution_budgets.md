@@ -4,8 +4,9 @@ FastRender treats JavaScript as **hostile input**. Preventing hangs and unbounde
 requires multiple layers of limits that work together:
 
 These limits primarily matter for the JS-capable runtime containers (e.g. `api::BrowserTab` and
-`api::BrowserDocumentJs`) and tooling that embeds them (e.g. `fetch_and_render --js`). For a map of
-which public containers include JavaScript + an event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
+`api::BrowserDocumentJs`) and tooling that embeds them (for example `fetch_and_render --js`,
+`render_pages --js`, and `pageset_progress run --js`). For a map of which public containers include
+JavaScript + an event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
 
 ## 1) OS/process-level caps
 

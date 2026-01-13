@@ -17,6 +17,65 @@ match Chrome baselines captured with CSP `script-src` blocked), even though scri
 in the static pipeline. Use `--render-parse-scripting-enabled=false` to force scripting-disabled
 parsing semantics when debugging `<noscript>` fallbacks.
 
+## JavaScript execution (`--js`)
+
+FastRender’s default CLI renderers run in a **static** mode (HTML/CSS/layout/paint only): author
+scripts are **not** executed unless you opt in with `--js`.
+
+### Binaries that support `--js`
+
+- Render CLIs:
+  - `fetch_and_render --js …` (single URL/file render)
+  - `render_pages --js …` (render cached pageset HTML under `fetches/html/`)
+  - `pageset_progress run --js …` (pageset scoreboard renders)
+- Browser smoke test:
+  - `browser --headless-smoke --js …` (vm-js smoke test; does not expose the shared JS budget flags)
+    - Example:
+
+      ```bash
+      bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+        --headless-smoke --js
+      ```
+
+When `--js` is enabled in the render CLIs above, they use the `vm-js`-backed
+[`api::BrowserTab`](../src/api/browser_tab.rs) and drive it via `BrowserTab::run_until_stable`
+(bounded by `--js-max-frames`).
+
+### Determinism / time model
+
+`BrowserTab::run_until_stable` is a deterministic “converge then snapshot” loop: it does **not**
+sleep in real time. It repeatedly drains runnable tasks/microtasks/timers, runs
+`requestAnimationFrame` callbacks, and renders frames until the document reaches a quiescent state
+(or `--js-max-frames` is hit).
+
+Time-based APIs (`setTimeout`, `requestAnimationFrame`, `Date.now()`, `performance.now()`, etc.) are
+driven by the tab’s monotonic clock (`js::Clock`). The render CLIs drive `run_until_stable` **without
+sleeping** and do not attempt to fast-forward time, so timers that are not already due may not fire
+before the snapshot render (this is intentional for deterministic “load then render” workflows).
+
+For an interactive, real-time loop (sleeping until the next wake-up), see
+[`docs/live_rendering_loop.md`](live_rendering_loop.md). Deterministic embeddings can additionally
+provide a `VirtualClock` to the event loop, but this is not currently exposed as a CLI flag.
+
+### Shared JS budget flags
+
+These flags are available on the JS-enabled render CLIs (`fetch_and_render`, `render_pages`, and
+`pageset_progress run`; run `--help` for per-binary defaults):
+
+- `--js-max-frames <N>`: maximum “frame” iterations while driving `run_until_stable`.
+- `--js-max-wall-ms <MS>`: wall-time budget per event-loop “spin” (0 disables the wall-time limit).
+- `--js-max-script-bytes <BYTES>`: maximum bytes accepted for a single script source (inline or external).
+- `--js-max-tasks <N>` / `--js-max-microtasks <N>`: maximum tasks/microtasks executed per spin.
+- `--js-max-pending-tasks <N>`, `--js-max-pending-microtasks <N>`, `--js-max-pending-timers <N>`:
+  caps on queued work to prevent unbounded memory growth.
+- `--js-max-instructions <N>`, `--js-max-vm-heap-bytes <BYTES>`, `--js-max-stack-depth <N>`: VM
+  budgeting knobs (instruction/heap/stack limits).
+
+Background and rationale: [`docs/js_execution_budgets.md`](js_execution_budgets.md).
+
+Note: the Chrome baseline scripts (`scripts/chrome_baseline.sh`, `xtask chrome-baseline-fixtures`,
+etc.) use a separate JavaScript toggle of the form `--js {on|off}`.
+
 ## Convenience scripts (terminal-friendly)
 
 These are optional wrappers for the most common loops:
@@ -298,6 +357,7 @@ Notes:
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Accepts `--shard <index>/<total>` to render a slice of the cached pages in a stable order.
 - `--pages` (and positional filters) use the same canonical stems as `fetch_pages` (strip scheme + leading `www.`). Cached filenames are normalized when matching filters so `www.`/non-`www` variants map consistently.
+- JavaScript: pass `--js` to execute author scripts via the `vm-js` `BrowserTab` harness, driven by `BrowserTab::run_until_stable` (bounded by `--js-max-frames`). See [JavaScript execution (`--js`)](#javascript-execution---js) above for the shared time model + budget flags.
 - Output directory: `--out-dir <dir>` overrides where renders/logs are written (defaults to `fetches/renders/`).
 - Disk cache directory: `--cache-dir <dir>` overrides the disk-backed subresource cache location (defaults to `fetches/assets/`; only has an effect when built with `--features disk_cache`).
 - Optional outputs:
@@ -305,6 +365,15 @@ Notes:
   - `--dump-intermediate {summary|full}` emits per-page summaries or full JSON dumps of DOM/composed DOM/styled/box/fragment/display-list stages (use `--only-failures` to gate large artifacts on errors); `full` also writes a combined `<out-dir>/<page>.snapshot.json` pipeline snapshot.
 - Layout fan-out defaults to `auto` (only engages once the box tree is large enough and has sufficient independent sibling work); use `--layout-parallel off` to force serial layout, `--layout-parallel on` to force fan-out, or tune thresholds with `--layout-parallel-min-fanout`, `--layout-parallel-auto-min-nodes`, and `--layout-parallel-max-threads`.
 - Worker Rayon threads: in the default per-page worker mode, `render_pages` sets `RAYON_NUM_THREADS` for each worker process to `available_parallelism()/jobs` (min 1, additionally clamped by a detected cgroup CPU quota on Linux) to avoid CPU oversubscription. Set `RAYON_NUM_THREADS` in the parent environment to override this.
+
+Example (render one cached page with JavaScript enabled into a separate output directory):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- \
+  --pages stripe.com \
+  --out-dir target/renders_js \
+  --js --js-max-frames 20
+```
 
 ### Offline fixture Chrome-vs-FastRender diffs (deterministic)
 
@@ -478,12 +547,24 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Entry: `src/bin/fetch_and_render.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --help`
 - JavaScript: pass `--js` to execute author scripts using the `vm-js`-backed [`api::BrowserTab`](../src/api/browser_tab.rs),
-  driven via `BrowserTab::run_until_stable` (bounded by `--js-max-frames`). For background on which
-  public containers include JS + an event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
+  driven via `BrowserTab::run_until_stable` (bounded by `--js-max-frames`). See [JavaScript execution (`--js`)](#javascript-execution---js)
+  for the shared time model + budget flags; for background on which public containers include JS + an
+  event loop, see [`docs/runtime_stacks.md`](runtime_stacks.md).
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
 - Disk cache directory: `--cache-dir <dir>` overrides the disk-backed subresource cache location (defaults to `fetches/assets/`; only has an effect when built with `--features disk_cache`).
 - Security defaults mirror the library: `file://` subresources are blocked for HTTP(S) documents. Use `--allow-file-from-http` to override during local testing, `--block-mixed-content` to forbid HTTP under HTTPS, and `--same-origin-subresources` (plus optional `--allow-subresource-origin`) to block cross-origin CSS/images/fonts when rendering untrusted pages. This flag does not block cross-origin iframe/embed document navigation.
 - Performance: layout fan-out defaults to `auto` (with optional `--layout-parallel-min-fanout` / `--layout-parallel-auto-min-nodes` / `--layout-parallel-max-threads`). Use `--layout-parallel off` to force serial layout or `--layout-parallel on` to force fan-out when chasing wall-time regressions on wide pages.
+
+Example (execute JS and render a single URL to a PNG):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- \
+  --timeout 60 \
+  --viewport 1200x800 \
+  --js --js-max-frames 30 \
+  https://example.com \
+  target/example.png
+```
 
 ## `bundle_page`
 
@@ -497,10 +578,12 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
       - Current limitation: `<link rel="preload" as="video|audio|track">` is not discovered as a media source yet.
     - Use `--fetch-timeout-secs <secs>` to bound per-request network time when crawling large pages.
     - Note: in render capture mode (default), FastRender may not fetch media sources yet. If you need media bytes inside the bundle, use `--no-render/--crawl` (or pass `--bundle-scripts`, which runs an additional crawl pass after the render and will also pick up media URLs).
+    - For JS-enabled offline replay, add `--bundle-scripts` to include `<script src>` plus related `preload`/`modulepreload` script resources (can significantly increase bundle size).
     - Size: `bundle_page` does not cap media bytes; crawls can download large files. Use `--fetch-timeout-secs` as a best-effort guardrail and rely on `import-page-fixture`'s `--media-max-*` budgets to keep committed fixtures small.
   - Cache (offline, from pageset caches): `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- cache <stem> --out <bundle_dir|.tar>`
     - Reads HTML from `fetches/html/<stem>.html` (+ `.html.meta`) and subresources from the disk-backed cache under `fetches/assets/` (override with `--asset-cache-dir` (alias `--cache-dir`); this should match the `--cache-dir` used when warming/running the pageset).
     - Fails if a discovered subresource (including media) is missing from the cache; pass `--allow-missing` to insert empty placeholders.
+    - Add `--bundle-scripts` to include scripts for JS-enabled offline replay (requires those scripts to be present in the disk cache; increases bundle size).
     - The disk cache key namespace depends on request headers. If you warmed `fetches/assets/` with non-default values (e.g. `pageset_progress --user-agent ... --accept-language ...`, or `FASTR_HTTP_BROWSER_HEADERS=0`), pass matching `bundle_page cache --user-agent ... --accept-language ...` (and the same env var) so cache capture hits the correct entries.
   - Render: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render <bundle> --out <png>`
     - `bundle_page render` is offline and ignores `FASTR_HTTP_*` env vars (it uses the bundle contents only).
@@ -671,11 +754,20 @@ bash scripts/cargo_agent.sh xtask import-page-fixture target/bundles/example.com
 - Run:
   - Help: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --help`
   - Typical: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5`
+  - JS-enabled (execute author scripts; see [JavaScript execution (`--js`)](#javascript-execution---js) for budgets/time model):
+
+    ```bash
+    bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
+      --timeout 5 \
+      --pages stripe.com \
+      --js --js-max-frames 10
+    ```
   - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
   - Compatibility (opt-in only): `--compat-profile site` enables site-specific hacks and
     `--dom-compat compat` applies generic DOM compatibility mutations (see
     [`docs/notes/dom-compatibility.md`](notes/dom-compatibility.md)). Defaults stay spec-only;
     `bash scripts/cargo_agent.sh xtask pageset` forwards the flags only when you provide them.
+- JavaScript: `pageset_progress run --js` executes author scripts using the `vm-js` `BrowserTab` harness, driven via `BrowserTab::run_until_stable` (bounded by `--js-max-frames`).
 - Disk cache directory: `--cache-dir <dir>` overrides the disk-backed subresource cache location (defaults to `fetches/assets/`; only has an effect when built with `--features disk_cache`).
 - Fonts: pass `--bundled-fonts` to skip system font discovery (pageset wrappers default to bundled fonts for deterministic timing; use `--system-fonts` on the wrappers when comparing `--accuracy` diffs against Chrome) or
   `--font-dir <path>` to load fonts from a specific directory without hitting host fonts.
