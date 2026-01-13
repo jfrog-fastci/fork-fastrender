@@ -1353,3 +1353,51 @@ fn compiled_instanceof_rhs_not_object_throws() -> Result<(), VmError> {
     other => panic!("expected TypeError, got {other:?}"),
   }
 }
+
+#[test]
+fn compiled_for_of_over_string_iterable() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let out = '';
+      for (let ch of 'ab') { out = out + ch; }
+      out
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_over_object() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let out = '';
+      for (let k in ({a:1, b:2})) { out = out + k; }
+      out
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}

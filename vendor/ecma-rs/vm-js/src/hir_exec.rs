@@ -2,6 +2,8 @@ use crate::code::{CompiledFunctionRef, CompiledScript};
 use crate::conversion_ops::ToPrimitiveHint;
 use crate::exec::{ResolvedBinding, RuntimeEnv};
 use crate::function::ThisMode;
+use crate::for_in::ForInEnumerator;
+use crate::iterator;
 use crate::property::{PropertyDescriptor, PropertyKey, PropertyKind};
 use crate::tick::DEFAULT_TICK_EVERY;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
@@ -829,6 +831,275 @@ impl<'vm> HirEvaluator<'vm> {
           }
         }
       }
+      hir_js::StmtKind::ForIn {
+        left,
+        right,
+        body: inner,
+        is_for_of,
+        await_,
+      } => {
+        if *await_ {
+          return Err(VmError::Unimplemented("for await..of (hir-js compiled path)"));
+        }
+
+        if *is_for_of {
+          // --- for..of ---
+          let iterable = self.eval_expr(scope, body, *right)?;
+
+          // Root the iterable + iterator record while evaluating the loop body.
+          let mut iter_scope = scope.reborrow();
+          iter_scope.push_root(iterable)?;
+
+          let mut iterator_record = iterator::get_iterator(
+            self.vm,
+            &mut *self.host,
+            &mut *self.hooks,
+            &mut iter_scope,
+            iterable,
+          )?;
+          iter_scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+          // Root the current iteration value across binding + body evaluation.
+          let iter_value_root_idx = iter_scope.heap().root_stack.len();
+          iter_scope.push_root(Value::Undefined)?;
+
+          // Per-iteration lexical environments for `let`/`const` in the head.
+          let outer_lex: GcEnv = self.env.lexical_env();
+
+          loop {
+            // Tick once per iteration so `for (x of xs) {}` is budgeted even when the body is empty.
+            self.vm.tick()?;
+
+            let next_value = match iterator::iterator_step_value(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut iter_scope,
+              &mut iterator_record,
+            ) {
+              Ok(v) => v,
+              // Spec: `ForIn/OfBodyEvaluation` does not perform `IteratorClose` on errors produced
+              // while stepping the iterator (`next`/`done`/`value`).
+              Err(err) => return Err(err),
+            };
+
+            let Some(iter_value) = next_value else {
+              break;
+            };
+
+            // Root the iteration value so env/binding work can allocate/GC safely.
+            iter_scope.heap_mut().root_stack[iter_value_root_idx] = iter_value;
+
+            let mut iter_env: Option<GcEnv> = None;
+            if let hir_js::ForHead::Var(var_decl) = left {
+              if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+                let env = iter_scope.env_create(Some(outer_lex))?;
+                self.env.set_lexical_env(iter_scope.heap_mut(), env);
+                iter_env = Some(env);
+              } else if !matches!(var_decl.kind, hir_js::VarDeclKind::Var) {
+                return Err(VmError::Unimplemented(
+                  "for-of loop variable declaration kind (hir-js compiled path)",
+                ));
+              }
+            }
+
+            // Binding errors must close the iterator.
+            if let Err(err) = self.bind_for_in_of_head(&mut iter_scope, body, left, iter_value) {
+              if iter_env.is_some() {
+                self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+              }
+
+              // Root the thrown value (if any) across iterator closing, since it can allocate / GC.
+              if let Some(v) = err.thrown_value() {
+                iter_scope.push_root(v)?;
+              }
+              match iterator::iterator_close(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                &mut iter_scope,
+                &iterator_record,
+                iterator::CloseCompletionKind::Throw,
+              ) {
+                Ok(()) => return Err(err),
+                Err(close_err) => return Err(close_err),
+              }
+            }
+
+            let flow = match self.eval_stmt(&mut iter_scope, body, *inner) {
+              Ok(f) => f,
+              Err(err) => {
+                if iter_env.is_some() {
+                  self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                }
+                if let Some(v) = err.thrown_value() {
+                  iter_scope.push_root(v)?;
+                }
+                match iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::Throw,
+                ) {
+                  Ok(()) => return Err(err),
+                  Err(close_err) => return Err(close_err),
+                }
+              }
+            };
+
+            if iter_env.is_some() {
+              self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+            }
+
+            match flow {
+              Flow::Normal(_) => {}
+              Flow::Continue(None) => {}
+              Flow::Continue(Some(label)) => {
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::Continue(Some(label)));
+              }
+              Flow::Break(None) => {
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::empty());
+              }
+              Flow::Break(Some(label)) => {
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::Break(Some(label)));
+              }
+              Flow::Return(v) => {
+                // Root the return value across iterator closing.
+                iter_scope.push_root(v)?;
+                if let Err(err) = iterator::iterator_close(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut iter_scope,
+                  &iterator_record,
+                  iterator::CloseCompletionKind::NonThrow,
+                ) {
+                  return Err(err);
+                }
+                return Ok(Flow::Return(v));
+              }
+            }
+          }
+
+          Ok(Flow::empty())
+        } else {
+          // --- for..in ---
+          let rhs_value = self.eval_expr(scope, body, *right)?;
+
+          // Root the RHS while converting to object; `ToObject` can allocate/GC and the RHS might
+          // not be reachable from any heap object.
+          let mut iter_scope = scope.reborrow();
+          iter_scope.push_root(rhs_value)?;
+          let object = iter_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, rhs_value)?;
+
+          // Root the base object while enumerating keys and executing the loop body.
+          iter_scope.push_root(Value::Object(object))?;
+
+          let mut enumerator = ForInEnumerator::new(object);
+
+          // Root the current key value across binding + body evaluation.
+          let key_value_root_idx = iter_scope.heap().root_stack.len();
+          iter_scope.push_root(Value::Undefined)?;
+
+          // Per-iteration lexical environments for `let`/`const` in the head.
+          let outer_lex: GcEnv = self.env.lexical_env();
+
+          loop {
+            let next_key = enumerator.next_key(
+              self.vm,
+              &mut iter_scope,
+              &mut *self.host,
+              &mut *self.hooks,
+            )?;
+            let Some(key_s) = next_key else {
+              break;
+            };
+
+            // Tick once per iteration so `for (k in o) {}` is budgeted even when the body is empty.
+            self.vm.tick()?;
+
+            let iter_value = Value::String(key_s);
+            iter_scope.heap_mut().root_stack[key_value_root_idx] = iter_value;
+
+            let mut iter_env: Option<GcEnv> = None;
+            if let hir_js::ForHead::Var(var_decl) = left {
+              if matches!(var_decl.kind, hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const) {
+                let env = iter_scope.env_create(Some(outer_lex))?;
+                self.env.set_lexical_env(iter_scope.heap_mut(), env);
+                iter_env = Some(env);
+              } else if !matches!(var_decl.kind, hir_js::VarDeclKind::Var) {
+                return Err(VmError::Unimplemented(
+                  "for-in loop variable declaration kind (hir-js compiled path)",
+                ));
+              }
+            }
+
+            if let Err(err) = self.bind_for_in_of_head(&mut iter_scope, body, left, iter_value) {
+              if iter_env.is_some() {
+                self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+              }
+              return Err(err);
+            }
+
+            let flow = match self.eval_stmt(&mut iter_scope, body, *inner) {
+              Ok(f) => f,
+              Err(err) => {
+                if iter_env.is_some() {
+                  self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+                }
+                return Err(err);
+              }
+            };
+
+            if iter_env.is_some() {
+              self.env.set_lexical_env(iter_scope.heap_mut(), outer_lex);
+            }
+
+            match flow {
+              Flow::Normal(_) => {}
+              Flow::Continue(None) => {}
+              Flow::Continue(Some(label)) => return Ok(Flow::Continue(Some(label))),
+              Flow::Break(None) => return Ok(Flow::empty()),
+              Flow::Break(Some(label)) => return Ok(Flow::Break(Some(label))),
+              Flow::Return(v) => return Ok(Flow::Return(v)),
+            }
+          }
+
+          Ok(Flow::empty())
+        }
+      }
       hir_js::StmtKind::Switch { discriminant, cases } => {
         // Evaluate the discriminant once (before creating the switch case lexical environment).
         let discriminant_value = self.eval_expr(scope, body, *discriminant)?;
@@ -1099,9 +1370,66 @@ impl<'vm> HirEvaluator<'vm> {
       }
       hir_js::StmtKind::Empty | hir_js::StmtKind::Debugger => Ok(Flow::empty()),
       other => Err(match other {
-        hir_js::StmtKind::ForIn { .. } => VmError::Unimplemented("for-in/of (hir-js compiled path)"),
         _ => VmError::Unimplemented("statement (hir-js compiled path)"),
       }),
+    }
+  }
+
+  fn bind_for_in_of_head(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    head: &hir_js::ForHead,
+    value: Value,
+  ) -> Result<(), VmError> {
+    match head {
+      hir_js::ForHead::Pat(pat_id) => {
+        let pat = self.get_pat(body, *pat_id)?;
+        let hir_js::PatKind::Ident(name_id) = pat.kind else {
+          return Err(VmError::Unimplemented(
+            "for-in/of assignment pattern (hir-js compiled path)",
+          ));
+        };
+        let name = self.resolve_name(name_id)?;
+        self.env.set(
+          self.vm,
+          &mut *self.host,
+          &mut *self.hooks,
+          scope,
+          name.as_str(),
+          value,
+          self.strict,
+        )
+      }
+      hir_js::ForHead::Var(var_decl) => {
+        if !matches!(
+          var_decl.kind,
+          hir_js::VarDeclKind::Var | hir_js::VarDeclKind::Let | hir_js::VarDeclKind::Const
+        ) {
+          return Err(VmError::Unimplemented(
+            "for-in/of loop variable declaration kind (hir-js compiled path)",
+          ));
+        }
+        if var_decl.declarators.len() != 1 {
+          return Err(VmError::Unimplemented(
+            "for-in/of variable declaration list (hir-js compiled path)",
+          ));
+        }
+        let declarator = &var_decl.declarators[0];
+        if declarator.init.is_some() {
+          return Err(VmError::Unimplemented(
+            "for-in/of loop head initializers (hir-js compiled path)",
+          ));
+        }
+        self.bind_var_decl_pat(
+          scope,
+          body,
+          declarator.pat,
+          var_decl.kind,
+          /* init_missing */ false,
+          value,
+        )
+      }
     }
   }
 
