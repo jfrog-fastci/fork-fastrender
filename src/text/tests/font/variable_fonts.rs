@@ -4,7 +4,7 @@ use crate::paint::display_list::{
   ListMarkerItem, TextItem,
 };
 use crate::paint::display_list_renderer::DisplayListRenderer;
-use crate::style::types::{FontSmoothing, FontVariationSetting};
+use crate::style::types::{FontSmoothing, FontVariationSetting, TextRendering};
 use crate::text::font_db::FontDatabase;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::{ShapedRun, ShapingPipeline};
@@ -104,6 +104,7 @@ fn text_item_from_run(run: &ShapedRun, origin: Point) -> TextItem {
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     font_smoothing: FontSmoothing::Auto,
+    text_rendering: TextRendering::Auto,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,
@@ -135,6 +136,7 @@ fn list_marker_from_run(run: &ShapedRun, origin: Point) -> ListMarkerItem {
     stroke_width: text.stroke_width,
     stroke_color: text.stroke_color,
     font_smoothing: text.font_smoothing,
+    text_rendering: text.text_rendering,
     palette_index: text.palette_index,
     palette_overrides: text.palette_overrides,
     palette_override_hash: text.palette_override_hash,

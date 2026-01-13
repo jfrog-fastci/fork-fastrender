@@ -58,6 +58,7 @@ use crate::paint::pixmap::new_pixmap_with_context;
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Rgba;
 use crate::style::types::FontSmoothing;
+use crate::style::types::TextRendering;
 use crate::text::color_fonts::{ColorFontRenderer, ColorGlyphRaster};
 use crate::text::font_db::LoadedFont;
 use crate::text::font_instance::{glyph_transform, FontInstance, GlyphOutlineMetrics};
@@ -1048,6 +1049,9 @@ pub struct TextRenderState<'a> {
   pub allow_subpixel_aa: bool,
   /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
   pub font_smoothing: FontSmoothing,
+
+  /// Rendering quality hint (`text-rendering`).
+  pub text_rendering: TextRendering,
 }
 
 /// Optional stroke to apply when rasterizing text (e.g. `-webkit-text-stroke`).
@@ -1071,6 +1075,13 @@ fn allow_subpixel_aa_for_state(state: &TextRenderState<'_>) -> bool {
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedTextDrawSettings {
+  hinting: bool,
+  snap_glyph_positions: bool,
+  subpixel_aa: bool,
+}
+
 impl<'a> Default for TextRenderState<'a> {
   fn default() -> Self {
     Self {
@@ -1080,6 +1091,7 @@ impl<'a> Default for TextRenderState<'a> {
       blend_mode: SkiaBlendMode::SourceOver,
       allow_subpixel_aa: true,
       font_smoothing: FontSmoothing::Auto,
+      text_rendering: TextRendering::Auto,
     }
   }
 }
@@ -1241,6 +1253,57 @@ impl TextRasterizer {
       subpixel_aa_gamma,
       subpixel_scratch: SubpixelAAScratch::default(),
       subpixel_aa_diagnostics,
+    }
+  }
+
+  fn resolve_draw_settings(
+    &self,
+    state: TextRenderState<'_>,
+    rotation: Option<Transform>,
+    synthetic_oblique: f32,
+  ) -> ResolvedTextDrawSettings {
+    let translation_only_state_transform = is_translation_only_transform(state.transform);
+
+    let hinting = match state.text_rendering {
+      TextRendering::OptimizeSpeed | TextRendering::GeometricPrecision => false,
+      TextRendering::Auto | TextRendering::OptimizeLegibility => {
+        self.hinting_enabled && translation_only_state_transform && rotation.is_none()
+      }
+    };
+
+    let allow_subpixel_aa = state.allow_subpixel_aa
+      && matches!(
+        state.font_smoothing,
+        FontSmoothing::Auto | FontSmoothing::Subpixel
+      );
+    let allow_subpixel_aa = match state.text_rendering {
+      TextRendering::OptimizeSpeed => false,
+      TextRendering::Auto | TextRendering::OptimizeLegibility | TextRendering::GeometricPrecision => {
+        allow_subpixel_aa
+      }
+    };
+
+    let subpixel_aa = allow_subpixel_aa
+      && self.subpixel_aa_enabled
+      && state.blend_mode == SkiaBlendMode::SourceOver
+      && rotation.is_none()
+      && translation_only_state_transform;
+
+    let translation_only = rotation.is_none()
+      && synthetic_oblique.abs() <= 1e-6
+      && translation_only_state_transform;
+
+    let snap_requested = match state.text_rendering {
+      TextRendering::GeometricPrecision => false,
+      TextRendering::OptimizeSpeed => true,
+      TextRendering::Auto | TextRendering::OptimizeLegibility => self.snap_glyph_positions,
+    };
+    let snap_glyph_positions = snap_requested && translation_only;
+
+    ResolvedTextDrawSettings {
+      hinting,
+      snap_glyph_positions,
+      subpixel_aa,
     }
   }
 
@@ -1820,7 +1883,8 @@ impl TextRasterizer {
     let inv_scale = 1.0 / scale.abs();
 
     let antialias_enabled = antialias_enabled_for_font_smoothing(state.font_smoothing);
-    let allow_subpixel_aa = allow_subpixel_aa_for_state(&state);
+    let translation_only_state_transform = is_translation_only_transform(state.transform);
+    let draw_settings = self.resolve_draw_settings(state, rotation, synthetic_oblique);
 
     // Create paint with fill color
     let mut paint = Paint::default();
@@ -1854,15 +1918,8 @@ impl TextRasterizer {
     let transform_signature = cache_transform_signature(state.transform, rotation);
     let glyph_opacity = color.a.clamp(0.0, 1.0);
     let color_for_glyph = Rgba { a: 1.0, ..color };
-    let translation_only_state_transform = is_translation_only_transform(state.transform);
-    // Font hinting is only safe when the post-positioning transform is translation-only.
-    // Rotations (including vertical writing mode rotations) and additional scale/skew would change
-    // the effective ppem/grid-fitting target; browsers typically disable hinting in those cases.
-    let hinting = self.hinting_enabled && translation_only_state_transform && rotation.is_none();
-    let snap_glyph_positions = self.snap_glyph_positions
-      && rotation.is_none()
-      && synthetic_oblique.abs() <= 1e-6
-      && translation_only_state_transform;
+    let hinting = draw_settings.hinting;
+    let snap_glyph_positions = draw_settings.snap_glyph_positions;
 
     // Render each glyph
     for glyph in glyphs {
@@ -1961,24 +2018,24 @@ impl TextRasterizer {
             .cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-          if diag_enabled {
-            let before = cache.stats();
-            let path = cache
-              .get_or_build(font, &instance, glyph.glyph_id, font_size, hinting)
-              .and_then(|glyph| glyph.path.clone());
-            let after = cache.stats();
-            let delta = after.delta_from(&before);
-            outline_hits = outline_hits.saturating_add(delta.hits);
+           if diag_enabled {
+             let before = cache.stats();
+             let path = cache
+               .get_or_build(font, &instance, glyph.glyph_id, font_size, hinting)
+               .and_then(|glyph| glyph.path.clone());
+             let after = cache.stats();
+             let delta = after.delta_from(&before);
+             outline_hits = outline_hits.saturating_add(delta.hits);
             outline_misses = outline_misses.saturating_add(delta.misses);
             outline_evictions = outline_evictions.saturating_add(delta.evictions);
-            outline_bytes = outline_bytes.max(after.bytes);
-            path
-          } else {
-            cache
-              .get_or_build(font, &instance, glyph.glyph_id, font_size, hinting)
-              .and_then(|glyph| glyph.path.clone())
-          }
-        };
+             outline_bytes = outline_bytes.max(after.bytes);
+             path
+           } else {
+             cache
+               .get_or_build(font, &instance, glyph.glyph_id, font_size, hinting)
+               .and_then(|glyph| glyph.path.clone())
+           }
+         };
         if let Some(path) = cached_path {
           let mut transform = glyph_transform(scale, synthetic_oblique, glyph_x, glyph_y);
           if let Some(rotation) = rotation {
@@ -2003,13 +2060,7 @@ impl TextRasterizer {
             //
             // This is intentionally guarded by a runtime toggle so golden tests remain stable.
             let mut used_subpixel = false;
-            if antialias_enabled
-              && allow_subpixel_aa
-              && self.subpixel_aa_enabled
-              && state.blend_mode == SkiaBlendMode::SourceOver
-              && rotation.is_none()
-              && translation_only_state_transform
-            {
+            if antialias_enabled && draw_settings.subpixel_aa {
               if let Some(stats) = self.subpixel_aa_diagnostics.as_mut() {
                 stats.attempts = stats.attempts.saturating_add(1);
               }
@@ -2868,6 +2919,68 @@ mod tests {
         "expected snapped coord to land on device pixel: coord={coord} tx={tx} -> snapped={snapped} device={device}",
       );
     }
+  }
+
+  #[test]
+  fn text_rendering_optimize_speed_disables_subpixel_aa() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_TEXT_SUBPIXEL_AA".to_string(), "1".to_string()),
+    ])));
+    runtime::with_runtime_toggles(toggles, || {
+      let rasterizer = TextRasterizer::new();
+      assert!(
+        rasterizer.subpixel_aa_enabled,
+        "test precondition: subpixel AA toggle should be enabled"
+      );
+
+      let mut state = TextRenderState::default();
+      state.font_smoothing = FontSmoothing::Auto;
+      state.allow_subpixel_aa = true;
+      state.blend_mode = SkiaBlendMode::SourceOver;
+      state.text_rendering = TextRendering::Auto;
+      let default = rasterizer.resolve_draw_settings(state, None, 0.0);
+      assert!(
+        default.subpixel_aa,
+        "test precondition: expected default text rendering to allow subpixel AA when enabled"
+      );
+
+      state.text_rendering = TextRendering::OptimizeSpeed;
+      let speed = rasterizer.resolve_draw_settings(state, None, 0.0);
+      assert!(
+        !speed.subpixel_aa,
+        "expected OptimizeSpeed to disable subpixel AA regardless of runtime toggle"
+      );
+    });
+  }
+
+  #[test]
+  fn text_rendering_geometric_precision_disables_snapping() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      (ENV_TEXT_SNAP_GLYPH_POSITIONS.to_string(), "1".to_string()),
+    ])));
+    runtime::with_runtime_toggles(toggles, || {
+      let rasterizer = TextRasterizer::new();
+      assert!(
+        rasterizer.snap_glyph_positions,
+        "test precondition: expected snapping to be enabled"
+      );
+
+      let mut state = TextRenderState::default();
+      state.transform = Transform::from_translate(0.0, 0.0);
+      state.text_rendering = TextRendering::Auto;
+      let default = rasterizer.resolve_draw_settings(state, None, 0.0);
+      assert!(
+        default.snap_glyph_positions,
+        "test precondition: expected default text rendering to inherit glyph snapping"
+      );
+
+      state.text_rendering = TextRendering::GeometricPrecision;
+      let geo = rasterizer.resolve_draw_settings(state, None, 0.0);
+      assert!(
+        !geo.snap_glyph_positions,
+        "expected GeometricPrecision to disable glyph position snapping regardless of runtime toggle"
+      );
+    });
   }
 
   #[test]

@@ -75,6 +75,7 @@ mod fit_canvas_to_content;
 mod font_size_zero_text;
 mod font_smoothing_display_list_test;
 mod font_smoothing_subpixel_aa_test;
+mod text_rendering_display_list_test;
 mod forced_colors_display_list_test;
 mod form_control_appearance_none_affordances;
 mod form_control_listbox_geometry_regression;

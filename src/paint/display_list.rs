@@ -58,6 +58,7 @@ use crate::style::types::BorderImageWidth;
 use crate::style::types::BorderImageWidthValue;
 use crate::style::types::BorderStyle as CssBorderStyle;
 use crate::style::types::FontSmoothing;
+use crate::style::types::TextRendering;
 use crate::style::types::MaskBorderMode;
 use crate::style::types::MaskClip;
 use crate::style::types::MaskComposite;
@@ -889,6 +890,9 @@ pub struct TextItem {
   /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
   pub font_smoothing: FontSmoothing,
 
+  /// Rendering quality hint (`text-rendering`).
+  pub text_rendering: TextRendering,
+
   /// Selected CPAL palette index for color fonts.
   pub palette_index: u16,
 
@@ -952,6 +956,7 @@ impl Default for TextItem {
       stroke_width: 0.0,
       stroke_color: Rgba::default(),
       font_smoothing: FontSmoothing::Auto,
+      text_rendering: TextRendering::Auto,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
@@ -1189,6 +1194,9 @@ pub struct ListMarkerItem {
   /// Font smoothing mode (`-webkit-font-smoothing`, etc.).
   pub font_smoothing: FontSmoothing,
 
+  /// Rendering quality hint (`text-rendering`).
+  pub text_rendering: TextRendering,
+
   /// Selected CPAL palette index for color fonts.
   pub palette_index: u16,
 
@@ -1248,6 +1256,7 @@ impl Default for ListMarkerItem {
       stroke_width: 0.0,
       stroke_color: Rgba::default(),
       font_smoothing: FontSmoothing::Auto,
+      text_rendering: TextRendering::Auto,
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,

@@ -64,6 +64,7 @@ use crate::paint::text_shadow::PathBounds;
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Rgba;
 use crate::style::types::FontSmoothing;
+use crate::style::types::TextRendering;
 use crate::text::color_fonts::ColorGlyphRaster;
 use crate::text::font_db::LoadedFont;
 use crate::text::pipeline::{GlyphPosition, RunRotation, ShapedRun};
@@ -2298,6 +2299,7 @@ impl Canvas {
         blend_mode: SkiaBlendMode::SourceOver,
         allow_subpixel_aa: false,
         font_smoothing: FontSmoothing::Auto,
+        text_rendering: TextRendering::Auto,
       };
 
       for run in runs {
@@ -2322,6 +2324,10 @@ impl Canvas {
           })
           .collect();
         let rotation = rotation_transform(run.rotation, run.origin.x, run.origin.y);
+        let run_state = TextRenderState {
+          text_rendering: run.text_rendering,
+          ..state
+        };
         self.text_rasterizer.render_glyph_run(
           &positions,
           font,
@@ -2336,7 +2342,7 @@ impl Canvas {
           run.origin.x,
           run.origin.y,
           Rgba::WHITE,
-          state,
+          run_state,
           &mut mask_pixmap,
         )?;
       }
@@ -2446,6 +2452,7 @@ impl Canvas {
       blend_mode: self.current_state.blend_mode,
       allow_subpixel_aa: true,
       font_smoothing,
+      text_rendering: TextRendering::Auto,
     }
   }
 
@@ -4046,6 +4053,7 @@ impl Canvas {
       palette_overrides,
       palette_override_hash,
       variations,
+      TextRendering::Auto,
     )
   }
 
@@ -4066,6 +4074,7 @@ impl Canvas {
     palette_overrides: &[(u16, Rgba)],
     palette_override_hash: u64,
     variations: &[FontVariation],
+    text_rendering: TextRendering,
   ) -> Result<()> {
     self.mirror_to_source_alpha_result(|canvas| {
       canvas.draw_text_run_impl(
@@ -4085,6 +4094,7 @@ impl Canvas {
         palette_override_hash,
         variations,
         FontSmoothing::Auto,
+        text_rendering,
       )
     })
   }
@@ -4108,6 +4118,7 @@ impl Canvas {
     palette_overrides: &[(u16, Rgba)],
     palette_override_hash: u64,
     variations: &[FontVariation],
+    text_rendering: TextRendering,
   ) -> Result<()> {
     self.draw_text_run_with_stroke_and_font_smoothing(
       position,
@@ -4127,6 +4138,7 @@ impl Canvas {
       palette_override_hash,
       variations,
       FontSmoothing::Auto,
+      text_rendering,
     )
   }
 
@@ -4150,6 +4162,7 @@ impl Canvas {
     palette_override_hash: u64,
     variations: &[FontVariation],
     font_smoothing: FontSmoothing,
+    text_rendering: TextRendering,
   ) -> Result<()> {
     let stroke = (stroke_width > 0.0 && stroke_color.a > 0.0).then_some(TextStroke {
       width: stroke_width,
@@ -4173,6 +4186,7 @@ impl Canvas {
         palette_override_hash,
         variations,
         font_smoothing,
+        text_rendering,
       )
     })
   }
@@ -4196,6 +4210,7 @@ impl Canvas {
     palette_override_hash: u64,
     variations: &[FontVariation],
     font_smoothing: FontSmoothing,
+    text_rendering: TextRendering,
   ) -> Result<()> {
     let has_stroke = stroke.is_some();
     if glyphs.is_empty() || (color.a == 0.0 && !has_stroke) || self.current_state.opacity == 0.0 {
@@ -4210,6 +4225,7 @@ impl Canvas {
       font_smoothing,
     );
     state.allow_subpixel_aa = allow_subpixel_aa;
+    state.text_rendering = text_rendering;
 
     let positions: Vec<GlyphPosition> = glyphs
       .iter()
@@ -6192,6 +6208,7 @@ mod tests {
         palette_overrides,
         0,
         variations,
+        TextRendering::Auto,
       )
       .expect("draw transparent text");
     let after = canvas.text_cache_stats();

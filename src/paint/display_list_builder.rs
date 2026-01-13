@@ -162,6 +162,7 @@ use crate::style::types::TextDecorationStyle;
 use crate::style::types::TextDecorationThickness;
 use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextEmphasisStyle;
+use crate::style::types::TextRendering;
 use crate::style::types::TextUnderlineOffset;
 use crate::style::types::TextUnderlinePosition;
 use crate::style::types::TransformBox;
@@ -7144,6 +7145,7 @@ impl DisplayListBuilder {
               stroke_width,
               stroke_color,
               font_smoothing: style_opt.map(|s| s.font_smoothing).unwrap_or_default(),
+              text_rendering: style_opt.map(|s| s.text_rendering).unwrap_or_default(),
               shadows: shadows.clone(),
               font_size,
               advance_width,
@@ -7160,6 +7162,7 @@ impl DisplayListBuilder {
               stroke_width,
               stroke_color,
               font_smoothing: style_opt.map(|s| s.font_smoothing).unwrap_or_default(),
+              text_rendering: style_opt.map(|s| s.text_rendering).unwrap_or_default(),
               shadows: shadows.clone(),
               font_size,
               advance_width,
@@ -8879,6 +8882,7 @@ impl DisplayListBuilder {
                     baseline_block,
                     baseline_inline,
                     style.allow_subpixel_aa,
+                    style.text_rendering,
                   );
                 } else {
                   self.collect_shaped_runs_for_text_clip(
@@ -8887,6 +8891,7 @@ impl DisplayListBuilder {
                     baseline_inline,
                     baseline_block,
                     style.allow_subpixel_aa,
+                    style.text_rendering,
                   );
                 }
               }
@@ -10852,6 +10857,7 @@ impl DisplayListBuilder {
         stroke_width,
         stroke_color,
         font_smoothing: style.map(|s| s.font_smoothing).unwrap_or_default(),
+        text_rendering: style.map(|s| s.text_rendering).unwrap_or_default(),
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -10882,6 +10888,7 @@ impl DisplayListBuilder {
     baseline_y: f32,
     start_x: f32,
     allow_subpixel_aa: bool,
+    text_rendering: TextRendering,
   ) {
     let mut pen_x = start_x;
     let mut counter = 0usize;
@@ -10903,6 +10910,7 @@ impl DisplayListBuilder {
         glyphs,
         color: Rgba::WHITE,
         allow_subpixel_aa,
+        text_rendering,
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -10973,6 +10981,7 @@ impl DisplayListBuilder {
         stroke_width,
         stroke_color,
         font_smoothing: style.map(|s| s.font_smoothing).unwrap_or_default(),
+        text_rendering: style.map(|s| s.text_rendering).unwrap_or_default(),
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -11003,6 +11012,7 @@ impl DisplayListBuilder {
     block_baseline: f32,
     inline_start: f32,
     allow_subpixel_aa: bool,
+    text_rendering: TextRendering,
   ) {
     let mut pen_inline = inline_start;
     let mut counter = 0usize;
@@ -11025,6 +11035,7 @@ impl DisplayListBuilder {
         glyphs,
         color: Rgba::WHITE,
         allow_subpixel_aa,
+        text_rendering,
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -11095,6 +11106,7 @@ impl DisplayListBuilder {
         stroke_width,
         stroke_color,
         font_smoothing: style.map(|s| s.font_smoothing).unwrap_or_default(),
+        text_rendering: style.map(|s| s.text_rendering).unwrap_or_default(),
         shadows: shadows.to_vec(),
         advance_width: run.advance,
         font_id,
@@ -11166,6 +11178,7 @@ impl DisplayListBuilder {
         stroke_width,
         stroke_color,
         font_smoothing: style.map(|s| s.font_smoothing).unwrap_or_default(),
+        text_rendering: style.map(|s| s.text_rendering).unwrap_or_default(),
         shadows: shadows.to_vec(),
         advance_width: run.advance,
         font_id,
@@ -15917,6 +15930,7 @@ impl DisplayListBuilder {
       stroke_width,
       stroke_color,
       font_smoothing: style.map(|s| s.font_smoothing).unwrap_or_default(),
+      text_rendering: style.map(|s| s.text_rendering).unwrap_or_default(),
       shadows,
       font_size,
       advance_width,

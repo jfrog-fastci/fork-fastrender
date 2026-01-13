@@ -1888,6 +1888,7 @@ fn color_glyph_shadow_matches_golden() {
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     font_smoothing: crate::style::types::FontSmoothing::Auto,
+    text_rendering: crate::style::types::TextRendering::Auto,
     palette_overrides: Arc::new(Vec::new()),
     palette_override_hash: 0,
     rotation: crate::text::pipeline::RunRotation::None,

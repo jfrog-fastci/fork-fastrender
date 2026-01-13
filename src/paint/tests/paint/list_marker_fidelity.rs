@@ -4,6 +4,7 @@ use crate::paint::display_list::{
 };
 use crate::paint::display_list_renderer::DisplayListRenderer;
 use crate::style::types::FontSmoothing;
+use crate::style::types::TextRendering;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::RunRotation;
@@ -63,6 +64,7 @@ fn text_item_from_run(run: &ShapedRun, origin: Point) -> TextItem {
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     font_smoothing: FontSmoothing::Auto,
+    text_rendering: TextRendering::Auto,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,
@@ -91,6 +93,7 @@ fn list_marker_from_run(run: &ShapedRun, origin: Point) -> ListMarkerItem {
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     font_smoothing: FontSmoothing::Auto,
+    text_rendering: TextRendering::Auto,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,

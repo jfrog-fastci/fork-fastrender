@@ -5,7 +5,7 @@ use crate::paint::display_list::{
 };
 use crate::paint::display_list_renderer::DisplayListRenderer;
 use crate::style::color::Rgba;
-use crate::style::types::{BackfaceVisibility, FontSmoothing, TransformStyle};
+use crate::style::types::{BackfaceVisibility, FontSmoothing, TextRendering, TransformStyle};
 use crate::text::font_db::FontConfig;
 use crate::text::font_loader::FontContext;
 use crate::Rect;
@@ -103,6 +103,7 @@ fn preserve_3d_text_clip_is_projected_in_clip_override() {
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     font_smoothing: FontSmoothing::Auto,
+    text_rendering: TextRendering::Auto,
     palette_index: shaped.palette_index,
     palette_overrides: shaped.palette_overrides.clone(),
     palette_override_hash: shaped.palette_override_hash,

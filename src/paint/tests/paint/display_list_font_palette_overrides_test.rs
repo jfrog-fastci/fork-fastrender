@@ -216,6 +216,7 @@ fn render_legacy_text_shadows(
       clip_mask: None,
       allow_subpixel_aa: true,
       font_smoothing: crate::style::types::FontSmoothing::Auto,
+      text_rendering: crate::style::types::TextRendering::Auto,
     };
 
     rasterizer

@@ -8,6 +8,7 @@ use crate::paint::display_list::{
 use crate::paint::display_list_renderer::DisplayListRenderer;
 use crate::style::color::Rgba;
 use crate::style::types::FontSmoothing;
+use crate::style::types::TextRendering;
 use crate::text::font_db::FontDatabase;
 use crate::text::pipeline::{Direction, ShapedRun, ShapingPipeline};
 use crate::{ComputedStyle, FontContext, Point};
@@ -72,6 +73,7 @@ fn text_item_from_run(run: &ShapedRun, origin: Point, text_color: Rgba) -> TextI
     stroke_width: 0.0,
     stroke_color: Rgba::TRANSPARENT,
     font_smoothing: FontSmoothing::Auto,
+    text_rendering: TextRendering::Auto,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,

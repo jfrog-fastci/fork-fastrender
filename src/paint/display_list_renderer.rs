@@ -5661,6 +5661,7 @@ impl DisplayListRenderer {
       stroke_width: item.stroke_width,
       stroke_color: item.stroke_color,
       font_smoothing: item.font_smoothing,
+      text_rendering: item.text_rendering,
       palette_index: item.palette_index,
       palette_overrides: item.palette_overrides.clone(),
       palette_override_hash: item.palette_override_hash,
@@ -5688,6 +5689,7 @@ impl DisplayListRenderer {
       stroke_width: scaled.stroke_width,
       stroke_color: scaled.stroke_color,
       font_smoothing: scaled.font_smoothing,
+      text_rendering: scaled.text_rendering,
       shadows: scaled.shadows,
       font_size: scaled.font_size,
       advance_width: scaled.advance_width,
@@ -14832,6 +14834,7 @@ impl DisplayListRenderer {
       blend_mode: SkiaBlendMode::SourceOver,
       allow_subpixel_aa: false,
       font_smoothing: crate::style::types::FontSmoothing::Auto,
+      text_rendering: crate::style::types::TextRendering::Auto,
     };
 
     for run in &scaled_runs {
@@ -14865,6 +14868,7 @@ impl DisplayListRenderer {
       let rotation = rotation_transform(run.rotation, run.origin.x, run.origin.y);
       let run_state = TextRenderState {
         font_smoothing: run.font_smoothing,
+        text_rendering: run.text_rendering,
         ..state
       };
       rasterizer
@@ -16737,9 +16741,10 @@ impl DisplayListRenderer {
       item.palette_override_hash,
       &item.variations,
       item.font_smoothing,
+      item.text_rendering,
     )?;
     if let Some(emphasis) = &item.emphasis {
-      self.render_emphasis(emphasis, item.allow_subpixel_aa)?;
+      self.render_emphasis(emphasis, item.allow_subpixel_aa, item.text_rendering)?;
     }
     Ok(())
   }
@@ -16759,6 +16764,7 @@ impl DisplayListRenderer {
       stroke_width: item.stroke_width,
       stroke_color: item.stroke_color,
       font_smoothing: item.font_smoothing,
+      text_rendering: item.text_rendering,
       palette_index: item.palette_index,
       palette_overrides: item.palette_overrides.clone(),
       palette_override_hash: item.palette_override_hash,
@@ -17494,6 +17500,7 @@ impl DisplayListRenderer {
         clip_mask: None,
         allow_subpixel_aa: item.allow_subpixel_aa,
         font_smoothing: item.font_smoothing,
+        text_rendering: item.text_rendering,
       };
 
       // Ignore text rasterizer failures so shadows don't prevent painting the rest of the scene.
@@ -17573,7 +17580,12 @@ impl DisplayListRenderer {
     Ok(())
   }
 
-  fn render_emphasis(&mut self, emphasis: &TextEmphasis, allow_subpixel_aa: bool) -> Result<()> {
+  fn render_emphasis(
+    &mut self,
+    emphasis: &TextEmphasis,
+    allow_subpixel_aa: bool,
+    text_rendering: crate::style::types::TextRendering,
+  ) -> Result<()> {
     if emphasis.marks.is_empty() {
       return Ok(());
     }
@@ -17624,6 +17636,7 @@ impl DisplayListRenderer {
               run.palette_overrides.as_slice(),
               run.palette_override_hash,
               &run.variations,
+              text_rendering,
             )?;
             pen += run.advance_width;
           }
