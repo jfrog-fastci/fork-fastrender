@@ -14,7 +14,7 @@
     "layout": 0.0,
     "paint": 0.0
   },
-  "notes": "",
+  "notes": "Placeholder from `pageset_progress sync` (auto_notes=missing cache): status=error is due to missing pageset cache, not a renderer crash. Offline fixture `tests/pages/fixtures/en.wikipedia.org/` renders, but is not visually good yet; `bash scripts/cargo_agent.sh xtask page-loop --fixture en.wikipedia.org --chrome` (default 1040x1240) shows ~15.8% pixel diff vs Chrome with many mismatched regions across the content.",
   "auto_notes": "missing cache",
   "accuracy": {
     "baseline": "chrome",
