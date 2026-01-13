@@ -1019,11 +1019,11 @@ impl RegExpProgram {
             state.pc += 1;
           }
           Inst::Any => {
-            let Some((cp, len)) = if dir.is_forward() {
+            let Some((cp, len)) = (if dir.is_forward() {
               decode_code_point(input, state.pos, flags.has_either_unicode_flag())
             } else {
               decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
-            } else {
+            }) else {
               break;
             };
             if !flags.dot_all && cp <= 0xFFFF && is_line_terminator_unit(cp as u16) {
@@ -1037,11 +1037,11 @@ impl RegExpProgram {
             state.pc += 1;
           }
           Inst::Class(cls) => {
-            let Some((cp, len)) = if dir.is_forward() {
+            let Some((cp, len)) = (if dir.is_forward() {
               decode_code_point(input, state.pos, flags.has_either_unicode_flag())
             } else {
               decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
-            } else {
+            }) else {
               break;
             };
             if !cls.matches(cp, flags) {
