@@ -1382,6 +1382,41 @@ fn p3_window_onerror_fires_for_uncaught_errors() -> Result<()> {
 }
 
 #[test]
+fn p3_window_onerror_return_true_suppresses_default_exception_reporting() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_onerror_suppress.html", js_options)?;
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        window.onerror = () => {
+          console.log("onerror");
+          return true;
+        };
+        setTimeout(() => {
+          throw new Error("boom");
+        }, 0);
+      </script>
+    </body>"#,
+  );
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  let logs = console_logs(&h.tab);
+  assert!(
+    logs.contains(&"onerror".to_string()),
+    "expected onerror handler to run, got: {logs:?}"
+  );
+
+  let exc = js_exception_messages(&h.tab);
+  assert!(
+    exc.is_empty(),
+    "expected suppressed exception to not be recorded as an unhandled JS exception, got: {exc:?}"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn p3_load_event_waits_for_images() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_images.html", js_options)?;
