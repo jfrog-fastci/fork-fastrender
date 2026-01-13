@@ -194,3 +194,149 @@ fn yield_star_return_does_not_suppress_close_error_from_return_getter() -> Resul
   rt.teardown_microtasks();
   result
 }
+
+#[test]
+fn yield_star_throw_suppresses_close_error_from_return_non_callable() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        function errToString(e) {
+          if (typeof e === "string") return e;
+          if (e && e.name) return e.name;
+          return "" + e;
+        }
+
+        var next1Value = null;
+        var next1Done = null;
+        var throwValue = null;
+        var throwDone = null;
+        var returnGetterCalled = false;
+        var err = "";
+
+        const delegate = {};
+        delegate[Symbol.asyncIterator] = function () {
+          return {
+            next() { return Promise.resolve({ value: 1, done: false }); },
+            // Close error: `GetMethod(iterator, "return")` finds a non-callable value.
+            get return() { returnGetterCalled = true; return 1; },
+          };
+        };
+
+        async function* g() {
+          try { yield* delegate; }
+          catch (e) { yield "caught:" + e; }
+        }
+
+        const it = g();
+        it.next().then(function (r) {
+          next1Value = r.value;
+          next1Done = r.done;
+          return it.throw("boom");
+        }).then(function (r) {
+          throwValue = r.value;
+          throwDone = r.done;
+        }, function (e) {
+          err = errToString(e);
+        });
+
+        err
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let next1_value = rt.exec_script("next1Value")?;
+    assert_eq!(next1_value, Value::Number(1.0));
+    let next1_done = rt.exec_script("next1Done")?;
+    assert_eq!(next1_done, Value::Bool(false));
+
+    let throw_value = rt.exec_script("throwValue")?;
+    assert_eq!(value_to_string(&rt, throw_value), "caught:boom");
+    let throw_done = rt.exec_script("throwDone")?;
+    assert_eq!(throw_done, Value::Bool(false));
+
+    let return_getter_called = rt.exec_script("returnGetterCalled")?;
+    assert_eq!(return_getter_called, Value::Bool(true));
+
+    let err = rt.exec_script("err")?;
+    assert_eq!(value_to_string(&rt, err), "");
+
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
+
+#[test]
+fn yield_star_return_does_not_suppress_close_error_from_return_non_callable() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        function errToString(e) {
+          if (typeof e === "string") return e;
+          if (e && e.name) return e.name;
+          return "" + e;
+        }
+
+        var next1Value = null;
+        var next1Done = null;
+        var returnGetterCalled = false;
+        var out = "";
+
+        const delegate = {};
+        delegate[Symbol.asyncIterator] = function () {
+          return {
+            next() { return Promise.resolve({ value: 1, done: false }); },
+            get return() { returnGetterCalled = true; return 1; },
+          };
+        };
+
+        async function* g() { yield* delegate; }
+
+        const it = g();
+        it.next().then(function (r) {
+          next1Value = r.value;
+          next1Done = r.done;
+          return it.return("ok");
+        }).then(
+          function () { out = "resolved"; },
+          function (e) { out = errToString(e); }
+        );
+
+        out
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let next1_value = rt.exec_script("next1Value")?;
+    assert_eq!(next1_value, Value::Number(1.0));
+    let next1_done = rt.exec_script("next1Done")?;
+    assert_eq!(next1_done, Value::Bool(false));
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "TypeError");
+
+    let return_getter_called = rt.exec_script("returnGetterCalled")?;
+    assert_eq!(return_getter_called, Value::Bool(true));
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
