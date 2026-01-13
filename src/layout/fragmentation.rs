@@ -798,6 +798,108 @@ pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
   );
 }
 
+pub(crate) fn apply_abspos_parallel_flow_forced_break_shifts(
+  root: &mut FragmentNode,
+  axes: FragmentAxes,
+  fragmentainer_size: f32,
+  context: FragmentationContext,
+) {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return;
+  }
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+  let root_writing_mode = root
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+
+  fn walk(
+    node: &mut FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    fragmentainer_size: f32,
+    context: FragmentationContext,
+    inherited_writing_mode: WritingMode,
+    default_style: &ComputedStyle,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_writing_mode = node
+      .style
+      .as_ref()
+      .map(|s| s.writing_mode)
+      .unwrap_or(inherited_writing_mode);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    if style.position.is_absolutely_positioned() {
+      // CSS Break 3 §3: absolutely-positioned elements establish a parallel fragmentation flow.
+      // Forced breaks inside them must not force breaks in the main flow; instead, continuation
+      // content is shifted to the next fragmentainer boundary.
+      let mut collection = BreakCollection::default();
+      collect_break_opportunities(
+        node,
+        abs_start,
+        &mut collection,
+        0,
+        0,
+        context,
+        axis,
+        node_writing_mode,
+        false,
+        false,
+      );
+
+      let abs_end = abs_start + node_block_size;
+      let mut positions: Vec<f32> = collection
+        .opportunities
+        .into_iter()
+        .filter(|o| matches!(o.strength, BreakStrength::Forced))
+        .map(|o| o.pos)
+        .collect();
+      positions.retain(|p| *p > abs_start + BREAK_EPSILON && *p < abs_end - BREAK_EPSILON);
+      if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+        apply_parallel_flow_shifts_to_descendants(node, abs_start, 0.0, axis, &shifts);
+      }
+
+      // Like floats, avoid applying shifts multiple times within this subtree.
+      return;
+    }
+
+    for child in node.children_mut().iter_mut() {
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      let child_writing_mode = child
+        .style
+        .as_ref()
+        .map(|s| s.writing_mode)
+        .unwrap_or(node_writing_mode);
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        fragmentainer_size,
+        context,
+        child_writing_mode,
+        default_style,
+      );
+    }
+  }
+
+  walk(
+    root,
+    0.0,
+    &axis,
+    fragmentainer_size,
+    context,
+    root_writing_mode,
+    default_style,
+  );
+}
+
 fn grid_container_parallel_flow_required_block_size(
   node: &FragmentNode,
   abs_start: f32,
@@ -2101,6 +2203,12 @@ fn fragment_tree_impl(
     context,
   );
   apply_flex_parallel_flow_forced_break_shifts(
+    &mut root,
+    axes,
+    options.fragmentainer_size,
+    context,
+  );
+  apply_abspos_parallel_flow_forced_break_shifts(
     &mut root,
     axes,
     options.fragmentainer_size,
@@ -3562,8 +3670,14 @@ fn collect_break_opportunities(
     .map(|s| s.writing_mode)
     .unwrap_or(inherited_writing_mode);
   let table_row_like = is_table_row_like(style.display);
+  // CSS Break 3 excludes absolutely-positioned elements from `break-inside` applicability.
+  let break_inside = if style.position.is_absolutely_positioned() {
+    BreakInside::Auto
+  } else {
+    style.break_inside
+  };
   let inside_avoid = avoid_depth
-    + usize::from(avoids_break_inside(style.break_inside, context))
+    + usize::from(avoids_break_inside(break_inside, context))
     + usize::from(table_row_like);
   let inside_inline = inline_depth
     + usize::from(matches!(
@@ -3571,7 +3685,12 @@ fn collect_break_opportunities(
       FragmentContent::Line { .. } | FragmentContent::Inline { .. }
     ));
 
-  if suppress_parallel_flow_descendants && style.float.is_floating() {
+  // Parallel fragmentation flows (CSS Break 3 §3) must not contribute their internal break
+  // opportunities to the parent flow. Floats and absolutely-positioned elements establish parallel
+  // flows, so suppress them when requested.
+  if suppress_parallel_flow_descendants
+    && (style.float.is_floating() || style.position.is_absolutely_positioned())
+  {
     return;
   }
 
@@ -3633,8 +3752,13 @@ fn collect_break_opportunities(
         let placement = &grid_items.items[idx];
         let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
+        let child_break_before = if child_style.position.is_absolutely_positioned() {
+          BreakBetween::Auto
+        } else {
+          child_style.break_before
+        };
         let mut before_strength =
-          combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+          combine_breaks(BreakBetween::Auto, child_break_before, context);
         if suppress_forced_breaks && matches!(before_strength, BreakStrength::Forced) {
           before_strength = BreakStrength::Auto;
         }
@@ -3645,8 +3769,13 @@ fn collect_break_opportunities(
           }
         }
 
+        let child_break_after = if child_style.position.is_absolutely_positioned() {
+          BreakBetween::Auto
+        } else {
+          child_style.break_after
+        };
         let mut after_strength =
-          combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+          combine_breaks(child_break_after, BreakBetween::Auto, context);
         if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
           after_strength = BreakStrength::Auto;
         }
@@ -3726,14 +3855,24 @@ fn collect_break_opportunities(
           .map(|s| s.as_ref())
           .unwrap_or(default_style);
 
-        let before_strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+        let child_break_before = if child_style.position.is_absolutely_positioned() {
+          BreakBetween::Auto
+        } else {
+          child_style.break_before
+        };
+        let before_strength = combine_breaks(BreakBetween::Auto, child_break_before, context);
         if !matches!(before_strength, BreakStrength::Auto) {
           if let Some(slot) = boundary_strengths.get_mut(line_idx) {
             *slot = max_break_strength(*slot, before_strength);
           }
         }
 
-        let after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+        let child_break_after = if child_style.position.is_absolutely_positioned() {
+          BreakBetween::Auto
+        } else {
+          child_style.break_after
+        };
+        let after_strength = combine_breaks(child_break_after, BreakBetween::Auto, context);
         if !matches!(after_strength, BreakStrength::Auto) {
           if let Some(slot) = boundary_strengths.get_mut(line_idx + 1) {
             *slot = max_break_strength(*slot, after_strength);
@@ -3848,6 +3987,30 @@ fn collect_break_opportunities(
     None
   };
 
+  // Break propagation must be based on the first/last *in-flow* child, excluding absolutely
+  // positioned descendants (CSS Break 3 §4.1).
+  let mut first_in_flow_child: Option<usize> = None;
+  let mut last_in_flow_child: Option<usize> = None;
+  let mut next_in_flow: Vec<Option<usize>> = vec![None; node.children.len()];
+  {
+    let mut last_seen: Option<usize> = None;
+    for (idx, child) in node.children.iter().enumerate().rev() {
+      let child_style = child
+        .style
+        .as_ref()
+        .map(|s| s.as_ref())
+        .unwrap_or(default_style);
+      if child_style.position.is_in_flow() {
+        if last_in_flow_child.is_none() {
+          last_in_flow_child = Some(idx);
+        }
+        next_in_flow[idx] = last_seen;
+        last_seen = Some(idx);
+        first_in_flow_child = Some(idx);
+      }
+    }
+  }
+
   for (idx, child) in node.children.iter().enumerate() {
     let (child_abs_start, child_abs_end) =
       axis.flow_range(node_flow_start, node_block_size, &child.bounds);
@@ -3856,12 +4019,13 @@ fn collect_break_opportunities(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    let next_child = node.children.get(idx + 1);
-    let next_style = next_child
+    let next_in_flow_idx = next_in_flow.get(idx).copied().flatten();
+    let next_in_flow_child = next_in_flow_idx.and_then(|i| node.children.get(i));
+    let next_style = next_in_flow_child
       .and_then(|c| c.style.as_ref())
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    let next_abs_start = next_child.map(|next| {
+    let next_abs_start = next_in_flow_child.map(|next| {
       axis
         .flow_range(node_flow_start, node_block_size, &next.bounds)
         .0
@@ -3885,10 +4049,23 @@ fn collect_break_opportunities(
       });
     }
 
-    let child_break_before = if idx < grid_item_count_break_hint_suppression {
+    // Absolutely-positioned boxes do not participate in sibling break propagation. Treat them as
+    // `auto` for `break-before/after` in the parent flow (CSS Break 3 §4.1).
+    let child_break_before_value = if child_style.position.is_absolutely_positioned() {
       BreakBetween::Auto
     } else {
       child_style.break_before
+    };
+    let child_break_after_value = if child_style.position.is_absolutely_positioned() {
+      BreakBetween::Auto
+    } else {
+      child_style.break_after
+    };
+
+    let child_break_before = if idx < grid_item_count_break_hint_suppression {
+      BreakBetween::Auto
+    } else {
+      child_break_before_value
     };
     // Fragment trees can include "background layer" fragments that overlap the same flow
     // start position (notably table row-group fragments that precede row fragments for paint
@@ -3896,7 +4073,7 @@ fn collect_break_opportunities(
     // child in DOM/paint order, but browsers still treat it as a break at the start edge.
     //
     // Detect this for table rows by checking whether the child starts at the parent's flow start.
-    let treat_as_first_break_before = idx == 0
+    let treat_as_first_break_before = Some(idx) == first_in_flow_child
       || (matches!(child_style.display, Display::TableRow)
         && (child_abs_start - abs_start).abs() <= BREAK_EPSILON);
     if treat_as_first_break_before && !matches!(child_break_before, BreakBetween::Auto) {
@@ -3930,9 +4107,9 @@ fn collect_break_opportunities(
     if grid_item_break_hints_fallback_to_edges
       && idx > 0
       && idx < grid_item_count_parallel_flow
-      && !matches!(child_style.break_before, BreakBetween::Auto)
+      && !matches!(child_break_before_value, BreakBetween::Auto)
     {
-      let mut strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+      let mut strength = combine_breaks(BreakBetween::Auto, child_break_before_value, context);
       strength = apply_avoid_penalty(strength, inside_avoid > 0);
       if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
         strength = BreakStrength::Auto;
@@ -3989,15 +4166,23 @@ fn collect_break_opportunities(
       );
     }
 
+    if !child_style.position.is_in_flow() {
+      continue;
+    }
+
     let child_break_after = if idx < grid_item_count_break_hint_suppression {
       BreakBetween::Auto
     } else {
-      child_style.break_after
+      child_break_after_value
     };
-    let next_break_before = if idx + 1 < grid_item_count_break_hint_suppression {
+    let next_break_before = if next_in_flow_idx.is_some_and(|next_idx| next_idx < grid_item_count_break_hint_suppression) {
       BreakBetween::Auto
     } else {
-      next_style.break_before
+      if next_style.position.is_absolutely_positioned() {
+        BreakBetween::Auto
+      } else {
+        next_style.break_before
+      }
     };
     let mut strength = combine_breaks(child_break_after, next_break_before, context);
     strength = apply_avoid_penalty(strength, inside_avoid > 0);
@@ -4022,7 +4207,7 @@ fn collect_break_opportunities(
       // block. This mirrors the `break-before` propagation logic above and prevents fragmentation
       // from creating a trailing slice that contains only the parent's padding/align-content gaps
       // when the last child ends early.
-      if next_child.is_none() {
+      if Some(idx) == last_in_flow_child {
         boundary = abs_end;
       }
       (boundary, boundary)
@@ -4228,7 +4413,9 @@ fn collect_forced_boundaries_with_axes_internal(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    if suppress_parallel_flow_descendants && node_style.float.is_floating() {
+    if suppress_parallel_flow_descendants
+      && (node_style.float.is_floating() || node_style.position.is_absolutely_positioned())
+    {
       return;
     }
     let node_is_row_flex_container = is_row_flex_container(node_style);
@@ -4272,22 +4459,32 @@ fn collect_forced_boundaries_with_axes_internal(
             let placement = &grid_items.items[idx];
             let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
-            if is_forced_page_break(child_style.break_before, include_always) {
+            let child_break_before = if child_style.position.is_absolutely_positioned() {
+              BreakBetween::Auto
+            } else {
+              child_style.break_before
+            };
+            if is_forced_page_break(child_break_before, include_always) {
               let boundary_idx = start_line.saturating_sub(1) as usize;
               if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
                 record_boundary(
                   req,
-                  break_side_hint(child_style.break_before, page_progression_is_ltr),
+                  break_side_hint(child_break_before, page_progression_is_ltr),
                 );
               }
             }
 
-            if is_forced_page_break(child_style.break_after, include_always) {
+            let child_break_after = if child_style.position.is_absolutely_positioned() {
+              BreakBetween::Auto
+            } else {
+              child_style.break_after
+            };
+            if is_forced_page_break(child_break_after, include_always) {
               let boundary_idx = end_line.saturating_sub(1) as usize;
               if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
                 record_boundary(
                   req,
-                  break_side_hint(child_style.break_after, page_progression_is_ltr),
+                  break_side_hint(child_break_after, page_progression_is_ltr),
                 );
               }
             }
@@ -4373,20 +4570,30 @@ fn collect_forced_boundaries_with_axes_internal(
             .map(|s| s.as_ref())
             .unwrap_or(default_style);
 
-          if is_forced_page_break(child_style.break_before, include_always) {
+          let child_break_before = if child_style.position.is_absolutely_positioned() {
+            BreakBetween::Auto
+          } else {
+            child_style.break_before
+          };
+          if is_forced_page_break(child_break_before, include_always) {
             if let Some(req) = boundary_reqs.get_mut(line_idx) {
               record_boundary(
                 req,
-                break_side_hint(child_style.break_before, page_progression_is_ltr),
+                break_side_hint(child_break_before, page_progression_is_ltr),
               );
             }
           }
 
-          if is_forced_page_break(child_style.break_after, include_always) {
+          let child_break_after = if child_style.position.is_absolutely_positioned() {
+            BreakBetween::Auto
+          } else {
+            child_style.break_after
+          };
+          if is_forced_page_break(child_break_after, include_always) {
             if let Some(req) = boundary_reqs.get_mut(line_idx + 1) {
               record_boundary(
                 req,
-                break_side_hint(child_style.break_after, page_progression_is_ltr),
+                break_side_hint(child_break_after, page_progression_is_ltr),
               );
             }
           }
@@ -4430,6 +4637,30 @@ fn collect_forced_boundaries_with_axes_internal(
       }
     }
 
+    // Break propagation must be based on the first/last in-flow child, excluding absolutely
+    // positioned descendants (CSS Break 3 §4.1).
+    let mut first_in_flow_child: Option<usize> = None;
+    let mut last_in_flow_child: Option<usize> = None;
+    let mut next_in_flow: Vec<Option<usize>> = vec![None; node.children.len()];
+    {
+      let mut last_seen: Option<usize> = None;
+      for (idx, child) in node.children.iter().enumerate().rev() {
+        let child_style = child
+          .style
+          .as_ref()
+          .map(|s| s.as_ref())
+          .unwrap_or(default_style);
+        if child_style.position.is_in_flow() {
+          if last_in_flow_child.is_none() {
+            last_in_flow_child = Some(idx);
+          }
+          next_in_flow[idx] = last_seen;
+          last_seen = Some(idx);
+          first_in_flow_child = Some(idx);
+        }
+      }
+    }
+
     for (idx, child) in node.children.iter().enumerate() {
       let child_block_size = axis.block_size(&child.bounds);
       let (child_abs_start, child_abs_end) =
@@ -4439,14 +4670,25 @@ fn collect_forced_boundaries_with_axes_internal(
         .as_ref()
         .map(|s| s.as_ref())
         .unwrap_or(default_style);
-      let next_style = node
-        .children
-        .get(idx + 1)
+      let next_in_flow_idx = next_in_flow.get(idx).copied().flatten();
+      let next_style = next_in_flow_idx
+        .and_then(|next_idx| node.children.get(next_idx))
         .and_then(|c| c.style.as_ref())
         .map(|s| s.as_ref())
         .unwrap_or(default_style);
 
-      if idx == 0 && is_forced_page_break(child_style.break_before, include_always) {
+      let child_break_before = if child_style.position.is_absolutely_positioned() {
+        BreakBetween::Auto
+      } else {
+        child_style.break_before
+      };
+      let child_break_after = if child_style.position.is_absolutely_positioned() {
+        BreakBetween::Auto
+      } else {
+        child_style.break_after
+      };
+
+      if Some(idx) == first_in_flow_child && is_forced_page_break(child_break_before, include_always) {
         let break_from_flex = flex_line_map
           .as_ref()
           .and_then(|map| map.get(idx))
@@ -4459,7 +4701,7 @@ fn collect_forced_boundaries_with_axes_internal(
             // side without carving out an empty fragmentainer slice when the element is offset by
             // padding or similar.
             position: abs_start,
-            page_side: break_side_hint(child_style.break_before, page_progression_is_ltr),
+            page_side: break_side_hint(child_break_before, page_progression_is_ltr),
           });
         }
       }
@@ -4472,21 +4714,27 @@ fn collect_forced_boundaries_with_axes_internal(
       {
         forced.push(ForcedBoundary {
           position: child_abs_start,
-          page_side: break_side_hint(child_style.break_before, page_progression_is_ltr),
+          page_side: break_side_hint(child_break_before, page_progression_is_ltr),
         });
       }
 
-      let break_after = is_forced_page_break(child_style.break_after, include_always);
-      let mut break_before = is_forced_page_break(next_style.break_before, include_always);
-      if break_before && grid_item_break_hints_fallback_to_edges && idx + 1 < in_flow_grid_item_count {
+      let break_after = is_forced_page_break(child_break_after, include_always);
+      let mut break_before = next_in_flow_idx
+        .is_some_and(|_| is_forced_page_break(next_style.break_before, include_always));
+      if break_before
+        && grid_item_break_hints_fallback_to_edges
+        && next_in_flow_idx.is_some_and(|next_idx| next_idx < in_flow_grid_item_count)
+      {
         break_before = false;
       }
       if break_after || break_before {
+        let next_idx_for_break = next_in_flow_idx.unwrap_or(idx.saturating_add(1));
         let break_from_grid =
-          (break_after && idx < grid_item_count) || (break_before && idx + 1 < grid_item_count);
+          (break_after && idx < grid_item_count) || (break_before && next_idx_for_break < grid_item_count);
         let break_from_flex = flex_line_map.as_ref().is_some_and(|map| {
           let current_is_flex = break_after && map.get(idx).is_some_and(|slot| slot.is_some());
-          let next_is_flex = break_before && map.get(idx + 1).is_some_and(|slot| slot.is_some());
+          let next_is_flex =
+            break_before && map.get(next_idx_for_break).is_some_and(|slot| slot.is_some());
           current_is_flex || next_is_flex
         });
         if !break_from_grid && !break_from_flex {
@@ -4498,14 +4746,14 @@ fn collect_forced_boundaries_with_axes_internal(
           // block. This matches `collect_break_opportunities` so side constraints like
           // `break-after: left/right` are applied at the actual page boundary instead of the child's
           // border box end (which can be offset from the parent's end by padding/align-content gaps).
-          if break_after && node.children.get(idx + 1).is_none() {
+          if break_after && Some(idx) == last_in_flow_child {
             boundary = abs_start + parent_block_size;
           }
           let page_side = if break_before {
             break_side_hint(next_style.break_before, page_progression_is_ltr)
-              .or(break_side_hint(child_style.break_after, page_progression_is_ltr))
+              .or(break_side_hint(child_break_after, page_progression_is_ltr))
           } else {
-            break_side_hint(child_style.break_after, page_progression_is_ltr)
+            break_side_hint(child_break_after, page_progression_is_ltr)
           };
           forced.push(ForcedBoundary {
             position: boundary,
@@ -4518,7 +4766,8 @@ fn collect_forced_boundaries_with_axes_internal(
         && child_style.position.is_in_flow())
         || (suppress_parallel_flow_descendants
           && node_is_row_flex_container
-          && child_style.position.is_in_flow());
+          && child_style.position.is_in_flow())
+        || (suppress_parallel_flow_descendants && child_style.position.is_absolutely_positioned());
       if !skip_parallel_flow_descendants {
         collect(
           child,
@@ -4704,7 +4953,13 @@ fn collect_atomic_candidate_for_node(
   }
 
   let table_row_like = is_table_row_like(style.display);
-  let avoid_inside = avoids_break_inside(style.break_inside, context) || table_row_like;
+  // CSS Break 3: `break-inside` does not apply to absolutely-positioned boxes.
+  let break_inside = if style.position.is_absolutely_positioned() {
+    BreakInside::Auto
+  } else {
+    style.break_inside
+  };
+  let avoid_inside = avoids_break_inside(break_inside, context) || table_row_like;
   if avoid_inside {
     let required = (end - start).max(0.0);
     candidates.push(AtomicCandidate {

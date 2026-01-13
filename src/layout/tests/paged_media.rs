@@ -2786,6 +2786,104 @@ fn fixed_headers_repeat_per_page() {
 }
 
 #[test]
+fn abspos_break_before_after_do_not_force_page_break() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .blk { height: 50px; margin: 0; }
+          #abs {
+            position: absolute;
+            top: 0;
+            left: 0;
+            break-before: page;
+            break-after: page;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="blk">A</div>
+        <div id="abs">ABS</div>
+        <div class="blk">B</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    1,
+    "break-before/after must not apply to absolutely-positioned boxes"
+  );
+  assert!(find_text(page_roots[0], "A").is_some(), "A should be on page 1");
+  assert!(find_text(page_roots[0], "B").is_some(), "B should be on page 1");
+}
+
+#[test]
+fn forced_break_inside_abspos_does_not_paginate_main_flow() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .blk { height: 20px; margin: 0; }
+          #abs {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 200px;
+          }
+          .abs-item { height: 20px; margin: 0; }
+          #abs1 { break-after: page; }
+        </style>
+      </head>
+      <body>
+        <div class="blk">A</div>
+        <div class="blk">B</div>
+        <div id="abs">
+          <div id="abs1" class="abs-item">ABS1</div>
+          <div id="abs2" class="abs-item">ABS2</div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "forced breaks inside abspos should create continuation pages without splitting the main flow"
+  );
+  assert!(find_text(page_roots[0], "A").is_some(), "A should be on page 1");
+  assert!(find_text(page_roots[0], "B").is_some(), "B should be on page 1");
+  assert!(
+    find_text(page_roots[0], "ABS2").is_none(),
+    "ABS2 should not appear on page 1"
+  );
+  assert!(
+    find_text(page_roots[1], "ABS2").is_some(),
+    "ABS2 should appear on page 2"
+  );
+  assert!(find_text(page_roots[1], "A").is_none(), "A should not be on page 2");
+  assert!(find_text(page_roots[1], "B").is_none(), "B should not be on page 2");
+}
+
+#[test]
 fn multicol_columns_continue_across_pages() {
   let html = r#"
     <html>
