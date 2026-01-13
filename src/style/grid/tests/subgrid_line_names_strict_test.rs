@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn subgrid_line_names_accepts_specified_grammar() {
+  let nbsp = "\u{00A0}";
   assert_eq!(
     parse_subgrid_line_names("subgrid"),
     Some(Vec::<Vec<String>>::new())
@@ -14,6 +15,10 @@ fn subgrid_line_names_accepts_specified_grammar() {
     parse_subgrid_line_names("subgrid/*comment*/"),
     Some(Vec::<Vec<String>>::new())
   );
+  assert!(
+    parse_subgrid_line_names(&format!("{nbsp}subgrid")).is_none(),
+    "NBSP must not be treated as CSS whitespace"
+  );
   assert_eq!(
     parse_subgrid_line_names("subgrid [a] [b]"),
     Some(vec![vec!["a".to_string()], vec!["b".to_string()]])
@@ -25,6 +30,10 @@ fn subgrid_line_names_accepts_specified_grammar() {
   assert_eq!(
     parse_subgrid_line_names("subgrid/*comment*/[a]"),
     Some(vec![vec!["a".to_string()]])
+  );
+  assert!(
+    parse_subgrid_line_names(&format!("subgrid{nbsp}[a]")).is_none(),
+    "NBSP must not be treated as CSS whitespace between tokens"
   );
   assert_eq!(
     parse_subgrid_line_names("subgrid [a/*comment*/b]"),
