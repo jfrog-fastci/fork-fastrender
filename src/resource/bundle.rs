@@ -1,6 +1,6 @@
 use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
-use crate::error::{Error, Result};
+use crate::error::{Error, ResourceError, Result};
 use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchRequest,
@@ -332,6 +332,37 @@ impl BundledResource {
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
     Ok(res)
   }
+
+  fn as_fetched_range(
+    &self,
+    url: &str,
+    start: u64,
+    end: u64,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let bytes =
+      clone_bytes_range_fallible(url, &self.bytes, start, end, max_bytes, "bundle resource bytes")?;
+    let mut res = FetchedResource::with_final_url(
+      bytes,
+      self.info.content_type.clone(),
+      self.info.final_url.clone(),
+    );
+    res.nosniff = self.info.nosniff;
+    res.status = self.info.status;
+    res.etag = self.info.etag.clone();
+    res.last_modified = self.info.last_modified.clone();
+    res.vary = self.info.vary.clone();
+    res.access_control_allow_origin = self.info.access_control_allow_origin.clone();
+    res.timing_allow_origin = self.info.timing_allow_origin.clone();
+    res.response_referrer_policy = self
+      .info
+      .response_referrer_policy
+      .as_deref()
+      .and_then(ReferrerPolicy::parse_value_list);
+    res.response_headers = self.info.response_headers.clone();
+    res.access_control_allow_credentials = self.info.access_control_allow_credentials;
+    Ok(res)
+  }
 }
 
 fn bundle_key_is_request_partitioned(key: &str) -> bool {
@@ -451,6 +482,50 @@ fn clone_bytes_fallible(bytes: &[u8], context: &'static str) -> Result<Vec<u8>> 
   let mut writer = FallibleVecWriter::new(bytes.len(), context);
   writer.write_all(bytes).map_err(Error::Io)?;
   Ok(writer.into_inner())
+}
+
+fn clone_bytes_range_fallible(
+  url: &str,
+  bytes: &[u8],
+  start: u64,
+  mut end: u64,
+  max_bytes: usize,
+  context: &'static str,
+) -> Result<Vec<u8>> {
+  if max_bytes == 0 {
+    return Ok(Vec::new());
+  }
+
+  let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+  end = end.min(cap_end);
+
+  let start_idx = usize::try_from(start).map_err(|_| {
+    Error::Resource(ResourceError::new(
+      url,
+      format!("byte range start {start} is too large to slice in memory"),
+    ))
+  })?;
+  if start_idx >= bytes.len() {
+    return Err(Error::Resource(ResourceError::new(
+      url,
+      format!(
+        "byte range start {start} is beyond end of response body (len={})",
+        bytes.len()
+      ),
+    )));
+  }
+
+  let end_idx = usize::try_from(end).map_err(|_| {
+    Error::Resource(ResourceError::new(
+      url,
+      format!("byte range end {end} is too large to slice in memory"),
+    ))
+  })?;
+  let available_end = bytes.len().saturating_sub(1);
+  let end_idx = end_idx.min(available_end);
+
+  let bytes = clone_bytes_fallible(&bytes[start_idx..=end_idx], context)?;
+  Ok(bytes)
 }
 
 impl Bundle {
@@ -1398,6 +1473,284 @@ impl ResourceFetcher for BundledFetcher {
     self.fetch_partial(req.url, max_bytes)
   }
 
+  fn fetch_range_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    range: std::ops::RangeInclusive<u64>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    let start = *range.start();
+    let end = *range.end();
+    if start > end {
+      return Err(Error::Resource(ResourceError::new(
+        req.url,
+        format!("invalid byte range: start {start} is greater than end {end}"),
+      )));
+    }
+
+    let capped_end = if max_bytes == 0 {
+      start
+    } else {
+      let cap_end = start.saturating_add((max_bytes as u64).saturating_sub(1));
+      end.min(cap_end)
+    };
+
+    let lookup_is_request_partitioned = bundle_key_is_request_partitioned(req.url);
+    let doc_matches = req.url == self.bundle.manifest.original_url
+      || req.url == self.bundle.manifest.document.final_url;
+
+    if doc_matches {
+      let (doc_meta, bytes) = self.bundle.document();
+      let bytes = clone_bytes_range_fallible(
+        req.url,
+        &bytes,
+        start,
+        capped_end,
+        max_bytes,
+        "bundle document bytes",
+      )?;
+      let mut res = FetchedResource::with_final_url(
+        bytes,
+        doc_meta.content_type.clone(),
+        Some(doc_meta.final_url.clone()),
+      );
+      res.nosniff = doc_meta.nosniff;
+      res.status = doc_meta.status;
+      res.etag = doc_meta.etag.clone();
+      res.last_modified = doc_meta.last_modified.clone();
+      res.vary = doc_meta.vary.clone();
+      res.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
+      res.timing_allow_origin = doc_meta.timing_allow_origin.clone();
+      res.response_referrer_policy = doc_meta
+        .response_referrer_policy
+        .as_deref()
+        .and_then(ReferrerPolicy::parse_value_list);
+      res.response_headers = doc_meta.response_headers.clone();
+      if let Some(vary) = res.vary.as_deref() {
+        if super::vary_contains_star(vary)
+          || (!super::allow_unhandled_vary_env()
+            && !super::vary_is_cacheable(vary, FetchContextKind::Document, None))
+        {
+          return Err(Error::Other(format!(
+            "Bundle document has unhandled Vary and cannot be replayed safely: {}",
+            doc_meta.final_url
+          )));
+        }
+      }
+      return Ok(res);
+    }
+
+    let cors_partition_key = super::cors_cache_partition_key(&req);
+    if let Some(partition_key) = cors_partition_key.as_deref() {
+      let validate_vary = |vary: Option<&str>| {
+        if let Some(vary) = vary {
+          if super::vary_contains_star(vary)
+            || (!super::allow_unhandled_vary_env()
+              && !super::vary_is_cacheable(vary, kind, Some("bundled")))
+          {
+            return Err(Error::Other(format!(
+              "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+              req.url
+            )));
+          }
+        }
+        Ok(())
+      };
+
+      let key =
+        request_partitioned_resource_key_v3(kind, req.url, partition_key, req.credentials_mode);
+      if let Some(resource) = self.bundle.resource_for_url(&key) {
+        validate_vary(resource.info.vary.as_deref())?;
+        return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+      }
+
+      let key = request_partitioned_resource_key_v2(kind, req.url, partition_key);
+      if let Some(resource) = self.bundle.resource_for_url(&key) {
+        validate_vary(resource.info.vary.as_deref())?;
+        return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+      }
+
+      let origin_from_referrer = req.referrer_url.and_then(origin_from_url);
+      let origin_from_target = origin_from_url(req.url);
+      let origin = req
+        .client_origin
+        .or(origin_from_referrer.as_ref())
+        .or(origin_from_target.as_ref());
+      if let Some(origin) = origin {
+        let key = request_partitioned_resource_key_with_credentials(
+          kind,
+          req.url,
+          origin,
+          req.credentials_mode,
+        );
+        if let Some(resource) = self.bundle.resource_for_url(&key) {
+          validate_vary(resource.info.vary.as_deref())?;
+          return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+        }
+
+        if req.credentials_mode != FetchCredentialsMode::Omit {
+          let key = request_partitioned_resource_key(kind, req.url, origin);
+          if let Some(resource) = self.bundle.resource_for_url(&key) {
+            validate_vary(resource.info.vary.as_deref())?;
+            return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+          }
+        }
+      }
+    }
+
+    if let Some(bucket) = self.bundle.vary_bucket_for_url(req.url) {
+      if bucket.vary.as_deref() == Some("*") {
+        return Err(Error::Other(format!(
+          "Resource is not cacheable in bundle (Vary: *): {}",
+          req.url
+        )));
+      }
+      let canonical = FetchRequest {
+        url: bucket.canonical_url.as_str(),
+        destination: req.destination,
+        referrer_url: req.referrer_url,
+        client_origin: req.client_origin,
+        referrer_policy: req.referrer_policy,
+        credentials_mode: req.credentials_mode,
+      };
+      let Some(vary_key) =
+        super::compute_vary_key_for_request(self, canonical, bucket.vary.as_deref())
+      else {
+        return Err(Error::Other(format!(
+          "Resource not cacheable in bundle (unknown Vary headers): {}",
+          req.url
+        )));
+      };
+      if let Some(resource) = bucket.variants.get(&vary_key) {
+        return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+      }
+      if let Some(legacy_key) =
+        super::compute_vary_key_for_request_legacy(self, canonical, bucket.vary.as_deref())
+      {
+        if legacy_key != vary_key {
+          if let Some(resource) = bucket.variants.get(&legacy_key) {
+            return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+          }
+        }
+      }
+      if bucket.vary.is_none() && bucket.variants.len() == 1 {
+        if let Some(resource) = bucket.variants.values().next() {
+          return resource.as_fetched_range(req.url, start, capped_end, max_bytes);
+        }
+      }
+      return Err(Error::Other(format!(
+        "Resource not found in bundle (no matching Vary variant): {}",
+        req.url
+      )));
+    }
+
+    if cors_partition_key.is_some() {
+      if let Some(resource) = self.bundle.resource_for_url(req.url) {
+        if resource
+          .info
+          .vary
+          .as_deref()
+          .is_some_and(|vary| vary_contains_header(vary, "origin"))
+        {
+          return Err(Error::Other(format!(
+            "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+            req.url
+          )));
+        }
+      }
+    }
+
+    if let Some(resource) = self.bundle.resource_for_url(req.url) {
+      let res = resource.as_fetched_range(req.url, start, capped_end, max_bytes)?;
+      let destination = resource
+        .manifest_kind
+        .map(super::FetchDestination::from)
+        .unwrap_or(req.destination);
+      if !lookup_is_request_partitioned
+        && destination.sec_fetch_mode() == "cors"
+        && res
+          .vary
+          .as_deref()
+          .is_some_and(|vary| vary_contains_header(vary, "origin"))
+      {
+        return Err(Error::Other(format!(
+          "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+          req.url
+        )));
+      }
+      let kind: FetchContextKind = destination.into();
+      let origin_key = lookup_is_request_partitioned.then_some("bundled");
+      if let Some(vary) = res.vary.as_deref() {
+        if super::vary_contains_star(vary)
+          || (!super::allow_unhandled_vary_env()
+            && !super::vary_is_cacheable(vary, kind, origin_key))
+        {
+          return Err(Error::Other(format!(
+            "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
+            req.url
+          )));
+        }
+      }
+      return Ok(res);
+    }
+
+    if req
+      .url
+      .get(..5)
+      .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+      .unwrap_or(false)
+    {
+      if max_bytes == 0 {
+        return super::data_url::decode_data_url_prefix(req.url, 0);
+      }
+
+      let decode_len: usize = capped_end
+        .saturating_add(1)
+        .try_into()
+        .map_err(|_| {
+          Error::Resource(ResourceError::new(
+            req.url,
+            format!("byte range end {capped_end} is too large to decode"),
+          ))
+        })?;
+      let mut res = super::data_url::decode_data_url_prefix(req.url, decode_len)?;
+      let start_idx = usize::try_from(start).map_err(|_| {
+        Error::Resource(ResourceError::new(
+          req.url,
+          format!("byte range start {start} is too large to slice in memory"),
+        ))
+      })?;
+      if start_idx >= res.bytes.len() {
+        return Err(Error::Resource(ResourceError::new(
+          req.url,
+          format!(
+            "byte range start {start} is beyond end of decoded data URL (len={})",
+            res.bytes.len()
+          ),
+        )));
+      }
+      let end_idx = usize::try_from(capped_end).map_err(|_| {
+        Error::Resource(ResourceError::new(
+          req.url,
+          format!("byte range end {capped_end} is too large to slice in memory"),
+        ))
+      })?;
+      let available_end = res.bytes.len().saturating_sub(1);
+      let end_idx = end_idx.min(available_end);
+      res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+      if res.bytes.len() > max_bytes {
+        res.bytes.truncate(max_bytes);
+      }
+      return Ok(res);
+    }
+
+    Err(Error::Other(format!(
+      "Resource not found in bundle: {}",
+      req.url
+    )))
+  }
+
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
     let headers = super::build_http_header_pairs(
       req.url,
@@ -1931,6 +2284,245 @@ mod tests {
     );
     assert_eq!(empty_res.response_headers, Some(expected_headers));
     assert!(empty_res.access_control_allow_credentials);
+  }
+
+  #[test]
+  fn bundled_fetcher_fetch_range_clones_only_requested_slice() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    let url = "https://example.com/large.bin";
+
+    let size = 1024 * 1024;
+    let mut data = vec![0u8; size];
+    for (i, byte) in data.iter_mut().enumerate() {
+      *byte = (i % 256) as u8;
+    }
+    std::fs::write(tmp.path().join("large.bin"), &data).expect("write large resource");
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile::default(),
+      resources: BTreeMap::from([(
+        url.to_string(),
+        BundledResourceInfo {
+          path: "large.bin".to_string(),
+          content_type: Some("application/octet-stream".to_string()),
+          nosniff: false,
+          status: Some(200),
+          final_url: Some(url.to_string()),
+          etag: None,
+          last_modified: None,
+          response_referrer_policy: None,
+          response_headers: None,
+          vary: None,
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let range_res = fetcher
+      .fetch_range_with_request(
+        FetchRequest::new(url, FetchDestination::Other),
+        100..=200,
+        1024,
+      )
+      .expect("fetch range");
+    assert_eq!(&range_res.bytes, &data[100..=200]);
+    assert!(
+      range_res.bytes.capacity() < 8 * 1024,
+      "expected range fetch to only allocate the requested slice, got capacity={}",
+      range_res.bytes.capacity()
+    );
+
+    let capped_res = fetcher
+      .fetch_range_with_request(
+        FetchRequest::new(url, FetchDestination::Other),
+        100..=200,
+        10,
+      )
+      .expect("fetch capped range");
+    assert_eq!(&capped_res.bytes, &data[100..=109]);
+    assert_eq!(capped_res.bytes.len(), 10);
+  }
+
+  #[test]
+  fn bundled_fetcher_fetch_range_selects_vary_variant() {
+    struct FixedHeaderFetcher {
+      header: &'static str,
+      value: String,
+    }
+
+    impl ResourceFetcher for FixedHeaderFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        Ok(FetchedResource::new(Vec::new(), None))
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, header_name: &str) -> Option<String> {
+        if header_name.eq_ignore_ascii_case(self.header) {
+          return Some(self.value.clone());
+        }
+        Some(String::new())
+      }
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+
+    let url = "https://example.com/asset.bin";
+    let variant_default = b"abcdef".to_vec();
+    let variant_other = b"UVWXYZ".to_vec();
+    std::fs::write(tmp.path().join("default.bin"), &variant_default).expect("write default");
+    std::fs::write(tmp.path().join("other.bin"), &variant_other).expect("write other");
+
+    let vary = "user-agent";
+
+    let default_key = compute_vary_key_for_request(
+      &FixedHeaderFetcher {
+        header: "user-agent",
+        value: crate::resource::DEFAULT_USER_AGENT.to_string(),
+      },
+      FetchRequest::new(url, FetchDestination::Other),
+      Some(vary),
+    )
+    .expect("compute vary key");
+    let other_key = compute_vary_key_for_request(
+      &FixedHeaderFetcher {
+        header: "user-agent",
+        value: "Other-UA".to_string(),
+      },
+      FetchRequest::new(url, FetchDestination::Other),
+      Some(vary),
+    )
+    .expect("compute vary key");
+
+    let default_manifest_key = vary_partitioned_resource_key(url, &default_key);
+    let other_manifest_key = vary_partitioned_resource_key(url, &other_key);
+
+    let info = BundledResourceInfo {
+      path: String::new(),
+      content_type: Some("application/octet-stream".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      response_headers: None,
+      vary: Some(vary.to_string()),
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        response_headers: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      fetch_profile: BundleFetchProfile::default(),
+      resources: BTreeMap::from([
+        (
+          default_manifest_key.clone(),
+          BundledResourceInfo {
+            path: "default.bin".to_string(),
+            ..info.clone()
+          },
+        ),
+        (
+          other_manifest_key.clone(),
+          BundledResourceInfo {
+            path: "other.bin".to_string(),
+            ..info.clone()
+          },
+        ),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let res = fetcher
+      .fetch_range_with_request(
+        FetchRequest::new(url, FetchDestination::Other),
+        1..=3,
+        32,
+      )
+      .expect("fetch vary range");
+    assert_eq!(&res.bytes, &variant_default[1..=3]);
   }
 
   #[test]
