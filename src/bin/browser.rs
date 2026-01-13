@@ -17599,10 +17599,35 @@ impl App {
       return false;
     }
 
+    // Base chrome height for the tab strip + toolbar (in egui points / CSS px).
+    const CHROME_BASE_HEIGHT_POINTS: f32 = 96.0;
+    // Extra height reserved for the omnibox popup while open. The popup is absolutely positioned in
+    // the chrome HTML, so without extra height it would be clipped by the top panel.
+    const OMNIBOX_POPUP_EXTRA_HEIGHT_POINTS: f32 = 240.0;
+
+    let chrome_height_points = if self.browser_state.chrome.omnibox.open
+      && !self.browser_state.chrome.omnibox.suggestions.is_empty()
+    {
+      CHROME_BASE_HEIGHT_POINTS + OMNIBOX_POPUP_EXTRA_HEIGHT_POINTS
+    } else {
+      CHROME_BASE_HEIGHT_POINTS
+    };
+
     // Lazily create the FastRender-backed chrome document.
     if self.chrome_frame_doc.is_none() {
-      match fastrender::ui::chrome_frame::ChromeFrameDocument::new((1, 1), self.pixels_per_point) {
-        Ok(doc) => self.chrome_frame_doc = Some(doc),
+      let renderer = fastrender::FastRender::builder()
+        .fetcher(std::sync::Arc::new(self.chrome_dynamic_fetcher.clone()))
+        .build();
+      match renderer.and_then(|renderer| {
+        fastrender::ui::chrome_frame::ChromeFrameDocument::new_with_renderer(
+          renderer,
+          (1, 1),
+          self.pixels_per_point,
+        )
+      }) {
+        Ok(doc) => {
+          self.chrome_frame_doc = Some(doc);
+        }
         Err(err) => {
           eprintln!("failed to create renderer-chrome document: {err}");
           self.chrome_frame_doc = None;
@@ -17613,7 +17638,7 @@ impl App {
     let Some(doc) = self.chrome_frame_doc.as_mut() else {
       // Document creation failed; keep the panel height stable so the page layout is still usable.
       egui::TopBottomPanel::top("renderer_chrome_tab_strip_fallback")
-        .exact_height(40.0)
+        .exact_height(chrome_height_points)
         .show(ctx, |ui| {
           ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_gray(30));
           ui.label("renderer-chrome unavailable (failed to create document)");
@@ -17624,8 +17649,9 @@ impl App {
     let (events, primary_down) = ctx.input(|i| (i.events.clone(), i.pointer.primary_down()));
 
     let mut session_dirty = false;
+    let mut action_urls: Vec<fastrender::ui::ChromeActionUrl> = Vec::new();
     egui::TopBottomPanel::top("renderer_chrome_tab_strip")
-      .exact_height(40.0)
+      .exact_height(chrome_height_points)
       .show(ctx, |ui| {
         let available = ui.available_size().max(egui::Vec2::ZERO);
         let size_points = egui::vec2(available.x.max(1.0), available.y.max(1.0));
@@ -17662,11 +17688,17 @@ impl App {
               }
             }
             egui::Event::PointerButton {
+              pos,
               button: egui::PointerButton::Primary,
               pressed: false,
               ..
             } => {
-              outputs.extend(doc.pointer_up(fastrender::ui::PointerButton::Primary));
+              let pos_css = if rect.contains(*pos) {
+                mapping.pos_points_to_pos_css_clamped(*pos)
+              } else {
+                None
+              };
+              outputs.extend(doc.pointer_up(fastrender::ui::PointerButton::Primary, pos_css));
             }
             egui::Event::PointerMoved(pos) => {
               if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(*pos) {
@@ -17693,6 +17725,9 @@ impl App {
                 session_dirty = true;
                 reordered = true;
               }
+            }
+            fastrender::ui::chrome_frame::ChromeFrameOutput::ActionUrl(action) => {
+              action_urls.push(action);
             }
           }
         }
@@ -17748,6 +17783,21 @@ impl App {
           ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(30));
         }
       });
+
+    if !action_urls.is_empty() {
+      let mut actions: Vec<fastrender::ui::ChromeAction> = Vec::new();
+      for action_url in action_urls.drain(..) {
+        match action_url.into_chrome_action() {
+          Ok(action) => actions.push(action),
+          Err(err) => {
+            eprintln!("renderer-chrome: failed to map chrome-action URL to action: {err}");
+          }
+        }
+      }
+      if !actions.is_empty() {
+        session_dirty |= self.handle_chrome_actions(actions);
+      }
+    }
 
     session_dirty
   }

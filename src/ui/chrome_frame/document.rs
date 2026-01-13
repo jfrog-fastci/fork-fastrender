@@ -6,7 +6,7 @@
 
 use crate::error::Result;
 use crate::geometry::Rect;
-use crate::ui::{BrowserAppState, PointerButton, TabId};
+use crate::ui::{BrowserAppState, ChromeActionUrl, OmniboxAction, PointerButton, TabId};
 use crate::{BrowserDocumentDom2, FastRender, RenderOptions};
 
 use std::collections::hash_map::DefaultHasher;
@@ -20,6 +20,9 @@ pub enum ChromeFrameOutput {
   /// The `target_index` matches [`BrowserAppState::drag_reorder_tab`]'s contract: it is the
   /// insertion index *after removing the dragged tab* (i.e. it counts only the other tabs).
   ReorderTab { tab_id: TabId, target_index: usize },
+  /// Request that the embedder dispatch a `chrome-action:` URL that was activated inside the chrome
+  /// document (e.g. clicking a link in the tab strip, toolbar, or omnibox dropdown).
+  ActionUrl(ChromeActionUrl),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +31,13 @@ struct TabDragState {
   down_pos_css: (f32, f32),
   active: bool,
   last_target_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ClickState {
+  anchor: crate::dom2::NodeId,
+  action: ChromeActionUrl,
+  down_pos_css: (f32, f32),
 }
 
 /// Minimal HTML/CSS "chrome frame" document rendered by FastRender in the browser process.
@@ -41,6 +51,7 @@ pub struct ChromeFrameDocument {
   tab_order: Vec<TabId>,
   state_sig: u64,
   drag: Option<TabDragState>,
+  click: Option<ClickState>,
 }
 
 impl ChromeFrameDocument {
@@ -53,7 +64,8 @@ impl ChromeFrameDocument {
     let options = RenderOptions::new()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
-    let doc = BrowserDocumentDom2::new(renderer, &chrome_html(&[], None), options)?;
+    // Start with an empty document; `sync_state` will replace it with the full chrome HTML.
+    let doc = BrowserDocumentDom2::new(renderer, "<!doctype html><html></html>", options)?;
     Ok(Self {
       doc,
       viewport_css,
@@ -61,6 +73,7 @@ impl ChromeFrameDocument {
       tab_order: Vec::new(),
       state_sig: 0,
       drag: None,
+      click: None,
     })
   }
 
@@ -89,14 +102,12 @@ impl ChromeFrameDocument {
     self.state_sig = sig;
     self.tab_order = app.tabs.iter().map(|t| t.id).collect();
 
-    let active = app.active_tab_id();
-    let tabs = app
-      .tabs
-      .iter()
-      .map(|tab| (tab.id, tab.display_title().to_string()))
-      .collect::<Vec<_>>();
-
-    let html = chrome_html(&tabs, active);
+    // Reuse the canonical renderer-chrome HTML generator.
+    //
+    // NOTE: This HTML links to `chrome://styles/chrome.css` and references `chrome://favicon/...`
+    // URLs. Embedders are expected to configure the renderer with a strict chrome-only fetcher (see
+    // `ui::ChromeAssetsFetcher` + `ui::ChromeDynamicAssetFetcher` + `ui::TrustedChromeFetcher`).
+    let html = super::state_to_html::chrome_frame_html_from_state(app);
     let options = self.doc.options().clone();
     self.doc.reset_with_html(&html, options)?;
     Ok(true)
@@ -157,6 +168,7 @@ impl ChromeFrameDocument {
   ) -> Vec<ChromeFrameOutput> {
     if !matches!(button, PointerButton::Primary) {
       self.drag = None;
+      self.click = None;
       return Vec::new();
     }
 
@@ -166,8 +178,15 @@ impl ChromeFrameDocument {
     };
     let Some(hit) = hit else {
       self.drag = None;
+      self.click = None;
       return Vec::new();
     };
+
+    self.click = self.anchor_action_for_node(hit).map(|(anchor, action)| ClickState {
+      anchor,
+      action,
+      down_pos_css: pos_css,
+    });
 
     let Some(tab_id) = self.tab_id_for_node(hit) else {
       self.drag = None;
@@ -191,6 +210,17 @@ impl ChromeFrameDocument {
 
   pub fn pointer_move(&mut self, pos_css: (f32, f32)) -> Vec<ChromeFrameOutput> {
     const DRAG_THRESHOLD_CSS_PX: f32 = 6.0;
+
+    // Cancel pending click if the pointer moved beyond the slop threshold.
+    if let Some(click) = self.click.as_ref() {
+      let dx = pos_css.0 - click.down_pos_css.0;
+      let dy = pos_css.1 - click.down_pos_css.1;
+      let dist2 = dx * dx + dy * dy;
+      if dist2 >= DRAG_THRESHOLD_CSS_PX * DRAG_THRESHOLD_CSS_PX {
+        self.click = None;
+      }
+    }
+
     let Some(mut drag) = self.drag else {
       return Vec::new();
     };
@@ -201,6 +231,8 @@ impl ChromeFrameDocument {
       let dist2 = dx * dx + dy * dy;
       if dist2 >= DRAG_THRESHOLD_CSS_PX * DRAG_THRESHOLD_CSS_PX {
         drag.active = true;
+        // Once a drag is active, do not treat this gesture as a click.
+        self.click = None;
       } else {
         self.drag = Some(drag);
         return Vec::new();
@@ -226,11 +258,49 @@ impl ChromeFrameDocument {
     }]
   }
 
-  pub fn pointer_up(&mut self, button: PointerButton) -> Vec<ChromeFrameOutput> {
-    if matches!(button, PointerButton::Primary) {
+  pub fn pointer_up(
+    &mut self,
+    button: PointerButton,
+    pos_css: Option<(f32, f32)>,
+  ) -> Vec<ChromeFrameOutput> {
+    if !matches!(button, PointerButton::Primary) {
       self.drag = None;
+      self.click = None;
+      return Vec::new();
     }
-    Vec::new()
+
+    let drag_active = self.drag.as_ref().is_some_and(|d| d.active);
+    self.drag = None;
+
+    if drag_active {
+      self.click = None;
+      return Vec::new();
+    }
+
+    let click = self.click.take();
+    let Some(click) = click else {
+      return Vec::new();
+    };
+    let Some(pos_css) = pos_css else {
+      return Vec::new();
+    };
+
+    let hit = match self.doc.element_from_point(pos_css.0, pos_css.1) {
+      Ok(hit) => hit,
+      Err(_) => None,
+    };
+    let Some(hit) = hit else {
+      return Vec::new();
+    };
+
+    let Some((anchor, action)) = self.anchor_action_for_node(hit) else {
+      return Vec::new();
+    };
+    if anchor != click.anchor {
+      return Vec::new();
+    }
+
+    vec![ChromeFrameOutput::ActionUrl(action)]
   }
 
   fn tab_id_for_node(&self, node: crate::dom2::NodeId) -> Option<TabId> {
@@ -247,6 +317,35 @@ impl ChromeFrameDocument {
           return Some(TabId(parsed));
         }
       }
+      current = dom.parent_node(id);
+    }
+    None
+  }
+
+  fn anchor_action_for_node(
+    &self,
+    node: crate::dom2::NodeId,
+  ) -> Option<(crate::dom2::NodeId, ChromeActionUrl)> {
+    let dom = self.doc.dom();
+    let mut current = Some(node);
+    let mut remaining = 128usize;
+    while let Some(id) = current {
+      if remaining == 0 {
+        break;
+      }
+      remaining -= 1;
+
+      if let crate::dom2::NodeKind::Element { tag_name, .. } = &dom.node(id).kind {
+        if tag_name.eq_ignore_ascii_case("a") {
+          if let Ok(Some(href)) = dom.get_attribute(id, "href") {
+            let href = href.trim();
+            if let Ok(action) = ChromeActionUrl::parse(href) {
+              return Some((id, action));
+            }
+          }
+        }
+      }
+
       current = dom.parent_node(id);
     }
     None
@@ -271,12 +370,51 @@ impl ChromeFrameDocument {
 fn compute_state_signature(app: &BrowserAppState) -> u64 {
   let mut hasher = DefaultHasher::new();
   app.active_tab_id().hash(&mut hasher);
+  if let Some(tab) = app.active_tab() {
+    tab.can_go_back.hash(&mut hasher);
+    tab.can_go_forward.hash(&mut hasher);
+    tab.loading.hash(&mut hasher);
+  }
   for tab in &app.tabs {
     tab.id.hash(&mut hasher);
     tab.display_title().hash(&mut hasher);
     tab.pinned.hash(&mut hasher);
     tab.group.hash(&mut hasher);
   }
+  app.chrome.address_bar_text.hash(&mut hasher);
+
+  app.chrome.omnibox.open.hash(&mut hasher);
+  app.chrome.omnibox.selected.hash(&mut hasher);
+  for suggestion in &app.chrome.omnibox.suggestions {
+    match &suggestion.action {
+      OmniboxAction::NavigateToUrl(url) => {
+        0u8.hash(&mut hasher);
+        url.hash(&mut hasher);
+      }
+      OmniboxAction::Search(query) => {
+        1u8.hash(&mut hasher);
+        query.hash(&mut hasher);
+      }
+      OmniboxAction::ActivateTab(tab_id) => {
+        2u8.hash(&mut hasher);
+        tab_id.hash(&mut hasher);
+      }
+    }
+    suggestion.title.hash(&mut hasher);
+    suggestion.url.hash(&mut hasher);
+    suggestion.source.hash(&mut hasher);
+  }
+
+  // Theme affects the generated CSS variables.
+  match app.appearance.theme {
+    crate::ui::theme_parsing::BrowserTheme::System => 0u8.hash(&mut hasher),
+    crate::ui::theme_parsing::BrowserTheme::Light => 1u8.hash(&mut hasher),
+    crate::ui::theme_parsing::BrowserTheme::Dark => 2u8.hash(&mut hasher),
+  }
+  app.appearance.accent_color.hash(&mut hasher);
+  app.appearance.ui_scale.to_bits().hash(&mut hasher);
+  app.appearance.high_contrast.hash(&mut hasher);
+  app.appearance.reduced_motion.hash(&mut hasher);
   hasher.finish()
 }
 
@@ -314,101 +452,17 @@ fn compute_tab_insertion_index(
   insertion_index
 }
 
-fn chrome_html(tabs: &[(TabId, String)], active: Option<TabId>) -> String {
-  // Keep geometry deterministic for hit-testing and headless unit tests. In particular:
-  // - fixed tab widths (avoid font-metric-dependent sizing),
-  // - fixed strip height,
-  // - no external resources.
-  let mut body = String::with_capacity(256 + tabs.len() * 128);
-  body.push_str("<div id=\"tab-strip\">");
-  for (tab_id, title) in tabs {
-    let class = if Some(*tab_id) == active {
-      "tab active"
-    } else {
-      "tab"
-    };
-    let safe_title = escape_html(title);
-    let id = tab_element_id(*tab_id);
-    body.push_str(&format!(
-      "<div class=\"{class}\" id=\"{id}\" data-tab-id=\"{tab_id}\"><span class=\"tab-title\">{safe_title}</span></div>",
-      tab_id = tab_id.0
-    ));
-  }
-  body.push_str("</div>");
-
-  format!(
-    "<!doctype html>
-<html>
-  <head>
-    <meta charset=\"utf-8\">
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-    <style>
-      html, body {{ margin: 0; padding: 0; }}
-      body {{
-        font: 13px/1.2 system-ui, -apple-system, Segoe UI, sans-serif;
-        background: rgb(245, 246, 248);
-      }}
-      #tab-strip {{
-        display: flex;
-        flex-direction: row;
-        align-items: stretch;
-        gap: 6px;
-        padding: 6px;
-        box-sizing: border-box;
-        height: 40px;
-      }}
-      .tab {{
-        box-sizing: border-box;
-        width: 160px;
-        height: 28px;
-        border-radius: 8px;
-        border: 1px solid rgba(0,0,0,0.22);
-        background: rgba(255,255,255,0.96);
-        padding: 4px 10px;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-        display: flex;
-        align-items: center;
-        user-select: none;
-      }}
-      .tab.active {{
-        background: rgba(255,255,255,1.0);
-        border-color: rgba(0,0,0,0.35);
-      }}
-      .tab-title {{
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }}
-    </style>
-  </head>
-  <body>{body}</body>
-</html>"
-  )
-}
-
-fn escape_html(value: &str) -> String {
-  let mut out = String::with_capacity(value.len() + 16);
-  for ch in value.chars() {
-    match ch {
-      '<' => out.push_str("&lt;"),
-      '>' => out.push_str("&gt;"),
-      '&' => out.push_str("&amp;"),
-      '"' => out.push_str("&quot;"),
-      '\'' => out.push_str("&#39;"),
-      _ => out.push(ch),
-    }
-  }
-  out
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::ui::BrowserTabState;
+  use crate::ui::chrome_assets::ChromeAssetsFetcher;
+  use crate::ui::chrome_dynamic_asset_fetcher::ChromeDynamicAssetFetcher;
+  use crate::ui::{OmniboxSuggestion, OmniboxSuggestionSource, OmniboxUrlSource};
   use crate::FontConfig;
   use std::collections::hash_map::DefaultHasher;
   use std::hash::{Hash, Hasher};
+  use std::sync::Arc;
 
   fn pixmap_hash(pixmap: &crate::Pixmap) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -434,8 +488,10 @@ mod tests {
       false,
     );
 
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(ChromeAssetsFetcher::new())));
     let renderer = FastRender::builder()
       .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
       .build()
       .expect("build deterministic renderer");
     let mut chrome =
@@ -525,6 +581,49 @@ mod tests {
     );
 
     Ok(())
+  }
+
+  #[test]
+  fn chrome_frame_clicking_omnibox_suggestion_emits_action_url() {
+    let mut app = BrowserAppState::new_with_initial_tab("https://example.invalid/".to_string());
+    app.chrome.omnibox.open = true;
+    app.chrome.omnibox.selected = Some(0);
+    app.chrome.omnibox.suggestions = vec![OmniboxSuggestion {
+      action: OmniboxAction::NavigateToUrl("https://example.com/".to_string()),
+      title: Some("Example".to_string()),
+      url: Some("https://example.com/".to_string()),
+      source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
+    }];
+
+    let fetcher = Arc::new(ChromeDynamicAssetFetcher::new(Arc::new(ChromeAssetsFetcher::new())));
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .fetcher(fetcher)
+      .build()
+      .expect("build deterministic renderer");
+    let mut chrome =
+      ChromeFrameDocument::new_with_renderer(renderer, (600, 320), 1.0).expect("create chrome doc");
+    chrome.sync_state(&app).expect("sync state");
+    let _ = chrome.render_if_needed().expect("render");
+
+    let node = chrome
+      .doc
+      .dom()
+      .get_element_by_id("omnibox-suggestion-0")
+      .expect("suggestion node");
+    let rect = chrome.doc.bounding_client_rect(node).expect("suggestion rect");
+    let pos = rect.center();
+
+    chrome.pointer_down(PointerButton::Primary, (pos.x, pos.y));
+    let outputs = chrome.pointer_up(PointerButton::Primary, Some((pos.x, pos.y)));
+
+    assert!(
+      outputs.iter().any(|out| matches!(
+        out,
+        ChromeFrameOutput::ActionUrl(ChromeActionUrl::Navigate { url }) if url == "https://example.com/"
+      )),
+      "expected clicking suggestion to emit Navigate action url, got: {outputs:?}"
+    );
   }
 
   #[test]
