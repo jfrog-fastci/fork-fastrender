@@ -581,6 +581,10 @@ glob = "built-ins/Array/prototype/sort/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Array/prototype/push/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Array/prototype/at/**"
 status = "pass"
 

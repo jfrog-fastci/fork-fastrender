@@ -13120,6 +13120,16 @@ pub fn array_prototype_push(
   let len_value = scope.get_with_host_and_hooks(vm, host, hooks, obj, length_key, Value::Object(obj))?;
   let mut len = to_length_usize(vm, &mut scope, host, hooks, len_value)?;
 
+  // ECMA-262: Throw if the new length exceeds 2^53 - 1 (Number.MAX_SAFE_INTEGER).
+  const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991; // 2^53 - 1
+  let arg_count = args.len() as u64;
+  let new_len = (len as u64).saturating_add(arg_count);
+  if new_len > MAX_SAFE_INTEGER {
+    return Err(VmError::TypeError(
+      "Array.prototype.push result exceeds MAX_SAFE_INTEGER",
+    ));
+  }
+
   for (i, value) in args.iter().copied().enumerate() {
     if i % 1024 == 0 {
       vm.tick()?;
@@ -13141,7 +13151,9 @@ pub fn array_prototype_push(
     if !ok {
       return Err(VmError::TypeError("Array.prototype.push failed"));
     }
-    len = len.saturating_add(1);
+    len = len.checked_add(1).ok_or(VmError::TypeError(
+      "Array.prototype.push result exceeds MAX_SAFE_INTEGER",
+    ))?;
   }
 
   // Per spec, set the final length even though array index writes already extend length.
