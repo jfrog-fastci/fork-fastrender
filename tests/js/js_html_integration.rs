@@ -357,6 +357,50 @@ fn p1_defer_scripts_execute_after_parsing_in_document_order_before_domcontentloa
 }
 
 #[test]
+fn p1_base_href_does_not_affect_relative_defer_script_src_resolution_after_discovery() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/dir/page.html", js_options)?;
+
+  h.register_script_source("https://example.invalid/dir/a.js", r#"console.log("resolved:dir");"#);
+  h.register_script_source(
+    "https://example.invalid/base/a.js",
+    r#"console.log("resolved:base");"#,
+  );
+  h.register_html_source(
+    r#"<!doctype html><html><head>
+      <script defer src="a.js"></script>
+      <base href="https://example.invalid/base/">
+      <script>
+        console.log("inline");
+        document.addEventListener("DOMContentLoaded", () => console.log("dcl"));
+      </script>
+    </head><body></body></html>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  let logs = console_logs(&h.tab);
+  assert!(
+    logs.contains(&"resolved:dir".to_string()),
+    "expected defer script to resolve against the base URL in effect at discovery time, got: {logs:?}"
+  );
+  assert!(
+    !logs.contains(&"resolved:base".to_string()),
+    "expected defer script to NOT resolve against a later <base href>, got: {logs:?}"
+  );
+  assert_eq!(
+    logs,
+    vec![
+      "inline".to_string(),
+      "resolved:dir".to_string(),
+      "dcl".to_string(),
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p1_async_classic_scripts_do_not_block_parsing_when_not_preloaded() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p1_async_not_fast.html", js_options)?;
