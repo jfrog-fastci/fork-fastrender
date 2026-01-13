@@ -2060,12 +2060,20 @@ impl FloatContext {
   ///
   /// This is used to update the position as layout progresses.
   pub fn set_current_y(&mut self, y: f32) {
-    self.current_y = y;
+    if y.is_finite() {
+      self.current_y = y;
+    }
   }
 
   /// Advance the current Y position by the given amount
   pub fn advance_y(&mut self, delta: f32) {
-    self.current_y += delta;
+    if !delta.is_finite() {
+      return;
+    }
+    let next = self.current_y + delta;
+    if next.is_finite() {
+      self.current_y = next;
+    }
   }
 
   /// Returns true if there are no floats
