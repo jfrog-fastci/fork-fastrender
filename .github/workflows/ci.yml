@@ -671,7 +671,7 @@ jobs:
           #
           # Keep this job lightweight: the sandbox checks do not require default features (AVIF,
           # preserve3d_warp, etc).
-          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib --test macos_renderer_sandbox --test macos_sandbox_exec --test macos_sandbox_fontdb --test macos_seatbelt_render_smoke sandbox
+          "${timeout_bin}" -k 10 600 bash scripts/cargo_agent.sh test --locked -p fastrender --no-default-features --lib --test macos_renderer_sandbox --test macos_sandbox_exec --test macos_sandbox_exec_stdio_ipc --test macos_sandbox_fontdb --test macos_seatbelt_render_smoke sandbox
 
   # ===========================================================================
   # Browser UI - Cross-platform compile + Linux headless smoke (no display/GPU)

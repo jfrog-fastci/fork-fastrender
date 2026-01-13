@@ -1,12 +1,13 @@
-//! macOS sandbox-exec integration tests.
+//! macOS-only integration test asserting the `sandbox-exec` spawn path preserves stdio IPC.
 //!
-//! These tests validate that the `/usr/bin/sandbox-exec` spawn wrapper preserves stdio-based IPC
-//! (pipes). The actual filesystem/network sandbox denials are covered elsewhere; this test focuses
-//! purely on pipe viability.
+//! This is intentionally separate from the filesystem/network denial checks (see `tests/macos_sandbox_exec.rs`).
 
 #![cfg(target_os = "macos")]
 
+use fastrender::sandbox::macos_spawn::{sandbox_exec_command, SandboxExecError};
+use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::Stdio;
 
 const ENV_STDIN_SENTINEL: &str = "FASTR_TEST_SANDBOX_EXEC_STDIO_IPC_STDIN_SENTINEL";
@@ -15,14 +16,20 @@ const ENV_STDOUT_SENTINEL: &str = "FASTR_TEST_SANDBOX_EXEC_STDIO_IPC_STDOUT_SENT
 #[test]
 fn sandbox_exec_spawn_preserves_stdio_pipes_for_ipc() {
   let child_exe = env!("CARGO_BIN_EXE_sandbox_exec_stdio_ipc_child");
+  let args: Vec<OsString> = Vec::new();
+
+  let mut cmd = match sandbox_exec_command(Path::new(child_exe), &args) {
+    Ok(cmd) => cmd,
+    Err(SandboxExecError::MissingSandboxExec { path }) => {
+      eprintln!("skipping: sandbox-exec missing at {}", path.display());
+      return;
+    }
+    Err(err) => panic!("failed to build sandbox-exec command: {err}"),
+  };
 
   let stdin_sentinel = "fastrender-stdio-ipc-in";
   let stdout_sentinel = "fastrender-stdio-ipc-out";
 
-  let mut cmd = crate::common::macos_sandbox_exec::sandbox_exec_command(
-    child_exe,
-    crate::common::macos_sandbox_exec::profile_allow_default(),
-  );
   cmd.env(ENV_STDIN_SENTINEL, stdin_sentinel);
   cmd.env(ENV_STDOUT_SENTINEL, stdout_sentinel);
   cmd.stdin(Stdio::piped());
