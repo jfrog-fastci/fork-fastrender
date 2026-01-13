@@ -2629,6 +2629,46 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_int16_array_does_not_invoke_shadowed_view_metadata_getters() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(12);\
+         const a = new Int16Array(ab, 2, 2);\
+         a[0] = 1234;\
+         a[1] = -5678;\
+         const origByteOffset = a.byteOffset;\
+         const origLength = a.length;\
+         const origByteLength = a.byteLength;\
+         Object.defineProperty(a, 'buffer', { get() { throw 1; } });\
+         Object.defineProperty(a, 'byteOffset', { get() { throw 2; } });\
+         Object.defineProperty(a, 'length', { get() { throw 3; } });\
+         Object.defineProperty(a, 'byteLength', { get() { throw 4; } });\
+         let threwBuffer = false;\
+         let threwByteOffset = false;\
+         let threwLength = false;\
+         let threwByteLength = false;\
+         try { a.buffer; } catch (e) { threwBuffer = e === 1; }\
+         try { a.byteOffset; } catch (e) { threwByteOffset = e === 2; }\
+         try { a.length; } catch (e) { threwLength = e === 3; }\
+         try { a.byteLength; } catch (e) { threwByteLength = e === 4; }\
+         if (!threwBuffer || !threwByteOffset || !threwLength || !threwByteLength) return false;\
+         const c = structuredClone(a);\
+         if (!(c instanceof Int16Array)) return false;\
+         if (Object.getPrototypeOf(c) !== Int16Array.prototype) return false;\
+         if (c.length !== origLength) return false;\
+         if (c.byteOffset !== origByteOffset) return false;\
+         if (c.byteLength !== origByteLength) return false;\
+         if (c[0] !== 1234 || c[1] !== -5678) return false;\
+         if (c.buffer === ab) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_data_view_does_not_invoke_shadowed_view_metadata_getters() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(
