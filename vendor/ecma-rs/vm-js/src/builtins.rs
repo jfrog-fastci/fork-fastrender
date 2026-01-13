@@ -16314,6 +16314,23 @@ pub fn regexp_prototype_symbol_split(
   let len = input_units.len();
   let limit_usize = limit as usize;
 
+  // Spec: If `size == 0`, `@@split` performs a single `RegExpExec` and returns an empty list if it
+  // succeeds, otherwise it returns `[S]`.
+  if len == 0 {
+    let matched = {
+      let mut tick = || vm.tick();
+      let exec_mem = {
+        let heap = scope.heap();
+        let headroom = heap.limits().max_bytes.saturating_sub(heap.estimated_total_bytes());
+        RegExpExecMemoryBudget::new(headroom)
+      };
+      program.exec_at(&input_units, 0, flags, &mut tick, &exec_mem, None)?
+    };
+    if matched.is_some() {
+      return Ok(Value::Object(create_array_object(vm, &mut scope, 0)?));
+    }
+  }
+
   let mut parts: Vec<Part> = Vec::new();
   let mut p = 0usize;
   let mut q = 0usize;
@@ -28887,6 +28904,21 @@ mod regexp_prototype_tests {
         // class is not a terminator and should be preserved.
         (/[/]/).source === "[/]" &&
         (/a\/b/).source === "a\\/b"
+      "#,
+    )?;
+    assert_eq!(v, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn regexp_symbol_split_empty_string_match_returns_empty_array() -> Result<(), VmError> {
+    let mut rt = new_runtime();
+    let v = rt.exec_script(
+      r#"
+        (function () {
+          const parts = /(?:)/[Symbol.split]("");
+          return Array.isArray(parts) && parts.length === 0;
+        })()
       "#,
     )?;
     assert_eq!(v, Value::Bool(true));
