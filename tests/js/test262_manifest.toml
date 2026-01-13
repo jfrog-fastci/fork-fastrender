@@ -1365,6 +1365,16 @@ status = "xfail"
 reason = "vm-js: RegExp backtracking/repetition capture semantics are still incorrect for some nested groups."
 
 [[expectations]]
+id = "built-ins/RegExp/prototype/exec/duplicate-named-groups-properties.js"
+status = "xfail"
+reason = "parse-js: regexp-duplicate-named-groups is not yet supported (duplicate named capture groups are rejected as invalid RegExp)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/duplicate-named-indices-groups-properties.js"
+status = "xfail"
+reason = "parse-js: regexp-duplicate-named-groups is not yet supported (blocks duplicate named group tests that also use /d indices)."
+
+[[expectations]]
 id = "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js"
 status = "pass"
 
@@ -1374,31 +1384,35 @@ status = "xfail"
 reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-matchall.js"
+id = "built-ins/RegExp/named-groups/functional-replace-global.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-search.js"
+id = "built-ins/RegExp/named-groups/functional-replace-non-global.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-split.js"
+id = "built-ins/RegExp/named-groups/groups-object.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-exec.js"
+id = "built-ins/RegExp/named-groups/groups-object-undefined.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-group-property-enumeration-order.js"
+id = "built-ins/RegExp/named-groups/groups-object-unmatched.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-match.js"
+id = "built-ins/RegExp/named-groups/string-replace-get.js"
 status = "pass"
 
 [[expectations]]
-id = "built-ins/RegExp/named-groups/duplicate-names-test.js"
+id = "built-ins/RegExp/named-groups/string-replace-missing.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/string-replace-undefined.js"
 status = "pass"
 
 [[expectations]]
@@ -1444,11 +1458,6 @@ status = "pass"
 [[expectations]]
 id = "built-ins/RegExp/named-groups/unicode-references.js"
 status = "pass"
-
-[[expectations]]
-id = "built-ins/RegExp/lookBehind/greedy-loop.js"
-status = "xfail"
-reason = "vm-js: RegExp lookbehind: greedy-loop capture semantics do not yet match test262."
 
 [[expectations]]
 glob = "built-ins/RegExp/lookBehind/**"
@@ -1516,11 +1525,13 @@ status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-groups-properties.js"
-status = "pass"
+status = "xfail"
+reason = "parse-js: regexp-duplicate-named-groups is not yet supported (duplicate named capture groups are rejected as invalid RegExp)."
 
 [[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-indices-groups-properties.js"
-status = "pass"
+status = "xfail"
+reason = "parse-js: regexp-duplicate-named-groups is not yet supported (blocks duplicate named group tests that also use /d indices)."
 
 [[expectations]]
 id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
