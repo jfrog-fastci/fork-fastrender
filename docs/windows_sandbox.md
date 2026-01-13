@@ -83,7 +83,7 @@ Code map (repo reality):
         (best-effort; escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
       - Does **not** assign the child to a Job object (callers must do that separately).
     - Manual sandbox probe example (`crates/win-sandbox/examples/probe.rs`)
-      - `cargo run -p win-sandbox --example probe -- --connect-localhost`
+      - `bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- --connect-localhost`
       - Spawns a sandboxed copy of itself and prints observed sandbox state from inside the child
         (AppContainer + integrity level + `ALL APPLICATION PACKAGES` group presence + Job membership
         + selected mitigations), with optional filesystem/network probes for quick regression triage.

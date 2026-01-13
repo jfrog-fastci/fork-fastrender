@@ -7,7 +7,7 @@
 //! Usage:
 //!
 //! ```text
-//! cargo run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost]
+//! bash scripts/cargo_agent.sh run -p win-sandbox --example probe -- [--read <PATH>] [--connect <IP:PORT>] [--connect-localhost]
 //! ```
 //!
 //! Notes:
