@@ -2542,12 +2542,12 @@ fn make_idle_deadline_object(
   let own_data_value =
     |heap: &vm_js::Heap, obj: vm_js::GcObject, key: &PropertyKey| -> Result<Option<Value>, VmError> {
       match heap.object_get_own_data_property_value(obj, key) {
-      Ok(value) => Ok(value),
-      // Best-effort: ignore non-data properties so we don't trip over user-installed getters.
-      Err(VmError::PropertyNotData) => Ok(None),
-      Err(err) => Err(err),
-    }
-  }
+        Ok(value) => Ok(value),
+        // Best-effort: ignore non-data properties so we don't trip over user-installed getters.
+        Err(VmError::PropertyNotData) => Ok(None),
+        Err(err) => Err(err),
+      }
+    };
   let idle_deadline_ctor_key = alloc_key(&mut scope, "IdleDeadline")?;
   let idle_deadline_ctor = own_data_value(scope.heap(), global_obj, &idle_deadline_ctor_key)?
     .and_then(|v| match v {

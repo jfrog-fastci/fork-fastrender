@@ -96,7 +96,11 @@ fn image_map_area_behaves_like_link_for_context_menu_and_click() {
   // Context menu hit-testing should resolve the <area href> to an absolute URL.
   worker
     .ui_tx
-    .send(UiToWorker::ContextMenuRequest { tab_id, pos_css })
+    .send(UiToWorker::ContextMenuRequest {
+      tab_id,
+      pos_css,
+      modifiers: PointerModifiers::NONE,
+    })
     .unwrap();
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {
