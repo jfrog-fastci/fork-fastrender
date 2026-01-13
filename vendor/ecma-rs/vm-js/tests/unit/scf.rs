@@ -17,3 +17,9 @@ fn surrogate_sanity() {
   assert_eq!(scf(0xD800), 0xD800);
 }
 
+#[test]
+fn ignores_full_and_turkic_mappings() {
+  // U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE has only full (`F`) and Turkic (`T`) mappings in
+  // Unicode CaseFolding.txt, so `scf` must treat it as identity.
+  assert_eq!(scf(0x0130), 0x0130);
+}

@@ -10,15 +10,9 @@
 //! and writes:
 //! `vendor/ecma-rs/vm-js/src/unicode_case_folding.rs`
 
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-#[derive(Clone, Copy)]
-struct Mapping {
-  from: u32,
-  to: u32,
-}
 
 fn main() {
   if let Err(err) = run() {
@@ -49,8 +43,8 @@ fn generate_scf_module(path: &Path) -> Result<String, String> {
   let contents = fs::read_to_string(path)
     .map_err(|e| format!("reading CaseFolding data from {path:?}: {e}"))?;
 
-  let mut mappings: Vec<Mapping> = Vec::new();
-  let mut seen_from: HashSet<u32> = HashSet::new();
+  // Use `BTreeMap` so output is naturally sorted by source code point.
+  let mut mappings: BTreeMap<u32, u32> = BTreeMap::new();
 
   for (idx, raw_line) in contents.lines().enumerate() {
     let line_no = idx + 1;
@@ -94,6 +88,11 @@ fn generate_scf_module(path: &Path) -> Result<String, String> {
     let to = parse_hex_code_point(to_raw).map_err(|e| {
       format!("invalid CaseFolding line {line_no}: bad mapping {mapping_raw:?}: {e}")
     })?;
+    if (0xD800..=0xDFFF).contains(&to) {
+      return Err(format!(
+        "invalid CaseFolding line {line_no}: surrogate code point in mapping target: {mapping_raw:?}"
+      ));
+    }
     if mapping_iter.next().is_some() {
       // Full case folding (multi code point) => ignore for scf.
       continue;
@@ -104,15 +103,14 @@ fn generate_scf_module(path: &Path) -> Result<String, String> {
       continue;
     }
 
-    if !seen_from.insert(from) {
-      return Err(format!(
-        "invalid CaseFolding: duplicate mapping for code point {from_raw:?}"
-      ));
+    if let Some(prev) = mappings.insert(from, to) {
+      if prev != to {
+        return Err(format!(
+          "invalid CaseFolding line {line_no}: duplicate mapping for {from_raw:?}: 0x{prev:04X} vs 0x{to:04X}"
+        ));
+      }
     }
-    mappings.push(Mapping { from, to });
   }
-
-  mappings.sort_by_key(|m| m.from);
 
   let mut out = String::new();
   out.push_str("//! Unicode simple case folding (`scf`) table.\n");
@@ -138,8 +136,8 @@ fn generate_scf_module(path: &Path) -> Result<String, String> {
 
   out.push_str("#[rustfmt::skip]\n");
   out.push_str("const SCF_TABLE: &[(u32, u32)] = &[\n");
-  for m in &mappings {
-    out.push_str(&format!("  (0x{from:04X}, 0x{to:04X}),\n", from = m.from, to = m.to));
+  for (from, to) in &mappings {
+    out.push_str(&format!("  (0x{from:04X}, 0x{to:04X}),\n"));
   }
   out.push_str("];\n");
 
