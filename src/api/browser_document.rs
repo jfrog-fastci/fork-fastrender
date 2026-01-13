@@ -1232,10 +1232,29 @@ impl BrowserDocument {
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
     interaction_state: Option<&InteractionState>,
   ) -> Result<super::PaintedFrame> {
+    let prev_css_hash = self.interaction_css_hash;
+    let prev_paint_hash = self.interaction_paint_hash;
+    let base_dirty = self.prepared.is_none() || self.style_dirty || self.layout_dirty;
+
+    let log_enabled = self
+      .options
+      .runtime_toggles
+      .as_ref()
+      .unwrap_or(&self.renderer.runtime_toggles)
+      .truthy("FASTR_LOG_INTERACTION_INVALIDATION");
+    let prev_layout_fingerprint = if log_enabled {
+      self
+        .prepared
+        .as_ref()
+        .map(|prepared| super::styled_layout_fingerprint_digest(prepared.styled_tree()))
+    } else {
+      None
+    };
+
     let interaction_css_hash = interaction_state_css_fingerprint(interaction_state);
     let interaction_paint_hash = interaction_state_paint_fingerprint(interaction_state);
-    let css_changed = interaction_css_hash != self.interaction_css_hash;
-    let paint_changed = interaction_paint_hash != self.interaction_paint_hash;
+    let css_changed = interaction_css_hash != prev_css_hash;
+    let paint_changed = interaction_paint_hash != prev_paint_hash;
 
     if css_changed {
       // Interaction state affects pseudo-class matching and other cascade inputs, so we must rerun
@@ -1300,6 +1319,43 @@ impl BrowserDocument {
       if let Some(prepared) = self.prepared.as_mut() {
         apply_paint_interaction_state_to_prepared(prepared, interaction_state);
       }
+    }
+
+    if log_enabled {
+      let layout_fingerprint_matched = if needs_layout {
+        let next_layout_fingerprint = self
+          .prepared
+          .as_ref()
+          .map(|prepared| super::styled_layout_fingerprint_digest(prepared.styled_tree()));
+        match (prev_layout_fingerprint, next_layout_fingerprint) {
+          (Some(prev), Some(next)) => prev == next,
+          _ => false,
+        }
+      } else {
+        true
+      };
+
+      let path = if base_dirty {
+        "full_prepare"
+      } else if css_changed {
+        if layout_fingerprint_matched {
+          "restyle_reuse_layout"
+        } else {
+          "restyle_relayout"
+        }
+      } else {
+        "paint_only"
+      };
+
+      eprintln!(
+        "[interaction-invalidation] path={} css={:#x}->{:#x} paint={:#x}->{:#x} layout_fp_match={}",
+        path,
+        prev_css_hash,
+        interaction_css_hash,
+        prev_paint_hash,
+        interaction_paint_hash,
+        layout_fingerprint_matched
+      );
     }
 
     let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
