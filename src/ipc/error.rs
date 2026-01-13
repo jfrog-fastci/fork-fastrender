@@ -26,12 +26,6 @@ pub enum IpcError {
   #[error("IPC protocol error: frame length {len} exceeds maximum {max}")]
   FrameTooLarge { len: usize, max: usize },
 
-  #[error("invalid IPC parameters: {message}")]
-  InvalidParameters { message: String },
-
-  #[error("IPC protocol violation: {message}")]
-  ProtocolViolation { message: String },
-
   // ==========================================================================
   // Generic errors (used by helper modules like the shared frame pool)
   // ==========================================================================
@@ -74,7 +68,9 @@ pub enum IpcError {
   #[error("frame buffer max_width_px/max_height_px must be non-zero")]
   FrameBufferMaxDimensionsZero,
 
-  #[error("frame buffer stride_bytes={stride_bytes} is smaller than min_row_bytes={min_row_bytes}")]
+  #[error(
+    "frame buffer stride_bytes={stride_bytes} is smaller than min_row_bytes={min_row_bytes}"
+  )]
   FrameBufferStrideTooSmall {
     stride_bytes: usize,
     min_row_bytes: usize,
@@ -112,7 +108,10 @@ pub enum IpcError {
   },
 
   #[error("frame row bytes {row_bytes} exceed stride_bytes {stride_bytes}")]
-  FrameRowBytesExceedStride { row_bytes: usize, stride_bytes: usize },
+  FrameRowBytesExceedStride {
+    row_bytes: usize,
+    stride_bytes: usize,
+  },
 
   #[error("frame exceeds shared memory buffer: required={required_bytes} available={byte_len}")]
   FrameExceedsBufferLen {

@@ -26,7 +26,10 @@ fn socket_domain_filter_allows_unix_denies_inet() {
       network_policy: fastrender::sandbox::NetworkPolicy::AllowUnixSocketsOnly,
       ..Default::default()
     }) {
-      Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
+      Ok(
+        fastrender::sandbox::SandboxStatus::Applied
+        | fastrender::sandbox::SandboxStatus::AppliedWithoutTsync,
+      ) => {}
       Ok(
         fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
       ) => return,
@@ -40,8 +43,7 @@ fn socket_domain_filter_allows_unix_denies_inet() {
 
     let mut fds = [-1, -1];
     // SAFETY: `fds` is a valid pointer to two integers.
-    let rc =
-      unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+    let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     assert_eq!(
       rc,
       0,
@@ -85,7 +87,8 @@ fn socket_domain_filter_allows_unix_denies_inet() {
   let exe = std::env::current_exe().expect("current test executable path");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
-    // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
+    // Avoid a large libtest threadpool: the sandbox applies to all threads when TSYNC is
+    // supported, and when TSYNC is unavailable we must avoid spawning additional threads.
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
     .arg(TEST_NAME)

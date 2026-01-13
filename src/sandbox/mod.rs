@@ -6,10 +6,11 @@
 //!
 //! ## Platform implementations
 //!
-//! - **Linux**: `seccomp-bpf` with `SECCOMP_FILTER_FLAG_TSYNC` to ensure the filter is applied to
-//!   all threads in the process. If you apply the sandbox after spawning threads, the kernel may
-//!   reject the request (or you may inadvertently sandbox background threads that still need
-//!   broader syscall access).
+//! - **Linux**: `seccomp-bpf` with `SECCOMP_FILTER_FLAG_TSYNC` when supported to ensure the filter
+//!   is applied to all threads in the process. Older kernels that support seccomp filters but not
+//!   TSYNC fall back to installing the filter without TSYNC (see
+//!   [`SandboxStatus::AppliedWithoutTsync`]), which requires applying the sandbox before any
+//!   additional threads spawn.
 //! - **macOS**: renderers can call `sandbox_init(3)` (Seatbelt) in-process. For debugging/legacy,
 //!   the browser process can also launch renderers through `/usr/bin/sandbox-exec` (deprecated by
 //!   Apple; may be removed in future macOS releases). See [`macos_spawn`] for helpers and
@@ -63,7 +64,14 @@ pub mod macos;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
   Disabled,
+  /// Sandbox was applied successfully (including cross-thread synchronization when available).
   Applied,
+  /// Sandbox was applied, but without `SECCOMP_FILTER_FLAG_TSYNC`.
+  ///
+  /// When `TSYNC` is unavailable, the seccomp filter is only guaranteed to apply to the calling
+  /// thread. Callers **must** apply the sandbox *before* spawning any additional threads to ensure
+  /// the entire process is covered.
+  AppliedWithoutTsync,
   Unsupported,
 }
 
@@ -220,6 +228,11 @@ pub struct RendererSandboxConfig {
   pub landlock: RendererLandlockPolicy,
   /// Seccomp policy.
   pub seccomp: RendererSeccompPolicy,
+  /// Force-disable `SECCOMP_FILTER_FLAG_TSYNC` even if the running kernel supports it.
+  ///
+  /// This is primarily intended for tests so the fallback path can be exercised deterministically
+  /// on modern kernels.
+  pub force_disable_tsync: bool,
 }
 
 impl Default for RendererSandboxConfig {
@@ -235,6 +248,7 @@ impl Default for RendererSandboxConfig {
       nproc_limit: None,
       landlock: RendererLandlockPolicy::Disabled,
       seccomp: RendererSeccompPolicy::RendererDefault,
+      force_disable_tsync: false,
     }
   }
 }
@@ -504,8 +518,12 @@ pub fn linux_set_parent_death_signal() -> io::Result<()> {
 
 /// Apply the renderer sandbox for the current process.
 ///
-/// Call this during renderer startup, before spawning any thread pools. On Linux, the sandbox is
-/// process-wide and uses `SECCOMP_FILTER_FLAG_TSYNC` to apply to all threads.
+/// Call this during renderer startup, before spawning any thread pools.
+///
+/// On Linux, the sandbox is process-wide and uses `SECCOMP_FILTER_FLAG_TSYNC` to apply to all
+/// threads when the running kernel supports it. When TSYNC is unavailable, the sandbox still
+/// installs successfully but returns [`SandboxStatus::AppliedWithoutTsync`] and must be applied
+/// before any threads are spawned.
 pub fn apply_renderer_sandbox(
   config: RendererSandboxConfig,
 ) -> Result<SandboxStatus, SandboxError> {
@@ -882,7 +900,7 @@ mod tests {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
       match apply_renderer_seccomp_denylist() {
-        Ok(SandboxStatus::Applied) => {}
+        Ok(SandboxStatus::Applied) | Ok(SandboxStatus::AppliedWithoutTsync) => {}
         Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
@@ -919,8 +937,7 @@ mod tests {
         "expected EPERM for Unix socketpair (got {unix_err:?})"
       );
 
-      let net_err =
-        TcpListener::bind("127.0.0.1:0").expect_err("expected bind to fail");
+      let net_err = TcpListener::bind("127.0.0.1:0").expect_err("expected bind to fail");
       assert_eq!(
         net_err.raw_os_error(),
         Some(libc::EPERM),
@@ -945,7 +962,8 @@ mod tests {
     let test_name = "sandbox::tests::renderer_seccomp_denylist_blocks_fs_and_network";
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
-      // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
+      // Avoid a large libtest threadpool: when TSYNC is available the sandbox applies to all
+      // threads.
       .env("RUST_TEST_THREADS", "1")
       .arg("--exact")
       .arg(test_name)
@@ -968,7 +986,7 @@ mod tests {
         network_policy: NetworkPolicy::AllowUnixSocketsOnly,
         ..Default::default()
       }) {
-        Ok(SandboxStatus::Applied) => {}
+        Ok(SandboxStatus::Applied) | Ok(SandboxStatus::AppliedWithoutTsync) => {}
         Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {

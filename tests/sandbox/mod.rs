@@ -48,6 +48,9 @@ mod linux_seccomp_socket_domain;
 #[cfg(target_os = "linux")]
 mod linux_seccomp_fs_metadata;
 
+#[cfg(target_os = "linux")]
+mod linux_seccomp_tsync;
+
 #[cfg(windows)]
 mod windows_process_handle_escape;
 

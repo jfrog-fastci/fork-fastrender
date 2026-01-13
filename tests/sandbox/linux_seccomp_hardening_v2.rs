@@ -46,10 +46,11 @@ fn blocks_high_risk_syscalls() {
   let is_child = std::env::var_os(CHILD_ENV).is_some();
   if is_child {
     match fastrender::sandbox::apply_renderer_seccomp_denylist() {
-      Ok(fastrender::sandbox::SandboxStatus::Applied) => {}
-      Ok(
-        fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported,
-      ) => return,
+      Ok(fastrender::sandbox::SandboxStatus::Applied)
+      | Ok(fastrender::sandbox::SandboxStatus::AppliedWithoutTsync) => {}
+      Ok(fastrender::sandbox::SandboxStatus::Disabled | fastrender::sandbox::SandboxStatus::Unsupported) => {
+        return;
+      }
       Err(err) => {
         if is_seccomp_unsupported_error(&err) {
           return;
@@ -85,7 +86,8 @@ fn blocks_high_risk_syscalls() {
   let exe = std::env::current_exe().expect("current test exe path");
   let output = Command::new(exe)
     .env(CHILD_ENV, "1")
-    // Avoid a large libtest threadpool: the sandbox uses TSYNC and applies to all threads.
+    // Avoid a large libtest threadpool: the sandbox applies to all threads when TSYNC is
+    // supported, and when TSYNC is unavailable we must avoid spawning additional threads.
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
     .arg(TEST_NAME)

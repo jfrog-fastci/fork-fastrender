@@ -2,8 +2,9 @@
 //!
 //! Implementation notes:
 //! - Uses `PR_SET_NO_NEW_PRIVS` (mandatory for unprivileged seccomp).
-//! - Installs a `SECCOMP_MODE_FILTER` program via the `seccomp()` syscall with
-//!   `SECCOMP_FILTER_FLAG_TSYNC` so the policy applies to all threads.
+//! - Installs a `SECCOMP_MODE_FILTER` program via the `seccomp()` syscall, attempting
+//!   `SECCOMP_FILTER_FLAG_TSYNC` first (all threads) and falling back to `flags=0` on older kernels
+//!   that reject TSYNC with `EINVAL`.
 //! - The policy is a small denylist (returning `EPERM`) on top of a broad allowlist,
 //!   with a conservative default action (`KILL_PROCESS`) for syscalls not explicitly allowed.
 
@@ -451,33 +452,131 @@ pub(super) fn apply_renderer_sandbox_linux(
   // SAFETY: `seccomp` syscall expects a pointer to a valid `sock_fprog` which contains a valid
   // pointer/length pair for the filter program. The kernel copies the filter; the pointer does
   // not need to outlive the syscall.
+  let mut do_install = |flags: u32| seccomp_set_mode_filter(flags, &prog);
+  let status = install_filter_with_tsync_fallback(config, &mut do_install)
+    .map_err(|source| seccomp_error_from_io(source))?;
+  Ok(status)
+}
+
+fn seccomp_error_from_io(source: io::Error) -> SandboxError {
+  let errno = source.raw_os_error().unwrap_or_default();
+  if errno == libc::EPERM {
+    return SandboxError::SeccompInstallRejected {
+      reason: SeccompInstallRejectedReason::PermissionDenied,
+      errno,
+      source,
+    };
+  }
+  if errno == libc::EINVAL {
+    return SandboxError::SeccompInstallRejected {
+      reason: SeccompInstallRejectedReason::InvalidArgument,
+      errno,
+      source,
+    };
+  }
+  SandboxError::SeccompInstallFailed { errno, source }
+}
+
+fn install_filter_with_tsync_fallback<F>(
+  config: RendererSandboxConfig,
+  do_install: &mut F,
+) -> io::Result<SandboxStatus>
+where
+  F: FnMut(u32) -> io::Result<()>,
+{
+  if config.force_disable_tsync {
+    do_install(0)?;
+    return Ok(SandboxStatus::AppliedWithoutTsync);
+  }
+
+  match do_install(SECCOMP_FILTER_FLAG_TSYNC) {
+    Ok(()) => Ok(SandboxStatus::Applied),
+    Err(err) => {
+      if err.raw_os_error() == Some(libc::EINVAL) {
+        // TSYNC is not supported by the running kernel; retry without flags.
+        do_install(0)?;
+        Ok(SandboxStatus::AppliedWithoutTsync)
+      } else {
+        Err(err)
+      }
+    }
+  }
+}
+
+fn seccomp_set_mode_filter(flags: u32, prog: &libc::sock_fprog) -> io::Result<()> {
+  // SAFETY: `seccomp` is a process-global syscall. We pass a valid pointer to a `sock_fprog`.
+  // The kernel copies the filter program and treats the user memory as read-only.
   let rc = unsafe {
     libc::syscall(
       libc::SYS_seccomp,
       SECCOMP_SET_MODE_FILTER,
-      SECCOMP_FILTER_FLAG_TSYNC,
-      &prog as *const libc::sock_fprog,
+      flags,
+      prog as *const libc::sock_fprog,
     )
   };
-  if rc != 0 {
-    let source = io::Error::last_os_error();
-    let errno = source.raw_os_error().unwrap_or_default();
-    if errno == libc::EPERM {
-      return Err(SandboxError::SeccompInstallRejected {
-        reason: SeccompInstallRejectedReason::PermissionDenied,
-        errno,
-        source,
-      });
-    }
-    if errno == libc::EINVAL {
-      return Err(SandboxError::SeccompInstallRejected {
-        reason: SeccompInstallRejectedReason::InvalidArgument,
-        errno,
-        source,
-      });
-    }
-    return Err(SandboxError::SeccompInstallFailed { errno, source });
+  if rc < 0 {
+    return Err(io::Error::last_os_error());
+  }
+  Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn err(errno: i32) -> io::Error {
+    io::Error::from_raw_os_error(errno)
   }
 
-  Ok(SandboxStatus::Applied)
+  #[test]
+  fn tsync_retry_on_einval() {
+    let config = RendererSandboxConfig::default();
+    let mut flags_seen = Vec::new();
+    let mut calls = 0usize;
+    let mut install = |flags: u32| {
+      flags_seen.push(flags);
+      calls += 1;
+      if calls == 1 {
+        return Err(err(libc::EINVAL));
+      }
+      Ok(())
+    };
+    let status =
+      install_filter_with_tsync_fallback(config, &mut install).expect("expected fallback to work");
+    assert_eq!(status, SandboxStatus::AppliedWithoutTsync);
+    assert_eq!(flags_seen, vec![SECCOMP_FILTER_FLAG_TSYNC, 0]);
+  }
+
+  #[test]
+  fn tsync_no_retry_on_other_error() {
+    let config = RendererSandboxConfig::default();
+    let mut calls = 0usize;
+    let mut install = |_flags: u32| {
+      calls += 1;
+      Err(err(libc::EPERM))
+    };
+    let result = install_filter_with_tsync_fallback(config, &mut install);
+    assert!(
+      matches!(result, Err(ref e) if e.raw_os_error() == Some(libc::EPERM)),
+      "expected EPERM error"
+    );
+    assert_eq!(calls, 1, "expected no retry for non-EINVAL errors");
+  }
+
+  #[test]
+  fn force_disable_tsync_skips_first_attempt() {
+    let config = RendererSandboxConfig {
+      force_disable_tsync: true,
+      ..Default::default()
+    };
+    let mut flags_seen = Vec::new();
+    let mut install = |flags: u32| {
+      flags_seen.push(flags);
+      Ok(())
+    };
+    let status = install_filter_with_tsync_fallback(config, &mut install)
+      .expect("expected install to succeed");
+    assert_eq!(status, SandboxStatus::AppliedWithoutTsync);
+    assert_eq!(flags_seen, vec![0]);
+  }
 }
