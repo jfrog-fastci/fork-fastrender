@@ -31,8 +31,8 @@ use crate::ui::url::{
 };
 use crate::ui::url_display;
 use crate::ui::zoom;
-use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
 use crate::ui::ChromeAction;
+use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
 use url::Url;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
@@ -954,28 +954,8 @@ pub fn chrome_ui_with_bookmarks(
     })
   } else {
     (
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      false,
-      None,
-      None,
-      false,
-      false,
-      None,
+      false, false, false, false, false, false, false, false, false, false, false, false, false,
+      false, false, false, false, None, None, false, false, None,
     )
   };
 
@@ -1635,8 +1615,20 @@ pub fn chrome_ui_with_bookmarks(
                 );
               }
 
+              if !formatted_url.display_host_prefix.is_empty() {
+                job.append(
+                  &formatted_url.display_host_prefix,
+                  0.0,
+                  egui::text::TextFormat {
+                    font_id: font_id.clone(),
+                    color: ui.visuals().weak_text_color(),
+                    ..Default::default()
+                  },
+                );
+              }
+
               job.append(
-                &formatted_url.display_host,
+                &formatted_url.display_host_domain,
                 0.0,
                 egui::text::TextFormat {
                   font_id: font_id.clone(),
@@ -1644,6 +1636,18 @@ pub fn chrome_ui_with_bookmarks(
                   ..Default::default()
                 },
               );
+
+              if !formatted_url.display_host_suffix.is_empty() {
+                job.append(
+                  &formatted_url.display_host_suffix,
+                  0.0,
+                  egui::text::TextFormat {
+                    font_id: font_id.clone(),
+                    color: ui.visuals().weak_text_color(),
+                    ..Default::default()
+                  },
+                );
+              }
 
               if let Some(rest) = formatted_url
                 .display_path_query_fragment
@@ -1846,12 +1850,7 @@ pub fn chrome_ui_with_bookmarks(
                 .rounding(badge_rounding)
                 .inner_margin(badge_margin)
                 .show(ui, |ui| {
-                  let icon_resp = icon_tinted(
-                    ui,
-                    badge_icon,
-                    ui.spacing().icon_width,
-                    warn_fg,
-                  );
+                  let icon_resp = icon_tinted(ui, badge_icon, ui.spacing().icon_width, warn_fg);
                   icon_resp.widget_info({
                     let label = a11y_label.clone();
                     move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
@@ -4574,7 +4573,10 @@ mod tests {
   #[test]
   fn accent_color_swatch_activates_via_keyboard() {
     let mut app = BrowserAppState::new();
-    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
     app.chrome.appearance_popup_open = true;
 
     let ctx = egui::Context::default();
@@ -5238,7 +5240,9 @@ mod tests {
     let _ = ctx.end_frame();
 
     assert!(
-      actions.iter().any(|action| matches!(action, ChromeAction::SavePage)),
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::SavePage)),
       "expected ChromeAction::SavePage, got {actions:?}"
     );
   }
@@ -6769,7 +6773,9 @@ mod tests {
     // This ensures we cover the release-driven detach path (vs. detach-on-drag).
     let release_pos = egui::pos2(strip_rect.center().x, strip_rect.top() - 10.0);
     assert!(
-      strip_rect.expand(super::tab_strip::TAB_DETACH_DRAG_THRESHOLD).contains(release_pos),
+      strip_rect
+        .expand(super::tab_strip::TAB_DETACH_DRAG_THRESHOLD)
+        .contains(release_pos),
       "expected release_pos to be inside the detach threshold expansion"
     );
     assert!(
@@ -7844,6 +7850,29 @@ mod tests {
   }
 
   #[test]
+  fn address_bar_display_mode_shows_full_host_including_subdomains() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://accounts.google.com/path".to_string()),
+      true,
+    );
+    let ctx = egui::Context::default();
+
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
+    let output = ctx.end_frame();
+
+    let texts = collect_text_strings(&output.shapes);
+    assert!(
+      texts
+        .iter()
+        .any(|text| text.contains("accounts.google.com")),
+      "expected address bar display to contain the subdomain prefix; found texts: {texts:?}"
+    );
+  }
+
+  #[test]
   fn address_bar_bookmark_star_is_keyboard_activatable() {
     let mut app = BrowserAppState::new();
     let tab_id = TabId(1);
@@ -7940,8 +7969,14 @@ mod tests {
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
-    assert!(app.chrome.address_bar_has_focus, "expected address bar to have focus");
-    assert!(app.chrome.address_bar_editing, "expected address bar to be editing");
+    assert!(
+      app.chrome.address_bar_has_focus,
+      "expected address bar to have focus"
+    );
+    assert!(
+      app.chrome.address_bar_editing,
+      "expected address bar to be editing"
+    );
     assert_address_bar_select_all(&ctx, address_bar_id, end);
   }
 
@@ -7969,8 +8004,14 @@ mod tests {
     let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
-    assert!(app.chrome.address_bar_has_focus, "expected address bar to have focus");
-    assert!(app.chrome.address_bar_editing, "expected address bar to be editing");
+    assert!(
+      app.chrome.address_bar_has_focus,
+      "expected address bar to have focus"
+    );
+    assert!(
+      app.chrome.address_bar_editing,
+      "expected address bar to be editing"
+    );
     assert_address_bar_select_all(&ctx, address_bar_id, end);
   }
 
@@ -8050,8 +8091,7 @@ mod tests {
 
     let ctx = egui::Context::default();
     let screen_size = egui::vec2(320.0, 200.0);
-    let screen_rect =
-      egui::Rect::from_min_size(egui::Pos2::new(0.0, 0.0), screen_size);
+    let screen_rect = egui::Rect::from_min_size(egui::Pos2::new(0.0, 0.0), screen_size);
 
     // Anchor the menu at the bottom-right corner so it would overflow without constraint.
     app.chrome.open_tab_context_menu = Some(OpenTabContextMenuState {
@@ -8065,10 +8105,11 @@ mod tests {
     let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let _ = ctx.end_frame();
 
-    let (min_x, min_y, max_x, max_y) =
-      app.chrome.tab_context_menu_rect.expect("expected tab context menu rect");
-    let menu_rect =
-      egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
+    let (min_x, min_y, max_x, max_y) = app
+      .chrome
+      .tab_context_menu_rect
+      .expect("expected tab context menu rect");
+    let menu_rect = egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
 
     let eps = 0.01;
     assert!(
