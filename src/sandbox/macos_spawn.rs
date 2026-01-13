@@ -36,7 +36,7 @@
 //! [`wrap_command_with_sandbox_exec`]) when spawning a renderer.
 
 #[cfg(target_os = "macos")]
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 #[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
@@ -90,6 +90,10 @@ pub fn maybe_wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io
 /// Specifically, the command is transformed to:
 /// `sandbox-exec -p <sbpl> -- <original-exe> <args...>`
 ///
+/// The wrapper also defines a small set of common Seatbelt parameters via `sandbox-exec -D`, so SBPL
+/// profiles can use `(param "HOME")` / `(param "TMPDIR")` consistently:
+/// `sandbox-exec -D HOME=... -D TMPDIR=... -p <sbpl> -- <original-exe> <args...>`
+///
 /// This helper does **not** invoke a shell; all arguments are forwarded as separate argv entries.
 ///
 /// Note: The rewrite constructs a new [`Command`] internally. Environment overrides and
@@ -97,6 +101,12 @@ pub fn maybe_wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io
 /// calling this helper.
 #[cfg(target_os = "macos")]
 pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Result<()> {
+  if !Path::new(SANDBOX_EXEC_PATH).is_file() {
+    return Err(io::Error::new(
+      io::ErrorKind::NotFound,
+      format!("missing {}", SANDBOX_EXEC_PATH),
+    ));
+  }
   if sbpl.is_empty() {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
@@ -110,6 +120,35 @@ pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Resu
     ));
   }
 
+  // Pass HOME/TMPDIR as Seatbelt parameters so SBPL profiles can reference them via `(param "HOME")`
+  // and `(param "TMPDIR")`.
+  //
+  // This matches the in-process Seatbelt wrapper (`sandbox_init_with_parameters`) behaviour in
+  // `src/sandbox/macos.rs`, and keeps SBPL profiles stable whether they are applied in-process or
+  // via `sandbox-exec`.
+  let mut home = std::env::var_os("HOME").unwrap_or_else(|| OsString::from("/Users"));
+  if home.is_empty() {
+    home = OsString::from("/Users");
+  }
+  let mut tmpdir =
+    std::env::var_os("TMPDIR").unwrap_or_else(|| std::env::temp_dir().into_os_string());
+  if tmpdir.is_empty() {
+    tmpdir = std::env::temp_dir().into_os_string();
+  }
+  for (key, value) in cmd.get_envs() {
+    if key == OsStr::new("HOME") {
+      home = match value {
+        Some(v) if !v.is_empty() => v.to_os_string(),
+        _ => OsString::from("/Users"),
+      };
+    } else if key == OsStr::new("TMPDIR") {
+      tmpdir = match value {
+        Some(v) if !v.is_empty() => v.to_os_string(),
+        _ => std::env::temp_dir().into_os_string(),
+      };
+    }
+  }
+
   let original_program = cmd.get_program().to_os_string();
   if original_program.is_empty() {
     return Err(io::Error::new(
@@ -120,7 +159,15 @@ pub fn wrap_command_with_sandbox_exec(cmd: &mut Command, sbpl: &str) -> io::Resu
   let current_dir: Option<PathBuf> = cmd.get_current_dir().map(PathBuf::from);
 
   let mut wrapped = Command::new(SANDBOX_EXEC_PATH);
+  let mut home_def = OsString::from("HOME=");
+  home_def.push(&home);
+  let mut tmpdir_def = OsString::from("TMPDIR=");
+  tmpdir_def.push(&tmpdir);
   wrapped
+    .arg("-D")
+    .arg(home_def)
+    .arg("-D")
+    .arg(tmpdir_def)
     .arg("-p")
     .arg(sbpl)
     .arg("--")
