@@ -2032,13 +2032,25 @@ impl FragmentationAnalyzer {
       // than slicing it at an arbitrary fragmentainer limit (e.g. splitting a block box when the
       // next legal break is just after the limit). Only do this when the caller did not request a
       // hard fragmentainer size.
+      //
+      // However, parallel fragmentation flows like floats suppress their internal break
+      // opportunities. Without a distance cap, this "lookahead" can skip an entire oversized float
+      // and yield a first column that exceeds the fragmentainer size, preventing the float from
+      // fragmenting across columns/column-sets.
+      //
+      // Restrict the lookahead to break opportunities that are *very* close to the limit so we
+      // still avoid near-zero continuation fragments caused by float rounding, while ensuring
+      // genuinely oversized content fragments to make progress.
       if let Some(next) = self.opportunities[window_end..].iter().find(|o| {
         o.pos > limit + BREAK_EPSILON
           && !pos_is_inside_atomic_for_fragmentainer(o.pos, fragmentainer, atomic)
       }) {
-        let clamped = next.pos.min(total_extent);
-        self.advance_line_starts(clamped);
-        return clamped;
+        let delta = next.pos - limit;
+        if delta.is_finite() && delta <= LINE_FALLBACK_EPSILON {
+          let clamped = next.pos.min(total_extent);
+          self.advance_line_starts(clamped);
+          return clamped;
+        }
       }
     }
 
