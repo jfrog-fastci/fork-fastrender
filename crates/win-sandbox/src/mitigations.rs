@@ -5,9 +5,9 @@ use crate::WinSandboxError;
 
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{
-  GetCurrentProcess, GetProcessMitigationPolicy, ProcessDynamicCodePolicy,
-  ProcessExtensionPointDisablePolicy, ProcessImageLoadPolicy, ProcessStrictHandleCheckPolicy,
-  ProcessSystemCallDisablePolicy, PROCESS_MITIGATION_POLICY,
+  GetCurrentProcess, ProcessDynamicCodePolicy, ProcessExtensionPointDisablePolicy,
+  ProcessImageLoadPolicy, ProcessStrictHandleCheckPolicy, ProcessSystemCallDisablePolicy,
+  PROCESS_MITIGATION_POLICY,
 };
 
 // windows-sys does not currently expose the policy-specific structs, but `GetProcessMitigationPolicy`
@@ -45,6 +45,37 @@ struct PROCESS_MITIGATION_IMAGE_LOAD_POLICY {
 #[repr(C)]
 struct PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY {
   Flags: u32,
+}
+
+#[cfg(windows)]
+type GetProcessMitigationPolicyFn = unsafe extern "system" fn(
+  windows_sys::Win32::Foundation::HANDLE,
+  PROCESS_MITIGATION_POLICY,
+  *mut std::ffi::c_void,
+  usize,
+) -> i32;
+
+#[cfg(windows)]
+fn get_process_mitigation_policy_fn() -> Option<GetProcessMitigationPolicyFn> {
+  use std::sync::OnceLock;
+  use windows_sys::Win32::Foundation::HMODULE;
+  use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+
+  // `GetProcessMitigationPolicy` is only exported on Windows 8+. Load it dynamically so the crate
+  // remains runnable on downlevel Windows builds (where mitigations are treated as unsupported).
+  static FN: OnceLock<Option<GetProcessMitigationPolicyFn>> = OnceLock::new();
+  *FN.get_or_init(|| unsafe {
+    let kernel32: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
+    let module: HMODULE = GetModuleHandleW(kernel32.as_ptr());
+    if module.is_null() {
+      return None;
+    }
+
+    // `GetProcAddress` returns an untyped `FARPROC` (function pointer). Cast it to the expected
+    // signature; this is safe as long as the symbol name matches the Win32 API export.
+    let proc = GetProcAddress(module, b"GetProcessMitigationPolicy\0".as_ptr())?;
+    Some(std::mem::transmute::<_, GetProcessMitigationPolicyFn>(proc))
+  })
 }
 
 // These constants are consumed by `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (a `DWORD64` / `u64`
@@ -91,10 +122,18 @@ impl MitigationPolicyBuilder {
 
 #[cfg(windows)]
 fn get_mitigation_policy<T>(policy: PROCESS_MITIGATION_POLICY) -> Result<T> {
+  let Some(get_policy) = get_process_mitigation_policy_fn() else {
+    // Downlevel OS: the function itself is missing, so no mitigation policies are supported.
+    return Err(WinSandboxError::from_code(
+      "GetProcessMitigationPolicy",
+      windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED,
+    ));
+  };
+
   // SAFETY: The caller ensures `T` is the correct struct for `policy`.
   let mut data: T = unsafe { std::mem::zeroed() };
   let ok = unsafe {
-    GetProcessMitigationPolicy(
+    get_policy(
       GetCurrentProcess(),
       policy,
       &mut data as *mut T as *mut _,
@@ -109,9 +148,13 @@ fn get_mitigation_policy<T>(policy: PROCESS_MITIGATION_POLICY) -> Result<T> {
 
 #[cfg(windows)]
 fn is_policy_supported<T>(policy: PROCESS_MITIGATION_POLICY) -> bool {
+  let Some(get_policy) = get_process_mitigation_policy_fn() else {
+    return false;
+  };
+
   let mut data: T = unsafe { std::mem::zeroed() };
   let ok = unsafe {
-    GetProcessMitigationPolicy(
+    get_policy(
       GetCurrentProcess(),
       policy,
       &mut data as *mut T as *mut _,
