@@ -37,6 +37,7 @@ pub mod omnibox;
 mod string_match;
 pub mod load_progress;
 pub mod search_suggest;
+pub mod trusted_chrome_fetcher;
 pub mod messages;
 pub mod clipboard;
 pub mod media_prefs;
