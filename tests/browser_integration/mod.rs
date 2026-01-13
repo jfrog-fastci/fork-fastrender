@@ -96,6 +96,7 @@ mod ui_context_menu;
 mod ui_context_menu_buttons;
 mod ui_context_menu_can_select_all_without_selection;
 mod ui_context_menu_modifiers;
+mod ui_context_menu_empty_tab;
 mod ui_context_menu_entries;
 mod ui_accesskit_show_context_menu;
 mod ui_context_menu_text_caret_right_click;
