@@ -877,7 +877,7 @@ fn validate_regex_pattern(
       }
       let esc = pattern[i..].chars().next().unwrap();
       let esc_len = esc.len_utf8();
-      if !in_charset && esc == 'u' {
+      if esc == 'u' {
         let after_u = i + esc_len;
         let bytes = pattern.as_bytes();
         if unicode_mode {
@@ -993,12 +993,14 @@ fn validate_regex_pattern(
             i += esc_len;
           }
         }
-        prev_can_be_quantified = true;
-        quantifier_allows_lazy = false;
+        if !in_charset {
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+        }
         continue;
       }
 
-      if !in_charset && esc == 'x' {
+      if esc == 'x' {
         let after_x = i + esc_len;
         let bytes = pattern.as_bytes();
         let is_x2 = after_x + 2 <= bytes.len()
@@ -1017,8 +1019,10 @@ fn validate_regex_pattern(
           // In non-UnicodeMode, invalid `\x` escapes are treated as identity escapes.
           i += esc_len;
         }
-        prev_can_be_quantified = true;
-        quantifier_allows_lazy = false;
+        if !in_charset {
+          prev_can_be_quantified = true;
+          quantifier_allows_lazy = false;
+        }
         continue;
       }
 
