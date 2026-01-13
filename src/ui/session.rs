@@ -6,6 +6,7 @@ use crate::ui::about_pages;
 use crate::ui::appearance;
 use crate::ui::appearance::AppearanceSettings;
 use crate::ui::browser_app::{BrowserAppState, TabGroupColor, TabGroupId};
+use crate::ui::protocol_limits;
 use crate::ui::validate_user_navigation_url_scheme;
 use crate::ui::zoom;
 use fs2::FileExt;
@@ -25,6 +26,30 @@ const FALLBACK_WINDOW_WIDTH_PX: i64 = 1_024;
 const FALLBACK_WINDOW_HEIGHT_PX: i64 = 768;
 const MAX_SCROLL_CSS: f32 = 1e9;
 
+// -----------------------------------------------------------------------------
+// Session sanitization safety limits
+// -----------------------------------------------------------------------------
+//
+// Session files are treated as untrusted input: even when we enforce an on-disk file size limit,
+// a small JSON can still contain pathological structures (e.g. thousands of windows/tabs or huge
+// strings). These limits keep startup work bounded and prevent large allocations.
+
+/// Maximum number of windows restored from a session file.
+const MAX_SESSION_WINDOWS: usize = 32;
+
+/// Maximum number of tabs restored per window.
+const MAX_SESSION_TABS_PER_WINDOW: usize = 256;
+
+/// Maximum number of tab groups restored per window.
+const MAX_SESSION_TAB_GROUPS_PER_WINDOW: usize = 64;
+
+/// Maximum UTF-8 bytes retained for URLs in the session file.
+///
+/// Keep this aligned with the UI↔worker protocol string limits.
+const MAX_SESSION_URL_BYTES: usize = protocol_limits::MAX_URL_BYTES;
+
+/// Maximum UTF-8 bytes retained for tab group titles stored in the session file.
+const MAX_SESSION_GROUP_TITLE_BYTES: usize = 256;
 fn default_did_exit_cleanly() -> bool {
   true
 }
@@ -110,10 +135,11 @@ pub struct BrowserSessionTabGroup {
 impl BrowserSessionTabGroup {
   fn sanitized(mut self) -> Self {
     let trimmed = self.title.trim();
-    self.title = if trimmed.is_empty() {
+    let truncated = truncate_utf8_to_max_bytes(trimmed, MAX_SESSION_GROUP_TITLE_BYTES).trim();
+    self.title = if truncated.is_empty() {
       default_tab_group_title()
     } else {
-      trimmed.to_string()
+      truncated.to_string()
     };
     self
   }
@@ -259,6 +285,10 @@ impl BrowserSessionWindow {
       self.tab_groups.clear();
       self.active_tab_index = 0;
     }
+
+    // Bound the number of tabs/groups we will process.
+    self.tabs.truncate(MAX_SESSION_TABS_PER_WINDOW);
+    self.tab_groups.truncate(MAX_SESSION_TAB_GROUPS_PER_WINDOW);
 
     for tab in &mut self.tabs {
       sanitize_tab(tab);
@@ -444,13 +474,7 @@ impl BrowserSession {
       self.unclean_exit_streak = 0;
     }
 
-    let home_trimmed = self.home_url.trim().to_string();
-    self.home_url =
-      if home_trimmed.is_empty() || validate_user_navigation_url_scheme(&home_trimmed).is_err() {
-        default_home_url()
-      } else {
-        home_trimmed
-      };
+    sanitize_url_in_place(&mut self.home_url, about_pages::ABOUT_NEWTAB);
 
     if self.windows.is_empty() {
       self.windows.push(BrowserSessionWindow {
@@ -471,6 +495,7 @@ impl BrowserSession {
 
     self.windows = std::mem::take(&mut self.windows)
       .into_iter()
+      .take(MAX_SESSION_WINDOWS)
       .map(|window| window.sanitized())
       .collect();
 
@@ -504,9 +529,7 @@ impl BrowserSession {
 }
 
 fn sanitize_tab(tab: &mut BrowserSessionTab) {
-  if tab.url.trim().is_empty() || validate_user_navigation_url_scheme(&tab.url).is_err() {
-    tab.url = about_pages::ABOUT_NEWTAB.to_string();
-  }
+  sanitize_url_in_place(&mut tab.url, about_pages::ABOUT_NEWTAB);
 
   tab.zoom = tab
     .zoom
@@ -527,6 +550,27 @@ fn sanitize_tab(tab: &mut BrowserSessionTab) {
     let y = y.max(0.0).min(MAX_SCROLL_CSS);
     ((x, y) != (0.0, 0.0)).then_some((x, y))
   });
+}
+
+fn sanitize_url_in_place(url: &mut String, fallback: &str) {
+  let trimmed = url.trim();
+  let truncated = truncate_utf8_to_max_bytes(trimmed, MAX_SESSION_URL_BYTES).trim();
+  if truncated.is_empty() || validate_user_navigation_url_scheme(truncated).is_err() {
+    *url = fallback.to_string();
+  } else if truncated != url.as_str() {
+    *url = truncated.to_string();
+  }
+}
+
+fn truncate_utf8_to_max_bytes(s: &str, max_bytes: usize) -> &str {
+  if s.len() <= max_bytes {
+    return s;
+  }
+  let mut end = max_bytes;
+  while end > 0 && !s.is_char_boundary(end) {
+    end -= 1;
+  }
+  &s[..end]
 }
 
 fn sanitize_window_dim(value: Option<i64>) -> Option<i64> {
@@ -1119,6 +1163,212 @@ mod tests {
 
     assert_eq!(session.windows[1].tabs.len(), 1);
     assert_eq!(session.windows[1].active_tab_index, 0);
+  }
+
+  #[test]
+  fn session_truncates_windows_and_clamps_active_window_index() {
+    let mut windows = Vec::new();
+    for _ in 0..(MAX_SESSION_WINDOWS + 5) {
+      windows.push(BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        }],
+        tab_groups: Vec::new(),
+        active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
+        window_state: None,
+      });
+    }
+
+    let session = BrowserSession {
+      version: 999,
+      home_url: about_pages::ABOUT_NEWTAB.to_string(),
+      windows,
+      active_window_index: MAX_SESSION_WINDOWS + 123,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      unclean_exit_streak: 0,
+      ui_scale: None,
+    }
+    .sanitized();
+
+    assert_eq!(session.windows.len(), MAX_SESSION_WINDOWS);
+    assert_eq!(session.active_window_index, MAX_SESSION_WINDOWS - 1);
+  }
+
+  #[test]
+  fn window_truncates_tabs_and_clamps_active_tab_index() {
+    let mut tabs = Vec::new();
+    for _ in 0..(MAX_SESSION_TABS_PER_WINDOW + 10) {
+      tabs.push(BrowserSessionTab {
+        url: "about:blank".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      });
+    }
+
+    let window = BrowserSessionWindow {
+      tabs,
+      tab_groups: Vec::new(),
+      active_tab_index: MAX_SESSION_TABS_PER_WINDOW + 999,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.tabs.len(), MAX_SESSION_TABS_PER_WINDOW);
+    assert_eq!(window.active_tab_index, MAX_SESSION_TABS_PER_WINDOW - 1);
+  }
+
+  #[test]
+  fn window_truncates_tab_groups_and_ungroups_tabs_for_dropped_groups() {
+    let mut tab_groups = Vec::new();
+    for idx in 0..(MAX_SESSION_TAB_GROUPS_PER_WINDOW + 2) {
+      tab_groups.push(BrowserSessionTabGroup {
+        title: format!("g{idx}"),
+        color: TabGroupColor::Blue,
+        collapsed: false,
+      });
+    }
+
+    let mut tabs = Vec::new();
+    for idx in 0..MAX_SESSION_TAB_GROUPS_PER_WINDOW {
+      tabs.push(BrowserSessionTab {
+        url: "about:blank".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: Some(idx),
+      });
+    }
+    // This references the first group that will be dropped by `truncate`.
+    tabs.push(BrowserSessionTab {
+      url: "about:newtab".to_string(),
+      zoom: None,
+      scroll_css: None,
+      pinned: false,
+      group: Some(MAX_SESSION_TAB_GROUPS_PER_WINDOW),
+    });
+
+    let window = BrowserSessionWindow {
+      tabs,
+      tab_groups,
+      active_tab_index: 0,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.tab_groups.len(), MAX_SESSION_TAB_GROUPS_PER_WINDOW);
+    assert_eq!(window.tab_groups[0].title, "g0");
+    assert_eq!(
+      window.tab_groups[MAX_SESSION_TAB_GROUPS_PER_WINDOW - 1].title,
+      format!("g{}", MAX_SESSION_TAB_GROUPS_PER_WINDOW - 1)
+    );
+
+    assert_eq!(window.tabs.len(), MAX_SESSION_TAB_GROUPS_PER_WINDOW + 1);
+    assert_eq!(window.tabs[0].group, Some(0));
+    assert_eq!(
+      window.tabs[MAX_SESSION_TAB_GROUPS_PER_WINDOW - 1].group,
+      Some(MAX_SESSION_TAB_GROUPS_PER_WINDOW - 1)
+    );
+    assert_eq!(window.tabs.last().unwrap().group, None);
+  }
+
+  #[test]
+  fn session_truncates_urls_and_revalidates_after_truncation() {
+    // Build a URL which is valid in full form, but becomes invalid if truncated to
+    // `MAX_SESSION_URL_BYTES` (ends with an incomplete percent-escape).
+    let base = "https://example.com/".to_string();
+    assert!(
+      base.len() + 1 < MAX_SESSION_URL_BYTES,
+      "base URL should be shorter than the truncation limit"
+    );
+    let fill_len = MAX_SESSION_URL_BYTES - base.len() - 1;
+    let long_valid = format!("{base}{}%00", "a".repeat(fill_len));
+    assert!(
+      validate_user_navigation_url_scheme(&long_valid).is_ok(),
+      "expected test URL to be valid before truncation"
+    );
+
+    let mut window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: long_valid.clone(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: None,
+      }],
+      tab_groups: Vec::new(),
+      active_tab_index: 0,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    };
+    window = window.sanitized();
+    assert_eq!(window.tabs[0].url, about_pages::ABOUT_NEWTAB);
+
+    let session = BrowserSession {
+      version: SESSION_VERSION,
+      home_url: long_valid,
+      windows: vec![BrowserSessionWindow {
+        tabs: vec![BrowserSessionTab {
+          url: "about:newtab".to_string(),
+          zoom: None,
+          scroll_css: None,
+          pinned: false,
+          group: None,
+        }],
+        tab_groups: Vec::new(),
+        active_tab_index: 0,
+        show_menu_bar: default_show_menu_bar(),
+        window_state: None,
+      }],
+      active_window_index: 0,
+      appearance: AppearanceSettings::default(),
+      did_exit_cleanly: true,
+      unclean_exit_streak: 0,
+      ui_scale: None,
+    }
+    .sanitized();
+    assert_eq!(session.home_url, about_pages::ABOUT_NEWTAB);
+  }
+
+  #[test]
+  fn tab_group_title_is_truncated_safely() {
+    // Use a 4-byte emoji so UTF-8 truncation needs to respect char boundaries.
+    let long_title = "🔥".repeat(MAX_SESSION_GROUP_TITLE_BYTES);
+    let window = BrowserSessionWindow {
+      tabs: vec![BrowserSessionTab {
+        url: "about:newtab".to_string(),
+        zoom: None,
+        scroll_css: None,
+        pinned: false,
+        group: Some(0),
+      }],
+      tab_groups: vec![BrowserSessionTabGroup {
+        title: long_title,
+        color: TabGroupColor::Red,
+        collapsed: false,
+      }],
+      active_tab_index: 0,
+      show_menu_bar: default_show_menu_bar(),
+      window_state: None,
+    }
+    .sanitized();
+
+    assert_eq!(window.tab_groups.len(), 1);
+    assert!(
+      window.tab_groups[0].title.as_bytes().len() <= MAX_SESSION_GROUP_TITLE_BYTES,
+      "expected title to be truncated to at most {} bytes, got {}",
+      MAX_SESSION_GROUP_TITLE_BYTES,
+      window.tab_groups[0].title.as_bytes().len()
+    );
   }
 
   #[test]
