@@ -2059,17 +2059,19 @@ pub(super) fn tab_strip_ui(
 
   // Micro-interaction: animate the active tab underline position/width.
   if let Some(active_rect) = active_tab_rect {
+    let pinned_scroll_rect = pinned_scroll_viewport_rect.unwrap_or(pinned_viewport_rect);
+    let unpinned_scroll_rect = unpinned_scroll_viewport_rect.unwrap_or(unpinned_viewport_rect);
     let underline_id = ui.make_persistent_id("tab_strip_active_underline");
-    let pinned_offset = unpinned_viewport_rect.min.x - tabs_rect.min.x;
+    let pinned_offset = unpinned_scroll_rect.min.x - tabs_rect.min.x;
     // Animate in a unified content coordinate space so the underline tracks scroll (unpinned tabs)
     // without lag, while still supporting pinned tabs which live in a separate scroll area.
     let target_center_content_x = if active_tab_is_pinned {
       // Pinned tabs are inside their own horizontal scroll area. Convert the active tab's *screen*
       // position back into *pinned-content* space so `animate_f32` doesn't "chase" the scroll and
       // visibly lag behind when the pinned strip is scrolled (wheel or drag autoscroll).
-      (active_rect.center().x - pinned_viewport_rect.min.x) + pinned_scroll_offset_x
+      (active_rect.center().x - pinned_scroll_rect.min.x) + pinned_scroll_offset_x
     } else {
-      pinned_offset + (active_rect.center().x - unpinned_viewport_rect.min.x + scroll_offset_x)
+      pinned_offset + (active_rect.center().x - unpinned_scroll_rect.min.x + scroll_offset_x)
     };
     let target_width = (active_rect.width() - 20.0).max(0.0);
     let center_content_x = motion.animate_f32(
@@ -2088,9 +2090,9 @@ pub(super) fn tab_strip_ui(
     let center_screen_x = if active_tab_is_pinned {
       // Convert back to screen space for painting, applying the current scroll offset so the
       // underline tracks pinned scrolling without lag.
-      pinned_viewport_rect.min.x + (center_content_x - pinned_scroll_offset_x)
+      pinned_scroll_rect.min.x + (center_content_x - pinned_scroll_offset_x)
     } else {
-      unpinned_viewport_rect.min.x + (center_content_x - pinned_offset) - scroll_offset_x
+      unpinned_scroll_rect.min.x + (center_content_x - pinned_offset) - scroll_offset_x
     };
     let x0 = center_screen_x - width * 0.5;
     let x1 = center_screen_x + width * 0.5;
