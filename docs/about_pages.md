@@ -20,11 +20,11 @@ If you add/remove an internal page, keep this document consistent with the `ABOU
 | URL | Purpose / expected content |
 | --- | --- |
 | `about:newtab` | Start page used for new tabs and first-run fallback. Shows a search box plus bookmarks + recently visited history **when snapshot data is available**. |
-| `about:settings` | Offline settings summary for the chrome UI. Today this is mostly a debugging surface: it shows the *effective* appearance settings (e.g. accent color) and points at the relevant env-var overrides. |
+| `about:settings` | Offline settings summary for the chrome UI. Today this is mostly a debugging surface: it shows the *effective* appearance settings (e.g. accent color), key persisted paths (session/bookmarks/history/download directory), and points at the relevant env-var overrides. |
 | `about:help` | Offline help page (usage notes + keyboard shortcuts). Should stay usable even when the network stack is broken. |
 | `about:version` | Build/version info (crate version, git hash when available, build profile). Useful for bug reports. |
 | `about:gpu` | wgpu adapter/backend selection used by the windowed UI. Best-effort: headless runs do not initialize wgpu so fields may be `"unknown"`. |
-| `about:processes` | **Multiprocess placeholder**. Today it shows a best-effort snapshot of currently open tabs (`AboutPageSnapshot.open_tabs`) and (once implemented) a derived **Site** column computed from each tab URL. The “Renderer” / “Network” columns are placeholders for future process-per-site work. |
+| `about:processes` | **Multiprocess/process-assignment debugging page** (still a placeholder for the final architecture). Today it shows a best-effort snapshot of currently open tabs (`AboutPageSnapshot.open_tabs`) including a derived **Site** column (and renderer process IDs when available), plus summary/grouping tables. |
 
 ### `about:processes` expectations (important)
 
@@ -33,9 +33,12 @@ If you add/remove an internal page, keep this document consistent with the `ABOU
 - **Today (single-process):**
   - It should render an **open-tabs snapshot** (tab id + URL) when the front-end populates
     `AboutPageSnapshot.open_tabs`.
-  - The **Site** column is intended to be derived from each tab URL using the same site isolation
-    rules as the multiprocess model (i.e. the `SiteKey` derivation described in
-    [`docs/site_isolation.md`](site_isolation.md)). This is currently not fully implemented.
+  - The **Site** column is derived from each tab URL (best-effort). When the front-end provides an
+    explicit `site_key`, that should match the `SiteKey` derivation described in
+    [`docs/site_isolation.md`](site_isolation.md); otherwise the page falls back to a simple
+    URL-derived label.
+  - Renderer/network process assignment is best-effort and may show as “unassigned” / “not
+    implemented” in single-process builds.
 - **Future (multiprocess):**
   - It should show real tab→process assignments (renderer + network) used by FastRender’s
     multiprocess architecture.
