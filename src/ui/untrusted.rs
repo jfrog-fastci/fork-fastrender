@@ -24,6 +24,8 @@ use std::sync::Arc;
 pub enum UntrustedFormSubmissionError {
   InvalidUrl,
   UrlTooLong,
+  InvalidHeaderName,
+  InvalidHeaderValue,
   TooManyHeaders,
   HeaderNameTooLong,
   HeaderValueTooLong,
@@ -36,6 +38,9 @@ impl UntrustedFormSubmissionError {
   pub fn toast_message(self) -> &'static str {
     match self {
       Self::InvalidUrl | Self::UrlTooLong => "Blocked attempt to open an invalid URL",
+      Self::InvalidHeaderName | Self::InvalidHeaderValue => {
+        "Blocked attempt to open a new tab: invalid request headers"
+      }
       Self::TooManyHeaders
       | Self::HeaderNameTooLong
       | Self::HeaderValueTooLong
@@ -114,6 +119,15 @@ pub fn sanitize_untrusted_text(s: &str, max_bytes: usize) -> String {
 /// This is intended for *display* and chrome state updates (address bar, tab title fallback, open
 /// in new tab requests). It enforces the same scheme allowlist as user-typed URLs.
 pub fn validate_untrusted_navigation_url(url: &str) -> Result<String, String> {
+  // Reject absurdly large inputs early. `sanitize_untrusted_text` stops scanning once it reaches
+  // `MAX_URL_BYTES`, but whitespace/control-only payloads could otherwise force O(n) work where
+  // n is attacker-controlled.
+  const ABSURD_URL_BYTES_MULTIPLIER: usize = 64;
+  let absurd_url_limit = MAX_URL_BYTES.saturating_mul(ABSURD_URL_BYTES_MULTIPLIER);
+  if url.len() > absurd_url_limit {
+    return Err("URL too long".to_string());
+  }
+
   // Apply the generic sanitization pass first so we never parse or store huge/hostile strings.
   let sanitized = sanitize_untrusted_text(url, MAX_URL_BYTES);
   if sanitized.trim().is_empty() {
@@ -179,6 +193,15 @@ pub fn validate_untrusted_form_submission_for_open_in_new_tab_request(
     }
     if value.len() > MAX_OPEN_IN_NEW_TAB_REQUEST_HEADER_VALUE_BYTES {
       return Err(UntrustedFormSubmissionError::HeaderValueTooLong);
+    }
+
+    // Validate that names/values satisfy HTTP token/value constraints so the worker cannot smuggle
+    // control characters or invalid separators into the network stack.
+    if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+      return Err(UntrustedFormSubmissionError::InvalidHeaderName);
+    }
+    if http::header::HeaderValue::from_str(value).is_err() {
+      return Err(UntrustedFormSubmissionError::InvalidHeaderValue);
     }
 
     total_header_bytes = total_header_bytes
@@ -396,5 +419,33 @@ mod tests {
       .expect("expected request to be valid");
     assert_eq!(sanitized.url, "https://example.com/");
     assert_eq!(sanitized.body, Some(b"q=a+b".to_vec()));
+  }
+
+  #[test]
+  fn validate_untrusted_form_submission_rejects_invalid_header_name() {
+    let request = FormSubmission {
+      url: "https://example.com/".to_string(),
+      method: FormSubmissionMethod::Post,
+      headers: vec![("bad header".to_string(), "ok".to_string())],
+      body: None,
+    };
+
+    let err = validate_untrusted_form_submission_for_open_in_new_tab_request(request)
+      .expect_err("expected invalid header name to be rejected");
+    assert_eq!(err, UntrustedFormSubmissionError::InvalidHeaderName);
+  }
+
+  #[test]
+  fn validate_untrusted_form_submission_rejects_invalid_header_value() {
+    let request = FormSubmission {
+      url: "https://example.com/".to_string(),
+      method: FormSubmissionMethod::Post,
+      headers: vec![("x-test".to_string(), "hello\nworld".to_string())],
+      body: None,
+    };
+
+    let err = validate_untrusted_form_submission_for_open_in_new_tab_request(request)
+      .expect_err("expected invalid header value to be rejected");
+    assert_eq!(err, UntrustedFormSubmissionError::InvalidHeaderValue);
   }
 }
