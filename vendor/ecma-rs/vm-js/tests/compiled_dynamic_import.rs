@@ -588,7 +588,28 @@ fn compiled_dynamic_import_requires_module_graph() -> Result<(), VmError> {
     .unwrap_err();
   match err {
     VmError::Unimplemented(msg) => assert_eq!(msg, "dynamic import requires a module graph"),
-    other => panic!("expected Unimplemented error, got {other:?}"),
+    VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
+      let Value::Object(err_obj) = reason else {
+        panic!("expected dynamic import error to throw an object, got {reason:?}");
+      };
+      let mut scope = rt.heap.scope();
+      scope.push_root(Value::Object(err_obj))?;
+      // `coerce_error_to_throw` prefixes unimplemented errors with `unimplemented:`.
+      let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+      let message = scope
+        .heap()
+        .object_get_own_data_property_value(err_obj, &message_key)?
+        .expect("expected own message property");
+      let Value::String(message_s) = message else {
+        panic!("expected Error.message to be a string, got {message:?}");
+      };
+      let msg = scope.heap().get_string(message_s)?.to_utf8_lossy();
+      assert!(
+        msg.contains("dynamic import requires a module graph"),
+        "expected message to mention missing module graph, got {msg:?}"
+      );
+    }
+    other => panic!("expected unimplemented dynamic import error, got {other:?}"),
   }
 
   // Restore the module graph pointer so runtime teardown behaves like normal.

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use vm_js::{
   Budget, CompiledFunctionRef, CompiledScript, Heap, HeapLimits, JsRuntime, TerminationReason, Value,
-  Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  PropertyKey, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 fn find_function_body(script: &Arc<CompiledScript>, name: &str) -> hir_js::BodyId {
@@ -12417,6 +12417,26 @@ fn compiled_import_call_requires_module_graph() -> Result<(), VmError> {
   let err = rt.exec_compiled_script(script).unwrap_err();
   match err {
     VmError::Unimplemented(msg) => assert_eq!(msg, "dynamic import requires a module graph"),
+    VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
+      let Value::Object(err_obj) = reason else {
+        panic!("expected dynamic import error to throw an object, got {reason:?}");
+      };
+      let mut scope = rt.heap_mut().scope();
+      scope.push_root(Value::Object(err_obj))?;
+      let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+      let message = scope
+        .heap()
+        .object_get_own_data_property_value(err_obj, &message_key)?
+        .expect("expected own message property");
+      let Value::String(message_s) = message else {
+        panic!("expected Error.message to be a string, got {message:?}");
+      };
+      let msg = scope.heap().get_string(message_s)?.to_utf8_lossy();
+      assert!(
+        msg.contains("dynamic import requires a module graph"),
+        "expected message to mention missing module graph, got {msg:?}"
+      );
+    }
     other => panic!("expected unimplemented dynamic import error, got {other:?}"),
   }
   Ok(())
