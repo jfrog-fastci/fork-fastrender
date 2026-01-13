@@ -3392,7 +3392,7 @@ mod tests {
   #[test]
   fn navigator_service_worker_is_present_and_registration_methods_resolve() {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+    let mut host = make_host(dom, "https://example.invalid/").unwrap();
 
     assert_eq!(
       host.exec_script("'serviceWorker' in navigator").unwrap(),
