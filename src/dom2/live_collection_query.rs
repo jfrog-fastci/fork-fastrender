@@ -144,6 +144,8 @@ impl Document {
   ) -> Vec<NodeId> {
     let namespace_is_wildcard = namespace == Some("*");
     let local_is_wildcard = local_name == "*";
+    let query_is_html_namespace =
+      namespace.is_some_and(|ns| self.is_html_case_insensitive_namespace(ns));
 
     self.collect_descendants_from(root, |_, node| {
       let (tag_name, node_ns) = match &node.kind {
@@ -174,7 +176,22 @@ impl Document {
         return false;
       }
 
-      local_is_wildcard || tag_name == local_name
+      if local_is_wildcard {
+        return true;
+      }
+
+      // Per spec-ish behavior: in HTML documents, HTML namespace tag name matching is ASCII
+      // case-insensitive.
+      //
+      // Note: `dom2` stores the HTML namespace as either the real namespace URI or an empty string,
+      // so we treat them as equivalent for this special-casing.
+      if query_is_html_namespace
+        || (namespace_is_wildcard && self.is_html_case_insensitive_namespace(node_ns))
+      {
+        tag_name.eq_ignore_ascii_case(local_name)
+      } else {
+        tag_name == local_name
+      }
     })
   }
 
@@ -271,5 +288,96 @@ impl Document {
         name_ok && value == name
       })
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE, SVG_NAMESPACE};
+
+  #[test]
+  fn get_elements_by_tag_name_ns_matches_html_namespace_local_name_case_insensitively_in_html_docs() {
+    let root = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
+        is_html_document: true,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: "".to_string(),
+          attributes: vec![("id".to_string(), "a".to_string())],
+        },
+        children: Vec::new(),
+      }],
+    };
+    let doc = Document::from_renderer_dom(&root);
+    let a = doc.get_element_by_id("a").unwrap();
+
+    assert_eq!(
+      doc.get_elements_by_tag_name_ns_from(doc.root(), Some(HTML_NAMESPACE), "SPAN"),
+      vec![a]
+    );
+  }
+
+  #[test]
+  fn get_elements_by_tag_name_ns_is_case_sensitive_in_xml_docs_and_non_html_namespaces() {
+    // XML document: even the HTML namespace should match localName case-sensitively.
+    let xml_root = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: false,
+        is_html_document: false,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "xml".to_string())],
+        },
+        children: Vec::new(),
+      }],
+    };
+    let xml_doc = Document::from_renderer_dom(&xml_root);
+    let xml = xml_doc.get_element_by_id("xml").unwrap();
+
+    assert_eq!(
+      xml_doc.get_elements_by_tag_name_ns_from(xml_doc.root(), Some(HTML_NAMESPACE), "SPAN"),
+      Vec::new()
+    );
+    assert_eq!(
+      xml_doc.get_elements_by_tag_name_ns_from(xml_doc.root(), Some(HTML_NAMESPACE), "span"),
+      vec![xml]
+    );
+
+    // HTML document: non-HTML namespaces remain case-sensitive.
+    let html_root = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
+        is_html_document: true,
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "svg".to_string())],
+        },
+        children: Vec::new(),
+      }],
+    };
+    let html_doc = Document::from_renderer_dom(&html_root);
+    let svg = html_doc.get_element_by_id("svg").unwrap();
+
+    assert_eq!(
+      html_doc.get_elements_by_tag_name_ns_from(html_doc.root(), Some(SVG_NAMESPACE), "SPAN"),
+      Vec::new()
+    );
+    assert_eq!(
+      html_doc.get_elements_by_tag_name_ns_from(html_doc.root(), Some(SVG_NAMESPACE), "span"),
+      vec![svg]
+    );
   }
 }
