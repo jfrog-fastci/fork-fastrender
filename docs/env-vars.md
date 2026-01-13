@@ -141,7 +141,9 @@ Not all builds implement all of these toggles yet; unsupported values are expect
 - `FASTR_BROWSER_HUD=0|1` – show an in-app HUD overlay with browser/debug metrics.
   - Default: `0`.
 - `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.
-  - Default: `0`.
+  - Default: enabled in debug builds; disabled in release builds unless set to `1`.
+- `FASTR_BROWSER_SHOW_MENU_BAR=0|1` – override whether the in-window menu bar is shown.
+  - When set, this takes precedence over the persisted session setting (useful for CI).
 
 ### Browser session file (tabs / zoom persistence)
 
