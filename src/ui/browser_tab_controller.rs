@@ -695,7 +695,8 @@ impl BrowserTabController {
     let delta_x = if delta_css.0.is_finite() { delta_css.0 } else { 0.0 };
     let delta_y = if delta_css.1.is_finite() { delta_css.1 } else { 0.0 };
 
-    let pointer_css = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+    let pointer_css =
+      pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0);
 
     if let Some(pointer_css) = pointer_css {
       // Give a focused `<input type=number>` under the pointer a chance to consume the wheel
@@ -2518,6 +2519,105 @@ mod find_in_page_tests {
     assert!(
       scrolled_y.is_some_and(|y| y > 0.0),
       "expected FindNext to scroll down to the next match (got scroll_y={scrolled_y:?})"
+    );
+  }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+  use super::*;
+  use crate::text::font_db::FontConfig;
+  use crate::ui::messages::RepaintReason;
+
+  #[test]
+  fn negative_pointer_scroll_is_treated_as_viewport_scroll() {
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("build deterministic renderer");
+
+    let tab_id = TabId(1);
+    let viewport_css = (200, 100);
+    let dpr = 1.0;
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #scroller {
+              width: 120px;
+              height: 60px;
+              overflow-y: scroll;
+              border: 1px solid black;
+            }
+            #scroller > .content { height: 400px; }
+            .wide { width: 1000px; height: 1px; }
+            .spacer { height: 2000px; }
+          </style>
+        </head>
+        <body>
+          <div id="scroller"><div class="content"></div></div>
+          <div class="wide"></div>
+          <div class="spacer"></div>
+        </body>
+      </html>"#;
+
+    let mut controller = BrowserTabController::from_html_with_renderer(
+      renderer,
+      tab_id,
+      html,
+      "https://example.com/",
+      viewport_css,
+      dpr,
+    )
+    .expect("controller from_html_with_renderer");
+
+    let _ = controller
+      .handle_message(UiToWorker::RequestRepaint {
+        tab_id,
+        reason: RepaintReason::Explicit,
+      })
+      .expect("initial repaint");
+
+    let _ = controller
+      .handle_message(UiToWorker::ScrollTo {
+        tab_id,
+        pos_css: (11.0, 11.0),
+      })
+      .expect("scroll to");
+
+    let after_scroll_to = controller.scroll_state().clone();
+    assert!(
+      (after_scroll_to.viewport.x - 11.0).abs() < 1e-3
+        && (after_scroll_to.viewport.y - 11.0).abs() < 1e-3,
+      "expected ScrollTo to set viewport scroll to (11,11), got {:?}",
+      after_scroll_to.viewport
+    );
+    assert!(
+      after_scroll_to.elements.is_empty(),
+      "expected no element scroll offsets after ScrollTo, got {:?}",
+      after_scroll_to.elements
+    );
+
+    let _ = controller
+      .handle_message(UiToWorker::Scroll {
+        tab_id,
+        delta_css: (0.0, 40.0),
+        pointer_css: Some((-1.0, -1.0)),
+      })
+      .expect("scroll with negative pointer");
+
+    let after_scroll = controller.scroll_state().clone();
+    assert!(
+      after_scroll.elements.is_empty(),
+      "expected negative pointer scroll to avoid element scroll offsets, got {:?}",
+      after_scroll.elements
+    );
+    assert!(
+      (after_scroll.viewport.y - (after_scroll_to.viewport.y + 40.0)).abs() < 1e-3,
+      "expected negative pointer scroll to apply delta to viewport scroll (expected y≈{} got {})",
+      after_scroll_to.viewport.y + 40.0,
+      after_scroll.viewport.y
     );
   }
 }

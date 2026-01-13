@@ -2661,7 +2661,8 @@ impl BrowserRuntime {
           // When scrolling with a stationary pointer, the hovered element can change as content
           // moves under the cursor. Track the latest pointer position so we can re-run hover
           // hit-testing after applying scroll offsets.
-          let pointer_pos_css = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+          let pointer_pos_css =
+            pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite() && *x >= 0.0 && *y >= 0.0);
 
           let current_scroll = doc.scroll_state();
           let mut changed = false;

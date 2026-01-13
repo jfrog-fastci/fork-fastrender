@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::support::{
-  create_tab_msg, navigate_msg, pointer_down, pointer_up, scroll_msg, viewport_changed_msg,
-  DEFAULT_TIMEOUT,
+  create_tab_msg, navigate_msg, pointer_down, pointer_up, scroll_msg, scroll_to_msg,
+  viewport_changed_msg, DEFAULT_TIMEOUT,
 };
 
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
@@ -128,6 +128,43 @@ fn make_test_page_scroller_far_down() -> (tempfile::TempDir, String) {
         <div class="top-spacer"></div>
         <div id="scroller"><div class="content"></div></div>
         <div class="bottom-spacer"></div>
+      </body>
+    </html>
+  "#;
+
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = url::Url::from_file_path(dir.path().join("index.html"))
+    .unwrap()
+    .to_string();
+  (dir, url)
+}
+
+fn make_test_page_wide() -> (tempfile::TempDir, String) {
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #scroller {
+            width: 120px;
+            height: 60px;
+            overflow-y: scroll;
+            border: 1px solid black;
+          }
+          #scroller > .content {
+            height: 400px;
+            background: linear-gradient(#eee, #ccc);
+          }
+          /* Force horizontal overflow so we can scroll `ScrollState.viewport.x` away from 0. */
+          .wide { width: 1000px; height: 1px; }
+          .spacer { height: 2000px; }
+        </style>
+      </head>
+      <body>
+        <div id="scroller"><div class="content"></div></div>
+        <div class="wide"></div>
+        <div class="spacer"></div>
       </body>
     </html>
   "#;
@@ -310,6 +347,83 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
     updated.elements.values().any(|pt| pt.y > 0.0),
     "expected element scroll to increase after wheel over #scroller, got {:?}",
     updated.elements
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn scroll_with_negative_pointer_is_treated_as_viewport_scroll() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_test_page_wide();
+
+  let (ui_tx, ui_rx, join) =
+    spawn_ui_worker("fastr-ui-worker-scroll-negative-pointer").expect("spawn ui worker").split();
+  let tab_id = TabId(1);
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  // Drain initial scroll state update from navigation before asserting scroll behavior.
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+
+  // Move the viewport scroll away from the origin so a misbehaving `pointer_css: (-1,-1)` would
+  // translate to an in-page point (scroll_x-1, scroll_y-1) and hit-test into the nested scroller.
+  ui_tx
+    .send(scroll_to_msg(tab_id, (11.0, 11.0)))
+    .expect("ScrollTo");
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let after_scroll_to = wait_for_scroll_update(&ui_rx, tab_id);
+  assert!(
+    after_scroll_to.viewport.x > 0.0 && after_scroll_to.viewport.y > 0.0,
+    "expected ScrollTo to move viewport away from origin, got {:?}",
+    after_scroll_to.viewport
+  );
+  assert!(
+    (after_scroll_to.viewport.x - 11.0).abs() < 1e-3 && (after_scroll_to.viewport.y - 11.0).abs() < 1e-3,
+    "expected ScrollTo to set viewport scroll to (11,11), got {:?}",
+    after_scroll_to.viewport
+  );
+  assert!(
+    after_scroll_to.elements.is_empty(),
+    "expected no element scroll offsets after ScrollTo, got {:?}",
+    after_scroll_to.elements
+  );
+
+  ui_tx
+    .send(scroll_msg(
+      tab_id,
+      (0.0, 40.0),
+      Some((-1.0_f32, -1.0_f32)),
+    ))
+    .expect("Scroll with negative pointer");
+
+  let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+
+  assert!(
+    updated.elements.is_empty(),
+    "expected negative pointer scroll to be treated as viewport scroll (got element offsets {:?})",
+    updated.elements
+  );
+  assert!(
+    updated.viewport.y > after_scroll_to.viewport.y,
+    "expected viewport y scroll to increase after negative pointer scroll, was {:?} then {:?}",
+    after_scroll_to.viewport,
+    updated.viewport
+  );
+  assert!(
+    (updated.viewport.y - (after_scroll_to.viewport.y + 40.0)).abs() < 1e-3,
+    "expected negative pointer scroll to apply delta to viewport scroll (expected y≈{} got {})",
+    after_scroll_to.viewport.y + 40.0,
+    updated.viewport.y
   );
 
   drop(ui_tx);
