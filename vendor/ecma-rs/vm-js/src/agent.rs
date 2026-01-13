@@ -592,12 +592,28 @@ impl Agent {
           termination_reason: Some(term.reason),
         }
       }
-      VmError::Syntax(_) => VmErrorReport {
-        kind: "syntax",
-        message: string_from_str_best_effort("syntax error"),
-        stack: Vec::new(),
-        termination_reason: None,
-      },
+      VmError::Syntax(diags) => {
+        // Include the first diagnostic message when available; this is host-generated data and does
+        // not invoke any user code. Keep the output bounded and OOM-safe.
+        let detail = diags
+          .first()
+          .map(|d| d.message.as_str())
+          .filter(|s| !s.is_empty());
+
+        let message = if let Some(detail) = detail {
+          fallible_format::try_format_error_message("syntax error: ", detail, "")
+            .unwrap_or_else(|_| string_from_str_best_effort("syntax error"))
+        } else {
+          string_from_str_best_effort("syntax error")
+        };
+
+        VmErrorReport {
+          kind: "syntax",
+          message,
+          stack: Vec::new(),
+          termination_reason: None,
+        }
+      }
       VmError::OutOfMemory => VmErrorReport {
         kind: "out_of_memory",
         message: string_from_str_best_effort("out of memory"),
@@ -903,8 +919,9 @@ pub fn format_termination(term: &Termination) -> String {
 
 #[cfg(test)]
 mod error_report_tests {
-  use crate::test_alloc::FailAllocsGuard;
+  use crate::test_alloc::{FailAllocsGuard, FailNextMatchingAllocGuard};
   use crate::{Budget, HeapLimits, TerminationReason, Value, VmError, VmOptions};
+  use std::sync::Arc;
 
   use super::{Agent, VmErrorReport};
 
@@ -984,6 +1001,26 @@ mod error_report_tests {
   }
 
   #[test]
+  fn agent_error_report_syntax_includes_diagnostic_message() {
+    let mut agent = new_agent();
+
+    let err = agent
+      .run_script("bad.js", "function {", Budget::unlimited(1), None)
+      .unwrap_err();
+    let report = agent.error_report(&err);
+    assert_eq!(report.kind, "syntax");
+    assert!(
+      report.message.starts_with("syntax error"),
+      "expected syntax message prefix, got: {:?}",
+      report.message
+    );
+    assert_ne!(
+      report.message, "syntax error",
+      "expected syntax report to include diagnostic details"
+    );
+  }
+
+  #[test]
   fn agent_error_report_does_not_invoke_error_name_getters() {
     let mut agent = new_agent();
 
@@ -1033,5 +1070,38 @@ throw new TypeError("boom");
     assert_eq!(report.kind, "throw");
     assert!(report.message.is_empty());
     assert!(report.stack.is_empty());
+  }
+
+  #[test]
+  fn clone_stack_best_effort_falls_back_to_incremental_allocation() {
+    // Ensure `clone_stack_best_effort` can still produce a stack even when the initial
+    // `try_reserve_exact` fails.
+    let frames = vec![
+      crate::StackFrame {
+        function: Some(Arc::<str>::from("f")),
+        source: Arc::<str>::from("a.js"),
+        line: 1,
+        col: 1,
+      },
+      crate::StackFrame {
+        function: None,
+        source: Arc::<str>::from("b.js"),
+        line: 2,
+        col: 3,
+      },
+      crate::StackFrame {
+        function: Some(Arc::<str>::from("g")),
+        source: Arc::<str>::from("c.js"),
+        line: 4,
+        col: 5,
+      },
+    ];
+
+    let size = core::mem::size_of::<crate::StackFrame>() * frames.len();
+    let align = core::mem::align_of::<crate::StackFrame>();
+    let _guard = FailNextMatchingAllocGuard::new(size, align);
+
+    let cloned = super::clone_stack_best_effort(&frames);
+    assert_eq!(cloned, frames);
   }
 }
