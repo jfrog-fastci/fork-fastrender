@@ -16,18 +16,34 @@ mod backend;
 mod backend_vmjs;
 #[cfg(feature = "vmjs")]
 mod backend_vmjs_rendered;
+#[cfg_attr(
+  not(any(feature = "vmjs", feature = "quickjs")),
+  allow(dead_code, unused_imports)
+)]
 mod cookie_jar;
 mod discover;
 #[cfg(feature = "quickjs")]
 mod dom_shims;
+#[cfg_attr(
+  not(any(feature = "vmjs", feature = "quickjs")),
+  allow(dead_code, unused_imports)
+)]
 mod engine;
 #[cfg(feature = "quickjs")]
 mod fetch;
 mod meta;
+#[cfg_attr(
+  not(any(feature = "vmjs", feature = "quickjs")),
+  allow(dead_code, unused_imports)
+)]
 mod runner;
 mod suite;
 #[cfg(feature = "quickjs")]
 mod url_shims;
+#[cfg_attr(
+  not(any(feature = "vmjs", feature = "quickjs")),
+  allow(dead_code, unused_imports)
+)]
 mod window_or_worker_global_scope;
 pub mod wpt_fs;
 #[cfg(feature = "vmjs")]
