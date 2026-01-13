@@ -26670,7 +26670,14 @@ fn async_delete_computed_member_after_base(
     return Ok(AsyncEval::Complete(Value::Bool(true)));
   }
 
-  match async_eval_expr(evaluator, scope, &expr.member)? {
+  // Root the base across evaluation of the member expression in case it allocates and triggers GC.
+  let member_eval = {
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(base)?;
+    async_eval_expr(evaluator, &mut member_scope, &expr.member)?
+  };
+
+  match member_eval {
     AsyncEval::Complete(member_value) => Ok(AsyncEval::Complete(
       async_delete_computed_member_after_member(evaluator, scope, expr, base, member_value)?,
     )),
@@ -26843,7 +26850,14 @@ fn async_computed_member_after_base(
     )?));
   }
 
-  match async_eval_expr(evaluator, scope, &expr.member)? {
+  // Root the base across evaluation of the member expression in case it allocates and triggers GC.
+  let member_eval = {
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(base)?;
+    async_eval_expr(evaluator, &mut member_scope, &expr.member)?
+  };
+
+  match member_eval {
     AsyncEval::Complete(member_value) => {
       let value = async_computed_member_after_member(evaluator, scope, expr, base, member_value)?;
       Ok(AsyncEval::Complete(value))
@@ -36086,7 +36100,14 @@ fn gen_delete_computed_member_after_base(
     return Ok(GenEval::Complete(Completion::normal(Value::Bool(true))));
   }
 
-  match gen_eval_expr(evaluator, scope, &expr.member)? {
+  // Root the base across evaluation of the member expression in case it allocates and triggers GC.
+  let member_eval = {
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(base)?;
+    gen_eval_expr(evaluator, &mut member_scope, &expr.member)?
+  };
+
+  match member_eval {
     GenEval::Complete(c) => match c {
       Completion::Normal(v) => {
         let member_value = v.unwrap_or(Value::Undefined);
@@ -36096,6 +36117,8 @@ fn gen_delete_computed_member_after_base(
       abrupt => Ok(GenEval::Complete(abrupt)),
     },
     GenEval::Suspend(mut suspend) => {
+      // Root the base value so it survives until the next yield boundary.
+      scope.push_root(base)?;
       gen_frames_push(
         &mut suspend.frames,
         GenFrame::DeleteComputedMemberAfterMember {
@@ -36201,7 +36224,14 @@ fn gen_computed_member_after_base(
     )));
   }
 
-  match gen_eval_expr(evaluator, scope, &expr.member)? {
+  // Root the base across evaluation of the member expression in case it allocates and triggers GC.
+  let member_eval = {
+    let mut member_scope = scope.reborrow();
+    member_scope.push_root(base)?;
+    gen_eval_expr(evaluator, &mut member_scope, &expr.member)?
+  };
+
+  match member_eval {
     GenEval::Complete(c) => match c {
       Completion::Normal(v) => match gen_computed_member_after_member(
         evaluator,
