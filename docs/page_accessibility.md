@@ -1,9 +1,13 @@
 # Page accessibility (status + developer workflow)
 
 FastRender currently has **page accessibility semantics** (roles/names/states) implemented in the
-renderer, and the desktop `browser` UI can expose that tree to OS screen readers via **AccessKit**.
-The page is still *visually* rendered as a pixel buffer, but the windowed UI receives a
-`PageA11ySnapshot` from the worker and merges it into egui’s AccessKit tree.
+renderer. This semantic tree (`AccessibilityNode`) is used by tests, the library API, and the
+`dump_a11y` CLI.
+
+The desktop `browser` UI exposes the **browser chrome** (tabs/address bar/menus) to OS screen readers
+via **AccessKit**. Page content is still *visually* rendered as a pixel buffer; wiring the page
+semantics tree into the OS-facing AccessKit tree is **in progress** (there is UI-side merge
+scaffolding in `src/bin/browser.rs`).
 
 For deeper details on the browser chrome’s AccessKit wiring (including the experimental non-egui
 backend), see [chrome_accessibility.md](chrome_accessibility.md).
@@ -34,9 +38,23 @@ The public API entrypoint used by the CLI is:
 
 FastRender uses multiple coordinate spaces. The important ones for UI integration are:
 
-- **Page-space CSS px**: layout output in document coordinates (includes scroll).
+- **Page-space CSS px**: layout/document coordinates (origin at the top-left of the document).
 - **Viewport-local CSS px**: (0,0) is the visible viewport top-left; *excludes* scroll offset.
 - **UI points / window coordinates**: what egui/winit and AccessKit ultimately work in.
+
+Coordinate conventions that matter when extending bounds/a11y:
+
+- **Page ↔ viewport conversion** (for non-fixed content):
+  - `viewport = page - scroll_state.viewport`
+  - `page = viewport + scroll_state.viewport`
+- **Element scroll offsets** (`scrollLeft`/`scrollTop`) are applied by mutating a cloned fragment tree:
+  - `crate::scroll::apply_scroll_offsets` (see [`src/scroll.rs`](../src/scroll.rs)).
+- **Viewport scroll** is applied during paint via a global translation (`-scroll_state.viewport`), and
+  `position: fixed` subtrees cancel that translation so they remain pinned:
+  - see `needs_viewport_scroll_cancel` in [`src/paint/painter.rs`](../src/paint/painter.rs).
+- For “paint-time geometry” (sticky- and element-scroll-aware, but still in **page** coordinates),
+  prefer [`PreparedDocument::fragment_tree_for_geometry`](../src/api.rs) and subtract
+  `scroll_state.viewport` yourself when you need viewport-local CSS pixels.
 
 How bounds are computed today (used for positioning UI popups like `<select>` dropdowns):
 
@@ -69,20 +87,26 @@ see [`src/api/dom2_geometry.rs`](../src/api/dom2_geometry.rs) (`Dom2GeometryCont
 
 ### Browser UI worker protocol (page a11y snapshot status)
 
-The render worker sends frames and some element geometry (for popups/overlays), and also sends a
-`PageA11ySnapshot` that the windowed UI can inject into the OS accessibility tree.
+The render worker sends frames and some element geometry (for popups/overlays).
+
+Page content accessibility today is primarily surfaced through `dump_a11y` and tests. The windowed UI
+has scaffolding for merging a future page accessibility payload (an AccessKit subtree) into the
+OS-facing accessibility tree, but that payload is not yet a stable part of the UI↔worker protocol.
 
 - UI↔worker messages: [`src/ui/messages.rs`](../src/ui/messages.rs)
 - Worker loop: [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
 
 High-level flow:
 
-- The worker builds a page accessibility snapshot (semantics + best-effort geometry) and sends it to
-  the UI as a `PageA11ySnapshot`.
-- The UI merges the snapshot into egui’s `PlatformOutput.accesskit_update` so assistive tech sees a
-  web content subtree under the window’s accessibility tree.
-- AccessKit action requests are routed back to the worker as DOM interactions (e.g. focus/activate,
-  scroll-into-view, set value for basic controls, set text selection for text inputs).
+- The worker builds a `RenderedFrame` (pixmap + scroll state + viewport metadata) and sends it to the
+  UI via `WorkerToUi::FrameReady` (see `src/ui/messages.rs`).
+- The windowed UI renders the pixmap as an egui image widget.
+- The UI has scaffolding to merge a **page content subtree** into egui’s AccessKit output (see
+  `App::merge_page_subtree_accesskit_update` in `src/bin/browser.rs`). The UI↔worker protocol does not
+  yet have a stable “page subtree” payload, but this is the intended insertion point.
+- AccessKit action requests targeted at page nodes are intended to round-trip back to the worker as
+  DOM interactions; today `BrowserTabController::handle_accesskit_action` implements `Focus` and
+  `ScrollIntoView` (including best-effort focus scrolling when layout artifacts exist).
 
 ### AccessKit integration (browser chrome)
 
@@ -93,9 +117,9 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
 - Egui code uses `ctx.enable_accesskit()` in tests (search for `enable_accesskit` in
   `src/ui/chrome.rs`, `src/ui/menu_bar.rs`, etc).
 - Page/content in the windowed UI is still drawn as a single **egui image widget**, with a stable
-  accessible label (“Web page content (rendered image)”). When a `PageA11ySnapshot` is available,
-  the UI injects a web content subtree into the AccessKit tree so screen readers can traverse page
-  content nodes.
+  accessible label (“Web page content (rendered image)”).
+- There is scaffolding to inject a web content subtree into the AccessKit tree, but not every build
+  wires up a page subtree yet (see “Browser UI worker protocol” above).
 - Future-facing (page/chrome rendered by FastRender rather than egui):
   - AccessKit update gating (avoid building trees/bounds when no AT is connected):
     [`src/ui/accesskit_bridge.rs`](../src/ui/accesskit_bridge.rs)
@@ -105,8 +129,9 @@ The desktop `browser` UI enables AccessKit for **egui widgets** (browser chrome)
     [env-vars.md](env-vars.md#appearance--accessibility--debugging-browser-ux) and
     [chrome_accessibility.md](chrome_accessibility.md)).
 
-Page content is still rendered as a bitmap in an egui panel, but screen readers can traverse page
-content nodes via the injected `PageA11ySnapshot` subtree.
+Page content is still rendered as a bitmap in an egui panel. Until a page content subtree is wired
+up, screen readers will typically only see a single labeled “page” node rather than per-element
+semantics.
 
 ## Tooling: inspect the page accessibility tree
 
@@ -133,6 +158,34 @@ cargo run --bin dump_a11y -- --viewport 800x600 --dpr 2.0 https://example.com/
 cargo run --bin dump_a11y -- https://example.com/ | jq '.role, .children[0].role'
 ```
 
+Worked example (stable fixture + expected output):
+
+```bash
+cargo run --bin dump_a11y -- tests/fixtures/accessibility/headings_links.html \
+  | jq '.. | objects | select(.id? == "title") | {role,name,level,html_tag,id,states,children}'
+```
+
+Expected output snippet:
+
+```json
+{
+  "role": "heading",
+  "name": "Main Title",
+  "level": 1,
+  "html_tag": "h1",
+  "id": "title",
+  "states": {
+    "focusable": false,
+    "disabled": false,
+    "required": false,
+    "invalid": false,
+    "visited": false,
+    "readonly": false
+  },
+  "children": []
+}
+```
+
 Notes:
 
 - In agent/CI environments, prefer the repo wrappers for resource limits and consistent Cargo flags:
@@ -148,9 +201,34 @@ Notes:
     cargo run --release --features a11y_debug --bin dump_a11y -- https://example.com/
     ```
 
-### `dump_a11y --include-bounds` (not implemented yet)
+### `dump_a11y --include-bounds` (Task 141 / optional)
 
-There is currently **no** `--include-bounds` flag. If you need bounds today:
+Some checkouts add a `--include-bounds` flag to `dump_a11y` (introduced after Task 141). Always
+confirm the flag exists in your build by checking `dump_a11y --help`.
+
+When enabled, the intent is:
+
+- Compute **layout/fragment geometry** in addition to semantic roles/names/states.
+- Include a per-node bounds field in the JSON output.
+
+Coordinate conventions to expect (and to keep consistent with the UI/input pipeline):
+
+- Bounds should be in **viewport-local CSS pixels** by default:
+  - (0,0) is the viewport top-left.
+  - Bounds do **not** include `ScrollState.viewport`; page-space coordinates can be recovered by
+    adding the scroll offset.
+- Element scroll offsets (`scrollLeft`/`scrollTop`) should be applied via
+  `crate::scroll::apply_scroll_offsets`.
+- `position: fixed` should remain pinned under viewport scroll (paint cancels the global viewport
+  translation for fixed subtrees; see `needs_viewport_scroll_cancel` in `src/paint/painter.rs`).
+
+Example (when available):
+
+```bash
+cargo run --bin dump_a11y -- --include-bounds tests/fixtures/accessibility/headings_links.html | jq '.children[0]'
+```
+
+If you need bounds today and the flag is not available:
 
 - `dump_a11y` builds semantics from the **styled DOM only** (no box generation / layout), so it does
   not have geometry available to report.
@@ -195,13 +273,33 @@ bash scripts/run_limited.sh --as 64G -- \
 ```
 
 This tool only snapshots the egui widget tree (tabs/address bar/menus). It does **not** run the
-render worker, so it will not include the injected `PageA11ySnapshot` subtree; use the real windowed
-browser + a platform accessibility inspector to validate page content exposure.
+render worker, so it will not include any page/content subtree update (if/when that is wired); use
+the real windowed browser + a platform accessibility inspector to validate page content exposure.
 
 See [chrome_accessibility.md](chrome_accessibility.md) for recommended `dump_accesskit` invocations
 and how to interpret the output.
 
 ## Testing guidance
+
+### Integration tests: `tests/accessibility/**` (semantics + fixtures)
+
+Most accessibility semantics coverage lives under `tests/accessibility/` and uses HTML+JSON fixtures
+in `tests/fixtures/accessibility/`.
+
+These tests are compiled into the unified integration test binary (`tests/integration.rs`), so run
+them via:
+
+```bash
+cargo test --test integration accessibility::
+```
+
+Helpful patterns:
+
+- Fixtures are in `tests/fixtures/accessibility/*.html`.
+- Many tests look up nodes by HTML `id=...` (matching the `AccessibilityNode.id` field in `dump_a11y`
+  output).
+- If you change the accessibility output schema or naming rules, expect to update fixtures and/or
+  snapshots accordingly.
 
 ### Unit tests: semantics (tree correctness)
 
@@ -245,6 +343,62 @@ Run:
 cargo test --features browser_ui accesskit
 ```
 
+### Browser integration tests (a11y interaction plumbing)
+
+Some browser-level tests exercise accessibility-adjacent interaction paths (e.g. selection actions
+used by native controls / eventual AT action routing):
+
+```bash
+cargo test --test integration browser_integration::a11y_select_action
+```
+
+There are also focused AccessKit bridge tests:
+
+- `tests/accesskit_dom2_node_ids.rs` (requires `--features a11y_accesskit`)
+- `tests/accesskit_scroll.rs` (requires `--features browser_ui`)
+
+```bash
+cargo test --features a11y_accesskit --test accesskit_dom2_node_ids
+cargo test --features browser_ui --test accesskit_scroll
+```
+
+## Known limitations (current gaps)
+
+- **No JS-driven live region updates**: `dump_a11y` and most renderer-side tree export is a snapshot
+  of the styled DOM at build time. ARIA live region events and incremental “tree update” delivery are
+  not implemented yet.
+- **No general per-node bounds in the semantic tree**: `AccessibilityNode` has no geometry; AccessKit
+  bridge code often uses conservative default bounds today. Wiring real bounds requires layout +
+  scroll/sticky transforms (see “Bounds / geometry” above).
+- **Text selection/caret exposure is partial**:
+  - Selection/caret state currently exists mainly for `<input>`/`<textarea>`.
+  - Some selection metadata is debug-only (`#[cfg(debug_assertions)]` or `--features a11y_debug`).
+- **Role/state coverage is incomplete**: many ARIA roles map to `"generic"` in the semantic tree or
+  to a generic container role in AccessKit bridges until explicit mappings are added.
+
+## Extending safely (guidelines)
+
+- **Keep the JSON schema stable**:
+  - `AccessibilityNode.node_id` is intentionally `#[serde(skip)]` so snapshot tests don’t depend on
+    renderer preorder numbering.
+  - Prefer adding **optional** fields (`Option<T>` + `#[serde(skip_serializing_if = "Option::is_none")]`)
+    to avoid breaking downstream tooling.
+  - Keep debug-only fields behind `#[cfg(any(debug_assertions, feature = "a11y_debug"))]`.
+- **Thread `InteractionState` through the places that need dynamic state**:
+  - The tree builder accepts `Option<&InteractionState>`; passing `None` means no focus/visited/selection.
+  - If you add new dynamic states, update `src/interaction/state.rs` and add coverage in
+    `tests/accessibility/**` (and/or browser integration tests).
+- **Bounds work must respect scroll + fixed positioning**:
+  - Prefer `PreparedDocument::fragment_tree_for_geometry` (page-space) + `ScrollState.viewport`
+    subtraction (viewport-local).
+  - Ensure element scroll offsets are applied (`scroll::apply_scroll_offsets`).
+  - Add regression tests that cover viewport scroll + `position: fixed` and element scroll containers.
+- **When bridging to AccessKit, preserve NodeId stability**:
+  - If you derive AccessKit ids from DOM2 ids, ensure they are stable across DOM insertions (see
+    `tests/accesskit_dom2_node_ids.rs`).
+  - Avoid collisions between “wrapper” nodes (window/chrome/page region) and per-element nodes by
+    using a clear namespacing scheme.
+
 ## Manual testing with screen readers (current + future)
 
 ### Preconditions
@@ -262,8 +416,9 @@ cargo test --features browser_ui accesskit
 
 - Screen readers should be able to navigate and announce **browser chrome controls** (tabs, address
   bar, toolbar buttons, menus).
-- Screen readers should be able to traverse basic **page content nodes** (e.g. headings/links/buttons)
-  and trigger focus/activate on at least one page control.
+- Page content is currently exposed as a **single labeled region/widget** in the egui tree (the page
+  pixmap). When/if a page content subtree is wired into AccessKit, screen readers should be able to
+  traverse page content nodes (headings/links/buttons) and trigger focus/activate.
 
 ### Inspecting the OS accessibility tree (optional)
 
@@ -274,8 +429,8 @@ exposed, instead of relying on screen reader speech alone.
 - Windows: **Inspect.exe** (Windows SDK, UI Automation tree)
 - Linux: **Accerciser** (AT-SPI tree)
 
-Note: these tools should show both the browser chrome (egui widgets) and the injected page subtree
-when a `PageA11ySnapshot` is available.
+Note: if/when the browser UI merges a page content subtree into AccessKit output, these tools should
+show both the chrome tree (egui widgets) and the injected page subtree.
 
 ### macOS: VoiceOver
 
@@ -296,7 +451,7 @@ when a `PageA11ySnapshot` is available.
 2. Launch `browser`.
 3. Use `Tab` / arrow-key navigation and ensure Orca announces chrome widgets.
 
-### With page a11y wired
+### When page a11y subtree is wired
 
 Manual testing should include:
 
