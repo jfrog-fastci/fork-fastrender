@@ -871,52 +871,119 @@ fn validate_regex_pattern(
       let esc_len = esc.len_utf8();
       if !in_charset && esc == 'u' {
         let after_u = i + esc_len;
-        if after_u >= pattern.len() {
-          return Err(RegexError {
-            kind: RegexErrorKind::InvalidPattern,
-            offset: base_offset + escape_start,
-            len: after_u.saturating_sub(escape_start),
-          });
-        }
         let bytes = pattern.as_bytes();
-        if bytes[after_u] == b'{' {
-          let mut j = after_u + 1;
-          let mut digits = 0usize;
-          while j < bytes.len() && bytes[j] != b'}' {
-            let c = bytes[j] as char;
-            if !c.is_ascii_hexdigit() {
-              return Err(RegexError {
-                kind: RegexErrorKind::InvalidPattern,
-                offset: base_offset + escape_start,
-                len: j + 1 - escape_start,
-              });
-            }
-            digits += 1;
-            j += 1;
-          }
-          if j >= bytes.len() || digits == 0 {
+        if unicode_mode {
+          // In UnicodeMode (`u`/`v`), `\u` must be a valid RegExpUnicodeEscapeSequence.
+          if after_u >= bytes.len() {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + escape_start,
-              len: j.saturating_sub(escape_start),
+              len: after_u.saturating_sub(escape_start),
             });
           }
-          // Skip the closing `}`.
-          i = j + 1;
-        } else {
-          // `\uXXXX`
-          let mut j = after_u;
-          for _ in 0..4 {
-            if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
+
+          if bytes[after_u] == b'{' {
+            // `\u{HexDigits}`
+            let mut j = after_u + 1;
+            let mut saw_digit = false;
+            // Track the numeric value but avoid overflow and allow arbitrarily many leading zeros.
+            let mut value: u32 = 0;
+            let mut significant_digits: usize = 0;
+            let mut started = false;
+            while j < bytes.len() && bytes[j] != b'}' {
+              let b = bytes[j];
+              if !(b as char).is_ascii_hexdigit() {
+                return Err(RegexError {
+                  kind: RegexErrorKind::InvalidPattern,
+                  offset: base_offset + escape_start,
+                  len: j + 1 - escape_start,
+                });
+              }
+              saw_digit = true;
+              let digit: u32 = match b {
+                b'0'..=b'9' => (b - b'0') as u32,
+                b'a'..=b'f' => (b - b'a' + 10) as u32,
+                b'A'..=b'F' => (b - b'A' + 10) as u32,
+                _ => unreachable!(),
+              };
+
+              if !started {
+                if digit != 0 {
+                  started = true;
+                  significant_digits = 1;
+                  value = digit;
+                }
+              } else {
+                significant_digits += 1;
+                // Max valid value is 0x10FFFF, which fits in 6 hex digits. Any more significant
+                // digits are definitely out of range.
+                if significant_digits > 6 {
+                  return Err(RegexError {
+                    kind: RegexErrorKind::InvalidPattern,
+                    offset: base_offset + escape_start,
+                    len: j + 1 - escape_start,
+                  });
+                }
+                value = (value << 4) | digit;
+                if value > 0x10FFFF {
+                  return Err(RegexError {
+                    kind: RegexErrorKind::InvalidPattern,
+                    offset: base_offset + escape_start,
+                    len: j + 1 - escape_start,
+                  });
+                }
+              }
+
+              j += 1;
+            }
+
+            // Require at least one hex digit and a closing `}`.
+            if j >= bytes.len() || !saw_digit {
               return Err(RegexError {
                 kind: RegexErrorKind::InvalidPattern,
                 offset: base_offset + escape_start,
                 len: j.saturating_sub(escape_start),
               });
             }
-            j += 1;
+            debug_assert_eq!(bytes[j], b'}');
+
+            // All-zero escapes are fine (value stays 0).
+            if started && value > 0x10FFFF {
+              return Err(RegexError {
+                kind: RegexErrorKind::InvalidPattern,
+                offset: base_offset + escape_start,
+                len: j + 1 - escape_start,
+              });
+            }
+
+            // Skip the closing `}`.
+            i = j + 1;
+          } else {
+            // `\uXXXX`
+            let mut j = after_u;
+            for _ in 0..4 {
+              if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
+                return Err(RegexError {
+                  kind: RegexErrorKind::InvalidPattern,
+                  offset: base_offset + escape_start,
+                  len: j.saturating_sub(escape_start),
+                });
+              }
+              j += 1;
+            }
+            i = j;
           }
-          i = j;
+        } else {
+          // In non-UnicodeMode, only treat `\uXXXX` as a Unicode escape when exactly 4 hex
+          // digits follow. Otherwise `\u` is an identity escape and the subsequent characters
+          // (including `{...}`) are parsed normally.
+          let is_u4 = after_u + 4 <= bytes.len()
+            && bytes[after_u..after_u + 4].iter().all(|b| (*b as char).is_ascii_hexdigit());
+          if is_u4 {
+            i = after_u + 4;
+          } else {
+            i += esc_len;
+          }
         }
         prev_can_be_quantified = true;
         quantifier_allows_lazy = false;
@@ -926,18 +993,22 @@ fn validate_regex_pattern(
       if !in_charset && esc == 'x' {
         let after_x = i + esc_len;
         let bytes = pattern.as_bytes();
-        let mut j = after_x;
-        for _ in 0..2 {
-          if j >= bytes.len() || !(bytes[j] as char).is_ascii_hexdigit() {
-            return Err(RegexError {
-              kind: RegexErrorKind::InvalidPattern,
-              offset: base_offset + escape_start,
-              len: j.saturating_sub(escape_start),
-            });
-          }
-          j += 1;
+        let is_x2 = after_x + 2 <= bytes.len()
+          && (bytes[after_x] as char).is_ascii_hexdigit()
+          && (bytes[after_x + 1] as char).is_ascii_hexdigit();
+        if is_x2 {
+          i = after_x + 2;
+        } else if unicode_mode {
+          // In UnicodeMode, invalid hex escapes are early errors.
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + escape_start,
+            len: after_x.saturating_sub(escape_start),
+          });
+        } else {
+          // In non-UnicodeMode, invalid `\x` escapes are treated as identity escapes.
+          i += esc_len;
         }
-        i = j;
         prev_can_be_quantified = true;
         quantifier_allows_lazy = false;
         continue;
