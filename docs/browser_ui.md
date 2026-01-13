@@ -987,6 +987,10 @@ FastRender includes several internal `about:` pages implemented in
 See [`docs/about_pages.md`](about_pages.md) for the canonical list and per-page expectations (notably
 `about:processes` for multiprocess/chrome debugging).
 
+Quick note: `about:processes` is a *multiprocess/process-assignment placeholder* page — today it
+shows a best-effort snapshot of open tabs (and a derived Site column), and will eventually show
+real renderer/network process assignment as multiprocess work lands.
+
 ### Test-only `about:test-*` pages
 
 For deterministic, offline repros (no network), the worker supports a few `about:` pages defined in
