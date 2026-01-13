@@ -21899,6 +21899,108 @@ pub fn map_prototype_get(
     .unwrap_or(Value::Undefined))
 }
 
+#[inline]
+fn canonicalize_keyed_collection_key(key: Value) -> Value {
+  // Spec: `CanonicalizeKeyedCollectionKey` (ECMA-262 / upsert proposal).
+  //
+  // Map/Set use SameValueZero semantics, which treat -0 and +0 as the same key.
+  // Canonicalize -0 to +0 so internal equality checks can reuse SameValue for numbers and so
+  // callbacks observe +0.
+  match key {
+    Value::Number(n) if n == 0.0 => Value::Number(0.0),
+    other => other,
+  }
+}
+
+pub fn map_prototype_get_or_insert(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-map.prototype.getorinsert
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError("Map.prototype.getOrInsert called on non-object"));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.getOrInsert called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  if let Some(existing) = scope.heap().map_get_with_tick(map, key, || vm.tick())? {
+    return Ok(existing);
+  }
+
+  scope
+    .heap_mut()
+    .map_set_with_tick(map, key, value, || vm.tick())?;
+  Ok(value)
+}
+
+pub fn map_prototype_get_or_insert_computed(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-map.prototype.getorinsertcomputed
+  let mut scope = scope.reborrow();
+  let Value::Object(map) = this else {
+    return Err(VmError::TypeError(
+      "Map.prototype.getOrInsertComputed called on non-object",
+    ));
+  };
+  if !scope.heap().is_map_object(map) {
+    return Err(VmError::TypeError(
+      "Map.prototype.getOrInsertComputed called on incompatible receiver",
+    ));
+  }
+
+  let key = args.get(0).copied().unwrap_or(Value::Undefined);
+  let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+
+  // Spec: check `IsCallable(callbackfn)` before checking key presence.
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError(
+      "Map.prototype.getOrInsertComputed callback is not callable",
+    ));
+  }
+
+  // Root values across the callback invocation, which can allocate and trigger GC.
+  scope.push_roots(&[Value::Object(map), callback])?;
+
+  // Spec: canonicalize -0 to +0 before checking the map and before calling the callback.
+  let key = canonicalize_keyed_collection_key(key);
+  scope.push_root(key)?;
+
+  if let Some(existing) = scope.heap().map_get_with_tick(map, key, || vm.tick())? {
+    return Ok(existing);
+  }
+
+  let value = {
+    let args = [key];
+    let mut call_scope = scope.reborrow();
+    vm.call_with_host_and_hooks(host, &mut call_scope, hooks, callback, Value::Undefined, &args)?
+  };
+
+  // Insert/update after the callback returns successfully.
+  scope
+    .heap_mut()
+    .map_set_with_tick(map, key, value, || vm.tick())?;
+  Ok(value)
+}
+
 pub fn map_prototype_set(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

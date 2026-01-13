@@ -46,22 +46,6 @@ impl WindowRealmHost for RenderedHost {
   }
 }
 
-impl DomHost for RenderedHost {
-  fn with_dom<R, F>(&self, f: F) -> R
-  where
-    F: FnOnce(&fastrender::dom2::Document) -> R,
-  {
-    DomHost::with_dom(&self.document, f)
-  }
-
-  fn mutate_dom<R, F>(&mut self, f: F) -> R
-  where
-    F: FnOnce(&mut fastrender::dom2::Document) -> (R, bool),
-  {
-    DomHost::mutate_dom(&mut self.document, f)
-  }
-}
-
 /// `vm-js` backend executed against a renderer-backed `BrowserDocumentDom2`.
 ///
 /// This exists primarily so layout/geometry-sensitive WPT tests (e.g. future IntersectionObserver /

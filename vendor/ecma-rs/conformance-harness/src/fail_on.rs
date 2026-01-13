@@ -3,6 +3,7 @@ use clap::ValueEnum;
 #[derive(Debug, Clone, Copy, Default, ValueEnum, PartialEq, Eq)]
 pub enum FailOn {
   /// Non-zero on any mismatch.
+  #[value(aliases = ["any"])]
   All,
   /// Non-zero only for mismatches not covered by manifest (default).
   #[default]

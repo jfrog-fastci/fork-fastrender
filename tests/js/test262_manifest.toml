@@ -1462,13 +1462,11 @@ reason = "vm-js: Map.groupBy is not implemented."
 
 [[expectations]]
 glob = "built-ins/Map/prototype/getOrInsert/**"
-status = "xfail"
-reason = "vm-js: Map.prototype.getOrInsert is not implemented."
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/Map/prototype/getOrInsertComputed/**"
-status = "xfail"
-reason = "vm-js: Map.prototype.getOrInsertComputed is not implemented."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/Map/valid-keys.js"

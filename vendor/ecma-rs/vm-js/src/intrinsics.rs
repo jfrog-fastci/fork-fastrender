@@ -4846,6 +4846,43 @@ impl Intrinsics {
         data_desc(Value::Object(get_fn), true, false, true),
       )?;
 
+      let get_or_insert_call = vm.register_native_call(builtins::map_prototype_get_or_insert)?;
+      let get_or_insert_s = scope.alloc_string("getOrInsert")?;
+      scope.push_root(Value::String(get_or_insert_s))?;
+      let get_or_insert_key = PropertyKey::from_string(get_or_insert_s);
+      let get_or_insert_fn =
+        scope.alloc_native_function(get_or_insert_call, None, get_or_insert_s, 2)?;
+      scope.push_root(Value::Object(get_or_insert_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get_or_insert_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        get_or_insert_key,
+        data_desc(Value::Object(get_or_insert_fn), true, false, true),
+      )?;
+
+      let get_or_insert_computed_call =
+        vm.register_native_call(builtins::map_prototype_get_or_insert_computed)?;
+      let get_or_insert_computed_s = scope.alloc_string("getOrInsertComputed")?;
+      scope.push_root(Value::String(get_or_insert_computed_s))?;
+      let get_or_insert_computed_key = PropertyKey::from_string(get_or_insert_computed_s);
+      let get_or_insert_computed_fn = scope.alloc_native_function(
+        get_or_insert_computed_call,
+        None,
+        get_or_insert_computed_s,
+        2,
+      )?;
+      scope.push_root(Value::Object(get_or_insert_computed_fn))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(get_or_insert_computed_fn, Some(function_prototype))?;
+      scope.define_property(
+        map_prototype,
+        get_or_insert_computed_key,
+        data_desc(Value::Object(get_or_insert_computed_fn), true, false, true),
+      )?;
+
       let set_call = vm.register_native_call(builtins::map_prototype_set)?;
       let set_s = scope.alloc_string("set")?;
       scope.push_root(Value::String(set_s))?;
