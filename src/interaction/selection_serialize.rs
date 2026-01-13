@@ -484,8 +484,12 @@ fn walk_box_tree(
       // List markers are rendered as text (e.g. bullets, numbers). Include them when selecting the
       // document, but treat them as not sliceable since the selection endpoints track DOM text
       // nodes, not generated markers.
-      if let MarkerContent::Text(text) = &marker.content {
-        builder.push_text(text, false);
+      // When copying a range selection, do not serialize markers at all. This avoids incorrect
+      // "stray" bullets/numbers from list items that are outside the selected DOM range.
+      if matches!(selection, DocumentSelection::All) {
+        if let MarkerContent::Text(text) = &marker.content {
+          builder.push_text(text, false);
+        }
       }
     }
     BoxType::LineBreak(_) => match selection {

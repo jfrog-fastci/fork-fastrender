@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
+use fastrender::geometry::{Point, Rect};
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::ui::messages::{
   PointerButton, PointerModifiers, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
@@ -11,6 +13,34 @@ fn extract_clipboard_text(messages: Vec<WorkerToUi>) -> Option<String> {
   messages.into_iter().find_map(|msg| match msg {
     WorkerToUi::SetClipboardText { text, .. } => Some(text),
     _ => None,
+  })
+}
+
+fn find_point_in_text(tree: &FragmentTree, needle: &str) -> Option<Point> {
+  fn walk(node: &FragmentNode, offset: Point, needle: &str) -> Option<Point> {
+    let rect = Rect::new(offset.translate(node.bounds.origin), node.bounds.size);
+    if let FragmentContent::Text { text, is_marker, .. } = &node.content {
+      if !*is_marker && text.contains(needle) {
+        let x = rect.x() + (rect.width().max(1.0) * 0.5);
+        let y = rect.y() + (rect.height().max(1.0) * 0.5);
+        return Some(Point::new(x, y));
+      }
+    }
+
+    let child_offset = rect.origin;
+    for child in node.children.iter() {
+      if let Some(found) = walk(child, child_offset, needle) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  walk(&tree.root, Point::ZERO, needle).or_else(|| {
+    tree
+      .additional_fragments
+      .iter()
+      .find_map(|root| walk(root, Point::ZERO, needle))
   })
 }
 
@@ -195,6 +225,59 @@ fn ui_document_selection_triple_click_selects_paragraph_or_line() -> Result<()> 
     extract_clipboard_text(copy_msgs).as_deref(),
     Some("alpha beta"),
     "expected triple-click selection to copy the full paragraph/line"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn ui_document_selection_double_click_in_list_does_not_copy_stray_markers_outside_range() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+
+  let tab_id = TabId::new();
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    r#"<!doctype html><meta charset="utf-8">
+<style>body{font:40px/80px monospace}</style>
+<ul><li>AAAA</li><li>BBBB</li></ul>
+"#,
+    "https://example.invalid/",
+    (500, 240),
+    1.0,
+  )?;
+
+  // Initial paint ensures layout artifacts exist for selection serialization.
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  let prepared = controller
+    .document()
+    .prepared()
+    .expect("expected prepared document after initial repaint");
+  let click_point = find_point_in_text(prepared.fragment_tree(), "BBBB")
+    .expect("expected to find a non-marker text fragment containing BBBB");
+
+  let scroll = controller.scroll_state().viewport;
+  let click_css = (click_point.x - scroll.x, click_point.y - scroll.y);
+
+  let _ = controller.handle_message(support::pointer_down_with(
+    tab_id,
+    click_css,
+    PointerButton::Primary,
+    PointerModifiers::NONE,
+    2,
+  ))?;
+  let _ = controller.handle_message(support::pointer_up(
+    tab_id,
+    click_css,
+    PointerButton::Primary,
+  ))?;
+
+  let copy_msgs = controller.handle_message(UiToWorker::Copy { tab_id })?;
+  assert_eq!(
+    extract_clipboard_text(copy_msgs).as_deref(),
+    Some("BBBB"),
+    "expected range selection inside a list item to copy only the selected text (no stray bullets)"
   );
 
   Ok(())
