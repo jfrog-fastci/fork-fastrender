@@ -70,6 +70,15 @@ The Windows renderer sandbox is **defense-in-depth**, layered as:
 4. **Process mitigation policies**: reduce kernel / Win32 API attack surface.
 5. **Fallback mode** if AppContainer cannot be used: restricted token + Low IL (weaker; see below).
 
+### Windows version / environment constraints
+
+- **AppContainer requires Windows 8+** (and `userenv.dll` must export the AppContainer profile APIs).
+  On older Windows versions, or unusual Windows Server configurations where the APIs are absent,
+  we fall back to restricted-token mode.
+- **Nested jobs** (assigning a process to a new Job when the parent is already in one) are
+  generally supported on Windows 8+. On older Windows versions, job assignment may fail. In repo
+  reality, we treat “can’t assign to Job” as a sandbox degradation and continue with a warning.
+
 The *broker* (browser process) is trusted and is responsible for:
 
 - Deciding what the renderer is allowed to do.
