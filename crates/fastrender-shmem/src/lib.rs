@@ -86,6 +86,8 @@
 //! IPC"), remember to whitelist this memfd as well, otherwise the renderer will inherit the fd
 //! number but find it closed by the time it tries to `mmap` it.
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use getrandom::getrandom;
 use memmap2::{MmapMut, MmapOptions};
 use std::ffi::CString;
@@ -99,14 +101,14 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 ///
 /// Many platforms allow longer names, but macOS commonly enforces `PSHMNAMLEN = 31` bytes.
 /// We keep the strictest known limit globally to avoid portability bugs.
-const MAX_SHMEM_NAME_LEN: usize = 31;
+pub const MAX_SHMEM_NAME_LEN: usize = 31;
 
 /// Maximum length of the user-facing shared-memory identifier (without the leading `/`).
-const MAX_SHMEM_ID_LEN: usize = MAX_SHMEM_NAME_LEN - 1;
+pub const MAX_SHMEM_ID_LEN: usize = MAX_SHMEM_NAME_LEN - 1;
 
-// Keep this prefix extremely short so the random payload has room under macOS's strict limit.
+// Keep this prefix extremely short so the random payload fits under macOS's strict limit.
 const SHMEM_ID_PREFIX: &str = "fr";
-const SHMEM_ID_RANDOM_BYTES: usize = 14; // 112 bits
+const SHMEM_ID_RANDOM_BYTES: usize = 16; // 128 bits
 
 /// Generates a fresh shared-memory identifier suitable for POSIX `shm_open`.
 ///
@@ -115,19 +117,16 @@ const SHMEM_ID_RANDOM_BYTES: usize = 14; // 112 bits
 /// browser. A compromised renderer that can guess another tab's shared-memory identifier can open
 /// and read/write its contents (owner-only mode bits don't help against same-UID attackers).
 ///
-/// Therefore, identifiers must be **unguessable**. We use OS randomness and encode it as
-/// lowercase hex. The strictest common `shm_open` name limit (macOS `PSHMNAMLEN = 31` bytes,
-/// including the required leading `/`) constrains the identifier length, so we currently use
-/// 112 bits of randomness (`SHMEM_ID_RANDOM_BYTES = 14`).
+/// Therefore, identifiers must be **unguessable**: we use 128 bits of OS randomness.
 ///
 /// ## Invariants
-/// - Lowercase hex (ASCII-only), with a short stable prefix.
-/// - Contains only `[a-z0-9-]`.
+/// - ASCII-only, with a short stable prefix.
+/// - Contains only URL-safe Base64 characters (`[A-Za-z0-9_-]`) and contains no `/`.
 /// - Does **not** include a leading `/`; POSIX requires one for `shm_open`, but we add it only at
 ///   the OS call-site.
 /// - Total length is capped at [`MAX_SHMEM_ID_LEN`] (30 bytes today) so the final `shm_open` name
 ///   including the required leading `/` fits within [`MAX_SHMEM_NAME_LEN`] (31 bytes). This matches
-///   macOS's `PSHMNAMLEN = 31` limit.
+///   macOS's common `PSHMNAMLEN = 31` limit.
 ///
 /// ## Panics
 /// Panics if OS randomness is unavailable. Falling back to predictable identifiers would defeat
@@ -136,22 +135,19 @@ pub fn generate_shmem_id() -> String {
   let mut rand_bytes = [0u8; SHMEM_ID_RANDOM_BYTES];
   getrandom(&mut rand_bytes).expect("failed to obtain OS randomness for shared memory id");
 
-  let mut out = String::with_capacity(SHMEM_ID_PREFIX.len() + (SHMEM_ID_RANDOM_BYTES * 2));
+  let encoded = URL_SAFE_NO_PAD.encode(rand_bytes);
+  let mut out = String::with_capacity(SHMEM_ID_PREFIX.len() + encoded.len());
   out.push_str(SHMEM_ID_PREFIX);
-
-  const HEX: &[u8; 16] = b"0123456789abcdef";
-  for &b in &rand_bytes {
-    out.push(HEX[(b >> 4) as usize] as char);
-    out.push(HEX[(b & 0x0f) as usize] as char);
-  }
-
-  debug_assert!(!out.contains('/'), "shared memory id must not contain '/'");
+  out.push_str(&encoded);
+  // Adding the leading `/` happens at the syscall layer; keep IDs strictly under the OS limit.
   assert!(
     out.len() <= MAX_SHMEM_ID_LEN,
-    "shared memory id too long: {} bytes (max {})",
+    "generated shm id too long: {} bytes (max {})",
     out.len(),
     MAX_SHMEM_ID_LEN
   );
+  debug_assert!(out.is_ascii());
+  debug_assert!(!out.contains('/'));
   out
 }
 
@@ -556,20 +552,22 @@ fn posix_shm_name(id: &str) -> io::Result<CString> {
   if id.len() > MAX_SHMEM_ID_LEN {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
-      format!(
-        "posix shm id too long: {} bytes (max {MAX_SHMEM_ID_LEN})",
-        id.len()
-      ),
+      format!("posix shm id too long: {} bytes (max {MAX_SHMEM_ID_LEN})", id.len()),
     ));
   }
+
+  // Keep names in a conservative portable charset:
+  // - ASCII only
+  // - no path separators (`/`)
+  // - no whitespace or control chars
   if !id
     .as_bytes()
     .iter()
-    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+    .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'))
   {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
-      "posix shm id must contain only ASCII [a-z0-9-]",
+      "posix shm id must contain only ASCII [A-Za-z0-9_-]",
     ));
   }
   if id.as_bytes().iter().any(|b| *b == b'/' || *b == 0) {
@@ -1038,12 +1036,14 @@ mod tests {
         id.len()
       );
       assert!(
-        id.as_bytes()
-          .iter()
-          .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')),
+        id.as_bytes().iter().all(|b| matches!(
+          b,
+          b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_'
+        )),
         "id contains unexpected characters: {id:?}"
       );
       assert!(!id.contains('/'), "id must not contain '/': {id:?}");
+
       #[cfg(unix)]
       {
         let name = posix_shm_name(&id).expect("posix_shm_name should accept generated ids");

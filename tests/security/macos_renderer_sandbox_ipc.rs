@@ -2,6 +2,7 @@ use std::os::unix::net::UnixListener;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use fastrender_shmem::{generate_shmem_id, MAX_SHMEM_NAME_LEN};
 use tempfile::tempdir;
 
 fn probe_bin() -> &'static str {
@@ -28,7 +29,13 @@ fn pipes_only_allows_stdio_pipe() {
 #[test]
 fn posix_shm_requires_allowance() {
   // POSIX shm names must start with '/' and contain no other slashes.
-  let shm_name = format!("/fastrender_sandbox_test_shm_{}_{}", std::process::id(), unique_suffix());
+  // macOS commonly limits `shm_open` names to 31 bytes including the leading `/`.
+  let shm_name = format!("/{}", generate_shmem_id());
+  assert!(
+    shm_name.len() <= MAX_SHMEM_NAME_LEN,
+    "generated shm name too long: {} bytes (max {MAX_SHMEM_NAME_LEN}): {shm_name:?}",
+    shm_name.len()
+  );
 
   // Allowed.
   let ok = Command::new(probe_bin())
@@ -152,12 +159,4 @@ fn mach_lookup_requires_allowance() {
     String::from_utf8_lossy(&denied.stdout),
     String::from_utf8_lossy(&denied.stderr)
   );
-}
-
-fn unique_suffix() -> u128 {
-  // Avoid `rand` in tests; a monotonic timestamp is sufficient for uniqueness.
-  std::time::SystemTime::now()
-    .duration_since(std::time::UNIX_EPOCH)
-    .expect("time")
-    .as_nanos()
 }
