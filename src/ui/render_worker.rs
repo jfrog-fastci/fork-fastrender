@@ -2274,6 +2274,18 @@ impl BrowserRuntime {
       UiToWorker::KeyAction { tab_id, key } => {
         self.handle_key_action(tab_id, key);
       }
+      UiToWorker::MediaCommand {
+        tab_id,
+        node_id,
+        command,
+      } => {
+        // Media playback is owned by the renderer/DOM subsystem; for now, treat this as an input
+        // event and surface it via the debug log so front-ends can validate wiring.
+        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("MediaCommand node_id={node_id} command={command:?}"),
+        });
+      }
       UiToWorker::SetDownloadDirectory { path } => {
         self.set_download_directory(path);
       }

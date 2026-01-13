@@ -88,6 +88,24 @@ pub enum RepaintReason {
   Navigation,
 }
 
+/// Media element kind for native media controls / commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MediaElementKind {
+  Audio,
+  Video,
+}
+
+/// UI-triggered media command for a specific media element (`<audio>`/`<video>`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MediaCommand {
+  TogglePlayPause,
+  SeekToSeconds(f64),
+  SeekBySeconds(f64),
+  ToggleMute,
+  /// Volume in the inclusive range `0..=1`.
+  SetVolume(f64),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WakeReason {
   /// Media playback / A-V timing (video frame presentation, audio scheduling, etc).
@@ -592,6 +610,12 @@ pub enum UiToWorker {
     tab_id: TabId,
     key: KeyAction,
   },
+  /// Send a user action to a media element (play/pause, seek, volume, mute).
+  MediaCommand {
+    tab_id: TabId,
+    node_id: usize,
+    command: MediaCommand,
+  },
   /// Begin/update an active "find in page" query for this tab.
   ///
   /// An empty query clears all find highlights/results for the tab.
@@ -853,6 +877,20 @@ pub enum WorkerToUi {
   /// Workers emit this in response to [`UiToWorker::FilePickerChoose`] and
   /// [`UiToWorker::FilePickerCancel`] so front-ends can close the overlay deterministically.
   FilePickerClosed {
+    tab_id: TabId,
+  },
+  /// Request that the UI show native media controls for a `<video>`/`<audio>` element.
+  MediaControlsOpened {
+    tab_id: TabId,
+    node_id: usize,
+    kind: MediaElementKind,
+    /// Bounding box of the media element in **viewport CSS coordinates**.
+    ///
+    /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
+    anchor_css: Rect,
+  },
+  /// Notification that an open media controls overlay should be dismissed.
+  MediaControlsClosed {
     tab_id: TabId,
   },
   /// Response to [`UiToWorker::ContextMenuRequest`].

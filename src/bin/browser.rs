@@ -5238,6 +5238,13 @@ struct OpenMediaControls {
   /// is open should close it without forwarding the click back to the page (preventing immediate
   /// reopen).
   anchor_css: fastrender::geometry::Rect,
+  kind: fastrender::ui::messages::MediaElementKind,
+  /// Cached anchor rect in egui points (used as a fallback when CSS→points mapping is stale).
+  anchor_rect_points: egui::Rect,
+  /// UI-local seek slider state (seconds).
+  seek_seconds: f32,
+  /// UI-local volume slider state (0..=1).
+  volume: f32,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -6876,6 +6883,7 @@ impl App {
       self.update_effective_pixels_per_point();
       // Point-space popups/hit boxes become stale when UI scaling changes; close them.
       self.close_select_dropdown();
+      self.close_media_controls();
       self.close_context_menu();
       if self.scrollbar_drag.is_some() {
         self.cancel_scrollbar_drag();
@@ -8171,6 +8179,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | UiToWorker::Cut { tab_id }
       | UiToWorker::SelectAll { tab_id }
       | UiToWorker::KeyAction { tab_id, .. }
+      | UiToWorker::MediaCommand { tab_id, .. }
       | UiToWorker::FindQuery { tab_id, .. }
       | UiToWorker::FindNext { tab_id }
       | UiToWorker::FindPrev { tab_id }
@@ -8217,6 +8226,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           | UiToWorker::Paste { .. }
           | UiToWorker::Cut { .. }
           | UiToWorker::KeyAction { .. }
+          | UiToWorker::MediaCommand { .. }
           | UiToWorker::FindQuery { .. }
           | UiToWorker::FindNext { .. }
           | UiToWorker::FindPrev { .. }
@@ -8914,6 +8924,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     if self.open_file_picker.is_some() {
       self.cancel_file_picker();
     }
+    if self.open_media_controls.is_some() {
+      self.close_media_controls();
+    }
     if self.pointer_captured {
       self.cancel_pointer_capture();
     }
@@ -8948,6 +8961,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
     if self.open_file_picker.is_some() {
       self.cancel_file_picker();
+    }
+    if self.open_media_controls.is_some() {
+      self.close_media_controls();
     }
     if self.pointer_captured {
       self.cancel_pointer_capture();
@@ -9021,7 +9037,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | fastrender::ui::WorkerToUi::SelectDropdownClosed { tab_id }
       | fastrender::ui::WorkerToUi::DateTimePickerClosed { tab_id }
       | fastrender::ui::WorkerToUi::ColorPickerClosed { tab_id }
-      | fastrender::ui::WorkerToUi::FilePickerClosed { tab_id } => {
+      | fastrender::ui::WorkerToUi::FilePickerClosed { tab_id }
+      | fastrender::ui::WorkerToUi::MediaControlsClosed { tab_id } => {
         if self
           .open_select_dropdown
           .as_ref()
@@ -9049,6 +9066,13 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           .is_some_and(|picker| picker.tab_id == *tab_id)
         {
           self.close_file_picker();
+        }
+        if self
+          .open_media_controls
+          .as_ref()
+          .is_some_and(|controls| controls.tab_id == *tab_id)
+        {
+          self.close_media_controls();
         }
         if self
           .open_context_menu
@@ -9309,6 +9333,47 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         // `rfd` dialogs are blocking; launch them on a helper thread so the egui frame loop stays
         // responsive.
         self.launch_native_file_picker_dialog(*tab_id, *input_node_id, *multiple, accept);
+        request_redraw = true;
+      }
+    }
+
+    if let fastrender::ui::WorkerToUi::MediaControlsOpened {
+      tab_id,
+      node_id,
+      kind,
+      anchor_css,
+    } = &msg
+    {
+      if self.browser_state.active_tab_id() == Some(*tab_id) {
+        let mut anchor_rect_points: Option<egui::Rect> = None;
+        if self.page_input_tab == Some(*tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            anchor_rect_points = mapping.rect_css_to_rect_points_clamped(*anchor_css);
+          }
+        }
+        let anchor_rect_points = anchor_rect_points
+          .or_else(|| {
+            self.page_rect_points.map(|page_rect| {
+              // Best-effort fallback when we can't map CSS→points (e.g. stale/missing mapping):
+              // anchor a reasonable rect in the center of the page.
+              let target_size = egui::vec2(320.0, 180.0);
+              let min = page_rect.center() - target_size * 0.5;
+              egui::Rect::from_min_size(min, target_size).intersect(page_rect)
+            })
+          })
+          .unwrap_or_else(|| egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(0.0, 0.0)));
+
+        self.open_media_controls = Some(OpenMediaControls {
+          tab_id: *tab_id,
+          media_node_id: *node_id,
+          kind: *kind,
+          anchor_css: *anchor_css,
+          anchor_rect_points,
+          seek_seconds: 0.0,
+          volume: 1.0,
+        });
+        self.open_media_controls_rect = None;
+        self.media_controls_overlay_pointer_capture = false;
         request_redraw = true;
       }
     }
@@ -12265,24 +12330,183 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
     }
   }
 
-  fn render_media_controls(&mut self, _ctx: &egui::Context) {
-    let Some(tab_id) = self
-      .open_media_controls
-      .as_ref()
-      .map(|overlay| overlay.tab_id)
-    else {
-      // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops the
-      // overlay without calling `close_media_controls`.
-      if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
-        self.close_media_controls();
-      }
-      return;
-    };
+  fn render_media_controls(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::messages::MediaCommand;
+    use fastrender::ui::ChromeAction;
+    use fastrender::ui::UiToWorker;
 
+    // If the mouse button was released while we missed the winit `MouseInput` release event (rare
+    // but can happen when the window loses focus mid-drag), clear capture based on egui input.
+    if self.media_controls_overlay_pointer_capture && ctx.input(|i| !i.pointer.any_down()) {
+      self.media_controls_overlay_pointer_capture = false;
+    }
+
+    let (tab_id, node_id, anchor_css, mut anchor_rect_points, mut seek_seconds, mut volume) =
+      match self.open_media_controls.as_ref() {
+        Some(controls) => (
+          controls.tab_id,
+          controls.media_node_id,
+          controls.anchor_css,
+          controls.anchor_rect_points,
+          controls.seek_seconds,
+          controls.volume,
+        ),
+        None => {
+          // Defensive: ensure stale rect/pointer-capture state cannot linger if some code path drops
+          // the overlay without calling `close_media_controls`.
+          if self.open_media_controls_rect.is_some() || self.media_controls_overlay_pointer_capture {
+            self.close_media_controls();
+          }
+          return;
+        }
+      };
+
+    // Media controls are page-scoped; close them if the active tab changes.
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.close_media_controls();
       self.window.request_redraw();
       return;
+    }
+
+    if self.page_input_tab == Some(tab_id) {
+      if let Some(mapping) = self.page_input_mapping {
+        if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+          anchor_rect_points = rect_points;
+        }
+      }
+    }
+
+    // If the anchor rect is degenerate (e.g. stale mapping), don't try to render a bar.
+    let anchor_finite = anchor_rect_points.min.x.is_finite()
+      && anchor_rect_points.min.y.is_finite()
+      && anchor_rect_points.max.x.is_finite()
+      && anchor_rect_points.max.y.is_finite();
+    if !anchor_finite || anchor_rect_points.width() <= 0.0 || anchor_rect_points.height() <= 0.0 {
+      self.open_media_controls_rect = None;
+      return;
+    }
+
+    // Anchor the control bar to the bottom of the media rect.
+    let mut bar_h = 44.0_f32;
+    bar_h = bar_h.min(anchor_rect_points.height());
+    if bar_h < 18.0 {
+      self.open_media_controls_rect = None;
+      return;
+    }
+
+    let mut bar_rect = egui::Rect::from_min_max(
+      egui::pos2(anchor_rect_points.min.x, anchor_rect_points.max.y - bar_h),
+      egui::pos2(anchor_rect_points.max.x, anchor_rect_points.max.y),
+    );
+
+    bar_rect = bar_rect.intersect(ctx.screen_rect());
+    if bar_rect.width() <= 0.0 || bar_rect.height() <= 0.0 {
+      self.open_media_controls_rect = None;
+      return;
+    }
+
+    let mut pending_commands: Vec<MediaCommand> = Vec::new();
+    let mut toggle_fullscreen = false;
+    let mut request_pointer_capture = false;
+
+    let bar = egui::Area::new(egui::Id::new(("fastr_media_controls", tab_id.0, node_id)))
+      .order(egui::Order::Foreground)
+      .fixed_pos(bar_rect.min)
+      .show(ctx, |ui| {
+        ui.set_min_width(bar_rect.width());
+        ui.set_min_height(bar_rect.height());
+        ui.set_max_width(bar_rect.width());
+        ui.set_max_height(bar_rect.height());
+
+        let visuals = ui.visuals();
+        let base = visuals.panel_fill;
+        // Semi-transparent scrim so controls are visible over video content.
+        let fill = egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 220);
+
+        egui::Frame::none()
+          .fill(fill)
+          .rounding(egui::Rounding::same(self.theme.sizing.corner_radius))
+          .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+          .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 0.0);
+
+            ui.horizontal(|ui| {
+              let play_resp = ui.button("Play/Pause");
+              play_resp
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Play/Pause"));
+              if play_resp.clicked() {
+                pending_commands.push(MediaCommand::TogglePlayPause);
+              }
+
+              let seek_resp = ui.add(
+                egui::Slider::new(&mut seek_seconds, 0.0..=100.0)
+                  .show_value(false)
+                  .text("Seek"),
+              );
+              seek_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "Seek"));
+              if seek_resp.drag_started() || seek_resp.dragged() {
+                request_pointer_capture = true;
+              }
+              if seek_resp.changed() {
+                pending_commands.push(MediaCommand::SeekToSeconds(seek_seconds as f64));
+              }
+
+              ui.label(egui::RichText::new("00:00").small());
+
+              let mute_resp = ui.button("Mute");
+              mute_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Mute"));
+              if mute_resp.clicked() {
+                pending_commands.push(MediaCommand::ToggleMute);
+              }
+
+              let volume_resp = ui.add(
+                egui::Slider::new(&mut volume, 0.0..=1.0)
+                  .show_value(false)
+                  .text("Volume"),
+              );
+              volume_resp
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Slider, "Volume"));
+              if volume_resp.drag_started() || volume_resp.dragged() {
+                request_pointer_capture = true;
+              }
+              if volume_resp.changed() {
+                volume = volume.clamp(0.0, 1.0);
+                pending_commands.push(MediaCommand::SetVolume(volume as f64));
+              }
+
+              let fs_resp = ui.button("Fullscreen");
+              fs_resp
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Fullscreen"));
+              if fs_resp.clicked() {
+                toggle_fullscreen = true;
+              }
+            });
+          });
+      });
+
+    self.open_media_controls_rect = Some(bar.response.rect);
+
+    // Persist UI-local slider state.
+    if let Some(controls) = self.open_media_controls.as_mut() {
+      controls.anchor_rect_points = anchor_rect_points;
+      controls.seek_seconds = seek_seconds;
+      controls.volume = volume;
+    }
+
+    if request_pointer_capture {
+      self.media_controls_overlay_pointer_capture = true;
+    }
+
+    for command in pending_commands {
+      let _ = self.send_worker_msg(UiToWorker::MediaCommand {
+        tab_id,
+        node_id,
+        command,
+      });
+    }
+
+    if toggle_fullscreen {
+      self.handle_chrome_actions(vec![ChromeAction::ToggleFullScreen]);
     }
   }
   fn sync_hover_after_tab_change(&mut self, ctx: &egui::Context) {
@@ -12619,6 +12843,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         let had_scrollbar_drag = self.scrollbar_drag.is_some();
         let had_cursor_in_page = self.cursor_in_page;
         let had_debug_log_pointer_capture = self.debug_log_overlay_pointer_capture;
+        let had_media_controls_pointer_capture = self.media_controls_overlay_pointer_capture;
         let had_cursor_near_scrollbars = self
           .last_cursor_pos_points
           .is_some_and(|pos| self.cursor_near_overlay_scrollbars(pos));
@@ -12656,6 +12881,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           || had_context_menu
           || had_cursor_near_scrollbars
           || had_debug_log_pointer_capture
+          || had_media_controls_pointer_capture
         {
           self.window.request_redraw();
         }
@@ -13339,6 +13565,20 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.window.request_redraw();
         }
 
+        if matches!(state, ElementState::Pressed) && self.open_media_controls.is_some() {
+          // While the media controls overlay is open, clicks inside it are handled by egui.
+          if self
+            .open_media_controls_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+          // Close the controls before forwarding the click so the user doesn't need a second click
+          // to interact with the underlying page.
+          self.close_media_controls();
+          self.window.request_redraw();
+        }
+
         if matches!(state, ElementState::Pressed) && self.open_select_dropdown.is_some() {
           // If the dropdown popup is open, clicks inside it are handled by egui (option selection).
           if self
@@ -13955,6 +14195,57 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           self.window.request_redraw();
         }
 
+        if self.open_media_controls.is_some()
+          && self.page_has_focus
+          && !self.egui_ctx.wants_keyboard_input()
+        {
+          // Media keyboard shortcuts should only trigger for the plain key (no command modifiers),
+          // otherwise reserved browser shortcuts like Alt+Left/Right should keep working.
+          let has_command_modifiers = self.modifiers.ctrl()
+            || self.modifiers.alt()
+            || self.modifiers.logo()
+            || self.modifiers.shift();
+          if !has_command_modifiers {
+            if let Some(controls) = self.open_media_controls.as_ref() {
+              match key {
+                VirtualKeyCode::Space => {
+                  let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
+                    tab_id: controls.tab_id,
+                    node_id: controls.media_node_id,
+                    command: fastrender::ui::messages::MediaCommand::TogglePlayPause,
+                  });
+                  self.window.request_redraw();
+                  return;
+                }
+                VirtualKeyCode::Left => {
+                  let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
+                    tab_id: controls.tab_id,
+                    node_id: controls.media_node_id,
+                    command: fastrender::ui::messages::MediaCommand::SeekBySeconds(-5.0),
+                  });
+                  self.window.request_redraw();
+                  return;
+                }
+                VirtualKeyCode::Right => {
+                  let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
+                    tab_id: controls.tab_id,
+                    node_id: controls.media_node_id,
+                    command: fastrender::ui::messages::MediaCommand::SeekBySeconds(5.0),
+                  });
+                  self.window.request_redraw();
+                  return;
+                }
+                VirtualKeyCode::Escape => {
+                  self.close_media_controls();
+                  self.window.request_redraw();
+                  return;
+                }
+                _ => {}
+              }
+            }
+          }
+        }
+
         if matches!(key, VirtualKeyCode::Escape) {
           // Escape should:
           // - dismiss popups (handled above for `<select>`; handled elsewhere for context menus),
@@ -14383,6 +14674,27 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         }
         if ch.is_control() {
           return;
+        }
+        if self.open_media_controls.is_some() {
+          if let Some(controls) = self.open_media_controls.as_ref() {
+            match *ch {
+              'm' | 'M' => {
+                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
+                  tab_id: controls.tab_id,
+                  node_id: controls.media_node_id,
+                  command: fastrender::ui::messages::MediaCommand::ToggleMute,
+                });
+                self.window.request_redraw();
+                return;
+              }
+              'f' | 'F' => {
+                self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ToggleFullScreen]);
+                self.window.request_redraw();
+                return;
+              }
+              _ => {}
+            }
+          }
         }
         if self.open_select_dropdown.is_some() {
           self.handle_select_dropdown_typeahead(*ch);

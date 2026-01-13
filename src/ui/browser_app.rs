@@ -2148,6 +2148,14 @@ impl BrowserAppState {
         // Front-ends that show a file picker should dismiss it.
         update.request_redraw = true;
       }
+      WorkerToUi::MediaControlsOpened { .. } => {
+        // Front-ends may show a native media controls overlay.
+        update.request_redraw = true;
+      }
+      WorkerToUi::MediaControlsClosed { .. } => {
+        // Front-ends that show a native media controls overlay should dismiss it.
+        update.request_redraw = true;
+      }
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.stage = Some(stage);
