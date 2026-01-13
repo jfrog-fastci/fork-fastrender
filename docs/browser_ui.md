@@ -1030,6 +1030,7 @@ details and metric mapping.
 - **Interaction gaps:** the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still
   incomplete (e.g. rich text editing, complex focus traversal).
+  - Debugging tip: set `FASTR_LOG_INTERACTION_INVALIDATION=1` to log (stderr) whether each frame was paint-only vs needed a restyle/relayout due to interaction state changes (useful when dogfooding hover/focus performance).
 - **Limited form support:**
   - text input is intentionally minimal
     - basic caret movement + selection are supported for focused `<input>`/`<textarea>` (arrow keys,
