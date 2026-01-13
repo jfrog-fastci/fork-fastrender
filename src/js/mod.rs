@@ -120,6 +120,8 @@ pub mod window_env;
 pub mod window_fetch;
 #[path = "vmjs/window_form_data.rs"]
 pub mod window_form_data;
+#[path = "vmjs/window_data_transfer.rs"]
+pub mod window_data_transfer;
 #[path = "vmjs/window_intersection_observer.rs"]
 pub mod window_intersection_observer;
 #[path = "vmjs/window_resize_observer.rs"]

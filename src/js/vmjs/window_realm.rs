@@ -55731,6 +55731,7 @@ fn init_window_globals(
   crate::js::window_url::install_window_url_bindings(vm, realm, heap)?;
   crate::js::window_blob::install_window_blob_bindings(vm, realm, heap)?;
   crate::js::window_file::install_window_file_bindings(vm, realm, heap)?;
+  crate::js::window_data_transfer::install_window_data_transfer_bindings(vm, realm, heap)?;
   crate::js::window_form_data::install_window_form_data_bindings(vm, realm, heap)?;
   crate::js::window_xml_serializer::install_window_xml_serializer_bindings(vm, realm, heap)?;
   crate::js::window_message_channel::install_window_message_channel_bindings(vm, realm, heap)?;
