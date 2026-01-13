@@ -14,12 +14,13 @@
     "layout": 48.00554360655738,
     "paint": 28.003233770491807
   },
-  "notes": "Remaining diffs vs Chrome are largely text rasterization/hinting: ~83% of differing pixels fall inside FastRender text/list-marker bounds on this fixture. Overall layout (float + negative-margin two-column structure, box borders/backgrounds, logo/RSS images) looks correct; non-text diffs are mostly small paint details (inline <code> background padding/extent, list marker glyph raster, a few 1px borders).",
+  "notes": "Remaining diffs vs Chrome are largely text rasterization/hinting: ~83% of differing pixels fall inside FastRender text/list-marker bounds on this fixture. This page is extremely text-dense, so the windowed-SSIM perceptual metric is unusually sensitive to small per-glyph differences (subpixel-AA, hinting, antialiasing) even when layout and colors look correct. Overall layout (float + negative-margin two-column structure, box borders/backgrounds, logo/RSS images) looks correct; non-text diffs are mostly small paint details (inline <code> background padding/extent, list marker glyph raster, a few 1px borders).",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 231308,
-    "diff_percent": 24.0946,
-    "perceptual": 0.3331,
+    "diff_pixels": 150357,
+    "diff_percent": 15.6622,
+    "perceptual": 0.2207,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 33,
       "y": 10,
@@ -38,7 +39,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "cbe69ff1e1bb8b51872f4692117518afddba2e99"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
