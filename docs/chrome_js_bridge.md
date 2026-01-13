@@ -107,6 +107,19 @@ in [`src/ui/messages.rs`](../src/ui/messages.rs)). A renderer-chrome embedding i
 implement the JS bridge by dispatching to these host-side actions (or an equivalent browser-process
 API), rather than exposing internal state directly.
 
+Conceptual mapping (in-tree protocol names):
+
+| Chrome JS | Browser host action |
+|---|---|
+| `chrome.navigation.navigate(url)` | `UiToWorker::Navigate { tab_id: active, url: normalized, reason: TypedUrl }` |
+| `chrome.navigation.goBack()` | `UiToWorker::GoBack { tab_id: active }` |
+| `chrome.navigation.goForward()` | `UiToWorker::GoForward { tab_id: active }` |
+| `chrome.navigation.reload()` | `UiToWorker::Reload { tab_id: active }` |
+| `chrome.navigation.stop()` | `UiToWorker::StopLoading { tab_id: active }` |
+| `chrome.tabs.activateTab(id)` | `UiToWorker::SetActiveTab { tab_id: id }` |
+| `chrome.tabs.closeTab(id)` | `UiToWorker::CloseTab { tab_id: id }` |
+| `chrome.tabs.newTab([url])` | Host allocates a new tab id, then `UiToWorker::CreateTab { .. }` + optional `Navigate` |
+
 ---
 
 ## API reference (MVP)
@@ -214,6 +227,12 @@ If events are not available, chrome pages can fall back to polling via `chrome.g
 Recommended: `e.detail` should be the same shape as `chrome.getState()` (or at least contain
 `{ tabs, activeTabId }`) so chrome pages can update with a single handler.
 
+Recommended implementation: dispatch `CustomEvent`:
+
+```js
+window.dispatchEvent(new CustomEvent("chrome-tabs", { detail: chromeState }));
+```
+
 ---
 
 ## Errors and argument validation
@@ -224,6 +243,8 @@ The chrome bridge is privileged, but it still validates inputs:
   - Example: `chrome.tabs.closeTab("not-a-number")` → throws.
 - Tab ids must be finite safe integers. Non-integers / `NaN` / out-of-range values throw a
   **TypeError**.
+- Unknown tab ids (well-typed but not present) should throw a **RangeError** to help surface bugs in
+  chrome UI logic.
 - Invalid/blocked URLs passed to `chrome.navigation.navigate(...)` should throw an exception rather
   than silently doing nothing. The embedder is expected to apply its scheme allowlist (e.g.
   reject `javascript:`).
