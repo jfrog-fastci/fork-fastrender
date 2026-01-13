@@ -3833,7 +3833,9 @@ impl<'a> Evaluator<'a> {
           for (name, loc) in &labels {
             this.tick()?;
             if ctx.labels.contains(name) {
-              return Err(syntax_error(*loc, format!("Duplicate label '{name}'")));
+              let msg =
+                crate::fallible_format::try_format_error_message("Duplicate label '", name, "'")?;
+              return Err(syntax_error(*loc, msg));
             }
             ctx.labels.insert(*name);
             if is_iteration {
@@ -3854,7 +3856,9 @@ impl<'a> Evaluator<'a> {
           }
           Some(label) => {
             if !ctx.labels.contains(label) {
-              return Err(syntax_error(stmt.loc, format!("Undefined label '{label}'")));
+              let msg =
+                crate::fallible_format::try_format_error_message("Undefined label '", label, "'")?;
+              return Err(syntax_error(stmt.loc, msg));
             }
             Ok(())
           }
@@ -3868,9 +3872,14 @@ impl<'a> Evaluator<'a> {
           }
           Some(label) => {
             if !ctx.iteration_labels.contains(label) {
+              let msg = crate::fallible_format::try_format_error_message(
+                "Illegal continue statement: '",
+                label,
+                "' does not denote an iteration statement",
+              )?;
               return Err(syntax_error(
                 stmt.loc,
-                format!("Illegal continue statement: '{label}' does not denote an iteration statement"),
+                msg,
               ));
             }
             Ok(())

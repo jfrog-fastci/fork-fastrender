@@ -146,8 +146,6 @@ pub(crate) fn try_format_error_message2(
     .len()
     .saturating_add(middle.len())
     .saturating_add(suffix.len());
-
-  // If the static parts already exceed the cap, drop dynamic insertions and truncate the rest.
   if static_len >= MAX_ERROR_MESSAGE_BYTES {
     let mut out = String::new();
     out

@@ -3818,7 +3818,7 @@ impl<'vm> HirEvaluator<'vm> {
         )
       }
       ResolvedBinding::Unresolvable { name } => {
-        let msg = format!("{} is not defined", name);
+        let msg = crate::fallible_format::try_format_error_message("", name, " is not defined")?;
         Err(throw_reference_error(self.vm, scope, &msg)?)
       }
     }
