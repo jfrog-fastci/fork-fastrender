@@ -1102,8 +1102,9 @@ fn collapsed_table_outer_border_spills_into_margin() {
     borders.vertical_line_base.first()
   );
 
-  // 2) Later rows with thicker outer borders should spill outward by the *excess half* beyond the
-  // baseline outer border.
+  // 2) Later rows with thicker outer borders should spill outward by the *excess width* beyond the
+  // baseline edge. The inside extent is clamped to the baseline half-width, so any additional
+  // thickness is painted entirely on the outside (CSS 2.1 §17.6.2).
   let baseline_width = borders.vertical_line_width(0);
   let baseline_half = baseline_width * 0.5;
   let baseline_outer_edge = borders
@@ -1112,7 +1113,7 @@ fn collapsed_table_outer_border_spills_into_margin() {
     .copied()
     .unwrap_or(0.0)
     - baseline_half;
-  let expected_spill = 20.0 - 2.0; // 18px
+  let expected_spill = 20.0 - baseline_width; // 18px
   let expected_min_x = baseline_outer_edge - expected_spill;
   assert!(
     (borders.paint_bounds.min_x() - expected_min_x).abs() < EPSILON,
