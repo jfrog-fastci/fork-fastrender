@@ -236,6 +236,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
 
       return Ok(Some(MediaPacket {
         track_id: self.frame.track,
+        dts_ns: pts_ns,
         pts_ns,
         duration_ns,
         data,

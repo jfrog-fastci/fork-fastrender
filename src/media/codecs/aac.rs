@@ -162,6 +162,7 @@ mod tests {
 
     let media_packet = MediaPacket {
       track_id: u64::from(pkt.track_id()),
+      dts_ns: pts_ns,
       pts_ns,
       duration_ns,
       data: pkt.data.as_ref().to_vec(),

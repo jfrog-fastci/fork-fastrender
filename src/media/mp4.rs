@@ -7,8 +7,12 @@
 //! This module intentionally implements only the subset of ISO BMFF needed for unit tests and
 //! basic MP4 playback plumbing (non-fragmented `moov`/`mdat` files).
 
+use mp4parse::unstable::Indice;
+use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
 use thiserror::Error;
+
+use super::{MediaError, MediaPacket, MediaResult, MediaTrackType};
 
 #[derive(Debug, Error)]
 pub enum Mp4Error {
@@ -612,6 +616,101 @@ fn ticks_to_ns(ticks: i64, timescale: u32) -> u64 {
     / den;
 
   ns.min(u128::from(u64::MAX)) as u64
+}
+
+/// Demuxes a single MP4 track using an `mp4parse` sample table.
+///
+/// # Ordering (important!)
+///
+/// This demuxer **always emits packets in sample index order**, which corresponds to *decode
+/// order*.
+///
+/// Do **not** reorder packets by PTS:
+/// - Video samples may have **non-monotonic** PTS due to B-frames (`ctts` reordering).
+/// - Decode order is not necessarily presentation order.
+pub struct Mp4TrackDemuxer<R> {
+  reader: R,
+  sample_table: Vec<Indice>,
+  timescale: u32,
+  track_id: u64,
+  track_type: MediaTrackType,
+  next_sample_idx: usize,
+  last_dts_ns: Option<u64>,
+}
+
+impl<R: Read + Seek> Mp4TrackDemuxer<R> {
+  pub fn new(
+    reader: R,
+    sample_table: Vec<Indice>,
+    timescale: u32,
+    track_id: u64,
+    track_type: MediaTrackType,
+  ) -> Self {
+    Self {
+      reader,
+      sample_table,
+      timescale,
+      track_id,
+      track_type,
+      next_sample_idx: 0,
+      last_dts_ns: None,
+    }
+  }
+
+  pub fn next_packet(&mut self) -> MediaResult<Option<MediaPacket>> {
+    let Some(indice) = self.sample_table.get(self.next_sample_idx) else {
+      return Ok(None);
+    };
+
+    let start_offset = indice.start_offset.0;
+    let end_offset = indice.end_offset.0;
+    let sample_len = end_offset.checked_sub(start_offset).ok_or_else(|| {
+      MediaError::Demux("mp4 sample table contains end_offset < start_offset".to_string())
+    })?;
+    let sample_len_usize = usize::try_from(sample_len)
+      .map_err(|_| MediaError::Demux("mp4 sample length too large to fit in memory".to_string()))?;
+
+    self.reader.seek(SeekFrom::Start(start_offset))?;
+    let mut data = vec![0u8; sample_len_usize];
+    self.reader.read_exact(&mut data)?;
+
+    // mp4parse `Indice` times are in track ticks; convert using the track timescale.
+    let dts_ns = ticks_to_ns(indice.start_decode.0, self.timescale);
+    let pts_ns = ticks_to_ns(indice.start_composition.0, self.timescale);
+    let duration_ticks = indice
+      .end_composition
+      .0
+      .saturating_sub(indice.start_composition.0);
+    let duration_ns = ticks_to_ns(duration_ticks, self.timescale);
+
+    // The demuxer is required to emit video packets in decode order (sample index order), even
+    // when PTS is non-monotonic (B-frames). This debug assertion catches accidental PTS-based
+    // reordering inside the demuxer.
+    if self.track_type == MediaTrackType::Video {
+      if let Some(prev_dts_ns) = self.last_dts_ns {
+        debug_assert!(
+          dts_ns >= prev_dts_ns,
+          "MP4 demuxer must emit video packets in decode order (sample index order). \
+           DTS decreased ({} -> {}); do not reorder by PTS (video PTS may be non-monotonic due to \
+           B-frames).",
+          prev_dts_ns,
+          dts_ns
+        );
+      }
+    }
+
+    self.last_dts_ns = Some(dts_ns);
+    self.next_sample_idx += 1;
+
+    Ok(Some(MediaPacket {
+      track_id: self.track_id,
+      dts_ns,
+      pts_ns,
+      duration_ns,
+      data,
+      is_keyframe: indice.sync,
+    }))
+  }
 }
 
 #[derive(Debug)]
@@ -1322,4 +1421,71 @@ mod tests {
       "seek should choose the first decode-order sample with PTS >= target"
     );
   }
-} 
+
+  #[test]
+  fn mp4_video_packets_are_emitted_in_decode_order_even_when_pts_goes_backwards() {
+    use mp4parse::unstable::CheckedInteger;
+
+    // Sample index order (decode order): A, B, C.
+    //
+    // Presentation order: A, C, B (B-frame causes PTS to go backwards).
+    let sample_table = vec![
+      Indice {
+        start_offset: CheckedInteger(0u64),
+        end_offset: CheckedInteger(1u64),
+        start_decode: CheckedInteger(0i64),
+        start_composition: CheckedInteger(0i64),
+        end_composition: CheckedInteger(1i64),
+        sync: true,
+        ..Default::default()
+      },
+      Indice {
+        start_offset: CheckedInteger(1u64),
+        end_offset: CheckedInteger(2u64),
+        start_decode: CheckedInteger(1i64),
+        start_composition: CheckedInteger(2i64),
+        end_composition: CheckedInteger(3i64),
+        sync: false,
+        ..Default::default()
+      },
+      Indice {
+        start_offset: CheckedInteger(2u64),
+        end_offset: CheckedInteger(3u64),
+        start_decode: CheckedInteger(2i64),
+        start_composition: CheckedInteger(1i64),
+        end_composition: CheckedInteger(2i64),
+        sync: false,
+        ..Default::default()
+      },
+    ];
+
+    let reader = std::io::Cursor::new(vec![b'A', b'B', b'C']);
+    let mut demuxer = Mp4TrackDemuxer::new(reader, sample_table, 1, 1, MediaTrackType::Video);
+
+    let mut packets = Vec::new();
+    while let Some(packet) = demuxer.next_packet().unwrap() {
+      packets.push(packet);
+    }
+
+    assert_eq!(packets.len(), 3);
+
+    // Emitted in decode/sample index order (not PTS order).
+    assert_eq!(
+      packets.iter().map(|p| p.data.as_slice()).collect::<Vec<_>>(),
+      vec![b"A".as_slice(), b"B".as_slice(), b"C".as_slice()]
+    );
+
+    // DTS is derived from `Indice::start_decode`.
+    assert_eq!(
+      packets.iter().map(|p| p.dts_ns).collect::<Vec<_>>(),
+      vec![0, 1_000_000_000, 2_000_000_000]
+    );
+
+    // PTS is derived from `Indice::start_composition` and can be non-monotonic for video.
+    assert_eq!(
+      packets.iter().map(|p| p.pts_ns).collect::<Vec<_>>(),
+      vec![0, 2_000_000_000, 1_000_000_000]
+    );
+    assert!(packets[2].pts_ns < packets[1].pts_ns);
+  }
+}

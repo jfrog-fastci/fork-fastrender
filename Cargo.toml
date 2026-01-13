@@ -151,6 +151,7 @@ matroska-demuxer = "0.7"
 memchr = "2.7"
 memmap2 = "0.9"
 mp4 = "0.14"
+mp4parse = { version = "0.17", features = ["unstable-api"] }
 openh264 = "0.6"
 audiopus_sys = "0.2.2"
 png = "0.18"

@@ -188,6 +188,16 @@ pub struct MediaTrackInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaPacket {
   pub track_id: u64,
+  /// Decode timestamp (nanoseconds).
+  ///
+  /// For codecs with frame reordering (e.g. video streams with B-frames), packets must be emitted
+  /// in **decode order** (sample index order). `dts_ns` is monotonic in that order.
+  pub dts_ns: u64,
+  /// Presentation timestamp (nanoseconds).
+  ///
+  /// Important: `pts_ns` is **not guaranteed to be monotonic** for video streams with B-frames.
+  /// Demuxers must not reorder packets by PTS; presentation-order reordering (if needed) belongs
+  /// downstream from demux.
   pub pts_ns: u64,
   pub duration_ns: u64,
   pub data: Vec<u8>,
