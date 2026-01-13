@@ -1484,10 +1484,10 @@ id = "annexB/built-ins/RegExp/named-groups/non-unicode-malformed-lookbehind.js"
 status = "xfail"
 reason = "vm-js: Annex B malformed lookbehind is still rejected as invalid RegExp."
 
-# Numeric escape semantics (Annex B legacy octal + UnicodeMode restrictions) are implemented; keep
-# this test as `pass` so regressions aren't hidden by the broad RegExp xfail below.
+# UnicodeMode (`/u`) disallow-extended-pattern restrictions (Annex B disabled) are implemented; keep
+# these tests as `pass` so regressions aren't hidden by the broad RegExp xfail below.
 [[expectations]]
-id = "built-ins/RegExp/unicode_restricted_octal_escape.js"
+glob = "built-ins/RegExp/unicode_restricted_*.js"
 status = "pass"
 
 # TODO: Fix the remaining lookbehind xfails and flip them to `pass`.
