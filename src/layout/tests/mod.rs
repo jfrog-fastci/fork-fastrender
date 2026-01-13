@@ -32,6 +32,7 @@ mod block_constraints_viewport_clamp;
 mod block_float_after_inline_content;
 mod block_height_min_content_auto;
 mod block_intrinsic_includes_child_margins;
+mod block_intrinsic_parallel_deadline;
 mod block_intrinsic_parallel_determinism;
 mod block_margin_collapse;
 mod block_nonblock_fc_does_not_inherit_definite_height;
