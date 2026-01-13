@@ -203,6 +203,11 @@ pub struct Agent {
   runtime: JsRuntime,
 }
 
+#[inline]
+fn is_hard_stop_error(err: &VmError) -> bool {
+  matches!(err, VmError::Termination(_) | VmError::OutOfMemory)
+}
+
 impl Agent {
   /// Creates a new [`Agent`] from an already-constructed [`Vm`] and [`Heap`], and initializes a
   /// fresh [`Realm`] on that heap.
@@ -283,11 +288,17 @@ impl Agent {
     budget: Budget,
     mut host_hooks: Option<&mut dyn HostHooks>,
   ) -> Result<Value, VmError> {
-    let source = arc_try_new_vm(SourceText::new_charged(
-      self.heap_mut(),
-      source_name,
-      source_text,
-    )?)?;
+    let source = match SourceText::new_charged(self.heap_mut(), source_name, source_text)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(source) => source,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.runtime.teardown_microtasks();
+        }
+        return Err(err);
+      }
+    };
 
     // Swap the VM budget in/out without holding a borrow across `exec_script`.
     let prev_budget = self.runtime.vm.swap_budget_state(budget);
@@ -336,6 +347,12 @@ impl Agent {
     }
 
     self.runtime.vm.restore_budget_state(prev_budget);
+
+    if let Err(err) = &result {
+      if is_hard_stop_error(err) {
+        self.runtime.teardown_microtasks();
+      }
+    }
     result
   }
 

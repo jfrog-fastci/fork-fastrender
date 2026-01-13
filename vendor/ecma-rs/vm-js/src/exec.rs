@@ -46,6 +46,11 @@ use crate::function::ThisMode;
 use crate::function::FunctionData;
 use crate::vm::EcmaFunctionKind;
 
+#[inline]
+fn is_hard_stop_error(err: &VmError) -> bool {
+  matches!(err, VmError::Termination(_) | VmError::OutOfMemory)
+}
+
 /// A `throw` completion value paired with a captured stack trace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Thrown {
@@ -1933,6 +1938,12 @@ impl JsRuntime {
         hooks.enqueue_promise_job(job, realm);
       }
       *self.vm.microtask_queue_mut() = hooks;
+
+      if let Err(err) = &result {
+        if is_hard_stop_error(err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+      }
       return result;
     }
 
@@ -1950,55 +1961,65 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+    let result: Result<Value, VmError> = (|| {
+      let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
 
-    // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
-    // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
-    // simultaneously. Temporarily move the queue out so it can be passed as `hooks`.
-    let mut hooks = mem::take(vm_ctx.microtask_queue_mut());
-    let result: Result<Value, VmError> = {
-      let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(&mut hooks);
-      (|| {
-        let mut vm_frame = vm_hooks.enter_frame(frame)?;
+      // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
+      // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
+      // simultaneously. Temporarily move the queue out so it can be passed as `hooks`.
+      let mut hooks = mem::take(vm_ctx.microtask_queue_mut());
+      let result: Result<Value, VmError> = {
+        let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(&mut hooks);
+        (|| {
+          let mut vm_frame = vm_hooks.enter_frame(frame)?;
 
-        // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
-        // interrupt budgets.
-        vm_frame.tick()?;
+          // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+          // interrupt budgets.
+          vm_frame.tick()?;
 
-        let mut scope = self.heap.scope();
-        let res = crate::hir_exec::run_compiled_script(
-          &mut *vm_frame,
-          &mut scope,
-          host,
-          &mut hooks,
-          &mut self.env,
-          script,
-        );
+          let mut scope = self.heap.scope();
+          let res = crate::hir_exec::run_compiled_script(
+            &mut *vm_frame,
+            &mut scope,
+            host,
+            &mut hooks,
+            &mut self.env,
+            script,
+          );
 
-        match res {
-          Err(err) if err.is_throw_completion() => {
-            let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
-            match err {
-              VmError::Throw(value) => Err(VmError::ThrowWithStack {
-                value,
-                stack: vm_frame.capture_stack(),
-              }),
-              other => Err(other),
+          match res {
+            Err(err) if err.is_throw_completion() => {
+              let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
+              match err {
+                VmError::Throw(value) => Err(VmError::ThrowWithStack {
+                  value,
+                  stack: vm_frame.capture_stack(),
+                }),
+                other => Err(other),
+              }
             }
+            other => other,
           }
-          other => other,
-        }
-      })()
-    };
+        })()
+      };
 
-    // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
-    // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
-    // out) into `hooks` before restoring it.
-    while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
-      hooks.enqueue_promise_job(job, realm);
+      // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
+      // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
+      // out) into `hooks` before restoring it.
+      while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
+        hooks.enqueue_promise_job(job, realm);
+      }
+      // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
+      *vm_ctx.microtask_queue_mut() = hooks;
+
+      result
+    })();
+
+    if let Err(err) = &result {
+      if is_hard_stop_error(err) {
+        self.vm.teardown_microtasks(&mut self.heap);
+      }
     }
-    // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
-    *vm_ctx.microtask_queue_mut() = hooks;
 
     result
   }
@@ -2033,42 +2054,51 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
-    let result: Result<Value, VmError> = {
-      let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(hooks);
-      (|| {
-        let mut vm_frame = vm_hooks.enter_frame(frame)?;
+    let result: Result<Value, VmError> = (|| {
+      let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+      let result: Result<Value, VmError> = {
+        let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(hooks);
+        (|| {
+          let mut vm_frame = vm_hooks.enter_frame(frame)?;
 
-        // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
-        // interrupt budgets.
-        vm_frame.tick()?;
+          // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+          // interrupt budgets.
+          vm_frame.tick()?;
 
-        let mut scope = self.heap.scope();
-        let res = crate::hir_exec::run_compiled_script(
-          &mut *vm_frame,
-          &mut scope,
-          host,
-          hooks,
-          &mut self.env,
-          script,
-        );
+          let mut scope = self.heap.scope();
+          let res = crate::hir_exec::run_compiled_script(
+            &mut *vm_frame,
+            &mut scope,
+            host,
+            hooks,
+            &mut self.env,
+            script,
+          );
 
-        match res {
-          Err(err) if err.is_throw_completion() => {
-            let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
-            match err {
-              VmError::Throw(value) => Err(VmError::ThrowWithStack {
-                value,
-                stack: vm_frame.capture_stack(),
-              }),
-              other => Err(other),
+          match res {
+            Err(err) if err.is_throw_completion() => {
+              let err = crate::vm::coerce_error_to_throw(&*vm_frame, &mut scope, err);
+              match err {
+                VmError::Throw(value) => Err(VmError::ThrowWithStack {
+                  value,
+                  stack: vm_frame.capture_stack(),
+                }),
+                other => Err(other),
+              }
             }
+            other => other,
           }
-          other => other,
-        }
-      })()
-    };
-    drop(vm_ctx);
+        })()
+      };
+      drop(vm_ctx);
+      result
+    })();
+
+    if let Err(err) = &result {
+      if is_hard_stop_error(err) {
+        self.vm.teardown_microtasks(&mut self.heap);
+      }
+    }
 
     // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
     // into the embedding's host hook implementation.
@@ -2101,7 +2131,17 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, "<inline>", source)?)?;
+    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(source) => source,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+        return Err(err);
+      }
+    };
     self.exec_script_source_with_host_and_hooks(
       host,
       hooks,
@@ -2128,7 +2168,17 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, "<inline>", source)?)?;
+    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(source) => source,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+        return Err(err);
+      }
+    };
     self.exec_script_source_with_hooks(hooks, source)
   }
 
@@ -2154,7 +2204,17 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, "<inline>", source)?)?;
+    let source = match SourceText::new_charged(&mut self.heap, "<inline>", source)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(source) => source,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+        return Err(err);
+      }
+    };
     self.exec_script_source_with_host(host, source)
   }
 
@@ -2169,7 +2229,19 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = arc_try_new_vm(self.vm.parse_top_level_with_budget(&source.text, opts)?)?;
+    let top = match self
+      .vm
+      .parse_top_level_with_budget(&source.text, opts)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(top) => top,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+        return Err(err);
+      }
+    };
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -2186,84 +2258,85 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+    let result: Result<Value, VmError> = (|| {
+      let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
 
-    // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
-    // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
-    // simultaneously. Temporarily move the queue out so it can be passed as `hooks`.
-    let mut hooks = mem::take(vm_ctx.microtask_queue_mut());
-    let result: Result<Value, VmError> = {
-      let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(&mut hooks);
-      (|| {
-        let mut vm_frame = vm_hooks.enter_frame(frame)?;
+      // Script evaluation needs a host hook implementation for Promise jobs. `Vm` stores a default
+      // microtask queue inside itself, but we need to hold `&mut Vm` and `&mut dyn VmHostHooks`
+      // simultaneously. Temporarily move the queue out so it can be passed as `hooks`.
+      let mut hooks = mem::take(vm_ctx.microtask_queue_mut());
+      let result: Result<Value, VmError> = {
+        let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(&mut hooks);
+        (|| {
+          let mut vm_frame = vm_hooks.enter_frame(frame)?;
 
-        // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
-        // interrupt budgets.
-        vm_frame.tick()?;
+          // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
+          // interrupt budgets.
+          vm_frame.tick()?;
 
-        let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
-        let has_await = top.stx.body.iter().any(stmt_contains_await);
-        {
-          let mut tick = || vm_frame.tick();
-          crate::early_errors::validate_top_level(
-            &top.stx.body,
-            crate::early_errors::EarlyErrorOptions {
+          let strict = detect_use_strict_directive(&top.stx.body, || vm_frame.tick())?;
+          let has_await = top.stx.body.iter().any(stmt_contains_await);
+          {
+            let mut tick = || vm_frame.tick();
+            crate::early_errors::validate_top_level(
+              &top.stx.body,
+              crate::early_errors::EarlyErrorOptions {
+                strict,
+                allow_top_level_await: has_await,
+              },
+              &mut tick,
+            )?;
+          }
+
+          let mut scope = self.heap.scope();
+          // In classic scripts, top-level `this` is the global object (even in strict mode).
+          let global_this = Value::Object(global_object);
+
+          if !has_await {
+            let mut evaluator = Evaluator {
+              vm: &mut *vm_frame,
+              host,
+              hooks: &mut hooks,
+              env: &mut self.env,
               strict,
-              allow_top_level_await: has_await,
-            },
-            &mut tick,
-          )?;
-        }
+              this: global_this,
+              new_target: Value::Undefined,
+              class_constructor: None,
+              derived_constructor: false,
+              this_initialized: true,
+              this_root_idx: None,
+            };
 
-        let mut scope = self.heap.scope();
-        // In classic scripts, top-level `this` is the global object (even in strict mode).
-        let global_this = Value::Object(global_object);
+            evaluator.instantiate_script(&mut scope, &top.stx.body)?;
 
-        if !has_await {
-          let mut evaluator = Evaluator {
-            vm: &mut *vm_frame,
+            let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
+            return match completion {
+              Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
+              Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
+                value: thrown.value,
+                stack: thrown.stack,
+              }),
+              Completion::Return(_) => Err(VmError::InvariantViolation(
+                "script evaluation produced Return completion (early errors should prevent this)",
+              )),
+              Completion::Break(..) => Err(VmError::InvariantViolation(
+                "script evaluation produced Break completion (early errors should prevent this)",
+              )),
+              Completion::Continue(..) => Err(VmError::InvariantViolation(
+                "script evaluation produced Continue completion (early errors should prevent this)",
+              )),
+            };
+          }
+
+          // Async classic script execution: evaluate the statement list using the async evaluator and
+          // return a Promise representing completion.
+          let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut scope,
             host,
-            hooks: &mut hooks,
-            env: &mut self.env,
-            strict,
-            this: global_this,
-            new_target: Value::Undefined,
-            class_constructor: None,
-            derived_constructor: false,
-            this_initialized: true,
-            this_root_idx: None,
-          };
-
-          evaluator.instantiate_script(&mut scope, &top.stx.body)?;
-
-          let completion = evaluator.eval_stmt_list(&mut scope, &top.stx.body)?;
-          return match completion {
-            Completion::Normal(v) => Ok(v.unwrap_or(Value::Undefined)),
-            Completion::Throw(thrown) => Err(VmError::ThrowWithStack {
-              value: thrown.value,
-              stack: thrown.stack,
-            }),
-            Completion::Return(_) => Err(VmError::InvariantViolation(
-              "script evaluation produced Return completion (early errors should prevent this)",
-            )),
-            Completion::Break(..) => Err(VmError::InvariantViolation(
-              "script evaluation produced Break completion (early errors should prevent this)",
-            )),
-            Completion::Continue(..) => Err(VmError::InvariantViolation(
-              "script evaluation produced Continue completion (early errors should prevent this)",
-            )),
-          };
-        }
-
-        // Async classic script execution: evaluate the statement list using the async evaluator and
-        // return a Promise representing completion.
-        let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(
-          &mut *vm_frame,
-          &mut scope,
-          host,
-          &mut hooks,
-        )?;
-        let promise = cap.promise;
+            &mut hooks,
+          )?;
+          let promise = cap.promise;
 
       // Use a distinct `RuntimeEnv` for async script evaluation. Async continuations tear down their
       // env roots on completion; classic scripts must not tear down the runtime's global env.
@@ -2585,18 +2658,27 @@ impl JsRuntime {
           env.teardown(scope.heap_mut());
           Err(err)
         }
-      }
-    })()
-    };
+        }
+      })()
+      };
 
-    // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
-    // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
-    // out) into `hooks` before restoring it.
-    while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
-      hooks.enqueue_promise_job(job, realm);
+      // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
+      // (for example by native handlers calling `vm.microtask_queue_mut()` while the queue was moved
+      // out) into `hooks` before restoring it.
+      while let Some((realm, job)) = vm_ctx.microtask_queue_mut().pop_front() {
+        hooks.enqueue_promise_job(job, realm);
+      }
+      // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
+      *vm_ctx.microtask_queue_mut() = hooks;
+
+      result
+    })();
+
+    if let Err(err) = &result {
+      if is_hard_stop_error(err) {
+        self.vm.teardown_microtasks(&mut self.heap);
+      }
     }
-    // Restore the VM's microtask queue so the embedding can run a microtask checkpoint later.
-    *vm_ctx.microtask_queue_mut() = hooks;
 
     result
   }
@@ -2613,7 +2695,19 @@ impl JsRuntime {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
     };
-    let top = arc_try_new_vm(self.vm.parse_top_level_with_budget(&source.text, opts)?)?;
+    let top = match self
+      .vm
+      .parse_top_level_with_budget(&source.text, opts)
+      .and_then(arc_try_new_vm)
+    {
+      Ok(top) => top,
+      Err(err) => {
+        if is_hard_stop_error(&err) {
+          self.vm.teardown_microtasks(&mut self.heap);
+        }
+        return Err(err);
+      }
+    };
 
     let global_object = self.realm.global_object();
     self.env.set_source_info(source.clone(), 0, 0);
@@ -2630,11 +2724,12 @@ impl JsRuntime {
       realm: self.realm.id(),
       script_or_module: None,
     };
-    let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
-    let result = {
-      let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(hooks);
-      (|| {
-        let mut vm_frame = vm_hooks.enter_frame(frame)?;
+    let result: Result<Value, VmError> = (|| {
+      let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
+      let result = {
+        let mut vm_hooks = vm_ctx.push_active_host_hooks_guard(hooks);
+        (|| {
+          let mut vm_frame = vm_hooks.enter_frame(frame)?;
 
         // Charge at least one tick at script entry so even an empty script respects fuel/deadline /
         // interrupt budgets.
@@ -3025,9 +3120,17 @@ impl JsRuntime {
           Err(err)
         }
       }
-    })()
-    };
-    drop(vm_ctx);
+        })()
+      };
+      drop(vm_ctx);
+      result
+    })();
+
+    if let Err(err) = &result {
+      if is_hard_stop_error(err) {
+        self.vm.teardown_microtasks(&mut self.heap);
+      }
+    }
 
     // As a safety net, drain any Promise jobs that were enqueued onto the VM-owned microtask queue
     // into the embedding's host hook implementation.

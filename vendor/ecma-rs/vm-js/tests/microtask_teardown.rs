@@ -40,21 +40,26 @@ fn dropping_runtime_discards_pending_promise_jobs() -> Result<(), VmError> {
 }
 
 #[test]
-fn dropping_runtime_after_termination_discards_pending_promise_jobs() -> Result<(), VmError> {
+fn termination_tears_down_pending_microtasks_and_async_continuations() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
-  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  // Async/await allocates more internal state than a simple Promise.then(); give it some headroom.
+  let heap = Heap::new(HeapLimits::new(4 * 1024 * 1024, 4 * 1024 * 1024));
   let mut runtime = JsRuntime::new(vm, heap)?;
+
+  let baseline_roots = runtime.heap.persistent_root_count();
+  assert_eq!(runtime.vm.async_continuation_count(), 0);
 
   // Terminate after enqueuing at least one Promise job.
   runtime.vm.set_budget(Budget {
-    // Needs to be large enough to run `Promise.resolve().then(..)` before we hit the infinite loop.
-    fuel: Some(500),
+    // Needs to be large enough to create an async continuation and enqueue a Promise job before we
+    // hit the infinite loop.
+    fuel: Some(2_000),
     deadline: None,
     check_time_every: 1,
   });
 
   let err = runtime
-    .exec_script("Promise.resolve().then(() => 0); while (true) {}")
+    .exec_script("async function f() { await 0; } f(); while (true) {}")
     .unwrap_err();
   match err {
     VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
@@ -62,11 +67,21 @@ fn dropping_runtime_after_termination_discards_pending_promise_jobs() -> Result<
   }
 
   assert!(
-    !runtime.vm.microtask_queue().is_empty(),
-    "expected Promise.resolve().then(..) to enqueue at least one Promise job before termination"
+    runtime.vm.microtask_queue().is_empty(),
+    "hard-stop termination should discard queued Promise jobs"
+  );
+  assert_eq!(
+    runtime.vm.async_continuation_count(),
+    0,
+    "hard-stop termination should tear down suspended async continuations"
+  );
+  assert_eq!(
+    runtime.heap.persistent_root_count(),
+    baseline_roots,
+    "hard-stop termination should not leak persistent roots"
   );
 
-  // Regression test: dropping after termination must also discard pending jobs.
+  // Dropping the runtime should not panic from debug assertions about leaked Job roots.
   drop(runtime);
   Ok(())
 }
