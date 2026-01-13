@@ -146,17 +146,22 @@ pub(crate) type DeleteAppContainerProfileFn =
 
 #[link(name = "kernel32")]
 extern "system" {
-  fn LoadLibraryW(name: *const u16) -> HMODULE;
+  fn LoadLibraryExW(name: *const u16, hfile: *mut c_void, flags: u32) -> HMODULE;
   fn GetProcAddress(module: HMODULE, proc_name: *const i8) -> *mut c_void;
   fn FreeLibrary(module: HMODULE) -> i32;
 }
+
+// Force DLL resolution from `%SystemRoot%\\System32` to avoid search-order hijacking.
+//
+// Value is stable ABI: https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 
 unsafe fn load_userenv() -> Result<HMODULE, AppContainerApiLoadError> {
   let wide = "userenv.dll"
     .encode_utf16()
     .chain(std::iter::once(0))
     .collect::<Vec<u16>>();
-  let module = LoadLibraryW(wide.as_ptr());
+  let module = LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
   if module.is_null() {
     return Err(AppContainerApiLoadError::LoadUserenvFailed {
       source: io::Error::last_os_error(),
