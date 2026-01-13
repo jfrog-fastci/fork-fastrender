@@ -10,13 +10,6 @@ semantics tree into the OS-facing AccessKit tree is **in progress**.
 
 However, the render worker already emits a page accessibility snapshot as part of the UI↔worker
 protocol: `WorkerToUi::PageAccessibility` contains the semantic tree plus best-effort per-node bounds
-in viewport-local CSS pixels. The windowed UI stores that snapshot (for future AccessKit subtree
-injection and other UI features), but not every build wires it into the OS-facing tree yet.
-via **AccessKit**. Page content is still *visually* rendered as a pixel buffer; wiring the page
-semantics tree into the OS-facing AccessKit tree is **in progress**.
-
-However, the render worker already emits a page accessibility snapshot as part of the UI↔worker
-protocol: `WorkerToUi::PageAccessibility` contains the semantic tree plus best-effort per-node bounds
 in viewport-local CSS pixels. The windowed UI stores that snapshot as
 `ui::browser_app::PageAccessibilitySnapshot` (for future AccessKit subtree injection and other UI
 features), but not every build wires it into the OS-facing tree yet.
