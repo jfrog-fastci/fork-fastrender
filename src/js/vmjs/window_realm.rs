@@ -35280,44 +35280,11 @@ fn range_compare_boundary_points_native(
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
   let dom = unsafe { dom_ptr.as_ref() };
 
-  let this_start = dom
-    .range_start(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let this_end = dom
-    .range_end(handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let other_start = dom
-    .range_start(source_handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-  let other_end = dom
-    .range_end(source_handle.range_id)
-    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
-
-  let this_root = dom.tree_root_for_range(this_start.node);
-  let other_root = dom.tree_root_for_range(other_start.node);
-  if this_root != other_root {
-    return Err(VmError::Throw(make_dom_exception(
-      vm,
-      scope,
-      dom2::DomError::WrongDocumentError.code(),
-      "",
-    )?));
+  match dom.range_compare_boundary_points(handle.range_id, how, source_handle.range_id) {
+    Ok(v) => Ok(Value::Number(v as f64)),
+    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
-
-  let (this_point, other_point) = match how {
-    0 => (this_start, other_start),
-    1 => (this_end, other_start),
-    2 => (this_end, other_end),
-    3 => (this_start, other_end),
-    _ => unreachable!("how validated to 0..=3"),
-  };
-
-  let ordering = dom.compare_boundary_points(this_point, other_point);
-  Ok(Value::Number(match ordering {
-    std::cmp::Ordering::Less => -1.0,
-    std::cmp::Ordering::Equal => 0.0,
-    std::cmp::Ordering::Greater => 1.0,
-  }))
 }
 
 fn range_extract_contents_native(
