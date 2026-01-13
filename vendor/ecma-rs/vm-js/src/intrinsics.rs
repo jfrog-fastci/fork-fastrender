@@ -982,7 +982,6 @@ impl Intrinsics {
     let array_prototype_shift = vm.register_native_call(builtins::array_prototype_shift)?;
     let array_prototype_unshift = vm.register_native_call(builtins::array_prototype_unshift)?;
     let array_prototype_splice = vm.register_native_call(builtins::array_prototype_splice)?;
-    let array_prototype_at = vm.register_native_call(builtins::array_prototype_at)?;
     let array_prototype_flat = vm.register_native_call(builtins::array_prototype_flat)?;
     let array_prototype_flat_map = vm.register_native_call(builtins::array_prototype_flat_map)?;
     let array_prototype_find_last = vm.register_native_call(builtins::array_prototype_find_last)?;
