@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{RenderedFrame, RepaintReason, WorkerToUi};
-use fastrender::ui::spawn_ui_worker_with_factory;
+use fastrender::ui::{spawn_ui_worker_for_test, spawn_ui_worker_with_factory};
 use fastrender::ui::{TabId, UiToWorker};
 use std::time::Duration;
 
@@ -350,6 +350,86 @@ fn js_timer_dom_mutation_affects_rendered_pixels() {
     last_sample,
     [255, 0, 0, 255],
     "expected JS-set background to render as red"
+  );
+
+  handle.join().expect("worker join");
+}
+
+#[test]
+fn tick_burst_coalesces_to_single_frame() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #box {
+              width: 32px;
+              height: 32px;
+              background: rgb(255, 0, 0);
+              animation: fade 100ms linear infinite;
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#,
+  );
+
+  // Slow down paints so a burst of ticks can accumulate in the UI→worker channel.
+  let handle = spawn_ui_worker_for_test("fastr-ui-worker-tick-burst", Some(10))
+    .expect("spawn ui worker");
+  let tab_id = TabId::new();
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("create tab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("viewport");
+
+  let initial = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    initial.next_tick.is_some(),
+    "expected animation fixture page to request periodic ticks"
+  );
+  while handle.ui_rx.try_recv().is_ok() {}
+
+  // Fire a burst of ticks back-to-back.
+  for _ in 0..50 {
+    handle
+      .ui_tx
+      .send(UiToWorker::Tick {
+        tab_id,
+        delta: Duration::from_millis(16),
+      })
+      .expect("tick");
+  }
+
+  // Observe the tick-driven frame.
+  let _tick_frame = next_frame(&handle.ui_rx, tab_id);
+
+  // Ensure no additional frames were produced for intermediate ticks.
+  let drained = support::drain_for(&handle.ui_rx, Duration::from_secs(1));
+  let extra_frames = drained
+    .iter()
+    .filter(|msg| matches!(msg, WorkerToUi::FrameReady { .. }))
+    .count();
+  assert_eq!(
+    extra_frames, 0,
+    "expected a single coalesced FrameReady for tick burst, got {extra_frames} extra:\n{}",
+    support::format_messages(&drained)
   );
 
   handle.join().expect("worker join");

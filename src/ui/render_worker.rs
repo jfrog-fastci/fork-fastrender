@@ -457,6 +457,9 @@ struct TabState {
   /// This is used to optionally apply a small paint-time deadline for scroll-triggered repaints so
   /// the worker can bail out quickly under heavy pages.
   next_paint_is_scroll: bool,
+  /// True when the next paint was triggered by a tick message and we should coalesce any
+  /// immediately-following tick events before rendering.
+  tick_coalesce: bool,
   document: Option<BrowserDocument>,
   js_tab: Option<BrowserTab>,
   /// Cached mapping from renderer pre-order ids (used by hit-testing/layout) back into the `dom2`
@@ -521,6 +524,7 @@ impl TabState {
       last_reported_scroll_state: ScrollState::default(),
       scroll_coalesce: false,
       next_paint_is_scroll: false,
+      tick_coalesce: false,
       document: None,
       js_tab: None,
       js_dom_mapping_generation: 0,
@@ -2021,6 +2025,18 @@ impl BrowserRuntime {
          self.drain_scroll_burst();
        }
 
+      // Ticks can arrive in rapid bursts when the UI is ticking an active tab but the worker is
+      // behind (e.g. expensive paint). Coalesce any queued ticks before we render so backlogged
+      // tick messages only produce a single frame.
+      if !self
+        .tabs
+        .values()
+        .any(|tab| tab.pending_navigation.is_some())
+        && self.tabs.values().any(|tab| tab.tick_coalesce)
+      {
+        self.drain_tick_burst();
+      }
+
        // Scrolling can move content under a stationary cursor. Queue a hover hit-test during scroll
        // handling and flush it once per coalesced scroll burst (or before the next paint job).
        self.flush_pending_hover_syncs();
@@ -2188,6 +2204,8 @@ impl BrowserRuntime {
     // scroll state changes in a deterministic order.
     let mut pending_scroll_to: HashMap<TabId, (f32, f32)> = HashMap::new();
     let mut pending_scroll_delta: HashMap<TabId, (f32, f32)> = HashMap::new();
+    // Coalesce tick bursts so a backlog of ticks does not trigger redundant paints.
+    let mut pending_ticks: HashMap<TabId, Duration> = HashMap::new();
 
     while let Some(msg) = self.try_recv_message() {
       match msg {
@@ -2258,6 +2276,17 @@ impl BrowserRuntime {
           flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_find_queries.insert(tab_id, (query, case_sensitive));
         }
+        UiToWorker::Tick { tab_id, delta } => {
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
+          flush_pending(
+            self,
+            &mut pending_viewport,
+            &mut pending_pointer_moves,
+            &mut pending_find_queries,
+          );
+          let entry = pending_ticks.entry(tab_id).or_insert(Duration::ZERO);
+          *entry = entry.checked_add(delta).unwrap_or(Duration::MAX);
+        }
         other => {
           flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           flush_pending(
@@ -2266,6 +2295,9 @@ impl BrowserRuntime {
             &mut pending_pointer_moves,
             &mut pending_find_queries,
           );
+          for (tab_id, delta) in pending_ticks.drain() {
+            self.handle_tick(tab_id, delta);
+          }
           self.handle_message(other);
         }
       }
@@ -2278,6 +2310,9 @@ impl BrowserRuntime {
       &mut pending_pointer_moves,
       &mut pending_find_queries,
     );
+    for (tab_id, delta) in pending_ticks.drain() {
+      self.handle_tick(tab_id, delta);
+    }
   }
 
   fn drain_scroll_burst(&mut self) {
@@ -2374,6 +2409,66 @@ impl BrowserRuntime {
     }
 
     flush_pending(self, &mut pending_viewport, &mut pending_pointer_moves);
+  }
+
+  fn drain_tick_burst(&mut self) {
+    use std::time::{Duration, Instant};
+
+    // Unlike scroll coalescing, ticks are already periodic (≈16ms), so keep this window tiny: we
+    // only want to capture tick messages that are already queued (or arrive immediately after)
+    // before the next paint starts.
+    const COALESCE_WINDOW: Duration = Duration::from_millis(1);
+    let deadline = Instant::now() + COALESCE_WINDOW;
+
+    let mut pending_ticks: HashMap<TabId, Duration> = HashMap::new();
+    let mut saw_tick = false;
+
+    loop {
+      let msg = match self.try_recv_message() {
+        Some(msg) => Some(msg),
+        None => {
+          if !saw_tick {
+            None
+          } else {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+              None
+            } else {
+              match self.ui_rx.recv_timeout(remaining) {
+                Ok(msg) => Some(msg),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+              }
+            }
+          }
+        }
+      };
+
+      let Some(msg) = msg else {
+        break;
+      };
+
+      match msg {
+        UiToWorker::Tick { tab_id, delta } => {
+          saw_tick = true;
+          let entry = pending_ticks.entry(tab_id).or_insert(Duration::ZERO);
+          *entry = entry.checked_add(delta).unwrap_or(Duration::MAX);
+        }
+        other => {
+          for (tab_id, delta) in pending_ticks.drain() {
+            self.handle_tick(tab_id, delta);
+          }
+          // Defer non-tick messages (clicks, navigations, etc) until after we render the coalesced
+          // tick frame.
+          self.deferred_msgs.push_front(other);
+          break;
+        }
+      }
+    }
+
+    for (tab_id, delta) in pending_ticks.drain() {
+      self.handle_tick(tab_id, delta);
+    }
   }
 
   fn flush_pending_hover_syncs(&mut self) {
@@ -3975,6 +4070,7 @@ impl BrowserRuntime {
         };
         doc.set_animation_time_ms(time_ms);
         tab.needs_repaint = true;
+        tab.tick_coalesce = true;
       }
     }
 
@@ -4001,6 +4097,7 @@ impl BrowserRuntime {
         tab.js_dom_dirty = true;
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
+        tab.tick_coalesce = true;
       }
       tab.js_dom_mutation_generation = generation_after;
     }
@@ -7737,6 +7834,7 @@ impl BrowserRuntime {
           let is_scroll = std::mem::take(&mut tab.next_paint_is_scroll);
           tab.needs_repaint = false;
           tab.scroll_coalesce = false;
+          tab.tick_coalesce = false;
           return Some(Job::Paint {
             tab_id: active,
             force,
@@ -7769,6 +7867,7 @@ impl BrowserRuntime {
         let is_scroll = std::mem::take(&mut tab.next_paint_is_scroll);
         tab.needs_repaint = false;
         tab.scroll_coalesce = false;
+        tab.tick_coalesce = false;
         return Some(Job::Paint {
           tab_id,
           force,
@@ -8105,6 +8204,7 @@ impl BrowserRuntime {
         // If we have to create a brand new long-lived `BrowserDocument` (e.g. first navigation, or a
         // recovered-from-crash tab), reset tick time so the new document's timeline starts at 0.
         tab.tick_time = Duration::ZERO;
+        tab.tick_coalesce = false;
       }
       (
         tab.cancel.snapshot_prepare(),
@@ -8616,6 +8716,7 @@ impl BrowserRuntime {
           tab.document = Some(doc);
           tab.interaction = interaction;
           tab.tick_time = Duration::ZERO;
+          tab.tick_coalesce = false;
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
           tab.site_key = Some(site_key_for_navigation(&committed_url, None));
@@ -8768,6 +8869,7 @@ impl BrowserRuntime {
     tab.document = Some(doc);
     tab.interaction = interaction;
     tab.tick_time = Duration::ZERO;
+    tab.tick_coalesce = false;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
     tab.site_key = Some(site_key_for_navigation(&committed_url, None));
@@ -8946,6 +9048,7 @@ impl BrowserRuntime {
         Ok(doc) => {
           if let Some(tab) = self.tabs.get_mut(&tab_id) {
             tab.tick_time = Duration::ZERO;
+            tab.tick_coalesce = false;
             tab.document = Some(doc);
           }
         }
@@ -9104,6 +9207,7 @@ impl BrowserRuntime {
     tab.js_dom_dirty = false;
     tab.js_dom_mutation_generation = 0;
     tab.tick_time = Duration::ZERO;
+    tab.tick_coalesce = false;
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
