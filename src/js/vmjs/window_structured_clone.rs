@@ -6,6 +6,8 @@
 //! Supported (and tested) types:
 //! - primitives (except `symbol`)
 //! - Array
+//! - Map
+//! - Set
 //! - ordinary objects (MVP: enumerable own *string* keys only)
 //! - ArrayBuffer (copy or transfer)
 //! - Uint8Array (clones underlying ArrayBuffer and re-creates the view)
@@ -305,6 +307,12 @@ enum Node {
   },
   Object {
     props: Vec<(GcString, EncodedValue)>,
+  },
+  Map {
+    entries: Vec<(EncodedValue, EncodedValue)>,
+  },
+  Set {
+    entries: Vec<EncodedValue>,
   },
   BooleanObject {
     value: bool,
@@ -635,11 +643,26 @@ fn parse_transfer_list(
 }
 
 #[derive(Debug)]
+enum SerializeFrameKind {
+  Props {
+    keys: Vec<PropertyKey>,
+    next_key_idx: usize,
+  },
+  MapEntries {
+    next_entry_idx: usize,
+    entry_len: usize,
+  },
+  SetEntries {
+    next_entry_idx: usize,
+    entry_len: usize,
+  },
+}
+
+#[derive(Debug)]
 struct SerializeFrame {
   obj: GcObject,
   node_id: NodeId,
-  keys: Vec<PropertyKey>,
-  next_key_idx: usize,
+  kind: SerializeFrameKind,
 }
 
 fn serialize_value_iterative(
@@ -661,44 +684,123 @@ fn serialize_value_iterative(
     // Tick once per frame so even empty objects participate in budget/interrupt checks.
     vm.tick()?;
 
-    while frame.next_key_idx < frame.keys.len() {
-      // Tick at least once per processed property so a large clone can't bypass budgets.
-      vm.tick()?;
+    match &mut frame.kind {
+      SerializeFrameKind::Props { keys, next_key_idx } => {
+        while *next_key_idx < keys.len() {
+          // Tick at least once per processed property so a large clone can't bypass budgets.
+          vm.tick()?;
 
-      let key = frame.keys[frame.next_key_idx];
-      frame.next_key_idx += 1;
+          let key = keys[*next_key_idx];
+          *next_key_idx += 1;
 
-      let PropertyKey::String(key_s) = key else {
-        continue;
-      };
+          let PropertyKey::String(key_s) = key else {
+            continue;
+          };
 
-      let Some(desc) = scope
-        .heap()
-        .object_get_own_property_with_tick(frame.obj, &key, || vm.tick())?
-      else {
-        continue;
-      };
-      if !desc.enumerable {
-        continue;
+          let Some(desc) = scope
+            .heap()
+            .object_get_own_property_with_tick(frame.obj, &key, || vm.tick())?
+          else {
+            continue;
+          };
+          if !desc.enumerable {
+            continue;
+          }
+
+          state.count_prop(vm, scope)?;
+
+          // `Get` can invoke user code, but `vm-js` roots the key for the duration of the operation.
+          let prop_val = vm.get_with_host_and_hooks(host, scope, hooks, frame.obj, key)?;
+          let (encoded, child_frame) = serialize_value_shallow(vm, scope, host, hooks, state, prop_val)?;
+
+          match state.nodes.get_mut(frame.node_id) {
+            Some(Node::Array { props, .. } | Node::Object { props }) => props.push((key_s, encoded)),
+            _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+          }
+
+          if let Some(child_frame) = child_frame {
+            // Depth-first traversal: resume this frame after we serialize the nested object.
+            stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'frames;
+          }
+        }
       }
+      SerializeFrameKind::MapEntries {
+        next_entry_idx,
+        entry_len,
+      } => {
+        while *next_entry_idx < *entry_len {
+          // Tick at least once per processed entry so a large clone can't bypass budgets.
+          vm.tick()?;
 
-      state.count_prop(vm, scope)?;
+          let idx = *next_entry_idx;
+          *next_entry_idx += 1;
 
-      // `Get` can invoke user code, but `vm-js` roots the key for the duration of the operation.
-      let prop_val = vm.get_with_host_and_hooks(host, scope, hooks, frame.obj, key)?;
-      let (encoded, child_frame) = serialize_value_shallow(vm, scope, host, hooks, state, prop_val)?;
+          let Some((key, value)) = scope.heap().map_entry_at(frame.obj, idx)? else {
+            continue;
+          };
 
-      match state.nodes.get_mut(frame.node_id) {
-        Some(Node::Array { props, .. } | Node::Object { props }) => props.push((key_s, encoded)),
-        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+          state.count_prop(vm, scope)?;
+
+          let (key_encoded, key_frame) = serialize_value_shallow(vm, scope, host, hooks, state, key)?;
+          let (value_encoded, value_frame) =
+            serialize_value_shallow(vm, scope, host, hooks, state, value)?;
+
+          match state.nodes.get_mut(frame.node_id) {
+            Some(Node::Map { entries }) => entries.push((key_encoded, value_encoded)),
+            _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+          }
+
+          if key_frame.is_some() || value_frame.is_some() {
+            // Depth-first traversal: serialize nested objects before continuing with sibling entries.
+            stack
+              .try_reserve(1 + (key_frame.is_some() as usize) + (value_frame.is_some() as usize))
+              .map_err(|_| VmError::OutOfMemory)?;
+            stack.push(frame);
+            if let Some(value_frame) = value_frame {
+              stack.push(value_frame);
+            }
+            if let Some(key_frame) = key_frame {
+              stack.push(key_frame);
+            }
+            continue 'frames;
+          }
+        }
       }
+      SerializeFrameKind::SetEntries {
+        next_entry_idx,
+        entry_len,
+      } => {
+        while *next_entry_idx < *entry_len {
+          // Tick at least once per processed entry so a large clone can't bypass budgets.
+          vm.tick()?;
 
-      if let Some(child_frame) = child_frame {
-        // Depth-first traversal: resume this frame after we serialize the nested object.
-        stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
-        stack.push(frame);
-        stack.push(child_frame);
-        continue 'frames;
+          let idx = *next_entry_idx;
+          *next_entry_idx += 1;
+
+          let Some(value) = scope.heap().set_entry_at(frame.obj, idx)? else {
+            continue;
+          };
+
+          state.count_prop(vm, scope)?;
+
+          let (encoded, child_frame) = serialize_value_shallow(vm, scope, host, hooks, state, value)?;
+
+          match state.nodes.get_mut(frame.node_id) {
+            Some(Node::Set { entries }) => entries.push(encoded),
+            _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+          }
+
+          if let Some(child_frame) = child_frame {
+            // Depth-first traversal: serialize nested objects before continuing with sibling entries.
+            stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'frames;
+          }
+        }
       }
     }
   }
@@ -1009,6 +1111,50 @@ fn serialize_object_shallow(
     ));
   }
 
+  // Map.
+  if scope.heap().is_map_object(obj) {
+    let entry_len = scope.heap().map_entries_len(obj)?;
+    let size = scope.heap().map_size(obj)?;
+    let mut entries: Vec<(EncodedValue, EncodedValue)> = Vec::new();
+    entries
+      .try_reserve_exact(size)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let id = state.push_node(Node::Map { entries }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    state.object_to_id.insert(obj, id);
+    let frame = SerializeFrame {
+      obj,
+      node_id: id,
+      kind: SerializeFrameKind::MapEntries {
+        next_entry_idx: 0,
+        entry_len,
+      },
+    };
+    return Ok((id, Some(frame)));
+  }
+
+  // Set.
+  if scope.heap().is_set_object(obj) {
+    let entry_len = scope.heap().set_entries_len(obj)?;
+    let size = scope.heap().set_size(obj)?;
+    let mut entries: Vec<EncodedValue> = Vec::new();
+    entries
+      .try_reserve_exact(size)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let id = state.push_node(Node::Set { entries }, vm, scope)?;
+    state.object_to_id.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+    state.object_to_id.insert(obj, id);
+    let frame = SerializeFrame {
+      obj,
+      node_id: id,
+      kind: SerializeFrameKind::SetEntries {
+        next_entry_idx: 0,
+        entry_len,
+      },
+    };
+    return Ok((id, Some(frame)));
+  }
+
   // ArrayBuffer.
   if scope.heap().is_array_buffer_object(obj) {
     let id = serialize_array_buffer_object(vm, scope, state, obj)?;
@@ -1300,8 +1446,10 @@ fn serialize_object_shallow(
     let frame = SerializeFrame {
       obj,
       node_id: id,
-      keys,
-      next_key_idx: 0,
+      kind: SerializeFrameKind::Props {
+        keys,
+        next_key_idx: 0,
+      },
     };
     return Ok((id, Some(frame)));
   };
@@ -1317,8 +1465,10 @@ fn serialize_object_shallow(
   let frame = SerializeFrame {
     obj,
     node_id: id,
-    keys,
-    next_key_idx: 0,
+    kind: SerializeFrameKind::Props {
+      keys,
+      next_key_idx: 0,
+    },
   };
   Ok((id, Some(frame)))
 }
@@ -1425,10 +1575,25 @@ fn prepare_transfer_list_buffers(
 }
 
 #[derive(Debug)]
+enum DeserializeFrameKind {
+  Props {
+    props: Vec<(GcString, EncodedValue)>,
+    next_prop_idx: usize,
+  },
+  MapEntries {
+    entries: Vec<(EncodedValue, EncodedValue)>,
+    next_entry_idx: usize,
+  },
+  SetEntries {
+    entries: Vec<EncodedValue>,
+    next_entry_idx: usize,
+  },
+}
+
+#[derive(Debug)]
 struct DeserializeFrame {
   dst: GcObject,
-  props: Vec<(GcString, EncodedValue)>,
-  next_prop_idx: usize,
+  kind: DeserializeFrameKind,
 }
 
 fn deserialize_value_iterative(
@@ -1448,32 +1613,96 @@ fn deserialize_value_iterative(
   'frames: while let Some(mut frame) = stack.pop() {
     vm.tick()?;
 
-    while frame.next_prop_idx < frame.props.len() {
-      vm.tick()?;
-      let (key_s, val) = frame.props[frame.next_prop_idx];
-      frame.next_prop_idx += 1;
+    match &mut frame.kind {
+      DeserializeFrameKind::Props {
+        props,
+        next_prop_idx,
+      } => {
+        while *next_prop_idx < props.len() {
+          vm.tick()?;
+          let (key_s, val) = props[*next_prop_idx];
+          *next_prop_idx += 1;
 
-      let (cloned_val, child_frame) = deserialize_value_shallow(vm, scope, state, callee, val)?;
-      let key = PropertyKey::from_string(key_s);
-      scope.define_property(
-        frame.dst,
-        key,
-        PropertyDescriptor {
-          enumerable: true,
-          configurable: true,
-          kind: PropertyKind::Data {
-            value: cloned_val,
-            writable: true,
-          },
-        },
-      )?;
+          let (cloned_val, child_frame) = deserialize_value_shallow(vm, scope, state, callee, val)?;
+          let key = PropertyKey::from_string(key_s);
+          scope.define_property(
+            frame.dst,
+            key,
+            PropertyDescriptor {
+              enumerable: true,
+              configurable: true,
+              kind: PropertyKind::Data {
+                value: cloned_val,
+                writable: true,
+              },
+            },
+          )?;
 
-      if let Some(child_frame) = child_frame {
-        // Depth-first traversal: populate nested objects before continuing with sibling properties.
-        stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
-        stack.push(frame);
-        stack.push(child_frame);
-        continue 'frames;
+          if let Some(child_frame) = child_frame {
+            // Depth-first traversal: populate nested objects before continuing with sibling properties.
+            stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'frames;
+          }
+        }
+      }
+      DeserializeFrameKind::MapEntries {
+        entries,
+        next_entry_idx,
+      } => {
+        while *next_entry_idx < entries.len() {
+          vm.tick()?;
+          let (key, value) = entries[*next_entry_idx];
+          *next_entry_idx += 1;
+
+          let (cloned_key, key_frame) = deserialize_value_shallow(vm, scope, state, callee, key)?;
+          let (cloned_value, value_frame) =
+            deserialize_value_shallow(vm, scope, state, callee, value)?;
+
+          scope
+            .heap_mut()
+            .map_set_with_tick(frame.dst, cloned_key, cloned_value, || vm.tick())?;
+
+          if key_frame.is_some() || value_frame.is_some() {
+            // Depth-first traversal: populate nested objects before continuing with sibling entries.
+            stack
+              .try_reserve(1 + (key_frame.is_some() as usize) + (value_frame.is_some() as usize))
+              .map_err(|_| VmError::OutOfMemory)?;
+            stack.push(frame);
+            if let Some(value_frame) = value_frame {
+              stack.push(value_frame);
+            }
+            if let Some(key_frame) = key_frame {
+              stack.push(key_frame);
+            }
+            continue 'frames;
+          }
+        }
+      }
+      DeserializeFrameKind::SetEntries {
+        entries,
+        next_entry_idx,
+      } => {
+        while *next_entry_idx < entries.len() {
+          vm.tick()?;
+          let value = entries[*next_entry_idx];
+          *next_entry_idx += 1;
+
+          let (cloned_value, child_frame) =
+            deserialize_value_shallow(vm, scope, state, callee, value)?;
+          scope
+            .heap_mut()
+            .set_add_with_tick(frame.dst, cloned_value, || vm.tick())?;
+
+          if let Some(child_frame) = child_frame {
+            // Depth-first traversal: populate nested objects before continuing with sibling entries.
+            stack.try_reserve(2).map_err(|_| VmError::OutOfMemory)?;
+            stack.push(frame);
+            stack.push(child_frame);
+            continue 'frames;
+          }
+        }
       }
     }
   }
@@ -1527,6 +1756,8 @@ fn deserialize_node_shallow(
     Some(Node::BigIntObject { .. }) => 10u8,
     Some(Node::Error { .. }) => 11u8,
     Some(Node::RegExp { .. }) => 12u8,
+    Some(Node::Map { .. }) => 13u8,
+    Some(Node::Set { .. }) => 14u8,
     None => return Err(VmError::InvariantViolation("structuredClone node id out of bounds")),
   };
 
@@ -1550,8 +1781,10 @@ fn deserialize_node_shallow(
       };
       let frame = DeserializeFrame {
         dst: arr,
-        props,
-        next_prop_idx: 0,
+        kind: DeserializeFrameKind::Props {
+          props,
+          next_prop_idx: 0,
+        },
       };
       return Ok((arr, Some(frame)));
     }
@@ -1570,10 +1803,58 @@ fn deserialize_node_shallow(
       };
       let frame = DeserializeFrame {
         dst: obj,
-        props,
-        next_prop_idx: 0,
+        kind: DeserializeFrameKind::Props {
+          props,
+          next_prop_idx: 0,
+        },
       };
       return Ok((obj, Some(frame)));
+    }
+    13 => {
+      // Map.
+      let map = scope.alloc_map()?;
+      scope.push_root(Value::Object(map))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(map, Some(intr.map_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      state.clones.insert(id, map);
+
+      let entries = match state.nodes.get_mut(id) {
+        Some(Node::Map { entries }) => std::mem::take(entries),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+      let frame = DeserializeFrame {
+        dst: map,
+        kind: DeserializeFrameKind::MapEntries {
+          entries,
+          next_entry_idx: 0,
+        },
+      };
+      return Ok((map, Some(frame)));
+    }
+    14 => {
+      // Set.
+      let set = scope.alloc_set()?;
+      scope.push_root(Value::Object(set))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(set, Some(intr.set_prototype()))?;
+      state.clones.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+      state.clones.insert(id, set);
+
+      let entries = match state.nodes.get_mut(id) {
+        Some(Node::Set { entries }) => std::mem::take(entries),
+        _ => return Err(VmError::InvariantViolation("structuredClone node kind mismatch")),
+      };
+      let frame = DeserializeFrame {
+        dst: set,
+        kind: DeserializeFrameKind::SetEntries {
+          entries,
+          next_entry_idx: 0,
+        },
+      };
+      return Ok((set, Some(frame)));
     }
     3 => {
       // ArrayBuffer.
@@ -1944,6 +2225,37 @@ mod tests {
          if (y.length !== 3) return false;\
          if (1 in y) return false;\
          return y[0] === y[2] && y[0] !== a;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_maps_sets_use_intrinsics_under_global_tampering() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let ok = realm.exec_script(
+      "(() => {\
+         const RealMap = Map;\
+         const RealSet = Set;\
+         const m = new RealMap([[1, 2]]);\
+         const s = new RealSet([1, 2]);\
+         globalThis.Map = function () { throw new Error('tampered Map'); };\
+         globalThis.Set = function () { throw new Error('tampered Set'); };\
+         const cm = structuredClone(m);\
+         if (cm === m) return false;\
+         if (!(cm instanceof RealMap)) return false;\
+         if (Object.getPrototypeOf(cm) !== RealMap.prototype) return false;\
+         if (cm.size !== 1) return false;\
+         if (cm.get(1) !== 2) return false;\
+         const cs = structuredClone(s);\
+         if (cs === s) return false;\
+         if (!(cs instanceof RealSet)) return false;\
+         if (Object.getPrototypeOf(cs) !== RealSet.prototype) return false;\
+         if (cs.size !== 2) return false;\
+         if (!cs.has(1) || !cs.has(2)) return false;\
+         return true;\
        })()",
     )?;
     assert_eq!(ok, Value::Bool(true));
