@@ -200,6 +200,32 @@ if [[ -d target ]]; then
 fi
 ```
 
+### Repo hygiene (avoid committing noise)
+
+Sometimes `git status` shows a huge number of unrelated modifications under `scripts/`, `tools/`,
+`vendor/`, or marks submodules (e.g. `specs/*`, `vendor/ecma-rs/*` corpora) as "modified content".
+This is usually metadata noise (executable-bit flips) or accidental submodule dirt, not real product
+work.
+
+Before committing, confirm what changed:
+
+```bash
+git diff --summary
+```
+
+To discard accidental changes in the main repo (safe):
+
+```bash
+git restore scripts tools vendor/ecma-rs
+```
+
+To discard accidental changes inside submodules (destructive — only do this if you have no
+intentional local edits inside submodules):
+
+```bash
+git submodule foreach --recursive 'git reset --hard && git clean -fd'
+```
+
 ## Regression philosophy (required)
 
 Live pages motivate fixes, but regressions keep them fixed:
