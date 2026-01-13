@@ -4448,6 +4448,128 @@ pub fn typed_array_prototype_set(
   Ok(Value::Undefined)
 }
 
+pub fn typed_array_prototype_values(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.values called on non-object",
+    ));
+  };
+
+  // RequireInternalSlot(obj, [[TypedArrayName]]).
+  let _ = scope.heap().typed_array_kind(obj).map_err(|_| {
+    VmError::TypeError("TypedArray.prototype.values called on incompatible receiver")
+  })?;
+
+  // ValidateTypedArray also throws if the typed array is out-of-bounds (including when the backing
+  // buffer is detached).
+  if scope
+    .heap()
+    .typed_array_is_out_of_bounds(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.values called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  create_array_iterator_with_kind(
+    vm,
+    scope,
+    host,
+    hooks,
+    Value::Object(obj),
+    ArrayIteratorKind::Values,
+  )
+}
+
+pub fn typed_array_prototype_keys(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.keys called on non-object",
+    ));
+  };
+
+  // RequireInternalSlot(obj, [[TypedArrayName]]).
+  let _ = scope.heap().typed_array_kind(obj).map_err(|_| {
+    VmError::TypeError("TypedArray.prototype.keys called on incompatible receiver")
+  })?;
+
+  // ValidateTypedArray also throws if the typed array is out-of-bounds (including when the backing
+  // buffer is detached).
+  if scope
+    .heap()
+    .typed_array_is_out_of_bounds(obj)
+    .map_err(|_| VmError::TypeError("TypedArray.prototype.keys called on incompatible receiver"))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  create_array_iterator_with_kind(
+    vm,
+    scope,
+    host,
+    hooks,
+    Value::Object(obj),
+    ArrayIteratorKind::Keys,
+  )
+}
+
+pub fn typed_array_prototype_entries(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "TypedArray.prototype.entries called on non-object",
+    ));
+  };
+
+  // RequireInternalSlot(obj, [[TypedArrayName]]).
+  let _ = scope.heap().typed_array_kind(obj).map_err(|_| {
+    VmError::TypeError("TypedArray.prototype.entries called on incompatible receiver")
+  })?;
+
+  // ValidateTypedArray also throws if the typed array is out-of-bounds (including when the backing
+  // buffer is detached).
+  if scope
+    .heap()
+    .typed_array_is_out_of_bounds(obj)
+    .map_err(|_| VmError::TypeError(
+      "TypedArray.prototype.entries called on incompatible receiver",
+    ))?
+  {
+    return Err(VmError::TypeError("ArrayBuffer is detached"));
+  }
+
+  create_array_iterator_with_kind(
+    vm,
+    scope,
+    host,
+    hooks,
+    Value::Object(obj),
+    ArrayIteratorKind::Entries,
+  )
+}
+
 fn to_index_from_value(
   vm: &mut Vm,
   scope: &mut Scope<'_>,

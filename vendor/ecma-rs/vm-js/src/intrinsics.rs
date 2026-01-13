@@ -6401,6 +6401,9 @@ impl Intrinsics {
     let typed_array_subarray_call =
       vm.register_native_call(builtins::typed_array_prototype_subarray)?;
     let typed_array_set_call = vm.register_native_call(builtins::typed_array_prototype_set)?;
+    let typed_array_values_call = vm.register_native_call(builtins::typed_array_prototype_values)?;
+    let typed_array_keys_call = vm.register_native_call(builtins::typed_array_prototype_keys)?;
+    let typed_array_entries_call = vm.register_native_call(builtins::typed_array_prototype_entries)?;
 
     let make_getter = |scope: &mut Scope<'_>,
                        call: NativeFunctionId,
@@ -6436,6 +6439,9 @@ impl Intrinsics {
     let slice_fn = make_method(scope, typed_array_slice_call, "slice", 2)?;
     let subarray_fn = make_method(scope, typed_array_subarray_call, "subarray", 2)?;
     let set_fn = make_method(scope, typed_array_set_call, "set", 1)?;
+    let values_fn = make_method(scope, typed_array_values_call, "values", 0)?;
+    let keys_fn = make_method(scope, typed_array_keys_call, "keys", 0)?;
+    let entries_fn = make_method(scope, typed_array_entries_call, "entries", 0)?;
 
     // Root the key strings across subsequent allocations: we allocate multiple keys before storing
     // them on any rooted object.
@@ -6457,6 +6463,15 @@ impl Intrinsics {
     let set_key_s = scope.alloc_string("set")?;
     scope.push_root(Value::String(set_key_s))?;
     let set_key = PropertyKey::from_string(set_key_s);
+    let values_key_s = scope.alloc_string("values")?;
+    scope.push_root(Value::String(values_key_s))?;
+    let values_key = PropertyKey::from_string(values_key_s);
+    let keys_key_s = scope.alloc_string("keys")?;
+    scope.push_root(Value::String(keys_key_s))?;
+    let keys_key = PropertyKey::from_string(keys_key_s);
+    let entries_key_s = scope.alloc_string("entries")?;
+    scope.push_root(Value::String(entries_key_s))?;
+    let entries_key = PropertyKey::from_string(entries_key_s);
 
     let typed_array_prototypes = [
       uint8_array_prototype,
@@ -6523,6 +6538,15 @@ impl Intrinsics {
       scope.define_property(proto, slice_key, data_desc(Value::Object(slice_fn), true, false, true))?;
       scope.define_property(proto, subarray_key, data_desc(Value::Object(subarray_fn), true, false, true))?;
       scope.define_property(proto, set_key, data_desc(Value::Object(set_fn), true, false, true))?;
+
+      scope.define_property(proto, values_key, data_desc(Value::Object(values_fn), true, false, true))?;
+      scope.define_property(proto, keys_key, data_desc(Value::Object(keys_fn), true, false, true))?;
+      scope.define_property(proto, entries_key, data_desc(Value::Object(entries_fn), true, false, true))?;
+      scope.define_property(
+        proto,
+        PropertyKey::Symbol(well_known_symbols.iterator),
+        data_desc(Value::Object(values_fn), true, false, true),
+      )?;
     }
 
     // --- DataView prototype accessors/methods ---
