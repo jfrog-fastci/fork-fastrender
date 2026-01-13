@@ -65,6 +65,25 @@ This is a security boundary:
 if the renderer can open sockets or arbitrary files, the OS sandbox becomes “best effort” instead of
 a hard isolation line.
 
+### IPC + shared memory contract (critical)
+
+The sandbox assumes the renderer communicates only via **explicit IPC endpoints** provided by the
+browser process.
+
+Practical implications on Linux:
+
+- With the default `NetworkPolicy::DenyAllSockets`, the renderer should not create sockets at all
+  (even `AF_UNIX`). IPC endpoints (pipes or socketpairs) must be created by the browser and
+  inherited/passed into the renderer.
+- Shared memory should be created by the browser (for example via `memfd_create` in the broker) and
+  passed to the renderer. The seccomp allowlist does **not** include `memfd_create`, so calling it
+  after the sandbox is installed would typically be a fatal seccomp violation.
+- If you need to pass file descriptors at runtime (after sandbox), use Unix sockets and allow
+  `sendmsg`/`recvmsg` (see `NetworkPolicy::AllowUnixSocketsOnly`) and follow the checklist in
+  [`docs/ipc_linux_fd_passing.md`](../ipc_linux_fd_passing.md).
+
+Related docs: [`docs/ipc.md`](../ipc.md), [`docs/ipc_linux_fd_passing.md`](../ipc_linux_fd_passing.md).
+
 ### Cargo feature implications (renderer builds)
 
 The sandbox boundary assumes the renderer does not even *have* in-process network/filesystem stacks.
@@ -138,6 +157,15 @@ Policy:
 - Keep only stdin/stdout/stderr (or explicit redirections) and the intended IPC fds.
 - Close everything else (prefer `close_range` where available).
 - Prefer `CLOEXEC` on IPC fds to prevent accidental leaks across exec boundaries.
+
+Repo reality nuance:
+
+- `sandbox::close_fds_except(...)` is designed to be used from a `pre_exec` hook where the launcher
+  knows exactly which fds must remain open.
+- When using `std::process::Command`, there may be internal exec-error-reporting pipes that are hard
+  to include in a strict keep-list. In those cases, it can be safer to use
+  `sandbox::set_cloexec_on_fds_except(...)` (mark fds close-on-exec without closing them) and/or do
+  post-`exec` fd cleanup inside the renderer entrypoint once IPC wiring is finalized.
 
 ### 3) Linux namespaces (best-effort hardening)
 
