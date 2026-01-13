@@ -835,8 +835,7 @@ impl<Host: 'static> EventLoop<Host> {
         reserved_source_idx,
         "external task queue front changed during drain"
       );
-      let source_idx = source.as_usize();
-      self.task_queues[source_idx].push_back(Task::new_with_seq(
+      self.task_queues[reserved_source_idx].push_back(Task::new_with_seq(
         source,
         seq,
         move |host, event_loop| runnable(host, event_loop),

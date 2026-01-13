@@ -343,6 +343,13 @@ pub enum BrowserToRenderer {
   /// (shared memory segment, pooled buffer, etc).
   FrameAck { frame_seq: u64 },
 
+  /// Release a shared frame buffer back to the renderer's frame pool.
+  ///
+  /// This is an alternative flow-control mechanism used by shared-memory buffer pool transports
+  /// (see [`crate::ipc::frame_pool`]). The `generation` lets the renderer ignore stale releases
+  /// after the browser recreates its pool.
+  ReleaseFrameBuffer { generation: u64, buffer_index: u32 },
+
   /// Close a tab (drop all associated renderer-side state).
   TabClosed { tab_id: u64 },
 
