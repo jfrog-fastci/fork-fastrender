@@ -205,6 +205,18 @@ pub enum BookmarkDelta {
     id: BookmarkId,
     parent: Option<BookmarkId>,
   },
+  /// Reorder a node within its current parent list by moving it before another sibling.
+  ReorderBefore {
+    id: BookmarkId,
+    parent: Option<BookmarkId>,
+    before_id: BookmarkId,
+  },
+  /// Reorder a node within its current parent list by moving it after another sibling.
+  ReorderAfter {
+    id: BookmarkId,
+    parent: Option<BookmarkId>,
+    after_id: BookmarkId,
+  },
   /// Replace the root ordering list (bookmarks bar ordering).
   ReorderRoot(Vec<BookmarkId>),
   /// Replace the entire store (used for imports).
@@ -274,7 +286,23 @@ impl BookmarkStore {
         parent,
       } => self.update(*id, title.clone(), url.clone(), *parent),
       BookmarkDelta::MoveNode { id, parent } => self.move_node(*id, *parent),
-      BookmarkDelta::ReorderRoot(order) => self.reorder_root(order),
+      BookmarkDelta::ReorderBefore {
+        id,
+        parent,
+        before_id,
+      } => self.reorder_before_in_parent(*id, *parent, *before_id),
+      BookmarkDelta::ReorderAfter {
+        id,
+        parent,
+        after_id,
+      } => self.reorder_after_in_parent(*id, *parent, *after_id),
+      BookmarkDelta::ReorderRoot(order) => {
+        if self.roots == order.as_slice() {
+          Ok(())
+        } else {
+          self.reorder_root(order)
+        }
+      }
       BookmarkDelta::ReplaceAll(store) => {
         *self = store.clone();
         self.touch();
@@ -450,11 +478,89 @@ impl BookmarkStore {
     ids_in_new_order: &[BookmarkId],
     deltas: &mut Vec<BookmarkDelta>,
   ) -> Result<(), BookmarkError> {
+    if ids_in_new_order.len() != self.roots.len() {
+      return Err(BookmarkError::InvalidReorder);
+    }
+
+    let expected: HashSet<BookmarkId> = self.roots.iter().copied().collect();
+    let got: HashSet<BookmarkId> = ids_in_new_order.iter().copied().collect();
+    if expected != got || got.len() != ids_in_new_order.len() {
+      return Err(BookmarkError::InvalidReorder);
+    }
+
     if self.roots == ids_in_new_order {
       return Ok(());
     }
-    self.reorder_root(ids_in_new_order)?;
-    deltas.push(BookmarkDelta::ReorderRoot(ids_in_new_order.to_vec()));
+
+    // Common case: the UI performs a single-item move (drag reorder). Detect that and record a
+    // compact delta instead of copying the full roots vector into the delta payload.
+    let len = self.roots.len();
+    if len >= 2 {
+      let mut start = 0usize;
+      while start < len && self.roots[start] == ids_in_new_order[start] {
+        start += 1;
+      }
+
+      let mut end = len;
+      while end > start && self.roots[end - 1] == ids_in_new_order[end - 1] {
+        end -= 1;
+      }
+
+      if start < end {
+        let old_start = self.roots[start];
+        let old_end = self.roots[end - 1];
+        let new_start = ids_in_new_order[start];
+        let new_end = ids_in_new_order[end - 1];
+
+        // Move a trailing element earlier: `[... a b c] -> [... c a b]`
+        if new_start == old_end {
+          let mut ok = true;
+          for idx in start..(end - 1) {
+            if ids_in_new_order[idx + 1] != self.roots[idx] {
+              ok = false;
+              break;
+            }
+          }
+
+          if ok {
+            self.reorder_before_in_parent(old_end, None, old_start)?;
+            deltas.push(BookmarkDelta::ReorderBefore {
+              id: old_end,
+              parent: None,
+              before_id: old_start,
+            });
+            return Ok(());
+          }
+        }
+
+        // Move a leading element later: `[... a b c] -> [... b c a]`
+        if new_end == old_start {
+          let mut ok = true;
+          for idx in (start + 1)..end {
+            if ids_in_new_order[idx - 1] != self.roots[idx] {
+              ok = false;
+              break;
+            }
+          }
+
+          if ok {
+            self.reorder_after_in_parent(old_start, None, old_end)?;
+            deltas.push(BookmarkDelta::ReorderAfter {
+              id: old_start,
+              parent: None,
+              after_id: old_end,
+            });
+            return Ok(());
+          }
+        }
+      }
+    }
+
+    // Fallback: record a full root ordering vector.
+    let new_vec = ids_in_new_order.to_vec();
+    self.roots = new_vec.clone();
+    self.touch();
+    deltas.push(BookmarkDelta::ReorderRoot(new_vec));
     Ok(())
   }
 
@@ -1144,6 +1250,124 @@ impl BookmarkStore {
         remove_first(&mut self.roots, id);
       }
     }
+  }
+
+  fn parent_list_mut(
+    &mut self,
+    parent: Option<BookmarkId>,
+  ) -> Result<&mut Vec<BookmarkId>, BookmarkError> {
+    match parent {
+      None => Ok(&mut self.roots),
+      Some(parent_id) => match self.nodes.get_mut(&parent_id) {
+        Some(BookmarkNode::Folder(folder)) => Ok(&mut folder.children),
+        Some(_) => Err(BookmarkError::ParentNotFolder(parent_id)),
+        None => Err(BookmarkError::ParentNotFound(parent_id)),
+      },
+    }
+  }
+
+  fn reorder_before_in_parent(
+    &mut self,
+    id: BookmarkId,
+    parent: Option<BookmarkId>,
+    before_id: BookmarkId,
+  ) -> Result<(), BookmarkError> {
+    if id == before_id {
+      return Ok(());
+    }
+
+    let actual_parent = self
+      .nodes
+      .get(&id)
+      .map(BookmarkNode::parent)
+      .ok_or(BookmarkError::NotFound(id))?;
+    if actual_parent != parent {
+      return Err(BookmarkError::InvalidReorder);
+    }
+    let before_parent = self
+      .nodes
+      .get(&before_id)
+      .map(BookmarkNode::parent)
+      .ok_or(BookmarkError::NotFound(before_id))?;
+    if before_parent != parent {
+      return Err(BookmarkError::InvalidReorder);
+    }
+
+    let list = self.parent_list_mut(parent)?;
+    let old_idx = list
+      .iter()
+      .position(|x| *x == id)
+      .ok_or(BookmarkError::InvalidReorder)?;
+    let before_idx = list
+      .iter()
+      .position(|x| *x == before_id)
+      .ok_or(BookmarkError::InvalidReorder)?;
+
+    // Already immediately before the target.
+    if old_idx + 1 == before_idx {
+      return Ok(());
+    }
+
+    list.remove(old_idx);
+    let mut insert_idx = before_idx;
+    if old_idx < before_idx {
+      insert_idx = insert_idx.saturating_sub(1);
+    }
+    list.insert(insert_idx, id);
+    self.touch();
+    Ok(())
+  }
+
+  fn reorder_after_in_parent(
+    &mut self,
+    id: BookmarkId,
+    parent: Option<BookmarkId>,
+    after_id: BookmarkId,
+  ) -> Result<(), BookmarkError> {
+    if id == after_id {
+      return Ok(());
+    }
+
+    let actual_parent = self
+      .nodes
+      .get(&id)
+      .map(BookmarkNode::parent)
+      .ok_or(BookmarkError::NotFound(id))?;
+    if actual_parent != parent {
+      return Err(BookmarkError::InvalidReorder);
+    }
+    let after_parent = self
+      .nodes
+      .get(&after_id)
+      .map(BookmarkNode::parent)
+      .ok_or(BookmarkError::NotFound(after_id))?;
+    if after_parent != parent {
+      return Err(BookmarkError::InvalidReorder);
+    }
+
+    let list = self.parent_list_mut(parent)?;
+    let old_idx = list
+      .iter()
+      .position(|x| *x == id)
+      .ok_or(BookmarkError::InvalidReorder)?;
+    let after_idx = list
+      .iter()
+      .position(|x| *x == after_id)
+      .ok_or(BookmarkError::InvalidReorder)?;
+
+    // Already immediately after the target.
+    if after_idx + 1 == old_idx {
+      return Ok(());
+    }
+
+    list.remove(old_idx);
+    let mut insert_idx = after_idx;
+    if old_idx < after_idx {
+      insert_idx = insert_idx.saturating_sub(1);
+    }
+    list.insert(insert_idx + 1, id);
+    self.touch();
+    Ok(())
   }
 
   fn collect_subtree_ids(&self, id: BookmarkId, out: &mut Vec<BookmarkId>) {
