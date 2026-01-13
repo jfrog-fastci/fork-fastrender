@@ -220,6 +220,51 @@ fn generator_nullish_coalescing_rhs_is_evaluated_after_yield_in_lhs_when_nullish
 }
 
 #[test]
+fn generator_short_circuit_uses_comma_result_after_yield_in_operand() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+      function* g_and(){ return (yield 1, false) && (yield 2); }
+      var it_and = g_and();
+      var a1 = it_and.next();
+      var a2 = it_and.next(123);
+
+      function* g_or(){ return (yield 1, true) || (yield 2); }
+      var it_or = g_or();
+      var b1 = it_or.next();
+      var b2 = it_or.next(123);
+
+      function* g_nullish_skip(){ return (yield 1, 0) ?? (yield 2); }
+      var it_ns = g_nullish_skip();
+      var c1 = it_ns.next();
+      var c2 = it_ns.next(123);
+
+      function* g_nullish_eval(){ return (yield 1, null) ?? (yield 2); }
+      var it_ne = g_nullish_eval();
+      var d1 = it_ne.next();
+      var d2 = it_ne.next(123);
+      var d3 = it_ne.next(456);
+
+      a1.value === 1 && a1.done === false &&
+      a2.value === false && a2.done === true &&
+
+      b1.value === 1 && b1.done === false &&
+      b2.value === true && b2.done === true &&
+
+      c1.value === 1 && c1.done === false &&
+      c2.value === 0 && c2.done === true &&
+
+      d1.value === 1 && d1.done === false &&
+      d2.value === 2 && d2.done === false &&
+      d3.value === 456 && d3.done === true
+    "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
 fn generator_comma_operator_with_yield_on_lhs() {
   let mut rt = new_runtime();
   let value = rt
