@@ -52,8 +52,11 @@ Examples:
 - `chrome-action:back`
 - `chrome-action:new-tab`
 - `chrome-action:close-tab?tab=42`
-- `chrome-action:navigate?input=https%3A%2F%2Fexample.com%2F`
-- `chrome-action:navigate?input=cats+%26+dogs` (search term)
+- `chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F`
+- `chrome-action:navigate?url=cats+%26+dogs` (search term)
+
+Note: the parser/formatter uses `url=` as the canonical parameter name for navigations, but accepts
+`input=` as a legacy alias (useful if an older chrome HTML template already uses `name=input`).
 
 Implementation note: the repo now has a small parser/formatter with a round-trip regression test:
 `src/ui/chrome_action_url.rs`.
@@ -103,8 +106,8 @@ markup patterns and `chrome-action:` URLs.
 
 | Feature | Proposed HTML | `chrome-action:` | Notes |
 |---|---|---|---|
-| Navigate to typed input | `<form class=omnibox action="chrome-action:navigate" method=get> <input name=input value="…"> </form>` | `chrome-action:navigate?input=...` | ✅ The browser process should run the same resolution as `BrowserTabState::navigate_typed` (URL vs search). |
-| Open typed input in new tab | `<button formaction="chrome-action:open-url-in-new-tab" formmethod=get>` | `chrome-action:open-url-in-new-tab?input=...` | ✅ Useful for middle-click / Ctrl+Enter parity; can also be a separate button. |
+| Navigate to typed input | `<form class=omnibox action="chrome-action:navigate" method=get> <input name=url value="…"> </form>` | `chrome-action:navigate?url=...` | ✅ The browser process should run the same resolution as `BrowserTabState::navigate_typed` (URL vs search). |
+| Open typed input in new tab | `<button formaction="chrome-action:open-url-in-new-tab" formmethod=get>` | `chrome-action:open-url-in-new-tab?url=...` | ✅ Useful for middle-click / Ctrl+Enter parity; can also be a separate button. |
 
 ### Omnibox suggestions (mouse + keyboard)
 
@@ -120,7 +123,7 @@ Omnibox suggestions are a mix of:
 ```html
 <ul class="omnibox-suggestions" role="listbox">
   <li role="option">
-    <a href="chrome-action:navigate?input=https%3A%2F%2Fexample.com%2F">
+    <a href="chrome-action:navigate?url=https%3A%2F%2Fexample.com%2F">
       <span class="title">Example Domain</span>
       <span class="url">example.com</span>
     </a>
@@ -130,11 +133,11 @@ Omnibox suggestions are a mix of:
 
 | Feature | Proposed HTML | `chrome-action:` | Notes |
 |---|---|---|---|
-| Suggestion click → navigate | `<a href="chrome-action:navigate?input=…">` | `chrome-action:navigate?input=…` | ✅ Input can be a URL or a raw search query. |
-| Suggestion click → open in new tab | `<a href="chrome-action:open-url-in-new-tab?input=…">` | `chrome-action:open-url-in-new-tab?input=…` | ✅ |
+| Suggestion click → navigate | `<a href="chrome-action:navigate?url=…">` | `chrome-action:navigate?url=…` | ✅ Input can be a URL or a raw search query. |
+| Suggestion click → open in new tab | `<a href="chrome-action:open-url-in-new-tab?url=…">` | `chrome-action:open-url-in-new-tab?url=…` | ✅ |
 | Keyboard up/down selection | (custom listbox UI) | (same actions) | ❌ Without JS, arrow-key-driven “roving selection” is hard to implement with semantic HTML alone. See gaps/JS section. |
 | `datalist`-based suggestions | `<input list=…><datalist>…</datalist>` | submit via `chrome-action:navigate` | ⚠️ Possible no-JS approach, but requires engine support for `<datalist>` suggestion UI (not currently implemented). Styling is also very limited. |
-| `<select size>` listbox fallback | `<select size=8 name=input>…</select>` | submit via `chrome-action:navigate` | ⚠️ This gives keyboard navigation “for free”, but options cannot be richly styled and cannot embed icons/secondary text. |
+| `<select size>` listbox fallback | `<select size=8 name=url>…</select>` | submit via `chrome-action:navigate` | ⚠️ This gives keyboard navigation “for free”, but options cannot be richly styled and cannot embed icons/secondary text. |
 
 ### Context menu / tooltip / status bubble
 
@@ -161,7 +164,7 @@ Omnibox suggestions are a mix of:
 |---|---|---|---|
 | Toggle History panel | Toolbar button | `chrome-action:toggle-history-panel` | ✅ Uses `ChromeState.history_panel_open`. |
 | Toggle Downloads panel | Toolbar button | `chrome-action:toggle-downloads-panel` | ✅ In the current egui UI, this open/closed state lives in the windowed front-end (`src/bin/browser.rs`), not `BrowserAppState`; renderer-chrome should surface an equivalent boolean to the HTML template. |
-| History entry click → navigate | `<a href="chrome-action:navigate?input=…">` | `chrome-action:navigate?input=…` | ✅ |
+| History entry click → navigate | `<a href="chrome-action:navigate?url=…">` | `chrome-action:navigate?url=…` | ✅ |
 | Clear history range | `<form action="chrome-action:clear-history" method=post>…</form>` | `chrome-action:clear-history` | ⚠️ Requires POST form submission plumbing and a defined payload shape. |
 | Download item cancel/retry | Buttons per item | `chrome-action:cancel-download?id=…` / `chrome-action:retry-download?id=…` | ⚠️ Requires defining IDs and wiring to the download manager. |
 | “Open file” / “Show in folder” | `<a href="chrome-action:open-download?id=…">` | `chrome-action:open-download?...` | ⚠️ Needs OS integration in browser process; action triggering can still be no-JS. |
