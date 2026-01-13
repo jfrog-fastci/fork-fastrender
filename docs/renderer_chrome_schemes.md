@@ -29,15 +29,17 @@ FastRender has (or will have) two renderer contexts:
 Even before renderer-chrome lands, the codebase already enforces a “content must reject unknown
 schemes” rule, which will also reject `chrome://` and `chrome-action:`:
 
-- Scheme allowlist for navigations: `src/ui/url.rs` (`validate_user_navigation_url_scheme`).
+- Scheme allowlist for navigations: [`src/ui/url.rs`](../src/ui/url.rs) (`validate_user_navigation_url_scheme`).
   - This only allows `http`, `https`, `file`, `about`.
 - Content worker uses that allowlist for all non-`about:` navigations:
-  `src/ui/render_worker.rs` (navigation prepare path calls `validate_user_navigation_url_scheme`).
+  [`src/ui/render_worker.rs`](../src/ui/render_worker.rs) (navigation prepare path calls
+  `validate_user_navigation_url_scheme`).
 - Integration test asserts “unsupported schemes fail fast (no error page render)”:
-  `tests/browser_integration/ui_worker_unsupported_scheme.rs`.
+  [`tests/browser_integration/ui_worker_unsupported_scheme.rs`](../tests/browser_integration/ui_worker_unsupported_scheme.rs).
 - Browser CLI start URL validation also uses the same allowlist:
-  `src/bin/browser.rs` + `tests/browser_integration/browser_cli_start_url_scheme.rs`.
-- Defense-in-depth for subresource fetches: `src/resource.rs` (scheme classification and
+  [`src/bin/browser.rs`](../src/bin/browser.rs) +
+  [`tests/browser_integration/browser_cli_start_url_scheme.rs`](../tests/browser_integration/browser_cli_start_url_scheme.rs).
+- Defense-in-depth for subresource fetches: [`src/resource.rs`](../src/resource.rs) (scheme classification and
   `ResourcePolicy::allowed_schemes`) treats unknown schemes as `Other` and blocks them by default.
 
 **Invariant:** The content renderer must treat `chrome://…` and `chrome-action:…` as unsupported
@@ -80,7 +82,8 @@ When implemented, `chrome://` URLs should be resolved as:
 3. Serve bytes from a trusted source (typically embedded via `include_bytes!` or a read-only bundle).
 
 Implementation reference (existing pattern): repo-owned UI assets are already embedded via
-`include_bytes!` in places like `src/ui/icons.rs` (SVGs in `assets/browser_icons/`). A future
+`include_bytes!` in places like [`src/ui/icons.rs`](../src/ui/icons.rs) (SVGs in
+[`assets/browser_icons/`](../assets/browser_icons/)). A future
 `chrome://icons/...` mapping would likely reuse these bytes rather than touching the filesystem.
 
 Security requirements for the resolver/fetcher:
@@ -113,7 +116,7 @@ Example (illustrative):
 
 The chrome host is expected to intercept these URLs at the UI-event layer and dispatch them to
 browser logic (typically by mapping to a strongly-typed enum such as `ChromeAction` in
-`src/ui/chrome.rs`).
+[`src/ui/chrome.rs`](../src/ui/chrome.rs)).
 
 ### Where it is allowed
 
@@ -130,7 +133,8 @@ unsupported navigation scheme (see the enforcement section above).
 - Dispatch must be reachable only from the trusted chrome renderer context.
 
 Implementation note: in the untrusted content worker, link resolution helpers (e.g.
-`src/ui/url.rs::resolve_link_url`) intentionally only special-case `javascript:` and will happily
+[`src/ui/url.rs`](../src/ui/url.rs) (`resolve_link_url`)) intentionally only special-case
+`javascript:` and will happily
 return absolute `chrome-action:...` URLs. This is safe because the later navigation stage enforces
 `validate_user_navigation_url_scheme` and rejects unsupported schemes. In the *trusted* chrome
 renderer, you would instead intercept `chrome-action:` before attempting navigation.
@@ -150,7 +154,7 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
 
 ### Adding a new `chrome-action:` action
 
-1. Add a new strongly-typed action variant (e.g. in `src/ui/chrome.rs` or a dedicated registry).
+1. Add a new strongly-typed action variant (e.g. in [`src/ui/chrome.rs`](../src/ui/chrome.rs) or a dedicated registry).
 2. Implement the handler in the chrome host (browser process).
 3. Ensure untrusted contexts cannot trigger it (scheme must remain unsupported there).
 4. Add unit tests for parsing and dispatch (including invalid/unknown actions).
@@ -167,7 +171,7 @@ renderer, you would instead intercept `chrome-action:` before attempting navigat
 
 **Integration tests (content rejection):**
 
-- `tests/browser_integration/ui_worker_unsupported_scheme.rs` asserts the untrusted content worker
+- [`tests/browser_integration/ui_worker_unsupported_scheme.rs`](../tests/browser_integration/ui_worker_unsupported_scheme.rs) asserts the untrusted content worker
   rejects `chrome://…` and `chrome-action:…` (as well as other unsupported schemes like
   `javascript:`). The expected behavior for untrusted content is:
   - `WorkerToUi::NavigationFailed { .. }`
