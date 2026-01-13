@@ -943,7 +943,7 @@ impl Heap {
     // FinalizationRegistry hygiene: clear dead targets from live registries.
     //
     // This uses the same "take the vector out, operate without holding a slot borrow" pattern as
-    // WeakMap/WeakSet hygiene so we can query liveness via `WeakGcObject::upgrade`.
+    // WeakMap/WeakSet hygiene so we can query liveness via `WeakGcKey::upgrade_value`.
     //
     // We do **not** enqueue cleanup jobs during GC (which must not allocate). Instead we mark
     // registries as having `cleanup_pending` and set a heap-global flag that will be observed by
@@ -961,7 +961,7 @@ impl Heap {
       for cell in cells.iter_mut() {
         match cell.target {
           Some(target) => {
-            if target.upgrade(&*self).is_none() {
+            if target.upgrade_value(&*self).is_none() {
               cell.target = None;
               registry_pending = true;
             }
@@ -2794,8 +2794,9 @@ impl Heap {
 
   /// Implements the `CanBeHeldWeakly` abstract operation.
   ///
-  /// This is used by WeakMap/WeakSet to accept Symbols as weak keys/values while rejecting
-  /// registered (global) symbols (see the `symbols-as-weakmap-keys` proposal).
+  /// This is used by WeakMap/WeakSet/WeakRef/FinalizationRegistry to accept Symbols as weak
+  /// keys/values/targets while rejecting registered (global) symbols (see the
+  /// `symbols-as-weakmap-keys` proposal).
   pub(crate) fn can_be_held_weakly(&self, value: Value) -> Result<bool, VmError> {
     match value {
       Value::Object(_) => Ok(true),
@@ -3246,10 +3247,10 @@ impl Heap {
 
   /// Implements `WeakRef.prototype.deref`.
   ///
-  /// Returns the target object if it is still alive, otherwise `None`.
-  pub fn weak_ref_deref(&self, weak_ref: GcObject) -> Result<Option<GcObject>, VmError> {
+  /// Returns the target value (Object or Symbol) if it is still alive, otherwise `None`.
+  pub fn weak_ref_deref(&self, weak_ref: GcObject) -> Result<Option<Value>, VmError> {
     match self.get_heap_object(weak_ref.0)? {
-      HeapObject::WeakRef(wr) => Ok(wr.target.upgrade(self)),
+      HeapObject::WeakRef(wr) => Ok(wr.target.upgrade_value(self)),
       _ => Err(VmError::invalid_handle()),
     }
   }
@@ -3266,19 +3267,19 @@ impl Heap {
   pub fn finalization_registry_register(
     &mut self,
     registry: GcObject,
-    target: GcObject,
+    target: Value,
     held_value: Value,
-    unregister_token: Option<GcObject>,
+    unregister_token: Option<Value>,
   ) -> Result<(), VmError> {
     debug_assert!(self.debug_value_is_valid_or_primitive(held_value));
     if !self.is_valid_object(registry) {
       return Err(VmError::invalid_handle());
     }
-    if !self.is_valid_object(target) {
+    if WeakGcKey::from_value(target, self)?.is_none() {
       return Err(VmError::invalid_handle());
     }
     if let Some(token) = unregister_token {
-      if !self.is_valid_object(token) {
+      if WeakGcKey::from_value(token, self)?.is_none() {
         return Err(VmError::invalid_handle());
       }
     }
@@ -3289,12 +3290,12 @@ impl Heap {
     let mut root_count = 0usize;
     roots[root_count] = Value::Object(registry);
     root_count += 1;
-    roots[root_count] = Value::Object(target);
+    roots[root_count] = target;
     root_count += 1;
     roots[root_count] = held_value;
     root_count += 1;
     if let Some(token) = unregister_token {
-      roots[root_count] = Value::Object(token);
+      roots[root_count] = token;
       root_count += 1;
     }
     scope.push_roots(&roots[..root_count])?;
@@ -3307,9 +3308,9 @@ impl Heap {
   fn finalization_registry_register_rooted(
     &mut self,
     registry: GcObject,
-    target: GcObject,
+    target: Value,
     held_value: Value,
-    unregister_token: Option<GcObject>,
+    unregister_token: Option<Value>,
   ) -> Result<(), VmError> {
     let slot_idx = self
       .validate(registry.0)
@@ -3345,13 +3346,23 @@ impl Heap {
       reserve_vec_to_len::<FinalizationRegistryCell>(&mut fr.cells, required_len)?;
     }
 
+    let Some(target_weak) = WeakGcKey::from_value(target, self)? else {
+      return Err(VmError::invalid_handle());
+    };
+    let unregister_token_weak = match unregister_token {
+      Some(token) => Some(
+        WeakGcKey::from_value(token, self)?.ok_or_else(|| VmError::invalid_handle())?,
+      ),
+      None => None,
+    };
+
     let Some(HeapObject::FinalizationRegistry(fr)) = self.slots[slot_idx].value.as_mut() else {
       return Err(VmError::invalid_handle());
     };
     fr.cells.push(FinalizationRegistryCell {
-      target: Some(WeakGcObject::from(target)),
+      target: Some(target_weak),
       held_value,
-      unregister_token: unregister_token.map(WeakGcObject::from),
+      unregister_token: unregister_token_weak,
     });
 
     if grow_by != 0 {
@@ -3368,17 +3379,16 @@ impl Heap {
   pub fn finalization_registry_unregister_with_tick(
     &mut self,
     registry: GcObject,
-    unregister_token: GcObject,
+    unregister_token: Value,
     mut tick: impl FnMut() -> Result<(), VmError>,
   ) -> Result<bool, VmError> {
     if !self.is_valid_object(registry) {
       return Err(VmError::invalid_handle());
     }
-    if !self.is_valid_object(unregister_token) {
+    let Some(needle) = WeakGcKey::from_value(unregister_token, self)? else {
       return Err(VmError::invalid_handle());
-    }
+    };
 
-    let needle = WeakGcObject::from(unregister_token);
     let slot_idx = self
       .validate(registry.0)
       .ok_or_else(|| VmError::invalid_handle())?;
@@ -7940,24 +7950,28 @@ impl<'a> Scope<'a> {
   pub fn alloc_weak_ref_with_prototype(
     &mut self,
     prototype: Option<GcObject>,
-    target: GcObject,
+    target: Value,
   ) -> Result<GcObject, VmError> {
     // Root inputs during allocation in case `ensure_can_allocate` triggers a GC.
     let mut scope = self.reborrow();
-    let mut roots = [Value::Object(target); 2];
+    let mut roots = [Value::Undefined; 2];
     let mut root_count = 0usize;
     if let Some(proto) = prototype {
       roots[root_count] = Value::Object(proto);
       root_count += 1;
     }
-    roots[root_count] = Value::Object(target);
+    roots[root_count] = target;
     root_count += 1;
     scope.push_roots(&roots[..root_count])?;
+
+    let Some(target_weak) = WeakGcKey::from_value(target, &*scope.heap)? else {
+      return Err(VmError::TypeError("WeakRef target cannot be held weakly"));
+    };
 
     let new_bytes = JsWeakRef::heap_size_bytes_for_property_count(0);
     scope.heap.ensure_can_allocate(new_bytes)?;
 
-    let obj = HeapObject::WeakRef(JsWeakRef::new(prototype, target));
+    let obj = HeapObject::WeakRef(JsWeakRef::new(prototype, target_weak));
     Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
@@ -9815,14 +9829,14 @@ impl Trace for JsDataView {
 #[derive(Debug)]
 struct JsWeakRef {
   base: ObjectBase,
-  target: WeakGcObject,
+  target: WeakGcKey,
 }
 
 impl JsWeakRef {
-  fn new(prototype: Option<GcObject>, target: GcObject) -> Self {
+  fn new(prototype: Option<GcObject>, target: WeakGcKey) -> Self {
     Self {
       base: ObjectBase::new(prototype),
-      target: WeakGcObject::from(target),
+      target,
     }
   }
 
@@ -9840,12 +9854,13 @@ impl Trace for JsWeakRef {
 
 #[derive(Debug, Clone, Copy)]
 struct FinalizationRegistryCell {
-  /// Weak reference to the target object. Cleared to `None` when the target is collected.
-  target: Option<WeakGcObject>,
+  /// Weak reference to the target value (Object or Symbol). Cleared to `None` when the target is
+  /// collected.
+  target: Option<WeakGcKey>,
   /// Strongly-held value passed to the cleanup callback.
   held_value: Value,
   /// Optional weak unregister token.
-  unregister_token: Option<WeakGcObject>,
+  unregister_token: Option<WeakGcKey>,
 }
 
 #[derive(Debug)]

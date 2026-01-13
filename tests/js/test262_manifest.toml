@@ -1839,6 +1839,49 @@ status = "pass"
 id = "built-ins/WeakSet/iterable-with-symbol-values.js"
 status = "pass"
 
+# --- WeakRef / FinalizationRegistry (symbols-as-weakmap-keys) ---
+[[expectations]]
+id = "built-ins/WeakRef/throws-when-target-cannot-be-held-weakly.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakRef/returns-new-object-from-constructor-with-symbol-target.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/WeakRef/prototype/deref/return-symbol-target.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/FinalizationRegistry/prototype/register/throws-when-target-cannot-be-held-weakly.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/FinalizationRegistry/prototype/register/throws-when-unregisterToken-not-undefined-and-cannot-be-held-weakly.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/FinalizationRegistry/prototype/register/return-undefined-register-symbol.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/FinalizationRegistry/prototype/unregister/throws-when-unregisterToken-cannot-be-held-weakly.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/FinalizationRegistry/prototype/unregister/unregister-symbol-token.js"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/WeakRef/**"
+status = "xfail"
+reason = "vm-js: WeakRef conformance is still incomplete; incremental bring-up."
+
+[[expectations]]
+glob = "built-ins/FinalizationRegistry/**"
+status = "xfail"
+reason = "vm-js: FinalizationRegistry conformance is still incomplete; incremental bring-up."
+
 [[expectations]]
 glob = "built-ins/WeakMap/**"
 status = "xfail"

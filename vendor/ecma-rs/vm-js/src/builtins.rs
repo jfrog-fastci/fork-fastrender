@@ -26864,11 +26864,11 @@ pub fn weak_ref_constructor_construct(
   let intr = require_intrinsics(vm)?;
 
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(target_obj) = target else {
-    return Err(VmError::TypeError("WeakRef target must be an object"));
-  };
+  if !scope.heap().can_be_held_weakly(target)? {
+    return Err(VmError::TypeError("WeakRef target cannot be held weakly"));
+  }
 
-  let weak_ref = scope.alloc_weak_ref_with_prototype(Some(intr.weak_ref_prototype()), target_obj)?;
+  let weak_ref = scope.alloc_weak_ref_with_prototype(Some(intr.weak_ref_prototype()), target)?;
   Ok(Value::Object(weak_ref))
 }
 
@@ -26894,7 +26894,7 @@ pub fn weak_ref_prototype_deref(
   let Some(target) = scope.heap().weak_ref_deref(weak_ref)? else {
     return Ok(Value::Undefined);
   };
-  Ok(Value::Object(target))
+  Ok(target)
 }
 
 pub fn finalization_registry_constructor_call(
@@ -26960,32 +26960,35 @@ pub fn finalization_registry_prototype_register(
   }
 
   let target = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(target_obj) = target else {
-    return Err(VmError::TypeError("FinalizationRegistry target must be an object"));
-  };
+  if !scope.heap().can_be_held_weakly(target)? {
+    return Err(VmError::TypeError(
+      "FinalizationRegistry target cannot be held weakly",
+    ));
+  }
 
   let held_value = args.get(1).copied().unwrap_or(Value::Undefined);
 
   let token = args.get(2).copied().unwrap_or(Value::Undefined);
-  let unregister_token = match token {
-    Value::Undefined => None,
-    Value::Object(o) => Some(o),
-    _ => {
+  let unregister_token = if matches!(token, Value::Undefined) {
+    None
+  } else {
+    if !scope.heap().can_be_held_weakly(token)? {
       return Err(VmError::TypeError(
-        "FinalizationRegistry unregisterToken must be an object",
-      ))
+        "FinalizationRegistry unregisterToken cannot be held weakly",
+      ));
     }
+    Some(token)
   };
 
   // Root inputs across potential GC while growing the registry's cell list.
-  scope.push_roots(&[Value::Object(registry), Value::Object(target_obj), held_value])?;
+  scope.push_roots(&[Value::Object(registry), target, held_value])?;
   if let Some(token) = unregister_token {
-    scope.push_root(Value::Object(token))?;
+    scope.push_root(token)?;
   }
 
   scope
     .heap_mut()
-    .finalization_registry_register(registry, target_obj, held_value, unregister_token)?;
+    .finalization_registry_register(registry, target, held_value, unregister_token)?;
   Ok(Value::Undefined)
 }
 
@@ -27011,18 +27014,18 @@ pub fn finalization_registry_prototype_unregister(
   }
 
   let token = args.get(0).copied().unwrap_or(Value::Undefined);
-  let Value::Object(token_obj) = token else {
+  if !scope.heap().can_be_held_weakly(token)? {
     return Err(VmError::TypeError(
-      "FinalizationRegistry unregisterToken must be an object",
+      "FinalizationRegistry unregisterToken cannot be held weakly",
     ));
-  };
+  }
 
   // Root inputs across in-place cell table scanning.
-  scope.push_roots(&[Value::Object(registry), Value::Object(token_obj)])?;
+  scope.push_roots(&[Value::Object(registry), token])?;
 
   let removed = scope
     .heap_mut()
-    .finalization_registry_unregister_with_tick(registry, token_obj, || vm.tick())?;
+    .finalization_registry_unregister_with_tick(registry, token, || vm.tick())?;
   Ok(Value::Bool(removed))
 }
 

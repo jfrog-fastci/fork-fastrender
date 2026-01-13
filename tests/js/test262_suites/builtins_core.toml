@@ -103,6 +103,16 @@ include = [
   # WeakMap (upsert / stage-4)
   "built-ins/WeakMap/prototype/getOrInsert/**/*.js",
   "built-ins/WeakMap/prototype/getOrInsertComputed/**/*.js",
+
+  # WeakRef / FinalizationRegistry (symbols-as-weakmap-keys)
+  "built-ins/WeakRef/throws-when-target-cannot-be-held-weakly.js",
+  "built-ins/WeakRef/returns-new-object-from-constructor-with-symbol-target.js",
+  "built-ins/WeakRef/prototype/deref/return-symbol-target.js",
+  "built-ins/FinalizationRegistry/prototype/register/throws-when-target-cannot-be-held-weakly.js",
+  "built-ins/FinalizationRegistry/prototype/register/throws-when-unregisterToken-not-undefined-and-cannot-be-held-weakly.js",
+  "built-ins/FinalizationRegistry/prototype/register/return-undefined-register-symbol.js",
+  "built-ins/FinalizationRegistry/prototype/unregister/throws-when-unregisterToken-cannot-be-held-weakly.js",
+  "built-ins/FinalizationRegistry/prototype/unregister/unregister-symbol-token.js",
 ]
 
 exclude = [
