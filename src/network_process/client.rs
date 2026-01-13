@@ -466,6 +466,15 @@ impl WebSocketBackend for DirectWebSocketBackend {
   }
 }
 
+#[cfg(not(feature = "direct_websocket"))]
+impl WebSocketBackend for DirectWebSocketBackend {
+  fn connect(&self, _url: &str, _protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
+    Err(Error::Other(
+      "WebSocket support is disabled (fastrender built without the `direct_websocket` feature)"
+        .to_string(),
+    ))
+  }
+}
 #[cfg(feature = "direct_websocket")]
 impl WebSocketStream for DirectWebSocketStream {
   fn send(&mut self, message: WebSocketMessage) -> Result<()> {
