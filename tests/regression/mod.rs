@@ -7,6 +7,7 @@ mod abspos_left_top_padding_edge;
 mod abspos_static_position_margin;
 mod abspos_static_position_margin_collapse;
 mod block_padding_offset;
+mod border_collapse_basic_001;
 mod containment_containing_block;
 mod containment_inline_containing_block;
 mod containment_table_intrinsic_inline_size;
