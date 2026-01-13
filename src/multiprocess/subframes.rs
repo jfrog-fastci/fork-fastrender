@@ -412,13 +412,13 @@ where
         node
           .children_by_subframe
           .iter()
-          .map(|(&subframe_id, &child_frame_id)| (subframe_id, child_frame_id))
+          .map(|(&subframe_token, &child_frame_id)| (subframe_token, child_frame_id))
           .collect()
       })
       .unwrap_or_default();
 
-    for (subframe_id, child_frame_id) in children {
-      let _ = self.frame_tree.detach_child(frame_id, subframe_id);
+    for (subframe_token, child_frame_id) in children {
+      let _ = self.frame_tree.detach_child(frame_id, subframe_token);
       self.destroy_frame_subtree(child_frame_id);
     }
   }
