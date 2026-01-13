@@ -86,7 +86,11 @@ const DEFAULT_READABLE_STREAM_HIGH_WATER_MARK: f64 = 1.0;
 ///
 /// Note: this implementation does not implement full backpressure/high-water-mark semantics, so
 /// this limit acts as a simple safety valve.
-const MAX_READABLE_STREAM_QUEUED_BYTES: usize = 32 * 1024 * 1024; // 32MiB
+///
+/// The value is chosen to be compatible with the default Fetch response body limit (50MiB), so
+/// `Response.body` (which is currently backed by an in-memory body model) can still be consumed via
+/// streaming reads without hitting a lower, unrelated cap.
+const MAX_READABLE_STREAM_QUEUED_BYTES: usize = 50 * 1024 * 1024; // 50MiB
 
 /// Hard upper bound on number of queued items for object-mode (`ReadableStream` of arbitrary JS
 /// values).
