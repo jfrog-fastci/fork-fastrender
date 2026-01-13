@@ -8,6 +8,11 @@ fn main() {
     // The libvpx sources are vendored, so changes are rare, but if they do happen we should
     // rebuild.
     println!("cargo:rerun-if-changed=upstream/libvpx/configure");
+    // Re-run if the toolchain environment changes. These vars are honored by libvpx's configure
+    // script and affect the produced `libvpx.a`.
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CFLAGS");
+    println!("cargo:rerun-if-env-changed=AR");
 
     let target = env::var("TARGET").expect("TARGET not set");
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS not set");
@@ -48,8 +53,12 @@ fn main() {
         // NOTE: libvpx does not support `--disable-asm`. Using the generic target produces a
         // portable C-only build, avoiding `nasm`/`yasm` requirements in CI.
     ];
+
+    let cc = env::var("CC").unwrap_or_default();
+    let cflags = env::var("CFLAGS").unwrap_or_default();
+    let ar = env::var("AR").unwrap_or_default();
     let build_fingerprint = format!(
-        "target={target}\nconfigure_args={}\n",
+        "target={target}\ncc={cc}\ncflags={cflags}\nar={ar}\nconfigure_args={}\n",
         configure_args.join(" ")
     );
 
