@@ -51,6 +51,12 @@ pub enum IpcError {
   #[error("request_id must be non-zero")]
   RequestIdZero,
 
+  #[error("url too long: {len} bytes (max {max})")]
+  UrlTooLong { len: usize, max: usize },
+
+  #[error("cookie string too long: {len} bytes (max {max})")]
+  CookieStringTooLong { len: usize, max: usize },
+
   #[error("frame buffer list too large: {len} (max {max})")]
   TooManyFrameBuffers { len: usize, max: usize },
 

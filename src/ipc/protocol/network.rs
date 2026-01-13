@@ -20,6 +20,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::IpcError;
 
+/// Hard cap on URL byte length accepted by the browser ↔ network protocol.
+///
+/// This is an explicit guardrail in addition to the framing-layer decode limit
+/// (`crate::ipc::MAX_IPC_MESSAGE_BYTES`): even if a hostile process stays under the overall frame
+/// cap, we still want to bound individual string allocations.
+pub const MAX_URL_BYTES: usize = 1024 * 1024;
+
+/// Hard cap on cookie string byte length accepted by cookie-related IPC messages.
+///
+/// This applies to both:
+/// - `StoreCookieFromDocument.cookie_string` (`document.cookie` setter input)
+/// - `CookieHeader.value` (cookie header string returned by the network process)
+pub const MAX_COOKIE_STRING_BYTES: usize = 4096;
+
+// Compile-time guard: protocol-level per-field caps must fit under the framing-layer limit.
+const _: () = {
+  if MAX_URL_BYTES > crate::ipc::MAX_IPC_MESSAGE_BYTES {
+    panic!("MAX_URL_BYTES must be <= MAX_IPC_MESSAGE_BYTES");
+  }
+  if MAX_COOKIE_STRING_BYTES > crate::ipc::MAX_IPC_MESSAGE_BYTES {
+    panic!("MAX_COOKIE_STRING_BYTES must be <= MAX_IPC_MESSAGE_BYTES");
+  }
+};
+
 /// Messages sent from the browser process to the network process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowserToNetwork {
@@ -34,6 +58,12 @@ pub enum BrowserToNetwork {
 
   /// Best-effort cancellation for an in-flight request.
   Cancel { request_id: u64 },
+
+  /// Request the `Cookie` header value that would be sent for `url`.
+  GetCookieHeader { request_id: u64, url: String },
+
+  /// Store a cookie string as if it were set via `document.cookie` for `url`.
+  StoreCookieFromDocument { url: String, cookie_string: String },
 }
 
 /// Messages sent from the network process back to the browser process.
@@ -47,6 +77,15 @@ pub enum NetworkToBrowser {
 
   /// The network process observed a cancellation request and aborted the fetch.
   Cancelled { request_id: u64 },
+
+  /// Cookie header value for a request.
+  ///
+  /// - `Some("")` indicates cookie support is enabled but there are no cookies for the URL.
+  /// - `None` indicates that the network process does not expose cookie state (unsupported).
+  CookieHeader { request_id: u64, value: Option<String> },
+
+  /// Optional acknowledgement for `StoreCookieFromDocument`.
+  StoreCookieAck { ok: bool, error: Option<String> },
 }
 
 /// Outcome of a fetch request.
@@ -71,12 +110,45 @@ fn validate_request_id(request_id: u64) -> Result<(), IpcError> {
   Ok(())
 }
 
+fn validate_url(url: &str) -> Result<(), IpcError> {
+  let len = url.len();
+  if len > MAX_URL_BYTES {
+    return Err(IpcError::UrlTooLong {
+      len,
+      max: MAX_URL_BYTES,
+    });
+  }
+  Ok(())
+}
+
+fn validate_cookie_string(cookie_string: &str) -> Result<(), IpcError> {
+  let len = cookie_string.len();
+  if len > MAX_COOKIE_STRING_BYTES {
+    return Err(IpcError::CookieStringTooLong {
+      len,
+      max: MAX_COOKIE_STRING_BYTES,
+    });
+  }
+  Ok(())
+}
+
 impl BrowserToNetwork {
   /// Validate a browser → network message.
   pub fn validate(&self) -> Result<(), IpcError> {
     match self {
-      BrowserToNetwork::Fetch { request_id, url: _ } => validate_request_id(*request_id),
+      BrowserToNetwork::Fetch { request_id, url } => {
+        validate_request_id(*request_id)?;
+        validate_url(url)
+      }
       BrowserToNetwork::Cancel { request_id } => validate_request_id(*request_id),
+      BrowserToNetwork::GetCookieHeader { request_id, url } => {
+        validate_request_id(*request_id)?;
+        validate_url(url)
+      }
+      BrowserToNetwork::StoreCookieFromDocument { url, cookie_string } => {
+        validate_url(url)?;
+        validate_cookie_string(cookie_string)
+      }
     }
   }
 
@@ -85,8 +157,10 @@ impl BrowserToNetwork {
   /// (FDs are sent out-of-band via `SCM_RIGHTS` on platforms that support it.)
   pub fn expected_fds(&self) -> usize {
     match self {
-      BrowserToNetwork::Fetch { .. } => 0,
-      BrowserToNetwork::Cancel { .. } => 0,
+      BrowserToNetwork::Fetch { .. }
+      | BrowserToNetwork::Cancel { .. }
+      | BrowserToNetwork::GetCookieHeader { .. }
+      | BrowserToNetwork::StoreCookieFromDocument { .. } => 0,
     }
   }
 }
@@ -95,8 +169,19 @@ impl NetworkToBrowser {
   /// Validate a network → browser message.
   pub fn validate(&self) -> Result<(), IpcError> {
     match self {
-      NetworkToBrowser::FetchResult { request_id, result: _ } => validate_request_id(*request_id),
+      NetworkToBrowser::FetchResult {
+        request_id,
+        result: _,
+      } => validate_request_id(*request_id),
       NetworkToBrowser::Cancelled { request_id } => validate_request_id(*request_id),
+      NetworkToBrowser::CookieHeader { request_id, value } => {
+        validate_request_id(*request_id)?;
+        if let Some(value) = value {
+          validate_cookie_string(value)?;
+        }
+        Ok(())
+      }
+      NetworkToBrowser::StoreCookieAck { .. } => Ok(()),
     }
   }
 
@@ -109,7 +194,9 @@ impl NetworkToBrowser {
         FetchResult::Ok { .. } => 1,
         FetchResult::Err { .. } => 0,
       },
-      NetworkToBrowser::Cancelled { .. } => 0,
+      NetworkToBrowser::Cancelled { .. }
+      | NetworkToBrowser::CookieHeader { .. }
+      | NetworkToBrowser::StoreCookieAck { .. } => 0,
     }
   }
 }
@@ -202,6 +289,10 @@ mod cancel {
                 let _ = resp_tx.send(NetworkToBrowser::Cancelled { request_id });
               }
             }
+            BrowserToNetwork::GetCookieHeader { .. }
+            | BrowserToNetwork::StoreCookieFromDocument { .. } => {
+              // Not exercised by the cancellation tests.
+            }
           },
 
           Cmd::Complete(request_id) => {
@@ -256,3 +347,38 @@ mod cancel {
   }
 }
 
+#[cfg(test)]
+mod cookies {
+  use super::*;
+
+  #[test]
+  fn serialization_roundtrip() {
+    let msg = BrowserToNetwork::GetCookieHeader {
+      request_id: 42,
+      url: "https://example.com/".to_string(),
+    };
+    let json = serde_json::to_string(&msg).expect("serialize GetCookieHeader");
+    let decoded: BrowserToNetwork = serde_json::from_str(&json).expect("deserialize GetCookieHeader");
+    assert_eq!(decoded, msg);
+
+    let msg = NetworkToBrowser::CookieHeader {
+      request_id: 42,
+      value: Some("a=b".to_string()),
+    };
+    let json = serde_json::to_string(&msg).expect("serialize CookieHeader");
+    let decoded: NetworkToBrowser = serde_json::from_str(&json).expect("deserialize CookieHeader");
+    assert_eq!(decoded, msg);
+  }
+
+  #[test]
+  fn validator_rejects_oversized_cookie_strings() {
+    let msg = BrowserToNetwork::StoreCookieFromDocument {
+      url: "https://example.com/".to_string(),
+      cookie_string: "a=".to_string() + &"x".repeat(MAX_COOKIE_STRING_BYTES),
+    };
+    let err = msg
+      .validate()
+      .expect_err("expected oversized cookie_string to be rejected");
+    assert!(matches!(err, IpcError::CookieStringTooLong { .. }));
+  }
+}
