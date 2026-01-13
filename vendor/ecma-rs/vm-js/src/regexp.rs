@@ -5811,8 +5811,8 @@ mod regexp_unicode_sets_tests {
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
 
-    // Unescaped `]` is only tolerated in non-Unicode mode (Annex B). In unicode mode it is a
-    // SyntaxError both via the constructor and via RegExp literals.
+    // Unescaped `]` is only tolerated in non-Unicode mode (Annex B). In UnicodeMode (`/u` or `/v`)
+    // it is a SyntaxError both via the constructor and via RegExp literals.
     assert!(eval_bool(
       &mut rt,
       r#"(function () { try { new RegExp("]", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
@@ -5821,8 +5821,16 @@ mod regexp_unicode_sets_tests {
       &mut rt,
       r#"(function () { try { eval("/]/u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
     )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("]", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { eval("/]/v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
 
-    // In Unicode mode, `{` must only appear as part of a valid quantifier after an atom.
+    // In UnicodeMode, `{` must only appear as part of a valid quantifier after an atom.
     assert!(eval_bool(
       &mut rt,
       r#"(function () { try { new RegExp("{", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
@@ -5842,6 +5850,26 @@ mod regexp_unicode_sets_tests {
     assert!(eval_bool(
       &mut rt,
       r#"(function () { try { new RegExp("a{1,2", "u"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("{", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{1", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{1,", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a{1,2", "v"); return false; } catch (e) { return e instanceof SyntaxError; } })()"#,
     )?);
 
     // Legacy (non-unicode) mode should continue treating these as literal PatternCharacters.
