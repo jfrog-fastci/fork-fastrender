@@ -15,6 +15,7 @@ trust-boundary: if untrusted HTML/JS can trigger these, it becomes a browser-esc
 Related context:
 - Renderer-chrome overview: [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 - Multiprocess security model: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
+- Chrome JS bridge (trusted `globalThis.chrome` API): [`docs/chrome_js_bridge.md`](chrome_js_bridge.md)
 
 ---
 
@@ -34,6 +35,8 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
   `src/ui/render_worker.rs` (navigation prepare path calls `validate_user_navigation_url_scheme`).
 - Integration test asserts “unsupported schemes fail fast (no error page render)”:
   `tests/browser_integration/ui_worker_unsupported_scheme.rs`.
+- Browser CLI start URL validation also uses the same allowlist:
+  `src/bin/browser.rs` + `tests/browser_integration/browser_cli_start_url_scheme.rs`.
 - Defense-in-depth for subresource fetches: `src/resource.rs` (scheme classification and
   `ResourcePolicy::allowed_schemes`) treats unknown schemes as `Other` and blocks them by default.
 
