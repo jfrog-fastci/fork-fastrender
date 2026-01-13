@@ -821,6 +821,53 @@ fn alloc_bounded_string_units(
   Ok(buf.into_boxed_slice())
 }
 
+fn timing_offset_from_performance_timing(
+  scope: &mut Scope<'_>,
+  performance_obj: GcObject,
+  field_units: &[u16],
+) -> Result<Option<f64>, VmError> {
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(performance_obj))?;
+
+  let timing_key_s = scope.alloc_string("timing")?;
+  scope.push_root(Value::String(timing_key_s))?;
+  let timing_key = PropertyKey::from_string(timing_key_s);
+  let Some(Value::Object(timing_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(performance_obj, &timing_key)?
+  else {
+    return Ok(None);
+  };
+  scope.push_root(Value::Object(timing_obj))?;
+
+  let nav_start_key_s = scope.alloc_string("navigationStart")?;
+  scope.push_root(Value::String(nav_start_key_s))?;
+  let nav_start_key = PropertyKey::from_string(nav_start_key_s);
+
+  let field_key_s = scope.alloc_string_from_code_units(field_units)?;
+  scope.push_root(Value::String(field_key_s))?;
+  let field_key = PropertyKey::from_string(field_key_s);
+
+  let nav_start = scope
+    .heap()
+    .object_get_own_data_property_value(timing_obj, &nav_start_key)?;
+  let field = scope
+    .heap()
+    .object_get_own_data_property_value(timing_obj, &field_key)?;
+
+  let (Some(Value::Number(nav_start)), Some(Value::Number(field))) = (nav_start, field) else {
+    return Ok(None);
+  };
+  if !nav_start.is_finite() || !field.is_finite() {
+    return Ok(None);
+  }
+  let offset = field - nav_start;
+  if !offset.is_finite() || offset.is_nan() {
+    return Ok(None);
+  }
+  Ok(Some(if offset < 0.0 { 0.0 } else { offset }))
+}
+
 fn perf_entry_desc(value: Value) -> PropertyDescriptor {
   PropertyDescriptor {
     enumerable: true,
@@ -988,7 +1035,7 @@ fn performance_measure_native(
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
-  _this: Value,
+  this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let Some(name_value) = args.first().copied() else {
@@ -1038,7 +1085,7 @@ fn performance_measure_native(
   let clock = with_time_context(scope, |ctx| ctx.clock.clone())?;
   let now = duration_to_ms_f64(clock.now());
 
-  let (start_time, end_time) = with_time_context(scope, |ctx| {
+  let (start_mark_time, end_mark_time) = with_time_context(scope, |ctx| {
     let lookup_mark = |name: &[u16]| {
       ctx
         .performance_entries
@@ -1048,18 +1095,42 @@ fn performance_measure_native(
         .map(|e| e.start_time)
     };
 
-    let start_time = start_mark_units
-      .as_deref()
-      .and_then(lookup_mark)
-      .unwrap_or(0.0);
-    let end_time = end_mark_units
-      .as_deref()
-      .and_then(lookup_mark)
-      .unwrap_or(now);
+    let start_time = start_mark_units.as_deref().and_then(lookup_mark);
+    let end_time = end_mark_units.as_deref().and_then(lookup_mark);
     (start_time, end_time)
   })?;
 
-  let duration = (end_time - start_time).max(0.0);
+  // Compatibility: treat missing user marks like "fetchStart" as Navigation Timing offsets when
+  // available. This keeps real-world analytics snippets from throwing on SSR.
+  let perf_obj = match this {
+    Value::Object(o) => Some(o),
+    _ => None,
+  };
+
+  let start_time = if let Some(t) = start_mark_time {
+    t
+  } else if let (Some(obj), Some(units)) = (perf_obj, start_mark_units.as_deref()) {
+    timing_offset_from_performance_timing(scope, obj, units)?.unwrap_or(0.0)
+  } else {
+    0.0
+  };
+
+  let end_time = if let Some(units) = end_mark_units.as_deref() {
+    if let Some(t) = end_mark_time {
+      t
+    } else if let Some(obj) = perf_obj {
+      timing_offset_from_performance_timing(scope, obj, units)?.unwrap_or(now)
+    } else {
+      now
+    }
+  } else {
+    now
+  };
+
+  let mut duration = end_time - start_time;
+  if !duration.is_finite() || duration.is_nan() || duration < 0.0 {
+    duration = 0.0;
+  }
 
   with_time_context_mut(scope, |ctx| {
     if ctx.performance_entries.len() >= MAX_PERFORMANCE_ENTRIES {
@@ -1444,6 +1515,24 @@ mod tests {
       .to_utf8_lossy()
   }
 
+  fn alloc_string_value(heap: &mut Heap, value: &str) -> Value {
+    let mut scope = heap.scope();
+    let s = scope.alloc_string(value).expect("alloc string");
+    Value::String(s)
+  }
+
+  fn alloc_string_values(heap: &mut Heap, values: &[&str]) -> Vec<Value> {
+    let mut scope = heap.scope();
+    let mut out = Vec::with_capacity(values.len());
+    for v in values {
+      let s = scope.alloc_string(v).expect("alloc string");
+      // Root each string across subsequent allocations in this helper.
+      scope.push_root(Value::String(s)).expect("push root");
+      out.push(Value::String(s));
+    }
+    out
+  }
+
   #[test]
   fn date_now_and_performance_now_follow_virtual_clock() {
     let clock = Arc::new(VirtualClock::new());
@@ -1631,6 +1720,244 @@ mod tests {
       heap.object_is_array(nav_arr).expect("object_is_array"),
       "expected navigation entries to be an array"
     );
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_mark_measure_get_entries_and_clears_work() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::default(),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    let perf_mark = get_object_property(&mut heap, performance_obj, "mark");
+    let perf_measure = get_object_property(&mut heap, performance_obj, "measure");
+    let perf_get_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+    let perf_get_by_name = get_object_property(&mut heap, performance_obj, "getEntriesByName");
+    let perf_clear_marks = get_object_property(&mut heap, performance_obj, "clearMarks");
+    let perf_clear_measures = get_object_property(&mut heap, performance_obj, "clearMeasures");
+
+    // performance.mark("a") should not throw.
+    clock.set_now(Duration::from_millis(10));
+    let arg_a = alloc_string_value(&mut heap, "a");
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_mark,
+      Value::Object(performance_obj),
+      &[arg_a],
+    );
+
+    // performance.measure("m", "a") should create a measure entry.
+    clock.set_now(Duration::from_millis(25));
+    let args = alloc_string_values(&mut heap, &["m", "a"]);
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_measure,
+      Value::Object(performance_obj),
+      &args,
+    );
+
+    // getEntriesByType('mark') contains the mark.
+    let arg_mark = alloc_string_value(&mut heap, "mark");
+    let marks = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_mark],
+    );
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks_arr), 1);
+    let entry0 = get_array_elem(&mut heap, marks_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let entry_type = get_object_property(&mut heap, entry0_obj, "entryType");
+    assert_eq!(string_value_to_utf8_lossy(&heap, entry_type), "mark");
+
+    // getEntriesByName('m', 'measure')[0].duration is finite.
+    let args = alloc_string_values(&mut heap, &["m", "measure"]);
+    let measures = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_name,
+      Value::Object(performance_obj),
+      &args,
+    );
+    let Value::Object(measures_arr) = measures else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, measures_arr), 1);
+    let entry0 = get_array_elem(&mut heap, measures_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let entry_type = get_object_property(&mut heap, entry0_obj, "entryType");
+    assert_eq!(string_value_to_utf8_lossy(&heap, entry_type), "measure");
+    let duration = get_object_property(&mut heap, entry0_obj, "duration");
+    let Value::Number(duration) = duration else {
+      panic!("duration should be a number");
+    };
+    assert!(duration.is_finite());
+
+    // A measure using "fetchStart" as startMark should not throw and should yield a numeric duration.
+    clock.set_now(Duration::from_millis(50));
+    let args = alloc_string_values(&mut heap, &["mf", "fetchStart"]);
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_measure,
+      Value::Object(performance_obj),
+      &args,
+    );
+    let args = alloc_string_values(&mut heap, &["mf", "measure"]);
+    let mf = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_name,
+      Value::Object(performance_obj),
+      &args,
+    );
+    let Value::Object(mf_arr) = mf else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, mf_arr), 1);
+    let entry0 = get_array_elem(&mut heap, mf_arr, 0);
+    let Value::Object(entry0_obj) = entry0 else {
+      panic!("expected entry object");
+    };
+    let duration = get_object_property(&mut heap, entry0_obj, "duration");
+    let Value::Number(duration) = duration else {
+      panic!("duration should be a number");
+    };
+    assert!(duration.is_finite());
+
+    // clearMarks/clearMeasures remove entries.
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_clear_marks,
+      Value::Object(performance_obj),
+      &[],
+    );
+    let arg_mark = alloc_string_value(&mut heap, "mark");
+    let marks = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_mark],
+    );
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks_arr), 0);
+
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_clear_measures,
+      Value::Object(performance_obj),
+      &[],
+    );
+    let arg_measure = alloc_string_value(&mut heap, "measure");
+    let measures = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_measure],
+    );
+    let Value::Object(measures_arr) = measures else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, measures_arr), 0);
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn performance_entries_are_bounded() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::default(),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    let perf_mark = get_object_property(&mut heap, performance_obj, "mark");
+    let perf_get_by_type = get_object_property(&mut heap, performance_obj, "getEntriesByType");
+    let perf_clear_marks = get_object_property(&mut heap, performance_obj, "clearMarks");
+
+    let _ = call(
+      &mut vm,
+      &mut heap,
+      perf_clear_marks,
+      Value::Object(performance_obj),
+      &[],
+    );
+
+    for i in 0..(MAX_PERFORMANCE_ENTRIES + 5) {
+      clock.set_now(Duration::from_millis(i as u64));
+      let arg_x = alloc_string_value(&mut heap, "x");
+      let _ = call(
+        &mut vm,
+        &mut heap,
+        perf_mark,
+        Value::Object(performance_obj),
+        &[arg_x],
+      );
+    }
+
+    let arg_mark = alloc_string_value(&mut heap, "mark");
+    let marks = call(
+      &mut vm,
+      &mut heap,
+      perf_get_by_type,
+      Value::Object(performance_obj),
+      &[arg_mark],
+    );
+    let Value::Object(marks_arr) = marks else {
+      panic!("expected array");
+    };
+    assert_eq!(get_array_len(&mut heap, marks_arr), MAX_PERFORMANCE_ENTRIES);
 
     realm.teardown(&mut heap);
   }
