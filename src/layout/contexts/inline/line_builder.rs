@@ -1688,10 +1688,12 @@ impl TextItem {
       // `cluster.glyph_end` is derived from shaping output; clamp defensively so we never borrow
       // `run.glyphs` twice (and so out-of-range cluster indices still apply spacing to the last
       // glyph).
-      debug_assert!(cluster.glyph_end > 0 && cluster.glyph_end <= run.glyphs.len());
-      let Some(glyph) = run.glyphs.get_mut(cluster.glyph_end - 1) else {
-        continue;
-      };
+      debug_assert!(cluster.glyph_end > 0);
+      let glyph_idx = cluster
+        .glyph_end
+        .saturating_sub(1)
+        .min(run.glyphs.len().saturating_sub(1));
+      let glyph = &mut run.glyphs[glyph_idx];
 
       match axis {
         InlineAxis::Horizontal => {

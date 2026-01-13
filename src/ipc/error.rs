@@ -19,6 +19,7 @@ pub enum IpcError {
   /// The remote side violated an agreed-upon invariant (e.g. inconsistent shared memory mapping).
   #[error("IPC protocol violation: {message}")]
   ProtocolViolation { message: String },
+
   #[error("IPC protocol error: frame length was zero")]
   ZeroLength,
 
@@ -33,18 +34,6 @@ pub enum IpcError {
 
   #[error("failed to deserialize IPC JSON message: {0}")]
   Deserialize(#[source] serde_json::Error),
-  // ==========================================================================
-  // Generic validation errors (higher-level IPC helpers)
-  // ==========================================================================
-
-  /// Invalid parameters supplied by trusted code (e.g. frame pool configuration).
-  #[error("invalid IPC parameters: {message}")]
-  InvalidParameters { message: String },
-
-  /// A higher-level protocol invariant was violated (e.g. mismatched buffer descriptors).
-  #[error("IPC protocol violation: {message}")]
-  ProtocolViolation { message: String },
-
   // ==========================================================================
   // Protocol validation errors (renderer → browser)
   // ==========================================================================
