@@ -80,6 +80,7 @@ mod ui_document_drag_drop;
 mod ui_document_selection_clipboard;
 mod ui_document_selection_multi_range;
 mod ui_document_selection_pointer_multiclick;
+mod ui_drag_events_prevent_default;
 mod ui_drag_drop;
 mod ui_context_menu;
 mod ui_context_menu_buttons;
