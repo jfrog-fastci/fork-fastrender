@@ -1186,20 +1186,26 @@ struct InspectionOutput {
   diagnostics: fastrender::api::RenderDiagnostics,
 }
 
+fn filter_mutual_exclusion_error() -> io::Error {
+  io::Error::new(
+    io::ErrorKind::InvalidInput,
+    "inspect_frag: --filter-id and --filter-selector are mutually exclusive",
+  )
+}
+
+fn validate_args(args: &Args) -> Result<(), DynError> {
+  if args.filter_id.is_some() && args.filter_selector.is_some() {
+    return Err(filter_mutual_exclusion_error().into());
+  }
+  Ok(())
+}
+
 fn inspect_pipeline(
   renderer: &mut FastRender,
   doc: &InputDocument,
   args: &Args,
 ) -> Result<InspectionOutput, DynError> {
-  if args.filter_id.is_some() && args.filter_selector.is_some() {
-    return Err(
-      io::Error::new(
-        io::ErrorKind::InvalidInput,
-        "--filter-id and --filter-selector are mutually exclusive",
-      )
-      .into(),
-    );
-  }
+  validate_args(args)?;
 
   let mut options = RenderOptions::new()
     .with_viewport(args.viewport.0, args.viewport.1)
@@ -1274,15 +1280,7 @@ fn inspect_pipeline(
       )?;
       matches.first().map(|m| m.node.node_id)
     }
-    _ => {
-      return Err(
-        io::Error::new(
-          io::ErrorKind::InvalidInput,
-          "inspect_frag: --filter-id and --filter-selector are mutually exclusive",
-        )
-        .into(),
-      );
-    }
+    (Some(_), Some(_)) => return Err(filter_mutual_exclusion_error().into()),
   };
 
   if let Some(node_id) = target_node_id {
@@ -1366,6 +1364,7 @@ fn inspect_pipeline(
 }
 
 fn run(args: Args) -> Result<(), DynError> {
+  validate_args(&args)?;
   let media_prefs = MediaPreferences::from(&args.media_prefs);
   let input = load_input_document(&args)?;
 
@@ -1744,7 +1743,6 @@ fn main() -> Result<(), DynError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use common::file_url::file_url_for_path;
 
   #[test]
   fn meta_base_hint_selection_uses_meta_url() {
@@ -1841,6 +1839,25 @@ mod tests {
     assert_eq!(
       toggles.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"),
       Some("1")
+    );
+  }
+
+  #[test]
+  fn filter_id_and_filter_selector_return_explicit_error() {
+    let args = Args::try_parse_from([
+      "inspect_frag",
+      "dummy.html",
+      "--filter-id",
+      "example",
+      "--filter-selector",
+      "body",
+    ])
+    .expect("parse args");
+    let err = run(args).err().expect("expected invalid-args error");
+    assert!(
+      err.to_string()
+        .contains("--filter-id and --filter-selector are mutually exclusive"),
+      "unexpected error: {err}"
     );
   }
 
@@ -2068,7 +2085,6 @@ mod tests {
         shaped: None,
         is_marker: false,
         emphasis_offset: Default::default(),
-        document_selection: None,
       },
       vec![],
     );
