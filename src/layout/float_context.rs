@@ -1243,6 +1243,14 @@ impl FloatContext {
   /// This is intended for debugging performance regressions involving float boundary stepping and
   /// `FloatRangeCache` segment scans. When disabled, this method is a no-op.
   pub fn debug_dump(&self, label: &str) {
+    self.debug_dump_internal(label, None);
+  }
+
+  fn debug_dump_with_sweep_state(&self, label: &str, sweep_state: &FloatSweepState) {
+    self.debug_dump_internal(label, Some(sweep_state));
+  }
+
+  fn debug_dump_internal(&self, label: &str, sweep_state: Option<&FloatSweepState>) {
     let toggles = runtime::runtime_toggles();
     if !toggles.truthy("FASTR_LOG_FLOAT_CONTEXT") {
       return;
@@ -1252,56 +1260,71 @@ impl FloatContext {
 
     eprintln!("FloatContext dump: {label}");
     eprintln!(
-      "  floats={} (left={}, right={}) events={} containing_width={:.2} float_ceiling_y={:.2}",
+      "  floats={} (left={}, right={}) events={} containing_width={:.2} float_ceiling_y={:.2} max_float_bottom={:.2}",
       self.float_map.len(),
       self.left_floats.len(),
       self.right_floats.len(),
       self.events.len(),
       self.containing_block_width,
-      self.current_y
-    );
-    eprintln!(
-      "  clearance_max_bottom: left={:.2} right={:.2}",
-      self.clearance_left_max_bottom,
-      self.clearance_right_max_bottom
+      self.current_y,
+      self.max_float_bottom
     );
 
-    match self.sweep_state.try_borrow() {
-      Ok(state) => {
-        let active_left_edges = state.active_left.len();
-        let active_right_edges = state.active_right.len();
-        eprintln!(
-          "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active_edges=(left={}, right={}) active_shapes=(left={}, right={})",
-          state.current_y,
-          state.pending_events.len(),
-          state.pending_start_events.len(),
-          active_left_edges,
-          active_right_edges,
-          state.active_shape_left.len(),
-          state.active_shape_right.len()
-        );
+    let clearance_left = if self.clearance_left_max_bottom == f32::MIN {
+      "none".to_string()
+    } else {
+      format!("{:.2}", self.clearance_left_max_bottom)
+    };
+    let clearance_right = if self.clearance_right_max_bottom == f32::MIN {
+      "none".to_string()
+    } else {
+      format!("{:.2}", self.clearance_right_max_bottom)
+    };
+    eprintln!("  clearance_max_bottom: left={clearance_left} right={clearance_right}");
 
-        if let Some((edge, bottom)) = state.active_left.peek_constraining_unpruned() {
-          eprintln!(
-            "    constraining_left: edge={:.2} bottom={:.2}",
-            edge, bottom
-          );
-        } else {
-          eprintln!("    constraining_left: none");
-        }
+    let mut focus_y = self.current_y;
 
-        if let Some((edge, bottom)) = state.active_right.peek_constraining_unpruned() {
-          eprintln!(
-            "    constraining_right: edge={:.2} bottom={:.2}",
-            edge, bottom
-          );
-        } else {
-          eprintln!("    constraining_right: none");
+    let log_sweep_state = |state: &FloatSweepState| {
+      let active_left_edges = state.active_left.len();
+      let active_right_edges = state.active_right.len();
+      eprintln!(
+        "  sweep_state: current_y={:.2} pending_events={} pending_start_events={} active_edges=(left={}, right={}) active_shapes=(left={}, right={})",
+        state.current_y,
+        state.pending_events.len(),
+        state.pending_start_events.len(),
+        active_left_edges,
+        active_right_edges,
+        state.active_shape_left.len(),
+        state.active_shape_right.len()
+      );
+
+      if let Some((edge, bottom)) = state.active_left.peek_constraining_unpruned() {
+        eprintln!("    constraining_left: edge={:.2} bottom={:.2}", edge, bottom);
+      } else {
+        eprintln!("    constraining_left: none");
+      }
+
+      if let Some((edge, bottom)) = state.active_right.peek_constraining_unpruned() {
+        eprintln!("    constraining_right: edge={:.2} bottom={:.2}", edge, bottom);
+      } else {
+        eprintln!("    constraining_right: none");
+      }
+    };
+
+    match sweep_state {
+      Some(state) => {
+        focus_y = state.current_y;
+        log_sweep_state(state);
+      }
+      None => match self.sweep_state.try_borrow() {
+        Ok(state) => {
+          focus_y = state.current_y;
+          log_sweep_state(&state);
         }
-      }
-      Err(_) => {
-        eprintln!("  sweep_state: <borrowed>");
-      }
+        Err(_) => {
+          eprintln!("  sweep_state: <borrowed>");
+        }
+      },
     }
 
     match self.range_cache.try_borrow() {
@@ -1326,12 +1349,6 @@ impl FloatContext {
         }
 
         if seg_count > 0 && max_segs > 0 {
-          let focus_y = self
-            .sweep_state
-            .try_borrow()
-            .ok()
-            .map(|state| state.current_y)
-            .unwrap_or(self.current_y);
           let focus_idx = if focus_y.is_finite() {
             cache.segment_index(focus_y)
           } else {
@@ -1911,6 +1928,32 @@ impl FloatContext {
     if scanned > 0 {
       profile_count_range_boundary_scanned(scanned);
       profile_update_max_range_boundaries_scanned_per_query(scanned);
+    }
+
+    // Optional instrumentation: dump float context state when a range query scans an unexpectedly
+    // large number of cached segments. Useful for diagnosing cases where the range-cache becomes
+    // overly fragmented or boundary stepping fails to coalesce segments.
+    //
+    // Disabled by default; enable with:
+    //   FASTR_LOG_FLOAT_CONTEXT=1
+    //   FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER=<N>
+    // to dump whenever `scanned > N`.
+    let toggles = runtime::runtime_toggles();
+    let log_scanned_over = toggles
+      .usize("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER")
+      .filter(|v| *v > 0);
+    if toggles.truthy("FASTR_LOG_FLOAT_CONTEXT")
+      && log_scanned_over.is_some_and(|threshold| scanned > threshold as u64)
+    {
+      // Drop the range-cache borrow so the dump can borrow and print segments.
+      drop(cache);
+      let threshold = log_scanned_over.unwrap();
+      self.debug_dump_with_sweep_state(
+        &format!(
+          "range_scan start={start:.2} end={end:.2} scanned={scanned} threshold={threshold}"
+        ),
+        state,
+      );
     }
 
     (best_left, best_right, next_boundary)
@@ -3081,6 +3124,8 @@ mod tests {
     let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
       ("FASTR_LOG_FLOAT_CONTEXT".to_string(), "1".to_string()),
       ("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS".to_string(), "3".to_string()),
+      // Trigger range-scan dumps from `edges_in_range_min_width_with_state`.
+      ("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER".to_string(), "1".to_string()),
     ])));
 
     runtime::with_runtime_toggles(toggles, || {
