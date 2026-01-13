@@ -1212,6 +1212,29 @@ fn compiled_regex_literal_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_statement_resolves_identifiers() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(){
+        let o = {x: 3};
+        with (o) { return x; }
+      }
+      f()
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_with_statement_executes() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
