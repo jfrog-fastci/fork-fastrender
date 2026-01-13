@@ -2,8 +2,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
-  fragment_tree_with_scroll, FormSubmission, FormSubmissionMethod, InteractionAction, InteractionEngine,
-  InteractionState,
+  fragment_tree_with_scroll, DateTimeInputKind, FormSubmission, FormSubmissionMethod, InteractionAction,
+  InteractionEngine, InteractionState,
 };
 use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
@@ -30,6 +30,7 @@ pub struct BrowserTabController {
   base_url: String,
   scroll_state: ScrollState,
   last_reported_scroll_state: ScrollState,
+  last_pointer_pos_css: Option<(f32, f32)>,
   viewport_css: (u32, u32),
   dpr: f32,
   find_query: String,
@@ -83,6 +84,7 @@ impl BrowserTabController {
       base_url: strip_fragment(document_url),
       scroll_state: ScrollState::default(),
       last_reported_scroll_state: ScrollState::default(),
+      last_pointer_pos_css: None,
       viewport_css,
       dpr,
       find_query: String::new(),
@@ -160,6 +162,14 @@ impl BrowserTabController {
       } if tab_id == self.tab_id => {
         self.handle_select_dropdown_choose(select_node_id, option_node_id)
       }
+      UiToWorker::DateTimePickerChoose {
+        tab_id,
+        input_node_id,
+        value,
+      } if tab_id == self.tab_id => self.handle_date_time_picker_choose(input_node_id, &value),
+      UiToWorker::DateTimePickerCancel { tab_id } if tab_id == self.tab_id => Ok(vec![
+        WorkerToUi::DateTimePickerClosed { tab_id },
+      ]),
       UiToWorker::FilePickerChoose {
         tab_id,
         input_node_id,
@@ -520,6 +530,7 @@ impl BrowserTabController {
   }
 
   fn handle_pointer_move(&mut self, pos_css: (f32, f32)) -> Result<Vec<WorkerToUi>> {
+    self.last_pointer_pos_css = Some(pos_css);
     let (box_tree_ptr, fragment_tree_ptr) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
@@ -553,6 +564,7 @@ impl BrowserTabController {
   }
 
   fn handle_drop_files(&mut self, pos_css: (f32, f32), paths: Vec<PathBuf>) -> Result<Vec<WorkerToUi>> {
+    self.last_pointer_pos_css = Some(pos_css);
     let (box_tree_ptr, fragment_tree_ptr) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
@@ -594,6 +606,7 @@ impl BrowserTabController {
     modifiers: crate::ui::PointerModifiers,
     click_count: u8,
   ) -> Result<Vec<WorkerToUi>> {
+    self.last_pointer_pos_css = Some(pos_css);
     if button != PointerButton::Primary && button != PointerButton::Middle {
       return Ok(Vec::new());
     }
@@ -639,6 +652,7 @@ impl BrowserTabController {
     button: PointerButton,
     modifiers: crate::ui::PointerModifiers,
   ) -> Result<Vec<WorkerToUi>> {
+    self.last_pointer_pos_css = Some(pos_css);
     if button != PointerButton::Primary && button != PointerButton::Middle {
       return Ok(Vec::new());
     }
@@ -771,6 +785,42 @@ impl BrowserTabController {
                 && rect.size.height.is_finite()
             })
             .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0)),
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
+      }
+      InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
+        let mut out = vec![WorkerToUi::DateTimePickerOpened {
+          tab_id: self.tab_id,
+          input_node_id,
+          kind,
+          value: self.date_time_picker_value(input_node_id, kind),
+          anchor_css: self
+            .select_anchor_css(input_node_id)
+            .filter(|rect| {
+              rect.origin.x.is_finite()
+                && rect.origin.y.is_finite()
+                && rect.size.width.is_finite()
+                && rect.size.height.is_finite()
+            })
+            .unwrap_or_else(|| {
+              Rect::from_xywh(
+                if viewport_point.x.is_finite() {
+                  viewport_point.x
+                } else {
+                  0.0
+                },
+                if viewport_point.y.is_finite() {
+                  viewport_point.y
+                } else {
+                  0.0
+                },
+                1.0,
+                1.0,
+              )
+            }),
         }];
         if changed {
           out.extend(self.paint_if_needed()?);
@@ -982,6 +1032,32 @@ impl BrowserTabController {
           anchor_css,
         });
       }
+      InteractionAction::OpenDateTimePicker { input_node_id, kind } => {
+        let anchor_css = self
+          .select_anchor_css(input_node_id)
+          .filter(|rect| {
+            rect.origin.x.is_finite()
+              && rect.origin.y.is_finite()
+              && rect.size.width.is_finite()
+              && rect.size.height.is_finite()
+          })
+          .unwrap_or_else(|| {
+            let (x, y) = self.last_pointer_pos_css.unwrap_or((0.0, 0.0));
+            Rect::from_xywh(
+              if x.is_finite() { x } else { 0.0 },
+              if y.is_finite() { y } else { 0.0 },
+              1.0,
+              1.0,
+            )
+          });
+        out.push(WorkerToUi::DateTimePickerOpened {
+          tab_id: self.tab_id,
+          input_node_id,
+          kind,
+          value: self.date_time_picker_value(input_node_id, kind),
+          anchor_css,
+        });
+      }
       _ => {}
     }
 
@@ -990,6 +1066,43 @@ impl BrowserTabController {
     }
 
     Ok(out)
+  }
+
+  fn handle_date_time_picker_choose(
+    &mut self,
+    input_node_id: usize,
+    value: &str,
+  ) -> Result<Vec<WorkerToUi>> {
+    // Mirror the threaded worker semantics: choosing a value should always close the popup even if
+    // it results in no DOM mutation (e.g. choosing the already-selected value).
+    let mut out = vec![WorkerToUi::DateTimePickerClosed { tab_id: self.tab_id }];
+    let engine = &mut self.interaction;
+    let changed = self
+      .document
+      .mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, value));
+    if changed {
+      out.extend(self.paint_if_needed()?);
+    }
+    Ok(out)
+  }
+
+  fn date_time_picker_value(&mut self, input_node_id: usize, kind: DateTimeInputKind) -> String {
+    let mut value = String::new();
+    let _ = self.document.mutate_dom(|dom| {
+      value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
+        .map(|node| match kind {
+          DateTimeInputKind::Date => crate::dom::input_date_value_string(node).unwrap_or_default(),
+          DateTimeInputKind::Time => crate::dom::input_time_value_string(node).unwrap_or_default(),
+          DateTimeInputKind::DateTimeLocal => {
+            crate::dom::input_datetime_local_value_string(node).unwrap_or_default()
+          }
+          DateTimeInputKind::Month => crate::dom::input_month_value_string(node).unwrap_or_default(),
+          DateTimeInputKind::Week => crate::dom::input_week_value_string(node).unwrap_or_default(),
+        })
+        .unwrap_or_default();
+      false
+    });
+    value
   }
 
   fn handle_select_dropdown_choose(
