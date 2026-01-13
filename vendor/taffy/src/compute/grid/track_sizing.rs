@@ -312,6 +312,11 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   }
 }
 
+#[cfg(test)]
+thread_local! {
+  static UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
 /// Update the cached `GridItem::{crosses_intrinsic_column,crosses_intrinsic_row}` flags for the
 /// specified axis.
 ///
@@ -329,6 +334,9 @@ fn update_item_crosses_intrinsic_tracks_for_axis(
   axis_tracks: &[GridTrack],
   axis_inner_node_size: Option<f32>,
 ) {
+  #[cfg(test)]
+  UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(c.get() + 1));
+
   let treat_percentage_as_intrinsic = axis_inner_node_size.is_none();
   for item in items.iter_mut() {
     let crosses_intrinsic = item.track_range_excluding_lines(axis).any(|i| {
@@ -1923,5 +1931,64 @@ mod tests {
     assert!((final_sizes[0] - 5.0).abs() < 1e-5);
     assert!((final_sizes[1] - 10.0).abs() < 1e-5);
     assert!((final_sizes[2] - 15.0).abs() < 1e-5);
+  }
+
+  #[test]
+  fn update_item_crosses_intrinsic_tracks_is_skipped_without_percentage_tracks() {
+    super::UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(0));
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let child = taffy
+      .new_leaf(Style {
+        size: Size::from_lengths(10.0, 10.0),
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          grid_template_columns: vec![length(10.0); 1],
+          grid_template_rows: vec![length(10.0); 1],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    super::UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| assert_eq!(c.get(), 0));
+  }
+
+  #[test]
+  fn update_item_crosses_intrinsic_tracks_runs_with_percentage_tracks() {
+    super::UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(0));
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let child = taffy
+      .new_leaf(Style {
+        size: Size::from_lengths(10.0, 10.0),
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          grid_template_columns: vec![percent(0.5); 1],
+          grid_template_rows: vec![percent(0.5); 1],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    taffy.compute_layout(root, Size::MAX_CONTENT).unwrap();
+
+    super::UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS
+      .with(|c| assert!(c.get() > 0));
   }
 }
