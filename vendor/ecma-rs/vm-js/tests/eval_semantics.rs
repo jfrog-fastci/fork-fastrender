@@ -604,6 +604,78 @@ fn direct_eval_with_multiple_awaited_arguments_is_direct() -> Result<(), VmError
 }
 
 #[test]
+fn direct_eval_can_call_super_in_derived_constructor() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          let ok = false;
+          class B {}
+          class D extends B {
+            constructor() {
+              eval("super()");
+              ok = this instanceof D;
+            }
+          }
+          new D();
+          return ok;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_super_call_works_in_nested_arrow_in_derived_constructor() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          let ok = false;
+          class B {}
+          class D extends B {
+            constructor() {
+              let f = () => eval("super()");
+              f();
+              ok = this instanceof D;
+            }
+          }
+          new D();
+          return ok;
+        })()
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn direct_eval_super_call_in_field_initializer_is_syntax_error() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        (() => {
+          class B {}
+          class D extends B {
+            x = eval("super()");
+          }
+          try { new D(); return "no error"; }
+          catch (e) { return e.name; }
+        })()
+      "#,
+    )
+    .unwrap();
+  let Value::String(s) = value else {
+    panic!("expected string from caught error name");
+  };
+  assert_eq!(rt.heap().get_string(s).unwrap().to_utf8_lossy(), "SyntaxError");
+}
+
+#[test]
 fn direct_eval_with_multiple_awaits_is_still_direct_if_eval_is_overwritten_between_awaits() -> Result<(), VmError> {
   let mut rt = new_runtime();
 

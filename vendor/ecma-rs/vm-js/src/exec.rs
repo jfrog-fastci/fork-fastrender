@@ -42720,6 +42720,40 @@ mod tests {
   }
 
   #[test]
+  fn derived_constructor_direct_eval_super_call_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      (() => {
+        let ok = true;
+        new class extends class {} {
+          constructor() {
+            ok = ok && (eval("super(); this") === this);
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            (() => super())();
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        return ok;
+      })()
+    "#;
+
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
   fn direct_eval_super_call_outside_derived_constructor_is_syntax_error() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -42786,6 +42820,57 @@ mod tests {
       })()
     "#,
     )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn derived_constructor_direct_eval_nested_super_call_hir() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let source = r#"
+      (() => {
+        let ok = true;
+
+        new class extends class {} {
+          constructor() {
+            (() => eval("super()"))();
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            (() => (() => super())())();
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            eval("(() => super())()");
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            eval("eval('super()')");
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        return ok;
+      })()
+    "#;
+
+    let script = crate::CompiledScript::compile_script(&mut rt.heap, "<inline>", source)?;
+    let value = rt.exec_compiled_script(script)?;
     assert!(matches!(value, Value::Bool(true)));
     Ok(())
   }
