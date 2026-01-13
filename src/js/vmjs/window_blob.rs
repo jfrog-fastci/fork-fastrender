@@ -912,6 +912,16 @@ mod tests {
     heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
+  fn read_result_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Result<Value, VmError> {
+    let key = alloc_key(scope, name)?;
+    Ok(
+      scope
+        .heap()
+        .object_get_own_data_property_value(obj, &key)?
+        .unwrap_or(Value::Undefined),
+    )
+  }
+
   #[test]
   fn blob_size_and_type() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
@@ -957,6 +967,77 @@ mod tests {
       "Object.getOwnPropertyDescriptor(new File(['hi'], 'x.txt', { type: 'text/plain' }), 'type') === undefined",
     )?;
     assert_eq!(v, Value::Bool(true));
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_stream_returns_readable_stream_of_bytes() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Keep the reader alive across multiple `exec_script` calls.
+    let _ = realm.exec_script("globalThis.reader = new Blob(['hi']).stream().getReader();")?;
+
+    let p1 = realm.exec_script("reader.read()")?;
+    let Value::Object(p1_obj) = p1 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p1_obj)?, PromiseState::Fulfilled);
+    let Some(result1_val) = realm.heap().promise_result(p1_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result1_obj) = result1_val else {
+      return Err(VmError::InvariantViolation("read() must resolve to an object"));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      let done1 = read_result_prop(&mut scope, result1_obj, "done")?;
+      assert_eq!(done1, Value::Bool(false));
+      let value1 = read_result_prop(&mut scope, result1_obj, "value")?;
+      let Value::Object(value1_obj) = value1 else {
+        return Err(VmError::InvariantViolation(
+          "read() result.value must be an object",
+        ));
+      };
+
+      if scope.heap().is_uint8_array_object(value1_obj) {
+        assert_eq!(scope.heap().uint8_array_data(value1_obj)?, b"hi");
+      } else if scope.heap().is_array_buffer_object(value1_obj) {
+        assert_eq!(scope.heap().array_buffer_data(value1_obj)?, b"hi");
+      } else {
+        return Err(VmError::InvariantViolation(
+          "read() result.value must be a Uint8Array or ArrayBuffer",
+        ));
+      }
+    }
+
+    let p2 = realm.exec_script("reader.read()")?;
+    let Value::Object(p2_obj) = p2 else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p2_obj)?, PromiseState::Fulfilled);
+    let Some(result2_val) = realm.heap().promise_result(p2_obj)? else {
+      return Err(VmError::InvariantViolation("read() promise missing result"));
+    };
+    let Value::Object(result2_obj) = result2_val else {
+      return Err(VmError::InvariantViolation("read() must resolve to an object"));
+    };
+
+    {
+      let heap = realm.heap_mut();
+      let mut scope = heap.scope();
+      let done2 = read_result_prop(&mut scope, result2_obj, "done")?;
+      assert_eq!(done2, Value::Bool(true));
+      let value2 = read_result_prop(&mut scope, result2_obj, "value")?;
+      assert!(matches!(value2, Value::Undefined));
+    }
 
     realm.teardown();
     Ok(())
