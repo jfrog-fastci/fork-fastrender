@@ -872,9 +872,15 @@ fn bench_block_intrinsic_sizing(c: &mut Criterion) {
 
 fn bench_block_intrinsic_sizing_parallel(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
+  // Ensure the rayon global pool is installed with a conservative thread count so this benchmark
+  // can run in constrained environments without panicking during Rayon's lazy initialization.
+  if !ensure_rayon_global_pool_for_bench(4) || rayon::current_num_threads() <= 1 {
+    eprintln!("layout_hotspots block_intrinsic_parallel: rayon pool unavailable; skipping");
+    return;
+  }
   let viewport = Size::new(800.0, 600.0);
   let font_ctx = common::fixed_font_context();
-  let parallelism = LayoutParallelism::enabled(1).with_max_threads(Some(2));
+  let parallelism = LayoutParallelism::enabled(1).with_max_threads(Some(4));
   let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
     .with_parallelism(parallelism);
   let bfc = BlockFormattingContext::with_factory(factory);
