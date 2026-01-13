@@ -1,6 +1,11 @@
-use crate::layout::float_context::FloatContext;
+use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+use crate::layout::float_context::{
+  float_profile_stats, reset_float_profile_counters, FloatContext, FloatSide,
+};
 use crate::layout::formatting_context::LayoutError;
 use crate::render_control::{with_deadline, RenderDeadline};
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 struct TestRenderDelayGuard;
@@ -179,4 +184,71 @@ fn float_context_incremental_float_placement_complete_before_deadline() {
     ),
     Some(other) => panic!("unexpected layout error: {other:?}"),
   }
+}
+
+#[test]
+fn float_context_dense_boundary_find_fit_does_not_rescan_quadratically() {
+  let _delay_guard = TestRenderDelayGuard::set(Some(0));
+
+  // A dense-boundary regression: alternate left/right floats on every row and request a find_fit
+  // with a tall height so the naive "range query + advance boundary" loop would repeatedly rescan
+  // many overlapping FloatRangeCache segments.
+  let deadline = RenderDeadline::new(Some(Duration::from_millis(1500)), None);
+
+  const CONTAINING_WIDTH: f32 = 200.0;
+  const FLOAT_WIDTH: f32 = 80.0;
+  const FLOAT_HEIGHT: f32 = 1.0;
+  const FLOAT_COUNT: usize = 10_000;
+  const QUERY_HEIGHT: f32 = 500.0;
+  const QUERY_WIDTH: f32 = 150.0;
+  const QUERY_COUNT: usize = 50;
+
+  let mut raw = HashMap::new();
+  raw.insert("FASTR_LAYOUT_PROFILE".to_string(), "1".to_string());
+  let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+  with_thread_runtime_toggles(toggles, || {
+    reset_float_profile_counters();
+
+    let mut ctx = FloatContext::new(CONTAINING_WIDTH);
+    for i in 0..FLOAT_COUNT {
+      let y = i as f32;
+      if i % 2 == 0 {
+        ctx.add_float_at(FloatSide::Left, 0.0, y, FLOAT_WIDTH, FLOAT_HEIGHT);
+      } else {
+        ctx.add_float_at(
+          FloatSide::Right,
+          CONTAINING_WIDTH - FLOAT_WIDTH,
+          y,
+          FLOAT_WIDTH,
+          FLOAT_HEIGHT,
+        );
+      }
+    }
+
+    let (acc, timeout) = with_deadline(Some(&deadline), || {
+      let mut acc = 0.0f32;
+      for _ in 0..QUERY_COUNT {
+        acc += ctx.find_fit(QUERY_WIDTH, QUERY_HEIGHT, 0.0);
+      }
+      let timeout = ctx.take_timeout_error();
+      (acc, timeout)
+    });
+
+    std::hint::black_box(acc);
+    match timeout {
+      None => {}
+      Some(LayoutError::Timeout { elapsed }) => panic!(
+        "expected dense-boundary find_fit to finish under deadline, timed out after {elapsed:?}"
+      ),
+      Some(other) => panic!("unexpected layout error: {other:?}"),
+    }
+
+    let stats = float_profile_stats();
+    assert!(
+      stats.range_boundaries_scanned < (FLOAT_COUNT as u64 * (QUERY_COUNT as u64) * 4),
+      "expected find_fit scan to be roughly linear (segments_scanned={})",
+      stats.range_boundaries_scanned
+    );
+  });
 }

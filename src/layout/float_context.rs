@@ -48,7 +48,7 @@ use crate::style::inline_axis_positive;
 use crate::style::types::{Direction, WritingMode};
 use std::cell::{Cell, RefCell};
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
@@ -1770,6 +1770,230 @@ impl FloatContext {
     )
   }
 
+  /// Single-pass `find_fit` implementation that scans [`FloatRangeCache`] segments once.
+  ///
+  /// This avoids repeatedly rescanning overlapping segments when `find_fit` / float placement
+  /// advances in small Y increments (dense float-boundary scenarios).
+  ///
+  /// Returns:
+  /// - `y`: the candidate y (either the earliest y that fits, or the last y reached when no further
+  ///   progress is possible / deadline exceeded).
+  /// - `left_edge`, `right_edge`: the constraining edges for the most constrained segment within
+  ///   `[y, y + height)`, using the same tie-breaking as `edges_in_range_min_width_with_state`
+  ///   (minimum width, then larger left edge).
+  fn find_fit_using_range_cache(
+    &self,
+    width: f32,
+    height: f32,
+    min_y: f32,
+    containing_left: f32,
+    containing_right: f32,
+  ) -> (f32, f32, f32) {
+    profile_count_range_query();
+
+    let containing_left = if containing_left.is_finite() {
+      containing_left
+    } else {
+      0.0
+    };
+    let containing_right = if containing_right.is_finite() {
+      containing_right.max(containing_left)
+    } else {
+      self.containing_block_width.max(containing_left)
+    };
+
+    let target_width = clamp_positive_finite(width);
+    let target_height = clamp_positive_finite(height);
+
+    // Preserve the legacy behavior for NaN: propagate it.
+    if min_y.is_nan() {
+      return (min_y, containing_left, containing_right);
+    }
+
+    #[inline]
+    fn segment_edges_in_span(
+      seg: &FloatRangeSegment,
+      containing_left: f32,
+      containing_right: f32,
+    ) -> (f32, f32, f32) {
+      let left_edge = seg.left_edge.max(containing_left);
+      let right_edge = seg.right_edge.min(containing_right);
+      let width = (right_edge - left_edge).max(0.0);
+      (left_edge, right_edge, width)
+    }
+
+    #[inline]
+    fn segment_is_better(width: f32, left: f32, best_width: f32, best_left: f32) -> bool {
+      width < best_width - f32::EPSILON
+        || ((width - best_width).abs() < f32::EPSILON && left > best_left)
+    }
+
+    let mut y = min_y;
+    let mut deadline_counter = 0usize;
+    let mut scan_counter = 0usize;
+    let mut scanned_segments = 0u64;
+
+    let mut last_left = containing_left;
+    let mut last_right = containing_right;
+
+    let mut cache = self.range_cache.borrow_mut();
+    cache.ensure_current(self.float_map.len(), &self.events);
+
+    // Ensure we have a starting segment, even when `height` is zero.
+    self.ensure_range_cache_coverage(&mut cache, y, y + target_height);
+    if cache.segments.is_empty() {
+      return (y, last_left, last_right);
+    }
+
+    // Special-case zero-height queries so behavior matches the `end <= start` fast-path in
+    // `edges_in_range_min_width_with_state`.
+    if target_height == 0.0 {
+      loop {
+        if let Err(RenderError::Timeout { elapsed, .. }) =
+          check_active_periodic(&mut deadline_counter, 128, RenderStage::Layout)
+        {
+          self.record_timeout(elapsed);
+          break;
+        }
+
+        let idx = cache.segment_index(y);
+        let Some(seg) = cache.segments.get(idx) else {
+          break;
+        };
+        let (left_edge, right_edge, available_width) =
+          segment_edges_in_span(seg, containing_left, containing_right);
+        scanned_segments += 1;
+        last_left = left_edge;
+        last_right = right_edge;
+
+        if available_width >= target_width {
+          break;
+        }
+
+        let next_y = seg.end_y;
+        if !next_y.is_finite() || next_y <= y {
+          break;
+        }
+        y = next_y;
+
+        // Extend cache coverage as we advance.
+        self.ensure_range_cache_coverage(&mut cache, y, y);
+      }
+
+      if scanned_segments > 0 {
+        profile_count_range_boundary_scanned(scanned_segments);
+      }
+      return (y, last_left, last_right);
+    }
+
+    // Sliding window over segments in `[y, y + target_height)`.
+    let mut start_idx = cache.segment_index(y);
+    let mut end_idx = start_idx;
+    let mut deque: VecDeque<usize> = VecDeque::new();
+
+    // Helper to add a segment into the monotonic deque.
+    let mut push_segment = |idx: usize, cache: &FloatRangeCache, deque: &mut VecDeque<usize>| {
+      let (left, _right, width) = segment_edges_in_span(&cache.segments[idx], containing_left, containing_right);
+      while let Some(&back_idx) = deque.back() {
+        let (back_left, _back_right, back_width) =
+          segment_edges_in_span(&cache.segments[back_idx], containing_left, containing_right);
+        if segment_is_better(width, left, back_width, back_left) {
+          deque.pop_back();
+        } else {
+          break;
+        }
+      }
+      deque.push_back(idx);
+    };
+
+    // Prime the initial window.
+    let mut window_end = y + target_height;
+    self.ensure_range_cache_coverage(&mut cache, y, window_end);
+    while end_idx < cache.segments.len() && cache.segments[end_idx].start_y < window_end {
+      if let Err(RenderError::Timeout { elapsed, .. }) =
+        check_active_periodic(&mut scan_counter, 256, RenderStage::Layout)
+      {
+        self.record_timeout(elapsed);
+        break;
+      }
+      push_segment(end_idx, &cache, &mut deque);
+      scanned_segments += 1;
+      end_idx += 1;
+    }
+
+    loop {
+      if let Err(RenderError::Timeout { elapsed, .. }) =
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Layout)
+      {
+        self.record_timeout(elapsed);
+        break;
+      }
+
+      // Ensure we have segments covering the window end.
+      window_end = y + target_height;
+      if cache.segments.last().is_none_or(|seg| seg.end_y < window_end) {
+        self.ensure_range_cache_coverage(&mut cache, y, window_end);
+      }
+
+      // If we jumped beyond the previously-scanned window, discard stale state.
+      if start_idx > end_idx {
+        end_idx = start_idx;
+        deque.clear();
+      }
+
+      // Extend the window by pushing newly-covered segments.
+      while end_idx < cache.segments.len() && cache.segments[end_idx].start_y < window_end {
+        if let Err(RenderError::Timeout { elapsed, .. }) =
+          check_active_periodic(&mut scan_counter, 256, RenderStage::Layout)
+        {
+          self.record_timeout(elapsed);
+          break;
+        }
+        push_segment(end_idx, &cache, &mut deque);
+        scanned_segments += 1;
+        end_idx += 1;
+      }
+
+      // Evict segments that are now above `y`.
+      while deque.front().is_some_and(|&idx| idx < start_idx) {
+        deque.pop_front();
+      }
+
+      let Some(&best_idx) = deque.front() else {
+        // No segments in the window; treat as unconstrained.
+        last_left = containing_left;
+        last_right = containing_right;
+        break;
+      };
+
+      let best_seg = &cache.segments[best_idx];
+      let (best_left, best_right, best_width) =
+        segment_edges_in_span(best_seg, containing_left, containing_right);
+
+      last_left = best_left;
+      last_right = best_right;
+
+      if best_width >= target_width {
+        break;
+      }
+
+      let next_y = best_seg.end_y;
+      if !next_y.is_finite() || next_y <= y {
+        break;
+      }
+
+      // Advance to the first y where the constraining segment is no longer in the window.
+      y = next_y;
+      start_idx = best_idx.saturating_add(1);
+    }
+
+    if scanned_segments > 0 {
+      profile_count_range_boundary_scanned(scanned_segments);
+    }
+
+    (y, last_left, last_right)
+  }
+
   fn next_float_start_y(&self, state: &mut FloatSweepState) -> f32 {
     while let Some(Reverse(event)) = state.pending_start_events.peek().copied() {
       // `advance_sweep_to` consumes all events with `event.y <= current_y`, so anything at or below
@@ -2171,40 +2395,15 @@ impl FloatContext {
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
 
-    let mut y = min_y;
     let target_width = clamp_positive_finite(width);
     let target_height = clamp_positive_finite(height);
-    let mut state = self.ensure_sweep_state(y);
-    let mut deadline_counter = 0usize;
-
-    loop {
-      if let Err(RenderError::Timeout { elapsed, .. }) =
-        check_active_periodic(&mut deadline_counter, 128, RenderStage::Layout)
-      {
-        self.record_timeout(elapsed);
-        break;
-      }
-
-      let range_end = y + target_height;
-      let (left_edge, right_edge, next_boundary) = self.edges_in_range_min_width_with_state(
-        &mut state,
-        y,
-        range_end,
-        containing_left,
-        containing_right,
-      );
-      let available_width = (right_edge - left_edge).max(0.0);
-
-      if available_width >= target_width {
-        return y;
-      }
-
-      if !next_boundary.is_finite() || next_boundary <= y {
-        break;
-      }
-      y = next_boundary;
-    }
-
+    let (y, _left, _right) = self.find_fit_using_range_cache(
+      target_width,
+      target_height,
+      min_y,
+      containing_left,
+      containing_right,
+    );
     y
   }
 
@@ -2399,66 +2598,36 @@ impl FloatContext {
       self.containing_block_width.max(containing_left)
     };
 
-    let mut y = min_y;
     let target_width = clamp_positive_finite(width);
     let target_height = clamp_positive_finite(height);
-    let mut state = self.ensure_sweep_state(y);
-    let mut deadline_counter = 0usize;
-    let mut last_left = containing_left;
-    let mut last_width = (containing_right - containing_left).max(0.0);
+    // Allow a small epsilon when deciding whether a float "fits" next to existing floats.
+    //
+    // Like line layout, float geometry is often the result of multiple floating-point operations
+    // (intrinsic sizing, padding subtraction, etc). Treating a float as non-fitting due to tiny
+    // rounding error can cause it to drop to the next float line unexpectedly, which diverges
+    // from browser behavior on tight-but-valid layouts (e.g. float-based nav bars).
+    const FLOAT_FIT_EPSILON: f32 = 0.01;
 
-    loop {
-      if let Err(RenderError::Timeout { elapsed, .. }) =
-        check_active_periodic(&mut deadline_counter, 128, RenderStage::Layout)
-      {
-        self.record_timeout(elapsed);
-        break;
-      }
+    // Convert `width <= available + epsilon` into `width - epsilon <= available` so the search can
+    // still use a single monotonic predicate.
+    let effective_target_width = (target_width - FLOAT_FIT_EPSILON).max(0.0);
+    let (y, left_edge, right_edge) = self.find_fit_using_range_cache(
+      effective_target_width,
+      target_height,
+      min_y,
+      containing_left,
+      containing_right,
+    );
 
-      let range_end = y + target_height;
-      let (left_edge, right_edge, next_boundary) = self.edges_in_range_min_width_with_state(
-        &mut state,
-        y,
-        range_end,
-        containing_left,
-        containing_right,
-      );
-      let available_width = (right_edge - left_edge).max(0.0);
+    let available_width = (right_edge - left_edge).max(0.0);
+    let fits = target_width <= available_width + FLOAT_FIT_EPSILON;
 
-      last_left = left_edge;
-      last_width = available_width;
-
-      // Allow a small epsilon when deciding whether a float "fits" next to existing floats.
-      //
-      // Like line layout, float geometry is often the result of multiple floating-point operations
-      // (intrinsic sizing, padding subtraction, etc). Treating a float as non-fitting due to tiny
-      // rounding error can cause it to drop to the next float line unexpectedly, which diverges
-      // from browser behavior on tight-but-valid layouts (e.g. float-based nav bars).
-      const FLOAT_FIT_EPSILON: f32 = 0.01;
-      if target_width <= available_width + FLOAT_FIT_EPSILON {
-        let x = match side {
-          FloatSide::Left => left_edge,
-          FloatSide::Right => left_edge + (available_width - target_width).max(0.0),
-        };
-        return (x, y);
-      }
-
-      let candidate_y = next_boundary;
-      if !candidate_y.is_finite() || candidate_y <= y {
-        let x = match side {
-          FloatSide::Left => last_left,
-          FloatSide::Right => last_left + last_width - target_width,
-        };
-        return (x, y);
-      }
-
-      y = candidate_y;
-    }
-
-    let x = match side {
-      FloatSide::Left => last_left,
-      FloatSide::Right => last_left + last_width - target_width,
+    let x = match (side, fits) {
+      (FloatSide::Left, _) => left_edge,
+      (FloatSide::Right, true) => left_edge + (available_width - target_width).max(0.0),
+      (FloatSide::Right, false) => left_edge + available_width - target_width,
     };
+
     (x, y)
   }
 
@@ -2508,40 +2677,15 @@ impl FloatContext {
   ///
   /// The Y position where the box can be placed.
   pub fn find_fit(&self, width: f32, height: f32, min_y: f32) -> f32 {
-    let mut y = min_y;
     let target_width = clamp_positive_finite(width);
     let target_height = clamp_positive_finite(height);
-    let mut state = self.ensure_sweep_state(y);
-    let mut deadline_counter = 0usize;
-
-    loop {
-      if let Err(RenderError::Timeout { elapsed, .. }) =
-        check_active_periodic(&mut deadline_counter, 128, RenderStage::Layout)
-      {
-        self.record_timeout(elapsed);
-        break;
-      }
-
-      let range_end = y + target_height;
-      let (left_edge, right_edge, next_boundary) = self.edges_in_range_min_width_with_state(
-        &mut state,
-        y,
-        range_end,
-        0.0,
-        self.containing_block_width,
-      );
-      let available_width = (right_edge - left_edge).max(0.0);
-
-      if available_width >= target_width {
-        return y;
-      }
-
-      if !next_boundary.is_finite() || next_boundary <= y {
-        break;
-      }
-      y = next_boundary;
-    }
-
+    let (y, _left, _right) = self.find_fit_using_range_cache(
+      target_width,
+      target_height,
+      min_y,
+      0.0,
+      self.containing_block_width,
+    );
     y
   }
 

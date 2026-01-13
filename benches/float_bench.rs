@@ -59,6 +59,20 @@ fn bench_available_width_in_range(c: &mut Criterion) {
   });
 }
 
+fn bench_find_fit_dense_boundaries(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
+  // Dense-boundary stress: alternating left/right floats every 1px for many rows, then ask `find_fit`
+  // for a tall box that cannot fit until below all floats. This historically triggered repeated
+  // rescans of overlapping FloatRangeCache segments.
+  let ctx = build_float_context(10_000);
+  c.bench_function("float_find_fit_dense_boundaries", |b| {
+    b.iter(|| {
+      // Keep the query height large enough to span many boundaries.
+      black_box(ctx.find_fit(150.0, 500.0, 0.0));
+    })
+  });
+}
+
 fn bench_compute_float_position_overlap_stress(c: &mut Criterion) {
   common::bench_print_config_once("float_bench", &[]);
   // A stress pattern that resembles float-heavy real sites:
@@ -162,6 +176,7 @@ criterion_group!(
   float_benches,
   bench_available_width,
   bench_available_width_in_range,
+  bench_find_fit_dense_boundaries,
   bench_compute_float_position,
   bench_compute_float_position_overlap_stress,
   bench_range_cache_incremental_updates,
