@@ -70,6 +70,15 @@ impl UnixSeqpacket {
   /// - Uses `MSG_NOSIGNAL` to avoid SIGPIPE when the peer is closed.
   /// - Retries on `EINTR`.
   pub fn send_msg(&self, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> Result<(), FdPassingError> {
+    if bytes.is_empty() && !fds.is_empty() {
+      // `SCM_RIGHTS` should never be sent without at least one byte of real payload (see `unix(7)`
+      // and the checklist in `docs/ipc_linux_fd_passing.md`). Guard here so higher-level protocol
+      // code can't accidentally create a "fd-only" message.
+      return Err(FdPassingError::InvalidInput {
+        reason: "fd passing requires at least one byte of payload data",
+      });
+    }
+
     let iov = libc::iovec {
       iov_base: bytes.as_ptr() as *mut libc::c_void,
       iov_len: bytes.len(),
