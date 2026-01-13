@@ -1048,7 +1048,7 @@ fn location_stringification_matches_href() -> Result<()> {
   let mut realm = WindowRealm::new(WindowRealmConfig::new(url)).map_err(|e| Error::Other(e.to_string()))?;
 
   let ok = realm
-    .exec_script("String(location) === location.href && (location + '') === location.href && location.toString() === location.href")
+    .exec_script("String(location) === location.href && (location + '') === location.href && location.toString() === location.href && location.toJSON() === location.href")
     .map_err(|e| Error::Other(e.to_string()))?;
 
   assert_eq!(ok, Value::Bool(true));
