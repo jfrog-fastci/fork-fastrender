@@ -540,7 +540,7 @@ fn tab_search_overlay_ui(
   // should not leak into the egui-agnostic browser state model.
   let open_prev = ctx.data(|d| d.get_temp::<bool>(open_prev_id)).unwrap_or(false);
   if app.chrome.tab_search.open && !open_prev {
-    let focused = ctx.memory(|mem| mem.focused());
+    let focused = ctx.memory(|mem| mem.focus());
     ctx.data_mut(|d| {
       d.insert_temp(opener_focus_id, focused);
     });

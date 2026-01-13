@@ -2577,7 +2577,7 @@ struct OpenDateTimePicker {
 
 #[cfg(feature = "browser_ui")]
 fn egui_focused_widget_id(ctx: &egui::Context) -> Option<egui::Id> {
-  ctx.memory(|mem| mem.focused())
+  ctx.memory(|mem| mem.focus())
 }
 
 #[cfg(feature = "browser_ui")]
@@ -2587,7 +2587,7 @@ fn restore_or_clear_egui_focus(ctx: &egui::Context, previous_focus: Option<egui:
       mem.request_focus(prev);
       return;
     }
-    let Some(focused) = mem.focused() else {
+    let Some(focused) = mem.focus() else {
       return;
     };
     mem.surrender_focus(focused);
@@ -5621,7 +5621,7 @@ impl App {
             format!("Open debug log ({} lines)", self.debug_log.len())
           };
           resp
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label));
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone()));
           if resp.clicked() {
             self.debug_log_ui_open = true;
           }
