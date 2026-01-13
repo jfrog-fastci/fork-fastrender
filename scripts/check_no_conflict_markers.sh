@@ -44,14 +44,43 @@ if command -v rg >/dev/null 2>&1; then
 fi
 
 matches=""
+
+append_matches() {
+  local new_matches="$1"
+  if [[ -z "${new_matches}" ]]; then
+    return 0
+  fi
+  if [[ -z "${matches}" ]]; then
+    matches="${new_matches}"
+  else
+    matches+=$'\n'"${new_matches}"
+  fi
+}
+
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   # Prefer `git grep`: it is fast, and only scans tracked files (avoids traversing large fixture
   # trees like WPT).
+  pathspecs=(
+    ':(glob)src/**/*.rs'
+    ':(glob)crates/**/*.rs'
+    ':(glob)tests/**/*.rs'
+    ':(glob)xtask/**/*.rs'
+    ':(glob)benches/**/*.rs'
+    ':(glob)fuzz/**/*.rs'
+    ':(glob)tools/**/*.rs'
+
+    # Required vendored sources.
+    ':(glob)vendor/ecma-rs/vm-js/src/**/*.rs'
+    ':(glob)vendor/ecma-rs/parse-js/src/**/*.rs'
+    ':(glob)vendor/ecma-rs/semantic-js/src/**/*.rs'
+    ':(glob)vendor/ecma-rs/test262-semantic/src/**/*.rs'
+
+    # Known conflict-marker fixtures (allowed).
+    ':!vendor/ecma-rs/parse-js/tests/TypeScript/**'
+  )
   set +e
-  matches="$(
-    git grep -nE "${conflict_re}" -- \
-      '*.rs' \
-      ':!vendor/ecma-rs/parse-js/tests/TypeScript/**'
+  git_matches="$(
+    git grep -nE "${conflict_re}" -- "${pathspecs[@]}"
   )"
   status=$?
   set -e
@@ -59,15 +88,21 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
     echo "error: git grep failed while scanning for conflict markers (exit ${status})" >&2
     exit "${status}"
   fi
+  append_matches "${git_matches}"
 elif [[ "${have_rg}" -eq 1 ]]; then
   # Fallback for environments without git (rare).
   set +e
-  matches="$(
+  rg_matches="$(
     rg -n \
       --glob '*.rs' \
       --glob '!vendor/ecma-rs/parse-js/tests/TypeScript/**' \
       "${conflict_re}" \
-      src crates tests xtask vendor/ecma-rs/vm-js/src vendor/ecma-rs/parse-js/src vendor/ecma-rs/semantic-js/src vendor/ecma-rs/test262-semantic/src 2>/dev/null
+      src crates tests xtask benches fuzz tools \
+      vendor/ecma-rs/vm-js/src \
+      vendor/ecma-rs/parse-js/src \
+      vendor/ecma-rs/semantic-js/src \
+      vendor/ecma-rs/test262-semantic/src \
+      2>/dev/null
   )"
   status=$?
   set -e
@@ -75,15 +110,51 @@ elif [[ "${have_rg}" -eq 1 ]]; then
     echo "error: rg failed while scanning for conflict markers (exit ${status})" >&2
     exit "${status}"
   fi
+  append_matches "${rg_matches}"
 else
   # Fallback for environments without ripgrep (e.g. minimal Windows shells).
-  matches="$(
+  grep_matches="$(
     grep -RInE \
       --include='*.rs' \
       "${conflict_re}" \
-      src crates tests xtask vendor/ecma-rs/vm-js/src vendor/ecma-rs/parse-js/src vendor/ecma-rs/semantic-js/src vendor/ecma-rs/test262-semantic/src \
+      src crates tests xtask benches fuzz tools \
+      vendor/ecma-rs/vm-js/src \
+      vendor/ecma-rs/parse-js/src \
+      vendor/ecma-rs/semantic-js/src \
+      vendor/ecma-rs/test262-semantic/src \
       2>/dev/null || true
   )"
+  append_matches "${grep_matches}"
+fi
+
+# In legacy checkouts `vendor/ecma-rs` may be a git submodule. The top-level `git grep` will not
+# search inside submodules, so explicitly scan the ecma-rs repository if it exists as its own git
+# work tree.
+if command -v git >/dev/null 2>&1 && [[ -e vendor/ecma-rs/.git ]]; then
+  set +e
+  ecma_rs_matches="$(
+    git -C vendor/ecma-rs grep -nE "${conflict_re}" -- \
+      ':(glob)vm-js/src/**/*.rs' \
+      ':(glob)parse-js/src/**/*.rs' \
+      ':(glob)semantic-js/src/**/*.rs' \
+      ':(glob)test262-semantic/src/**/*.rs' \
+      ':!parse-js/tests/TypeScript/**'
+  )"
+  status=$?
+  set -e
+  if [[ "${status}" -ne 0 && "${status}" -ne 1 ]]; then
+    echo "error: git grep failed while scanning vendor/ecma-rs submodule for conflict markers (exit ${status})" >&2
+    exit "${status}"
+  fi
+  if [[ -n "${ecma_rs_matches}" ]]; then
+    # Prefix submodule-local paths so errors point at the superproject file locations.
+    ecma_rs_matches="$(printf '%s\n' "${ecma_rs_matches}" | sed 's|^|vendor/ecma-rs/|')"
+    append_matches "${ecma_rs_matches}"
+  fi
+fi
+
+if [[ -n "${matches}" ]]; then
+  matches="$(printf '%s\n' "${matches}" | sort -u)"
 fi
 
 if [[ -n "${matches}" ]]; then
