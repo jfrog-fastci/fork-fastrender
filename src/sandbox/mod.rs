@@ -538,6 +538,7 @@ fn preflight_status(config: &RendererSandboxConfig, disable_env: Option<&OsStr>)
     || config.enable_landlock
     || config.close_extra_fds
     || config.linux_namespaces.enabled
+    || config.address_space_limit_bytes.is_some()
     || config.core_limit_bytes.is_some()
     || config.nofile_limit.is_some()
     || config.nproc_limit.is_some();
@@ -855,6 +856,10 @@ mod env_override_tests {
         close_extra_fds: false,
         report_only: false,
         network_policy: NetworkPolicy::DenyAllSockets,
+        address_space_limit_bytes: None,
+        nofile_limit: None,
+        core_limit_bytes: None,
+        nproc_limit: None,
         ..RendererSandboxConfig::default()
       },
       None,
