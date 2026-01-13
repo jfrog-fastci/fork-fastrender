@@ -14332,139 +14332,57 @@ fn require_async_generator_object(
 }
 
 pub fn async_generator_prototype_next(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
   this: Value,
-  args: &[Value],
+  _args: &[Value],
 ) -> Result<Value, VmError> {
-  let this_obj = require_async_generator_object(
+  let _this_obj = require_async_generator_object(
     scope,
     this,
     "AsyncGenerator.prototype.next called on non-object",
     "AsyncGenerator.prototype.next called on incompatible receiver",
   )?;
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  enqueue_async_generator_job(vm, scope, host, hooks, callee, this_obj, 0, arg0)
+  Err(VmError::Unimplemented("async generator runtime"))
 }
 
 pub fn async_generator_prototype_return(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
   this: Value,
-  args: &[Value],
+  _args: &[Value],
 ) -> Result<Value, VmError> {
-  let this_obj = require_async_generator_object(
+  let _this_obj = require_async_generator_object(
     scope,
     this,
     "AsyncGenerator.prototype.return called on non-object",
     "AsyncGenerator.prototype.return called on incompatible receiver",
   )?;
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  enqueue_async_generator_job(vm, scope, host, hooks, callee, this_obj, 1, arg0)
+  Err(VmError::Unimplemented("async generator runtime"))
 }
 
 pub fn async_generator_prototype_throw(
-  vm: &mut Vm,
+  _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
   this: Value,
-  args: &[Value],
+  _args: &[Value],
 ) -> Result<Value, VmError> {
-  let this_obj = require_async_generator_object(
+  let _this_obj = require_async_generator_object(
     scope,
     this,
     "AsyncGenerator.prototype.throw called on non-object",
     "AsyncGenerator.prototype.throw called on incompatible receiver",
   )?;
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
-  enqueue_async_generator_job(vm, scope, host, hooks, callee, this_obj, 2, arg0)
-}
-
-fn enqueue_async_generator_job(
-  vm: &mut Vm,
-  scope: &mut Scope<'_>,
-  host: &mut dyn VmHost,
-  hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  gen_obj: GcObject,
-  op: u32,
-  arg: Value,
-) -> Result<Value, VmError> {
-  // AsyncGenerator.* methods return a Promise and perform generator execution in a microtask.
-  //
-  // vm-js models this by enqueueing a Promise job that calls an internal native function
-  // (`exec::async_generator_resume_call`) with the generator + Promise capability stored in native
-  // slots.
-  let mut scope = scope.reborrow();
-  scope.push_root(Value::Object(gen_obj))?;
-  scope.push_root(arg)?;
-
-  let cap = crate::promise_ops::new_promise_capability_with_host_and_hooks(vm, &mut scope, host, hooks)?;
-  scope.push_roots(&[cap.promise, cap.resolve, cap.reject])?;
-
-  let call_id = vm.async_generator_resume_call_id()?;
-  let intr = vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
-
-  let name = scope.alloc_string("")?;
-  let slots = [
-    Value::Object(gen_obj),
-    cap.resolve,
-    cap.reject,
-    Value::Number(op as f64),
-    arg,
-  ];
-  let resume = scope.alloc_native_function_with_slots(call_id, None, name, 0, &slots)?;
-  scope.push_root(Value::Object(resume))?;
-
-  // Ensure `call_impl` can synthesize an execution context when the job runs.
-  let Some(global_object) = scope.heap().get_function_realm(callee)? else {
-    return Err(VmError::InvariantViolation(
-      "async generator method missing [[Realm]]",
-    ));
-  };
-  scope
-    .heap_mut()
-    .object_set_prototype(resume, Some(intr.function_prototype()))?;
-  scope.heap_mut().set_function_realm(resume, global_object)?;
-  if let Some(realm) = vm.current_realm() {
-    scope.heap_mut().set_function_job_realm(resume, realm)?;
-  }
-  if let Some(sm) = vm.get_active_script_or_module() {
-    let token = vm.intern_script_or_module(sm)?;
-    scope
-      .heap_mut()
-      .set_function_script_or_module_token(resume, Some(token))?;
-  }
-
-  let job = Job::new(JobKind::Promise, move |ctx, host| {
-    let _ = ctx.call(host, Value::Object(resume), Value::Undefined, &[])?;
-    Ok(())
-  })?;
-
-  // Root the callback while creating the persistent root: `add_root` can trigger GC.
-  let mut root_scope = scope.reborrow();
-  root_scope.push_root(Value::Object(resume))?;
-
-  let mut roots: Vec<RootId> = Vec::new();
-  roots.try_reserve_exact(1).map_err(|_| VmError::OutOfMemory)?;
-  let id = match root_scope.heap_mut().add_root(Value::Object(resume)) {
-    Ok(id) => id,
-    Err(e) => return Err(e),
-  };
-  roots.push(id);
-
-  hooks.host_enqueue_promise_job(job.with_roots(roots), vm.current_realm());
-  Ok(cap.promise)
+  Err(VmError::Unimplemented("async generator runtime"))
 }
 
 fn require_generator_object(

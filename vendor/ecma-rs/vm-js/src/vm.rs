@@ -330,7 +330,6 @@ pub struct Vm {
   ecma_function_cache: HashMap<EcmaFunctionKey, EcmaFunctionId>,
   template_registry: HashMap<TemplateRegistryKey, TemplateRegistryEntry>,
   async_resume_call: Option<NativeFunctionId>,
-  async_generator_resume_call: Option<NativeFunctionId>,
   module_tla_on_fulfilled_call: Option<NativeFunctionId>,
   module_tla_on_rejected_call: Option<NativeFunctionId>,
   dynamic_import_eval_on_fulfilled_call: Option<NativeFunctionId>,
@@ -591,7 +590,6 @@ impl Vm {
       ecma_function_cache: HashMap::new(),
       template_registry: HashMap::new(),
       async_resume_call: None,
-      async_generator_resume_call: None,
       module_tla_on_fulfilled_call: None,
       module_tla_on_rejected_call: None,
       dynamic_import_eval_on_fulfilled_call: None,
@@ -950,15 +948,6 @@ impl Vm {
     }
     let id = self.register_native_call(crate::exec::async_resume_call)?;
     self.async_resume_call = Some(id);
-    Ok(id)
-  }
-
-  pub(crate) fn async_generator_resume_call_id(&mut self) -> Result<NativeFunctionId, VmError> {
-    if let Some(id) = self.async_generator_resume_call {
-      return Ok(id);
-    }
-    let id = self.register_native_call(crate::exec::async_generator_resume_call)?;
-    self.async_generator_resume_call = Some(id);
     Ok(id)
   }
 
