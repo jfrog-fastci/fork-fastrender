@@ -17049,6 +17049,18 @@ fn compute_base_styles<'a>(
     styles.display = Display::None;
   }
 
+  // HTML `<template>` elements represent nothing in a rendering and must never generate boxes,
+  // regardless of author CSS (HTML Standard: "In a rendering, the `template` element represents
+  // nothing.").
+  //
+  // The UA stylesheet sets `template { display: none; }`, but author styles can override that (e.g.
+  // `template { display: block !important; }`). Force `display: none` after the cascade so template
+  // elements never accidentally participate in layout/paint.
+  if node.is_html_template_element() {
+    ua_styles.display = Display::None;
+    styles.display = Display::None;
+  }
+
   // HTML <noscript> elements are only rendered when scripting is disabled for the document.
   //
   // When scripting is enabled, browsers still parse <noscript> in the body, but the element is not

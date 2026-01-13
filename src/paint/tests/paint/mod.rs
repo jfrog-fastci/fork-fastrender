@@ -45,6 +45,7 @@ mod contain_paint;
 mod css2_clip_rect_integration;
 mod determinism_repeat_test;
 mod display_contents;
+mod template_element_non_rendering;
 mod display_list_builder_deep_nesting;
 mod display_list_color_fonts_test;
 mod display_list_font_palette_overrides_test;
