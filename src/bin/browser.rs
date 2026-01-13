@@ -5493,7 +5493,7 @@ impl App {
         tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
       } else {
         let mut tex =
-          fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap);
+          fastrender::ui::WgpuPixmapTexture::new_page(&self.device, &mut self.egui_renderer, &pixmap);
         tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
         self.tab_textures.insert(tab_id, tex);
       }
@@ -11286,8 +11286,11 @@ impl App {
         };
 
         tex.set_filter_mode(&self.device, &mut self.egui_renderer, desired_filter);
-        let response =
-          ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
+        let response = ui.add(
+          egui::Image::new((tex.id(), size_points))
+            .uv(tex.uv_rect())
+            .sense(egui::Sense::click()),
+        );
         // The page is currently presented as a rendered image (no document accessibility yet). Give
         // it a stable label so screen readers can identify what this focusable region represents.
         response.widget_info(|| {

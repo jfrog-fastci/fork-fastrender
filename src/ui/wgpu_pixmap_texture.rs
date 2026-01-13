@@ -14,10 +14,12 @@ pub struct WgpuPixmapTexture {
   texture: wgpu::Texture,
   view: wgpu::TextureView,
   id: egui::TextureId,
-  size_px: (u32, u32),
+  content_size_px: (u32, u32),
+  alloc_size_px: (u32, u32),
   staging: Vec<u8>,
   padded_bytes_per_row: u32,
   filter: wgpu::FilterMode,
+  allocation: WgpuPixmapTextureAllocation,
 }
 
 /// Filter mode used for displaying rasterized page content.
@@ -26,6 +28,23 @@ pub struct WgpuPixmapTexture {
 /// If the UI intentionally draws the image at fractional scale (e.g. smooth zooming), switching to
 /// `Linear` may look better at the cost of potentially blurrier text.
 const PAGE_TEXTURE_FILTER_MODE: wgpu::FilterMode = wgpu::FilterMode::Nearest;
+
+/// Allocation bucket size used for page textures.
+///
+/// Resizing a browser window can produce many intermediate pixmap sizes. We avoid per-frame GPU
+/// texture reallocations by rounding allocation up to a coarse grid and reusing the texture until
+/// the content exceeds its capacity.
+const PAGE_TEXTURE_BUCKET_PX: u32 = 64;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum WgpuPixmapTextureAllocation {
+  /// Allocate exactly the pixmap size, recreating the underlying wgpu texture on any size change.
+  ///
+  /// This is used for small UI assets such as favicons where we don't have per-widget UV cropping.
+  Exact,
+  /// Allocate in buckets and rely on UV cropping to display only the active content region.
+  PageBucketed,
+}
 
 /// Minimal interface we need from `egui_wgpu::Renderer` to manage texture IDs.
 ///
@@ -104,6 +123,53 @@ where
   true
 }
 
+fn round_up_to_bucket(value: u32, bucket: u32) -> u32 {
+  if bucket <= 1 {
+    return value;
+  }
+  let rem = value % bucket;
+  if rem == 0 {
+    value
+  } else {
+    value.saturating_add(bucket - rem)
+  }
+}
+
+fn page_alloc_size_for_content(content_size_px: (u32, u32)) -> (u32, u32) {
+  (
+    round_up_to_bucket(content_size_px.0, PAGE_TEXTURE_BUCKET_PX),
+    round_up_to_bucket(content_size_px.1, PAGE_TEXTURE_BUCKET_PX),
+  )
+}
+
+fn recreate_on_capacity_exceeded<R, T>(
+  egui_renderer: &mut R,
+  content_size_px: &mut (u32, u32),
+  alloc_size_px: &mut (u32, u32),
+  id: &mut egui::TextureId,
+  new_content_size_px: (u32, u32),
+  create: impl FnOnce(&mut R, (u32, u32)) -> (T, egui::TextureId),
+) -> Option<T>
+where
+  R: EguiWgpuTextureRegistry,
+{
+  *content_size_px = new_content_size_px;
+
+  let required_alloc_size_px = page_alloc_size_for_content(new_content_size_px);
+  if required_alloc_size_px.0 <= alloc_size_px.0 && required_alloc_size_px.1 <= alloc_size_px.1 {
+    return None;
+  }
+
+  // Free the old egui `TextureId` first to avoid the renderer's texture registry growing
+  // indefinitely as we resize/recreate.
+  egui_renderer.free_texture(id);
+
+  let (resource, new_id) = create(egui_renderer, required_alloc_size_px);
+  *id = new_id;
+  *alloc_size_px = required_alloc_size_px;
+  Some(resource)
+}
+
 impl WgpuPixmapTexture {
   pub fn new(
     device: &wgpu::Device,
@@ -111,6 +177,43 @@ impl WgpuPixmapTexture {
     pixmap: &Pixmap,
   ) -> Self {
     Self::new_with_filter(device, egui_renderer, pixmap, PAGE_TEXTURE_FILTER_MODE)
+  }
+
+  /// Create a texture for rasterized page content.
+  ///
+  /// Unlike [`WgpuPixmapTexture::new`], this uses a bucketed allocation strategy so intermediate
+  /// window resizes don't constantly recreate the underlying GPU texture.
+  pub fn new_page(
+    device: &wgpu::Device,
+    egui_renderer: &mut egui_wgpu::Renderer,
+    pixmap: &Pixmap,
+  ) -> Self {
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let content_size_px = (w, h);
+    let alloc_size_px = page_alloc_size_for_content(content_size_px);
+    let (texture, view, id) = create_and_register_texture(
+      device,
+      egui_renderer,
+      alloc_size_px.0,
+      alloc_size_px.1,
+      PAGE_TEXTURE_FILTER_MODE,
+    );
+
+    let padded_bytes_per_row = align_to(w.saturating_mul(4), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let mut staging = Vec::new();
+    staging.resize(staging_len(padded_bytes_per_row, h), 0);
+
+    Self {
+      texture,
+      view,
+      id,
+      content_size_px,
+      alloc_size_px,
+      staging,
+      padded_bytes_per_row,
+      filter: PAGE_TEXTURE_FILTER_MODE,
+      allocation: WgpuPixmapTextureAllocation::PageBucketed,
+    }
   }
 
   /// Create a texture with an explicit filter mode.
@@ -134,10 +237,12 @@ impl WgpuPixmapTexture {
       texture,
       view,
       id,
-      size_px: (w, h),
+      content_size_px: (w, h),
+      alloc_size_px: (w, h),
       staging,
       padded_bytes_per_row,
       filter,
+      allocation: WgpuPixmapTextureAllocation::Exact,
     }
   }
 
@@ -171,25 +276,55 @@ impl WgpuPixmapTexture {
     pixmap: &Pixmap,
   ) {
     let (w, h) = (pixmap.width(), pixmap.height());
+    let new_content_size_px = (w, h);
     let src_stride = w.saturating_mul(4);
 
-    if let Some((texture, view)) = recreate_on_resize(
-      egui_renderer,
-      &mut self.size_px,
-      &mut self.id,
-      (w, h),
-      |egui_renderer| {
-        let (texture, view, id) =
-          create_and_register_texture(device, egui_renderer, w, h, self.filter);
-        ((texture, view), id)
-      },
-    ) {
-      self.texture = texture;
-      self.view = view;
-      self.padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-      self
-        .staging
-        .resize(staging_len(self.padded_bytes_per_row, h), 0);
+    match self.allocation {
+      WgpuPixmapTextureAllocation::Exact => {
+        self.content_size_px = new_content_size_px;
+        if let Some((texture, view)) = recreate_on_resize(
+          egui_renderer,
+          &mut self.alloc_size_px,
+          &mut self.id,
+          new_content_size_px,
+          |egui_renderer| {
+            let (texture, view, id) =
+              create_and_register_texture(device, egui_renderer, w, h, self.filter);
+            ((texture, view), id)
+          },
+        ) {
+          self.texture = texture;
+          self.view = view;
+        }
+      }
+      WgpuPixmapTextureAllocation::PageBucketed => {
+        if let Some((texture, view)) = recreate_on_capacity_exceeded(
+          egui_renderer,
+          &mut self.content_size_px,
+          &mut self.alloc_size_px,
+          &mut self.id,
+          new_content_size_px,
+          |egui_renderer, alloc_size_px| {
+            let (alloc_w, alloc_h) = alloc_size_px;
+            let (texture, view, id) =
+              create_and_register_texture(device, egui_renderer, alloc_w, alloc_h, self.filter);
+            ((texture, view), id)
+          },
+        ) {
+          self.texture = texture;
+          self.view = view;
+        }
+      }
+    }
+
+    // Upload staging buffers are based on *content* dimensions, not allocation size.
+    let desired_padded_bytes_per_row = align_to(src_stride, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    if self.padded_bytes_per_row != desired_padded_bytes_per_row {
+      self.padded_bytes_per_row = desired_padded_bytes_per_row;
+    }
+    let expected_staging_len = staging_len(self.padded_bytes_per_row, h);
+    if self.staging.len() != expected_staging_len {
+      self.staging.resize(expected_staging_len, 0);
     }
 
     // Fast path: if the source row stride is already 256-byte aligned, we can upload directly
@@ -219,10 +354,7 @@ impl WgpuPixmapTexture {
 
     // Ensure staging is correctly sized even if the pixmap dimensions match but the alignment
     // constant changes (unlikely) or we loaded older serialized state.
-    let expected_len = staging_len(self.padded_bytes_per_row, h);
-    if self.staging.len() != expected_len {
-      self.staging.resize(expected_len, 0);
-    }
+    debug_assert_eq!(self.staging.len(), expected_staging_len);
 
     copy_pixmap_to_padded_staging(pixmap, self.padded_bytes_per_row, &mut self.staging);
 
@@ -252,11 +384,27 @@ impl WgpuPixmapTexture {
   }
 
   pub fn size_px(&self) -> (u32, u32) {
-    self.size_px
+    self.content_size_px
+  }
+
+  pub fn alloc_size_px(&self) -> (u32, u32) {
+    self.alloc_size_px
+  }
+
+  /// Normalized UV rect that crops the displayed region to the active pixmap content.
+  pub fn uv_rect(&self) -> egui::Rect {
+    let (content_w, content_h) = self.content_size_px;
+    let (alloc_w, alloc_h) = self.alloc_size_px;
+    if alloc_w == 0 || alloc_h == 0 {
+      return egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(0.0, 0.0));
+    }
+    let max_x = (content_w as f32 / alloc_w as f32).min(1.0);
+    let max_y = (content_h as f32 / alloc_h as f32).min(1.0);
+    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(max_x, max_y))
   }
 
   pub fn size_points(&self, pixels_per_point: f32) -> egui::Vec2 {
-    let (w, h) = self.size_px;
+    let (w, h) = self.content_size_px;
     egui::vec2(w as f32 / pixels_per_point, h as f32 / pixels_per_point)
   }
 
@@ -496,5 +644,114 @@ mod tests {
     assert!(registry.freed.is_empty());
     assert_eq!(id, egui::TextureId::User(1));
     assert_eq!(filter, wgpu::FilterMode::Nearest);
+  }
+
+  #[test]
+  fn recreate_on_capacity_exceeded_is_noop_when_new_content_fits_existing_alloc() {
+    #[derive(Default)]
+    struct MockRegistry {
+      freed: Vec<egui::TextureId>,
+    }
+
+    impl EguiWgpuTextureRegistry for MockRegistry {
+      fn register_native_texture(
+        &mut self,
+        _device: &wgpu::Device,
+        _view: &wgpu::TextureView,
+        _filter: wgpu::FilterMode,
+      ) -> egui::TextureId {
+        unreachable!("not used by this test")
+      }
+
+      fn free_texture(&mut self, id: &egui::TextureId) {
+        self.freed.push(*id);
+      }
+    }
+
+    let mut registry = MockRegistry::default();
+    let mut content_size_px = (100, 100);
+    let mut alloc_size_px = page_alloc_size_for_content(content_size_px);
+    assert_eq!(alloc_size_px, (128, 128));
+    let mut id = egui::TextureId::User(1);
+
+    let recreated = recreate_on_capacity_exceeded(
+      &mut registry,
+      &mut content_size_px,
+      &mut alloc_size_px,
+      &mut id,
+      (120, 127),
+      |_registry, _new_alloc| unreachable!("should not recreate when content fits in alloc"),
+    );
+
+    assert!(recreated.is_none());
+    assert!(registry.freed.is_empty());
+    assert_eq!(id, egui::TextureId::User(1));
+    assert_eq!(content_size_px, (120, 127));
+    assert_eq!(alloc_size_px, (128, 128));
+  }
+
+  #[test]
+  fn recreate_on_capacity_exceeded_frees_old_texture_id_once_when_bucket_is_exceeded() {
+    #[derive(Default)]
+    struct MockRegistry {
+      freed: Vec<egui::TextureId>,
+    }
+
+    impl EguiWgpuTextureRegistry for MockRegistry {
+      fn register_native_texture(
+        &mut self,
+        _device: &wgpu::Device,
+        _view: &wgpu::TextureView,
+        _filter: wgpu::FilterMode,
+      ) -> egui::TextureId {
+        unreachable!("not used by this test")
+      }
+
+      fn free_texture(&mut self, id: &egui::TextureId) {
+        self.freed.push(*id);
+      }
+    }
+
+    let mut registry = MockRegistry::default();
+    let mut content_size_px = (100, 100);
+    let mut alloc_size_px = page_alloc_size_for_content(content_size_px);
+    let mut id = egui::TextureId::User(1);
+    let old_id = id;
+
+    let recreated = recreate_on_capacity_exceeded(
+      &mut registry,
+      &mut content_size_px,
+      &mut alloc_size_px,
+      &mut id,
+      (129, 127),
+      |registry, new_alloc_size_px| {
+        // Ensure we freed the old id before trying to "register" a new one.
+        assert_eq!(registry.freed, vec![old_id]);
+        assert_eq!(new_alloc_size_px, (192, 128));
+        ((), egui::TextureId::User(2))
+      },
+    );
+
+    assert!(recreated.is_some());
+    assert_eq!(registry.freed, vec![old_id]);
+    assert_eq!(id, egui::TextureId::User(2));
+    assert_eq!(content_size_px, (129, 127));
+    assert_eq!(alloc_size_px, (192, 128));
+
+    // Updating again within the same bucket should not free/recreate again.
+    let recreated = recreate_on_capacity_exceeded(
+      &mut registry,
+      &mut content_size_px,
+      &mut alloc_size_px,
+      &mut id,
+      (191, 128),
+      |_registry, _new_alloc| unreachable!("should not recreate when content fits in alloc"),
+    );
+
+    assert!(recreated.is_none());
+    assert_eq!(registry.freed, vec![old_id]);
+    assert_eq!(id, egui::TextureId::User(2));
+    assert_eq!(content_size_px, (191, 128));
+    assert_eq!(alloc_size_px, (192, 128));
   }
 }
