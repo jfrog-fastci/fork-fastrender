@@ -12,7 +12,6 @@ use crate::js::event_loop::{EventLoop, TaskSource, TimerId};
 use crate::js::realm_module_loader::ModuleLoadOutcome;
 use crate::js::vm_error_format;
 use crate::js::window_realm::{
-  drain_pending_dataset_mutation_observer_microtasks,
   dispatch_host_exotic_delete, dispatch_host_exotic_get, dispatch_host_exotic_set,
   DatasetExoticContext, ExoticDispatchHandledBy,
   WindowRealmHost, WindowRealmUserData,
