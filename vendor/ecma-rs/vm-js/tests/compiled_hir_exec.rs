@@ -11049,6 +11049,167 @@ fn compiled_assignment_object_destructuring() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_destructuring_computed_member_target_delays_to_property_key_conversion() -> Result<(), VmError> {
+  // Mirrors test262:
+  // `language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order.js`
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = [];
+
+      function source() {
+        log.push("source");
+        return {
+          get p() { log.push("get"); }
+        };
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) { log.push("set"); }
+        };
+      }
+
+      function sourceKey() {
+        log.push("source-key");
+        return { toString() { log.push("source-key-tostring"); return "p"; } };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return { toString() { log.push("target-key-tostring"); return "q"; } };
+      }
+
+      ({ [sourceKey()]: target()[targetKey()] } = source());
+      log.join("|")
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(
+    rt.heap().get_string(s)?.to_utf8_lossy(),
+    "source|source-key|source-key-tostring|target|target-key|get|target-key-tostring|set"
+  );
+  Ok(())
+}
+
+#[test]
+fn compiled_destructuring_computed_member_target_delays_to_property_key_past_default_eval() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = [];
+
+      function source() {
+        log.push("source");
+        return {
+          get p() { log.push("get"); return undefined; }
+        };
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) { log.push("set"); }
+        };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return { toString() { log.push("target-key-tostring"); return "q"; } };
+      }
+
+      function def() { log.push("default"); return 1; }
+
+      ({ p: target()[targetKey()] = def() } = source());
+      log.join("|")
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(
+    rt.heap().get_string(s)?.to_utf8_lossy(),
+    "source|target|target-key|get|default|target-key-tostring|set"
+  );
+  Ok(())
+}
+
+#[test]
+fn compiled_array_destructuring_computed_member_target_delays_to_property_key_conversion() -> Result<(), VmError> {
+  // Mirrors test262:
+  // `language/expressions/assignment/destructuring/iterator-destructuring-property-reference-target-evaluation-order.js`
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = [];
+
+      function source() {
+        log.push("source");
+        let iterator = {
+          next() {
+            log.push("iterator-step");
+            return {
+              get done() { log.push("iterator-done"); return true; },
+              get value() { log.push("iterator-value"); }
+            };
+          },
+        };
+        let src = {};
+        src[Symbol.iterator] = function() {
+          log.push("iterator");
+          return iterator;
+        };
+        return src;
+      }
+
+      function target() {
+        log.push("target");
+        return {
+          set q(v) { log.push("set"); }
+        };
+      }
+
+      function targetKey() {
+        log.push("target-key");
+        return { toString() { log.push("target-key-tostring"); return "q"; } };
+      }
+
+      ([target()[targetKey()]] = source());
+      log.join("|")
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(
+    rt.heap().get_string(s)?.to_utf8_lossy(),
+    "source|iterator|target|target-key|iterator-step|iterator-done|target-key-tostring|set"
+  );
+  Ok(())
+}
+
+#[test]
 fn compiled_array_destructuring_rest() -> Result<(), VmError> {
   let result = compile_and_call0(
     r#"
