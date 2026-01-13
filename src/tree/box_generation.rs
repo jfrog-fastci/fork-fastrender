@@ -7789,9 +7789,27 @@ fn create_replaced_box_from_styled(
         .map(|s| s.to_string());
     }
     let controls = styled.node.get_attribute_ref("controls").is_some();
+    let crossorigin = match styled.node.get_attribute_ref("crossorigin") {
+      None => CrossOriginAttribute::None,
+      Some(value) => {
+        let value = trim_ascii_whitespace(value);
+        if value.eq_ignore_ascii_case("use-credentials") {
+          CrossOriginAttribute::UseCredentials
+        } else {
+          // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+          CrossOriginAttribute::Anonymous
+        }
+      }
+    };
+    let referrer_policy = styled
+      .node
+      .get_attribute_ref("referrerpolicy")
+      .and_then(ReferrerPolicy::from_attribute);
     ReplacedType::Video {
       src,
       poster,
+      crossorigin,
+      referrer_policy,
       controls,
     }
   } else if tag.eq_ignore_ascii_case("audio") {
@@ -7801,7 +7819,27 @@ fn create_replaced_box_from_styled(
       crate::html::media::MediaElementKind::Audio,
       media_ctx.as_ref(),
     );
-    ReplacedType::Audio { src }
+    let crossorigin = match styled.node.get_attribute_ref("crossorigin") {
+      None => CrossOriginAttribute::None,
+      Some(value) => {
+        let value = trim_ascii_whitespace(value);
+        if value.eq_ignore_ascii_case("use-credentials") {
+          CrossOriginAttribute::UseCredentials
+        } else {
+          // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+          CrossOriginAttribute::Anonymous
+        }
+      }
+    };
+    let referrer_policy = styled
+      .node
+      .get_attribute_ref("referrerpolicy")
+      .and_then(ReferrerPolicy::from_attribute);
+    ReplacedType::Audio {
+      src,
+      crossorigin,
+      referrer_policy,
+    }
   } else if tag.eq_ignore_ascii_case("canvas") {
     ReplacedType::Canvas
   } else if tag.eq_ignore_ascii_case("svg") {

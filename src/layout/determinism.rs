@@ -506,7 +506,7 @@ fn hash_replaced_type(hasher: &mut FingerprintHasher, replaced: &ReplacedType) {
       hasher.write_u8(1);
       hasher.write_str(src);
     }
-    ReplacedType::Audio { src } => {
+    ReplacedType::Audio { src, .. } => {
       hasher.write_u8(2);
       hasher.write_str(src);
     }

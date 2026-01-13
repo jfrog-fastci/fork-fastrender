@@ -1372,7 +1372,11 @@ impl Painter {
         }
       }
       ReplacedType::Video {
-        src: _src, poster, ..
+        src: _src,
+        poster,
+        crossorigin,
+        referrer_policy,
+        ..
       } => {
         let needs_intrinsic = replaced_box.intrinsic_size.is_none();
         let needs_ratio = replaced_box.aspect_ratio.is_none();
@@ -1380,7 +1384,11 @@ impl Painter {
           return;
         }
         if let Some(poster) = poster {
-          if let Ok(img) = self.image_cache.load(&poster) {
+          if let Ok(img) = self.image_cache.load_with_crossorigin_and_referrer_policy(
+            &poster,
+            *crossorigin,
+            *referrer_policy,
+          ) {
             let orientation = style.image_orientation.resolve(img.orientation, false);
             if let Some((w, h)) =
               img.css_dimensions(orientation, &style.image_resolution, self.scale, None)
@@ -9352,7 +9360,14 @@ impl Painter {
           }
         }
       }
-      ReplacedType::Video { src, .. } => {
+      ReplacedType::Video {
+        src,
+        crossorigin,
+        referrer_policy,
+        ..
+      } => {
+        let crossorigin = *crossorigin;
+        let referrer_policy = *referrer_policy;
         // Prefer an actual decoded video frame if one is available.
         if let Some(provider) = self.media_provider.as_ref() {
           let size_hint = crate::media::MediaFrameSizeHint::new(
@@ -9392,8 +9407,8 @@ impl Painter {
         for candidate in sources {
           if self.paint_image_from_src(
             &candidate,
-            CrossOriginAttribute::None,
-            None,
+            crossorigin,
+            referrer_policy,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -24294,6 +24309,8 @@ mod tests {
         replaced_type: ReplacedType::Video {
           src: String::new(),
           poster: Some(poster.to_string()),
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           controls: false,
         },
         box_id: None,
@@ -24354,6 +24371,8 @@ mod tests {
     let replaced = ReplacedType::Video {
       src: "v.mp4".to_string(),
       poster: None,
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       controls: false,
     };
 
@@ -24394,6 +24413,8 @@ mod tests {
         replaced_type: ReplacedType::Video {
           src: String::new(),
           poster: None,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           controls: true,
         },
         box_id: None,
@@ -24428,6 +24449,8 @@ mod tests {
         replaced_type: ReplacedType::Video {
           src: String::new(),
           poster: None,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
           controls: true,
         },
         box_id: None,
@@ -24452,7 +24475,11 @@ mod tests {
     let fragment = FragmentNode::new_with_style(
       Rect::from_xywh(0.0, 0.0, 12.0, 8.0),
       FragmentContent::Replaced {
-        replaced_type: ReplacedType::Audio { src: String::new() },
+        replaced_type: ReplacedType::Audio {
+          src: String::new(),
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
+        },
         box_id: None,
       },
       vec![],

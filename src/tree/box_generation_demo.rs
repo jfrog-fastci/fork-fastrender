@@ -260,6 +260,8 @@ impl DOMNode {
       "video" => Some(ReplacedType::Video {
         src,
         poster,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       }),
       "canvas" => Some(ReplacedType::Canvas),
@@ -1520,6 +1522,8 @@ mod tests {
       ReplacedType::Video {
         src: "test.mp4".to_string(),
         poster: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
       None,

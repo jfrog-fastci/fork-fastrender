@@ -804,6 +804,12 @@ pub enum ReplacedType {
     src: String,
     /// Poster image URL or data URI
     poster: Option<String>,
+    /// Parsed `crossorigin` attribute.
+    ///
+    /// Used to control the request profile for poster fetches (and, in the future, media fetches).
+    crossorigin: CrossOriginAttribute,
+    /// Optional parsed `referrerpolicy` attribute.
+    referrer_policy: Option<ReferrerPolicy>,
     /// Whether the `controls` attribute is present.
     ///
     /// This is a boolean HTML attribute: its presence enables the UA control UI.
@@ -813,6 +819,10 @@ pub enum ReplacedType {
   Audio {
     /// Source URL
     src: String,
+    /// Parsed `crossorigin` attribute.
+    crossorigin: CrossOriginAttribute,
+    /// Optional parsed `referrerpolicy` attribute.
+    referrer_policy: Option<ReferrerPolicy>,
   },
 
   /// Canvas element
@@ -3356,6 +3366,8 @@ mod tests {
     let video = ReplacedType::Video {
       src: String::new(),
       poster: Some("   ".to_string()),
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       controls: false,
     };
     let sources = video.image_sources_with_fallback(ImageSelectionContext {
@@ -3778,6 +3790,8 @@ mod tests {
     let video = ReplacedType::Video {
       src: "video.mp4".to_string(),
       poster: Some("thumb.png".to_string()),
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       controls: false,
     };
     let sources = video.image_sources_with_fallback(ImageSelectionContext {

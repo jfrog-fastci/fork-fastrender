@@ -44,6 +44,7 @@ use crate::text::pipeline::GlyphPosition;
 use crate::text::pipeline::RunRotation;
 use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
+use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -2094,6 +2095,8 @@ fn video_replaced_element_uses_poster_image_in_display_list() {
   let replaced_type = ReplacedType::Video {
     src: "unused".to_string(),
     poster: Some(poster_path.to_string_lossy().to_string()),
+    crossorigin: CrossOriginAttribute::None,
+    referrer_policy: None,
     controls: false,
   };
   let style = Arc::new(ComputedStyle::default());

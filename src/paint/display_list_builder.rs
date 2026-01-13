@@ -7801,6 +7801,7 @@ impl DisplayListBuilder {
 
           let crossorigin = match replaced_type {
             ReplacedType::Image { crossorigin, .. } => *crossorigin,
+            ReplacedType::Video { crossorigin, .. } => *crossorigin,
             _ => CrossOriginAttribute::None,
           };
           let loading = match replaced_type {
@@ -7815,6 +7816,7 @@ impl DisplayListBuilder {
             ReplacedType::Image {
               referrer_policy, ..
             } => *referrer_policy,
+            ReplacedType::Video { referrer_policy, .. } => *referrer_policy,
             _ => None,
           };
           // `ImageCache` may return an internal 1×1 fully-transparent placeholder for non-fetchable
@@ -16844,6 +16846,8 @@ mod tests {
       ReplacedType::Video {
         src: "v.mp4".to_string(),
         poster: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
     );
@@ -21146,6 +21150,76 @@ mod tests {
   }
 
   #[test]
+  fn video_poster_fetch_uses_crossorigin_and_referrer_policy() {
+    use crate::error::Result;
+    use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher};
+
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      bytes: Arc<Vec<u8>>,
+      requests: Arc<std::sync::Mutex<Vec<(FetchDestination, ReferrerPolicy)>>>,
+    }
+
+    impl RecordingFetcher {
+      fn new(bytes: Vec<u8>) -> (Self, Arc<std::sync::Mutex<Vec<(FetchDestination, ReferrerPolicy)>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+          Self {
+            bytes: Arc::new(bytes),
+            requests: Arc::clone(&requests),
+          },
+          requests,
+        )
+      }
+
+      fn make_resource(&self, url: &str) -> FetchedResource {
+        let mut res = FetchedResource::new((*self.bytes).clone(), Some("image/png".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        res
+      }
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Ok(self.make_resource(url))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if let Ok(mut guard) = self.requests.lock() {
+          guard.push((req.destination, req.referrer_policy));
+        }
+        self.fetch(req.url)
+      }
+    }
+
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+      .write_image(&[0u8, 0, 0, 255], 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+    let (fetcher, requests) = RecordingFetcher::new(buf);
+
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    let builder = DisplayListBuilder::with_image_cache(cache);
+    let fragment = FragmentNode::new_replaced(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      ReplacedType::Video {
+        src: "unused".to_string(),
+        poster: Some("https://img.test/poster.png".to_string()),
+        crossorigin: CrossOriginAttribute::Anonymous,
+        referrer_policy: Some(ReferrerPolicy::NoReferrer),
+        controls: false,
+      },
+    );
+    let _list = builder.build(&fragment);
+
+    let recorded = requests.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, FetchDestination::ImageCors);
+    assert_eq!(recorded[0].1, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
   fn embed_and_object_decode_images() {
     let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="blue"/></svg>"#;
 
@@ -22268,6 +22342,8 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
     );
@@ -22287,6 +22363,8 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: true,
       },
     );
@@ -22313,6 +22391,8 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: true,
       },
     );
@@ -22345,7 +22425,11 @@ mod tests {
   fn audio_replaced_uses_labeled_placeholder() {
     let fragment = FragmentNode::new_replaced(
       Rect::from_xywh(0.0, 0.0, 30.0, 12.0),
-      ReplacedType::Audio { src: String::new() },
+      ReplacedType::Audio {
+        src: String::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
     );
     let builder = DisplayListBuilder::new();
     let list = builder.build(&fragment);
@@ -22364,6 +22448,8 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: Some(poster.to_string()),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
     );

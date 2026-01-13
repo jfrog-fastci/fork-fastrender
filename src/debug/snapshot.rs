@@ -909,7 +909,7 @@ fn snapshot_replaced(replaced: &ReplacedType) -> ReplacedSnapshot {
       alt: alt.clone(),
     },
     ReplacedType::Video { src, .. } => ReplacedSnapshot::Video { src: src.clone() },
-    ReplacedType::Audio { src } => ReplacedSnapshot::Audio { src: src.clone() },
+    ReplacedType::Audio { src, .. } => ReplacedSnapshot::Audio { src: src.clone() },
     ReplacedType::Canvas => ReplacedSnapshot::Canvas,
     ReplacedType::Svg { .. } => ReplacedSnapshot::Svg,
     ReplacedType::Iframe { src, srcdoc, .. } => ReplacedSnapshot::Iframe {

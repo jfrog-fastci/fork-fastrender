@@ -18289,7 +18289,13 @@ impl FastRender {
           }
         }
       }
-      ReplacedType::Video { .. } => {
+      ReplacedType::Video {
+        crossorigin,
+        referrer_policy,
+        ..
+      } => {
+        let crossorigin = *crossorigin;
+        let referrer_policy = *referrer_policy;
         if profile_enabled {
           REPLACED_INTRINSIC_PROFILE.with(|state| {
             state.borrow_mut().videos += 1;
@@ -18320,7 +18326,11 @@ impl FastRender {
             } else {
               self
                 .image_cache
-                .probe(candidate.url)
+                .probe_with_crossorigin_and_referrer_policy(
+                  candidate.url,
+                  crossorigin,
+                  referrer_policy,
+                )
                 .map(|meta| (*meta).clone())
             };
             if let Ok(meta) = meta {
@@ -31058,6 +31068,8 @@ mod tests {
           ReplacedType::Video {
             src: String::new(),
             poster: Some("#".into()),
+            crossorigin: CrossOriginAttribute::None,
+            referrer_policy: None,
             controls: false,
           },
           None,
@@ -32102,6 +32114,8 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: Some(poster.to_string()),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
       None,
@@ -32146,6 +32160,8 @@ mod tests {
       ReplacedType::Video {
         src: String::new(),
         poster: Some("   ".to_string()),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         controls: false,
       },
       Some(Size::new(200.0, 0.0)),

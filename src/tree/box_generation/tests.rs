@@ -3285,7 +3285,7 @@ fn audio_src_falls_back_to_source_children() {
 
   fn find_audio_src(node: &BoxNode) -> Option<String> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Audio { src } = &repl.replaced_type {
+      if let ReplacedType::Audio { src, .. } = &repl.replaced_type {
         return Some(src.clone());
       }
     }
@@ -3305,7 +3305,7 @@ fn audio_src_placeholder_falls_back_to_source_children() {
 
   fn find_audio_src(node: &BoxNode) -> Option<String> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Audio { src } = &repl.replaced_type {
+      if let ReplacedType::Audio { src, .. } = &repl.replaced_type {
         return Some(src.clone());
       }
     }
@@ -3325,7 +3325,7 @@ fn audio_src_about_blank_fragment_falls_back_to_source_children() {
 
   fn find_audio_src(node: &BoxNode) -> Option<String> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Audio { src } = &repl.replaced_type {
+      if let ReplacedType::Audio { src, .. } = &repl.replaced_type {
         return Some(src.clone());
       }
     }
@@ -3419,7 +3419,7 @@ fn audio_src_prefers_source_type_prefix() {
 
   fn find_audio_src(node: &BoxNode) -> Option<String> {
     if let BoxType::Replaced(repl) = &node.box_type {
-      if let ReplacedType::Audio { src } = &repl.replaced_type {
+      if let ReplacedType::Audio { src, .. } = &repl.replaced_type {
         return Some(src.clone());
       }
     }
@@ -3774,6 +3774,8 @@ fn test_find_replaced_boxes_utility() {
     ReplacedType::Video {
       src: "test.mp4".to_string(),
       poster: None,
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
       controls: false,
     },
     None,
