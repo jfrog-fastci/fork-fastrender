@@ -1115,6 +1115,15 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsModuleHooks<'_, Host> 
     self.inner.host_enqueue_promise_job(job, realm);
   }
 
+  fn host_enqueue_promise_job_fallible(
+    &mut self,
+    ctx: &mut dyn vm_js::VmJobContext,
+    job: vm_js::Job,
+    realm: Option<vm_js::RealmId>,
+  ) -> Result<(), VmError> {
+    self.inner.host_enqueue_promise_job_fallible(ctx, job, realm)
+  }
+
   fn host_exotic_get(
     &mut self,
     scope: &mut Scope<'_>,

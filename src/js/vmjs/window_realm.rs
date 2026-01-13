@@ -1421,6 +1421,15 @@ impl WindowRealm {
         self.microtasks.enqueue_promise_job(job, realm);
       }
 
+      fn host_enqueue_promise_job_fallible(
+        &mut self,
+        ctx: &mut dyn vm_js::VmJobContext,
+        job: vm_js::Job,
+        realm: Option<vm_js::RealmId>,
+      ) -> Result<(), VmError> {
+        vm_js::VmHostHooks::host_enqueue_promise_job_fallible(&mut *self.microtasks, ctx, job, realm)
+      }
+
       fn host_exotic_get(
         &mut self,
         scope: &mut Scope<'_>,
@@ -1636,16 +1645,46 @@ impl WindowRealm {
           }
         }
 
-        fn drain_into(&mut self, queue: &mut vm_js::MicrotaskQueue) {
-          for (realm, job) in self.pending.drain(..) {
-            queue.enqueue_promise_job(job, realm);
+        fn drain_into(
+          &mut self,
+          ctx: &mut dyn vm_js::VmJobContext,
+          queue: &mut vm_js::MicrotaskQueue,
+        ) -> Result<(), VmError> {
+          let mut pending = std::mem::take(&mut self.pending).into_iter();
+          while let Some((realm, job)) = pending.next() {
+            if let Err(err) =
+              vm_js::VmHostHooks::host_enqueue_promise_job_fallible(queue, ctx, job, realm)
+            {
+              // Discard any remaining jobs so we don't leak persistent roots.
+              for (_realm, job) in pending {
+                job.discard(ctx);
+              }
+              return Err(err);
+            }
           }
+          Ok(())
         }
       }
 
       impl VmHostHooks for DomShimMicrotaskHooks {
         fn host_enqueue_promise_job(&mut self, job: vm_js::Job, realm: Option<RealmId>) {
           self.pending.push((realm, job));
+        }
+
+        fn host_enqueue_promise_job_fallible(
+          &mut self,
+          ctx: &mut dyn vm_js::VmJobContext,
+          job: vm_js::Job,
+          realm: Option<RealmId>,
+        ) -> Result<(), VmError> {
+          // Avoid `Vec::push` aborting on allocator OOM: reserve fallibly and surface
+          // `VmError::OutOfMemory` instead.
+          if self.pending.try_reserve(1).is_err() {
+            job.discard(ctx);
+            return Err(VmError::OutOfMemory);
+          }
+          self.pending.push((realm, job));
+          Ok(())
         }
 
         fn host_exotic_get(
@@ -1888,7 +1927,14 @@ impl WindowRealm {
         // Some job types may schedule new Promise jobs via `VmHostHooks`; enqueue them into the VM's
         // microtask queue before proceeding (or before discarding the remaining queue on
         // termination).
-        hooks.drain_into(rt.vm.microtask_queue_mut());
+        if hard_stop_err.is_none() {
+          let (vm, heap) = (&mut rt.vm, &mut rt.heap);
+          let mut drain_ctx = TeardownCtx { heap };
+          if let Err(err) = hooks.drain_into(&mut drain_ctx, vm.microtask_queue_mut()) {
+            hard_stop_err = Some(err);
+            break;
+          }
+        }
 
         match job_result {
           Ok(()) => {}
@@ -1951,7 +1997,16 @@ impl WindowRealm {
 
         // Ensure any Promise jobs scheduled during dispatch are enqueued before continuing (or
         // before teardown on termination).
-        hooks.drain_into(rt.vm.microtask_queue_mut());
+        if termination_err.is_none() {
+          let (vm, heap) = (&mut rt.vm, &mut rt.heap);
+          let mut drain_ctx = TeardownCtx { heap };
+          if let Err(err) = hooks.drain_into(&mut drain_ctx, vm.microtask_queue_mut()) {
+            termination_err = Some(err);
+            // Re-queue the current + remaining events so a future checkpoint can retry delivery.
+            pending_hashchange_events.push_front(event);
+            break;
+          }
+        }
 
         match dispatch_result {
           Ok(()) => {}
@@ -2011,7 +2066,14 @@ impl WindowRealm {
           job.run(&mut ctx, &mut hooks)
         };
 
-        hooks.drain_into(rt.vm.microtask_queue_mut());
+        if termination_err.is_none() {
+          let (vm, heap) = (&mut rt.vm, &mut rt.heap);
+          let mut drain_ctx = TeardownCtx { heap };
+          if let Err(err) = hooks.drain_into(&mut drain_ctx, vm.microtask_queue_mut()) {
+            termination_err = Some(err);
+            break;
+          }
+        }
 
         match job_result {
           Ok(()) => {}

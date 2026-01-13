@@ -124,6 +124,15 @@ mod tests {
       self.microtasks.enqueue_promise_job(job, realm);
     }
 
+    fn host_enqueue_promise_job_fallible(
+      &mut self,
+      ctx: &mut dyn vm_js::VmJobContext,
+      job: Job,
+      realm: Option<vm_js::RealmId>,
+    ) -> Result<(), VmError> {
+      vm_js::VmHostHooks::host_enqueue_promise_job_fallible(&mut self.microtasks, ctx, job, realm)
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
       Some(&mut self.payload)
     }
