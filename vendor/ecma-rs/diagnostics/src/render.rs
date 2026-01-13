@@ -105,14 +105,14 @@ pub fn render_diagnostic_with_options(
   }
 
   write_severity(&mut output, diagnostic.severity, options.color);
-  writeln!(output, "[{}]: {}", diagnostic.code, diagnostic.message).unwrap();
+  let _ = writeln!(output, "[{}]: {}", diagnostic.code, diagnostic.message);
 
   for file in &files {
     render_file_group(provider, &mut output, file, &options);
   }
 
   for note in &diagnostic.notes {
-    writeln!(output, "= note: {}", note).unwrap();
+    let _ = writeln!(output, "= note: {}", note);
   }
 
   output
@@ -138,22 +138,22 @@ fn render_file_group(
       let first_offset =
         clamp_offset_to_char_boundary(text, file.labels[0].span.range.start as usize);
       let (line, col) = line_and_column(&cache, first_offset, options.tab_width);
-      writeln!(output, " --> {}:{}:{}", name, line, col).unwrap();
+      let _ = writeln!(output, " --> {}:{}:{}", name, line, col);
       let (lines_to_render, highlights) = plan_file_render(&cache, &file.labels, options);
       render_lines(&cache, &lines_to_render, &highlights, output, options);
     }
     None => {
-      writeln!(output, " --> {}:?:?", name).unwrap();
+      let _ = writeln!(output, " --> {}:?:?", name);
       render_missing_source(output, file);
     }
   }
 }
 
 fn render_missing_source(output: &mut String, file: &FileGroup) {
-  writeln!(output, "  | (source unavailable)").unwrap();
+  let _ = writeln!(output, "  | (source unavailable)");
   for label in &file.labels {
     if !label.message.is_empty() {
-      writeln!(output, "  = label: {}", label.message).unwrap();
+      let _ = writeln!(output, "  = label: {}", label.message);
     }
   }
 }
@@ -166,14 +166,14 @@ fn render_lines<'a>(
   options: &RenderOptions,
 ) {
   if lines.is_empty() {
-    writeln!(output, "  |").unwrap();
+    let _ = writeln!(output, "  |");
     return;
   }
 
   let max_line_no = lines.iter().copied().max().unwrap_or(0) + 1;
   let gutter_width = max_line_no.to_string().len().max(1);
 
-  writeln!(output, "  |").unwrap();
+  let _ = writeln!(output, "  |");
   let mut prev_line: Option<usize> = None;
   for &line_idx in lines {
     if let Some(prev) = prev_line {
@@ -194,14 +194,13 @@ fn render_lines<'a>(
 }
 
 fn render_gap_line(output: &mut String, gutter_width: usize, skipped: usize) {
-  writeln!(
+  let _ = writeln!(
     output,
     "{:>width$} | ... ({} lines elided)",
     "",
     skipped,
     width = gutter_width
-  )
-  .unwrap();
+  );
 }
 
 fn render_line<'a>(
@@ -216,14 +215,13 @@ fn render_line<'a>(
   let raw_line = &cache.text[line_start..line_end];
   let expanded_line = expand_tabs(raw_line, options.tab_width);
 
-  writeln!(
+  let _ = writeln!(
     output,
     "{:>width$} | {}",
     line_idx + 1,
     expanded_line,
     width = gutter_width
-  )
-  .unwrap();
+  );
 
   if let Some(highlights) = highlights {
     render_highlight_rows(highlights, gutter_width, output, options);
@@ -353,7 +351,7 @@ fn highlights_overlap(a: &LineHighlight<'_>, b: &LineHighlight<'_>) -> bool {
 
 fn write_severity(output: &mut String, severity: Severity, color: bool) {
   if !color {
-    write!(output, "{severity}").unwrap();
+    let _ = write!(output, "{severity}");
     return;
   }
   let code = match severity {
@@ -363,7 +361,7 @@ fn write_severity(output: &mut String, severity: Severity, color: bool) {
     Severity::Help => ANSI_BOLD_CYAN,
   };
   output.push_str(code);
-  write!(output, "{severity}").unwrap();
+  let _ = write!(output, "{severity}");
   output.push_str(ANSI_RESET);
 }
 
@@ -394,7 +392,9 @@ fn plan_file_render<'a>(
       continue;
     }
 
-    let first_visible = *visible_lines.first().unwrap();
+    let Some(&first_visible) = visible_lines.first() else {
+      continue;
+    };
 
     for &line_idx in &visible_lines {
       lines_to_render.insert(line_idx);
@@ -532,7 +532,9 @@ fn display_column(line_text: &str, offset_in_line: usize, tab_width: usize) -> u
   let mut idx = 0;
   let target = offset_in_line.min(line_text.len());
   while idx < target {
-    let ch = line_text[idx..].chars().next().unwrap();
+    let Some(ch) = line_text.get(idx..).and_then(|s| s.chars().next()) else {
+      break;
+    };
     let ch_len = ch.len_utf8();
     if idx + ch_len > target {
       break;
