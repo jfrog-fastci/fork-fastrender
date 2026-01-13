@@ -870,6 +870,86 @@ fn format_new_window_error_detail(raw: &str) -> String {
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
+fn sanitize_toast_detail_single_line(raw: &str, max_bytes: usize) -> Option<String> {
+  if max_bytes == 0 {
+    return None;
+  }
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+
+  // Avoid allocating based on `raw.len()` (could be very large). Pre-allocate up to the limit.
+  let mut out = String::with_capacity(max_bytes.min(128));
+  let mut pending_space = false;
+  let mut truncated = false;
+
+  for ch in raw.chars() {
+    if ch.is_whitespace() || ch.is_control() {
+      pending_space = true;
+      continue;
+    }
+
+    if pending_space && !out.is_empty() {
+      if out.len() + 1 > max_bytes {
+        truncated = true;
+        break;
+      }
+      out.push(' ');
+    }
+    pending_space = false;
+
+    let ch_len = ch.len_utf8();
+    if out.len() + ch_len > max_bytes {
+      truncated = true;
+      break;
+    }
+    out.push(ch);
+  }
+
+  if truncated && !out.is_empty() {
+    const ELLIPSIS: char = '…';
+    let ellipsis_len = ELLIPSIS.len_utf8();
+    if out.len() + ellipsis_len > max_bytes {
+      truncate_utf8_string_in_place(&mut out, max_bytes.saturating_sub(ellipsis_len));
+    }
+    if !out.is_empty() {
+      out.push(ELLIPSIS);
+    }
+  }
+
+  if out.is_empty() {
+    None
+  } else {
+    Some(out)
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+const BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES: usize = 160;
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn bookmark_reorder_failure_toast(
+  err: &fastrender::ui::BookmarkError,
+) -> (fastrender::ui::ToastKind, String) {
+  use fastrender::ui::{BookmarkError, ToastKind};
+
+  let detail_raw = match err {
+    BookmarkError::InvalidReorder => "Invalid reorder request".to_string(),
+    BookmarkError::InvalidStore(msg) => msg.clone(),
+    other => format!("{other:?}"),
+  };
+  let detail = sanitize_toast_detail_single_line(&detail_raw, BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES);
+
+  let mut text = "Failed to reorder bookmarks".to_string();
+  if let Some(detail) = detail {
+    text.push('\n');
+    text.push_str(&detail);
+  }
+  (ToastKind::Error, text)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
 fn sanitize_anchor_css_rect(rect: fastrender::geometry::Rect) -> fastrender::geometry::Rect {
   const MAX_ABS_POS: f32 = 1_000_000.0;
   const MAX_SIZE: f32 = 1_000_000.0;
@@ -3701,6 +3781,42 @@ mod tests {
     assert!(
       detail.ends_with('…'),
       "expected clamped detail to end with ellipsis, got {detail:?}"
+    );
+  }
+
+  #[test]
+  fn bookmark_reorder_failure_toast_maps_invalid_reorder_to_error_toast() {
+    let (kind, text) =
+      bookmark_reorder_failure_toast(&fastrender::ui::BookmarkError::InvalidReorder);
+    assert_eq!(kind, fastrender::ui::ToastKind::Error);
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("Failed to reorder bookmarks"));
+    assert!(
+      lines
+        .next()
+        .is_some_and(|line| line.to_ascii_lowercase().contains("reorder")),
+      "expected toast to include an error detail line"
+    );
+    assert!(lines.next().is_none(), "toast should be at most two lines");
+  }
+
+  #[test]
+  fn bookmark_reorder_failure_toast_sanitizes_and_truncates_detail() {
+    let long_detail = "bad\n\t  detail ".repeat(64);
+    let err = fastrender::ui::BookmarkError::InvalidStore(long_detail);
+    let (_kind, text) = bookmark_reorder_failure_toast(&err);
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("Failed to reorder bookmarks"));
+    let detail = lines.next().expect("expected detail line");
+    assert!(
+      detail.as_bytes().len() <= BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES,
+      "detail line should be clamped"
+    );
+    assert!(!detail.contains('\n'));
+    assert!(!detail.contains('\t'));
+    assert!(
+      detail.ends_with('…'),
+      "expected clamped detail to be marked with an ellipsis"
     );
   }
 }
@@ -19596,7 +19712,10 @@ impl App {
         ChromeAction::ReorderBookmarksBar(order) => {
           let mut deltas = Vec::new();
           if let Err(err) = self.bookmarks.reorder_root_with_deltas(&order, &mut deltas) {
-            eprintln!("failed to reorder bookmarks: {err:?}");
+            let (kind, text) = bookmark_reorder_failure_toast(&err);
+            self.show_chrome_toast_with_kind(kind, &text);
+            // Ensure the toast (and the original bookmark ordering) is rendered immediately.
+            self.window.request_redraw();
             continue;
           }
           self.record_bookmark_deltas(deltas, false);
