@@ -4001,7 +4001,9 @@ pub trait ResourceFetcher: Send + Sync {
   /// - For HTTP(S) URLs, this issues a `GET` with a `Range: bytes=start-end` header via
   ///   [`ResourceFetcher::fetch_http_request`] so implementations can keep their existing header
   ///   construction, caching, and CORS logic.
-  /// - For `file://` URLs and relative filesystem paths, this reads only the requested slice.
+  /// - For `file://` URLs and relative filesystem paths, implementations **may** read only the
+  ///   requested slice. The default implementation falls back to fetching the full resource then
+  ///   slicing, so fetchers that need efficient filesystem range reads should override this method.
   /// - For `data:` URLs, this decodes then slices.
   ///
   /// When the server ignores the range request and returns a `200 OK` response, this method will
@@ -14203,6 +14205,159 @@ pub(crate) fn decode_data_url(url: &str) -> Result<FetchedResource> {
 // Tests
 // ============================================================================
 
+// Minimal unit tests that do not require the in-process HTTP(S) implementation.
+//
+// These should compile even when `direct_network` is disabled (e.g. sandboxed renderer builds).
+#[cfg(test)]
+mod tests_minimal {
+  use super::*;
+  use std::io::Write;
+  use std::sync::Arc;
+  use tempfile::NamedTempFile;
+
+  #[test]
+  fn resource_policy_allows_bare_file_paths_by_default() {
+    let policy = ResourcePolicy::new();
+    assert_eq!(
+      policy
+        .ensure_url_allowed("./foo.html")
+        .expect("bare path should be allowed"),
+      ResourceScheme::Relative
+    );
+    assert_eq!(
+      policy
+        .ensure_url_allowed("file:///tmp/foo.html")
+        .expect("file:// URLs should be allowed"),
+      ResourceScheme::File
+    );
+  }
+
+  #[test]
+  fn resource_policy_can_block_bare_file_paths_without_disabling_file_scheme() {
+    let policy = ResourcePolicy::new().allow_bare_file_paths(false);
+    assert!(
+      policy.ensure_url_allowed("./foo.html").is_err(),
+      "bare paths should be blocked when allow_bare_file_paths is false"
+    );
+    assert_eq!(
+      policy
+        .ensure_url_allowed("file:///tmp/foo.html")
+        .expect("file:// URLs should remain allowed"),
+      ResourceScheme::File
+    );
+  }
+
+  #[test]
+  fn fetch_file_denied_backend_returns_deterministic_error() {
+    let file = NamedTempFile::new().expect("temp file");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let fetcher = HttpFetcher::new().with_file_backend(Arc::new(NoFileBackend::default()));
+    let err = fetcher
+      .fetch_with_context(FetchContextKind::Other, &url)
+      .expect_err("expected file backend to deny access");
+
+    let Error::Resource(resource) = err else {
+      panic!("expected Resource error, got: {err:?}");
+    };
+    assert_eq!(
+      resource.message, "file backend disabled",
+      "unexpected error: {resource:?}"
+    );
+  }
+
+  #[test]
+  fn fetch_range_with_request_denied_backend_returns_deterministic_error() {
+    let file = NamedTempFile::new().expect("temp file");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let fetcher = HttpFetcher::new().with_file_backend(Arc::new(NoFileBackend::default()));
+    let err = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 0..=3, 4)
+      .expect_err("expected file backend to deny access");
+
+    let Error::Resource(resource) = err else {
+      panic!("expected Resource error, got: {err:?}");
+    };
+    assert_eq!(
+      resource.message, "file backend disabled",
+      "unexpected error: {resource:?}"
+    );
+  }
+
+  #[test]
+  fn fetch_range_with_request_blocks_bare_file_paths_when_disabled() {
+    let policy = ResourcePolicy::new().allow_bare_file_paths(false);
+    let fetcher = HttpFetcher::new().with_policy(policy);
+    let err = fetcher
+      .fetch_range_with_request(
+        FetchRequest::new("./foo.html", FetchDestination::Fetch),
+        0..=3,
+        4,
+      )
+      .expect_err("expected bare filesystem path to be blocked");
+    assert!(
+      err
+        .to_string()
+        .contains("bare filesystem paths are not allowed"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn fetch_range_with_request_allows_file_urls_when_bare_paths_disabled() {
+    let mut file = NamedTempFile::new().expect("temp file");
+    file.write_all(b"0123456789").expect("write file");
+    file.flush().expect("flush");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let policy = ResourcePolicy::new().allow_bare_file_paths(false);
+    let fetcher = HttpFetcher::new().with_policy(policy);
+    let res = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
+      .expect("fetch file range");
+    assert_eq!(res.bytes, b"567");
+  }
+
+  #[test]
+  fn resource_fetcher_default_range_does_not_bypass_fetch_with_request_for_file_urls() {
+    struct DenyFetcher;
+
+    impl ResourceFetcher for DenyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Err(Error::Other(format!("deny {url}")))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        Err(Error::Other(format!("deny {}", req.url)))
+      }
+    }
+
+    let mut file = NamedTempFile::new().expect("temp file");
+    file.write_all(b"0123456789").expect("write file");
+    file.flush().expect("flush");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let fetcher = DenyFetcher;
+    let err = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 0..=3, 4)
+      .expect_err("expected default range impl to delegate to fetch_with_request");
+    assert!(matches!(err, Error::Other(_)), "unexpected error: {err:?}");
+    assert!(
+      err.to_string().contains("deny"),
+      "unexpected error message: {err}"
+    );
+  }
+}
+
 // The bulk of `resource`'s unit tests exercise the in-process HTTP(S) implementation, which is
 // intentionally compiled out when `direct_network` is disabled (renderer-minimal builds proxy
 // network I/O over IPC instead).
@@ -14223,11 +14378,11 @@ mod tests {
   use std::io::Write;
   use std::net::TcpListener;
   use std::net::TcpStream;
-  use std::sync::Condvar;
   use std::sync::atomic::AtomicUsize;
   use std::sync::atomic::Ordering;
   use std::sync::Arc;
   use std::sync::Barrier;
+  use std::sync::Condvar;
   use std::sync::Mutex;
   use std::sync::OnceLock;
   use std::thread;
@@ -24117,8 +24272,10 @@ mod tests {
         }
         drop(guard);
 
-        let mut res =
-          FetchedResource::new(format!("{start}-{end}").into_bytes(), Some("test/range".to_string()));
+        let mut res = FetchedResource::new(
+          format!("{start}-{end}").into_bytes(),
+          Some("test/range".to_string()),
+        );
         res.final_url = Some(req.url.to_string());
         Ok(res)
       }
