@@ -6,14 +6,62 @@ use std::time::{Duration, Instant};
 use parking_lot::{Mutex, RwLock};
 
 use super::{
-  frames_to_duration, AudioBackend, AudioClock, AudioEngineConfig, AudioError, AudioOutputInfo,
-  AudioSink, AudioStreamConfig,
+  frames_to_duration, next_device_id_for_name, AudioBackend, AudioClock, AudioDeviceInfo,
+  AudioEngineConfig, AudioError, AudioOutputInfo, AudioSink, AudioStreamConfig, DeviceSelector,
 };
 use super::convert::sanitize_sample;
 use crate::media::audio_clock::InterpolatedAudioClock;
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use cpal::traits::{HostTrait, StreamTrait};
+
+pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
+  use cpal::traits::DeviceTrait;
+
+  let host = cpal::default_host();
+  let devices = host
+    .output_devices()
+    .map_err(|err| AudioError::OutputDeviceEnumerationFailed(err.to_string()))?;
+
+  let mut seen = std::collections::HashMap::<String, u32>::new();
+  let mut out = Vec::new();
+  for device in devices {
+    let Ok(name) = device.name() else {
+      continue;
+    };
+    let id = next_device_id_for_name(&mut seen, &name);
+    out.push(AudioDeviceInfo { id, name });
+  }
+  Ok(out)
+}
+
+fn select_output_device(host: &cpal::Host, selector: &DeviceSelector) -> Result<cpal::Device, AudioError> {
+  use cpal::traits::DeviceTrait;
+
+  match selector {
+    DeviceSelector::Default => host
+      .default_output_device()
+      .ok_or(AudioError::NoOutputDevice),
+    DeviceSelector::Device(target) => {
+      let devices = host
+        .output_devices()
+        .map_err(|err| AudioError::OutputDeviceEnumerationFailed(err.to_string()))?;
+      let mut seen = std::collections::HashMap::<String, u32>::new();
+      for device in devices {
+        let Ok(name) = device.name() else {
+          continue;
+        };
+        let id = next_device_id_for_name(&mut seen, &name);
+        if &id == target {
+          return Ok(device);
+        }
+      }
+      Err(AudioError::OutputDeviceNotFound {
+        selector: selector.clone(),
+      })
+    }
+  }
+}
 
 /// CPAL-based audio output backend (cross-platform).
 ///
@@ -50,10 +98,21 @@ pub struct CpalAudioBackend {
 
 impl CpalAudioBackend {
   pub fn new() -> Result<Self, AudioError> {
-    Self::new_with_config(&super::audio_engine_config())
+    Self::new_with_device(DeviceSelector::Default)
+  }
+
+  pub fn new_with_device(selector: DeviceSelector) -> Result<Self, AudioError> {
+    Self::new_with_config_and_device(&super::audio_engine_config(), selector)
   }
 
   pub fn new_with_config(engine_cfg: &AudioEngineConfig) -> Result<Self, AudioError> {
+    Self::new_with_config_and_device(engine_cfg, DeviceSelector::Default)
+  }
+
+  fn new_with_config_and_device(
+    engine_cfg: &AudioEngineConfig,
+    selector: DeviceSelector,
+  ) -> Result<Self, AudioError> {
     // This comes from process-wide configuration (env vars), so clamp it defensively. The queue and
     // sink buffers must never be able to allocate unbounded memory.
     let max_buffered_duration = engine_cfg
@@ -75,11 +134,10 @@ impl CpalAudioBackend {
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
 
     let thread = std::thread::spawn(move || {
+      let selector = selector;
       let init = (|| -> Result<(ReadyState, cpal::Stream), AudioError> {
         let host = cpal::default_host();
-        let device = host
-          .default_output_device()
-          .ok_or(AudioError::NoOutputDevice)?;
+        let device = select_output_device(&host, &selector)?;
 
         let (stream_config, sample_format) = select_output_stream_config(&device)?;
         let config = AudioStreamConfig::new(stream_config.sample_rate.0, stream_config.channels);

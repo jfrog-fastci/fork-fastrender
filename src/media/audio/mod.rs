@@ -19,6 +19,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::clock::MediaClock;
@@ -52,7 +54,7 @@ pub use config::{
   AudioEngineConfigGuard,
 };
 #[cfg(feature = "audio_cpal")]
-pub use cpal_backend::CpalAudioBackend;
+pub use cpal_backend::{list_output_devices, CpalAudioBackend};
 pub use convert::convert_to_f32_interleaved;
 pub use latency::{
   duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
@@ -92,6 +94,106 @@ pub type AudioStreamHandle = PcmF32QueueProducer;
 
 #[cfg(any(feature = "audio_wav", test))]
 pub use wav_backend::WavAudioBackend;
+
+/// Opaque identifier for an output audio device.
+///
+/// CPAL does not expose a cross-platform stable device UUID. We therefore identify devices by:
+/// - their reported name, and
+/// - an ordinal for the Nth occurrence of that name in the host's output device enumeration.
+///
+/// This is stable enough for:
+/// - presenting a device list in a settings UI, and
+/// - re-selecting a previously chosen device later in the same session (or across runs) when the
+///   host enumerates devices consistently.
+///
+/// If the device disappears, selection fails with [`AudioError::OutputDeviceNotFound`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AudioDeviceId {
+  pub name: String,
+  pub ordinal: u32,
+}
+
+impl std::fmt::Display for AudioDeviceId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    // `URL_SAFE_NO_PAD` is unambiguous and avoids introducing separators that would complicate
+    // parsing (e.g. ':' characters).
+    let encoded =
+      base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.name.as_bytes());
+    write!(f, "{}:{}", self.ordinal, encoded)
+  }
+}
+
+impl std::str::FromStr for AudioDeviceId {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    let (ordinal_str, encoded_name) = s
+      .split_once(':')
+      .ok_or_else(|| "missing ':' delimiter".to_string())?;
+    let ordinal: u32 = ordinal_str
+      .parse()
+      .map_err(|_| "invalid device ordinal".to_string())?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+      .decode(encoded_name)
+      .map_err(|err| format!("invalid base64 device name: {err}"))?;
+    let name = String::from_utf8(decoded)
+      .map_err(|err| format!("device name is not valid UTF-8: {err}"))?;
+    Ok(Self { name, ordinal })
+  }
+}
+
+/// Lightweight output device metadata for presentation in a UI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioDeviceInfo {
+  pub id: AudioDeviceId,
+  pub name: String,
+}
+
+/// Selector describing which output device to use when constructing a CPAL backend.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DeviceSelector {
+  /// Use the host's default output device.
+  Default,
+  /// Use a specific output device (as returned by [`list_output_devices`] when the `audio_cpal`
+  /// feature is enabled).
+  Device(AudioDeviceId),
+}
+
+impl std::fmt::Display for DeviceSelector {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Self::Default => write!(f, "default"),
+      Self::Device(id) => write!(f, "device:{id}"),
+    }
+  }
+}
+
+impl std::str::FromStr for DeviceSelector {
+  type Err = String;
+
+  fn from_str(s: &str) -> Result<Self, Self::Err> {
+    if s == "default" {
+      return Ok(Self::Default);
+    }
+    let Some(raw) = s.strip_prefix("device:") else {
+      return Err("unsupported device selector format".to_string());
+    };
+    let id = raw.parse::<AudioDeviceId>()?;
+    Ok(Self::Device(id))
+  }
+}
+
+pub(crate) fn next_device_id_for_name(
+  seen: &mut std::collections::HashMap<String, u32>,
+  name: &str,
+) -> AudioDeviceId {
+  let ordinal = seen.get(name).copied().unwrap_or(0);
+  seen.insert(name.to_string(), ordinal.saturating_add(1));
+  AudioDeviceId {
+    name: name.to_string(),
+    ordinal,
+  }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStreamConfig {
@@ -194,8 +296,9 @@ impl MediaClock for AudioClock {
 
 #[cfg(test)]
 mod tests {
-  use super::{AudioClock, InterpolatedAudioClock};
+  use super::*;
   use crate::media::clock::MediaClock;
+  use std::collections::HashMap;
   use std::sync::Arc;
   use std::time::{Duration, Instant};
 
@@ -269,6 +372,57 @@ mod tests {
     let _ = raw.now_at(start + Duration::from_millis(4));
     let _ = clock.time();
   }
+
+  #[test]
+  fn cpal_device_select_id_roundtrip_parses_base64_names() {
+    let id = AudioDeviceId {
+      name: "Built-in Output: Speakers 🔊".to_string(),
+      ordinal: 2,
+    };
+    let encoded = id.to_string();
+    let parsed: AudioDeviceId = encoded.parse().unwrap();
+    assert_eq!(parsed, id);
+  }
+
+  #[test]
+  fn cpal_device_select_selector_roundtrip() {
+    let selector = DeviceSelector::Device(AudioDeviceId {
+      name: "Headphones".to_string(),
+      ordinal: 0,
+    });
+    let encoded = selector.to_string();
+    let parsed: DeviceSelector = encoded.parse().unwrap();
+    assert_eq!(parsed, selector);
+  }
+
+  #[test]
+  fn cpal_device_select_assigns_ordinals_per_name() {
+    let mut seen = HashMap::new();
+    let a0 = next_device_id_for_name(&mut seen, "A");
+    let b0 = next_device_id_for_name(&mut seen, "B");
+    let a1 = next_device_id_for_name(&mut seen, "A");
+    assert_eq!(
+      a0,
+      AudioDeviceId {
+        name: "A".to_string(),
+        ordinal: 0
+      }
+    );
+    assert_eq!(
+      b0,
+      AudioDeviceId {
+        name: "B".to_string(),
+        ordinal: 0
+      }
+    );
+    assert_eq!(
+      a1,
+      AudioDeviceId {
+        name: "A".to_string(),
+        ordinal: 1
+      }
+    );
+  }
 }
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -277,6 +431,10 @@ pub enum AudioError {
   // --------------------------------------------------------------------------
   #[error("no default output audio device is available")]
   NoOutputDevice,
+  #[error("failed to enumerate output audio devices: {0}")]
+  OutputDeviceEnumerationFailed(String),
+  #[error("output audio device not found ({selector})")]
+  OutputDeviceNotFound { selector: DeviceSelector },
   #[error("failed to enumerate output audio configs: {0}")]
   OutputConfigEnumerationFailed(String),
   #[error("failed to load default output audio config: {0}")]
