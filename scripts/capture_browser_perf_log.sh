@@ -8,10 +8,10 @@ set -euo pipefail
 #   timeout -k 10 600 + scripts/run_limited.sh --as 64G + scripts/cargo_agent.sh
 #
 # Usage (positional, recommended):
-#   bash scripts/capture_browser_perf_log.sh target/browser.perf.jsonl about:test-scroll
+#   bash scripts/capture_browser_perf_log.sh target/browser.perf.jsonl about:test-layout-stress
 #
 # Usage (flag form, for scripts):
-#   bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-scroll
+#   bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-layout-stress
 #
 # Add `--summary` to run `browser_perf_log_summary` after capture.
 
@@ -29,13 +29,13 @@ Capture the windowed `browser` perf JSONL log (FASTR_PERF_LOG=1) to <out.jsonl>.
 
 Examples:
   # Positional:
-  bash scripts/capture_browser_perf_log.sh target/browser.perf.jsonl about:test-scroll
+  bash scripts/capture_browser_perf_log.sh target/browser.perf.jsonl about:test-layout-stress
 
   # Flag form:
-  bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-scroll
+  bash scripts/capture_browser_perf_log.sh --out target/browser.perf.jsonl --url about:test-layout-stress
 
   # Capture + summarize:
-  bash scripts/capture_browser_perf_log.sh --summary target/browser.perf.jsonl about:test-scroll
+  bash scripts/capture_browser_perf_log.sh --summary target/browser.perf.jsonl about:test-layout-stress
 
 Notes:
   - Perf logs are emitted on stdout and also written to <out.jsonl> via `tee`.

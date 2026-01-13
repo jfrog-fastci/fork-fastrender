@@ -224,17 +224,17 @@ Most renderer debug knobs are environment variables; the canonical list is
 To capture machine-readable browser responsiveness metrics:
 
 ```bash
-timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
 # Wrapper-friendly helper (sets env vars for you):
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud \
   --perf-log --perf-log-out target/browser_perf.jsonl \
-  about:test-scroll
+  about:test-layout-stress
 
 # Manual invocation:
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-scroll
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
 ```
 
 Summarize a captured log with:
@@ -256,7 +256,7 @@ timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output targe
 For interactive CPU attribution while reproducing jank (Linux), use the Samply wrapper:
 
 ```bash
-timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-scroll
+timeout -k 10 600 bash scripts/profile_browser_samply.sh --url about:test-layout-stress
 ```
 
 See [`docs/perf-logging.md#browser-responsiveness`](perf-logging.md#browser-responsiveness) for how the
