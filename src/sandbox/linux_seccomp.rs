@@ -116,7 +116,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_creat,
     libc::SYS_open_by_handle_at,
     libc::SYS_name_to_handle_at,
-
     // Filesystem mutation.
     libc::SYS_unlink,
     libc::SYS_unlinkat,
@@ -138,17 +137,14 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_fchownat,
     libc::SYS_truncate,
     libc::SYS_ftruncate,
-
     // Mounting / namespace escape.
     libc::SYS_mount,
     libc::SYS_umount2,
     libc::SYS_pivot_root,
     libc::SYS_chroot,
-
     // Process execution.
     libc::SYS_execve,
     libc::SYS_execveat,
-
     // Network / sockets.
     libc::SYS_connect,
     libc::SYS_bind,
@@ -161,7 +157,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_recvmsg,
     libc::SYS_setsockopt,
     libc::SYS_getsockopt,
-
     // Introspection / escape.
     libc::SYS_ptrace,
     libc::SYS_bpf,
@@ -173,7 +168,6 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_init_module,
     libc::SYS_finit_module,
     libc::SYS_delete_module,
-
     // High-risk kernel attack surface that should never be needed in a renderer process.
     libc::SYS_io_uring_setup,
     libc::SYS_io_uring_enter,
@@ -181,11 +175,22 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
     libc::SYS_kcmp,
+    // pidfd-based process and FD introspection.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    libc::SYS_pidfd_open,
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    libc::SYS_pidfd_getfd,
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    libc::SYS_pidfd_send_signal,
     libc::SYS_userfaultfd,
     libc::SYS_keyctl,
     libc::SYS_add_key,
     libc::SYS_request_key,
-
+    // Filesystem notification (expand kernel surface; should never be needed in a renderer).
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    libc::SYS_fanotify_init,
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    libc::SYS_fanotify_mark,
     // Privilege/namespace syscalls (even if they'd fail, make it explicit).
     libc::SYS_unshare,
     libc::SYS_setns,
