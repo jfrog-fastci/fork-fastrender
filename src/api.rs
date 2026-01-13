@@ -270,6 +270,7 @@ pub use browser_document::{BrowserDocument, BrowserNavigationReport};
 
 mod browser_document_dom2;
 pub use browser_document_dom2::BrowserDocumentDom2;
+pub use browser_document_dom2::Dom2HitTestResult;
 mod browser_document_js;
 pub use browser_document_js::{BrowserDocumentJs, RunUntilStableOutcome, RunUntilStableStopReason};
 mod browser_document2;

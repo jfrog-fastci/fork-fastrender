@@ -38,6 +38,16 @@ pub struct BrowserDocumentDom2InvalidationCounters {
   pub incremental_relayouts: u64,
 }
 
+/// Result of hit testing in viewport coordinates, including both renderer hit metadata and a stable
+/// `dom2::NodeId` for JS/event dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dom2HitTestResult {
+  /// Stable `dom2` node id corresponding to `hit.dom_node_id` (renderer preorder id).
+  pub node: crate::dom2::NodeId,
+  /// Hit-test metadata computed from layout/box tree.
+  pub hit: crate::interaction::HitTestResult,
+}
+
 /// Mutable, multi-frame renderer backed by a live `dom2` document.
 ///
 /// `BrowserDocumentDom2` mirrors [`super::BrowserDocument`] but stores a spec-ish mutable
@@ -1765,6 +1775,50 @@ impl BrowserDocumentDom2 {
     }
   }
 
+  /// Perform a viewport-coordinate hit test and return both hit metadata and a stable `dom2` node id.
+  ///
+  /// - `x`/`y` are viewport-relative CSS px coordinates (before applying scroll offsets).
+  /// - The returned [`Dom2HitTestResult::node`] is stable across renderer snapshots (unlike renderer
+  ///   preorder ids) and corresponds to [`Dom2HitTestResult::hit::dom_node_id`].
+  ///
+  /// This ensures style/layout are up to date but does **not** require a paint.
+  pub fn hit_test_viewport_point(&mut self, x: f32, y: f32) -> Result<Option<Dom2HitTestResult>> {
+    if !x.is_finite() || !y.is_finite() {
+      return Ok(None);
+    }
+ 
+    self.ensure_layout_for_hit_testing()?;
+    let Some(prepared) = self.prepared.as_ref() else {
+      return Ok(None);
+    };
+ 
+    let viewport = prepared.fragment_tree().viewport_size();
+    if x < 0.0 || y < 0.0 || x >= viewport.width || y >= viewport.height {
+      return Ok(None);
+    }
+ 
+    let scroll_state = ScrollState::from_parts_with_deltas(
+      Point::new(self.options.scroll_x, self.options.scroll_y),
+      self.options.element_scroll_offsets.clone(),
+      self.options.scroll_delta,
+      self.options.element_scroll_deltas.clone(),
+    );
+ 
+    let Some(hit) = crate::interaction::hit_testing::hit_test_dom_viewport_point(
+      prepared,
+      &scroll_state,
+      Point::new(x, y),
+    ) else {
+      return Ok(None);
+    };
+ 
+    let Some(node) = self.dom2_node_for_hit_test(&hit) else {
+      return Ok(None);
+    };
+ 
+    Ok(Some(Dom2HitTestResult { node, hit }))
+  }
+
   /// Like [`BrowserDocumentDom2::element_from_point`], but returns all hit elements (topmost first).
   ///
   /// This backs `Document.elementsFromPoint()` when needed.
@@ -3277,6 +3331,38 @@ mod tests {
       }
     }
     None
+  }
+
+  #[test]
+  fn hit_test_viewport_point_returns_node_and_metadata_for_link() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+      <html>
+        <body style="margin:0">
+          <a id="link" href="https://example.invalid/" style="display:block;width:50px;height:20px">Link</a>
+        </body>
+      </html>"#;
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(100, 100))?;
+ 
+    let link_id = doc.dom().get_element_by_id("link").expect("link element");
+ 
+    let result = doc.hit_test_viewport_point(5.0, 5.0)?;
+    let result = result.expect("hit result");
+    assert_eq!(result.node, link_id);
+    assert_eq!(result.hit.kind, crate::interaction::HitTestKind::Link);
+    assert_eq!(result.hit.href.as_deref(), Some("https://example.invalid/"));
+    Ok(())
+  }
+
+  #[test]
+  fn hit_test_viewport_point_returns_none_outside_viewport() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html><html><body><div>Hi</div></body></html>"#;
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(32, 32))?;
+ 
+    assert!(doc.hit_test_viewport_point(40.0, 10.0)?.is_none());
+    assert!(doc.hit_test_viewport_point(10.0, 40.0)?.is_none());
+    Ok(())
   }
 
   #[test]
