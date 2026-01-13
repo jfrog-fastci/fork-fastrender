@@ -3995,6 +3995,58 @@ mod tests {
   }
 
   #[test]
+  fn script_internal_slot_updates_do_not_invalidate_layout() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><script id=s></script><div>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )?;
+    doc.render_frame()?;
+
+    let script = doc.dom().get_element_by_id("s").expect("script element");
+    assert!(
+      doc.dom().node(script).script_parser_document,
+      "expected scripts imported from renderer DOM to start as parser-inserted"
+    );
+    assert!(
+      !doc.dom().node(script).script_force_async,
+      "expected parser-inserted scripts to start with force_async=false"
+    );
+
+    let before_generation = doc.dom_mutation_generation();
+
+    // Running "prepare the script element" mutates per-script internal slots that do not affect
+    // rendering. These updates must not bump the dom2 mutation generation, otherwise
+    // `BrowserDocumentDom2` will treat the document as dirty and force a full layout flush.
+    let changed = doc.mutate_dom(|dom| {
+      let spec = crate::js::dom_integration::build_dynamic_script_element_spec(dom, script, None);
+      let _should_run = crate::js::prepare_script_element_dom2(dom, script, &spec);
+      false
+    });
+    assert!(!changed);
+
+    assert_eq!(
+      doc.dom_mutation_generation(),
+      before_generation,
+      "updating script internal slots must not bump mutation generation"
+    );
+    assert!(
+      !doc.dom().node(script).script_parser_document,
+      "expected prepare_script_element_dom2 to clear script_parser_document"
+    );
+    assert!(
+      doc.dom().node(script).script_force_async,
+      "expected prepare_script_element_dom2 to set script_force_async when parser-inserted and not async"
+    );
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected no paint/layout invalidation solely due to script internal slot updates"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn mutate_dom_noop_append_child_does_not_invalidate() {
     let renderer = renderer_for_tests();
     let mut doc = BrowserDocumentDom2::new(
