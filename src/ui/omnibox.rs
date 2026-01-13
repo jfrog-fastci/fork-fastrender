@@ -45,6 +45,28 @@ pub trait OmniboxProvider {
   fn suggestions(&self, ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion>;
 }
 
+static PRIMARY_ACTION_PROVIDER: PrimaryActionProvider = PrimaryActionProvider;
+static REMOTE_SEARCH_SUGGEST_PROVIDER: RemoteSearchSuggestProvider = RemoteSearchSuggestProvider;
+static OPEN_TABS_PROVIDER: OpenTabsProvider = OpenTabsProvider;
+static ABOUT_PAGES_PROVIDER: AboutPagesProvider = AboutPagesProvider;
+static CLOSED_TABS_PROVIDER: ClosedTabsProvider = ClosedTabsProvider;
+static VISITED_PROVIDER: VisitedProvider = VisitedProvider;
+static BOOKMARKS_PROVIDER: BookmarksProvider = BookmarksProvider;
+
+/// Default provider set used by the omnibox suggestion engine.
+///
+/// Stored as a static slice so building suggestions (a hot per-keystroke path) does not allocate
+/// trait objects each time.
+static DEFAULT_PROVIDERS: [&(dyn OmniboxProvider + Sync); 7] = [
+  &PRIMARY_ACTION_PROVIDER,
+  &REMOTE_SEARCH_SUGGEST_PROVIDER,
+  &OPEN_TABS_PROVIDER,
+  &ABOUT_PAGES_PROVIDER,
+  &CLOSED_TABS_PROVIDER,
+  &VISITED_PROVIDER,
+  &BOOKMARKS_PROVIDER,
+];
+
 /// The action a suggestion represents (what happens when the user selects it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OmniboxAction {
@@ -395,11 +417,11 @@ pub fn build_omnibox_suggestions(
   input: &str,
   limit: usize,
 ) -> Vec<OmniboxSuggestion> {
-  build_omnibox_suggestions_with_providers_at_time(
+  build_omnibox_suggestions_with_provider_iter_at_time(
     ctx,
     input,
     limit,
-    default_providers(),
+    DEFAULT_PROVIDERS.iter().copied(),
     SystemTime::now(),
   )
 }
@@ -412,7 +434,8 @@ pub fn build_omnibox_suggestions_default_limit(
   build_omnibox_suggestions(ctx, input, DEFAULT_OMNIBOX_LIMIT)
 }
 
-fn default_providers() -> Vec<Box<dyn OmniboxProvider>> {
+#[cfg(test)]
+fn default_providers_boxed() -> Vec<Box<dyn OmniboxProvider + Sync>> {
   vec![
     Box::new(PrimaryActionProvider),
     Box::new(RemoteSearchSuggestProvider),
@@ -424,20 +447,38 @@ fn default_providers() -> Vec<Box<dyn OmniboxProvider>> {
   ]
 }
 
+#[cfg(test)]
 fn build_omnibox_suggestions_with_providers(
   ctx: &OmniboxContext<'_>,
   input: &str,
   limit: usize,
-  providers: Vec<Box<dyn OmniboxProvider>>,
+  providers: Vec<Box<dyn OmniboxProvider + Sync>>,
 ) -> Vec<OmniboxSuggestion> {
   build_omnibox_suggestions_with_providers_at_time(ctx, input, limit, providers, SystemTime::now())
 }
 
+#[cfg(test)]
 fn build_omnibox_suggestions_with_providers_at_time(
   ctx: &OmniboxContext<'_>,
   input: &str,
   limit: usize,
-  providers: Vec<Box<dyn OmniboxProvider>>,
+  providers: Vec<Box<dyn OmniboxProvider + Sync>>,
+  now: SystemTime,
+) -> Vec<OmniboxSuggestion> {
+  build_omnibox_suggestions_with_provider_iter_at_time(
+    ctx,
+    input,
+    limit,
+    providers.iter().map(|p| p.as_ref()),
+    now,
+  )
+}
+
+fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
+  ctx: &OmniboxContext<'_>,
+  input: &str,
+  limit: usize,
+  providers: impl IntoIterator<Item = &'a (dyn OmniboxProvider + Sync)>,
   now: SystemTime,
 ) -> Vec<OmniboxSuggestion> {
   let input = input.trim();
@@ -784,7 +825,7 @@ mod tests {
       &ctx,
       "example",
       DEFAULT_OMNIBOX_LIMIT,
-      default_providers(),
+      default_providers_boxed(),
       now,
     );
 
@@ -1360,7 +1401,7 @@ mod tests {
       &ctx,
       "Needle",
       10,
-      default_providers(),
+      default_providers_boxed(),
       now,
     );
 
