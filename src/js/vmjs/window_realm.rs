@@ -32,7 +32,6 @@ use crate::resource::{
   ReferrerPolicy, ResourceFetcher,
 };
 use crate::style::media::MediaContext;
-use crate::Rect;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;
@@ -5949,7 +5948,6 @@ fn history_state_change_native(
       state_key,
       read_only_data_desc(cloned_state_value),
     )?;
-  }
 
     // Keep `history.length` in sync with the per-realm session history.
     let length_key = alloc_key(&mut scope, "length")?;
@@ -12484,20 +12482,6 @@ fn dom_parser_constructor_native(
   ))
 }
 
-fn dom_parser_constructor_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::TypeError(
-    "DOMParser constructor cannot be invoked without 'new'",
-  ))
-}
-
 fn dom_parser_constructor_construct_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -12543,20 +12527,6 @@ fn dom_parser_constructor_construct_native(
   )?;
 
   Ok(Value::Object(obj))
-}
-
-fn dom_parser_constructor_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
-  _this: Value,
-  _args: &[Value],
-) -> Result<Value, VmError> {
-  Err(VmError::TypeError(
-    "DOMParser constructor cannot be invoked without 'new'",
-  ))
 }
 
 fn dom_parser_parse_from_string_native(
@@ -17092,22 +17062,6 @@ pub(crate) fn alloc_intersection_observer_entry_object_with_dom_rects(
   )?;
 
   Ok(obj)
-}
-
-pub(crate) fn alloc_intersection_observer_entry_object(
-  scope: &mut Scope<'_>,
-  global: GcObject,
-  root_bounds: Option<(f64, f64, f64, f64)>,
-  bounding_client_rect: (f64, f64, f64, f64),
-  intersection_rect: (f64, f64, f64, f64),
-) -> Result<GcObject, VmError> {
-  alloc_intersection_observer_entry_dom_rects_object(
-    scope,
-    global,
-    root_bounds,
-    bounding_client_rect,
-    intersection_rect,
-  )
 }
 
 /// Allocates a `ResizeObserverEntry`-shaped object.

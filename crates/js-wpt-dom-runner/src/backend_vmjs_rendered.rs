@@ -34,22 +34,6 @@ struct RenderedHost {
   document_url: String,
 }
 
-impl fastrender::js::DomHost for RenderedHost {
-  fn with_dom<R, F>(&self, f: F) -> R
-  where
-    F: FnOnce(&fastrender::dom2::Document) -> R,
-  {
-    <BrowserDocumentDom2 as fastrender::js::DomHost>::with_dom(&self.document, f)
-  }
-
-  fn mutate_dom<R, F>(&mut self, f: F) -> R
-  where
-    F: FnOnce(&mut fastrender::dom2::Document) -> (R, bool),
-  {
-    <BrowserDocumentDom2 as fastrender::js::DomHost>::mutate_dom(&mut self.document, f)
-  }
-}
-
 impl WindowRealmHost for RenderedHost {
   fn vm_host_and_window_realm(
     &mut self,
