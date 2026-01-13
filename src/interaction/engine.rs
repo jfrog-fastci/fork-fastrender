@@ -4894,6 +4894,31 @@ impl InteractionEngine {
       return false;
     };
 
+    // Preserve an existing selection when the right-click falls inside the selected range, matching
+    // native browser behaviour.
+    let current_len = index
+      .node(node_id)
+      .map(|node| {
+        if is_textarea(node) {
+          textarea_value_for_editing(node).chars().count()
+        } else {
+          node.get_attribute_ref("value").unwrap_or("").chars().count()
+        }
+      })
+      .unwrap_or(0);
+    let caret = caret.min(current_len);
+
+    if let Some(edit) = self.text_edit.as_ref().filter(|edit| edit.node_id == node_id) {
+      let mut edit = *edit;
+      edit.caret = edit.caret.min(current_len);
+      edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
+      if let Some((start, end)) = edit.selection() {
+        if caret >= start && caret <= end {
+          return false;
+        }
+      }
+    }
+
     self.text_drag = None;
 
     let mut changed = false;
@@ -5607,6 +5632,111 @@ impl InteractionEngine {
     }
     dom_changed |= prev_doc_selection != self.state.document_selection;
     dom_changed
+  }
+
+  /// Prepare text-control caret/selection state for a context-menu (right-click) gesture.
+  ///
+  /// Native browser behaviour for `<input>` / `<textarea>`:
+  /// - Right-click *inside* an existing selection preserves the selection.
+  /// - Right-click outside the selection collapses it and moves the caret to the click point.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
+  pub fn place_text_control_caret_for_context_menu_request(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    node_id: usize,
+    box_id: usize,
+    page_point: Point,
+  ) -> bool {
+    self.modality = InputModality::Pointer;
+
+    let mut index = DomIndexMut::new(dom);
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+
+    let is_text_input = is_text_input(node);
+    let is_textarea = is_textarea(node);
+    if !(is_text_input || is_textarea) {
+      return false;
+    }
+
+    // Focus the control like a normal pointer interaction would.
+    let mut changed = false;
+    if is_focusable_interactive_element(&index, node_id) {
+      changed |= self.set_focus(&mut index, Some(node_id), false);
+    }
+
+    // Only update caret/selection state when the control is (now) focused.
+    if self.state.focused != Some(node_id) {
+      return changed;
+    }
+
+    let (caret, caret_affinity) = caret_index_for_text_control_point(
+      &index,
+      box_tree,
+      fragment_tree,
+      scroll,
+      node_id,
+      box_id,
+      page_point,
+    )
+    .unwrap_or((0, CaretAffinity::Downstream));
+
+    let current_value = index
+      .node(node_id)
+      .map(|node| {
+        if is_textarea {
+          textarea_value_for_editing(node)
+        } else {
+          node.get_attribute_ref("value").unwrap_or("").to_string()
+        }
+      })
+      .unwrap_or_default();
+    let current_len = current_value.chars().count();
+    let caret = caret.min(current_len);
+
+    // Preserve an existing selection if the right-click fell within it.
+    if let Some(edit) = self.text_edit.as_ref().filter(|edit| edit.node_id == node_id) {
+      let mut edit = *edit;
+      edit.caret = edit.caret.min(current_len);
+      edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
+      if let Some((start, end)) = edit.selection() {
+        if caret >= start && caret <= end {
+          return changed;
+        }
+      }
+    }
+
+    // Otherwise collapse selection and place caret at the click point.
+    let before = self.text_edit;
+    match self.text_edit.as_mut() {
+      Some(edit) if edit.node_id == node_id => {
+        edit.caret = caret;
+        edit.caret_affinity = caret_affinity;
+        edit.selection_anchor = None;
+        edit.preferred_x = None;
+      }
+      _ => {
+        self.text_edit = Some(TextEditState {
+          node_id,
+          caret,
+          caret_affinity,
+          selection_anchor: None,
+          preferred_x: None,
+        });
+      }
+    }
+    if self.text_edit != before {
+      changed = true;
+    }
+    changed |= self.sync_text_edit_paint_state();
+
+    changed
   }
 
   fn remap_engine_ids_after_dom_change(
