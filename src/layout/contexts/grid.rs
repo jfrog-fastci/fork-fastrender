@@ -20202,14 +20202,332 @@ mod tests {
     let size_2 = thread_2.join().expect("thread 2 join");
     assert_eq!(size_2, size_1);
 
-    let (_tls_hits, shared_hits, misses) = grid_measure_cache_counters();
+    let counters = grid_measure_cache_counters();
     assert!(
-      shared_hits >= 1,
-      "expected at least one shared cache hit, got shared_hits={shared_hits}"
+      counters.shared_hits >= 1,
+      "expected at least one shared cache hit, got shared_hits={}",
+      counters.shared_hits
     );
     assert!(
-      misses >= 1,
-      "expected at least one miss for the first fill, got misses={misses}"
+      counters.misses >= 1,
+      "expected at least one miss for the first fill, got misses={}",
+      counters.misses
+    );
+  }
+
+  #[test]
+  fn grid_measure_override_keys_bypass_shared_cache_by_default() {
+    use taffy::style::AvailableSpace;
+
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+    reset_grid_measure_cache_counters();
+
+    let item_style = make_item_style();
+    let box_id = 4245usize;
+    let override_style = Arc::new((*item_style).clone());
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_GRID_MEASURE_CACHE_PROFILE".to_string(),
+      "1".to_string(),
+    )])));
+
+    let thread_1 = {
+      let toggles = toggles.clone();
+      let item_style = item_style.clone();
+      let override_style = override_style.clone();
+      std::thread::spawn(move || {
+        runtime::with_thread_runtime_toggles(toggles, || {
+          let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+          let mut node = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+          node.id = box_id;
+          let node_ptr = &node as *const _;
+          let gc = GridFormattingContext::new();
+          let factory = gc.factory.clone();
+          let container_style = make_grid_style();
+          let container_constraints = LayoutConstraints::indefinite();
+          let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+          let avail = taffy::geometry::Size {
+            width: AvailableSpace::Definite(200.0),
+            height: AvailableSpace::Definite(100.0),
+          };
+          let known = taffy::geometry::Size {
+            width: None,
+            height: None,
+          };
+
+          let _override_guard = push_style_override(box_id, override_style);
+
+          reset_grid_measure_layout_calls();
+          let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+            FxHashMap::default();
+          let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+          let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+          let output = gc.measure_grid_item(
+            node_ptr,
+            TaffyNodeId::from(1u64),
+            known,
+            avail,
+            None,
+            container_style.as_ref(),
+            &container_constraints,
+            &taffy_style,
+            &FxHashSet::default(),
+            &factory,
+            &mut measure_cache,
+            &mut measured_fragments,
+            &mut measured_node_keys,
+          );
+
+          assert_eq!(
+            grid_measure_layout_calls(),
+            1,
+            "first thread should miss and perform nested layout"
+          );
+          output.size
+        })
+      })
+    };
+
+    let size_1 = thread_1.join().expect("thread 1 join");
+
+    let thread_2 = {
+      let toggles = toggles.clone();
+      let item_style = item_style.clone();
+      let override_style = override_style.clone();
+      std::thread::spawn(move || {
+        runtime::with_thread_runtime_toggles(toggles, || {
+          let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+          let mut node = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+          node.id = box_id;
+          let node_ptr = &node as *const _;
+          let gc = GridFormattingContext::new();
+          let factory = gc.factory.clone();
+          let container_style = make_grid_style();
+          let container_constraints = LayoutConstraints::indefinite();
+          let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+          let avail = taffy::geometry::Size {
+            width: AvailableSpace::Definite(200.0),
+            height: AvailableSpace::Definite(100.0),
+          };
+          let known = taffy::geometry::Size {
+            width: None,
+            height: None,
+          };
+
+          let _override_guard = push_style_override(box_id, override_style);
+
+          reset_grid_measure_layout_calls();
+          let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+            FxHashMap::default();
+          let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+          let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+          let output = gc.measure_grid_item(
+            node_ptr,
+            TaffyNodeId::from(1u64),
+            known,
+            avail,
+            None,
+            container_style.as_ref(),
+            &container_constraints,
+            &taffy_style,
+            &FxHashSet::default(),
+            &factory,
+            &mut measure_cache,
+            &mut measured_fragments,
+            &mut measured_node_keys,
+          );
+
+          assert_eq!(
+            grid_measure_layout_calls(),
+            1,
+            "override keys should bypass the shared cache by default"
+          );
+          output.size
+        })
+      })
+    };
+
+    let size_2 = thread_2.join().expect("thread 2 join");
+    assert_eq!(size_2, size_1);
+
+    let counters = grid_measure_cache_counters();
+    assert!(
+      counters.override_lookups >= 2,
+      "expected override lookups to be recorded (got {})",
+      counters.override_lookups
+    );
+    assert!(
+      counters.override_shared_bypass_misses >= 2,
+      "expected override bypass misses to be recorded (got {})",
+      counters.override_shared_bypass_misses
+    );
+    assert_eq!(
+      counters.override_shared_hits, 0,
+      "override keys should not hit shared cache when sharing is disabled"
+    );
+  }
+
+  #[test]
+  fn grid_measure_override_keys_can_share_across_threads_when_enabled() {
+    use taffy::style::AvailableSpace;
+
+    let _lock = grid_measure_size_cache_test_lock();
+    reset_grid_measure_size_cache_for_test();
+    reset_grid_measure_cache_counters();
+
+    let item_style = make_item_style();
+    let box_id = 4246usize;
+    let override_style = Arc::new((*item_style).clone());
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      (
+        "FASTR_GRID_MEASURE_CACHE_PROFILE".to_string(),
+        "1".to_string(),
+      ),
+      (
+        "FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES".to_string(),
+        "1".to_string(),
+      ),
+    ])));
+
+    let thread_1 = {
+      let toggles = toggles.clone();
+      let item_style = item_style.clone();
+      let override_style = override_style.clone();
+      std::thread::spawn(move || {
+        runtime::with_thread_runtime_toggles(toggles, || {
+          let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+          let mut node = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+          node.id = box_id;
+          let node_ptr = &node as *const _;
+          let gc = GridFormattingContext::new();
+          let factory = gc.factory.clone();
+          let container_style = make_grid_style();
+          let container_constraints = LayoutConstraints::indefinite();
+          let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+          let avail = taffy::geometry::Size {
+            width: AvailableSpace::Definite(200.0),
+            height: AvailableSpace::Definite(100.0),
+          };
+          let known = taffy::geometry::Size {
+            width: None,
+            height: None,
+          };
+
+          let _override_guard = push_style_override(box_id, override_style);
+
+          reset_grid_measure_layout_calls();
+          let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+            FxHashMap::default();
+          let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+          let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+          let output = gc.measure_grid_item(
+            node_ptr,
+            TaffyNodeId::from(1u64),
+            known,
+            avail,
+            None,
+            container_style.as_ref(),
+            &container_constraints,
+            &taffy_style,
+            &FxHashSet::default(),
+            &factory,
+            &mut measure_cache,
+            &mut measured_fragments,
+            &mut measured_node_keys,
+          );
+
+          assert_eq!(
+            grid_measure_layout_calls(),
+            1,
+            "first thread should miss and perform nested layout"
+          );
+          output.size
+        })
+      })
+    };
+
+    let size_1 = thread_1.join().expect("thread 1 join");
+
+    let thread_2 = {
+      let toggles = toggles.clone();
+      let item_style = item_style.clone();
+      let override_style = override_style.clone();
+      std::thread::spawn(move || {
+        runtime::with_thread_runtime_toggles(toggles, || {
+          let _cache_guard = enable_grid_measure_size_cache_for_test_thread();
+          let mut node = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+          node.id = box_id;
+          let node_ptr = &node as *const _;
+          let gc = GridFormattingContext::new();
+          let factory = gc.factory.clone();
+          let container_style = make_grid_style();
+          let container_constraints = LayoutConstraints::indefinite();
+          let taffy_style: taffy::style::Style = taffy::style::Style::default();
+
+          let avail = taffy::geometry::Size {
+            width: AvailableSpace::Definite(200.0),
+            height: AvailableSpace::Definite(100.0),
+          };
+          let known = taffy::geometry::Size {
+            width: None,
+            height: None,
+          };
+
+          let _override_guard = push_style_override(box_id, override_style);
+
+          reset_grid_measure_layout_calls();
+          let mut measure_cache: FxHashMap<MeasureKey, taffy::tree::MeasureOutput> =
+            FxHashMap::default();
+          let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+          let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+          let output = gc.measure_grid_item(
+            node_ptr,
+            TaffyNodeId::from(1u64),
+            known,
+            avail,
+            None,
+            container_style.as_ref(),
+            &container_constraints,
+            &taffy_style,
+            &FxHashSet::default(),
+            &factory,
+            &mut measure_cache,
+            &mut measured_fragments,
+            &mut measured_node_keys,
+          );
+
+          assert_eq!(
+            grid_measure_layout_calls(),
+            0,
+            "override keys should hit the shared cache when sharing is enabled"
+          );
+          output.size
+        })
+      })
+    };
+
+    let size_2 = thread_2.join().expect("thread 2 join");
+    assert_eq!(size_2, size_1);
+
+    let counters = grid_measure_cache_counters();
+    assert!(
+      counters.override_shared_hits >= 1,
+      "expected override shared hits when sharing enabled (got {})",
+      counters.override_shared_hits
+    );
+    assert!(
+      counters.override_shared_bypass_misses == 0,
+      "expected no bypass misses when override sharing enabled (got {})",
+      counters.override_shared_bypass_misses
     );
   }
 
