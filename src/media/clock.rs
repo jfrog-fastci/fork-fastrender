@@ -26,6 +26,17 @@ use std::time::{Duration, Instant};
 /// best-effort output latency estimate (see `AudioBackend::output_info()` in `src/media/audio/`).
 pub trait MediaClock: Send + Sync + 'static {
   fn now(&self) -> Duration;
+
+  /// Whether this clock has started producing valid timestamps.
+  ///
+  /// System clocks are generally started immediately. Audio clocks often cannot provide a stable
+  /// clock until the audio device has consumed (or committed to consuming) the first sample.
+  ///
+  /// A default implementation returns `true` so existing monotonic clocks do not need to override
+  /// this method.
+  fn is_started(&self) -> bool {
+    true
+  }
 }
 
 /// Shared clock representing the output device's timebase (e.g. audio hardware clock).

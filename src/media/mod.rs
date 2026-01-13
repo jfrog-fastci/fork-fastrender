@@ -19,9 +19,11 @@ pub mod av_sync;
 pub mod clock;
 pub mod codecs;
 pub mod demux;
+pub mod master_clock;
 pub mod timebase;
 
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
+pub use master_clock::{ClockSource, MasterClock};
 pub use timebase::{duration_to_ticks, ticks_to_duration, Timebase};
 
 /// Size information that can help a [`MediaFrameProvider`] choose an appropriate decode/scale
