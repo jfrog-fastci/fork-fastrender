@@ -3131,6 +3131,204 @@ fn update_renderer_media_prefs_runtime_toggles(
   fastrender::debug::runtime::update_runtime_toggles(toggles);
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowRectPx {
+  x: i64,
+  y: i64,
+  width: i64,
+  height: i64,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+impl WindowRectPx {
+  fn edges(self) -> (i64, i64, i64, i64) {
+    let x2 = self.x.saturating_add(self.width);
+    let y2 = self.y.saturating_add(self.height);
+    (self.x.min(x2), self.y.min(y2), self.x.max(x2), self.y.max(y2))
+  }
+
+  fn intersects(self, other: Self) -> bool {
+    let (ax1, ay1, ax2, ay2) = self.edges();
+    let (bx1, by1, bx2, by2) = other.edges();
+    ax1 < bx2 && ax2 > bx1 && ay1 < by2 && ay2 > by1
+  }
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn rect_distance_sq(a: WindowRectPx, b: WindowRectPx) -> i128 {
+  let (ax1, ay1, ax2, ay2) = a.edges();
+  let (bx1, by1, bx2, by2) = b.edges();
+
+  let dx = if ax2 < bx1 {
+    bx1.saturating_sub(ax2)
+  } else if bx2 < ax1 {
+    ax1.saturating_sub(bx2)
+  } else {
+    0
+  };
+  let dy = if ay2 < by1 {
+    by1.saturating_sub(ay2)
+  } else if by2 < ay1 {
+    ay1.saturating_sub(by2)
+  } else {
+    0
+  };
+
+  let dx = i128::from(dx);
+  let dy = i128::from(dy);
+  dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+}
+
+/// When restoring a persisted window state we may end up completely off-screen (e.g. a monitor was
+/// unplugged). Detect that case and move the rect onto the primary monitor (or the nearest monitor
+/// when the primary is unavailable).
+#[cfg(any(test, feature = "browser_ui"))]
+fn adjust_offscreen_window_rect(
+  window: WindowRectPx,
+  monitors: &[WindowRectPx],
+  primary_monitor: Option<WindowRectPx>,
+) -> WindowRectPx {
+  if monitors.is_empty() && primary_monitor.is_none() {
+    return window;
+  }
+
+  let is_partially_visible = monitors.iter().any(|m| window.intersects(*m))
+    || primary_monitor.is_some_and(|m| window.intersects(m));
+  if is_partially_visible {
+    return window;
+  }
+
+  let target_monitor = primary_monitor.or_else(|| {
+    monitors
+      .iter()
+      .copied()
+      .min_by_key(|m| rect_distance_sq(window, *m))
+  });
+  let Some(target_monitor) = target_monitor else {
+    return window;
+  };
+
+  let monitor_width = target_monitor.width.max(0);
+  let monitor_height = target_monitor.height.max(0);
+  if monitor_width == 0 || monitor_height == 0 {
+    return window;
+  }
+
+  let window_width = window.width.max(1).min(monitor_width);
+  let window_height = window.height.max(1).min(monitor_height);
+
+  let x = target_monitor.x.saturating_add((monitor_width - window_width) / 2);
+
+  // Slightly down from the top edge keeps the restored window from hugging macOS menu bars / X11
+  // panels while staying deterministic for tests.
+  const TOP_PADDING_PX: i64 = 32;
+  let y = {
+    let max_y = target_monitor
+      .y
+      .saturating_add(monitor_height.saturating_sub(window_height));
+    target_monitor.y.saturating_add(TOP_PADDING_PX).min(max_y)
+  };
+
+  WindowRectPx {
+    x,
+    y,
+    width: window_width,
+    height: window_height,
+  }
+}
+
+#[cfg(test)]
+mod window_restore_rect_tests {
+  use super::{adjust_offscreen_window_rect, WindowRectPx};
+
+  #[test]
+  fn window_inside_monitor_is_unchanged() {
+    let primary = WindowRectPx {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    let window = WindowRectPx {
+      x: 100,
+      y: 100,
+      width: 800,
+      height: 600,
+    };
+    assert_eq!(
+      adjust_offscreen_window_rect(window, &[primary], Some(primary)),
+      window
+    );
+  }
+
+  #[test]
+  fn window_fully_outside_is_moved_onto_primary_monitor() {
+    let primary = WindowRectPx {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    let window = WindowRectPx {
+      x: 4000,
+      y: 200,
+      width: 800,
+      height: 600,
+    };
+    let adjusted = adjust_offscreen_window_rect(window, &[primary], Some(primary));
+    assert!(adjusted.intersects(primary));
+    assert_eq!(adjusted.width, window.width);
+    assert_eq!(adjusted.height, window.height);
+  }
+
+  #[test]
+  fn negative_monitor_coordinates_are_supported() {
+    let primary = WindowRectPx {
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    let secondary = WindowRectPx {
+      x: -1920,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    let window = WindowRectPx {
+      x: -1800,
+      y: 100,
+      width: 800,
+      height: 600,
+    };
+    assert_eq!(
+      adjust_offscreen_window_rect(window, &[primary, secondary], Some(primary)),
+      window
+    );
+  }
+
+  #[test]
+  fn very_large_window_is_clamped_to_monitor() {
+    let primary = WindowRectPx {
+      x: 0,
+      y: 0,
+      width: 1000,
+      height: 800,
+    };
+    let window = WindowRectPx {
+      x: 2000,
+      y: 0,
+      width: 5000,
+      height: 4000,
+    };
+    let adjusted = adjust_offscreen_window_rect(window, &[primary], Some(primary));
+    assert!(adjusted.intersects(primary));
+    assert_eq!(adjusted.width, primary.width);
+    assert_eq!(adjusted.height, primary.height);
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   let perf_log_start = std::time::Instant::now();
@@ -3616,17 +3814,71 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(state) = window_state.as_ref() {
-      if let (Some(width), Some(height)) = (state.width, state.height) {
-        window_builder = window_builder.with_inner_size(PhysicalSize::new(
-          width.clamp(1, i64::from(u32::MAX)) as u32,
-          height.clamp(1, i64::from(u32::MAX)) as u32,
-        ));
+      let mut persisted_size = if let (Some(width), Some(height)) = (state.width, state.height) {
+        Some((
+          width.clamp(1, i64::from(u32::MAX)),
+          height.clamp(1, i64::from(u32::MAX)),
+        ))
+      } else {
+        None
+      };
+      let mut persisted_pos = if let (Some(x), Some(y)) = (state.x, state.y) {
+        Some((
+          x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
+          y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
+        ))
+      } else {
+        None
+      };
+
+      // If the persisted window rect is fully outside the current monitor layout (e.g. a monitor was
+      // unplugged since the session was saved), move it back onto the primary monitor so the window
+      // always appears on-screen.
+      if let (Some((x, y)), Some((width, height))) = (persisted_pos, persisted_size) {
+        let monitors = target
+          .available_monitors()
+          .map(|monitor| {
+            let pos = monitor.position();
+            let size = monitor.size();
+            WindowRectPx {
+              x: i64::from(pos.x),
+              y: i64::from(pos.y),
+              width: i64::from(size.width),
+              height: i64::from(size.height),
+            }
+          })
+          .collect::<Vec<_>>();
+        let primary_monitor = target.primary_monitor().map(|monitor| {
+          let pos = monitor.position();
+          let size = monitor.size();
+          WindowRectPx {
+            x: i64::from(pos.x),
+            y: i64::from(pos.y),
+            width: i64::from(size.width),
+            height: i64::from(size.height),
+          }
+        });
+
+        let adjusted = adjust_offscreen_window_rect(
+          WindowRectPx {
+            x,
+            y,
+            width,
+            height,
+          },
+          &monitors,
+          primary_monitor,
+        );
+        persisted_pos = Some((adjusted.x, adjusted.y));
+        persisted_size = Some((adjusted.width, adjusted.height));
       }
-      if let (Some(x), Some(y)) = (state.x, state.y) {
-        window_builder = window_builder.with_position(PhysicalPosition::new(
-          x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-          y.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        ));
+
+      if let Some((width, height)) = persisted_size {
+        window_builder =
+          window_builder.with_inner_size(PhysicalSize::new(width as u32, height as u32));
+      }
+      if let Some((x, y)) = persisted_pos {
+        window_builder = window_builder.with_position(PhysicalPosition::new(x as i32, y as i32));
       }
       if state.maximized {
         window_builder = window_builder.with_maximized(true);
