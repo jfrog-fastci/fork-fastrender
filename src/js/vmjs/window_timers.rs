@@ -1024,6 +1024,35 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
   ) -> Result<(), VmError> {
     let _ = host_defined;
 
+    // Convert a module-load result into the completion record expected by `vm-js`'s module loading
+    // continuation, allocating real `TypeError`/`SyntaxError` objects where appropriate.
+    //
+    // IMPORTANT: The caller must **not** use `?` on this helper before ensuring the associated
+    // `ModuleLoadPayload` has been finished/teardown'd. If error-object construction fails (OOM /
+    // termination), we must still call `finish_loading_imported_module*` with `Err(err.clone())` so
+    // the payload's persistent roots are released.
+    fn map_module_result_to_completion(
+      vm: &Vm,
+      scope: &mut Scope<'_>,
+      result: Result<ModuleId, VmError>,
+    ) -> Result<Result<ModuleId, VmError>, VmError> {
+      let completion = match result {
+        Ok(id) => Ok(id),
+        Err(VmError::Syntax(diags)) => {
+          let message =
+            vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
+          let value = make_syntax_error_value(vm, scope, &message)?;
+          Err(VmError::Throw(value))
+        }
+        Err(VmError::TypeError(message)) => {
+          let value = make_type_error_value(vm, scope, message)?;
+          Err(VmError::Throw(value))
+        }
+        Err(other) => Err(other),
+      };
+      Ok(completion)
+    }
+
     let (module_loader, module_loading_enabled) = {
       let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
         return Err(VmError::InvariantViolation(
@@ -1039,17 +1068,34 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
     // If the embedding did not enable module loading for this realm, complete the module request
     // immediately with a TypeError so dynamic imports reject without aborting the host event loop.
     if !module_loading_enabled {
-      let value = make_type_error_value(vm, scope, "module loading is not enabled for this realm")?;
-      vm.finish_loading_imported_module(
-        scope,
-        modules,
-        self,
-        referrer,
-        module_request,
-        payload,
-        Err(VmError::Throw(value)),
-      )?;
-      return Ok(());
+      match make_type_error_value(vm, scope, "module loading is not enabled for this realm") {
+        Ok(value) => {
+          vm.finish_loading_imported_module(
+            scope,
+            modules,
+            self,
+            referrer,
+            module_request,
+            payload,
+            Err(VmError::Throw(value)),
+          )?;
+          return Ok(());
+        }
+        Err(err) => {
+          // Even if we cannot allocate the `TypeError` instance, we must still finish the payload so
+          // its persistent roots are released.
+          let _ = vm.finish_loading_imported_module(
+            scope,
+            modules,
+            self,
+            referrer,
+            module_request,
+            payload,
+            Err(err.clone()),
+          );
+          return Err(err);
+        }
+      }
     }
 
     let outcome = module_loader
@@ -1058,21 +1104,12 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 
     match outcome {
       ModuleLoadOutcome::FinishNow(result) => {
-        let completion = match result {
-          Ok(id) => Ok(id),
-          Err(VmError::Syntax(diags)) => {
-            let message =
-              vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
-            let value = make_syntax_error_value(vm, scope, &message)?;
-            Err(VmError::Throw(value))
-          }
-          Err(VmError::TypeError(message)) => {
-            let value = make_type_error_value(vm, scope, message)?;
-            Err(VmError::Throw(value))
-          }
-          Err(other) => Err(other),
+        let (completion, conversion_err) = match map_module_result_to_completion(vm, scope, result) {
+          Ok(completion) => (completion, None),
+          Err(err) => (Err(err.clone()), Some(err)),
         };
-        vm.finish_loading_imported_module(
+
+        let finish_result = vm.finish_loading_imported_module(
           scope,
           modules,
           self,
@@ -1080,7 +1117,16 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           module_request,
           payload,
           completion,
-        )?;
+        );
+
+        // Preserve historical behavior: if error-object conversion failed, propagate that error
+        // (even though we still finished the payload).
+        if let Some(err) = conversion_err {
+          let _ = finish_result;
+          return Err(err);
+        }
+
+        finish_result?;
       }
       ModuleLoadOutcome::InFlight => {}
       ModuleLoadOutcome::StartFetch(key) => {
@@ -1091,29 +1137,23 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
                                                 key: crate::js::realm_module_loader::ModuleKey|
          -> Result<(), VmError> {
            let (waiters, result) = module_loader
-             .borrow_mut()
-             .fetch_and_register(scope.heap_mut(), modules, key)
-             .ok_or(VmError::InvariantViolation(
-               "module loader missing inflight continuation",
-             ))?;
+              .borrow_mut()
+              .fetch_and_register(scope.heap_mut(), modules, key)
+              .ok_or(VmError::InvariantViolation(
+                "module loader missing inflight continuation",
+              ))?;
 
-          let completion = match result {
-            Ok(id) => Ok(id),
-            Err(VmError::Syntax(diags)) => {
-              let message =
-                vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
-              let value = make_syntax_error_value(vm, scope, &message)?;
-              Err(VmError::Throw(value))
-            }
-            Err(VmError::TypeError(message)) => {
-              let value = make_type_error_value(vm, scope, message)?;
-              Err(VmError::Throw(value))
-            }
-            Err(other) => Err(other),
-          };
+          let (completion, conversion_err) =
+            match map_module_result_to_completion(vm, scope, result) {
+              Ok(completion) => (completion, None),
+              Err(err) => (Err(err.clone()), Some(err)),
+            };
 
+          // Always attempt to finish all waiters so their persistent roots are released. Record the
+          // first `finish_loading_imported_module` error (if any) but keep going.
+          let mut first_finish_err: Option<VmError> = None;
           for waiter in waiters {
-            vm.finish_loading_imported_module(
+            let res = vm.finish_loading_imported_module(
               scope,
               modules,
               hooks,
@@ -1121,8 +1161,22 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
               waiter.request,
               waiter.payload,
               completion.clone(),
-            )?;
+            );
+            if let Err(err) = res {
+              if first_finish_err.is_none() {
+                first_finish_err = Some(err);
+              }
+            }
           }
+
+          // Prefer propagating a conversion failure (matches prior behavior), otherwise surface the
+          // first finish error.
+          if let Some(err) = conversion_err {
+            return Err(err);
+          }
+          if let Some(err) = first_finish_err {
+            return Err(err);
+          };
 
           Ok(())
         };
@@ -1182,31 +1236,24 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
               let modules = unsafe { &mut *(modules_ptr as *mut ModuleGraph) };
 
                let (waiters, result) = module_loader_for_task
-                 .borrow_mut()
-                 .fetch_and_register(heap, modules, key_for_task)
-                 .ok_or(VmError::InvariantViolation(
-                   "module loader missing inflight continuation",
-                 ))?;
+                  .borrow_mut()
+                  .fetch_and_register(heap, modules, key_for_task)
+                  .ok_or(VmError::InvariantViolation(
+                    "module loader missing inflight continuation",
+                  ))?;
 
-              let mut scope = heap.scope();
+               let mut scope = heap.scope();
 
-              let completion = match result {
-                Ok(id) => Ok(id),
-                Err(VmError::Syntax(diags)) => {
-                  let message =
-                    vm_error_format::vm_error_to_string(scope.heap_mut(), VmError::Syntax(diags));
-                  let value = make_syntax_error_value(&vm, &mut scope, &message)?;
-                  Err(VmError::Throw(value))
-                }
-                Err(VmError::TypeError(message)) => {
-                  let value = make_type_error_value(&vm, &mut scope, message)?;
-                  Err(VmError::Throw(value))
-                }
-                Err(other) => Err(other),
-              };
+              let (completion, conversion_err) =
+                match map_module_result_to_completion(&vm, &mut scope, result) {
+                  Ok(completion) => (completion, None),
+                  Err(err) => (Err(err.clone()), Some(err)),
+                };
 
+              // Finish all waiters even if one completion fails so payload roots are not leaked.
+              let mut first_finish_err: Option<VmError> = None;
               for waiter in waiters {
-                vm.finish_loading_imported_module_with_host_and_hooks(
+                let res = vm.finish_loading_imported_module_with_host_and_hooks(
                   vm_host,
                   &mut scope,
                   modules,
@@ -1215,7 +1262,19 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
                   waiter.request,
                   waiter.payload,
                   completion.clone(),
-                )?;
+                );
+                if let Err(err) = res {
+                  if first_finish_err.is_none() {
+                    first_finish_err = Some(err);
+                  }
+                }
+              }
+
+              if let Some(err) = conversion_err {
+                return Err(err);
+              }
+              if let Some(err) = first_finish_err {
+                return Err(err);
               }
               Ok(())
             });
@@ -1235,10 +1294,15 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
             .borrow_mut()
             .take_inflight(&key)
             .unwrap_or_default();
-          let value = make_type_error_value(vm, scope, "failed to enqueue module fetch task")?;
-          let completion = Err(VmError::Throw(value));
+          let (completion, conversion_err) =
+            match make_type_error_value(vm, scope, "failed to enqueue module fetch task") {
+              Ok(value) => (Err(VmError::Throw(value)), None),
+              Err(err) => (Err(err.clone()), Some(err)),
+            };
+
+          let mut first_finish_err: Option<VmError> = None;
           for waiter in waiters {
-            vm.finish_loading_imported_module(
+            let res = vm.finish_loading_imported_module(
               scope,
               modules,
               self,
@@ -1246,7 +1310,19 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
               waiter.request,
               waiter.payload,
               completion.clone(),
-            )?;
+            );
+            if let Err(err) = res {
+              if first_finish_err.is_none() {
+                first_finish_err = Some(err);
+              }
+            }
+          }
+
+          if let Some(err) = conversion_err {
+            return Err(err);
+          }
+          if let Some(err) = first_finish_err {
+            return Err(err);
           }
         }
       }
@@ -2877,6 +2953,149 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn host_load_imported_module_does_not_leak_payload_roots_when_error_object_alloc_ooms(
+  ) -> crate::error::Result<()> {
+    use vm_js::TerminationReason;
+ 
+    fn vm_err(err: VmError) -> crate::error::Error {
+      crate::error::Error::Other(err.to_string())
+    }
+ 
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut opts = JsExecutionOptions::default();
+    // Keep this small so we can deterministically exhaust the heap in this unit test.
+    opts.max_vm_heap_bytes = Some(4 * 1024 * 1024);
+    let mut host = crate::js::WindowHost::new_with_options(dom, "https://example.com/", opts)?;
+    let mut hooks =
+      VmJsEventLoopHooks::<crate::js::WindowHostState>::new_with_host(host.host_mut())?;
+ 
+    // Capture a live `ModuleLoadPayload` by triggering `vm-js` module-graph loading and intercepting
+    // the host hook call. We intentionally do *not* finish the payload here; that is the root-safety
+    // invariant under test.
+    struct CaptureHost {
+      captured: Option<(ModuleReferrer, ModuleRequest, ModuleLoadPayload)>,
+    }
+ 
+    impl VmHostHooks for CaptureHost {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+ 
+      fn host_load_imported_module(
+        &mut self,
+        _vm: &mut Vm,
+        _scope: &mut Scope<'_>,
+        _modules: &mut ModuleGraph,
+        referrer: ModuleReferrer,
+        request: ModuleRequest,
+        _host_defined: HostDefined,
+        payload: ModuleLoadPayload,
+      ) -> Result<(), VmError> {
+        if self.captured.is_none() {
+          self.captured = Some((referrer, request, payload));
+        }
+        Ok(())
+      }
+    }
+ 
+    let window = host.host_mut().window_mut();
+    let (vm, _realm, heap) = window.vm_realm_and_heap_mut();
+    let mut modules = ModuleGraph::new();
+    let (referrer, request, payload) = {
+      let mut scope = heap.scope();
+ 
+      let root_record = vm_js::SourceTextModuleRecord::parse(scope.heap_mut(), "import './dep.js';")
+        .map_err(vm_err)?;
+      let root_id = modules.add_module(root_record).map_err(vm_err)?;
+ 
+      let mut capture_host = CaptureHost { captured: None };
+      let _promise = vm_js::load_requested_modules(
+        vm,
+        &mut scope,
+        &mut modules,
+        &mut capture_host,
+        root_id,
+        HostDefined::default(),
+      )
+      .map_err(vm_err)?;
+ 
+      capture_host
+        .captured
+        .take()
+        .expect("expected module-load payload to be captured")
+    };
+ 
+    // Fill the heap with rooted ArrayBuffers until further allocations fail. This should make the
+    // subsequent `TypeError` object allocation inside `host_load_imported_module` fail with OOM.
+    let mut buffer_roots: Vec<RootId> = Vec::new();
+    let mut chunk = 512 * 1024;
+    loop {
+      let attempt = {
+        let mut scope = heap.scope();
+        // Root the object handle while we add a persistent root: `add_root` can allocate.
+        match scope.alloc_array_buffer(chunk) {
+          Ok(obj) => {
+            scope.push_root(Value::Object(obj)).map_err(vm_err)?;
+            scope.heap_mut().add_root(Value::Object(obj)).map(Some)
+          }
+          Err(err) => Err(err),
+        }
+      };
+ 
+      match attempt {
+        Ok(Some(root)) => {
+          buffer_roots.push(root);
+        }
+        Ok(None) => {}
+        Err(VmError::OutOfMemory) => {
+          if chunk <= 1 {
+            break;
+          }
+          chunk = (chunk / 2).max(1);
+        }
+        Err(VmError::Termination(term)) if term.reason == TerminationReason::OutOfMemory => {
+          if chunk <= 1 {
+            break;
+          }
+          chunk = (chunk / 2).max(1);
+        }
+        Err(other) => return Err(crate::error::Error::Other(other.to_string())),
+      }
+    }
+ 
+    // Now call the real host hook. Prior to the fix, if error-object construction OOM'd, the hook
+    // would return early and drop `payload` with live persistent roots, tripping debug assertions in
+    // `vm-js`. The regression test passes as long as this call returns an error *without panicking*.
+    let err = {
+      let mut scope = heap.scope();
+      hooks
+        .host_load_imported_module(
+          vm,
+          &mut scope,
+          &mut modules,
+          referrer,
+          request,
+          HostDefined::default(),
+          payload,
+        )
+        .expect_err("expected module-load error-object allocation to fail under tiny heap")
+    };
+    assert!(
+      matches!(err, VmError::OutOfMemory)
+        || matches!(err, VmError::Termination(term) if term.reason == TerminationReason::OutOfMemory),
+      "expected out-of-memory error, got {err:?}"
+    );
+ 
+    // Discard any Promise jobs that `finish_loading_imported_module` may have attempted to enqueue.
+    // This keeps the test focused on `ModuleLoadPayload` root teardown rather than job-queue wiring.
+    let _ = hooks.finish(heap);
+ 
+    for root in buffer_roots {
+      heap.remove_root(root);
+    }
+ 
+    Ok(())
+  }
+ 
   #[test]
   fn request_idle_callback_is_exposed_and_runs_when_idle() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
