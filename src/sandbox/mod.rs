@@ -34,6 +34,8 @@
 
 use std::io;
 
+pub mod config;
+
 pub mod fd_sanitizer;
 
 pub use fd_sanitizer::close_fds_except;
@@ -44,8 +46,14 @@ mod linux_prelude;
 #[cfg(target_os = "linux")]
 pub mod linux_landlock;
 
+// macOS Seatbelt sandbox support lives in `macos.rs`. Keep it behind a cfg so the crate still
+// builds on non-macOS targets without linking against `libsandbox`.
+#[cfg(target_os = "macos")]
+pub mod macos;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
+  Disabled,
   Applied,
   Unsupported,
 }
@@ -173,6 +181,104 @@ pub enum SandboxError {
     #[source]
     source: io::Error,
   },
+
+  #[error("invalid {var}: expected 0 or 1, got {value:?}")]
+  InvalidBoolean0Or1 { var: &'static str, value: String },
+
+  #[error(
+    "invalid {var}: expected one of pure-computation, no-internet, renderer-default, or a path to an SBPL file; got {value:?}"
+  )]
+  InvalidMacosSeatbeltProfile { var: &'static str, value: String },
+
+  #[error(
+    "failed to read SBPL file {path:?} (from {var}={raw_value:?}); expected one of pure-computation, no-internet, renderer-default, or a path to an existing SBPL file"
+  )]
+  ReadSeatbeltProfileFailed {
+    var: &'static str,
+    raw_value: String,
+    path: std::path::PathBuf,
+    #[source]
+    source: io::Error,
+  },
+
+  #[error("SBPL profile contains an interior NUL byte (from {var}={raw_value:?})")]
+  SeatbeltProfileContainsNul { var: &'static str, raw_value: String },
+
+  #[cfg(target_os = "macos")]
+  #[error("failed to apply macOS Seatbelt sandbox (profile={profile}): {errorbuf}")]
+  MacosSeatbeltInitFailed { profile: String, errorbuf: String },
+}
+
+/// Parse `FASTR_RENDERER_*` environment variables and apply the renderer sandbox when enabled.
+///
+/// This is intended to be called very early in renderer process startup (before spawning threads
+/// or initializing libraries that might attempt privileged operations).
+pub fn maybe_apply_renderer_sandbox_from_env() -> Result<SandboxStatus, SandboxError> {
+  let default_enabled = cfg!(target_os = "macos");
+  let config = match config::RendererSandboxEnvConfig::from_env(default_enabled) {
+    Ok(config) => config,
+    Err(err) => {
+      eprintln!(
+        "fastrender: renderer sandbox configuration error\n\
+         error: {err}\n\
+         hint: set FASTR_RENDERER_SANDBOX=0 to disable sandboxing for debugging"
+      );
+      return Err(err);
+    }
+  };
+
+  if !config.enabled {
+    return Ok(SandboxStatus::Disabled);
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    use config::MacosSeatbeltProfileSelection;
+    let profile_desc = config.macos_seatbelt_profile.describe();
+
+    let apply_result = match &config.macos_seatbelt_profile {
+      MacosSeatbeltProfileSelection::PureComputation => macos::apply_renderer_sandbox(
+        macos::MacosSandboxMode::PureComputation,
+      ),
+      MacosSeatbeltProfileSelection::NoInternet => macos::apply_named_profile("no-internet"),
+      MacosSeatbeltProfileSelection::RendererDefault => macos::apply_renderer_sandbox(
+        macos::MacosSandboxMode::RendererSystemFonts,
+      ),
+      MacosSeatbeltProfileSelection::SbplPath { .. } => {
+        let sbpl = match config.macos_seatbelt_profile.load_sbpl_source() {
+          Ok(sbpl) => sbpl,
+          Err(err) => {
+            eprintln!(
+              "fastrender: failed to load macOS Seatbelt sandbox profile (profile={profile_desc})\n\
+               error: {err}\n\
+               hint: set FASTR_RENDERER_SANDBOX=0 to disable sandboxing for debugging"
+            );
+            return Err(err);
+          }
+        };
+        macos::apply_profile_source_with_home_param(&sbpl)
+      }
+    };
+
+    if let Err(err) = apply_result {
+      // Log enough context for debugging/CI where the sandbox may be intentionally disabled.
+      eprintln!(
+        "fastrender: failed to apply macOS Seatbelt sandbox (profile={profile_desc})\n\
+         errorbuf: {err}\n\
+         hint: set FASTR_RENDERER_SANDBOX=0 to disable sandboxing for debugging"
+      );
+      return Err(SandboxError::MacosSeatbeltInitFailed {
+        profile: profile_desc,
+        errorbuf: err.to_string(),
+      });
+    }
+    return Ok(SandboxStatus::Applied);
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    Ok(SandboxStatus::Unsupported)
+  }
 }
 
 /// Apply hardening steps that must run before seccomp is installed.
@@ -280,7 +386,7 @@ mod tests {
     if is_child {
       match apply_renderer_seccomp_denylist() {
         Ok(SandboxStatus::Applied) => {}
-        Ok(SandboxStatus::Unsupported) => return,
+        Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
             return;
@@ -353,7 +459,7 @@ mod tests {
         network_policy: NetworkPolicy::AllowUnixSocketsOnly,
       }) {
         Ok(SandboxStatus::Applied) => {}
-        Ok(SandboxStatus::Unsupported) => return,
+        Ok(SandboxStatus::Disabled | SandboxStatus::Unsupported) => return,
         Err(err) => {
           if is_seccomp_unsupported_error(&err) {
             return;

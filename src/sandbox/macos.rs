@@ -410,7 +410,7 @@ fn sandbox_message(errorbuf: *mut libc::c_char) -> String {
   message
 }
 
-fn apply_named_profile(profile_name: &str) -> io::Result<()> {
+pub(crate) fn apply_named_profile(profile_name: &str) -> io::Result<()> {
   let profile_name =
     CString::new(profile_name).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL"))?;
   sandbox_init_profile(&profile_name, SANDBOX_NAMED)
@@ -422,7 +422,7 @@ fn apply_profile_source(profile_source: &str) -> io::Result<()> {
   sandbox_init_profile(&profile_source, SANDBOX_PROFILE)
 }
 
-fn apply_profile_source_with_home_param(profile_source: &str) -> io::Result<()> {
+pub(crate) fn apply_profile_source_with_home_param(profile_source: &str) -> io::Result<()> {
   let profile_source = CString::new(profile_source)
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "sandbox profile contains NUL"))?;
 
