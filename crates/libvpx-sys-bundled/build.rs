@@ -33,7 +33,7 @@ fn main() {
     //
     // We intentionally build libvpx without yasm/nasm assembly by default to keep builds
     // portable/CI-friendly.
-    let is_msvc_target = target_os == "windows" && target_arch == "x86_64" && target_env == "msvc";
+    let is_msvc_target = target_os == "windows" && target_env == "msvc";
 
     let libvpx_toolchain = match (target_os.as_str(), target_arch.as_str(), target_env.as_str()) {
         ("linux", "x86_64", "gnu") => "generic-gnu".to_string(),
@@ -72,6 +72,7 @@ Got env={other:?}. musl targets are not supported by the bundled libvpx build ye
             format!("arm64-darwin{darwin}-gcc")
         }
         ("windows", "x86_64", "gnu") => "x86_64-win64-gcc".to_string(),
+        ("windows", "aarch64", "gnu") => "arm64-win64-gcc".to_string(),
         ("windows", "x86_64", "msvc") => {
             if !host.contains("windows") {
                 unsupported(
@@ -84,10 +85,29 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
             let vs_ver = detect_visual_studio_major().unwrap_or(16);
             format!("x86_64-win64-vs{vs_ver}")
         }
+        ("windows", "aarch64", "msvc") => {
+            if !host.contains("windows") {
+                unsupported(
+                    &target,
+                    &host,
+                    "Windows MSVC target requested but build host is not Windows. \
+Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows or link against a system libvpx.",
+                );
+            }
+            let vs_ver = detect_visual_studio_major().unwrap_or(16);
+            if vs_ver < 15 {
+                unsupported(
+                    &target,
+                    &host,
+                    "Windows ARM64 MSVC builds require Visual Studio 2017+ (vs15) so that the generated projects can target ARM64.",
+                );
+            }
+            format!("arm64-win64-vs{vs_ver}")
+        }
         _ => unsupported(
             &target,
             &host,
-            "unsupported target for bundled libvpx build. Supported targets: linux x86_64-gnu, macOS x86_64/aarch64, Windows x86_64-gnu (MinGW), Windows x86_64-msvc (best-effort).",
+            "unsupported target for bundled libvpx build. Supported targets: linux x86_64-gnu, macOS x86_64/aarch64, Windows x86_64-gnu (MinGW), Windows aarch64-gnu (MinGW), Windows x86_64-msvc (best-effort), Windows aarch64-msvc (best-effort).",
         ),
     };
 
@@ -200,8 +220,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         && cross_env.is_empty()
         && cc.is_empty();
     let effective_cross = if needs_default_cross {
-        // The canonical MinGW-w64 prefix used by most Linux distributions.
-        "x86_64-w64-mingw32-".to_string()
+        default_mingw_cross_prefix(&target, &host, target_arch.as_str())
     } else {
         cross_env
     };
@@ -285,9 +304,6 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         if !cflags.is_empty() {
             configure_cmd.env("CFLAGS", &cflags);
         }
-        if !ld.is_empty() {
-            configure_cmd.env("LD", &ld);
-        }
         if !ar.is_empty() {
             configure_cmd.env("AR", &ar);
         }
@@ -319,14 +335,28 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
                 .env("NO_LAUNCH_DEVENV", "1");
             run(make_gen_cmd, "libvpx make (msvc generate projects)");
 
-            // Now build Release|x64 only.
+            // Now build only the desired Release|<Platform> configuration.
+            let msvc_cfg = match target_arch.as_str() {
+                "x86_64" => "Release_x64",
+                "aarch64" => "Release_ARM64",
+                other => unsupported(
+                    &target,
+                    &host,
+                    &format!(
+                        "unsupported Windows MSVC arch {other:?} for bundled libvpx build (expected x86_64 or aarch64)"
+                    ),
+                ),
+            };
             let mut make_build_cmd = Command::new(&effective_make);
             make_build_cmd
                 .current_dir(&build_dir)
                 .arg(format!("-j{jobs}"))
                 .arg("target=solution")
-                .arg("Release_x64");
-            run(make_build_cmd, "libvpx make (msvc build Release_x64)");
+                .arg(msvc_cfg);
+            run(
+                make_build_cmd,
+                &format!("libvpx make (msvc build {msvc_cfg})"),
+            );
 
             let produced = find_msvc_static_lib(&build_dir).unwrap_or_else(|| {
                 panic!(
@@ -474,6 +504,21 @@ fn disable_yasm_nasm_by_default(target_arch: &str) -> Vec<&'static str> {
     ]
 }
 
+fn default_mingw_cross_prefix(target: &str, host: &str, target_arch: &str) -> String {
+    // The canonical MinGW-w64 toolchain prefixes used by many Linux distributions.
+    match target_arch {
+        "x86_64" => "x86_64-w64-mingw32-".to_string(),
+        "aarch64" => "aarch64-w64-mingw32-".to_string(),
+        other => unsupported(
+            target,
+            host,
+            &format!(
+                "unsupported MinGW arch {other:?} for bundled libvpx build (set CROSS explicitly if you have a different toolchain prefix)"
+            ),
+        ),
+    }
+}
+
 fn detect_darwin_major() -> Option<u32> {
     let out = Command::new("uname").arg("-r").output().ok()?;
     if !out.status.success() {
@@ -521,16 +566,17 @@ fn find_msvc_static_lib(build_dir: &Path) -> Option<PathBuf> {
 
         // Score paths: prefer x64/Release over Debug/Win32, etc.
         let mut score = 0;
-        for comp in rel.components() {
-            let comp = comp.as_os_str().to_string_lossy();
-            match comp.as_ref() {
-                "x64" | "amd64" => score += 20,
-                "Release" => score += 10,
-                "Win32" => score -= 10,
-                "Debug" => score -= 5,
-                _ => {}
+            for comp in rel.components() {
+                let comp = comp.as_os_str().to_string_lossy();
+                match comp.as_ref() {
+                    "x64" | "amd64" => score += 20,
+                    "ARM64" | "arm64" => score += 20,
+                    "Release" => score += 10,
+                    "Win32" => score -= 10,
+                    "Debug" => score -= 5,
+                    _ => {}
+                }
             }
-        }
         if score <= 0 {
             // Still accept it, but prefer release-ish outputs.
             score += 1;

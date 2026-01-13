@@ -36,7 +36,9 @@ Target selection:
   libvpx release's known Darwin toolchains)
 - macOS aarch64 (Apple Silicon): `--target=arm64-darwinXX-gcc`
 - Windows x86_64-gnu (MinGW): `--target=x86_64-win64-gcc`
+- Windows aarch64-gnu (MinGW): `--target=arm64-win64-gcc`
 - Windows x86_64-msvc: `--target=x86_64-win64-vsNN` (NN is detected from the host, defaulting to 16)
+- Windows aarch64-msvc: `--target=arm64-win64-vsNN` (NN is detected from the host; VS2017+ / vs15+ required)
 
 Common flags:
 
@@ -61,7 +63,9 @@ Supported (best-effort; CI coverage may vary):
 - `x86_64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
 - `aarch64-apple-darwin` (native builds only; cross-compiling the bundled libvpx is not supported)
 - `x86_64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
+- `aarch64-pc-windows-gnu` (MinGW; may require `CROSS` / a MinGW-w64 toolchain when cross-compiling)
 - `x86_64-pc-windows-msvc` (MSVC; requires MSYS2/Cygwin + `msbuild.exe` in PATH)
+- `aarch64-pc-windows-msvc` (MSVC; requires MSYS2/Cygwin + `msbuild.exe` in PATH; VS2017+ / vs15+ required)
 
 Unsupported:
 
