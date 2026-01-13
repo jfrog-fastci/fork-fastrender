@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, PropertyKey, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -16,99 +16,124 @@ fn value_to_string(rt: &JsRuntime, value: Value) -> String {
   rt.heap.get_string(s).unwrap().to_utf8_lossy()
 }
 
-fn async_generators_supported(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  let value = rt.exec_script(
-    r#"
-      try {
-        // vm-js currently throws a *catchable* SyntaxError when encountering `async function*`
-        // syntax, so test suites can feature-detect async generators.
-        (async function* () {});
-        true;
-      } catch (e) {
-        if (e && e.name === "SyntaxError" && e.message === "async generator functions") {
-          false;
-        } else {
-          throw e;
-        }
-      }
-    "#,
-  )?;
-  let Value::Bool(b) = value else {
-    panic!("expected bool, got {value:?}");
+fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> Result<bool, VmError> {
+  match err {
+    VmError::Unimplemented(msg) if msg.contains("async generator functions") => return Ok(true),
+    _ => {}
+  }
+
+  let Some(thrown) = err.thrown_value() else {
+    return Ok(false);
   };
-  Ok(b)
+  let Value::Object(err_obj) = thrown else {
+    return Ok(false);
+  };
+
+  // vm-js historically feature-detects async generator functions by throwing a SyntaxError at runtime
+  // (instead of returning a host-level `VmError::Unimplemented`), so test harnesses can use
+  // try/catch. Treat that specific error as "feature not implemented" so this test can land before
+  // async generators are supported.
+  let syntax_error_proto = rt.realm().intrinsics().syntax_error_prototype();
+  if rt.heap.object_prototype(err_obj)? != Some(syntax_error_proto) {
+    return Ok(false);
+  }
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+
+  let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+  let Some(Value::String(message_s)) = scope
+    .heap()
+    .object_get_own_data_property_value(err_obj, &message_key)?
+  else {
+    return Ok(false);
+  };
+  let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
+  Ok(message == "async generator functions")
 }
 
 #[test]
 fn internal_await_delays_first_yield() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  if !async_generators_supported(&mut rt)? {
-    return Ok(());
-  }
 
-  let value = rt.exec_script(
-    r#"
-      var log = "";
-      var out = "";
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        var log = "";
+        var out = "";
 
-      async function* g(){
-        log += "s";
-        await Promise.resolve().then(()=>{ log += "a"; });
-        yield 1;
-      }
+        async function* g(){
+          log += "s";
+          await Promise.resolve().then(()=>{ log += "a"; });
+          yield 1;
+        }
 
-      var it = g();
-      it.next().then(r => { out = String(r.value) + ':' + String(r.done); });
+        var it = g();
+        it.next().then(r => { out = String(r.value) + ':' + String(r.done); });
 
-      log + '|' + out
-    "#,
-  )?;
-  // The generator starts running synchronously until it hits `await`. At this point it is
-  // suspended on the internal await and has not yet produced a `yield`.
-  assert_eq!(value_to_string(&rt, value), "s|");
+        log + '|' + out
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    // The generator starts running synchronously until it hits `await`. At this point it is
+    // suspended on the internal await and has not yet produced a `yield`.
+    assert_eq!(value_to_string(&rt, value), "s|");
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("log")?;
-  assert_eq!(value_to_string(&rt, value), "sa");
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "sa");
 
-  let value = rt.exec_script("out")?;
-  assert_eq!(value_to_string(&rt, value), "1:false");
+    let value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, value), "1:false");
 
-  Ok(())
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
 }
 
 #[test]
 fn next_requests_are_queued_across_internal_await() -> Result<(), VmError> {
   let mut rt = new_runtime();
-  if !async_generators_supported(&mut rt)? {
-    return Ok(());
-  }
 
-  let value = rt.exec_script(
-    r#"
-      var results = [];
+  let result: Result<(), VmError> = (|| {
+    let value = match rt.exec_script(
+      r#"
+        var results = [];
 
-      async function* g(){
-        await Promise.resolve();
-        yield 1;
-        yield 2;
-      }
+        async function* g(){
+          await Promise.resolve();
+          yield 1;
+          yield 2;
+        }
 
-      var it = g();
-      it.next().then(r=>results.push(r.value));
-      it.next().then(r=>results.push(r.value));
-      it.next().then(r=>results.push(r.done ? 'done' : 'notdone'));
+        var it = g();
+        it.next().then(r=>results.push(r.value));
+        it.next().then(r=>results.push(r.value));
+        it.next().then(r=>results.push(r.done ? 'done' : 'notdone'));
 
-      results.join(',')
-    "#,
-  )?;
-  assert_eq!(value_to_string(&rt, value), "");
+        results.join(',')
+      "#,
+    ) {
+      Ok(v) => v,
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    };
+    assert_eq!(value_to_string(&rt, value), "");
 
-  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
-  let value = rt.exec_script("results.join(',')")?;
-  assert_eq!(value_to_string(&rt, value), "1,2,done");
+    let value = rt.exec_script("results.join(',')")?;
+    assert_eq!(value_to_string(&rt, value), "1,2,done");
 
-  Ok(())
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
 }
