@@ -55,6 +55,11 @@ pub struct BrowserDocumentJs {
 }
 
 impl BrowserDocumentJs {
+  fn sync_animation_time_to_event_loop(&mut self, event_loop: &EventLoop<Self>) {
+    let ms = crate::js::time::duration_to_ms_f64(event_loop.now()) as f32;
+    self.document.set_animation_time_ms(ms);
+  }
+
   pub fn from_html(html: &str, options: RenderOptions) -> Result<Self> {
     Ok(Self::new(BrowserDocumentDom2::from_html(html, options)?))
   }
@@ -156,6 +161,9 @@ impl BrowserDocumentJs {
     })();
 
     // Always restore the event loop, even when JS execution returns an error.
+    if step_result.is_ok() {
+      self.sync_animation_time_to_event_loop(&event_loop);
+    }
     self.event_loop = Some(event_loop);
     step_result?;
     self.render_if_needed()
@@ -254,6 +262,13 @@ impl BrowserDocumentJs {
       }
 
       // Always restore the event loop, even when JS execution returns an error.
+      self.event_loop = Some(event_loop);
+    }
+
+    // Ensure CSS animations sample the same timebase as the event loop (`requestAnimationFrame`
+    // timestamps, timers) before rendering.
+    if let Some(event_loop) = self.event_loop.take() {
+      self.sync_animation_time_to_event_loop(&event_loop);
       self.event_loop = Some(event_loop);
     }
     self.render_if_needed()
@@ -388,6 +403,11 @@ impl BrowserDocumentJs {
     max_frames: usize,
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
+    // Ensure CSS animations sample the same timebase as rAF timestamps before we early-out.
+    if let Some(event_loop) = self.event_loop.take() {
+      self.sync_animation_time_to_event_loop(&event_loop);
+      self.event_loop = Some(event_loop);
+    }
     if !self.document.is_dirty()
       && !self.document.needs_animation_frame()
       && self.event_loop.as_ref().is_some_and(|event_loop| {
@@ -460,6 +480,8 @@ impl BrowserDocumentJs {
         }
       }
 
+      self.sync_animation_time_to_event_loop(&event_loop);
+
       self.event_loop = Some(event_loop);
 
       if self.document.is_dirty() || self.document.needs_animation_frame() {
@@ -516,8 +538,9 @@ mod tests {
   use crate::dom2::NodeKind;
   use crate::dom2::{Document as Dom2Document, NodeId};
   use crate::js::{
-    Clock, CurrentScriptHost, JsExecutionOptions, RunLimits, RunUntilIdleStopReason, VirtualClock,
+    Clock, CurrentScriptHost, JsExecutionOptions, RunLimits, RunUntilIdleStopReason,
     ScriptBlockExecutor, ScriptExecutionLogEntry, ScriptSourceSnapshot, ScriptType, TaskSource,
+    VirtualClock,
   };
   use std::cell::RefCell;
   use std::rc::Rc;
@@ -1076,6 +1099,51 @@ mod tests {
 
     clock.advance(Duration::from_millis(6));
     assert_eq!(runtime.next_timer_due_in()?, Some(Duration::from_millis(4)));
+    Ok(())
+  }
+
+  #[test]
+  fn css_animation_time_tracks_event_loop_clock() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      body { margin: 0; }
+      @keyframes bg {
+        from { background-color: rgb(255, 0, 0); }
+        to { background-color: rgb(0, 255, 0); }
+      }
+      #box {
+        width: 32px;
+        height: 32px;
+        background-color: rgb(255, 0, 0);
+        animation: bg 1s linear infinite;
+      }
+    </style>
+  </head>
+  <body><div id="box"></div></body>
+</html>"#;
+
+    let document = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      super::super::RenderOptions::new().with_viewport(32, 32),
+    )?;
+
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(0));
+    let event_loop = EventLoop::<BrowserDocumentJs>::with_clock(clock.clone());
+    let mut runtime = BrowserDocumentJs::with_event_loop(document, event_loop);
+
+    let pix0 = runtime.tick_frame()?.expect("expected initial render");
+
+    clock.advance(Duration::from_millis(100));
+    let pix1 = runtime
+      .tick_frame()?
+      .expect("expected render after advancing event loop clock");
+
+    assert_ne!(pix0.data(), pix1.data(), "expected animation to progress");
     Ok(())
   }
 }
