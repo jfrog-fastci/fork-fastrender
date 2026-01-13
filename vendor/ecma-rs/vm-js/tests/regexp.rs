@@ -1929,6 +1929,18 @@ fn regexp_lookbehind_greedy_quantifiers_capture_maximal_left_context() {
 }
 
 #[test]
+fn regexp_nested_quantifiers_reset_repeat_state_on_reentry() {
+  // Regression test: Quantifier iteration state must be local to a single entry into the quantifier.
+  // Without resetting per-quantifier counters on re-entry, nested quantifiers like `(?:b\d{2})+`
+  // only match the final chunk.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("ab12b23b34c".match(/((?:b\d{2})+)c/))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["b12b23b34c","b12b23b34"]"#);
+}
+
+#[test]
 fn regexp_lookbehind_mutual_recursive_backreferences_use_empty_for_unset_captures() {
   // From test262 `lookBehind/mutual-recursive.js`.
   let mut rt = new_runtime();
