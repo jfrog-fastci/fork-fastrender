@@ -369,7 +369,22 @@ status = "skip"
 reason = "Crash regression HTML does not use testharness.js (runner expects testharness tests)."
 
 [[expectations]]
+id = "dom/ranges/Range-attributes.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+
+[[expectations]]
+id = "dom/ranges/Range-detach.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+
+[[expectations]]
 id = "dom/ranges/Range-constructor.html"
+backend = ["vmjs", "vmjs-rendered"]
+status = "pass"
+
+[[expectations]]
+id = "dom/ranges/Range-commonAncestorContainer-2.html"
 backend = ["vmjs", "vmjs-rendered"]
 status = "pass"
 
