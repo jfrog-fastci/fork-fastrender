@@ -438,7 +438,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_HELP => Some(help_html()),
     ABOUT_VERSION => Some(version_html()),
     ABOUT_GPU => Some(gpu_html()),
-    ABOUT_PROCESSES => Some(processes_html()),
+    ABOUT_PROCESSES => Some(processes_html(url)),
     ABOUT_ERROR => Some(error_html("Navigation error", None, None)),
     ABOUT_HISTORY => Some(history_html(url)),
     ABOUT_BOOKMARKS => Some(bookmarks_html(url)),
@@ -1011,8 +1011,19 @@ fn best_effort_site_for_url(url: &str) -> String {
   }
 }
 
-fn processes_html() -> String {
+fn processes_html(full_url: &str) -> String {
   let snapshot = about_page_snapshot();
+
+  let query = about_query_param(full_url, "q")
+    .unwrap_or_default()
+    .trim()
+    .to_string();
+  let query_lower = query.to_ascii_lowercase();
+  let tokens: Vec<&str> = query_lower
+    .split_whitespace()
+    .filter(|t| !t.is_empty())
+    .collect();
+  let safe_query = escape_html(&query);
 
   let process_model = crate::ui::process_assignment_config::process_model_from_env();
   let process_model_label = match process_model {
@@ -1073,6 +1084,7 @@ fn processes_html() -> String {
   let mut crashed_tabs = 0usize;
   let mut unresponsive_tabs = 0usize;
   let mut renderer_crashed_tabs = 0usize;
+  let mut visible_tabs = 0usize;
 
   let mut rows = String::new();
   if snapshot.open_tabs.is_empty() {
@@ -1097,6 +1109,51 @@ fn processes_html() -> String {
         Some(id) => format!("<code>{id}</code>"),
         None => "<span class=\"muted\">(unassigned)</span>".to_string(),
       };
+      if !tokens.is_empty() {
+        use std::fmt::Write;
+        let mut searchable = String::new();
+        let _ = write!(
+          searchable,
+          "{} {} {} {} {}",
+          tab.window_id.as_deref().unwrap_or(""),
+          tab.tab_id,
+          tab.url,
+          site,
+          tab.renderer_process
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unassigned".to_string()),
+        );
+        for (enabled, label) in [
+          (tab.loading, "loading"),
+          (tab.unresponsive, "unresponsive"),
+          (tab.crashed, "crashed"),
+          (tab.renderer_crashed, "renderer_crashed"),
+        ] {
+          if enabled {
+            searchable.push(' ');
+            searchable.push_str(label);
+          }
+        }
+        if let Some(reason) = tab.crash_reason.as_deref().filter(|s| !s.trim().is_empty()) {
+          searchable.push(' ');
+          searchable.push_str(reason);
+        }
+        if let Some(violation) = tab
+          .renderer_protocol_violation
+          .as_deref()
+          .filter(|s| !s.trim().is_empty())
+        {
+          searchable.push(' ');
+          searchable.push_str(violation);
+        }
+        if !tokens
+          .iter()
+          .all(|t| contains_ascii_case_insensitive(&searchable, t))
+        {
+          continue;
+        }
+      }
+      visible_tabs += 1;
       let state = {
         let mut out = String::new();
         let mut any_flag = false;
@@ -1331,6 +1388,18 @@ fn processes_html() -> String {
 
   let total_tabs = snapshot.open_tabs.len();
   let window_count = windows.len();
+  let tabs_suffix = if tokens.is_empty() {
+    String::new()
+  } else {
+    format!(
+      " <span class=\"muted\">(filtered from {total_tabs})</span>"
+    )
+  };
+  let clear_filter = if tokens.is_empty() {
+    String::new()
+  } else {
+    format!("<a class=\"about-button\" href=\"{ABOUT_PROCESSES}\">Clear</a>")
+  };
 
   about_layout_html(
     "Processes",
@@ -1342,9 +1411,15 @@ fn processes_html() -> String {
         tab→process assignment used by FastRender&rsquo;s multiprocess model.
       </p>
 
+      <form class=\"search\" method=\"get\" action=\"{ABOUT_PROCESSES}\" role=\"search\">
+        <input type=\"search\" name=\"q\" value=\"{safe_query}\" placeholder=\"Filter tabs, sites, processes\">
+        <button class=\"about-button primary\" type=\"submit\">Filter</button>
+        {clear_filter}
+      </form>
+
       <p class=\"summary\">
         Process model: <code>{process_model_label}</code> {process_model_env_html}<br>
-        Tabs: <code>{total_tabs}</code>
+        Tabs: <code>{visible_tabs}</code>{tabs_suffix}
         · Windows: <code>{window_count}</code>
         · Renderer processes: <code>{renderer_process_count}</code>
         · Unassigned tabs: <code>{unassigned_tabs}</code>
@@ -1413,6 +1488,21 @@ fn processes_html() -> String {
     ),
     r#"
 .sub { color: var(--about-muted); margin: 0 0 14px; }
+.search { display: flex; gap: 10px; margin: 0 0 18px; flex-wrap: wrap; }
+.search input {
+  flex: 1;
+  min-width: min(420px, 100%);
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--about-border-strong);
+  background: var(--about-surface);
+  color: inherit;
+  font: inherit;
+}
+.search input:focus {
+  outline: 3px solid var(--about-focus);
+  outline-offset: 2px;
+}
 .summary { margin: 0 0 18px; }
 .summary code { font-weight: 650; }
 .proc-table {
