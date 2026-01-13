@@ -1,4 +1,4 @@
-use crate::geometry::Rect;
+use crate::geometry::{Point, Rect};
 use crate::site_isolation::site_key_for_navigation;
 use crate::site_isolation::SiteKey;
 use std::collections::{HashMap, HashSet};
@@ -56,6 +56,12 @@ pub struct DiscoveredSubframe {
   pub url: String,
   pub rect: Rect,
   pub clip: Rect,
+  /// Whether the embedding `<iframe>` participates in hit testing / pointer events.
+  ///
+  /// When `false`, the browser must treat the embedded subframe as non-interactive and allow input
+  /// to pass through to underlying content (e.g. `pointer-events: none`, `visibility: hidden`, or
+  /// `inert` on the `<iframe>` element).
+  pub hit_testable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +80,7 @@ pub enum RendererToBrowserFrame {
 pub struct FrameEmbedding {
   pub rect: Rect,
   pub clip: Rect,
+  pub hit_testable: bool,
 }
 
 #[derive(Debug)]
@@ -190,11 +197,62 @@ impl FrameTree {
     }
     removed
   }
+
+  /// Hit-test a point in the coordinate space of `root_frame_id`, returning the deepest frame that
+  /// should receive input.
+  ///
+  /// This is used by browser-side input routing for OOPIF: it must respect
+  /// [`FrameEmbedding::hit_testable`] so iframes with `pointer-events: none` (or inert/hidden) do
+  /// not capture clicks/scroll.
+  pub fn hit_test(&self, root_frame_id: FrameId, point: Point) -> FrameId {
+    self.hit_test_in_frame(root_frame_id, point, MAX_FRAME_HIT_TEST_DEPTH)
+  }
+
+  fn hit_test_in_frame(&self, frame_id: FrameId, point: Point, depth_left: usize) -> FrameId {
+    if depth_left == 0 || !point.x.is_finite() || !point.y.is_finite() {
+      return frame_id;
+    }
+    let Some(node) = self.frames.get(&frame_id) else {
+      return frame_id;
+    };
+
+    // `children_by_subframe` is a HashMap; sort by SubframeId so hit testing is deterministic.
+    let mut children: Vec<(SubframeId, FrameId)> = node
+      .children_by_subframe
+      .iter()
+      .map(|(&subframe_id, &child_frame_id)| (subframe_id, child_frame_id))
+      .collect();
+    children.sort_by_key(|(subframe_id, child_frame_id)| (subframe_id.raw(), child_frame_id.raw()));
+
+    // Assume later DOM ids are painted above earlier ones; hit-test in reverse order (topmost first).
+    for (_subframe_id, child_frame_id) in children.into_iter().rev() {
+      let Some(child_node) = self.frames.get(&child_frame_id) else {
+        continue;
+      };
+      let Some(embedding) = child_node.embedding.as_ref() else {
+        continue;
+      };
+      if !embedding.hit_testable {
+        continue;
+      }
+
+      if !embedding.rect.contains_point(point) || !embedding.clip.contains_point(point) {
+        continue;
+      }
+
+      let child_point = Point::new(point.x - embedding.rect.x(), point.y - embedding.rect.y());
+      return self.hit_test_in_frame(child_frame_id, child_point, depth_left - 1);
+    }
+
+    frame_id
+  }
 }
 
 // -----------------------------------------------------------------------------
 // Process integration
 // -----------------------------------------------------------------------------
+
+const MAX_FRAME_HIT_TEST_DEPTH: usize = 64;
 
 /// Minimal message sender surface required by [`SubframesController`].
 ///
@@ -363,6 +421,7 @@ where
       let embedding = FrameEmbedding {
         rect: subframe.rect,
         clip: subframe.clip,
+        hit_testable: subframe.hit_testable,
       };
 
       let child_site = site_key_for_navigation(&subframe.url, Some(&parent_site));
@@ -618,6 +677,7 @@ mod tests {
       url: url.to_string(),
       rect: Rect::from_xywh(0.0, 0.0, w, h),
       clip: Rect::from_xywh(0.0, 0.0, w, h),
+      hit_testable: true,
     }
   }
 
@@ -631,6 +691,79 @@ mod tests {
       .get(&process_id)
       .cloned()
       .unwrap_or_default()
+  }
+
+  #[test]
+  fn frame_hit_testing_ignores_non_hit_testable_iframe() {
+    let root = FrameId::new(1);
+    let child = FrameId::new(2);
+
+    let mut tree = FrameTree::default();
+    tree.insert_root(FrameNode::new_root(
+      root,
+      SiteKey::Opaque(1),
+      "https://root.test/".to_string(),
+      RendererProcessId::new(1),
+    ));
+    tree.insert_child(
+      root,
+      SubframeId::new(1),
+      FrameNode::new_child(
+        child,
+        root,
+        SiteKey::Opaque(2),
+        "https://child.test/".to_string(),
+        RendererProcessId::new(2),
+        FrameEmbedding {
+          rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+          clip: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+          hit_testable: false,
+        },
+      ),
+    );
+
+    assert_eq!(
+      tree.hit_test(root, Point::new(10.0, 10.0)),
+      root,
+      "expected non-hit-testable iframe to be ignored during frame hit testing"
+    );
+  }
+
+  #[test]
+  fn frame_hit_testing_returns_child_when_hit_testable() {
+    let root = FrameId::new(1);
+    let child = FrameId::new(2);
+
+    let mut tree = FrameTree::default();
+    tree.insert_root(FrameNode::new_root(
+      root,
+      SiteKey::Opaque(1),
+      "https://root.test/".to_string(),
+      RendererProcessId::new(1),
+    ));
+    tree.insert_child(
+      root,
+      SubframeId::new(1),
+      FrameNode::new_child(
+        child,
+        root,
+        SiteKey::Opaque(2),
+        "https://child.test/".to_string(),
+        RendererProcessId::new(2),
+        FrameEmbedding {
+          rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+          clip: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+          hit_testable: true,
+        },
+      ),
+    );
+
+    assert_eq!(tree.hit_test(root, Point::new(10.0, 10.0)), child);
+    assert_eq!(
+      tree.hit_test(root, Point::new(80.0, 80.0)),
+      root,
+      "outside iframe bounds should hit-test to the root frame"
+    );
   }
 
   #[test]
@@ -843,4 +976,3 @@ mod tests {
     );
   }
 }
-
