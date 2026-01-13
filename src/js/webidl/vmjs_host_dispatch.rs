@@ -534,147 +534,31 @@ fn node_kind_to_node_type(kind: &NodeKind) -> u32 {
 }
 
 fn tree_parent_node(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
-  let node_ref = dom.nodes().get(node.index())?;
-  // ShadowRoot tree-facing semantics: `ShadowRoot.parentNode` is always null.
-  if matches!(node_ref.kind, NodeKind::ShadowRoot { .. }) {
-    return None;
-  }
-  dom.parent_node(node)
+  dom.tree_parent_node(node)
 }
 
 fn tree_first_child(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
-  let nodes = dom.nodes();
-  let node_ref = nodes.get(node.index())?;
-  let filter_shadow_root_children = matches!(node_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-  for &child_id in &node_ref.children {
-    let Some(child_node) = nodes.get(child_id.index()) else {
-      continue;
-    };
-    if filter_shadow_root_children && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
-      continue;
-    }
-    return Some(child_id);
-  }
-  None
+  dom.first_tree_child(node)
 }
 
 fn tree_last_child(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
-  let nodes = dom.nodes();
-  let node_ref = nodes.get(node.index())?;
-  let filter_shadow_root_children = matches!(node_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-  for &child_id in node_ref.children.iter().rev() {
-    let Some(child_node) = nodes.get(child_id.index()) else {
-      continue;
-    };
-    if filter_shadow_root_children && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
-      continue;
-    }
-    return Some(child_id);
-  }
-  None
+  dom.last_tree_child(node)
 }
 
 fn tree_next_sibling(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
-  let parent = tree_parent_node(dom, node)?;
-  let nodes = dom.nodes();
-  let parent_ref = nodes.get(parent.index())?;
-  let pos = parent_ref.children.iter().position(|&c| c == node)?;
-  let filter_shadow_root_children = matches!(parent_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-  for &sib in parent_ref.children.iter().skip(pos + 1) {
-    let Some(sib_node) = nodes.get(sib.index()) else {
-      continue;
-    };
-    if filter_shadow_root_children && matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
-      continue;
-    }
-    return Some(sib);
-  }
-  None
+  dom.tree_next_sibling(node)
 }
 
 fn tree_previous_sibling(dom: &crate::dom2::Document, node: NodeId) -> Option<NodeId> {
-  let parent = tree_parent_node(dom, node)?;
-  let nodes = dom.nodes();
-  let parent_ref = nodes.get(parent.index())?;
-  let pos = parent_ref.children.iter().position(|&c| c == node)?;
-  let filter_shadow_root_children = matches!(parent_ref.kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-  for &sib in parent_ref.children.iter().take(pos).rev() {
-    let Some(sib_node) = nodes.get(sib.index()) else {
-      continue;
-    };
-    if filter_shadow_root_children && matches!(sib_node.kind, NodeKind::ShadowRoot { .. }) {
-      continue;
-    }
-    return Some(sib);
-  }
-  None
-}
-
-fn tree_last_inclusive_descendant(dom: &crate::dom2::Document, node: NodeId) -> NodeId {
-  if node.index() >= dom.nodes_len() {
-    return node;
-  }
-  let mut current = node;
-  let mut remaining = dom.nodes_len() + 1;
-  while remaining > 0 {
-    remaining -= 1;
-    let Some(last_child) = tree_last_child(dom, current) else {
-      break;
-    };
-    current = last_child;
-  }
-  current
-}
-
-fn tree_is_inclusive_descendant_of(dom: &crate::dom2::Document, root: NodeId, node: NodeId) -> bool {
-  let mut remaining = dom.nodes_len() + 1;
-  let mut current = Some(node);
-  while let Some(id) = current {
-    if remaining == 0 {
-      break;
-    }
-    remaining -= 1;
-    if id == root {
-      return true;
-    }
-    current = tree_parent_node(dom, id);
-  }
-  false
+  dom.tree_previous_sibling(node)
 }
 
 fn tree_following_in_subtree(dom: &crate::dom2::Document, root: NodeId, node: NodeId) -> Option<NodeId> {
-  if !tree_is_inclusive_descendant_of(dom, root, node) {
-    return None;
-  }
-  if let Some(first_child) = tree_first_child(dom, node) {
-    return Some(first_child);
-  }
-  let mut current = node;
-  let mut remaining = dom.nodes_len() + 1;
-  while remaining > 0 {
-    remaining -= 1;
-    if current == root {
-      return None;
-    }
-    if let Some(next_sibling) = tree_next_sibling(dom, current) {
-      return Some(next_sibling);
-    }
-    current = tree_parent_node(dom, current)?;
-  }
-  None
+  dom.tree_following_in_subtree(root, node)
 }
 
 fn tree_preceding_in_subtree(dom: &crate::dom2::Document, root: NodeId, node: NodeId) -> Option<NodeId> {
-  if root == node {
-    return None;
-  }
-  if !tree_is_inclusive_descendant_of(dom, root, node) {
-    return None;
-  }
-  if let Some(previous_sibling) = tree_previous_sibling(dom, node) {
-    return Some(tree_last_inclusive_descendant(dom, previous_sibling));
-  }
-  tree_parent_node(dom, node)
+  dom.tree_preceding_in_subtree(root, node)
 }
 
 fn to_uint16_f64(n: f64) -> u16 {

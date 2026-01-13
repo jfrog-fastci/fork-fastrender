@@ -10019,7 +10019,7 @@ impl BrowserRuntime {
       // - text editing key actions (backspace/delete/range stepping/etc) where no DOM event is
       //   dispatched but dom2 still needs to observe the updated state.
       if changed {
-        if let (Some(doc), Some(js_tab)) = (tab.document.as_ref(), tab.js_tab.as_mut()) {
+        if let Some(js_tab) = tab.js_tab.as_mut() {
           let dom_snapshot = doc.dom();
           let mapping = tab.js_dom_mapping.as_ref();
           if let Some(focused_id) = focused {

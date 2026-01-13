@@ -76,3 +76,19 @@ test(() => {
   // TreeWalker.nextNode() does not return the root; it returns descendants in tree order.
   assert_array_equals(seen, ["tmpl", "after"]);
 }, "TreeWalker does not descend into inert <template> contents");
+
+test(() => {
+  clear_children(document.body);
+
+  const template = document.createElement("template");
+  const inner = document.createElement("span");
+  template.appendChild(inner);
+  document.body.appendChild(template);
+
+  const it = document.createNodeIterator(template, NodeFilter.SHOW_ELEMENT, null);
+  assert_equals(it.nextNode(), template);
+  assert_equals(it.nextNode(), null);
+
+  const tw = document.createTreeWalker(template, NodeFilter.SHOW_ELEMENT, null);
+  assert_equals(tw.nextNode(), null);
+}, "Traversal treats <template> itself as a leaf");
