@@ -5027,6 +5027,57 @@ fn blank_page_inserted_for_break_after_right() {
 }
 
 #[test]
+fn running_strings_and_elements_carry_to_inserted_blank_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 20px;
+            @top-center { content: string(chapter) " - " element(header, start); }
+          }
+          body { margin: 0; }
+          h1 { margin: 0; string-set: chapter content(); }
+          h2 { position: running(header); margin: 0; }
+
+          .first { height: 150px; break-after: right; }
+          .second { height: 120px; }
+        </style>
+      </head>
+      <body>
+        <h2>Header A</h2>
+        <h1>Chapter A</h1>
+        <div class="first">First</div>
+        <div class="second">Second</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  // First page is `:right` in LTR page progression. `break-after: right` forces the next page to
+  // also be right, so pagination must insert a blank left page in-between.
+  assert_eq!(page_roots.len(), 3, "expected a single inserted blank page");
+
+  let blank_page = page_roots[1];
+  let blank_content_text = collected_text_compacted(page_content(blank_page));
+  assert!(
+    blank_content_text.is_empty(),
+    "expected inserted blank page to have no in-flow content, got {blank_content_text:?}"
+  );
+  assert!(
+    margin_boxes_contain_text(blank_page, "Chapter A - Header A"),
+    "expected inserted blank page to carry running string/element values into margin boxes"
+  );
+}
+
+#[test]
 fn blank_page_inserted_for_break_after_right_propagated_to_container_end() {
   let html = r#"
     <html>
@@ -6984,6 +7035,81 @@ fn huge_footnote_body_continues_across_pages() {
   assert!(
     find_text(last_footnote_area, "Footnote line 40").is_some(),
     "expected last footnote line to appear on a later page"
+  );
+}
+
+#[test]
+fn footnote_only_continuation_pages_carry_running_strings_and_elements() {
+  let mut lines = String::new();
+  for idx in 1..=60 {
+    lines.push_str(&format!(r#"<span class="line">Footnote line {idx}</span>"#));
+  }
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{
+            size: 200px 140px;
+            margin: 20px;
+            @top-center {{ content: string(chapter) " - " element(header, start); }}
+          }}
+
+          body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+          h1 {{ margin: 0; string-set: chapter content(); }}
+          h2 {{ position: running(header); margin: 0; }}
+          p {{ margin: 0; }}
+
+          .note {{ float: footnote; }}
+          .line {{ display: block; height: 10px; }}
+        </style>
+      </head>
+      <body>
+        <h2>Header A</h2>
+        <h1>Chapter A</h1>
+        <p>Main<span class="note">{lines}</span></p>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected huge footnote to create multiple pages, got {}",
+    page_roots.len()
+  );
+
+  let mut continuation_page = None;
+  for page in page_roots.iter().skip(1) {
+    let wrapper = page_document_wrapper(page);
+    if wrapper.children.len() < 2 {
+      continue;
+    }
+    // Footnote-only pages are emitted once main-flow content is exhausted. The content subtree is
+    // still present, but should be empty.
+    let content_text = collected_text_compacted(page_content(page));
+    if !content_text.is_empty() {
+      continue;
+    }
+    let footnote_area = wrapper.children.get(1).expect("footnote area");
+    if !collected_text_compacted(footnote_area).is_empty() {
+      continuation_page = Some(*page);
+      break;
+    }
+  }
+
+  let continuation_page = continuation_page.expect("expected a footnote-only continuation page");
+  assert!(
+    margin_boxes_contain_text(continuation_page, "Chapter A - Header A"),
+    "expected footnote-only continuation page to carry running string/element values into margin boxes"
   );
 }
 
