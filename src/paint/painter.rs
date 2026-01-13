@@ -5653,12 +5653,12 @@ impl Painter {
                     css_width: self.css_width,
                     css_height: self.css_height,
                     background: Rgba::new(0, 0, 0, 0.0),
-                      shaper: ShapingPipeline::new(),
-                      font_ctx: self.font_ctx.clone(),
-                      image_cache: self.image_cache.clone(),
-                      media_provider: self.media_provider.clone(),
-                      svg_id_defs: self.svg_id_defs.clone(),
-                      svg_id_defs_raw: self.svg_id_defs_raw.clone(),
+                    shaper: ShapingPipeline::new(),
+                    font_ctx: self.font_ctx.clone(),
+                    image_cache: self.image_cache.clone(),
+                    media_provider: self.media_provider.clone(),
+                    svg_id_defs: self.svg_id_defs.clone(),
+                    svg_id_defs_raw: self.svg_id_defs_raw.clone(),
                     text_shape_cache: Arc::clone(&self.text_shape_cache),
                     trace: self.trace.clone(),
                     scroll_state: self.scroll_state.clone(),
@@ -9253,7 +9253,29 @@ impl Painter {
           }
         }
       }
-      ReplacedType::Video { .. } => {
+      ReplacedType::Video { src, .. } => {
+        // Prefer an actual decoded video frame if one is available.
+        if let Some(provider) = self.media_provider.as_ref() {
+          let size_hint = crate::media::MediaFrameSizeHint::new(
+            Size::new(content_rect.width(), content_rect.height()),
+            self.scale,
+          );
+          if let Some(frame) = provider.video_frame(box_id, src.as_str(), Some(size_hint)) {
+            if self.paint_image_data(
+              frame.as_ref(),
+              style,
+              content_rect.x(),
+              content_rect.y(),
+              content_rect.width(),
+              content_rect.height(),
+              clip_mask,
+            ) {
+              return;
+            }
+          }
+        }
+
+        // Fall back to painting the poster image (if any).
         let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
           .with_device_pixel_ratio(self.scale)
           .with_env_overrides();
@@ -12616,6 +12638,110 @@ impl Painter {
     self
       .pixmap
       .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
+    true
+  }
+
+  fn paint_image_data(
+    &mut self,
+    image: &ImageData,
+    style: Option<&ComputedStyle>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    clip_mask: Option<&Mask>,
+  ) -> bool {
+    if width <= 0.0 || height <= 0.0 {
+      return false;
+    }
+    if image.width == 0 || image.height == 0 {
+      return false;
+    }
+    if image.pixels.len() != (image.width as usize)
+      .saturating_mul(image.height as usize)
+      .saturating_mul(4)
+    {
+      return false;
+    }
+
+    // Resolve natural size for object-fit calculations. When missing, treat the pixel size as the
+    // natural CSS size (1dppx).
+    let img_w_css = if image.css_width.is_finite() && image.css_width > 0.0 {
+      image.css_width
+    } else {
+      image.width as f32
+    };
+    let img_h_css = if image.css_height.is_finite() && image.css_height > 0.0 {
+      image.css_height
+    } else {
+      image.height as f32
+    };
+
+    let fit = style.map(|s| s.object_fit).unwrap_or(ObjectFit::Fill);
+    let pos = style
+      .map(|s| s.object_position)
+      .unwrap_or_else(default_object_position);
+    let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
+    let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
+
+    let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
+      fit,
+      pos,
+      width,
+      height,
+      img_w_css,
+      img_h_css,
+      image.has_intrinsic_ratio,
+      font_size,
+      root_font_size,
+      Some((self.css_width, self.css_height)),
+    ) {
+      Some(v) => v,
+      None => return false,
+    };
+
+    let dest_x_device = self.device_length(dest_x);
+    let dest_y_device = self.device_length(dest_y);
+    let dest_w_device = self.device_length(dest_w);
+    let dest_h_device = self.device_length(dest_h);
+
+    let scale_x = dest_w_device / image.width as f32;
+    let scale_y = dest_h_device / image.height as f32;
+    if !scale_x.is_finite() || !scale_y.is_finite() {
+      return false;
+    }
+
+    let bytes: Cow<'_, [u8]> = if image.premultiplied {
+      Cow::Borrowed(image.pixels.as_ref().as_slice())
+    } else {
+      // tiny-skia expects premultiplied RGBA; premultiply into a scratch buffer.
+      let mut buf = image.pixels.as_ref().clone();
+      for px in buf.chunks_exact_mut(4) {
+        let a = px[3] as u16;
+        px[0] = ((px[0] as u16 * a + 127) / 255) as u8;
+        px[1] = ((px[1] as u16 * a + 127) / 255) as u8;
+        px[2] = ((px[2] as u16 * a + 127) / 255) as u8;
+      }
+      Cow::Owned(buf)
+    };
+
+    let Some(pixmap) = PixmapRef::from_bytes(bytes.as_ref(), image.width, image.height) else {
+      return false;
+    };
+
+    let mut paint = PixmapPaint::default();
+    paint.quality = Self::filter_quality_for_image(style);
+    let transform = Transform::from_row(
+      scale_x,
+      0.0,
+      0.0,
+      scale_y,
+      self.device_x(x) + dest_x_device,
+      self.device_y(y) + dest_y_device,
+    );
+    self
+      .pixmap
+      .draw_pixmap(0, 0, pixmap, &paint, transform, clip_mask);
     true
   }
 
@@ -23244,6 +23370,79 @@ mod tests {
       color_at(&pixmap, 5, 5),
       (0, 255, 0, 255),
       "poster content should paint instead of placeholder"
+    );
+  }
+
+  #[test]
+  fn opacity_layer_propagates_media_frame_provider() {
+    #[derive(Debug)]
+    struct MockMediaProvider;
+
+    impl crate::media::MediaFrameProvider for MockMediaProvider {
+      fn video_frame(
+        &self,
+        _box_id: Option<usize>,
+        src: &str,
+        _size_hint: Option<crate::media::MediaFrameSizeHint>,
+      ) -> Option<Arc<ImageData>> {
+        if src != "v.mp4" {
+          return None;
+        }
+        let pixels = [0u8, 0, 255, 255].repeat(4);
+        Some(Arc::new(ImageData::new_premultiplied(
+          2,
+          2,
+          2.0,
+          2.0,
+          pixels,
+        )))
+      }
+    }
+
+    let font_ctx = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
+    let mut painter = Painter::with_resources_scaled(
+      2,
+      2,
+      Rgba::TRANSPARENT,
+      font_ctx,
+      ImageCache::new(),
+      1.0,
+    )
+    .expect("painter");
+    painter.media_provider = Some(Arc::new(MockMediaProvider));
+
+    let style = ComputedStyle::default();
+    let replaced = ReplacedType::Video {
+      src: "v.mp4".to_string(),
+      poster: None,
+      controls: false,
+    };
+
+    painter.paint_with_opacity_layer(
+      0.5,
+      Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+      None,
+      |layer, _clip| {
+        layer.paint_replaced(&replaced, None, Some(&style), 0.0, 0.0, 2.0, 2.0);
+      },
+    );
+
+    let px = painter.pixmap.pixel(1, 1).expect("pixel");
+    assert!(
+      px.blue() > 0 && px.alpha() > 0,
+      "expected video frame to be painted through opacity layer, got rgba=({}, {}, {}, {})",
+      px.red(),
+      px.green(),
+      px.blue(),
+      px.alpha()
+    );
+    assert!(
+      (120..=136).contains(&px.blue()) && (120..=136).contains(&px.alpha()),
+      "expected ~50% opacity (blue/alpha near 128), got rgba=({}, {}, {}, {})",
+      px.red(),
+      px.green(),
+      px.blue(),
+      px.alpha()
     );
   }
 
