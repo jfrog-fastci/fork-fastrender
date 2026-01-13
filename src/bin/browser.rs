@@ -11143,6 +11143,174 @@ mod warning_toast_a11y_tests {
 }
 
 #[cfg(all(test, feature = "browser_ui"))]
+mod error_infobar_a11y_tests {
+  #[derive(Clone, Copy)]
+  struct FrameInfo {
+    id: egui::Id,
+    has_focus: bool,
+  }
+
+  fn key_press_release(key: egui::Key) -> Vec<egui::Event> {
+    let modifiers = egui::Modifiers::default();
+    vec![
+      egui::Event::Key {
+        key,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      },
+      egui::Event::Key {
+        key,
+        pressed: false,
+        repeat: false,
+        modifiers,
+      },
+    ]
+  }
+
+  fn error_infobar_details_toggle_ui(ui: &mut egui::Ui, details_open: &mut bool) -> FrameInfo {
+    let infobar_id = egui::Id::new("test_error_infobar");
+    let details_label = if *details_open { "Hide details" } else { "Details" };
+    let details_resp = ui
+      .push_id(infobar_id.with("toggle_details"), |ui| ui.button(details_label))
+      .inner;
+
+    let mut toggle_requested = details_resp.clicked();
+    if details_resp.has_focus() {
+      toggle_requested |= ui.input_mut(|i| {
+        i.consume_key(Default::default(), egui::Key::Enter)
+          || i.consume_key(Default::default(), egui::Key::Space)
+      });
+    }
+
+    if toggle_requested {
+      *details_open = !*details_open;
+      details_resp.request_focus();
+    }
+
+    FrameInfo {
+      id: details_resp.id,
+      has_focus: details_resp.has_focus(),
+    }
+  }
+
+  fn run_infobar_frame(
+    ctx: &egui::Context,
+    details_open: &mut bool,
+    events: Vec<egui::Event>,
+  ) -> FrameInfo {
+    let mut raw = egui::RawInput::default();
+    raw.focused = true;
+    raw.pixels_per_point = Some(1.0);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::pos2(0.0, 0.0),
+      egui::vec2(600.0, 240.0),
+    ));
+    raw.events = events;
+
+    ctx.begin_frame(raw);
+    let mut info = None;
+    egui::CentralPanel::default().show(ctx, |ui| {
+      info = Some(error_infobar_details_toggle_ui(ui, details_open));
+    });
+    let _ = ctx.end_frame();
+    info.unwrap()
+  }
+
+  #[test]
+  fn error_infobar_details_toggle_works_with_space() {
+    let ctx = egui::Context::default();
+    let mut details_open = false;
+
+    run_infobar_frame(&ctx, &mut details_open, Vec::new());
+    run_infobar_frame(
+      &ctx,
+      &mut details_open,
+      key_press_release(egui::Key::Space),
+    );
+    assert!(
+      !details_open,
+      "expected Space to do nothing when the toggle is not focused"
+    );
+
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Tab));
+    run_infobar_frame(
+      &ctx,
+      &mut details_open,
+      key_press_release(egui::Key::Space),
+    );
+    assert!(
+      details_open,
+      "expected Space to toggle details when focused via Tab"
+    );
+  }
+
+  #[test]
+  fn error_infobar_details_toggle_works_with_enter() {
+    let ctx = egui::Context::default();
+    let mut details_open = false;
+
+    run_infobar_frame(&ctx, &mut details_open, Vec::new());
+    run_infobar_frame(
+      &ctx,
+      &mut details_open,
+      key_press_release(egui::Key::Enter),
+    );
+    assert!(
+      !details_open,
+      "expected Enter to do nothing when the toggle is not focused"
+    );
+
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Tab));
+    run_infobar_frame(
+      &ctx,
+      &mut details_open,
+      key_press_release(egui::Key::Enter),
+    );
+    assert!(
+      details_open,
+      "expected Enter to toggle details when focused via Tab"
+    );
+  }
+
+  #[test]
+  fn error_infobar_details_toggle_keeps_focus_and_id_when_label_changes() {
+    let ctx = egui::Context::default();
+    let mut details_open = false;
+
+    let initial = run_infobar_frame(&ctx, &mut details_open, Vec::new());
+
+    run_infobar_frame(&ctx, &mut details_open, key_press_release(egui::Key::Tab));
+    let focused_closed = run_infobar_frame(&ctx, &mut details_open, Vec::new());
+    assert!(
+      focused_closed.has_focus,
+      "expected details toggle to have focus after Tab"
+    );
+    assert_eq!(
+      focused_closed.id, initial.id,
+      "expected details toggle egui id to be stable while closed"
+    );
+
+    run_infobar_frame(
+      &ctx,
+      &mut details_open,
+      key_press_release(egui::Key::Space),
+    );
+    assert!(details_open, "expected Space to open details when focused");
+
+    let focused_open = run_infobar_frame(&ctx, &mut details_open, Vec::new());
+    assert!(
+      focused_open.has_focus,
+      "expected details toggle to retain focus after changing label"
+    );
+    assert_eq!(
+      focused_open.id, initial.id,
+      "expected details toggle egui id to be stable across label changes"
+    );
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
 mod select_dropdown_a11y_tests {
   use super::App;
   use fastrender::tree::box_tree::{SelectControl, SelectItem};
