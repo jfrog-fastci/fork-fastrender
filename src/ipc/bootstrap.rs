@@ -133,6 +133,9 @@ pub fn spawn_child_with_ipc(
   // Safety: the pre_exec closure is restricted to async-signal-safe operations.
   unsafe {
     cmd.pre_exec(move || {
+      // Defense-in-depth: ensure the child is killed if the parent disappears.
+      let _ = crate::sandbox::linux_set_parent_death_signal();
+
       let src_fd = child_end.as_raw_fd();
 
       // Duplicate to a well-known FD (3) to avoid collisions and keep the child-side
