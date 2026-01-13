@@ -118,6 +118,23 @@ fn string_regex_methods_basic_match_search_replace_split() {
 }
 
 #[test]
+fn string_match_primitive_does_not_consult_symbol_match() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        Object.defineProperty(Boolean.prototype, Symbol.match, {
+          get() { throw new Error("should not access Boolean.prototype[Symbol.match]"); },
+          configurable: true,
+        });
+        JSON.stringify("atrue".match(true))
+      "#,
+    )
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "[\"true\"]");
+}
+
+#[test]
 fn regexp_s_and_s_match_full_ecma262_whitespace_and_lineterminators() {
   let mut rt = new_runtime();
   let value = rt

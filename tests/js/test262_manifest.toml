@@ -1186,21 +1186,6 @@ status = "xfail"
 reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
 
 [[expectations]]
-id = "built-ins/String/prototype/replace/cstm-replace-on-boolean-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
-
-[[expectations]]
-id = "built-ins/String/prototype/replace/cstm-replace-on-number-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
-
-[[expectations]]
-id = "built-ins/String/prototype/replace/cstm-replace-on-string-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replace incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
-
-[[expectations]]
 id = "built-ins/String/prototype/replace/regexp-capture-by-index.js"
 status = "pass"
 
@@ -1228,21 +1213,6 @@ reason = "vm-js: String.prototype.replace does not yet implement RequireObjectCo
 id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-bigint-primitive.js"
 status = "xfail"
 reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
-
-[[expectations]]
-id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-boolean-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
-
-[[expectations]]
-id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-number-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
-
-[[expectations]]
-id = "built-ins/String/prototype/replaceAll/cstm-replaceall-on-string-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.replaceAll incorrectly calls @@replace on primitive values (should not consult Symbol.replace)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x003C.js"
@@ -1358,21 +1328,6 @@ reason = "vm-js: String.prototype.split does not yet implement @@split hooks on 
 id = "built-ins/String/prototype/split/cstm-split-on-bigint-primitive.js"
 status = "xfail"
 reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
-
-[[expectations]]
-id = "built-ins/String/prototype/split/cstm-split-on-boolean-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split incorrectly calls @@split on primitive values (should not consult Symbol.split)."
-
-[[expectations]]
-id = "built-ins/String/prototype/split/cstm-split-on-number-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split incorrectly calls @@split on primitive values (should not consult Symbol.split)."
-
-[[expectations]]
-id = "built-ins/String/prototype/split/cstm-split-on-string-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.split incorrectly calls @@split on primitive values (should not consult Symbol.split)."
 
 [[expectations]]
 id = "built-ins/String/prototype/split/separator-regexp.js"

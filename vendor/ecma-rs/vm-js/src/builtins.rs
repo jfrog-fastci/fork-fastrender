@@ -15768,23 +15768,27 @@ pub fn string_prototype_replace(
   let replace_value = args.get(1).copied().unwrap_or(Value::Undefined);
 
   if !matches!(search_value, Value::Undefined | Value::Null) {
-    let method = crate::spec_ops::get_method_with_host_and_hooks(
-      vm,
-      &mut scope,
-      host,
-      hooks,
-      search_value,
-      PropertyKey::from_symbol(intr.well_known_symbols().replace),
-    )?;
-    if let Some(method) = method {
-      return vm.call_with_host_and_hooks(
-        host,
+    // Per spec, primitives must skip the `GetMethod(searchValue, @@replace)` path (avoid boxing and
+    // consulting `Boolean/Number/String.prototype[Symbol.replace]`).
+    if let Value::Object(_) = search_value {
+      let method = crate::spec_ops::get_method_with_host_and_hooks(
+        vm,
         &mut scope,
+        host,
         hooks,
-        method,
         search_value,
-        &[Value::String(s), replace_value],
-      );
+        PropertyKey::from_symbol(intr.well_known_symbols().replace),
+      )?;
+      if let Some(method) = method {
+        return vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          method,
+          search_value,
+          &[Value::String(s), replace_value],
+        );
+      }
     }
   }
 
@@ -15899,23 +15903,27 @@ pub fn string_prototype_replace_all(
   }
 
   if !matches!(search_value, Value::Undefined | Value::Null) {
-    let method = crate::spec_ops::get_method_with_host_and_hooks(
-      vm,
-      &mut scope,
-      host,
-      hooks,
-      search_value,
-      PropertyKey::from_symbol(intr.well_known_symbols().replace),
-    )?;
-    if let Some(method) = method {
-      return vm.call_with_host_and_hooks(
-        host,
+    // Per spec, primitives must skip the `GetMethod(searchValue, @@replace)` path (avoid boxing and
+    // consulting `Boolean/Number/String.prototype[Symbol.replace]`).
+    if let Value::Object(_) = search_value {
+      let method = crate::spec_ops::get_method_with_host_and_hooks(
+        vm,
         &mut scope,
+        host,
         hooks,
-        method,
         search_value,
-        &[Value::String(s), replace_value],
-      );
+        PropertyKey::from_symbol(intr.well_known_symbols().replace),
+      )?;
+      if let Some(method) = method {
+        return vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          method,
+          search_value,
+          &[Value::String(s), replace_value],
+        );
+      }
     }
   }
 
@@ -16103,23 +16111,27 @@ pub fn string_prototype_split(
 
   // `separator` has `@@split` => delegate.
   if !matches!(separator, Value::Null | Value::Undefined) {
-    let intr = require_intrinsics(vm)?;
-    if let Some(method) = crate::spec_ops::get_method_with_host_and_hooks(
-      vm,
-      &mut scope,
-      host,
-      hooks,
-      separator,
-      PropertyKey::from_symbol(intr.well_known_symbols().split),
-    )? {
-      return vm.call_with_host_and_hooks(
-        host,
+    // Per spec, primitives must skip the `GetMethod(separator, @@split)` path (avoid boxing and
+    // consulting `Boolean/Number/String.prototype[Symbol.split]`).
+    if let Value::Object(_) = separator {
+      let intr = require_intrinsics(vm)?;
+      if let Some(method) = crate::spec_ops::get_method_with_host_and_hooks(
+        vm,
         &mut scope,
+        host,
         hooks,
-        method,
         separator,
-        &[Value::String(s), Value::Number(limit as f64)],
-      );
+        PropertyKey::from_symbol(intr.well_known_symbols().split),
+      )? {
+        return vm.call_with_host_and_hooks(
+          host,
+          &mut scope,
+          hooks,
+          method,
+          separator,
+          &[Value::String(s), Value::Number(limit as f64)],
+        );
+      }
     }
   }
 
