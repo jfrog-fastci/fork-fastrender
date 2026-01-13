@@ -2528,6 +2528,64 @@ mod regex_validation_tests {
   }
 
   #[test]
+  fn unicode_sets_mode_rejects_reserved_punctuator_literals() {
+    // These patterns are accepted in non-`v` modes but are early errors in Unicode Sets mode.
+    for pat in [
+      r"/[(]/v",
+      r"/[)]/v",
+      r"/[[]/v",
+      r"/[{]/v",
+      r"/[}]/v",
+      r"/[/]/v",
+      r"/[-]/v",
+      r"/[|]/v",
+    ] {
+      assert_invalid(pat);
+    }
+
+    // Spot-check that the same patterns are still accepted in `u` mode (and thus aren't rejected
+    // by the generic regex validator).
+    assert_valid(r"/[(]/u");
+    assert_valid(r"/[&&]/u");
+    assert_valid(r"/[``]/u");
+  }
+
+  #[test]
+  fn unicode_sets_mode_rejects_reserved_double_punctuators() {
+    for pat in [
+      r"/[&&]/v",
+      r"/[!!]/v",
+      r"/[##]/v",
+      r"/[$$]/v",
+      r"/[%%]/v",
+      r"/[**]/v",
+      r"/[++]/v",
+      r"/[,,]/v",
+      r"/[..]/v",
+      r"/[::]/v",
+      r"/[;;]/v",
+      r"/[<<]/v",
+      r"/[==]/v",
+      r"/[>>]/v",
+      r"/[??]/v",
+      r"/[@@]/v",
+      r"/[``]/v",
+      r"/[~~]/v",
+      r"/[^^^]/v",
+      r"/[_^^]/v",
+    ] {
+      assert_invalid(pat);
+    }
+  }
+
+  #[test]
+  fn unicode_sets_mode_accepts_nested_classes_and_set_operators() {
+    assert_valid(r"/^[[0-9]\p{ASCII_Hex_Digit}]+$/v");
+    assert_valid(r"/^[\p{ASCII_Hex_Digit}--[0-9]]+$/v");
+    assert_valid(r"/^[[0-9]&&\p{ASCII_Hex_Digit}]+$/v");
+  }
+
+  #[test]
   fn unicode_sets_mode_rejects_malformed_class_string_disjunction() {
     assert_invalid(r"/[\q]/v"); // missing `{`
     assert_invalid(r"/[\q{a|b]/v"); // unterminated `}`
