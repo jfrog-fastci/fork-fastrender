@@ -1149,6 +1149,7 @@ impl Intrinsics {
     let math_log2 = vm.register_native_call(builtins::math_log2)?;
     let math_trunc = vm.register_native_call(builtins::math_trunc)?;
     let math_round = vm.register_native_call(builtins::math_round)?;
+    let math_sum_precise = vm.register_native_call(builtins::math_sum_precise)?;
     let math_max = vm.register_native_call(builtins::math_max)?;
     let math_min = vm.register_native_call(builtins::math_min)?;
     let math_pow = vm.register_native_call(builtins::math_pow)?;
@@ -6200,6 +6201,7 @@ impl Intrinsics {
       define_method("log2", math_log2, 1)?;
       define_method("trunc", math_trunc, 1)?;
       define_method("round", math_round, 1)?;
+      define_method("sumPrecise", math_sum_precise, 1)?;
       define_method("max", math_max, 2)?;
       define_method("min", math_min, 2)?;
       define_method("pow", math_pow, 2)?;

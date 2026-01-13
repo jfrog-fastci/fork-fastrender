@@ -228,6 +228,11 @@ impl JsBigInt {
     ((self.limbs.len() - 1) as u64) * 32 + hi as u64
   }
 
+  #[inline]
+  pub(crate) fn limbs(&self) -> &[u32] {
+    &self.limbs
+  }
+
   fn cmp_mag(a: &[u32], b: &[u32]) -> Ordering {
     if a.len() != b.len() {
       return a.len().cmp(&b.len());

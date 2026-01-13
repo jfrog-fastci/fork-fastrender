@@ -19227,6 +19227,152 @@ fn to_uint32(n: f64) -> u32 {
 }
 
 const MATH_VARIADIC_TICK_EVERY: usize = 32;
+const MATH_SUM_PRECISE_TICK_EVERY: u64 = 32;
+const MATH_SUM_PRECISE_MAX_COUNT: u64 = (1u64 << 53) - 1;
+
+fn sum_precise_bigint_shr_u64(limbs: &[u32], shift: u64) -> u64 {
+  let word_shift = (shift / 32) as usize;
+  let bit_shift = (shift % 32) as u32;
+
+  let a0 = limbs.get(word_shift).copied().unwrap_or(0) as u128;
+  let a1 = limbs.get(word_shift + 1).copied().unwrap_or(0) as u128;
+  let a2 = limbs.get(word_shift + 2).copied().unwrap_or(0) as u128;
+
+  let combined = a0 | (a1 << 32) | (a2 << 64);
+  (combined >> bit_shift) as u64
+}
+
+fn sum_precise_bigint_test_bit(limbs: &[u32], bit_index: u64) -> bool {
+  let limb_index = (bit_index / 32) as usize;
+  let bit = (bit_index % 32) as u32;
+  limbs
+    .get(limb_index)
+    .copied()
+    .unwrap_or(0)
+    .wrapping_shr(bit)
+    & 1
+    == 1
+}
+
+fn sum_precise_bigint_has_low_bits(limbs: &[u32], bit_count: u64) -> bool {
+  if bit_count == 0 {
+    return false;
+  }
+  let full_limbs = (bit_count / 32) as usize;
+  let rem_bits = (bit_count % 32) as u32;
+
+  for &limb in limbs.iter().take(full_limbs) {
+    if limb != 0 {
+      return true;
+    }
+  }
+
+  if rem_bits != 0 {
+    if let Some(&limb) = limbs.get(full_limbs) {
+      let mask = (1u32 << rem_bits) - 1;
+      if limb & mask != 0 {
+        return true;
+      }
+    }
+  }
+
+  false
+}
+
+/// Converts an exact integer sum of binary64 values, scaled by `2^1074`, into a correctly-rounded
+/// binary64 (f64) value.
+///
+/// Each finite binary64 value is a multiple of `2^-1074`, so the exact real sum of any finite
+/// sequence is representable as `S * 2^-1074` for some integer `S`.
+fn sum_precise_scaled_bigint_to_f64(sum_scaled: &JsBigInt) -> f64 {
+  const EXP: i64 = -1074;
+
+  let sign = sum_scaled.is_negative();
+  let mag_bit_len = sum_scaled.bit_len();
+  if mag_bit_len == 0 {
+    return 0.0;
+  }
+
+  let limbs = sum_scaled.limbs();
+  let mut e: i64 = (mag_bit_len as i64 - 1) + EXP;
+
+  if e > 1023 {
+    return if sign {
+      f64::NEG_INFINITY
+    } else {
+      f64::INFINITY
+    };
+  }
+
+  if e < -1022 {
+    // Subnormal: since the exact sum is a multiple of 2^-1074, it is exactly representable as a
+    // subnormal (or 0) when `e < -1022`.
+    let mantissa = sum_precise_bigint_shr_u64(limbs, 0);
+    let bits = ((sign as u64) << 63) | mantissa;
+    return f64::from_bits(bits);
+  }
+
+  // Normal.
+  let sig: u64;
+  if mag_bit_len == 53 {
+    sig = sum_precise_bigint_shr_u64(limbs, 0);
+  } else {
+    let k = mag_bit_len - 53;
+    let mut hi = sum_precise_bigint_shr_u64(limbs, k);
+
+    let round_bit = sum_precise_bigint_test_bit(limbs, k - 1);
+    let sticky = sum_precise_bigint_has_low_bits(limbs, k - 1);
+    if round_bit && (sticky || (hi & 1) == 1) {
+      hi = hi.wrapping_add(1);
+    }
+
+    if hi == (1u64 << 53) {
+      hi >>= 1;
+      e += 1;
+      if e > 1023 {
+        return if sign {
+          f64::NEG_INFINITY
+        } else {
+          f64::INFINITY
+        };
+      }
+    }
+
+    sig = hi;
+  }
+
+  let exp_bits = (e + 1023) as u64;
+  let frac = sig & ((1u64 << 52) - 1);
+  let bits = ((sign as u64) << 63) | (exp_bits << 52) | frac;
+  f64::from_bits(bits)
+}
+
+fn sum_precise_f64_to_scaled_bigint(n: f64) -> Result<JsBigInt, VmError> {
+  debug_assert!(n.is_finite());
+
+  let bits = n.to_bits();
+  let sign = (bits >> 63) != 0;
+  let exp_bits = ((bits >> 52) & 0x7ff) as i32;
+  let frac = bits & ((1u64 << 52) - 1);
+
+  let (mantissa, exp) = if exp_bits == 0 {
+    // Subnormal or zero.
+    (frac, -1074)
+  } else {
+    ((1u64 << 52) | frac, exp_bits - 1075)
+  };
+
+  // Scale from `mantissa * 2^exp` into an integer multiple of `2^-1074`.
+  let shift = (exp + 1074) as u64;
+  let mut out = JsBigInt::from_u128(mantissa as u128)?;
+  if shift != 0 {
+    out = out.shl(shift)?;
+  }
+  if sign {
+    out = out.neg()?;
+  }
+  Ok(out)
+}
 
 /// `Math.abs(x)` (ECMA-262).
 pub fn math_abs(
@@ -19736,6 +19882,120 @@ pub fn math_round(
       r
     }
   })
+}
+
+/// `Math.sumPrecise(items)` (ECMA-262).
+pub fn math_sum_precise(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  enum State {
+    MinusZero,
+    Finite,
+    PlusInfinity,
+    MinusInfinity,
+    NotANumber,
+  }
+
+  let mut scope = scope.reborrow();
+
+  let items = args.get(0).copied().unwrap_or(Value::Undefined);
+  crate::spec_ops::require_object_coercible(items)?;
+
+  let mut iterator_record = crate::iterator::get_iterator(vm, host, hooks, &mut scope, items)?;
+  scope.push_roots(&[iterator_record.iterator, iterator_record.next_method])?;
+
+  let mut state = State::MinusZero;
+  // Exact sum of finite numbers, scaled by `2^1074` (so the exact real sum is `sum_scaled *
+  // 2^-1074`).
+  let mut sum_scaled = JsBigInt::zero();
+  let mut count: u64 = 0;
+
+  loop {
+    if count % MATH_SUM_PRECISE_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+
+    let next = match crate::iterator::iterator_step_value(
+      vm,
+      host,
+      hooks,
+      &mut scope,
+      &mut iterator_record,
+    ) {
+      Ok(Some(v)) => v,
+      Ok(None) => break,
+      Err(err) => return Err(err),
+    };
+
+    if count >= MATH_SUM_PRECISE_MAX_COUNT {
+      let err = VmError::RangeError("Math.sumPrecise: too many elements");
+      return Err(iterator_close_on_error(
+        vm,
+        &mut scope,
+        host,
+        hooks,
+        &iterator_record,
+        err,
+      ));
+    }
+
+    let n = match next {
+      Value::Number(n) => n,
+      _ => {
+        let err = VmError::TypeError("Math.sumPrecise: iterator value is not a Number");
+        return Err(iterator_close_on_error(
+          vm,
+          &mut scope,
+          host,
+          hooks,
+          &iterator_record,
+          err,
+        ));
+      }
+    };
+
+    if state != State::NotANumber {
+      if n.is_nan() {
+        state = State::NotANumber;
+      } else if n == f64::INFINITY {
+        if state == State::MinusInfinity {
+          state = State::NotANumber;
+        } else {
+          state = State::PlusInfinity;
+        }
+      } else if n == f64::NEG_INFINITY {
+        if state == State::PlusInfinity {
+          state = State::NotANumber;
+        } else {
+          state = State::MinusInfinity;
+        }
+      } else if !(n == 0.0 && n.is_sign_negative()) && matches!(state, State::MinusZero | State::Finite)
+      {
+        state = State::Finite;
+        if n != 0.0 {
+          let term = sum_precise_f64_to_scaled_bigint(n)?;
+          sum_scaled = sum_scaled.add(&term)?;
+        }
+      }
+    }
+
+    count += 1;
+  }
+
+  match state {
+    State::NotANumber => Ok(Value::Number(f64::NAN)),
+    State::PlusInfinity => Ok(Value::Number(f64::INFINITY)),
+    State::MinusInfinity => Ok(Value::Number(f64::NEG_INFINITY)),
+    State::MinusZero => Ok(Value::Number(-0.0)),
+    State::Finite => Ok(Value::Number(sum_precise_scaled_bigint_to_f64(&sum_scaled))),
+  }
 }
 
 /// `Math.max(...args)` (ECMA-262).
