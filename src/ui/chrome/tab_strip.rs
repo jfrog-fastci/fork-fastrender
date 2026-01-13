@@ -58,6 +58,11 @@ fn drag_autoscroll_delta_x(pointer_pos: Pos2, viewport_rect: Rect, dt: f32) -> f
   delta_x
 }
 
+// When both pinned and unpinned tabs exist, keep the pinned segment from starving the unpinned
+// scroll area (especially in narrow windows with many pinned tabs).
+const PINNED_VIEWPORT_MAX_FRACTION: f32 = 0.45;
+const MIN_UNPINNED_VIEWPORT: f32 = TAB_MIN_WIDTH + TAB_PADDING_X * 2.0;
+
 fn tab_status_messages(tab: &BrowserTabState) -> (Option<&str>, Option<&str>) {
   let err = tab.error.as_deref().filter(|s| !s.trim().is_empty());
   let warn = tab.warning.as_deref().filter(|s| !s.trim().is_empty());
@@ -129,6 +134,52 @@ fn paint_tab_strip_edge_fade(painter: &egui::Painter, rect: Rect, color: Color32
     let x1 = x0 + seg_w;
     let seg = Rect::from_min_max(Pos2::new(x0, rect.top()), Pos2::new(x1, rect.bottom()));
     painter.rect_filled(seg, 0.0, fill);
+  }
+}
+
+fn paint_scroll_edge_fades(
+  ui: &egui::Ui,
+  viewport_rect: Rect,
+  scroll_offset_x: f32,
+  max_scroll_x: f32,
+) {
+  if viewport_rect.width() <= 0.0 || viewport_rect.height() <= 0.0 || max_scroll_x <= 0.0 {
+    return;
+  }
+
+  let fade_w = 18.0_f32.min(viewport_rect.width() * 0.5);
+  if fade_w <= 0.0 {
+    return;
+  }
+
+  // Ramp the fade alpha in/out smoothly based on how close we are to the edge so it doesn't pop.
+  let left_t = (scroll_offset_x / fade_w).clamp(0.0, 1.0);
+  let right_t = ((max_scroll_x - scroll_offset_x) / fade_w).clamp(0.0, 1.0);
+
+  if left_t <= 0.0 && right_t <= 0.0 {
+    return;
+  }
+
+  let fade_rect = Rect::from_min_max(
+    viewport_rect.min,
+    Pos2::new(viewport_rect.max.x, viewport_rect.max.y - 1.0),
+  );
+  let painter = ui.painter().with_clip_rect(viewport_rect);
+  let fade_color = ui.visuals().panel_fill;
+
+  if left_t > 0.0 {
+    let left_rect = Rect::from_min_max(
+      fade_rect.min,
+      Pos2::new(fade_rect.min.x + fade_w, fade_rect.max.y),
+    );
+    paint_tab_strip_edge_fade(&painter, left_rect, with_alpha(fade_color, left_t), true);
+  }
+  if right_t > 0.0 {
+    let right_rect = Rect::from_min_max(
+      Pos2::new(fade_rect.max.x - fade_w, fade_rect.min.y),
+      fade_rect.max,
+    );
+    paint_tab_strip_edge_fade(&painter, right_rect, with_alpha(fade_color, right_t), false);
   }
 }
 
@@ -927,13 +978,43 @@ pub(super) fn tab_strip_ui(
   } else {
     (pinned_count as f32) * PINNED_TAB_WIDTH + (pinned_count.saturating_sub(1) as f32) * TAB_GAP
   };
-  let segment_gap = if pinned_count > 0 && unpinned_count > 0 {
+  let mut segment_gap = if pinned_count > 0 && unpinned_count > 0 {
     TAB_GAP
   } else {
     0.0
   };
 
-  let pinned_viewport_max_x = (tabs_rect.min.x + pinned_content_width).min(tabs_rect.max.x);
+  let mut pinned_viewport_width = if pinned_count == 0 {
+    0.0
+  } else if unpinned_count == 0 {
+    tabs_viewport_width
+  } else {
+    let max_by_fraction = tabs_viewport_width * PINNED_VIEWPORT_MAX_FRACTION;
+    let max_by_unpinned = (tabs_viewport_width - MIN_UNPINNED_VIEWPORT - segment_gap).max(0.0);
+    // Ensure pinned tabs remain discoverable even in narrow strips by keeping at least one pinned
+    // tab width when possible.
+    pinned_content_width
+      .min(max_by_fraction.min(max_by_unpinned))
+      .max(PINNED_TAB_WIDTH.min(tabs_viewport_width))
+      .min(tabs_viewport_width)
+  };
+
+  // If the gap would fully consume what little space remains (e.g. very narrow windows), drop it
+  // so neither segment collapses to a 0-width viewport.
+  if pinned_count > 0 && unpinned_count > 0 && segment_gap > 0.0 {
+    let remaining = tabs_viewport_width - pinned_viewport_width - segment_gap;
+    if remaining <= 0.0 {
+      segment_gap = 0.0;
+      let max_by_fraction = tabs_viewport_width * PINNED_VIEWPORT_MAX_FRACTION;
+      let max_by_unpinned = (tabs_viewport_width - MIN_UNPINNED_VIEWPORT - segment_gap).max(0.0);
+      pinned_viewport_width = pinned_content_width
+        .min(max_by_fraction.min(max_by_unpinned))
+        .max(PINNED_TAB_WIDTH.min(tabs_viewport_width))
+        .min(tabs_viewport_width);
+    }
+  }
+
+  let pinned_viewport_max_x = (tabs_rect.min.x + pinned_viewport_width).min(tabs_rect.max.x);
   let pinned_viewport_rect =
     Rect::from_min_max(tabs_rect.min, Pos2::new(pinned_viewport_max_x, tabs_rect.max.y));
 
@@ -993,6 +1074,7 @@ pub(super) fn tab_strip_ui(
 
   let mut active_tab_rect: Option<Rect> = None;
   let mut active_tab_is_pinned = false;
+  let mut pinned_scroll_offset_x: f32 = 0.0;
   let mut scroll_offset_x: f32 = 0.0;
   let mut unpinned_max_scroll_x: f32 = 0.0;
 
@@ -1003,46 +1085,82 @@ pub(super) fn tab_strip_ui(
         egui::Layout::left_to_right(egui::Align::Center),
       );
       pinned_ui.set_clip_rect(pinned_viewport_rect);
-      pinned_ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
-      pinned_ui.horizontal(|ui| {
-        let (tabs, chrome) = (&app.tabs, &mut app.chrome);
-        for idx in 0..pinned_count {
-          let tab = &tabs[idx];
-          let tab_id = tab.id;
-          let is_active = active_id == Some(tab_id);
-          let favicon_tex = favicon_for_tab(tab_id);
-          let (tab_rect, tab_response, maybe_action) = pinned_tab_ui(
-            ui,
-            motion,
-            tab,
-            is_active,
-            can_close_tabs,
-            favicon_tex,
-            chrome,
-            focus_ring,
-          );
-          if is_active {
-            active_tab_rect = Some(tab_rect);
-            active_tab_is_pinned = true;
-          }
-          #[cfg(test)]
-          tab_rects_for_test.push(tab_rect);
-          pinned_tab_rects_for_drag.push((tab_id, tab_rect));
-          let is_close_action = maybe_action
-            .as_ref()
-            .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
-          if !is_close_action && tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
-            chrome.dragging_tab_id = Some(tab_id);
-            chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
-          }
-          if chrome.dragging_tab_id == Some(tab_id) {
-            dragged_tab_rect = Some(tab_rect);
-          }
-          if let Some(action) = maybe_action {
-            actions.push(action);
-          }
-        }
+      let mut restore_scroll_delta: Option<(Vec2, Vec2)> = None;
+      // Match the unpinned segment ergonomics: treat vertical wheel scroll as horizontal scroll
+      // while the pointer is over the pinned strip.
+      let pointer_over_strip = pinned_ui.input(|i| {
+        i.pointer
+          .hover_pos()
+          .is_some_and(|pos| pinned_viewport_rect.contains(pos))
       });
+      if pointer_over_strip {
+        let has_vertical_scroll =
+          pinned_ui.input(|i| i.scroll_delta.y.abs() > 0.0 || i.smooth_scroll_delta.y.abs() > 0.0);
+        if has_vertical_scroll {
+          pinned_ui.ctx().input_mut(|i| {
+            restore_scroll_delta = Some((i.scroll_delta, i.smooth_scroll_delta));
+            i.scroll_delta = Vec2::new(i.scroll_delta.x + i.scroll_delta.y, 0.0);
+            i.smooth_scroll_delta = Vec2::new(i.smooth_scroll_delta.x + i.smooth_scroll_delta.y, 0.0);
+          });
+        }
+      }
+
+      let scroll_output = egui::ScrollArea::horizontal()
+        .id_source("tab_strip_pinned_scroll")
+        .auto_shrink([false, true])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(&mut pinned_ui, |ui| {
+          ui.spacing_mut().item_spacing = Vec2::new(TAB_GAP, 0.0);
+          ui.horizontal(|ui| {
+            let (tabs, chrome) = (&app.tabs, &mut app.chrome);
+            for idx in 0..pinned_count {
+              let tab = &tabs[idx];
+              let tab_id = tab.id;
+              let is_active = active_id == Some(tab_id);
+              let favicon_tex = favicon_for_tab(tab_id);
+              let (tab_rect, tab_response, maybe_action) = pinned_tab_ui(
+                ui,
+                motion,
+                tab,
+                is_active,
+                can_close_tabs,
+                favicon_tex,
+                chrome,
+                focus_ring,
+              );
+              if is_active {
+                active_tab_rect = Some(tab_rect);
+                active_tab_is_pinned = true;
+              }
+              if is_active && active_changed {
+                tab_response.scroll_to_me(Some(egui::Align::Center));
+              }
+              #[cfg(test)]
+              tab_rects_for_test.push(tab_rect);
+              pinned_tab_rects_for_drag.push((tab_id, tab_rect));
+              let is_close_action = maybe_action
+                .as_ref()
+                .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
+              if !is_close_action && tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
+                chrome.dragging_tab_id = Some(tab_id);
+                chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+              }
+              if chrome.dragging_tab_id == Some(tab_id) {
+                dragged_tab_rect = Some(tab_rect);
+              }
+              if let Some(action) = maybe_action {
+                actions.push(action);
+              }
+            }
+          });
+        });
+      pinned_scroll_offset_x = scroll_output.state.offset.x;
+      if let Some((scroll_delta, smooth_scroll_delta)) = restore_scroll_delta {
+        pinned_ui.ctx().input_mut(|i| {
+          i.scroll_delta = scroll_delta;
+          i.smooth_scroll_delta = smooth_scroll_delta;
+        });
+      }
     }
 
     if unpinned_count > 0 && unpinned_viewport_rect.width() > 0.0 {
@@ -1215,7 +1333,16 @@ pub(super) fn tab_strip_ui(
       .line_segment([Pos2::new(x, y0), Pos2::new(x, y1)], stroke);
   }
 
-  // Micro-interaction: animate the active tab underline position/width.
+  // Edge fades: scrollbars are hidden, so use subtle fades as the overflow affordance.
+  if pinned_count > 0 && pinned_viewport_rect.width() > 0.0 {
+    let pinned_max_scroll_x = (pinned_content_width - pinned_viewport_rect.width()).max(0.0);
+    paint_scroll_edge_fades(
+      ui,
+      pinned_viewport_rect,
+      pinned_scroll_offset_x,
+      pinned_max_scroll_x,
+    );
+  }
   if unpinned_viewport_rect.width() > 0.0 {
     let max_scroll_x = unpinned_max_scroll_x;
     let fade_w = 18.0_f32.min(unpinned_viewport_rect.width() * 0.5);
@@ -1247,6 +1374,7 @@ pub(super) fn tab_strip_ui(
     }
   }
 
+  // Micro-interaction: animate the active tab underline position/width.
   if let Some(active_rect) = active_tab_rect {
     let underline_id = ui.make_persistent_id("tab_strip_active_underline");
     let pinned_offset = unpinned_viewport_rect.min.x - tabs_rect.min.x;
