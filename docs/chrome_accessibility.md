@@ -217,6 +217,10 @@ bash scripts/run_limited.sh --as 64G -- \
 
 Use this when you’re debugging what screen readers actually see for the **browser chrome** (widget names/roles, focus target, expanded state/actions, etc).
 
+Note: on Linux, building with `--features browser_ui` requires system GUI/audio development headers
+(`libasound2-dev`, X11/Wayland headers, etc). See
+[`docs/browser_ui.md#platform-prerequisites`](browser_ui.md#platform-prerequisites).
+
 Common invocations:
 
 ```bash

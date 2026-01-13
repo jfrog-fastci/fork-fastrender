@@ -577,6 +577,12 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   accessibility).
 - Entry: `src/bin/dump_accesskit.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin dump_accesskit -- --help`
+- Notes:
+  - On Linux, building with `--features browser_ui` requires system GUI/audio development headers
+    (including `libasound2-dev`). See [`docs/browser_ui.md#platform-prerequisites`](browser_ui.md#platform-prerequisites).
+  - See [`docs/chrome_accessibility.md`](chrome_accessibility.md) for recommended `dump_accesskit`
+    invocations (`--named-only`, `--show-menu-bar`, `--focus-address-bar`) and how to interpret the
+    output.
 
 ## Offline / cached captures
 
