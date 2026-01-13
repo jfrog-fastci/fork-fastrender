@@ -5544,7 +5544,7 @@ mod tests {
   fn webidl_dispatch_delegates_dom_operation_to_active_vm_host() -> Result<(), VmError> {
     let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
     let mut vm = Vm::new(VmOptions::default());
-    let realm = Realm::new(&mut vm, &mut heap)?;
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     // Install bindings so global names exist (future allowlist expansions will install more DOM).
     crate::js::bindings::install_node_bindings_vm_js(&mut vm, &mut heap, &realm)?;
@@ -5589,6 +5589,9 @@ mod tests {
         overload: 0
       })
     );
+
+    // Avoid `Realm dropped without calling teardown()` panics in vm-js.
+    realm.teardown(&mut heap);
     Ok(())
   }
 
@@ -5596,7 +5599,7 @@ mod tests {
   fn webidl_dispatch_delegates_dom_iterable_snapshot_to_active_vm_host() -> Result<(), VmError> {
     let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
     let mut vm = Vm::new(VmOptions::default());
-    let realm = Realm::new(&mut vm, &mut heap)?;
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     let global = realm.global_object();
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
@@ -5637,6 +5640,9 @@ mod tests {
         kind: IterableKind::Values
       })
     );
+
+    // Avoid `Realm dropped without calling teardown()` panics in vm-js.
+    realm.teardown(&mut heap);
     Ok(())
   }
 
@@ -5644,7 +5650,7 @@ mod tests {
   fn webidl_dispatch_does_not_delegate_non_dom_interfaces() -> Result<(), VmError> {
     let mut heap = Heap::new(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
     let mut vm = Vm::new(VmOptions::default());
-    let realm = Realm::new(&mut vm, &mut heap)?;
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
 
     let global = realm.global_object();
     let mut dispatch = VmJsWebIdlBindingsHostDispatch::<DummyWindowRealmHost>::new(global);
@@ -5679,6 +5685,9 @@ mod tests {
 
     assert_eq!(result, Value::Undefined);
     assert_eq!(dom_host.last_call, None);
+
+    // Avoid `Realm dropped without calling teardown()` panics in vm-js.
+    realm.teardown(&mut heap);
     Ok(())
   }
 
