@@ -107,6 +107,23 @@ fn array_modern_methods_work() -> Result<(), VmError> {
     ok = ok && sp2.length === 4 && sp2[0] === 1 && sp2[1] === 2 && sp2[2] === undefined && sp2[3] === 3;
     ok = ok && sp2.hasOwnProperty("2");
 
+    // toSpliced with no arguments returns a copy (not an empty array).
+    var sp0 = ["a", "b"];
+    var sp0Copy = sp0.toSpliced();
+    ok = ok && sp0Copy.length === 2 && sp0Copy[0] === "a" && sp0Copy[1] === "b";
+    ok = ok && sp0Copy !== sp0;
+
+    // toSpliced works on frozen objects (array + array-like).
+    var frozenArr = Object.freeze(["a", "b"]);
+    var frozenCopy = frozenArr.toSpliced();
+    ok = ok && frozenCopy.length === 2 && frozenCopy[0] === "a" && frozenCopy[1] === "b";
+    ok = ok && frozenCopy !== frozenArr;
+
+    var frozenArrayLike = Object.freeze({ length: 2, 0: "a", 1: "b" });
+    var frozenArrayLikeCopy = Array.prototype.toSpliced.call(frozenArrayLike);
+    ok = ok && Array.isArray(frozenArrayLikeCopy);
+    ok = ok && frozenArrayLikeCopy.length === 2 && frozenArrayLikeCopy[0] === "a" && frozenArrayLikeCopy[1] === "b";
+
     // toSpliced ignores @@species.
     called = false;
     sp.constructor = {};
@@ -132,4 +149,3 @@ fn array_modern_methods_work() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
-

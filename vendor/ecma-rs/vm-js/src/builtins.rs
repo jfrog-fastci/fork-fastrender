@@ -11677,12 +11677,20 @@ pub fn array_prototype_to_spliced(
 
   let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
 
-  let start_val = args.get(0).copied().unwrap_or(Value::Undefined);
-  let actual_start = slice_index_from_value(vm, &mut scope, host, hooks, start_val, len, 0)?;
+  // `Array.prototype.toSpliced` treats a missing `start` argument differently from an explicit
+  // `undefined` value: when `start` is not present, `actualDeleteCount` is 0 (copy the array).
+  let actual_start = if args.is_empty() {
+    0usize
+  } else {
+    let start_val = args.get(0).copied().unwrap_or(Value::Undefined);
+    slice_index_from_value(vm, &mut scope, host, hooks, start_val, len, 0)?
+  };
 
   let insert_count = args.len().saturating_sub(2);
 
-  let actual_delete_count = if args.len() < 2 {
+  let actual_delete_count = if args.is_empty() {
+    0usize
+  } else if args.len() == 1 {
     len.saturating_sub(actual_start)
   } else {
     let delete_count_val = args.get(1).copied().unwrap_or(Value::Undefined);
