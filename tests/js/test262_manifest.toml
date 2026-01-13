@@ -1464,10 +1464,6 @@ status = "xfail"
 reason = "vm-js: RegExp named capture group names do not yet support all Unicode IdentifierName forms."
 
 [[expectations]]
-id = "built-ins/RegExp/match-indices/no-indices-array.js"
-status = "pass"
-
-[[expectations]]
 glob = "built-ins/RegExp/property-escapes/**"
 status = "xfail"
 reason = "vm-js: RegExp Unicode property escapes (\\p{...}) are not fully implemented."
