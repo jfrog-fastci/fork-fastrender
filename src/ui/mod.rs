@@ -2,6 +2,7 @@ pub mod about_pages;
 pub mod html_escape;
 pub mod appearance;
 pub mod renderer_media_prefs;
+pub mod chrome_assets;
 pub mod bookmarks;
 pub mod browser_app;
 pub mod browser_limits;

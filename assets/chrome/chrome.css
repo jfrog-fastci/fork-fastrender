@@ -1,0 +1,52 @@
+/* Minimal built-in chrome stylesheet for FastRender internal UI experiments.
+ *
+ * This is intentionally small: it's only meant to provide a baseline for early
+ * chrome HTML prototyping (toolbars, tab strips, etc.).
+ */
+
+:root {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.3;
+  color: #1f1f1f;
+}
+
+body {
+  margin: 0;
+  background: #f3f4f6;
+}
+
+.tab-strip {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0 8px;
+  background: #dfe3e8;
+  border-bottom: 1px solid #c7cbd1;
+}
+
+.tab {
+  padding: 6px 10px;
+  background: #cfd5dd;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid transparent;
+}
+
+.tab.active {
+  background: #ffffff;
+  border-color: #c7cbd1;
+  border-bottom-color: #ffffff;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: #ffffff;
+  border-bottom: 1px solid #e3e5e8;
+}
+
+.content {
+  padding: 12px;
+}
+
