@@ -137,6 +137,8 @@ pub struct MenuBarState {
 pub enum MenuCommand {
   NewTab,
   NewWindow,
+  SavePage,
+  PrintPage,
   CloseTab,
   Quit,
   Undo,
@@ -209,20 +211,28 @@ pub fn menu_bar_ui(
 
             let save_page_resp = ui
               .add_enabled(
-                false,
+                has_active_tab,
                 egui::Button::new("Save Page…").shortcut_text(SHORTCUT_SAVE_PAGE),
               )
-              .on_disabled_hover_text("Not implemented yet");
+              .on_hover_text("Not implemented yet");
             save_page_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save page (not implemented)")
             });
+            if save_page_resp.clicked() {
+              commands.push(MenuCommand::SavePage);
+              ui.close_menu();
+            }
 
             let print_resp = ui
-              .add_enabled(false, egui::Button::new("Print…").shortcut_text(SHORTCUT_PRINT))
-              .on_disabled_hover_text("Not implemented yet");
+              .add_enabled(has_active_tab, egui::Button::new("Print…").shortcut_text(SHORTCUT_PRINT))
+              .on_hover_text("Not implemented yet");
             print_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Print page (not implemented)")
             });
+            if print_resp.clicked() {
+              commands.push(MenuCommand::PrintPage);
+              ui.close_menu();
+            }
 
             let close_tab_resp = ui.add_enabled(
               can_close_tab,
@@ -600,6 +610,8 @@ pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) ->
   match command {
     MenuCommand::NewTab => vec![ChromeAction::NewTab],
     MenuCommand::NewWindow => vec![ChromeAction::NewWindow],
+    MenuCommand::SavePage => vec![ChromeAction::SavePage],
+    MenuCommand::PrintPage => vec![ChromeAction::PrintPage],
     MenuCommand::CloseTab => {
       if app.tabs.len() > 1 {
         app
@@ -777,6 +789,22 @@ mod tests {
   }
 
   #[test]
+  fn dispatch_save_page_emits_chrome_action() {
+    let mut app = BrowserAppState::new();
+    let actions = dispatch_menu_command(MenuCommand::SavePage, &mut app);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(actions[0], crate::ui::ChromeAction::SavePage));
+  }
+
+  #[test]
+  fn dispatch_print_page_emits_chrome_action() {
+    let mut app = BrowserAppState::new();
+    let actions = dispatch_menu_command(MenuCommand::PrintPage, &mut app);
+    assert_eq!(actions.len(), 1);
+    assert!(matches!(actions[0], crate::ui::ChromeAction::PrintPage));
+  }
+
+  #[test]
   fn dispatch_downloads_emits_chrome_action() {
     let mut app = BrowserAppState::new();
     let actions = dispatch_menu_command(MenuCommand::ToggleDownloadsPanel, &mut app);
@@ -818,6 +846,32 @@ mod tests {
     assert!(
       cmds.iter().any(|c| matches!(c, MenuCommand::NewTab)),
       "expected File → New Tab to emit MenuCommand::NewTab, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn file_save_page_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    let cmds = click_menu_item(&ctx, &app, "File", "Save Page…");
+
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::SavePage)),
+      "expected File → Save Page… to emit MenuCommand::SavePage, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn file_print_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+    app.push_tab(BrowserTabState::new(TabId(1), "about:newtab".to_string()), true);
+    let cmds = click_menu_item(&ctx, &app, "File", "Print…");
+
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::PrintPage)),
+      "expected File → Print… to emit MenuCommand::PrintPage, got {cmds:?}"
     );
   }
 
