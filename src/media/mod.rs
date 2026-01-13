@@ -23,6 +23,7 @@ pub mod av_sync;
 pub mod clock;
 pub mod codecs;
 pub mod demux;
+pub mod loader;
 pub mod master_clock;
 pub mod mp4;
 pub mod timebase;
@@ -117,6 +118,9 @@ pub type MediaResult<T> = std::result::Result<T, MediaError>;
 
 #[derive(Debug, Error)]
 pub enum MediaError {
+  #[error("failed to load media from '{url}': {reason}")]
+  LoadFailed { url: String, reason: String },
+
   #[error("i/o error: {0}")]
   Io(#[from] std::io::Error),
 
