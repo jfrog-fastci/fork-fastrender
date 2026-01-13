@@ -1413,6 +1413,52 @@ fn p3_load_event_waits_for_images_inserted_after_domcontentloaded() -> Result<()
 }
 
 #[test]
+fn p3_load_event_waits_for_external_script_inserted_after_domcontentloaded() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new(
+    "https://example.invalid/p3_load_dynamic_classic_script.html",
+    js_options,
+  )?;
+
+  // Insert an external classic script after DOMContentLoaded (via a microtask) and ensure it still
+  // delays `load`.
+  //
+  // This ensures dynamic script scheduling registers a load blocker before the already-queued `load`
+  // task runs.
+  let script_url = "https://example.invalid/dynclassic.js";
+  h.register_script_source(script_url, r#"console.log("script");"#);
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          Promise.resolve().then(() => {{
+            console.log("microtask");
+            const s = document.createElement("script");
+            s.src = "{script_url}";
+            document.body.appendChild(s);
+          }});
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "microtask".to_string(),
+      "script".to_string(),
+      "load".to_string()
+    ]
+  );
+  Ok(())
+}
+
+#[test]
 fn p3_load_event_waits_for_module_script_inserted_after_domcontentloaded() -> Result<()> {
   let js_options = JsExecutionOptions {
     supports_module_scripts: true,
