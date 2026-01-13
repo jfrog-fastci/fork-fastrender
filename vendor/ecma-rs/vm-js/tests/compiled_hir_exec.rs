@@ -2335,6 +2335,106 @@ fn compiled_class_length_stops_at_rest_param() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_arguments_object_exists_and_has_length() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() { return arguments.length; }
+      f(1, 2, 3);
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_arguments_visible_in_default_initializer() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(a = arguments.length) { return a; }
+      f(undefined, 1, 2);
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_param_tdz_shadows_outer_binding() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      var b = 100;
+      function f(a = b, b = 2) { return a; }
+      f(undefined, 2);
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  let thrown_value = match err {
+    VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => value,
+    other => panic!("expected throw, got {other:?}"),
+  };
+  let Value::Object(err_obj) = thrown_value else {
+    panic!("expected thrown object, got {thrown_value:?}");
+  };
+
+  // `ReferenceError.prototype.name === "ReferenceError"`.
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(err_obj))?;
+  let name_key = vm_js::PropertyKey::from_string(scope.alloc_string("name")?);
+  let Some(desc) = scope.heap().get_property(err_obj, &name_key)? else {
+    panic!("expected error.name property");
+  };
+  let vm_js::PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("expected error.name to be a data property");
+  };
+  let Value::String(name_val) = value else {
+    panic!("expected error.name to be a string, got {value:?}");
+  };
+  let actual = scope.heap().get_string(name_val)?.to_utf8_lossy();
+  assert_eq!(actual, "ReferenceError");
+  Ok(())
+}
+
+#[test]
+fn compiled_rest_parameter_collects_args() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(...xs) { return xs.length; }
+      f(1, 2, 3);
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_equality_compares_bigints_by_value() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

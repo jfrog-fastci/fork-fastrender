@@ -595,7 +595,6 @@ impl<'vm> HirEvaluator<'vm> {
     };
 
     const PROLOGUE_TICK_EVERY: usize = 32;
-
     // Pre-create all parameter bindings before evaluating default initializers so identifier
     // references during parameter evaluation observe TDZ semantics.
     //
@@ -702,11 +701,7 @@ impl<'vm> HirEvaluator<'vm> {
       }
 
       scope.env_create_mutable_binding(env_rec, "arguments")?;
-      scope.heap_mut().env_initialize_binding(
-        env_rec,
-        "arguments",
-        Value::Object(args_obj),
-      )?;
+      scope.heap_mut().env_initialize_binding(env_rec, "arguments", Value::Object(args_obj))?;
     }
 
     // Bind parameters.
