@@ -270,6 +270,19 @@ pub struct ModuleGraph {
   module_graph_ptr_refcount: usize,
   torn_down: bool,
   async_eval_states: Vec<AsyncModuleEvalState>,
+  /// SCC roots that are ready to execute (all dependencies completed).
+  ///
+  /// This queue is drained in spec order (`[[AsyncEvaluationOrder]]`) so that when multiple SCCs
+  /// become available at once (or are made available transitively by synchronous execution),
+  /// evaluation order follows `InnerModuleEvaluation` discovery order rather than module insertion
+  /// order.
+  ready_scc_queue: Vec<ModuleId>,
+  /// Re-entrancy guard for `ready_scc_queue` processing.
+  ///
+  /// `execute_scc` can synchronously complete an SCC, which calls `complete_scc` and enqueues more
+  /// ready SCCs. We must not recursively drain the queue in that case, otherwise newly-ready SCCs
+  /// could execute ahead of already-ready SCCs with a lower `[[AsyncEvaluationOrder]]`.
+  processing_ready_scc_queue: bool,
 }
 
 impl Default for ModuleGraph {
@@ -291,6 +304,8 @@ impl Default for ModuleGraph {
       // A freshly-created graph does not own any persistent roots yet, and can be dropped safely.
       torn_down: true,
       async_eval_states: Vec::new(),
+      ready_scc_queue: Vec::new(),
+      processing_ready_scc_queue: false,
     }
   }
 }
@@ -537,6 +552,8 @@ impl ModuleGraph {
       self.module_graph_ptr_prev = None;
     }
     self.module_graph_ptr_refcount = 0;
+    self.ready_scc_queue.clear();
+    self.processing_ready_scc_queue = false;
   }
 
   /// Alias for [`ModuleGraph::teardown`].
@@ -847,6 +864,11 @@ impl ModuleGraph {
       // we do not retain the module graph pointer unnecessarily.
       self.module_graph_ptr_prev = None;
     }
+
+    // Discard any queued SCC executions: the evaluation state machine was torn down above, so these
+    // entries (if any) are now stale.
+    self.ready_scc_queue.clear();
+    self.processing_ready_scc_queue = false;
 
     struct AbortJobCtx<'a> {
       heap: &'a mut Heap,
@@ -1809,7 +1831,6 @@ impl ModuleGraph {
         }
       }
 
-      deps.sort_by_key(|m| m.to_raw());
       self.scc_deps[root_idx] = deps.clone();
 
       for dep_root in deps {
@@ -1820,10 +1841,6 @@ impl ModuleGraph {
           parents.push(root);
         }
       }
-    }
-
-    for parents in &mut self.scc_parents {
-      parents.sort_by_key(|m| m.to_raw());
     }
 
     self.scc_dirty = false;
@@ -1985,6 +2002,11 @@ impl ModuleGraph {
       members
     };
 
+    let scc_has_tla = members
+      .iter()
+      .copied()
+      .any(|m| self.modules.get(module_index(m)).is_some_and(|r| r.has_tla));
+
     for (i, member) in members.iter().copied().enumerate() {
       if i % 32 == 0 && i != 0 {
         vm.tick()?;
@@ -2040,6 +2062,24 @@ impl ModuleGraph {
       realm_id,
     });
     self.torn_down = false;
+
+    // Assign a deterministic async evaluation order for this SCC if it is part of async module
+    // evaluation (has TLA or depends on an async SCC).
+    //
+    // This mirrors the spec's `IncrementModuleAsyncEvaluationCount` / `[[AsyncEvaluationOrder]]`
+    // assignment: we call it only after recursing into requested modules (via `start_scc_evaluation`
+    // on dependencies), which yields a post-order traversal consistent with `InnerModuleEvaluation`
+    // discovery order (requested-modules left-to-right).
+    if pending_deps > 0 || scc_has_tla {
+      let slot = self
+        .async_eval_states
+        .get_mut(root_idx)
+        .ok_or_else(|| VmError::invalid_handle())?;
+      if slot.async_evaluation_order == AsyncEvaluationOrder::Unset {
+        let order = vm.increment_module_async_evaluation_count();
+        slot.async_evaluation_order = AsyncEvaluationOrder::Order(order);
+      }
+    }
 
     if pending_deps == 0 {
       self.execute_scc(vm, scope, scc_root, host, hooks)?;
@@ -2231,6 +2271,13 @@ impl ModuleGraph {
 
     self.scc_eval_states[root_idx] = None;
 
+    // Mirror the spec's transition to `~done~` for this SCC's async evaluation order.
+    if let Some(state) = self.async_eval_states.get_mut(root_idx) {
+      if matches!(state.async_evaluation_order, AsyncEvaluationOrder::Order(_)) {
+        state.async_evaluation_order = AsyncEvaluationOrder::Done;
+      }
+    }
+
     self.resolve_scc_promise(vm, scope, host, hooks, scc_root)?;
 
     // Notify async parents that this SCC is now available.
@@ -2239,7 +2286,6 @@ impl ModuleGraph {
       .get(root_idx)
       .cloned()
       .unwrap_or_else(Vec::new);
-    let mut ready_parents: Vec<ModuleId> = Vec::new();
     for (i, parent_root) in parents.into_iter().enumerate() {
       if i % 32 == 0 && i != 0 {
         vm.tick()?;
@@ -2257,14 +2303,56 @@ impl ModuleGraph {
       }
       parent_state.pending_deps = parent_state.pending_deps.saturating_sub(1);
       if parent_state.pending_deps == 0 {
-        ready_parents.push(parent_root);
+        self
+          .ready_scc_queue
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+        self.ready_scc_queue.push(parent_root);
       }
     }
-    for parent_root in ready_parents {
-      self.execute_scc(vm, scope, parent_root, host, hooks)?;
-    }
+    self.process_ready_scc_queue(vm, scope, host, hooks)?;
 
     Ok(())
+  }
+
+  /// Drain `ready_scc_queue` in spec order.
+  ///
+  /// Spec note: this implements the ordering constraints of `AsyncModuleExecutionFulfilled`'s
+  /// `sortedExecList` using the SCC-level execution engine. We must ensure that when multiple SCCs
+  /// become ready at once (or when an SCC completes synchronously and makes more SCCs ready) we
+  /// always start execution in ascending `[[AsyncEvaluationOrder]]`, not module insertion order.
+  fn process_ready_scc_queue(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+  ) -> Result<(), VmError> {
+    if self.processing_ready_scc_queue {
+      return Ok(());
+    }
+    self.processing_ready_scc_queue = true;
+
+    let result = (|| {
+      while !self.ready_scc_queue.is_empty() {
+        // Avoid quadratic behavior on large graphs: sort once per "batch" of ready SCCs. Any SCCs
+        // that become ready while executing will be appended and picked up by the next loop
+        // iteration.
+        let orders = &self.async_eval_states;
+        self.ready_scc_queue.sort_by_key(|m| {
+          orders
+            .get(module_index(*m))
+            .and_then(|s| s.async_evaluation_order.as_integer())
+            .unwrap_or(u64::MAX)
+        });
+        let next = self.ready_scc_queue.remove(0);
+        self.execute_scc(vm, scope, next, host, hooks)?;
+      }
+      Ok(())
+    })();
+
+    self.processing_ready_scc_queue = false;
+    result
   }
 
   fn fail_scc(

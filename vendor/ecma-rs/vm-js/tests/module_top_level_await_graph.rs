@@ -338,6 +338,110 @@ fn tla_evaluate_is_idempotent_for_importer_without_tla() -> Result<(), VmError> 
 }
 
 #[test]
+fn tla_async_parent_order_follows_import_order_not_module_id() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+  let mut promise_root: Option<RootId> = None;
+  let mut graph = ModuleGraph::new();
+
+  let result = (|| -> Result<(), VmError> {
+    // Add modules in a non-import order to ensure ModuleId assignment does not match import order.
+    graph.add_module_with_specifier(
+      "./dep.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          globalThis.order = [];
+          await Promise.resolve();
+          globalThis.order.push('dep');
+          export const x = 1;
+        "#,
+      )?,
+    );
+    graph.add_module_with_specifier(
+      "./c.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import './dep.js';
+          globalThis.order.push('c');
+          export {};
+        "#,
+      )?,
+    );
+    graph.add_module_with_specifier(
+      "./b.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import './dep.js';
+          globalThis.order.push('b');
+          export {};
+        "#,
+      )?,
+    );
+    let main = graph.add_module_with_specifier(
+      "./main.js",
+      SourceTextModuleRecord::parse(
+        &mut heap,
+        r#"
+          import './b.js';
+          import './c.js';
+          export const order = globalThis.order.join(',');
+        "#,
+      )?,
+    );
+    graph.link_all_by_specifier();
+
+    let promise = graph.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      main,
+      &mut host,
+      &mut hooks,
+    )?;
+    let promise_obj = expect_promise_object(promise);
+
+    promise_root = Some(root_value(&mut heap, promise)?);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Pending);
+
+    drain_microtasks(&mut vm, &mut heap, &mut hooks)?;
+
+    let promise = heap
+      .get_root(promise_root.ok_or_else(|| VmError::InvariantViolation("promise root missing"))?)
+      .ok_or_else(VmError::invalid_handle)?;
+    let promise_obj = expect_promise_object(promise);
+    assert_eq!(heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+    let mut scope = heap.scope();
+    let ns = graph.get_module_namespace(main, &mut vm, &mut scope)?;
+    let Value::String(order_s) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns, "order")?
+    else {
+      return Err(VmError::InvariantViolation(
+        "expected `order` export to be a string",
+      ));
+    };
+    assert_eq!(scope.heap().get_string(order_s)?.to_utf8_lossy(), "dep,b,c");
+
+    drop(scope);
+    graph.teardown(&mut vm, &mut heap);
+    Ok(())
+  })();
+
+  graph.teardown(&mut vm, &mut heap);
+  if let Some(root) = promise_root {
+    heap.remove_root(root);
+  }
+  graph.teardown(&mut vm, &mut heap);
+  teardown_jobs(&mut vm, &mut heap, &mut hooks);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
 fn tla_async_cycle_evaluates_without_deadlock() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = MicrotaskQueue::new();
