@@ -457,6 +457,11 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     new_target,
   ])?;
 
+  let allow_super_call = match this {
+    Value::Object(obj) if scope.heap().is_derived_constructor_state(obj) => true,
+    _ => false,
+  };
+
   let source_text = eval_string_to_utf8_lossy_with_tick(vm, scope.heap(), source_string)?;
   let source = arc_try_new_vm(SourceText::new_charged(
     scope.heap_mut(),
@@ -468,7 +473,11 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     source_type: SourceType::Script,
   };
   // Like the Function constructor, `eval("...")` parse/early errors are JS-catchable.
-  let top = match vm.parse_top_level_with_budget(&source.text, opts) {
+  let top = match if allow_super_call {
+    vm.parse_top_level_with_budget_allowing_enclosing_meta_properties(&source.text, opts)
+  } else {
+    vm.parse_top_level_with_budget(&source.text, opts)
+  } {
     Ok(top) => top,
     Err(VmError::Syntax(diags)) => {
       let intr = vm
@@ -488,7 +497,7 @@ pub(crate) fn perform_direct_eval_with_host_and_hooks(
     let mut tick = || vm.tick();
     match crate::early_errors::validate_top_level(
       &top.stx.body,
-      crate::early_errors::EarlyErrorOptions::script(strict),
+      crate::early_errors::EarlyErrorOptions::script_with_super_call(strict, allow_super_call),
       &mut tick,
     ) {
       Ok(()) => {}
@@ -2372,6 +2381,7 @@ impl JsRuntime {
                 strict,
                 allow_top_level_await: has_await,
                 is_module: false,
+                allow_super_call: false,
               },
               &mut tick,
             )?;
@@ -2843,16 +2853,17 @@ impl JsRuntime {
       let has_await = top.stx.body.iter().any(stmt_contains_await);
       {
         let mut tick = || vm_frame.tick();
-        crate::early_errors::validate_top_level(
-          &top.stx.body,
-          crate::early_errors::EarlyErrorOptions {
-            strict,
-            allow_top_level_await: has_await,
-            is_module: false,
-          },
-          &mut tick,
-        )?;
-      }
+          crate::early_errors::validate_top_level(
+            &top.stx.body,
+            crate::early_errors::EarlyErrorOptions {
+              strict,
+              allow_top_level_await: has_await,
+              is_module: false,
+              allow_super_call: false,
+            },
+            &mut tick,
+          )?;
+        }
 
       let mut scope = self.heap.scope();
       let res: Result<Value, VmError> = (|| {
@@ -3785,8 +3796,12 @@ struct Evaluator<'a> {
   derived_constructor: bool,
   /// Whether `this` has been initialized (only meaningful when `derived_constructor` is `true`).
   this_initialized: bool,
-  /// Root-stack slot index used to keep a derived constructor's `this` value alive across nested
-  /// scopes. When present, `heap.root_stack[this_root_idx]` is kept in sync with `self.this`.
+  /// Root-stack slot index used to keep derived-constructor `this` state alive across nested
+  /// scopes.
+  ///
+  /// For derived constructors, `self.this` is set to a shared heap cell (see
+  /// [`crate::heap::DerivedConstructorState`]) so nested arrow functions and eval code can observe
+  /// `super()` initializing the enclosing constructor's `this` binding.
   this_root_idx: Option<usize>,
 }
 
@@ -9405,6 +9420,19 @@ impl<'a> Evaluator<'a> {
         OptionalChainEval::Value(self.eval_tagged_template(scope, node)?)
       }
       Expr::This(_) => {
+        if let Value::Object(obj) = self.this {
+          if scope.heap().is_derived_constructor_state(obj) {
+            let state = scope.heap().get_derived_constructor_state(obj)?;
+            if let Some(this_obj) = state.this_value {
+              return Ok(OptionalChainEval::Value(Value::Object(this_obj)));
+            }
+            return Err(throw_reference_error(
+              self.vm,
+              scope,
+              "Must call super constructor in derived class before accessing 'this'",
+            )?);
+          }
+        }
         if self.derived_constructor && !self.this_initialized {
           return Err(throw_reference_error(
             self.vm,
@@ -11119,12 +11147,23 @@ impl<'a> Evaluator<'a> {
           // semantics).
           //
           // Spec: https://tc39.es/ecma262/#sec-delete-operator-runtime-semantics-evaluation
-          if self.derived_constructor && !self.this_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
+          if let Value::Object(obj) = self.this {
+            if scope.heap().is_derived_constructor_state(obj) {
+              let state = scope.heap().get_derived_constructor_state(obj)?;
+              if state.this_value.is_none() {
+                return Err(throw_reference_error(
+                  self.vm,
+                  scope,
+                  "Must call super constructor in derived class before accessing 'this'",
+                )?);
+              }
+            } else if self.derived_constructor && !self.this_initialized {
+              return Err(throw_reference_error(
+                self.vm,
+                scope,
+                "Must call super constructor in derived class before accessing 'this'",
+              )?);
+            }
           }
           Err(
             // ECMA-262 `Evaluation` for the `delete` operator explicitly rejects Super References.
@@ -11138,12 +11177,23 @@ impl<'a> Evaluator<'a> {
           // Evaluating a super property reference requires an initialized `this` binding. In
           // derived constructors before `super()`, this check happens before evaluating the
           // computed key expression.
-          if self.derived_constructor && !self.this_initialized {
-            return Err(throw_reference_error(
-              self.vm,
-              scope,
-              "Must call super constructor in derived class before accessing 'this'",
-            )?);
+          if let Value::Object(obj) = self.this {
+            if scope.heap().is_derived_constructor_state(obj) {
+              let state = scope.heap().get_derived_constructor_state(obj)?;
+              if state.this_value.is_none() {
+                return Err(throw_reference_error(
+                  self.vm,
+                  scope,
+                  "Must call super constructor in derived class before accessing 'this'",
+                )?);
+              }
+            } else if self.derived_constructor && !self.this_initialized {
+              return Err(throw_reference_error(
+                self.vm,
+                scope,
+                "Must call super constructor in derived class before accessing 'this'",
+              )?);
+            }
           }
 
           // Ensure the computed key expression is evaluated (including `ToPropertyKey`
@@ -11711,6 +11761,157 @@ impl<'a> Evaluator<'a> {
     if matches!(&*expr.callee.stx, Expr::Super(_)) {
       if expr.optional_chaining {
         return Err(VmError::Unimplemented("optional chaining super call"));
+      }
+
+      // Derived constructor `super()` semantics must be visible to nested arrow functions and eval
+      // code. Those contexts capture the enclosing constructor's `this` as a shared heap object.
+      if let Value::Object(state_obj) = self.this {
+        if scope.heap().is_derived_constructor_state(state_obj) {
+          let (class_ctor, already_initialized) = {
+            let state = scope.heap().get_derived_constructor_state(state_obj)?;
+            (state.class_constructor, state.this_value.is_some())
+          };
+          if already_initialized {
+            return Err(throw_reference_error(
+              self.vm,
+              scope,
+              "super() can only be called once in a derived constructor",
+            )?);
+          }
+
+          // Resolve the superclass constructor from the class constructor's hidden `extends` slot.
+          let super_value = crate::class_fields::class_constructor_super_value(scope, class_ctor)?;
+          let super_ctor = match super_value {
+            Value::Object(o) => o,
+            Value::Null => {
+              return Err(throw_type_error(
+                self.vm,
+                scope,
+                "Class extends value is not a constructor",
+              )?)
+            }
+            Value::Undefined => {
+              return Err(VmError::InvariantViolation(
+                "derived constructor attempted super() call with undefined superclass",
+              ))
+            }
+            _ => {
+              return Err(VmError::InvariantViolation(
+                "class constructor super slot is not undefined, null, or object",
+              ))
+            }
+          };
+
+          // Root callee/new_target and the derived-constructor state for the duration of argument
+          // evaluation + construction.
+          let mut call_scope = scope.reborrow();
+          call_scope.push_roots(&[
+            Value::Object(super_ctor),
+            self.new_target,
+            Value::Object(state_obj),
+            Value::Object(class_ctor),
+          ])?;
+
+          // Evaluate argument list (including spread) in source order.
+          let mut args: Vec<Value> = Vec::new();
+          args
+            .try_reserve_exact(expr.arguments.len())
+            .map_err(|_| VmError::OutOfMemory)?;
+          for arg in &expr.arguments {
+            if arg.stx.spread {
+              let spread_value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
+              call_scope.push_root(spread_value)?;
+
+              let mut iter = iterator::get_iterator(
+                self.vm,
+                &mut *self.host,
+                &mut *self.hooks,
+                &mut call_scope,
+                spread_value,
+              )?;
+              call_scope.push_roots_with_extra_roots(&[iter.iterator], &[iter.next_method], &[])?;
+              if let Err(err) = call_scope.push_root(iter.next_method) {
+                // `ArgumentListEvaluation` uses `IteratorStepValue` and does not perform
+                // `IteratorClose` on abrupt completions (including when `next` throws).
+                return Err(err);
+              }
+
+              loop {
+                let next_value = match iterator::iterator_step_value(
+                  self.vm,
+                  &mut *self.host,
+                  &mut *self.hooks,
+                  &mut call_scope,
+                  &mut iter,
+                ) {
+                  Ok(v) => v,
+                  // Spec: spread argument evaluation does not perform `IteratorClose` on errors
+                  // produced while stepping the iterator (`next`/`done`/`value`).
+                  Err(err) => return Err(err),
+                };
+
+                let Some(value) = next_value else {
+                  break;
+                };
+
+                let step_res: Result<(), VmError> = (|| {
+                  self.tick()?;
+                  call_scope.push_root(value)?;
+                  args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+                  args.push(value);
+                  Ok(())
+                })();
+                if let Err(err) = step_res {
+                  return Err(err);
+                }
+              }
+            } else {
+              let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
+              call_scope.push_root(value)?;
+              args.try_reserve(1).map_err(|_| VmError::OutOfMemory)?;
+              args.push(value);
+            }
+          }
+
+          // Construct the superclass instance: `Construct(super, args, newTarget)`.
+          let source = self.env.source();
+          let rel_start = loc.start_u32().saturating_sub(self.env.prefix_len());
+          let abs_offset = self.env.base_offset().saturating_add(rel_start);
+          let this_value = self.vm.construct_with_host_and_hooks_at_location(
+            &mut *self.host,
+            &mut call_scope,
+            &mut *self.hooks,
+            Value::Object(super_ctor),
+            &args,
+            self.new_target,
+            source.as_ref(),
+            abs_offset,
+          )?;
+
+          let Value::Object(this_obj) = this_value else {
+            return Err(VmError::InvariantViolation(
+              "super constructor returned non-object from Construct",
+            ));
+          };
+
+          // Initialize the enclosing derived constructor's `this` binding exactly once.
+          call_scope
+            .heap_mut()
+            .get_derived_constructor_state_mut(state_obj)?
+            .this_value = Some(this_obj);
+
+          // Initialize derived instance fields immediately after `super()` returns.
+          crate::class_fields::initialize_instance_fields_with_host_and_hooks(
+            self.vm,
+            &mut call_scope,
+            &mut *self.host,
+            &mut *self.hooks,
+            this_obj,
+            class_ctor,
+          )?;
+
+          return Ok(OptionalChainEval::Value(this_value));
+        }
       }
 
       let Some(class_ctor) = self.class_constructor else {
@@ -34481,6 +34682,7 @@ pub(crate) fn run_ecma_function(
   let mut derived_constructor = false;
   let mut this_initialized = true;
   let mut this_root_idx: Option<usize> = None;
+  let mut this_value = this;
   if let FunctionData::ClassConstructorBody {
     class_constructor: ctor,
   } = scope.heap().get_function_data(callee)?
@@ -34490,11 +34692,15 @@ pub(crate) fn run_ecma_function(
     derived_constructor = !matches!(super_value, Value::Undefined);
     this_initialized = !derived_constructor;
     if derived_constructor {
-      // Keep an always-present root slot for `this` so derived constructors can initialize it after
-      // `super()` returns and keep it alive across nested scopes.
+      // Derived constructors have an uninitialized `this` binding until `super()` returns.
+      //
+      // Represent `this` as a heap-owned shared state object so nested arrow functions and direct
+      // eval code can observe initialization when `super()` is called.
+      let state = scope.alloc_derived_constructor_state(ctor)?;
       let idx = scope.heap().root_stack.len();
-      scope.push_root(this)?;
+      scope.push_root(Value::Object(state))?;
       this_root_idx = Some(idx);
+      this_value = Value::Object(state);
     }
   }
 
@@ -34504,7 +34710,7 @@ pub(crate) fn run_ecma_function(
     hooks,
     env,
     strict,
-    this,
+    this: this_value,
     new_target,
     home_object,
     class_constructor,
@@ -34859,7 +35065,18 @@ pub(crate) fn run_ecma_function(
     }
   }?;
 
-  Ok((value, evaluator.this))
+  let final_this = match evaluator.this {
+    Value::Object(obj) if scope.heap().is_derived_constructor_state(obj) => {
+      let state = scope.heap().get_derived_constructor_state(obj)?;
+      match state.this_value {
+        Some(this_obj) => Value::Object(this_obj),
+        None => Value::Undefined,
+      }
+    }
+    other => other,
+  };
+
+  Ok((value, final_this))
 }
 
 pub(crate) fn instantiate_module_decls(
@@ -36434,6 +36651,110 @@ mod tests {
         }
       }
       test262 === 'outer scope' && probe1 === 'first block' && probe2 === 'second block'
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn derived_constructor_direct_eval_super_call() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        let ok = true;
+        new class extends class {} {
+          constructor() {
+            ok = ok && (eval("super(); this") === this);
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            (() => super())();
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        return ok;
+      })()
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn direct_eval_super_call_outside_derived_constructor_is_syntax_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        try {
+          eval("super()");
+          return false;
+        } catch (e) {
+          return typeof e === "object" && e !== null && e.constructor === SyntaxError;
+        }
+      })()
+    "#,
+    )?;
+    assert!(matches!(value, Value::Bool(true)));
+    Ok(())
+  }
+
+  #[test]
+  fn derived_constructor_direct_eval_nested_super_call() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    let value = rt.exec_script(
+      r#"
+      (() => {
+        let ok = true;
+
+        new class extends class {} {
+          constructor() {
+            (() => eval("super()"))();
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            (() => (() => super())())();
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            eval("(() => super())()");
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        new class extends class {} {
+          constructor() {
+            eval("eval('super()')");
+            ok = ok && (this === eval("this"));
+            ok = ok && (this === (() => this)());
+          }
+        }();
+
+        return ok;
+      })()
     "#,
     )?;
     assert!(matches!(value, Value::Bool(true)));

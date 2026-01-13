@@ -46,6 +46,7 @@ pub(crate) struct EarlyErrorOptions {
   pub(crate) strict: bool,
   pub(crate) allow_top_level_await: bool,
   pub(crate) is_module: bool,
+  pub(crate) allow_super_call: bool,
 }
 
 impl EarlyErrorOptions {
@@ -54,6 +55,16 @@ impl EarlyErrorOptions {
       strict,
       allow_top_level_await: false,
       is_module: false,
+      allow_super_call: false,
+    }
+  }
+
+  pub(crate) fn script_with_super_call(strict: bool, allow_super_call: bool) -> Self {
+    Self {
+      strict,
+      allow_top_level_await: false,
+      is_module: false,
+      allow_super_call,
     }
   }
 
@@ -62,6 +73,7 @@ impl EarlyErrorOptions {
       strict: true,
       allow_top_level_await: true,
       is_module: true,
+      allow_super_call: false,
     }
   }
 }
@@ -98,7 +110,7 @@ where
     yield_allowed: false,
     await_is_reserved: opts.allow_top_level_await,
     yield_is_reserved: false,
-    super_call_allowed: false,
+    super_call_allowed: opts.allow_super_call,
     arguments_allowed: true,
     return_allowed: false,
     using_allowed: opts.is_module,

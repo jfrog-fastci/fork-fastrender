@@ -84,6 +84,7 @@ impl CompiledScript {
           strict,
           allow_top_level_await: has_await,
           is_module: false,
+          allow_super_call: false,
         },
         &mut tick,
       )?;
@@ -199,6 +200,7 @@ impl CompiledScript {
           strict,
           allow_top_level_await: has_await,
           is_module: false,
+          allow_super_call: false,
         },
         &mut tick,
       )?;

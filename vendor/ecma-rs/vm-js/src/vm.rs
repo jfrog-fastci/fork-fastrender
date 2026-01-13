@@ -2811,7 +2811,7 @@ impl Vm {
     self.parse_top_level_with_budget_impl(source, opts, false)
   }
 
-  fn parse_top_level_with_budget_allowing_enclosing_meta_properties(
+  pub(crate) fn parse_top_level_with_budget_allowing_enclosing_meta_properties(
     &mut self,
     source: &str,
     opts: ParseOptions,

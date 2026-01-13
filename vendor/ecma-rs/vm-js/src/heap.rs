@@ -1937,6 +1937,7 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
       self.get_heap_object(obj.0),
       Ok(
         HeapObject::Object(_)
+          | HeapObject::DerivedConstructorState(_)
           | HeapObject::ArrayBuffer(_)
           | HeapObject::TypedArray(_)
           | HeapObject::DataView(_)
@@ -1953,6 +1954,13 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
           | HeapObject::Generator(_)
           | HeapObject::AsyncGenerator(_)
       )
+    )
+  }
+
+  pub(crate) fn is_derived_constructor_state(&self, obj: GcObject) -> bool {
+    matches!(
+      self.get_heap_object(obj.0),
+      Ok(HeapObject::DerivedConstructorState(_))
     )
   }
 
@@ -8531,6 +8539,26 @@ referenced slot currently has generation={} and kind={current_kind} (expected {e
     }
   }
 
+  pub(crate) fn get_derived_constructor_state(
+    &self,
+    obj: GcObject,
+  ) -> Result<&DerivedConstructorState, VmError> {
+    match self.get_heap_object(obj.0)? {
+      HeapObject::DerivedConstructorState(s) => Ok(s),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
+  pub(crate) fn get_derived_constructor_state_mut(
+    &mut self,
+    obj: GcObject,
+  ) -> Result<&mut DerivedConstructorState, VmError> {
+    match self.get_heap_object_mut(obj.0)? {
+      HeapObject::DerivedConstructorState(s) => Ok(s),
+      _ => Err(VmError::invalid_handle()),
+    }
+  }
+
   #[allow(dead_code)]
   pub(crate) fn get_function_this_mode(&self, func: GcObject) -> Result<ThisMode, VmError> {
     match self.get_heap_object(func.0)? {
@@ -9198,6 +9226,24 @@ impl<'a> Scope<'a> {
 
     let obj = HeapObject::Object(JsObject::new(None));
     Ok(GcObject(self.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  pub(crate) fn alloc_derived_constructor_state(
+    &mut self,
+    class_constructor: GcObject,
+  ) -> Result<GcObject, VmError> {
+    // Root the class constructor across allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    scope.push_root(Value::Object(class_constructor))?;
+
+    let new_bytes = 0;
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::DerivedConstructorState(DerivedConstructorState {
+      class_constructor,
+      this_value: None,
+    });
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
   }
 
   /// Allocates an empty `Map` object on the heap.
@@ -10808,12 +10854,31 @@ impl Slot {
   }
 }
 
+/// Shared state for a derived class constructor's `this` binding.
+///
+/// Derived class constructors have an uninitialized `this` binding until `super()` returns. That
+/// initialization must be observable by nested arrow functions and direct eval code.
+///
+/// `vm-js` represents that shared state as a heap object so it can be:
+/// - captured by value by arrow functions (`[[ThisMode]] = Lexical`), and
+/// - passed into nested direct eval evaluators,
+/// while still allowing `super()` to initialize the enclosing constructor's `this` exactly once.
+#[derive(Debug)]
+pub(crate) struct DerivedConstructorState {
+  /// The containing class constructor wrapper function object (the native wrapper holding field
+  /// metadata and the hidden `extends` slot).
+  pub(crate) class_constructor: GcObject,
+  /// The initialized `this` value produced by `super()`, if it has been called.
+  pub(crate) this_value: Option<GcObject>,
+}
+
 #[derive(Debug)]
 enum HeapObject {
   String(JsString),
   Symbol(JsSymbol),
   BigInt(JsBigInt),
   Object(JsObject),
+  DerivedConstructorState(DerivedConstructorState),
   ModuleNamespaceExports(ModuleNamespaceExportsData),
   ArrayBuffer(JsArrayBuffer),
   TypedArray(JsTypedArray),
@@ -10840,6 +10905,7 @@ impl Trace for HeapObject {
       HeapObject::Symbol(s) => s.trace(tracer),
       HeapObject::BigInt(b) => b.trace(tracer),
       HeapObject::Object(o) => o.trace(tracer),
+      HeapObject::DerivedConstructorState(s) => s.trace(tracer),
       HeapObject::ModuleNamespaceExports(ns) => ns.trace(tracer),
       HeapObject::ArrayBuffer(b) => b.trace(tracer),
       HeapObject::TypedArray(a) => a.trace(tracer),
@@ -10861,6 +10927,15 @@ impl Trace for HeapObject {
   }
 }
 
+impl Trace for DerivedConstructorState {
+  fn trace(&self, tracer: &mut Tracer<'_>) {
+    tracer.trace_value(Value::Object(self.class_constructor));
+    if let Some(this_obj) = self.this_value {
+      tracer.trace_value(Value::Object(this_obj));
+    }
+  }
+}
+
 impl HeapObject {
   #[cfg(any(debug_assertions, feature = "gc_validate"))]
   fn debug_kind(&self) -> &'static str {
@@ -10869,6 +10944,7 @@ impl HeapObject {
       HeapObject::Symbol(_) => "Symbol",
       HeapObject::BigInt(_) => "BigInt",
       HeapObject::Object(_) => "Object",
+      HeapObject::DerivedConstructorState(_) => "DerivedConstructorState",
       HeapObject::ModuleNamespaceExports(_) => "ModuleNamespaceExports",
       HeapObject::ArrayBuffer(_) => "ArrayBuffer",
       HeapObject::TypedArray(_) => "TypedArray",
