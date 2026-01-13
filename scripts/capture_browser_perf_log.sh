@@ -83,6 +83,7 @@ mkdir -p -- "${out_dir}"
 
 echo "capture_browser_perf_log: writing perf JSONL to ${out_path}" >&2
 echo "capture_browser_perf_log: running with FASTR_PERF_LOG=1 under scripts/run_limited.sh --as 64G" >&2
+echo "capture_browser_perf_log: forcing FASTR_PERF_LOG_OUT to be unset/empty so logs stay on stdout" >&2
 
 browser_cmd=()
 if [[ -n "${CARGO_BIN_EXE_browser:-}" && -x "${CARGO_BIN_EXE_browser}" ]]; then
@@ -106,7 +107,8 @@ fi
 set +e
 (
   cd "${repo_root}" || exit 1
-  FASTR_PERF_LOG=1 bash "${repo_root}/scripts/run_limited.sh" --as 64G -- "${browser_cmd[@]}"
+  FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= \
+    bash "${repo_root}/scripts/run_limited.sh" --as 64G -- "${browser_cmd[@]}"
 ) | tee -- "${out_path}"
 pipeline_status=$?
 browser_status=${PIPESTATUS[0]}
