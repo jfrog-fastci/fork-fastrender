@@ -72,6 +72,13 @@ transport/codec yet:
 - **Shared framing helper (in-tree):**
   - `src/ipc/framing.rs` provides a length-prefixed framing layer with a hard maximum frame size.
   - See: [`src/ipc/framing.rs`](../src/ipc/framing.rs).
+- **In-tree JSON IPC connection helper (bounded):**
+  - [`src/ipc/connection.rs`](../src/ipc/connection.rs) provides `IpcConnection`, a wrapper that
+    sends/receives **length-prefixed** JSON messages on top of `src/ipc/framing.rs` while enforcing
+    `MAX_IPC_MESSAGE_BYTES` on both send and receive.
+  - Security note: `serde` ignores unknown struct fields by default. IPC protocol structs intended
+    for a trust boundary should use `#[serde(deny_unknown_fields)]` and should have regression tests
+    asserting unknown fields are rejected (see `src/ipc/connection.rs`).
 - **Network-process IPC (in-tree, under active development):**
   - `src/net/transport.rs` defines a binary protocol with explicit per-field limits and uses
     `src/ipc/framing.rs` for bounded framing.
@@ -79,6 +86,11 @@ transport/codec yet:
 
 All of the above are **stream transports**: message boundaries are *not* preserved by the kernel, so
 framing must be explicit and allocation-bounded.
+
+Also relevant: [`src/ipc/bootstrap.rs`](../src/ipc/bootstrap.rs) provides a Unix-domain `socketpair()`
+bootstrap helper for spawning child processes with an **already-connected** IPC socket. It prefers
+`SOCK_SEQPACKET` (and falls back to `SOCK_STREAM` where needed) and is careful about `CLOEXEC` so the
+parent does not leak IPC sockets into unrelated `exec()` calls.
 
 ### Target transport for FD passing: Unix domain sockets
 
@@ -251,6 +263,12 @@ Repo reality:
   messages (256 KiB), independent of the outer frame length:
   - See: `RENDERER_IPC_DECODE_LIMIT_BYTES` + `bincode_options()` in
     [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs).
+- Some IPC surfaces use `serde_json` rather than `bincode` (e.g. `src/resource/ipc_fetcher.rs`,
+  `src/ipc/connection.rs`).
+  - The same rule still applies: enforce the hard frame cap **before** deserializing.
+  - Prefer `#[serde(deny_unknown_fields)]` on protocol structs/enums at a security boundary so
+    unexpected fields are rejected rather than silently ignored (see the note + regression test in
+    [`src/ipc/connection.rs`](../src/ipc/connection.rs)).
 
 ---
 
