@@ -2063,3 +2063,25 @@ fn compiled_for_in_assigns_to_member_target() -> Result<(), VmError> {
   assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "b");
   Ok(())
 }
+
+#[test]
+fn compiled_strict_directive_after_other_directives() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use asm";
+      "use strict";
+      function f(){ return this === undefined; }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
