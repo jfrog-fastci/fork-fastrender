@@ -1540,6 +1540,32 @@ fn compiled_try_catch_coerces_internal_type_error() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_uncaught_type_error_is_coerced_to_throw_with_stack() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(rt.heap_mut(), "test.js", r#"(null).x"#)?;
+  let err = rt.exec_compiled_script(script).unwrap_err();
+
+  let VmError::ThrowWithStack { value, .. } = err else {
+    panic!("expected ThrowWithStack, got {err:?}");
+  };
+  let Value::Object(obj) = value else {
+    panic!("expected thrown object, got {value:?}");
+  };
+
+  // The host boundary should have coerced the internal VmError::TypeError into a real TypeError
+  // object when intrinsics are available.
+  let type_error_proto = rt.realm().intrinsics().type_error_prototype();
+
+  let mut scope = rt.heap_mut().scope();
+  scope.push_root(Value::Object(obj))?;
+  assert_eq!(scope.heap().object_prototype(obj)?, Some(type_error_proto));
+  Ok(())
+}
+
+#[test]
 fn compiled_lexical_tdz_shadowing_throws() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
