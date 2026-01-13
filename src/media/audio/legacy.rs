@@ -1398,6 +1398,62 @@ mod tests {
   }
 
   #[test]
+  fn muted_stream_drains_queue_and_advances_clock() {
+    // Use 1kHz so 1 frame == 1ms and the gain ramp spans a small, deterministic number of frames.
+    let sample_rate = 1_000;
+    let backend = NullAudioBackend::new(sample_rate, 1);
+    let ramp_frames = gain_ramp_frames(sample_rate) as usize;
+    assert!(ramp_frames > 0);
+    let muted_extra_frames = 5usize;
+    let total_frames = ramp_frames + muted_extra_frames + 10;
+
+    let stream = backend.create_stream();
+    stream.enqueue_samples(vec![1.0; total_frames]).unwrap();
+    stream.play();
+    stream.set_muted(true);
+
+    // Drain exactly one ramp's worth of frames so the stream becomes fully muted (gain reaches 0).
+    let _ = backend.render(ramp_frames);
+    assert_eq!(
+      stream.current_time(),
+      Duration::from_millis(ramp_frames as u64),
+      "stream clock must advance while ramping to mute"
+    );
+
+    // Inspect the internal queue to ensure the first render actually consumed frames.
+    let remaining_after_ramp = {
+      let state = stream.inner.state.lock();
+      state.queue.len() / stream.inner.channels
+    };
+    assert_eq!(
+      remaining_after_ramp,
+      total_frames - ramp_frames,
+      "queue must drain during mute ramp"
+    );
+
+    // While fully muted (gain == 0), the mixer must still drain queued audio and advance the
+    // stream clock. This path is distinct from the ramped mixing path: the mixer fast-paths to
+    // `drain_frames()` when no streams are currently audible.
+    let out = backend.render(muted_extra_frames);
+    assert!(all_samples_eq(&out, 0.0));
+    assert_eq!(
+      stream.current_time(),
+      Duration::from_millis((ramp_frames + muted_extra_frames) as u64),
+      "stream clock must advance while muted"
+    );
+
+    let remaining_after_mute = {
+      let state = stream.inner.state.lock();
+      state.queue.len() / stream.inner.channels
+    };
+    assert_eq!(
+      remaining_after_mute,
+      total_frames - (ramp_frames + muted_extra_frames),
+      "queue must drain even when fully muted (gain == 0)"
+    );
+  }
+
+  #[test]
   fn mixer_zeroes_output_when_no_active_streams() {
     let mixer = AudioMixer::new(48_000, 1);
     let mut out = vec![1.0; 240];
