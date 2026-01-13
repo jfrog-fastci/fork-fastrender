@@ -354,6 +354,11 @@ const GRID_MEASURE_SIZE_CACHE_EVICTION_BATCH: usize = 16_384;
 const GRID_MEASURE_SHARED_CACHE_SHARDS: usize = 64;
 const GRID_MEASURE_SHARED_CACHE_MAX_ENTRIES_PER_SHARD: usize =
   GRID_MEASURE_SIZE_CACHE_MAX_ENTRIES / GRID_MEASURE_SHARED_CACHE_SHARDS;
+/// Override-key entries (`MeasureKey::override_fingerprint.is_some()`) are capped separately when
+/// `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES` is enabled so transient override probes cannot evict
+/// the entire base-style keyset from the shared cache.
+const GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD: usize =
+  GRID_MEASURE_SHARED_CACHE_MAX_ENTRIES_PER_SHARD / 4;
 const GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD: usize =
   GRID_MEASURE_SIZE_CACHE_EVICTION_BATCH / GRID_MEASURE_SHARED_CACHE_SHARDS;
 
@@ -363,15 +368,20 @@ struct GridMeasureCacheEntry {
   output: taffy::tree::MeasureOutput,
 }
 
+#[derive(Default)]
+struct GridMeasureCacheShard {
+  map: FxHashMap<MeasureKey, GridMeasureCacheEntry>,
+  override_entries: usize,
+}
+
 struct ShardedGridMeasureCache {
-  shards:
-    [RwLock<FxHashMap<MeasureKey, GridMeasureCacheEntry>>; GRID_MEASURE_SHARED_CACHE_SHARDS],
+  shards: [RwLock<GridMeasureCacheShard>; GRID_MEASURE_SHARED_CACHE_SHARDS],
 }
 
 impl ShardedGridMeasureCache {
   fn new() -> Self {
     Self {
-      shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+      shards: std::array::from_fn(|_| RwLock::new(GridMeasureCacheShard::default())),
     }
   }
 
@@ -384,8 +394,8 @@ impl ShardedGridMeasureCache {
   fn get(&self, key: &MeasureKey, epoch: usize) -> Option<taffy::tree::MeasureOutput> {
     let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
     {
-      let map = shard.read();
-      if let Some(entry) = map.get(key) {
+      let shard = shard.read();
+      if let Some(entry) = shard.map.get(key) {
         if entry.epoch == epoch {
           return Some(entry.output);
         }
@@ -395,13 +405,16 @@ impl ShardedGridMeasureCache {
     }
 
     // Slow path: if the entry is stale, remove it lazily under a write lock.
-    let mut map = shard.write();
-    if let Some(entry) = map.get(key) {
+    let mut shard = shard.write();
+    if let Some(entry) = shard.map.get(key) {
       if entry.epoch == epoch {
         return Some(entry.output);
       }
       if entry.epoch != epoch {
-        map.remove(key);
+        shard.map.remove(key);
+        if key.override_fingerprint.is_some() {
+          shard.override_entries = shard.override_entries.saturating_sub(1);
+        }
       }
     }
     None
@@ -410,37 +423,79 @@ impl ShardedGridMeasureCache {
   #[inline]
   fn insert(&self, key: MeasureKey, epoch: usize, output: taffy::tree::MeasureOutput) {
     let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
-    let mut map = shard.write();
+    let mut shard = shard.write();
 
     let max_entries = GRID_MEASURE_SHARED_CACHE_MAX_ENTRIES_PER_SHARD;
     if max_entries == 0 {
-      map.clear();
+      shard.map.clear();
+      shard.override_entries = 0;
       return;
     }
-    if map.len() >= max_entries && !map.contains_key(&key) {
+
+    let is_override = key.override_fingerprint.is_some();
+    if is_override && GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD == 0 {
+      return;
+    }
+
+    // When override key sharing is enabled, keep override entries bounded so they cannot evict the
+    // entire base-style keyset.
+    if is_override
+      && shard.override_entries >= GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD
+      && !shard.map.contains_key(&key)
+    {
       let eviction_batch = GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD
         .max(1)
-        .min(max_entries)
-        .min(map.len());
+        .min(GRID_MEASURE_SHARED_CACHE_MAX_OVERRIDE_ENTRIES_PER_SHARD.max(1))
+        .min(shard.override_entries);
       if eviction_batch > 0 {
-        let keys: Vec<_> = map.keys().take(eviction_batch).cloned().collect();
+        let keys: Vec<_> = shard
+          .map
+          .keys()
+          .filter(|candidate| candidate.override_fingerprint.is_some())
+          .take(eviction_batch)
+          .cloned()
+          .collect();
         for key in keys {
-          map.remove(&key);
+          if shard.map.remove(&key).is_some() {
+            shard.override_entries = shard.override_entries.saturating_sub(1);
+          }
         }
       }
     }
-    map.insert(
+
+    if shard.map.len() >= max_entries && !shard.map.contains_key(&key) {
+      let eviction_batch = GRID_MEASURE_SHARED_CACHE_EVICTION_BATCH_PER_SHARD
+        .max(1)
+        .min(max_entries)
+        .min(shard.map.len());
+      if eviction_batch > 0 {
+        let keys: Vec<_> = shard.map.keys().take(eviction_batch).cloned().collect();
+        for key in keys {
+          if shard.map.remove(&key).is_some() && key.override_fingerprint.is_some() {
+            shard.override_entries = shard.override_entries.saturating_sub(1);
+          }
+        }
+      }
+    }
+    let inserted = shard
+      .map
+      .insert(
       key,
       GridMeasureCacheEntry {
         epoch,
         output,
       },
     );
+    if inserted.is_none() && is_override {
+      shard.override_entries = shard.override_entries.saturating_add(1);
+    }
   }
 
   fn clear(&self) {
     for shard in &self.shards {
-      shard.write().clear();
+      let mut shard = shard.write();
+      shard.map.clear();
+      shard.override_entries = 0;
     }
   }
 }
