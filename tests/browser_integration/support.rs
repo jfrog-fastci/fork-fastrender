@@ -728,13 +728,15 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       tab_id,
       hovered_url,
       cursor,
+      tooltip,
     } = msg
     {
       let _ = writeln!(
         &mut out,
-        "HoverChanged(tab={}, cursor={cursor:?}, hovered_url={:?})",
+        "HoverChanged(tab={}, cursor={cursor:?}, hovered_url={:?}, tooltip={:?})",
         tab_id.0,
-        hovered_url.as_deref()
+        hovered_url.as_deref(),
+        tooltip.as_deref()
       );
       continue;
     }

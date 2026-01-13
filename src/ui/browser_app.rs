@@ -542,6 +542,7 @@ pub struct BrowserTabState {
   /// - lower zoom → more CSS pixels in the viewport + lower DPR
   pub zoom: f32,
   pub hovered_url: Option<String>,
+  pub hover_tooltip: Option<String>,
   pub cursor: CursorKind,
   pub find: FindInPageState,
   pub scroll_state: ScrollState,
@@ -593,6 +594,7 @@ impl BrowserTabState {
       can_go_forward: false,
       zoom: crate::ui::zoom::DEFAULT_ZOOM,
       hovered_url: None,
+      hover_tooltip: None,
       cursor: CursorKind::Default,
       find: FindInPageState::default(),
       scroll_state: ScrollState::default(),
@@ -1551,6 +1553,7 @@ impl BrowserAppState {
     self.sync_address_bar_to_active();
     if let Some(tab) = self.tab_mut(tab_id) {
       tab.hovered_url = None;
+      tab.hover_tooltip = None;
       tab.cursor = CursorKind::Default;
     }
     self.bump_session_revision();
@@ -2642,6 +2645,7 @@ impl BrowserAppState {
           tab.reset_load_progress();
           tab.favicon_meta = None;
           tab.hovered_url = None;
+          tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
         }
         if let Some(url) = safe_url {
@@ -2730,6 +2734,7 @@ impl BrowserAppState {
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
           tab.hovered_url = None;
+          tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
         }
         if let Some(url) = safe_url {
@@ -2782,6 +2787,7 @@ impl BrowserAppState {
           tab.title = None;
           tab.favicon_meta = None;
           tab.hovered_url = None;
+          tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
         }
         if let Some(url) = safe_url {
@@ -2870,11 +2876,17 @@ impl BrowserAppState {
         tab_id,
         hovered_url,
         cursor,
+        tooltip,
       } => {
         let safe_hovered =
           hovered_url.and_then(|url| crate::ui::url::sanitize_worker_url_for_ui(&url));
+        let safe_tooltip = tooltip
+          .as_deref()
+          .map(|t| sanitize_untrusted_text(t, MAX_TITLE_BYTES))
+          .filter(|t| !t.is_empty());
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.hovered_url = safe_hovered;
+          tab.hover_tooltip = safe_tooltip;
           tab.cursor = cursor;
         }
         update.request_redraw = self.active_tab_id() == Some(tab_id);

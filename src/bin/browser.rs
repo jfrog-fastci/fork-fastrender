@@ -15044,6 +15044,7 @@ impl App {
 
         if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id)) {
           tab.hovered_url = None;
+          tab.hover_tooltip = None;
           tab.cursor = CursorKind::Default;
         }
 
@@ -17277,6 +17278,7 @@ impl App {
     };
     if let Some(tab) = self.browser_state.tab_mut(tab_id) {
       tab.hovered_url = None;
+      tab.hover_tooltip = None;
       tab.cursor = fastrender::ui::CursorKind::Default;
     }
     self.pending_pointer_move = Some(fastrender::ui::UiToWorker::PointerMove {
@@ -17496,6 +17498,7 @@ impl App {
           if should_clear {
             if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id)) {
               tab.hovered_url = None;
+              tab.hover_tooltip = None;
               tab.cursor = fastrender::ui::CursorKind::Default;
             }
 
@@ -18378,6 +18381,7 @@ impl App {
               if let Some(tab) = active_tab_id.and_then(|tab_id| self.browser_state.tab_mut(tab_id))
               {
                 tab.hovered_url = None;
+                tab.hover_tooltip = None;
                 tab.cursor = fastrender::ui::CursorKind::Default;
               }
 
@@ -21595,6 +21599,7 @@ impl App {
             self.pending_pointer_move = None;
             if let Some(tab) = self.browser_state.tab_mut(active_tab) {
               tab.hovered_url = None;
+              tab.hover_tooltip = None;
               tab.cursor = fastrender::ui::CursorKind::Default;
             }
           } else {

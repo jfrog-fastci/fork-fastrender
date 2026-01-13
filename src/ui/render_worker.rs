@@ -492,6 +492,7 @@ struct TabState {
   last_hovered_dom_element_id: Option<String>,
   last_hovered_dom2_node: Option<crate::dom2::NodeId>,
   last_hovered_url: Option<String>,
+  last_tooltip: Option<String>,
   last_cursor: CursorKind,
 
   pending_navigation: Option<NavigationRequest>,
@@ -545,6 +546,7 @@ impl TabState {
       last_hovered_dom_element_id: None,
       last_hovered_dom2_node: None,
       last_hovered_url: None,
+      last_tooltip: None,
       last_cursor: CursorKind::Default,
       pending_navigation: None,
       needs_repaint: false,
@@ -724,6 +726,33 @@ fn trim_ascii_whitespace(value: &str) -> &str {
   // HTML attribute parsing ignores leading/trailing ASCII whitespace (TAB/LF/FF/CR/SPACE) but does
   // not treat all Unicode whitespace as ignorable (e.g. NBSP).
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn tooltip_from_hover_chain(dom: &mut crate::dom::DomNode, hover_chain: &[usize]) -> Option<String> {
+  // `InteractionEngine` stores hover chain ids in target→root order.
+  //
+  // The chain may contain additional non-ancestor nodes (e.g. label-associated controls) appended
+  // after the real ancestor chain. Ancestor ids are strictly decreasing in DOM pre-order, so keep
+  // only that prefix for HTML `title` tooltip semantics.
+  let mut prev = usize::MAX;
+  for &node_id in hover_chain {
+    if node_id >= prev {
+      break;
+    }
+    prev = node_id;
+
+    let Some(node) = crate::dom::find_node_mut_by_preorder_id(dom, node_id) else {
+      continue;
+    };
+    let Some(title) = node.get_attribute_ref("title") else {
+      continue;
+    };
+    let title = trim_ascii_whitespace(title);
+    if !title.is_empty() {
+      return Some(title.to_string());
+    }
+  }
+  None
 }
 
 fn dom_node_type_eq(a: &crate::dom::DomNodeType, b: &crate::dom::DomNodeType) -> bool {
@@ -2610,7 +2639,7 @@ impl BrowserRuntime {
 
         // Switching tabs should clear any stale hover state (cursor + hovered URL) until the UI
         // sends the next pointer position for this tab.
-        Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
+        Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default, None);
       }
       UiToWorker::Navigate {
         tab_id,
@@ -3883,7 +3912,7 @@ impl BrowserRuntime {
 
     // Navigations replace the document (or at least its URL/scroll state); clear any stale hover
     // metadata until the next pointer move re-establishes it.
-    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default);
+    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, None, CursorKind::Default, None);
 
     let had_pending_navigation = tab.loading;
     let had_pending_history_entry = tab.pending_history_entry;
@@ -4516,16 +4545,22 @@ impl BrowserRuntime {
     tab: &mut TabState,
     hovered_url: Option<String>,
     cursor: CursorKind,
+    tooltip: Option<String>,
   ) {
-    if tab.last_cursor == cursor && tab.last_hovered_url.as_deref() == hovered_url.as_deref() {
+    if tab.last_cursor == cursor
+      && tab.last_hovered_url.as_deref() == hovered_url.as_deref()
+      && tab.last_tooltip.as_deref() == tooltip.as_deref()
+    {
       return;
     }
     tab.last_cursor = cursor;
     tab.last_hovered_url = hovered_url.clone();
+    tab.last_tooltip = tooltip.clone();
     let _ = ui_tx.send(WorkerToUi::HoverChanged {
       tab_id,
       hovered_url,
       cursor,
+      tooltip,
     });
   }
 
@@ -4594,7 +4629,7 @@ impl BrowserRuntime {
     let base_url =
       base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
 
-    let (changed, hovered_url, cursor, hovered_dom_node_id, hovered_dom_element_id) = {
+    let (changed, hovered_url, cursor, tooltip, hovered_dom_node_id, hovered_dom_element_id) = {
       let Some(doc) = tab.document.as_mut() else {
         return;
       };
@@ -4613,14 +4648,16 @@ impl BrowserRuntime {
         let (
           hovered_url,
           mut cursor,
+          tooltip,
           hovered_dom_node_id,
           hovered_dom_element_id,
           hover_is_drop_target,
         ) = if !pointer_in_page {
-          (None, CursorKind::Default, None, None, false)
+          (None, CursorKind::Default, None, None, None, false)
         } else {
           match hit {
             Some(hit) => {
+              let tooltip = tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain());
               let crate::interaction::HitTestResult {
                 css_cursor,
                 is_selectable_text,
@@ -4667,12 +4704,13 @@ impl BrowserRuntime {
               (
                 hovered_url,
                 cursor,
+                tooltip,
                 Some(dom_node_id),
                 dom_element_id,
                 hover_is_drop_target,
               )
             }
-            None => (None, CursorKind::Default, None, None, false),
+            None => (None, CursorKind::Default, None, None, None, false),
           }
         };
 
@@ -4689,6 +4727,7 @@ impl BrowserRuntime {
             changed,
             hovered_url,
             cursor,
+            tooltip,
             hovered_dom_node_id,
             hovered_dom_element_id,
           ),
@@ -4725,7 +4764,7 @@ impl BrowserRuntime {
       }
     }
 
-    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, hovered_url, cursor);
+    Self::maybe_emit_hover_changed(&self.ui_tx, tab_id, tab, hovered_url, cursor, tooltip);
 
     // ---------------------------------------------------------------------------
     // DOM mouse events (`mousemove` + hover transitions)

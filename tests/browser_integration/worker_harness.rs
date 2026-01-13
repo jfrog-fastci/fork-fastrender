@@ -190,6 +190,7 @@ pub enum WorkerToUiEvent {
     tab_id: TabId,
     hovered_url: Option<String>,
     cursor: CursorKind,
+    tooltip: Option<String>,
   },
   FindResult {
     tab_id: TabId,
@@ -472,11 +473,13 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       tab_id,
       hovered_url,
       cursor,
+      tooltip,
     } => (
       WorkerToUiEvent::HoverChanged {
         tab_id,
         hovered_url,
         cursor,
+        tooltip,
       },
       None,
     ),

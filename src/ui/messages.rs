@@ -1114,6 +1114,11 @@ pub enum WorkerToUi {
     tab_id: TabId,
     hovered_url: Option<String>,
     cursor: CursorKind,
+    /// Optional hover tooltip text derived from HTML `title` attributes.
+    ///
+    /// This should be `None` when the pointer is outside the page image (UI sentinel position),
+    /// or when no non-empty `title` attribute exists on the hit target or its element ancestors.
+    tooltip: Option<String>,
   },
   /// Updated find-in-page results for a tab.
   ///

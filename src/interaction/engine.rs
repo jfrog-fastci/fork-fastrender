@@ -7531,7 +7531,18 @@ impl InteractionEngine {
 
     dom_changed |= self.sync_text_edit_paint_state();
 
-    let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
+    // Pointer-leave robustness: the browser UI uses negative/non-finite coordinates as a sentinel
+    // when the pointer leaves the page image. Treat these as "no hit" for hover-chain updates so we
+    // do not accidentally hover negatively-positioned content.
+    let hit = if page_point.x.is_finite()
+      && page_point.y.is_finite()
+      && page_point.x >= 0.0
+      && page_point.y >= 0.0
+    {
+      hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point)
+    } else {
+      None
+    };
     let hover_is_drop_target = hit.as_ref().is_some_and(|hit| {
       self.drag_drop_active_kind().is_some()
         && hit.is_editable_text_drop_target_candidate
