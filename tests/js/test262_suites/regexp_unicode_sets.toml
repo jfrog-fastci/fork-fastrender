@@ -20,6 +20,6 @@
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
+  "built-ins/RegExp/prototype/unicodeSets/**/*.js",
   "built-ins/RegExp/unicodeSets/**/*.js",
 ]
-
