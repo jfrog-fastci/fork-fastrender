@@ -764,9 +764,10 @@ fn async_from_sync_iterator_continuation(
           done: false,
         };
         // `AsyncFromSyncIteratorContinuation` calls `IteratorClose(syncIteratorRecord, valueWrapper)`
-        // where `valueWrapper` is a throw completion (`PromiseResolve` failed). Closing errors
-        // override the incoming completion, but must never replace fatal VM failures
-        // (OOM/termination/etc).
+        // where `valueWrapper` is a throw completion (`PromiseResolve` failed). Per ECMA-262
+        // `IteratorClose`, throw completions suppress errors thrown while getting/calling
+        // `iterator.return` (the original `PromiseResolve` throw is preserved). However, fatal VM
+        // failures (OOM/termination/etc) are still propagated.
         if let Err(close_err) =
           iterator_close(vm, host, hooks, &mut scope, &record, CloseCompletionKind::Throw)
         {

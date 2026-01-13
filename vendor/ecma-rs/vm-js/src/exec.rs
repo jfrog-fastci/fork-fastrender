@@ -9694,7 +9694,9 @@ impl<'a> Evaluator<'a> {
     label_set: &[String],
   ) -> Result<Completion, VmError> {
     if stmt.await_ {
-      return Err(VmError::Unimplemented("for await..of"));
+      return Err(VmError::InvariantViolation(
+        "for-await-of reached in sync statement evaluator",
+      ));
     }
 
     // ECMA-262 `ForIn/OfHeadEvaluation`:
@@ -34852,7 +34854,9 @@ fn gen_eval_for_of(
   label_set: &[String],
 ) -> Result<GenEval<Completion>, VmError> {
   if stmt.await_ {
-    return Err(VmError::Unimplemented("for await..of"));
+    return Err(VmError::InvariantViolation(
+      "for-await-of reached in generator evaluator",
+    ));
   }
 
   if for_in_of_lhs_contains_yield(&stmt.lhs) {
