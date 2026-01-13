@@ -11,7 +11,6 @@ use crate::resource::ResourceFetcher;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::sync::Arc;
 use vm_js::{Heap, Realm, Vm, VmError};
 
 static NEXT_ENV_ID: AtomicU64 = AtomicU64::new(1);
