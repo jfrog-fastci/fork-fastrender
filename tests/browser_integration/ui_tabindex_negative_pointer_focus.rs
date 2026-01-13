@@ -34,7 +34,7 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
   let html = r#"<!doctype html>
     <html>
       <head>
-        <meta charset="utf-8">
+        <meta charset=\"utf-8\">
         <style>
           html, body { margin: 0; padding: 0; }
           #a { position: absolute; left: 0; top: 0; width: 80px; height: 22px; }
@@ -43,9 +43,9 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
         </style>
       </head>
       <body>
-        <input id="a">
-        <div id="t" tabindex="-1"></div>
-        <input id="b">
+        <input id=\"a\">
+        <div id=\"t\" tabindex=\"-1\"></div>
+        <input id=\"b\">
       </body>
     </html>
   "#;
@@ -64,10 +64,13 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
   let node_id_t = node_id_by_id_attr(controller.document().dom(), "t");
   let node_id_b = node_id_by_id_attr(controller.document().dom(), "b");
 
+  // Tab focuses the first tab stop, skipping `tabindex < 0`.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Tab))?;
+  assert_eq!(controller.interaction_state().focused, Some(node_id_a));
+
   // Click the `tabindex="-1"` element and ensure it receives focus.
   let click = (10.0, 40.0);
-  let _ =
-    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
   let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
   assert_eq!(controller.interaction_state().focused, Some(node_id_t));
 
@@ -79,4 +82,3 @@ fn tabindex_negative_pointer_focuses_but_tab_skips() -> Result<()> {
 
   Ok(())
 }
-
