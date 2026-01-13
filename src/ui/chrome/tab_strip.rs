@@ -1614,42 +1614,41 @@ pub(super) fn tab_strip_ui(
   let mut group_chip_total_width: f32 = 0.0;
   let mut total_gap_width: f32 = 0.0;
   let mut first_item = true;
-  // Gap scaling in the unpinned strip is driven by the *previous* item:
-  // - gaps after normal tabs / group chips are full `TAB_GAP`
-  // - gaps after group-member tabs shrink with that group's expand factor
-  //
-  // This keeps the chip→next-item gap stable (avoids a pop at the end of collapse) while still
-  // allowing the collapsing group region to shrink away.
-  let mut prev_gap_scale: Option<f32> = None;
+  // Scale each inter-item gap by `min(prev_item_scale, curr_item_scale)` so collapsing group-member
+  // tabs smoothly shrink *both* their widths and the adjacent gaps.
+  let mut prev_item_scale: f32 = 1.0;
   {
     let mut idx = pinned_len;
     while idx < app.tabs.len() {
       let tab = &app.tabs[idx];
       let Some(group_id) = tab.group else {
+        let curr_scale = 1.0;
         if !first_item {
-          total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
+          total_gap_width += TAB_GAP * prev_item_scale.min(curr_scale);
         }
         first_item = false;
-        tab_units += 1.0;
-        prev_gap_scale = None;
+        tab_units += curr_scale;
+        prev_item_scale = curr_scale;
         idx += 1;
         continue;
       };
 
       // If the group metadata is missing, treat the tab as ungrouped so we stay robust.
       let Some(group) = app.tab_groups.get(&group_id) else {
+        let curr_scale = 1.0;
         if !first_item {
-          total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
+          total_gap_width += TAB_GAP * prev_item_scale.min(curr_scale);
         }
         first_item = false;
-        tab_units += 1.0;
-        prev_gap_scale = None;
+        tab_units += curr_scale;
+        prev_item_scale = curr_scale;
         idx += 1;
         continue;
       };
 
       let is_first = idx == pinned_len || app.tabs[idx - 1].group != Some(group_id);
       if is_first {
+        let curr_scale = 1.0;
         let title = if group.title.trim().is_empty() {
           "Group"
         } else {
@@ -1657,11 +1656,10 @@ pub(super) fn tab_strip_ui(
         };
         group_chip_total_width += group_chip_width(ui, title);
         if !first_item {
-          total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
+          total_gap_width += TAB_GAP * prev_item_scale.min(curr_scale);
         }
         first_item = false;
-        // Chips never scale the gap after them.
-        prev_gap_scale = None;
+        prev_item_scale = curr_scale;
       }
 
       let group_t = group_expand_t
@@ -1677,12 +1675,13 @@ pub(super) fn tab_strip_ui(
         continue;
       }
 
+      let curr_scale = group_t;
       if !first_item {
-        total_gap_width += TAB_GAP * prev_gap_scale.unwrap_or(1.0);
+        total_gap_width += TAB_GAP * prev_item_scale.min(curr_scale);
       }
       first_item = false;
-      tab_units += group_t;
-      prev_gap_scale = Some(group_t);
+      tab_units += curr_scale;
+      prev_item_scale = curr_scale;
       idx += 1;
     }
   }
