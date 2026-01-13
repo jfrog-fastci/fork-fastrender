@@ -165,3 +165,126 @@ fn apply_signed_offset_frames(base_frame: u64, offset_ns: i64, sample_rate: u32)
     shifted as u64
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::media::audio::TimedAudioSegment;
+  use std::sync::atomic::AtomicU64;
+  use std::sync::Arc;
+
+  fn seg(start_ms: u64, samples: &[f32], sample_rate: u32) -> TimedAudioSegment {
+    TimedAudioSegment {
+      start_pts: Duration::from_millis(start_ms),
+      samples: samples.to_vec(),
+      channels: 1,
+      sample_rate,
+    }
+  }
+
+  #[test]
+  fn mixes_multiple_streams_with_gain() {
+    let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 1.0,
+      },
+    );
+    mixer.add_stream(
+      2,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 0.5,
+      },
+    );
+
+    mixer
+      .stream_queue_mut(1)
+      .unwrap()
+      .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0], 10))
+      .unwrap();
+    mixer
+      .stream_queue_mut(2)
+      .unwrap()
+      .push_segment(seg(0, &[10.0, 10.0, 10.0, 10.0], 10))
+      .unwrap();
+
+    let mut out = vec![0.0; 4];
+    mixer.mix_into_frames(&mut out, 0, 4);
+    assert_eq!(out, vec![6.0, 7.0, 8.0, 9.0]);
+  }
+
+  #[test]
+  fn stream_offset_inserts_silence() {
+    let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 1.0,
+      },
+    );
+    // Offset stream 2 backward by 200ms = 2 frames at 10Hz (delays it relative to device time).
+    mixer.add_stream(
+      2,
+      AudioStreamParams {
+        pts_offset_ns: -200_000_000,
+        gain: 1.0,
+      },
+    );
+
+    mixer
+      .stream_queue_mut(1)
+      .unwrap()
+      .push_segment(seg(1000, &[1.0, 2.0, 3.0, 4.0], 10))
+      .unwrap();
+    mixer
+      .stream_queue_mut(2)
+      .unwrap()
+      .push_segment(seg(1000, &[10.0, 11.0, 12.0, 13.0], 10))
+      .unwrap();
+
+    // Mix 4 frames starting at device frame 10 (1s). Stream 2 should contribute on frames 2..4 of
+    // this window because it is delayed by 2 frames.
+    let mut out = vec![0.0; 4];
+    mixer.mix_into_frames(&mut out, 10, 4);
+    assert_eq!(out, vec![1.0, 2.0, 13.0, 15.0]);
+  }
+
+  #[test]
+  fn mix_from_backend_clock_accounts_for_latency() {
+    let mut mixer = AudioMixer::new(1, 10, Duration::from_secs(10));
+    mixer.add_stream(
+      1,
+      AudioStreamParams {
+        pts_offset_ns: 0,
+        gain: 1.0,
+      },
+    );
+    mixer
+      .stream_queue_mut(1)
+      .unwrap()
+      .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0], 10))
+      .unwrap();
+
+    let frames_played = Arc::new(AtomicU64::new(4));
+    let clock = AudioClock::OutputFrames {
+      frames_played,
+      sample_rate_hz: 10,
+    };
+    let output_info = AudioOutputInfo {
+      sample_rate_hz: 10,
+      channels: 1,
+      callback_frames: None,
+      // Latency of 200ms = 2 frames.
+      estimated_latency: Duration::from_millis(200),
+    };
+
+    let mut out = vec![0.0; 2];
+    // played=4, latency=2 => device_frame=2 => should read samples [3,4].
+    mixer.mix_into_from_backend_clock(&mut out, &clock, &output_info, 2);
+    assert_eq!(out, vec![3.0, 4.0]);
+  }
+}
