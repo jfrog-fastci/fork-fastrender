@@ -86,6 +86,30 @@ This updates (and you should commit) the files under `progress/test262/`:
 - `summary.md` (human-readable baseline summary)
 - `trend.json` (aggregated per-area counts for easy diffs over time)
 
+#### Fallback workflow (no `xtask` build required)
+
+`xtask` depends on the top-level `fastrender` crate. If `fastrender` fails to compile for unrelated reasons (e.g. during
+large refactors), you can still refresh the committed baseline artifacts from a `test262-semantic` JSON report:
+
+```bash
+# 1) Produce the JSON report directly via the vendored runner (from repo root):
+cd vendor/ecma-rs
+bash scripts/cargo_agent.sh run --release -p test262-semantic -- \
+  --test262-dir test262-semantic/data \
+  --harness test262 \
+  --suite-path ../../tests/js/test262_suites/curated.toml \
+  --manifest ../../tests/js/test262_manifest.toml \
+  --timeout-secs 10 \
+  --fail-on none \
+  --report-path ../../target/js/test262.json
+cd ../..
+
+# 2) Regenerate the committed baseline + summary + trend (from repo root):
+python3 tools/test262_update_baseline.py \
+  --report target/js/test262.json \
+  --baseline progress/test262/baseline.json
+```
+
 ### Opting out locally
 
 For local iteration where you only want a report+summary without baseline gating:
