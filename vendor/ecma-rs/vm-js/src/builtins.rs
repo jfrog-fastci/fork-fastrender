@@ -334,6 +334,22 @@ fn from_property_descriptor(
   scope: &mut Scope<'_>,
   desc: PropertyDescriptor,
 ) -> Result<GcObject, VmError> {
+  // Root any descriptor values before we allocate the result object.
+  //
+  // This matters for exotic objects that materialize descriptor values lazily (e.g. String index
+  // properties): the `[[Value]]` can be a freshly-allocated string that is not reachable from any
+  // other heap object yet. If we start allocating the `{ value, writable, ... }` result object
+  // first, GC can collect those values and we end up with stale handles.
+  match desc.kind {
+    PropertyKind::Data { value, .. } => {
+      scope.push_root(value)?;
+    }
+    PropertyKind::Accessor { get, set } => {
+      scope.push_root(get)?;
+      scope.push_root(set)?;
+    }
+  }
+
   let intr = require_intrinsics(vm)?;
 
   let out = scope.alloc_object()?;
@@ -350,15 +366,12 @@ fn from_property_descriptor(
 
   match desc.kind {
     PropertyKind::Data { value, writable } => {
-      scope.push_root(value)?;
       let value_key = string_key(scope, "value")?;
       let writable_key = string_key(scope, "writable")?;
       scope.create_data_property_or_throw(out, value_key, value)?;
       scope.create_data_property_or_throw(out, writable_key, Value::Bool(writable))?;
     }
     PropertyKind::Accessor { get, set } => {
-      scope.push_root(get)?;
-      scope.push_root(set)?;
       let get_key = string_key(scope, "get")?;
       let set_key = string_key(scope, "set")?;
       scope.create_data_property_or_throw(out, get_key, get)?;
