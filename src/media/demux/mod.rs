@@ -167,3 +167,6 @@ pub mod webm {
     }
   }
 }
+
+// Re-export the unified demuxer trait so callers can access it via `media::demux::MediaDemuxer`.
+pub use super::demuxer::MediaDemuxer;

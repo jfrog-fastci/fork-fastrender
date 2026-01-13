@@ -1482,3 +1482,57 @@ impl<R: Read + Seek + Send> MediaDemuxer for Mp4PacketDemuxer<R> {
     ))
   }
 }
+
+#[cfg(all(test, feature = "media_mp4", feature = "media_webm"))]
+mod trait_object_tests {
+  use super::{MediaDemuxer, Mp4PacketDemuxer};
+  use crate::media::demux::webm::WebmDemuxer;
+  use std::io::Cursor;
+
+  fn open_webm() -> Box<dyn MediaDemuxer> {
+    let path = crate::testing::fixture_path("fixtures/media/vp9_opus.webm");
+    let bytes = std::fs::read(path).expect("read webm fixture");
+    let demuxer = WebmDemuxer::open(Cursor::new(bytes)).expect("open webm");
+    Box::new(demuxer)
+  }
+
+  fn open_mp4() -> Box<dyn MediaDemuxer> {
+    let path = crate::testing::fixture_path("fixtures/media/test_h264_aac.mp4");
+    let demuxer = Mp4PacketDemuxer::open(path).expect("open mp4");
+    Box::new(demuxer)
+  }
+
+  fn assert_demuxer_basic(mut demuxer: Box<dyn MediaDemuxer>, seek_target_ns: u64) {
+    let tracks = demuxer.tracks();
+    assert!(!tracks.is_empty(), "expected at least one track");
+
+    let first_pkt = demuxer
+      .next_packet()
+      .expect("read first packet")
+      .expect("expected at least one packet");
+    assert!(
+      tracks.iter().any(|t| t.id == first_pkt.track_id),
+      "packet track_id {} should correspond to a known track",
+      first_pkt.track_id
+    );
+
+    demuxer.seek(seek_target_ns).expect("seek");
+    let post_seek_pkt = demuxer
+      .next_packet()
+      .expect("read packet after seek")
+      .expect("expected packet after seek");
+    assert!(
+      post_seek_pkt.pts_ns >= seek_target_ns,
+      "post-seek packet PTS {}ns is before seek target {}ns",
+      post_seek_pkt.pts_ns,
+      seek_target_ns
+    );
+  }
+
+  #[test]
+  fn trait_object_demuxes_webm_and_mp4() {
+    let seek_target_ns = 500_000_000_u64;
+    assert_demuxer_basic(open_webm(), seek_target_ns);
+    assert_demuxer_basic(open_mp4(), seek_target_ns);
+  }
+}
