@@ -256,11 +256,13 @@ mod perf_log {
       cpu_time_ms_total: u64,
       cpu_percent_recent: f64,
     },
+    #[serde(rename = "idle_summary")]
     IdleSample {
       schema_version: u32,
       t_ms: u64,
       window_id: &'a str,
       rolling_window_ms: u64,
+      #[serde(rename = "idle_frames_per_sec")]
       idle_fps: f32,
       idle_frames_total: u64,
       idle_frames_window: u64,
@@ -24803,11 +24805,12 @@ mod perf_log_tests {
     let text = String::from_utf8(buf).expect("valid utf-8");
     let line = text.lines().next().expect("expected a JSONL line");
     let value: serde_json::Value = serde_json::from_str(line).expect("valid json");
-    assert_eq!(value["event"], "idle_sample");
+    assert_eq!(value["event"], "idle_summary");
     assert_eq!(value["schema_version"], perf_log::SCHEMA_VERSION);
     assert_eq!(value["t_ms"], 100);
     assert_eq!(value["window_id"], "WindowId(9)");
     assert_eq!(value["rolling_window_ms"], 2000);
+    assert_eq!(value["idle_frames_per_sec"], 12.5);
   }
 }
 
