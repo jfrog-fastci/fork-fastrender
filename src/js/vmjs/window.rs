@@ -1689,13 +1689,21 @@ mod tests {
 
   #[test]
   fn webidl_dom_backend_node_traversal_does_not_leak_closed_shadow_root() -> Result<()> {
-    let mut realm = WindowRealm::new(
-      WindowRealmConfig::new("https://example.invalid/")
-        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
-    )
-    .map_err(|err| Error::Other(err.to_string()))?;
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
 
-    let result = match realm.exec_script(
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
+
+    let result = host.exec_script_in_event_loop(
+      &mut event_loop,
       "(() => {\n\
         const host = document.createElement('div');\n\
         const sr = host.attachShadow({ mode: 'closed' });\n\
@@ -1717,20 +1725,12 @@ mod tests {
         if (sr.nextSibling !== null) return 'expected sr.nextSibling === null';\n\
         return true;\n\
       })()",
-    ) {
-      Ok(value) => value,
-      Err(err) => return Err(vm_error_format::vm_error_to_error(realm.heap_mut(), err)),
-    };
+    )?;
 
     match result {
       Value::Bool(true) => Ok(()),
       Value::String(s) => {
-        let msg = realm
-          .heap()
-          .get_string(s)
-          .map(|s| s.to_utf8_lossy())
-          .unwrap_or_else(|_| "<failed to read error string>".to_string());
-        Err(Error::Other(msg))
+        Err(Error::Other(value_to_string_from_host_state(&host, Value::String(s))))
       }
       other => Err(Error::Other(format!(
         "expected test script to return true/string, got {other:?}"
