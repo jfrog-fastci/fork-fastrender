@@ -3105,16 +3105,38 @@ fn apply_drop_shadow(
     return Ok(());
   };
   check_active(RenderStage::Paint)?;
-  let blur_pad = (blur_radius.abs() * 3.0).ceil() as u32;
+  let blur_pad = (blur_radius.abs() * 3.0).ceil() as u64;
   // Negative spread is an erosion pass. Even though it shrinks the shadow, we still need a
   // transparent margin so edge pixels can observe transparent neighbors; otherwise a tight
   // alpha-bounds crop would clamp-to-edge and prevent the erosion from taking effect.
   //
   // Positive spread already needs padding to avoid clipping the dilation.
-  let spread_pad = spread.abs().ceil() as u32;
-  let pad = blur_pad + spread_pad;
+  let spread_pad = spread.abs().ceil() as u64;
+  let pad = match blur_pad.checked_add(spread_pad) {
+    Some(pad) => match u32::try_from(pad) {
+      Ok(pad) => pad,
+      Err(_) => return Ok(()),
+    },
+    None => return Ok(()),
+  };
+  let pad_i32 = match i32::try_from(pad) {
+    Ok(pad) => pad,
+    Err(_) => return Ok(()),
+  };
+  let pad2 = match pad.checked_mul(2) {
+    Some(pad2) => pad2,
+    None => return Ok(()),
+  };
+  let shadow_w = match bounds_w.checked_add(pad2) {
+    Some(w) => w,
+    None => return Ok(()),
+  };
+  let shadow_h = match bounds_h.checked_add(pad2) {
+    Some(h) => h,
+    None => return Ok(()),
+  };
 
-  let mut shadow = match new_pixmap(bounds_w + pad * 2, bounds_h + pad * 2) {
+  let mut shadow = match new_pixmap(shadow_w, shadow_h) {
     Some(p) => p,
     None => return Ok(()),
   };
@@ -3164,9 +3186,17 @@ fn apply_drop_shadow(
 
   let mut paint = PixmapPaint::default();
   paint.blend_mode = SkiaBlendMode::DestinationOver;
+  let dest_x = match i32::try_from(min_x) {
+    Ok(min_x) => min_x - pad_i32,
+    Err(_) => return Ok(()),
+  };
+  let dest_y = match i32::try_from(min_y) {
+    Ok(min_y) => min_y - pad_i32,
+    Err(_) => return Ok(()),
+  };
   pixmap.draw_pixmap(
-    min_x as i32 - pad as i32,
-    min_y as i32 - pad as i32,
+    dest_x,
+    dest_y,
     shadow.as_ref(),
     &paint,
     Transform::from_translate(offset_x, offset_y),
@@ -3190,6 +3220,10 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
   check_active(RenderStage::Paint)?;
   let expand = spread > 0.0;
   let radius = radius as usize;
+  // Clamp-to-edge addressing saturates once the radius exceeds the image dimensions. Clamp here
+  // to avoid pathological `extended_len` loops and large sliding-window buffers for hostile CSS.
+  let radius_x = radius.min(width.saturating_sub(1));
+  let radius_y = radius.min(height.saturating_sub(1));
   let len = width
     .checked_mul(height)
     .ok_or(RenderError::InvalidParameters {
@@ -3235,7 +3269,7 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
       &mut scratch.horizontal,
       width,
       height,
-      radius,
+      radius_x,
       expand,
     )?;
 
@@ -3248,7 +3282,7 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
       &mut scratch.horizontal,
       height,
       width,
-      radius,
+      radius_y,
       expand,
     )?;
 

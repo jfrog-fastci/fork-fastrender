@@ -16810,6 +16810,11 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
     return Ok(());
   }
   let radius = radius as usize;
+  // Clamp-to-edge addressing saturates once the radius exceeds the image dimensions. Clamp here
+  // to avoid pathological window sizes and extremely long sliding-window loops when CSS supplies
+  // a very large `spread`.
+  let radius_x = radius.min(width.saturating_sub(1));
+  let radius_y = radius.min(height.saturating_sub(1));
   let len = width
     .checked_mul(height)
     .ok_or(RenderError::InvalidParameters {
@@ -16850,7 +16855,10 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
 
     {
       let src_pixels = pixmap.pixels();
-      for (src, dst) in src_pixels.iter().zip(scratch.alpha0.iter_mut()) {
+      for (idx, (src, dst)) in src_pixels.iter().zip(scratch.alpha0.iter_mut()).enumerate() {
+        if idx % LEGACY_FILTER_DEADLINE_STRIDE == 0 {
+          check_active(RenderStage::Paint)?;
+        }
         *dst = src.alpha();
       }
     }
@@ -16860,7 +16868,7 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
       &mut scratch.alpha1,
       width,
       height,
-      radius,
+      radius_x,
       expand,
     )?;
 
@@ -16869,7 +16877,7 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
       &mut scratch.alpha0,
       width,
       height,
-      radius,
+      radius_y,
       expand,
     )?;
 
