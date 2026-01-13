@@ -227,6 +227,13 @@ pub(crate) struct MutationLog {
   pub(crate) text_changed: FxHashSet<NodeId>,
   /// Parent nodes whose child list changed (insert/remove/reorder).
   pub(crate) child_list_changed: FxHashSet<NodeId>,
+  /// Nodes whose live form control state changed (e.g. `<input>.value`, `<input>.checked`,
+  /// `<textarea>.value`, `<option>.selected`).
+  ///
+  /// This is distinct from `attribute_changed` because these mutations must not be treated as style
+  /// affecting content-attribute changes. Hosts can use this to trigger incremental repaint of
+  /// form controls without falling back to full restyle/layout.
+  pub(crate) form_state_changed: FxHashSet<NodeId>,
 }
 
 impl MutationLog {
@@ -234,12 +241,14 @@ impl MutationLog {
     self.attribute_changed.is_empty()
       && self.text_changed.is_empty()
       && self.child_list_changed.is_empty()
+      && self.form_state_changed.is_empty()
   }
 
   pub(crate) fn clear(&mut self) {
     self.attribute_changed.clear();
     self.text_changed.clear();
     self.child_list_changed.clear();
+    self.form_state_changed.clear();
   }
 }
 
@@ -890,6 +899,11 @@ impl Document {
   #[inline]
   fn record_child_list_mutation(&mut self, parent: NodeId) {
     self.mutations.child_list_changed.insert(parent);
+  }
+
+  #[inline]
+  fn record_form_state_mutation(&mut self, node: NodeId) {
+    self.mutations.form_state_changed.insert(node);
   }
 
   fn node_checked(&self, id: NodeId) -> Result<&Node, DomError> {

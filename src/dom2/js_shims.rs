@@ -440,7 +440,13 @@ impl Document {
       .is_some_and(|s| s.selectedness)
   }
 
-  fn set_option_selectedness(&mut self, option: NodeId, selected: bool, dirty: bool) -> bool {
+  fn set_option_selectedness(
+    &mut self,
+    select: NodeId,
+    option: NodeId,
+    selected: bool,
+    dirty: bool,
+  ) -> bool {
     let Some(state) = self
       .option_states
       .get_mut(option.index())
@@ -459,12 +465,13 @@ impl Document {
       changed = true;
     }
     if changed {
+      self.record_form_state_mutation(select);
       self.bump_mutation_generation();
     }
     changed
   }
 
-  fn normalize_select_single(&mut self, options: &[NodeId]) {
+  fn normalize_select_single(&mut self, select: NodeId, options: &[NodeId]) {
     if options.is_empty() {
       return;
     }
@@ -479,7 +486,7 @@ impl Document {
     let chosen = last_selected.unwrap_or(0);
     for (idx, &opt) in options.iter().enumerate() {
       let selected = idx == chosen;
-      self.set_option_selectedness(opt, selected, false);
+      self.set_option_selectedness(select, opt, selected, false);
     }
   }
 
@@ -489,7 +496,7 @@ impl Document {
       return -1;
     }
     if !self.select_multiple(select) {
-      self.normalize_select_single(&options);
+      self.normalize_select_single(select, &options);
     }
     options
       .into_iter()
@@ -511,13 +518,13 @@ impl Document {
       let Some(target) = target else {
         for option in options {
           if self.option_selectedness(option) {
-            changed |= self.set_option_selectedness(option, false, true);
+            changed |= self.set_option_selectedness(select, option, false, true);
           }
         }
         return Ok(changed);
       };
 
-      changed |= self.set_option_selectedness(target, true, true);
+      changed |= self.set_option_selectedness(select, target, true, true);
       return Ok(changed);
     }
 
@@ -525,13 +532,13 @@ impl Document {
       return Ok(false);
     };
 
-    changed |= self.set_option_selectedness(target, true, true);
+    changed |= self.set_option_selectedness(select, target, true, true);
     for option in options {
       if option == target {
         continue;
       }
       if self.option_selectedness(option) {
-        changed |= self.set_option_selectedness(option, false, true);
+        changed |= self.set_option_selectedness(select, option, false, true);
       }
     }
 
@@ -552,7 +559,7 @@ impl Document {
       return String::new();
     }
     if !self.select_multiple(select) {
-      self.normalize_select_single(&options);
+      self.normalize_select_single(select, &options);
     }
     for option in options {
       if self.option_selectedness(option) {

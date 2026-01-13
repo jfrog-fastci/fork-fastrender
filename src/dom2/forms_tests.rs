@@ -121,3 +121,31 @@ fn state_is_initialized_for_dom_created_elements() {
 
   assert!(!doc.option_selected(option).unwrap());
 }
+
+#[test]
+fn form_control_property_setters_record_form_state_mutations() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let input = doc.create_element("input", "");
+  let textarea = doc.create_element("textarea", "");
+
+  doc.set_input_value(input, "hello").unwrap();
+  let mutations = doc.take_mutations();
+  assert!(mutations.form_state_changed.contains(&input));
+  assert!(mutations.attribute_changed.is_empty());
+  assert!(mutations.text_changed.is_empty());
+  assert!(mutations.child_list_changed.is_empty());
+
+  doc.set_input_checked(input, true).unwrap();
+  let mutations = doc.take_mutations();
+  assert!(mutations.form_state_changed.contains(&input));
+  assert!(mutations.attribute_changed.is_empty());
+  assert!(mutations.text_changed.is_empty());
+  assert!(mutations.child_list_changed.is_empty());
+
+  doc.set_textarea_value(textarea, "world").unwrap();
+  let mutations = doc.take_mutations();
+  assert!(mutations.form_state_changed.contains(&textarea));
+  assert!(mutations.attribute_changed.is_empty());
+  assert!(mutations.text_changed.is_empty());
+  assert!(mutations.child_list_changed.is_empty());
+}
