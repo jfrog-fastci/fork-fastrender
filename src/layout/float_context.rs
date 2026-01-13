@@ -463,6 +463,9 @@ impl FloatSweepState {
     self.pending_events.clear();
     self.pending_events.extend(events.iter().copied().map(Reverse));
 
+    // Float events are start events only (floats expire lazily based on `bottom`), but we keep a
+    // separate heap so range scans can cheaply tell whether any new floats begin within a queried
+    // band.
     self.pending_start_events.clear();
     self
       .pending_start_events
