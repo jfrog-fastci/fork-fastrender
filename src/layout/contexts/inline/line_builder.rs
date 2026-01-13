@@ -1628,38 +1628,121 @@ impl TextItem {
     let mut needs_sort = false;
     let mut monotonic_decreasing = true;
 
-    for (run_idx, run) in runs.iter().enumerate() {
+    // Cluster offsets are defined in logical (source-text) order. When runs/glyphs are already
+    // monotonic, we can avoid a full O(n log n) cluster sort by iterating runs in start order and
+    // scanning RTL buffers backwards (so cluster offsets are discovered in increasing order).
+    let mut run_starts_increasing = true;
+    let mut run_starts_decreasing = true;
+    let mut last_start: Option<usize> = None;
+    for run in runs.iter() {
       if run.glyphs.is_empty() {
         continue;
       }
-
-      let mut idx = 0;
-      while idx < run.glyphs.len() {
-        let cluster_value = run.glyphs[idx].cluster;
-        while idx < run.glyphs.len() && run.glyphs[idx].cluster == cluster_value {
-          idx += 1;
+      if let Some(prev) = last_start {
+        if run.start < prev {
+          run_starts_increasing = false;
         }
-        let glyph_end = idx;
-
-        let offset = run.start.saturating_add(cluster_value as usize);
-        let is_space = wants_word_spacing && is_space_like_at_offset(offset);
-
-        if let Some(prev) = last_offset {
-          if offset < prev {
-            needs_sort = true;
-          }
-          if offset > prev {
-            monotonic_decreasing = false;
-          }
+        if run.start > prev {
+          run_starts_decreasing = false;
         }
-        last_offset = Some(offset);
+      }
+      last_start = Some(run.start);
+    }
 
-        clusters.push(ClusterRef {
-          run_idx,
-          glyph_end,
-          offset,
-          is_space,
-        });
+    let mut sorted_run_indices: Vec<usize> = Vec::new();
+    if !run_starts_increasing && !run_starts_decreasing {
+      sorted_run_indices = (0..runs.len()).collect();
+      sorted_run_indices.sort_by_key(|idx| runs[*idx].start);
+    }
+
+    let mut collect_for_run = |run_idx: usize| {
+      let run = &runs[run_idx];
+      if run.glyphs.is_empty() {
+        return;
+      }
+
+      let run_start = run.start;
+      let run_len = run.glyphs.len();
+      debug_assert!(run_len > 0);
+
+      // HarfBuzz may emit RTL runs in visual order with cluster values descending. Scan the buffer
+      // from whichever end produces increasing cluster offsets so we can preserve monotonicity.
+      let scan_forward = run.glyphs[0].cluster <= run.glyphs[run_len - 1].cluster;
+
+      if scan_forward {
+        let mut idx = 0;
+        while idx < run_len {
+          let cluster_value = run.glyphs[idx].cluster;
+          while idx < run_len && run.glyphs[idx].cluster == cluster_value {
+            idx += 1;
+          }
+          let glyph_end = idx;
+
+          let offset = run_start.saturating_add(cluster_value as usize);
+          let is_space = wants_word_spacing && is_space_like_at_offset(offset);
+
+          if let Some(prev) = last_offset {
+            if offset < prev {
+              needs_sort = true;
+            }
+            if offset > prev {
+              monotonic_decreasing = false;
+            }
+          }
+          last_offset = Some(offset);
+
+          clusters.push(ClusterRef {
+            run_idx,
+            glyph_end,
+            offset,
+            is_space,
+          });
+        }
+      } else {
+        let mut idx = run_len;
+        while idx > 0 {
+          let end = idx;
+          let cluster_value = run.glyphs[end - 1].cluster;
+          idx = idx.saturating_sub(1);
+          while idx > 0 && run.glyphs[idx - 1].cluster == cluster_value {
+            idx -= 1;
+          }
+          let glyph_end = end;
+
+          let offset = run_start.saturating_add(cluster_value as usize);
+          let is_space = wants_word_spacing && is_space_like_at_offset(offset);
+
+          if let Some(prev) = last_offset {
+            if offset < prev {
+              needs_sort = true;
+            }
+            if offset > prev {
+              monotonic_decreasing = false;
+            }
+          }
+          last_offset = Some(offset);
+
+          clusters.push(ClusterRef {
+            run_idx,
+            glyph_end,
+            offset,
+            is_space,
+          });
+        }
+      }
+    };
+
+    if run_starts_increasing {
+      for run_idx in 0..runs.len() {
+        collect_for_run(run_idx);
+      }
+    } else if run_starts_decreasing {
+      for run_idx in (0..runs.len()).rev() {
+        collect_for_run(run_idx);
+      }
+    } else {
+      for run_idx in sorted_run_indices {
+        collect_for_run(run_idx);
       }
     }
 
@@ -11248,19 +11331,24 @@ mod tests {
 
   #[test]
   fn apply_spacing_mixed_direction_triggers_sort_and_updates_advance() {
-    // Force a non-monotonic cluster discovery order by providing runs out-of-order (RTL run first).
+    // Force a non-monotonic cluster discovery order so the fallback path has to perform a real
+    // cluster sort (not just a reverse). This can happen with complex scripts or unexpected shaping
+    // output; we simulate it by scrambling the RTL run's glyph order.
     let text = "abc אבג";
     let ltr_end = text.find('א').expect("has rtl char boundary");
     let (ltr_text, rtl_text) = text.split_at(ltr_end);
 
     let ltr_run =
       make_synthetic_run_with_byte_clusters(ltr_text, 0, 10.0, PipelineDirection::LeftToRight);
-    let rtl_run = make_synthetic_run_with_byte_clusters(
+    let mut rtl_run = make_synthetic_run_with_byte_clusters(
       rtl_text,
       ltr_end,
       10.0,
       PipelineDirection::RightToLeft,
     );
+    // HarfBuzz usually emits clusters monotonic within a run, but for this unit test we want a
+    // non-monotonic sequence that cannot be fixed just by scanning from the opposite end.
+    rtl_run.glyphs.rotate_right(1);
 
     let mut runs = vec![rtl_run, ltr_run];
     let base_width: f32 = runs.iter().map(|r| r.advance).sum();
