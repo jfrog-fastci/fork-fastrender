@@ -10727,9 +10727,10 @@ fn maybe_adopt_node_into_document(
 
   debug_assert_eq!(gc_object_id(src_document_obj), node.document_id);
 
-  let Some(mut src_dom_ptr) = dom_ptr_for_document_id_mut(vm, host, node.document_id)
-    .or_else(|| dom_from_vm_host_mut(host).map(NonNull::from))
-  else {
+  // Resolve the source DOM pointer without calling `dom_mut()` on `BrowserDocumentDom2`, which would
+  // conservatively mark the host document dirty even when adoption is non-render-affecting (e.g.
+  // adopting a detached node like a fresh DocumentType).
+  let Some(src_dom_ptr) = dom_ptr_for_document_id_read(vm, host, node.document_id) else {
     return Err(VmError::TypeError(
       "operation requires a DOM-backed source document",
     ));
@@ -10773,14 +10774,43 @@ fn maybe_adopt_node_into_document(
   } else {
     // Cross-document adoption between distinct `dom2::Document` arenas.
     //
-    // SAFETY: both pointers are valid for the duration of this native call, and `src_dom_ptr !=
-    // dest_dom_ptr` ensures the mutable borrows do not alias.
-    let adopted = match unsafe { dest_dom_ptr.as_mut() }
-      .adopt_node_from(unsafe { src_dom_ptr.as_mut() }, node.node_id)
-    {
-      Ok(adopted) => adopted,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
-    };
+    // We prefer to mutate realm-owned documents directly, but for nodes backed by the host DOM we
+    // must route mutations through `DomHost::mutate_dom` so `BrowserDocumentDom2` can avoid
+    // invalidations when the adopted subtree was disconnected.
+    let adopted =
+      if let Some(mut src_dom_ptr_mut) = owned_dom_ptr_for_document_id_mut(vm, node.document_id) {
+        // SAFETY: both pointers are valid for the duration of this native call, and `src_dom_ptr !=
+        // dest_dom_ptr` ensures the mutable borrows do not alias.
+        match unsafe { dest_dom_ptr.as_mut() }
+          .adopt_node_from(unsafe { src_dom_ptr_mut.as_mut() }, node.node_id)
+        {
+          Ok(adopted) => adopted,
+          Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+        }
+      } else {
+        // Source document is backed by the host DOM. Avoid calling `dom_mut()` (unconditional
+        // invalidation) by routing the adoption through `DomHost::mutate_dom`.
+        //
+        // Treat adoption as render-affecting only when the source subtree was connected.
+        // SAFETY: `src_dom_ptr` is valid for the duration of this native call.
+        let source_was_connected =
+          unsafe { src_dom_ptr.as_ref() }.is_connected_for_scripting(node.node_id);
+
+        let adopted = mutate_dom_for_vm_host(host, |src_dom| {
+          let adopted = unsafe { dest_dom_ptr.as_mut() }.adopt_node_from(src_dom, node.node_id);
+          let render_affecting = source_was_connected && adopted.is_ok();
+          (adopted, render_affecting)
+        })
+        .ok_or(VmError::TypeError(
+          "operation requires a DOM-backed source document",
+        ))?;
+
+        match adopted {
+          Ok(adopted) => adopted,
+          Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+        }
+      };
+
     let mapping: HashMap<NodeId, NodeId> = adopted.mapping.into_iter().collect();
     (adopted.new_root, mapping)
   };
@@ -14314,8 +14344,10 @@ fn document_create_attribute_native(
     return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
-  let is_html_document = dom_from_vm_host(host)
-    .map(|dom| dom.is_html_document())
+  let is_html_document = dom_platform_mut(vm)
+    .and_then(|platform| platform.require_document_handle(scope.heap(), Value::Object(document_obj)).ok())
+    .and_then(|handle| dom_ptr_for_document_id_read(vm, host, handle.document_id))
+    .map(|dom_ptr| unsafe { dom_ptr.as_ref() }.is_html_document())
     .unwrap_or(true);
 
   // HTML documents lowercase attribute local names.
@@ -14422,8 +14454,10 @@ fn document_create_attribute_ns_native(
     };
 
   // HTML documents lowercase attribute local names when the namespace is null.
-  let is_html_document = dom_from_vm_host(host)
-    .map(|dom| dom.is_html_document())
+  let is_html_document = dom_platform_mut(vm)
+    .and_then(|platform| platform.require_document_handle(scope.heap(), Value::Object(document_obj)).ok())
+    .and_then(|handle| dom_ptr_for_document_id_read(vm, host, handle.document_id))
+    .map(|dom_ptr| unsafe { dom_ptr.as_ref() }.is_html_document())
     .unwrap_or(true);
   if is_html_document && namespace.is_none() {
     local_name = local_name.to_ascii_lowercase();
@@ -30167,7 +30201,6 @@ fn dom_implementation_create_document_native(
         },
       },
     )?;
-
     // Store the DOM-standard content type for XML documents.
     let content_type_key = alloc_key(&mut scope, DOCUMENT_CONTENT_TYPE_KEY)?;
     let content_type_s = scope.alloc_string(content_type)?;
@@ -55861,6 +55894,47 @@ mod tests {
     assert!(
       !document.is_dirty(),
       "createHTMLDocument must not mark BrowserDocumentDom2 dirty"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn dom_implementation_create_document_allows_null_qualified_name_and_adopts_doctype(
+  ) -> Result<(), VmError> {
+    use crate::api::RenderOptions;
+
+    let mut document = BrowserDocumentDom2::from_html(
+      "<!doctype html><html><head></head><body></body></html>",
+      RenderOptions::default(),
+    )
+    .expect("BrowserDocumentDom2::from_html should succeed");
+    let _ = document
+      .render_if_needed()
+      .expect("initial render should succeed");
+    assert!(
+      !document.is_dirty(),
+      "expected document to be clean after initial render"
+    );
+
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let value = exec_script_with_dom_host(
+      &mut realm,
+      &mut document,
+      "(() => {\n\
+        const dt = document.implementation.createDocumentType('qorflesnorf', 'abcde', 'x\"\\'y');\n\
+        const xml = document.implementation.createDocument(null, null, dt);\n\
+        if (xml.documentElement !== null) return 'documentElement';\n\
+        if (xml.doctype !== dt) return 'doctypeIdentity';\n\
+        if (dt.ownerDocument !== xml) return 'doctypeOwnerDocument';\n\
+        if (typeof xml.contentType !== 'string' || xml.contentType !== 'application/xml') return 'contentType:' + xml.contentType;\n\
+        return true;\n\
+      })()",
+    )?;
+    assert_eq!(value, Value::Bool(true));
+
+    assert!(
+      !document.is_dirty(),
+      "createDocument must not mark BrowserDocumentDom2 dirty when adopting a detached doctype"
     );
     Ok(())
   }
