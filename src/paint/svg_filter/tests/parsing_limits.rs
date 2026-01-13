@@ -1,5 +1,7 @@
 use crate::image_loader::ImageCache;
-use crate::paint::svg_filter::{parse_svg_filter_from_svg_document, FilterPrimitive, TransferFn};
+use crate::paint::svg_filter::{
+  parse_svg_filter_from_svg_document, FilterInput, FilterPrimitive, TransferFn,
+};
 
 #[test]
 fn convolve_matrix_massive_order_is_rejected_without_panic() {
@@ -119,4 +121,67 @@ fn convolve_matrix_huge_kernel_matrix_is_rejected_without_panic() {
     filter.steps[0].primitive,
     FilterPrimitive::Flood { .. }
   ));
+}
+
+#[test]
+fn oversized_result_name_is_ignored() {
+  let result_name = "a".repeat(super::super::MAX_SVG_FILTER_NAME_BYTES + 16);
+  let svg = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <defs>
+        <filter id="f">
+          <feFlood flood-color="red" result="{result_name}" />
+        </filter>
+      </defs>
+    </svg>
+  "#
+  );
+
+  let cache = ImageCache::new();
+  let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    parse_svg_filter_from_svg_document(&svg, Some("f"), &cache)
+  }));
+  assert!(parsed.is_ok(), "SVG filter parse panicked");
+
+  let filter = parsed.unwrap().expect("expected filter to parse");
+  assert_eq!(filter.steps.len(), 1);
+  assert!(
+    filter.steps[0].result.is_none(),
+    "expected oversized result name to be dropped"
+  );
+}
+
+#[test]
+fn oversized_input_reference_is_treated_as_previous() {
+  let input_name = "x".repeat(super::super::MAX_SVG_FILTER_NAME_BYTES + 16);
+  let svg = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <defs>
+        <filter id="f">
+          <feOffset in="{input_name}" dx="0" dy="0" />
+        </filter>
+      </defs>
+    </svg>
+  "#
+  );
+
+  let cache = ImageCache::new();
+  let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    parse_svg_filter_from_svg_document(&svg, Some("f"), &cache)
+  }));
+  assert!(parsed.is_ok(), "SVG filter parse panicked");
+
+  let filter = parsed.unwrap().expect("expected filter to parse");
+  assert_eq!(filter.steps.len(), 1);
+  match &filter.steps[0].primitive {
+    FilterPrimitive::Offset { input, .. } => {
+      assert!(
+        matches!(input, FilterInput::Previous),
+        "expected oversized input reference to be treated as Previous"
+      );
+    }
+    other => panic!("expected Offset primitive, got {other:?}"),
+  }
 }

@@ -57,6 +57,9 @@ const MAX_SVG_NUMBER_TOKEN_BYTES: usize = 128;
 // values). This bounds worst-case CPU when parsing hostile SVG that includes huge attributes with
 // no separators.
 const MAX_SVG_FILTER_NUMBER_LIST_BYTES: usize = 1024 * 1024;
+// Cap `in` / `result` identifier sizes so hostile SVG filter markup cannot force large string
+// allocations that then get cloned into hash maps during filter execution.
+const MAX_SVG_FILTER_NAME_BYTES: usize = 1024;
 const FILTER_DEADLINE_STRIDE: usize = 256;
 const MAX_SVG_FILTER_DEPTH: usize = 128;
 
@@ -826,10 +829,19 @@ enum SvgCoordinateUnits {
 
 impl SvgCoordinateUnits {
   fn parse(attr: Option<&str>, default: SvgCoordinateUnits) -> SvgCoordinateUnits {
-    match attr.map(|v| trim_ascii_whitespace(v).to_ascii_lowercase()) {
-      Some(v) if v == "objectboundingbox" => SvgCoordinateUnits::ObjectBoundingBox,
-      Some(v) if v == "userspaceonuse" => SvgCoordinateUnits::UserSpaceOnUse,
-      _ => default,
+    let Some(attr) = attr else {
+      return default;
+    };
+    let v = trim_ascii_whitespace(attr);
+    if v.len() > 32 {
+      return default;
+    }
+    if v.eq_ignore_ascii_case("objectboundingbox") {
+      SvgCoordinateUnits::ObjectBoundingBox
+    } else if v.eq_ignore_ascii_case("userspaceonuse") {
+      SvgCoordinateUnits::UserSpaceOnUse
+    } else {
+      default
     }
   }
 }
@@ -2050,10 +2062,55 @@ fn parse_filter_node(node: &roxmltree::Node, image_cache: &ImageCache) -> Option
 
   let mut steps = Vec::new();
   for child in node.children().filter(|c| c.is_element()) {
-    let result_name = child.attribute("result").map(|s| s.to_string());
+    let tag = child.tag_name().name();
+    let primitive = if tag.eq_ignore_ascii_case("feflood") {
+      parse_fe_flood(&child)
+    } else if tag.eq_ignore_ascii_case("fegaussianblur") {
+      parse_fe_gaussian_blur(&child)
+    } else if tag.eq_ignore_ascii_case("feoffset") {
+      parse_fe_offset(&child)
+    } else if tag.eq_ignore_ascii_case("fecolormatrix") {
+      parse_fe_color_matrix(&child)
+    } else if tag.eq_ignore_ascii_case("fecomposite") {
+      parse_fe_composite(&child)
+    } else if tag.eq_ignore_ascii_case("femerge") {
+      parse_fe_merge(&child)
+    } else if tag.eq_ignore_ascii_case("fedropshadow") {
+      parse_fe_drop_shadow(&child)
+    } else if tag.eq_ignore_ascii_case("feblend") {
+      parse_fe_blend(&child)
+    } else if tag.eq_ignore_ascii_case("femorphology") {
+      parse_fe_morphology(&child)
+    } else if tag.eq_ignore_ascii_case("fecomponenttransfer") {
+      parse_fe_component_transfer(&child)
+    } else if tag.eq_ignore_ascii_case("fediffuselighting") {
+      parse_fe_diffuse_lighting(&child)
+    } else if tag.eq_ignore_ascii_case("feimage") {
+      parse_fe_image(&child, image_cache, primitive_units_coord)
+    } else if tag.eq_ignore_ascii_case("fespecularlighting") {
+      parse_fe_specular_lighting(&child)
+    } else if tag.eq_ignore_ascii_case("fetile") {
+      parse_fe_tile(&child)
+    } else if tag.eq_ignore_ascii_case("feturbulence") {
+      parse_fe_turbulence(&child)
+    } else if tag.eq_ignore_ascii_case("fedisplacementmap") {
+      parse_fe_displacement_map(&child)
+    } else if tag.eq_ignore_ascii_case("feconvolvematrix") {
+      parse_fe_convolve_matrix(&child)
+    } else {
+      None
+    };
+
+    let Some(prim) = primitive else {
+      continue;
+    };
+
+    let result_name = match child.attribute("result") {
+      Some(s) if s.len() <= MAX_SVG_FILTER_NAME_BYTES => Some(s.to_string()),
+      _ => None,
+    };
     let color_interpolation_filters =
       parse_color_interpolation_filters(child.attribute("color-interpolation-filters"));
-    let tag = child.tag_name().name().to_ascii_lowercase();
     let region_override = {
       let x = SvgLength::parse_optional(child.attribute("x"));
       let y = SvgLength::parse_optional(child.attribute("y"));
@@ -2071,34 +2128,12 @@ fn parse_filter_node(node: &roxmltree::Node, image_cache: &ImageCache) -> Option
         None
       }
     };
-    let primitive = match tag.as_str() {
-      "feflood" => parse_fe_flood(&child),
-      "fegaussianblur" => parse_fe_gaussian_blur(&child),
-      "feoffset" => parse_fe_offset(&child),
-      "fecolormatrix" => parse_fe_color_matrix(&child),
-      "fecomposite" => parse_fe_composite(&child),
-      "femerge" => parse_fe_merge(&child),
-      "fedropshadow" => parse_fe_drop_shadow(&child),
-      "feblend" => parse_fe_blend(&child),
-      "femorphology" => parse_fe_morphology(&child),
-      "fecomponenttransfer" => parse_fe_component_transfer(&child),
-      "fediffuselighting" => parse_fe_diffuse_lighting(&child),
-      "feimage" => parse_fe_image(&child, image_cache, primitive_units_coord),
-      "fespecularlighting" => parse_fe_specular_lighting(&child),
-      "fetile" => parse_fe_tile(&child),
-      "feturbulence" => parse_fe_turbulence(&child),
-      "fedisplacementmap" => parse_fe_displacement_map(&child),
-      "feconvolvematrix" => parse_fe_convolve_matrix(&child),
-      _ => None,
-    };
-    if let Some(prim) = primitive {
-      steps.push(FilterStep {
-        result: result_name,
-        color_interpolation_filters,
-        primitive: prim,
-        region: region_override.clone(),
-      });
-    }
+    steps.push(FilterStep {
+      result: result_name,
+      color_interpolation_filters,
+      primitive: prim,
+      region: region_override.clone(),
+    });
   }
 
   if steps.is_empty() {
@@ -2497,7 +2532,9 @@ fn parse_input(attr: Option<&str>) -> FilterInput {
     Some(v) if v.eq_ignore_ascii_case("strokepaint") => FilterInput::StrokePaint,
     Some(v) if v.eq_ignore_ascii_case("sourcealpha") => FilterInput::SourceAlpha,
     Some(v) if v.eq_ignore_ascii_case("sourcegraphic") => FilterInput::SourceGraphic,
-    Some(v) if !v.is_empty() => FilterInput::Reference(v.to_string()),
+    Some(v) if !v.is_empty() && v.len() <= MAX_SVG_FILTER_NAME_BYTES => {
+      FilterInput::Reference(v.to_string())
+    }
     _ => FilterInput::Previous,
   }
 }
@@ -2569,19 +2606,28 @@ fn parse_color(value: Option<&str>) -> Option<Rgba> {
 }
 
 fn parse_color_interpolation_filters(value: Option<&str>) -> Option<ColorInterpolationFilters> {
-  match value.map(|s| trim_ascii_whitespace(s).to_ascii_lowercase()) {
-    Some(v) if v == "srgb" => Some(ColorInterpolationFilters::SRGB),
-    Some(v) if v == "linearrgb" => Some(ColorInterpolationFilters::LinearRGB),
-    _ => None,
+  let v = trim_ascii_whitespace(value?);
+  if v.len() > 32 {
+    return None;
+  }
+  if v.eq_ignore_ascii_case("srgb") {
+    Some(ColorInterpolationFilters::SRGB)
+  } else if v.eq_ignore_ascii_case("linearrgb") {
+    Some(ColorInterpolationFilters::LinearRGB)
+  } else {
+    None
   }
 }
 
 fn parse_channel_selector(value: Option<&str>) -> ChannelSelector {
-  match value.map(|v| trim_ascii_whitespace(v).to_ascii_lowercase()) {
-    Some(v) if v == "r" => ChannelSelector::R,
-    Some(v) if v == "g" => ChannelSelector::G,
-    Some(v) if v == "b" => ChannelSelector::B,
-    Some(v) if v == "a" => ChannelSelector::A,
+  let v = trim_ascii_whitespace(value.unwrap_or(""));
+  if v.len() != 1 {
+    return ChannelSelector::A;
+  }
+  match v.as_bytes()[0].to_ascii_lowercase() {
+    b'r' => ChannelSelector::R,
+    b'g' => ChannelSelector::G,
+    b'b' => ChannelSelector::B,
     _ => ChannelSelector::A,
   }
 }
@@ -2598,44 +2644,40 @@ fn parse_fe_flood(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_light_source(node: &roxmltree::Node) -> Option<LightSource> {
   for child in node.children().filter(|c| c.is_element()) {
-    match child.tag_name().name().to_ascii_lowercase().as_str() {
-      "fedistantlight" => {
-        let azimuth = parse_number(attribute_ci(&child, "azimuth"));
-        let elevation = parse_number(attribute_ci(&child, "elevation"));
-        return Some(LightSource::Distant { azimuth, elevation });
-      }
-      "fepointlight" => {
-        let x = SvgLength::parse(attribute_ci(&child, "x"), SvgLength::Number(0.0));
-        let y = SvgLength::parse(attribute_ci(&child, "y"), SvgLength::Number(0.0));
-        let z = SvgLength::parse(attribute_ci(&child, "z"), SvgLength::Number(0.0));
-        return Some(LightSource::Point { x, y, z });
-      }
-      "fespotlight" => {
-        let x = SvgLength::parse(attribute_ci(&child, "x"), SvgLength::Number(0.0));
-        let y = SvgLength::parse(attribute_ci(&child, "y"), SvgLength::Number(0.0));
-        let z = SvgLength::parse(attribute_ci(&child, "z"), SvgLength::Number(0.0));
-        let points_at_x =
-          SvgLength::parse(attribute_ci(&child, "pointsAtX"), SvgLength::Number(0.0));
-        let points_at_y =
-          SvgLength::parse(attribute_ci(&child, "pointsAtY"), SvgLength::Number(0.0));
-        let points_at_z =
-          SvgLength::parse(attribute_ci(&child, "pointsAtZ"), SvgLength::Number(0.0));
-        let specular_exponent = attribute_ci(&child, "specularExponent")
-          .and_then(|v| v.parse::<f32>().ok())
-          .unwrap_or(1.0);
-        let limiting_cone_angle = attribute_ci(&child, "limitingConeAngle")
-          .and_then(|v| v.parse::<f32>().ok())
-          .filter(|v| v.is_finite() && *v >= 0.0);
-        return Some(LightSource::Spot {
-          x,
-          y,
-          z,
-          points_at: (points_at_x, points_at_y, points_at_z),
-          specular_exponent,
-          limiting_cone_angle,
-        });
-      }
-      _ => {}
+    let name = child.tag_name().name();
+    if name.eq_ignore_ascii_case("fedistantlight") {
+      let azimuth = parse_number(attribute_ci(&child, "azimuth"));
+      let elevation = parse_number(attribute_ci(&child, "elevation"));
+      return Some(LightSource::Distant { azimuth, elevation });
+    } else if name.eq_ignore_ascii_case("fepointlight") {
+      let x = SvgLength::parse(attribute_ci(&child, "x"), SvgLength::Number(0.0));
+      let y = SvgLength::parse(attribute_ci(&child, "y"), SvgLength::Number(0.0));
+      let z = SvgLength::parse(attribute_ci(&child, "z"), SvgLength::Number(0.0));
+      return Some(LightSource::Point { x, y, z });
+    } else if name.eq_ignore_ascii_case("fespotlight") {
+      let x = SvgLength::parse(attribute_ci(&child, "x"), SvgLength::Number(0.0));
+      let y = SvgLength::parse(attribute_ci(&child, "y"), SvgLength::Number(0.0));
+      let z = SvgLength::parse(attribute_ci(&child, "z"), SvgLength::Number(0.0));
+      let points_at_x =
+        SvgLength::parse(attribute_ci(&child, "pointsAtX"), SvgLength::Number(0.0));
+      let points_at_y =
+        SvgLength::parse(attribute_ci(&child, "pointsAtY"), SvgLength::Number(0.0));
+      let points_at_z =
+        SvgLength::parse(attribute_ci(&child, "pointsAtZ"), SvgLength::Number(0.0));
+      let specular_exponent = attribute_ci(&child, "specularExponent")
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.0);
+      let limiting_cone_angle = attribute_ci(&child, "limitingConeAngle")
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0);
+      return Some(LightSource::Spot {
+        x,
+        y,
+        z,
+        points_at: (points_at_x, points_at_y, points_at_z),
+        specular_exponent,
+        limiting_cone_angle,
+      });
     }
   }
   None
@@ -2673,13 +2715,18 @@ fn parse_fe_gaussian_blur(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
   let (sx, sy) = parse_number_pair(attribute_ci(node, "stdDeviation"));
   let std_dev = (sx.max(0.0), sy.max(0.0));
-  let edge_mode = match trim_ascii_whitespace(attribute_ci(node, "edgeMode").unwrap_or("duplicate"))
-    .to_ascii_lowercase()
-    .as_str()
-  {
-    "none" => EdgeMode::None,
-    "wrap" => EdgeMode::Wrap,
-    _ => EdgeMode::Duplicate,
+  let edge_mode_raw = trim_ascii_whitespace(attribute_ci(node, "edgeMode").unwrap_or("duplicate"));
+  let edge_mode_raw = if edge_mode_raw.len() > 32 {
+    "duplicate"
+  } else {
+    edge_mode_raw
+  };
+  let edge_mode = if edge_mode_raw.eq_ignore_ascii_case("none") {
+    EdgeMode::None
+  } else if edge_mode_raw.eq_ignore_ascii_case("wrap") {
+    EdgeMode::Wrap
+  } else {
+    EdgeMode::Duplicate
   };
   Some(FilterPrimitive::GaussianBlur {
     input,
@@ -2697,46 +2744,41 @@ fn parse_fe_offset(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(node.attribute("in"));
-  let kind_attr = node.attribute("type").unwrap_or("matrix");
-  let kind = match kind_attr.to_ascii_lowercase().as_str() {
-    "saturate" => {
-      // The `values` attribute defaults to 1 (identity). Clamp negative values to 0 while allowing
-      // oversaturation (> 1). Non-finite values are treated as missing so we don't poison the
-      // filter graph with NaNs.
-      let mut amount = parse_number_iter(node.attribute("values"))
-        .next()
-        .unwrap_or(1.0);
-      if !amount.is_finite() {
-        amount = 1.0;
-      }
-      let amount = amount.max(0.0);
-      ColorMatrixKind::Saturate(amount)
+  let kind_raw = trim_ascii_whitespace(node.attribute("type").unwrap_or("matrix"));
+  let kind_raw = if kind_raw.len() > 32 { "matrix" } else { kind_raw };
+  let kind = if kind_raw.eq_ignore_ascii_case("saturate") {
+    // The `values` attribute defaults to 1 (identity). Clamp negative values to 0 while allowing
+    // oversaturation (> 1). Non-finite values are treated as missing so we don't poison the
+    // filter graph with NaNs.
+    let mut amount = parse_number_iter(node.attribute("values"))
+      .next()
+      .unwrap_or(1.0);
+    if !amount.is_finite() {
+      amount = 1.0;
     }
-    "huerotate" => {
-      let angle = parse_number_iter(node.attribute("values"))
-        .next()
-        .unwrap_or(0.0);
-      ColorMatrixKind::HueRotate(angle)
+    let amount = amount.max(0.0);
+    ColorMatrixKind::Saturate(amount)
+  } else if kind_raw.eq_ignore_ascii_case("huerotate") {
+    let angle = parse_number_iter(node.attribute("values"))
+      .next()
+      .unwrap_or(0.0);
+    ColorMatrixKind::HueRotate(angle)
+  } else if kind_raw.eq_ignore_ascii_case("luminancetoalpha") {
+    ColorMatrixKind::LuminanceToAlpha
+  } else {
+    let mut arr = [0.0; 20];
+    let mut count = 0usize;
+    for (slot, value) in arr.iter_mut().zip(parse_number_iter(node.attribute("values"))) {
+      *slot = value;
+      count += 1;
     }
-    "luminancetoalpha" => ColorMatrixKind::LuminanceToAlpha,
-    _ => {
-      let mut arr = [0.0; 20];
-      let mut count = 0usize;
-      for (slot, value) in arr
-        .iter_mut()
-        .zip(parse_number_iter(node.attribute("values")))
-      {
-        *slot = value;
-        count += 1;
-      }
-      if count == 20 {
-        ColorMatrixKind::Matrix(arr)
-      } else {
-        ColorMatrixKind::Matrix([
-          1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-          1.0, 0.0,
-        ])
-      }
+    if count == 20 {
+      ColorMatrixKind::Matrix(arr)
+    } else {
+      ColorMatrixKind::Matrix([
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        1.0, 0.0,
+      ])
     }
   };
   Some(FilterPrimitive::ColorMatrix { input, kind })
@@ -2787,27 +2829,44 @@ fn parse_fe_blend(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 /// Map SVG `feBlend` modes to tiny-skia blend modes, falling back to normal when unsupported.
 fn parse_blend_mode(mode: Option<&str>) -> BlendMode {
-  match mode.map(|m| m.to_ascii_lowercase()) {
-    Some(mode) => match mode.as_str() {
-      "normal" => BlendMode::SourceOver,
-      "multiply" => BlendMode::Multiply,
-      "screen" => BlendMode::Screen,
-      "darken" => BlendMode::Darken,
-      "lighten" => BlendMode::Lighten,
-      "overlay" => BlendMode::Overlay,
-      "color-dodge" => BlendMode::ColorDodge,
-      "color-burn" => BlendMode::ColorBurn,
-      "hard-light" => BlendMode::HardLight,
-      "soft-light" => BlendMode::SoftLight,
-      "difference" => BlendMode::Difference,
-      "exclusion" => BlendMode::Exclusion,
-      "hue" => BlendMode::Hue,
-      "saturation" => BlendMode::Saturation,
-      "color" => BlendMode::Color,
-      "luminosity" => BlendMode::Luminosity,
-      _ => BlendMode::SourceOver,
-    },
-    None => BlendMode::SourceOver,
+  let raw = trim_ascii_whitespace(mode.unwrap_or("normal"));
+  if raw.len() > 32 {
+    return BlendMode::SourceOver;
+  }
+  if raw.eq_ignore_ascii_case("normal") {
+    BlendMode::SourceOver
+  } else if raw.eq_ignore_ascii_case("multiply") {
+    BlendMode::Multiply
+  } else if raw.eq_ignore_ascii_case("screen") {
+    BlendMode::Screen
+  } else if raw.eq_ignore_ascii_case("darken") {
+    BlendMode::Darken
+  } else if raw.eq_ignore_ascii_case("lighten") {
+    BlendMode::Lighten
+  } else if raw.eq_ignore_ascii_case("overlay") {
+    BlendMode::Overlay
+  } else if raw.eq_ignore_ascii_case("color-dodge") {
+    BlendMode::ColorDodge
+  } else if raw.eq_ignore_ascii_case("color-burn") {
+    BlendMode::ColorBurn
+  } else if raw.eq_ignore_ascii_case("hard-light") {
+    BlendMode::HardLight
+  } else if raw.eq_ignore_ascii_case("soft-light") {
+    BlendMode::SoftLight
+  } else if raw.eq_ignore_ascii_case("difference") {
+    BlendMode::Difference
+  } else if raw.eq_ignore_ascii_case("exclusion") {
+    BlendMode::Exclusion
+  } else if raw.eq_ignore_ascii_case("hue") {
+    BlendMode::Hue
+  } else if raw.eq_ignore_ascii_case("saturation") {
+    BlendMode::Saturation
+  } else if raw.eq_ignore_ascii_case("color") {
+    BlendMode::Color
+  } else if raw.eq_ignore_ascii_case("luminosity") {
+    BlendMode::Luminosity
+  } else {
+    BlendMode::SourceOver
   }
 }
 
@@ -2920,22 +2979,29 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
 fn parse_fe_composite(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input1 = parse_input(node.attribute("in"));
   let input2 = parse_input(node.attribute("in2"));
-  let operator_attr = node
-    .attribute("operator")
-    .unwrap_or("over")
-    .to_ascii_lowercase();
-  let operator = match operator_attr.as_str() {
-    "in" => CompositeOperator::In,
-    "out" => CompositeOperator::Out,
-    "atop" => CompositeOperator::Atop,
-    "xor" => CompositeOperator::Xor,
-    "arithmetic" => CompositeOperator::Arithmetic {
+  let operator_raw = trim_ascii_whitespace(node.attribute("operator").unwrap_or("over"));
+  let operator_raw = if operator_raw.len() > 32 {
+    "over"
+  } else {
+    operator_raw
+  };
+  let operator = if operator_raw.eq_ignore_ascii_case("in") {
+    CompositeOperator::In
+  } else if operator_raw.eq_ignore_ascii_case("out") {
+    CompositeOperator::Out
+  } else if operator_raw.eq_ignore_ascii_case("atop") {
+    CompositeOperator::Atop
+  } else if operator_raw.eq_ignore_ascii_case("xor") {
+    CompositeOperator::Xor
+  } else if operator_raw.eq_ignore_ascii_case("arithmetic") {
+    CompositeOperator::Arithmetic {
       k1: parse_number(node.attribute("k1")),
       k2: parse_number(node.attribute("k2")),
       k3: parse_number(node.attribute("k3")),
       k4: parse_number(node.attribute("k4")),
-    },
-    _ => CompositeOperator::Over,
+    }
+  } else {
+    CompositeOperator::Over
   };
   Some(FilterPrimitive::Composite {
     input1,
@@ -3053,18 +3119,24 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     .clamp(0, MAX_TURBULENCE_OCTAVES as i32) as u32;
   let stitch_tiles = attribute_ci(node, "stitchTiles")
     .map(|v| {
-      let v = trim_ascii_whitespace(v).to_ascii_lowercase();
-      v == "stitch" || v == "true" || v == "1"
+      let v = trim_ascii_whitespace(v);
+      if v.len() > 16 {
+        false
+      } else {
+        v.eq_ignore_ascii_case("stitch") || v.eq_ignore_ascii_case("true") || v == "1"
+      }
     })
     .unwrap_or(false);
-  let kind = match node
-    .attribute("type")
-    .unwrap_or("turbulence")
-    .to_ascii_lowercase()
-    .as_str()
-  {
-    "fractalnoise" => TurbulenceType::FractalNoise,
-    _ => TurbulenceType::Turbulence,
+  let kind_raw = trim_ascii_whitespace(node.attribute("type").unwrap_or("turbulence"));
+  let kind_raw = if kind_raw.len() > 32 {
+    "turbulence"
+  } else {
+    kind_raw
+  };
+  let kind = if kind_raw.eq_ignore_ascii_case("fractalnoise") {
+    TurbulenceType::FractalNoise
+  } else {
+    TurbulenceType::Turbulence
   };
 
   Some(FilterPrimitive::Turbulence {
