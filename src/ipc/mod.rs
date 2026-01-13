@@ -20,6 +20,7 @@ pub mod pixels;
 pub mod protocol;
 pub mod received_frame;
 pub mod shm;
+pub mod transport;
 #[cfg(unix)]
 pub mod validate;
 pub mod sync;
@@ -46,4 +47,3 @@ pub use framing::{
 pub use network::{NetworkToRenderer, RendererToNetwork};
 pub use received_frame::{FrameMeta, ReceivedFrame, ShmemSliceView};
 pub use types::{PointF32, RectF32, ScrollMetricsIpc, ScrollStateIpc};
-

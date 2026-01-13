@@ -2,6 +2,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum IpcError {
+  #[error("IPC operation timed out")]
+  Timeout,
+
+  #[error("unsupported IPC operation: {message}")]
+  Unsupported { message: String },
+
   #[error("IPC stream ended unexpectedly")]
   UnexpectedEof,
 
@@ -149,6 +155,11 @@ impl From<std::io::Error> for IpcError {
   fn from(err: std::io::Error) -> Self {
     if err.kind() == std::io::ErrorKind::UnexpectedEof {
       Self::UnexpectedEof
+    } else if matches!(
+      err.kind(),
+      std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) {
+      Self::Timeout
     } else {
       Self::Io(err)
     }

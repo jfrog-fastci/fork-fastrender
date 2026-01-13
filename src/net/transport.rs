@@ -189,6 +189,10 @@ impl From<TransportError> for NetworkError {
 impl From<IpcError> for TransportError {
   fn from(err: IpcError) -> Self {
     match err {
+      IpcError::Timeout => Self::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+      IpcError::Unsupported { .. } => {
+        Self::Io(std::io::Error::from(std::io::ErrorKind::Unsupported))
+      }
       IpcError::UnexpectedEof => Self::Io(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)),
       IpcError::Io(err) => Self::Io(err),
       IpcError::FrameTooLarge { len, max } => Self::FrameTooLarge { len, max },
