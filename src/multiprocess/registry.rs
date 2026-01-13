@@ -154,6 +154,46 @@ impl<S: ProcessSpawner> RendererProcessRegistry<S> {
     id
   }
 
+  /// Convenience wrapper around [`Self::get_or_spawn`] that also returns a mutable reference to the
+  /// associated process handle (if available).
+  pub fn get_or_spawn_handle_mut(
+    &mut self,
+    site: SiteKey,
+  ) -> Option<(RendererProcessId, &mut S::Handle)> {
+    let key = site.clone();
+    let pid = self.get_or_spawn(site);
+    Some((pid, self.by_site.get_mut(&key)?))
+  }
+
+  /// Lookup the process handle for `site`.
+  pub fn handle_for_site(&self, site: &SiteKey) -> Option<&S::Handle> {
+    self.by_site.get(site)
+  }
+
+  /// Lookup the process handle for `site` (mutable).
+  pub fn handle_for_site_mut(&mut self, site: &SiteKey) -> Option<&mut S::Handle> {
+    self.by_site.get_mut(site)
+  }
+
+  /// Lookup the process handle for `process`.
+  pub fn handle_for_process(&self, process: RendererProcessId) -> Option<&S::Handle> {
+    let site = self.by_process.get(&process)?;
+    self.by_site.get(site)
+  }
+
+  /// Lookup the process handle for `process` (mutable).
+  pub fn handle_for_process_mut(&mut self, process: RendererProcessId) -> Option<&mut S::Handle> {
+    let site = self.by_process.get(&process)?.clone();
+    self.by_site.get_mut(&site)
+  }
+
+  /// Spawn/lookup a process for `site` and retain `frame_id` in it.
+  pub fn retain_frame_for_site(&mut self, site: SiteKey, frame_id: FrameId) -> RendererProcessId {
+    let pid = self.get_or_spawn(site);
+    self.retain_frame(pid, frame_id);
+    pid
+  }
+
   /// Retain a frame in `process`.
   ///
   /// Retaining the same `frame_id` more than once increments an internal refcount; callers must
@@ -483,6 +523,42 @@ mod tests {
     assert_eq!(drop_count.load(Ordering::Relaxed), 0);
 
     reg.release_frame(pid, frame);
+    assert_eq!(reg.process_count(), 0);
+    assert_eq!(terminate_count.load(Ordering::Relaxed), 1);
+    assert_eq!(drop_count.load(Ordering::Relaxed), 1);
+  }
+
+  #[test]
+  fn handle_lookup_helpers_return_spawned_process() {
+    let spawn_count = Arc::new(AtomicUsize::new(0));
+    let terminate_count = Arc::new(AtomicUsize::new(0));
+    let drop_count = Arc::new(AtomicUsize::new(0));
+
+    let spawner = FakeSpawner::new(
+      Arc::clone(&spawn_count),
+      Arc::clone(&terminate_count),
+      Arc::clone(&drop_count),
+    );
+    let mut reg = RendererProcessRegistry::new(spawner);
+
+    let site_key = site("https://example.com/");
+    let pid = {
+      let (pid, handle) = reg
+        .get_or_spawn_handle_mut(site_key.clone())
+        .expect("spawned handle");
+      assert_eq!(pid, handle.id());
+      pid
+    };
+
+    assert_eq!(spawn_count.load(Ordering::Relaxed), 1);
+    assert_eq!(reg.handle_for_site(&site_key).map(ProcessHandle::id), Some(pid));
+    assert_eq!(reg.handle_for_process(pid).map(ProcessHandle::id), Some(pid));
+
+    let frame = FrameId::new(1);
+    let pid2 = reg.retain_frame_for_site(site_key.clone(), frame);
+    assert_eq!(pid2, pid);
+    reg.release_frame(pid2, frame);
+    // Termination expected after releasing the last retained frame (keep_alive defaults to false).
     assert_eq!(reg.process_count(), 0);
     assert_eq!(terminate_count.load(Ordering::Relaxed), 1);
     assert_eq!(drop_count.load(Ordering::Relaxed), 1);
