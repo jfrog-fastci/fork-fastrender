@@ -1136,6 +1136,8 @@ impl Intrinsics {
     let symbol_key_for = vm.register_native_call(builtins::symbol_key_for)?;
     let error_prototype_to_string = vm.register_native_call(builtins::error_prototype_to_string)?;
     let json_parse = vm.register_native_call(builtins::json_parse)?;
+    let json_raw_json = vm.register_native_call(builtins::json_raw_json)?;
+    let json_is_raw_json = vm.register_native_call(builtins::json_is_raw_json)?;
     let json_stringify = vm.register_native_call(builtins::json_stringify)?;
     let math_abs = vm.register_native_call(builtins::math_abs)?;
     let math_acos = vm.register_native_call(builtins::math_acos)?;
@@ -6289,6 +6291,28 @@ impl Intrinsics {
       scope.push_root(Value::String(stringify_s))?;
       let key = PropertyKey::from_string(stringify_s);
       let func = scope.alloc_native_function(json_stringify, None, stringify_s, 3)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(json, key, data_desc(Value::Object(func), true, false, true))?;
+    }
+    {
+      let raw_json_s = scope.alloc_string("rawJSON")?;
+      scope.push_root(Value::String(raw_json_s))?;
+      let key = PropertyKey::from_string(raw_json_s);
+      let func = scope.alloc_native_function(json_raw_json, None, raw_json_s, 1)?;
+      scope.push_root(Value::Object(func))?;
+      scope
+        .heap_mut()
+        .object_set_prototype(func, Some(function_prototype))?;
+      scope.define_property(json, key, data_desc(Value::Object(func), true, false, true))?;
+    }
+    {
+      let is_raw_json_s = scope.alloc_string("isRawJSON")?;
+      scope.push_root(Value::String(is_raw_json_s))?;
+      let key = PropertyKey::from_string(is_raw_json_s);
+      let func = scope.alloc_native_function(json_is_raw_json, None, is_raw_json_s, 1)?;
       scope.push_root(Value::Object(func))?;
       scope
         .heap_mut()

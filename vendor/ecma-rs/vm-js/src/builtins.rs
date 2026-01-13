@@ -18,7 +18,7 @@ use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::{Node, ParenthesizedExpr};
 use parse_js::ast::stmt::Stmt;
 use parse_js::{Dialect, ParseOptions, SourceType};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::sync::Arc;
 use crate::tick;
@@ -21542,6 +21542,19 @@ fn json_syntax_error(vm: &mut Vm, scope: &mut Scope<'_>) -> VmError {
   }
 }
 
+#[derive(Clone, Copy)]
+struct JsonParseSourceInfo {
+  start: usize,
+  end: usize,
+  value: Value,
+}
+
+#[derive(Default)]
+struct JsonParseWithSourceMeta {
+  object_props: HashMap<GcObject, HashMap<GcString, JsonParseSourceInfo>>,
+  array_elems: HashMap<GcObject, Vec<Option<JsonParseSourceInfo>>>,
+}
+
 struct JsonParser<'a> {
   units: &'a [u16],
   pos: usize,
@@ -21602,6 +21615,54 @@ impl<'a> JsonParser<'a> {
       Some(u) if u == b'{' as u16 => self.parse_object(vm, scope),
       Some(u) if u == b'-' as u16 || (u >= b'0' as u16 && u <= b'9' as u16) => {
         Ok(Value::Number(self.parse_number(vm, scope)?))
+      }
+      _ => Err(json_syntax_error(vm, scope)),
+    }
+  }
+
+  fn parse_value_with_source(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    meta: &mut JsonParseWithSourceMeta,
+  ) -> Result<(Value, Option<JsonParseSourceInfo>), VmError> {
+    self.skip_ws(vm, scope)?;
+    let start = self.pos;
+    match self.peek() {
+      Some(u) if u == b'n' as u16 => {
+        let v = self.parse_null(vm, scope)?;
+        let end = self.pos;
+        Ok((v, Some(JsonParseSourceInfo { start, end, value: v })))
+      }
+      Some(u) if u == b't' as u16 => {
+        let v = self.parse_true(vm, scope)?;
+        let end = self.pos;
+        Ok((v, Some(JsonParseSourceInfo { start, end, value: v })))
+      }
+      Some(u) if u == b'f' as u16 => {
+        let v = self.parse_false(vm, scope)?;
+        let end = self.pos;
+        Ok((v, Some(JsonParseSourceInfo { start, end, value: v })))
+      }
+      Some(Self::QUOTE) => {
+        let s = self.parse_string(vm, scope)?;
+        let v = Value::String(s);
+        let end = self.pos;
+        Ok((v, Some(JsonParseSourceInfo { start, end, value: v })))
+      }
+      Some(u) if u == b'[' as u16 => {
+        let array = self.parse_array_with_source(vm, scope, meta)?;
+        Ok((Value::Object(array), None))
+      }
+      Some(u) if u == b'{' as u16 => {
+        let obj = self.parse_object_with_source(vm, scope, meta)?;
+        Ok((Value::Object(obj), None))
+      }
+      Some(u) if u == b'-' as u16 || (u >= b'0' as u16 && u <= b'9' as u16) => {
+        let n = self.parse_number(vm, scope)?;
+        let v = Value::Number(n);
+        let end = self.pos;
+        Ok((v, Some(JsonParseSourceInfo { start, end, value: v })))
       }
       _ => Err(json_syntax_error(vm, scope)),
     }
@@ -21836,6 +21897,73 @@ impl<'a> JsonParser<'a> {
     Ok(Value::Object(array))
   }
 
+  fn parse_array_with_source(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    meta: &mut JsonParseWithSourceMeta,
+  ) -> Result<GcObject, VmError> {
+    self.expect(vm, scope, b'[' as u16)?;
+
+    let array = create_array_object(vm, scope, 0)?;
+    scope.push_root(Value::Object(array))?;
+
+    let mut sources: Vec<Option<JsonParseSourceInfo>> = Vec::new();
+
+    self.skip_ws(vm, scope)?;
+    if matches!(self.peek(), Some(u) if u == b']' as u16) {
+      let _ = self.bump(vm, scope)?;
+      meta
+        .array_elems
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      meta.array_elems.insert(array, sources);
+      return Ok(array);
+    }
+
+    let mut idx: usize = 0;
+    loop {
+      {
+        let mut el_scope = scope.reborrow();
+        el_scope.push_root(Value::Object(array))?;
+
+        let (value, source_info) = self.parse_value_with_source(vm, &mut el_scope, meta)?;
+        el_scope.push_root(value)?;
+
+        let key_s = alloc_string_from_usize(&mut el_scope, idx)?;
+        el_scope.push_root(Value::String(key_s))?;
+        let key = PropertyKey::from_string(key_s);
+        el_scope.define_property(array, key, data_desc(value, true, true, true))?;
+
+        vec_try_push(&mut sources, source_info)?;
+      }
+
+      idx = idx.saturating_add(1);
+
+      self.skip_ws(vm, scope)?;
+      match self.peek() {
+        Some(u) if u == b',' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          self.skip_ws(vm, scope)?;
+          continue;
+        }
+        Some(u) if u == b']' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          break;
+        }
+        _ => return Err(json_syntax_error(vm, scope)),
+      }
+    }
+
+    meta
+      .array_elems
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    meta.array_elems.insert(array, sources);
+
+    Ok(array)
+  }
+
   fn parse_object(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<Value, VmError> {
     self.expect(vm, scope, b'{' as u16)?;
 
@@ -21892,9 +22020,91 @@ impl<'a> JsonParser<'a> {
 
     Ok(Value::Object(obj))
   }
+
+  fn parse_object_with_source(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    meta: &mut JsonParseWithSourceMeta,
+  ) -> Result<GcObject, VmError> {
+    self.expect(vm, scope, b'{' as u16)?;
+
+    let intr = require_intrinsics(vm)?;
+    let obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(obj))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(obj, Some(intr.object_prototype()))?;
+
+    let mut prop_sources: HashMap<GcString, JsonParseSourceInfo> = HashMap::new();
+
+    self.skip_ws(vm, scope)?;
+    if matches!(self.peek(), Some(u) if u == b'}' as u16) {
+      let _ = self.bump(vm, scope)?;
+      meta
+        .object_props
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      meta.object_props.insert(obj, prop_sources);
+      return Ok(obj);
+    }
+
+    loop {
+      {
+        let mut member_scope = scope.reborrow();
+        member_scope.push_root(Value::Object(obj))?;
+
+        self.skip_ws(vm, &mut member_scope)?;
+        let key_str = self.parse_string(vm, &mut member_scope)?;
+        member_scope.push_root(Value::String(key_str))?;
+
+        self.skip_ws(vm, &mut member_scope)?;
+        self.expect(vm, &mut member_scope, b':' as u16)?;
+        self.skip_ws(vm, &mut member_scope)?;
+
+        let (value, source_info) = self.parse_value_with_source(vm, &mut member_scope, meta)?;
+        member_scope.push_root(value)?;
+
+        member_scope.define_property(
+          obj,
+          PropertyKey::from_string(key_str),
+          data_desc(value, true, true, true),
+        )?;
+
+        if let Some(info) = source_info {
+          prop_sources
+            .try_reserve(1)
+            .map_err(|_| VmError::OutOfMemory)?;
+          prop_sources.insert(key_str, info);
+        }
+      }
+
+      self.skip_ws(vm, scope)?;
+      match self.peek() {
+        Some(u) if u == b',' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          self.skip_ws(vm, scope)?;
+          continue;
+        }
+        Some(u) if u == b'}' as u16 => {
+          let _ = self.bump(vm, scope)?;
+          break;
+        }
+        _ => return Err(json_syntax_error(vm, scope)),
+      }
+    }
+
+    meta
+      .object_props
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    meta.object_props.insert(obj, prop_sources);
+
+    Ok(obj)
+  }
 }
 
-/// `JSON.parse` (minimal).
+/// `JSON.parse` (with proposal-era `json-parse-with-source` reviver context support).
 pub fn json_parse(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -21920,18 +22130,27 @@ pub fn json_parse(
     units
   };
 
+  let reviver = args.get(1).copied().unwrap_or(Value::Undefined);
+  let reviver_is_callable = scope.heap().is_callable(reviver)?;
+
   let mut parser = JsonParser::new(&units);
-  let parsed = parser.parse_value(vm, &mut scope)?;
+  let (parsed, root_source, meta) = if reviver_is_callable {
+    let mut meta = JsonParseWithSourceMeta::default();
+    let (parsed, root_source) = parser.parse_value_with_source(vm, &mut scope, &mut meta)?;
+    (parsed, root_source, Some(meta))
+  } else {
+    (parser.parse_value(vm, &mut scope)?, None, None)
+  };
   scope.push_root(parsed)?;
   parser.skip_ws(vm, &mut scope)?;
   if parser.pos != units.len() {
     return Err(json_syntax_error(vm, &mut scope));
   }
 
-  let reviver = args.get(1).copied().unwrap_or(Value::Undefined);
-  if !scope.heap().is_callable(reviver)? {
+  if !reviver_is_callable {
     return Ok(parsed);
   }
+  let mut meta = meta.unwrap_or_default();
 
   // Internalize with reviver.
   let intr = require_intrinsics(vm)?;
@@ -21946,6 +22165,41 @@ pub fn json_parse(
   let empty_key = PropertyKey::from_string(empty);
   scope.define_property(root, empty_key, data_desc(parsed, true, true, true))?;
 
+  // Record source metadata for the root wrapper property "" when the parsed root is a primitive.
+  {
+    let mut root_props: HashMap<GcString, JsonParseSourceInfo> = HashMap::new();
+    if let Some(info) = root_source {
+      root_props
+        .try_reserve(1)
+        .map_err(|_| VmError::OutOfMemory)?;
+      root_props.insert(empty, info);
+    }
+    meta
+      .object_props
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    meta.object_props.insert(root, root_props);
+  }
+
+  // Root all objects and primitive values referenced by `meta` so GC cannot collect/reuse them
+  // while `InternalizeJSONProperty` is running (reviver callbacks can forward-modify the graph).
+  for (obj, props) in &meta.object_props {
+    scope.push_root(Value::Object(*obj))?;
+    for info in props.values() {
+      if let Value::String(s) = info.value {
+        scope.push_root(Value::String(s))?;
+      }
+    }
+  }
+  for (obj, elems) in &meta.array_elems {
+    scope.push_root(Value::Object(*obj))?;
+    for info in elems.iter().flatten() {
+      if let Value::String(s) = info.value {
+        scope.push_root(Value::String(s))?;
+      }
+    }
+  }
+
   fn internalize_json_property(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -21954,6 +22208,9 @@ pub fn json_parse(
     holder: GcObject,
     name: crate::GcString,
     reviver: Value,
+    meta: &JsonParseWithSourceMeta,
+    json_units: &[u16],
+    array_index: Option<usize>,
   ) -> Result<Value, VmError> {
     let mut scope = scope.reborrow();
     scope.push_roots(&[Value::Object(holder), Value::String(name), reviver])?;
@@ -21962,6 +22219,59 @@ pub fn json_parse(
     let mut val =
       scope.ordinary_get_with_host_and_hooks(vm, host, hooks, holder, key, Value::Object(holder))?;
     scope.push_root(val)?;
+
+    fn primitive_same_value(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, VmError> {
+      match (a, b) {
+        (Value::Null, Value::Null) => Ok(true),
+        (Value::Bool(a), Value::Bool(b)) => Ok(a == b),
+        (Value::Number(a), Value::Number(b)) => Ok(a.to_bits() == b.to_bits()),
+        (Value::String(a), Value::String(b)) => Ok(
+          scope.heap().get_string(a)?.as_code_units() == scope.heap().get_string(b)?.as_code_units(),
+        ),
+        _ => Ok(false),
+      }
+    }
+
+    fn alloc_source_string(
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
+      json_units: &[u16],
+      start: usize,
+      end: usize,
+    ) -> Result<crate::GcString, VmError> {
+      let slice = json_units
+        .get(start..end)
+        .ok_or(VmError::InvariantViolation("invalid JSON source span"))?;
+      let mut out: Vec<u16> = Vec::new();
+      out
+        .try_reserve_exact(slice.len())
+        .map_err(|_| VmError::OutOfMemory)?;
+      vec_try_extend_from_slice(&mut out, slice, || vm.tick())?;
+      scope.alloc_string_from_u16_vec(out)
+    }
+
+    // Determine `context.source` for primitive values that still match the original parsed value.
+    let source: Option<crate::GcString> = (|| {
+      let info = if let Some(i) = array_index {
+        meta
+          .array_elems
+          .get(&holder)
+          .and_then(|v| v.get(i))
+          .and_then(|v| v.as_ref())
+      } else {
+        meta
+          .object_props
+          .get(&holder)
+          .and_then(|m| m.get(&name))
+      };
+      let Some(info) = info else {
+        return Ok(None);
+      };
+      if !primitive_same_value(&mut scope, val, info.value)? {
+        return Ok(None);
+      }
+      Ok(Some(alloc_source_string(vm, &mut scope, json_units, info.start, info.end)?))
+    })()?;
 
     if let Value::Object(obj) = val {
       if crate::spec_ops::is_array_with_host_and_hooks(vm, &mut scope, host, hooks, val)? {
@@ -21976,7 +22286,18 @@ pub fn json_parse(
 
           let idx_s = alloc_string_from_usize(&mut idx_scope, i)?;
           idx_scope.push_root(Value::String(idx_s))?;
-          let new_element = internalize_json_property(vm, &mut idx_scope, host, hooks, obj, idx_s, reviver)?;
+          let new_element = internalize_json_property(
+            vm,
+            &mut idx_scope,
+            host,
+            hooks,
+            obj,
+            idx_s,
+            reviver,
+            meta,
+            json_units,
+            Some(i),
+          )?;
 
           if matches!(new_element, Value::Undefined) {
             let ok =
@@ -22022,7 +22343,18 @@ pub fn json_parse(
           let mut p_scope = scope.reborrow();
           p_scope.push_roots(&[Value::Object(obj), Value::String(p)])?;
 
-          let new_element = internalize_json_property(vm, &mut p_scope, host, hooks, obj, p, reviver)?;
+          let new_element = internalize_json_property(
+            vm,
+            &mut p_scope,
+            host,
+            hooks,
+            obj,
+            p,
+            reviver,
+            meta,
+            json_units,
+            None,
+          )?;
           if matches!(new_element, Value::Undefined) {
             let ok =
               p_scope.ordinary_delete_with_host_and_hooks(vm, host, hooks, obj, PropertyKey::from_string(p))?;
@@ -22043,11 +22375,140 @@ pub fn json_parse(
       val = Value::Object(obj);
     }
 
-    let args = [Value::String(name), val];
+    let intr = require_intrinsics(vm)?;
+    let context = scope.alloc_object_with_prototype(Some(intr.object_prototype()))?;
+    scope.push_root(Value::Object(context))?;
+    if let Some(source) = source {
+      scope.push_root(Value::String(source))?;
+      let source_key = string_key(&mut scope, "source")?;
+      scope.create_data_property_or_throw(context, source_key, Value::String(source))?;
+    }
+
+    let args = [Value::String(name), val, Value::Object(context)];
     vm.call_with_host_and_hooks(host, &mut scope, hooks, reviver, Value::Object(holder), &args)
   }
 
-  internalize_json_property(vm, &mut scope, host, hooks, root, empty, reviver)
+  internalize_json_property(vm, &mut scope, host, hooks, root, empty, reviver, &meta, &units, None)
+}
+
+/// `JSON.rawJSON` (proposal-era `json-parse-with-source`).
+pub fn json_raw_json(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/proposal-json-parse-with-source/#sec-json.rawjson
+  let mut scope = scope.reborrow();
+
+  let text = args.get(0).copied().unwrap_or(Value::Undefined);
+  let json_string = scope.to_string(vm, host, hooks, text)?;
+  scope.push_root(Value::String(json_string))?;
+
+  // Reject empty strings and leading/trailing whitespace code units.
+  {
+    let s = scope.heap().get_string(json_string)?;
+    let units = s.as_code_units();
+    if units.is_empty() {
+      return Err(json_syntax_error(vm, &mut scope));
+    }
+    let first = units[0];
+    let last = units[units.len() - 1];
+    if matches!(first, 0x0009 | 0x000A | 0x000D | 0x0020)
+      || matches!(last, 0x0009 | 0x000A | 0x000D | 0x0020)
+    {
+      return Err(json_syntax_error(vm, &mut scope));
+    }
+  }
+
+  // Parse `jsonString` as JSON text for validation.
+  //
+  // Copy the UTF-16 code units out of the heap string to avoid holding a heap borrow across
+  // allocations/GC in the parser.
+  let units: Vec<u16> = {
+    let js = scope.heap().get_string(json_string)?;
+    let slice = js.as_code_units();
+    let mut units: Vec<u16> = Vec::new();
+    units
+      .try_reserve_exact(slice.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    vec_try_extend_from_slice(&mut units, slice, || vm.tick())?;
+    units
+  };
+
+  let mut parser = JsonParser::new(&units);
+  let parsed = parser.parse_value(vm, &mut scope)?;
+  scope.push_root(parsed)?;
+  parser.skip_ws(vm, &mut scope)?;
+  if parser.pos != units.len() {
+    return Err(json_syntax_error(vm, &mut scope));
+  }
+
+  // The outermost value must not be an object or array.
+  if matches!(parsed, Value::Object(_)) {
+    return Err(json_syntax_error(vm, &mut scope));
+  }
+
+  // OrdinaryObjectCreate(null, « [[IsRawJSON]] »).
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  // Model `[[IsRawJSON]]` via an engine-private internal-slot marker symbol.
+  let marker_sym = scope.heap_mut().ensure_internal_is_raw_json_symbol()?;
+  let marker_key = PropertyKey::from_symbol(marker_sym);
+  scope.define_property(obj, marker_key, data_desc(Value::Bool(true), false, false, false))?;
+
+  // CreateDataPropertyOrThrow(obj, "rawJSON", jsonString).
+  let raw_json_s = scope.alloc_string("rawJSON")?;
+  scope.push_root(Value::String(raw_json_s))?;
+  scope.create_data_property_or_throw(
+    obj,
+    PropertyKey::from_string(raw_json_s),
+    Value::String(json_string),
+  )?;
+
+  // SetIntegrityLevel(obj, frozen).
+  let ok = set_integrity_level(vm, &mut scope, host, hooks, obj, IntegrityLevel::Frozen)?;
+  if !ok {
+    return Err(VmError::InvariantViolation(
+      "SetIntegrityLevel failed for JSON.rawJSON result",
+    ));
+  }
+
+  Ok(Value::Object(obj))
+}
+
+/// `JSON.isRawJSON` (proposal-era `json-parse-with-source`).
+pub fn json_is_raw_json(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/proposal-json-parse-with-source/#sec-json.israwjson
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(obj) = arg0 else {
+    return Ok(Value::Bool(false));
+  };
+
+  let marker_sym = match scope.heap().internal_is_raw_json_symbol() {
+    Some(sym) => sym,
+    None => return Ok(Value::Bool(false)),
+  };
+
+  let marker_key = PropertyKey::from_symbol(marker_sym);
+  Ok(Value::Bool(
+    scope
+      .heap()
+      .object_get_own_data_property_value(obj, &marker_key)?
+      .is_some(),
+  ))
 }
 
 /// `JSON.stringify` (ECMA-262).
@@ -22154,6 +22615,8 @@ pub fn json_stringify(
     to_json_key: PropertyKey,
     length_key: PropertyKey,
     wrapper_markers: WrapperMarkerKeys,
+    raw_json_marker_key: PropertyKey,
+    raw_json_key: PropertyKey,
   }
 
   fn unbox_primitive_wrapper(
@@ -22357,6 +22820,22 @@ pub fn json_stringify(
       }
       Value::String(s) => quote_json_string(vm, scope, out, s),
       Value::Object(obj) => {
+        if scope
+          .heap()
+          .object_get_own_data_property_value(obj, &state.raw_json_marker_key)?
+          .is_some()
+        {
+          let Some(Value::String(raw_json)) =
+            scope.heap().object_get_own_data_property_value(obj, &state.raw_json_key)?
+          else {
+            return Err(VmError::InvariantViolation(
+              "RawJSON object missing rawJSON string",
+            ));
+          };
+          let units = scope.heap().get_string(raw_json)?.as_code_units();
+          return out.push_units(units, || vm.tick());
+        }
+
         if crate::spec_ops::is_array_with_host_and_hooks(vm, scope, host, hooks, Value::Object(obj))? {
           serialize_json_array(vm, scope, host, hooks, state, out, obj)
         } else {
@@ -22763,6 +23242,13 @@ pub fn json_stringify(
   scope.push_root(Value::String(length_s))?;
   let length_key = PropertyKey::from_string(length_s);
 
+  let raw_json_marker_key =
+    PropertyKey::from_symbol(scope.heap_mut().ensure_internal_is_raw_json_symbol()?);
+
+  let raw_json_s = scope.alloc_string("rawJSON")?;
+  scope.push_root(Value::String(raw_json_s))?;
+  let raw_json_key = PropertyKey::from_string(raw_json_s);
+
   // --- Wrapper object for root ({"": value}) ---
   let wrapper = scope.alloc_object()?;
   scope.push_root(Value::Object(wrapper))?;
@@ -22786,6 +23272,8 @@ pub fn json_stringify(
     to_json_key,
     length_key,
     wrapper_markers,
+    raw_json_marker_key,
+    raw_json_key,
   };
 
   let max_bytes = scope.heap().limits().max_bytes;

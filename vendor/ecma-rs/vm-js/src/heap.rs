@@ -85,6 +85,9 @@ struct InternalSymbols {
   regexp_string_iterator_global: Option<GcSymbol>,
   regexp_string_iterator_unicode: Option<GcSymbol>,
   regexp_string_iterator_done: Option<GcSymbol>,
+
+  // Proposal-era `JSON.rawJSON` internal slot marker (`[[IsRawJSON]]`).
+  is_raw_json: Option<GcSymbol>,
 }
 
 /// Minimum non-zero capacity for heap-internal vectors that can grow due to hostile input.
@@ -744,6 +747,7 @@ impl Heap {
         internal.regexp_string_iterator_global,
         internal.regexp_string_iterator_unicode,
         internal.regexp_string_iterator_done,
+        internal.is_raw_json,
       ];
       for sym in internal_syms.into_iter().flatten() {
         tracer.trace_value(Value::Symbol(sym));
@@ -5809,6 +5813,18 @@ impl Heap {
     )
   }
 
+  pub(crate) fn internal_is_raw_json_symbol(&self) -> Option<GcSymbol> {
+    self.internal_symbols.is_raw_json
+  }
+
+  pub(crate) fn ensure_internal_is_raw_json_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    self.ensure_internal_symbol(
+      "vm-js.internal.IsRawJSON",
+      |s| s.is_raw_json,
+      |s, sym| s.is_raw_json = Some(sym),
+    )
+  }
+
   fn is_internal_symbol(&self, sym: GcSymbol) -> bool {
     let internal = &self.internal_symbols;
     let sym = Some(sym);
@@ -5833,6 +5849,7 @@ impl Heap {
       || sym == internal.regexp_string_iterator_global
       || sym == internal.regexp_string_iterator_unicode
       || sym == internal.regexp_string_iterator_done
+      || sym == internal.is_raw_json
   }
 
   /// Gets an object's own property descriptor.
