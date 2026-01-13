@@ -3261,6 +3261,29 @@ mod tests {
   }
 
   #[test]
+  fn request_idle_callback_deadline_uses_idle_deadline_prototype_when_available(
+  ) -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__ok = false;
+      function IdleDeadline() {}
+      requestIdleCallback((deadline) => {
+        globalThis.__ok = Object.getPrototypeOf(deadline) === IdleDeadline.prototype;
+      });
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let ok = host.exec_script("globalThis.__ok")?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn cancel_idle_callback_prevents_invocation() -> crate::error::Result<()> {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let mut host = make_window_host(dom, "https://example.com/")?;
