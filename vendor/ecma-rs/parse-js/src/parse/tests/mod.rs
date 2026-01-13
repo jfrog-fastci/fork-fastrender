@@ -1,4 +1,5 @@
 mod expr;
+mod for_of;
 mod stmt;
 mod type_member;
 mod class_await;

@@ -847,7 +847,13 @@ impl<'a> Parser<'a> {
       }
       let lhs = p.for_in_of_lhs(header_ctx)?;
       p.require(TT::KeywordOf)?;
-      let rhs = p.expr(header_ctx, [TT::ParenthesisClose])?;
+      // `for-of` expects an `AssignmentExpression` on the right-hand side.
+      // In particular, the top-level comma operator (SequenceExpression) is not
+      // permitted without parentheses:
+      // - `for (x of [], []) {}` is a syntax error
+      // - `for (x of ([], [])) {}` is valid
+      let mut asi = Asi::no();
+      let rhs = p.expr_with_min_prec(header_ctx, 2, [TT::ParenthesisClose], &mut asi)?;
       p.require(TT::ParenthesisClose)?;
       let body = p.for_body(ctx)?;
       Ok(ForOfStmt {
