@@ -256,7 +256,6 @@ pub mod perf_log;
 pub mod perf_log_schema;
 pub mod multiprocess;
 pub mod net;
-#[cfg(feature = "direct_websocket")]
 pub mod network_process;
 pub mod pageset;
 pub mod process_limits;
