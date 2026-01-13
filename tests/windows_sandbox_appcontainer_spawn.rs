@@ -9,6 +9,8 @@ use fastrender::sandbox::windows::{spawn_sandboxed, WindowsSandboxLevel};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
 
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn wait_process(handle: HANDLE) -> io::Result<std::process::ExitStatus> {
   // SAFETY: caller owns the process handle and we wait indefinitely for it to signal.
   let wait_rc = unsafe { WaitForSingleObject(handle, INFINITE) };
@@ -32,6 +34,47 @@ fn wait_process(handle: HANDLE) -> io::Result<std::process::ExitStatus> {
 #[test]
 fn appcontainer_child_smoke() {
   // Intentionally empty.
+}
+
+#[test]
+fn disable_renderer_sandbox_env_forces_unsandboxed_spawn() {
+  let _guard = ENV_LOCK.lock().unwrap();
+
+  const DISABLE_ENV: &str = "FASTR_DISABLE_RENDERER_SANDBOX";
+  const LEGACY_ENV: &str = "FASTR_WINDOWS_RENDERER_SANDBOX";
+
+  let prev_disable = std::env::var_os(DISABLE_ENV);
+  let prev_legacy = std::env::var_os(LEGACY_ENV);
+
+  std::env::set_var(DISABLE_ENV, "1");
+  std::env::remove_var(LEGACY_ENV);
+
+  let exe = std::env::current_exe().expect("current test exe path");
+  let args = vec![
+    OsString::from("--exact"),
+    OsString::from("appcontainer_child_smoke"),
+    OsString::from("--nocapture"),
+  ];
+
+  let child = spawn_sandboxed(&exe, &args, &[]).expect("spawn sandboxed child");
+  assert_eq!(
+    child.level,
+    WindowsSandboxLevel::None,
+    "expected sandbox opt-out to force unsandboxed spawn"
+  );
+
+  let handle = child.process.as_raw_handle() as HANDLE;
+  let status = wait_process(handle).expect("wait for child");
+  assert!(status.success(), "child should exit successfully");
+
+  match prev_disable {
+    Some(value) => std::env::set_var(DISABLE_ENV, value),
+    None => std::env::remove_var(DISABLE_ENV),
+  }
+  match prev_legacy {
+    Some(value) => std::env::set_var(LEGACY_ENV, value),
+    None => std::env::remove_var(LEGACY_ENV),
+  }
 }
 
 /// Regression test for developer builds on Windows where an AppContainer token cannot execute the
