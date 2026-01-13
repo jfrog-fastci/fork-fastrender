@@ -6,10 +6,14 @@ It is written to prevent “small refactors” from accidentally weakening isola
 Code map (repo reality):
 
 - High-level renderer spawn sandboxing:
-  - `src/sandbox/windows.rs` (`spawn_sandboxed(...)`)
+  - `src/sandbox/windows.rs` (`fastrender::sandbox::windows::spawn_sandboxed(...)`)
   - `src/sandbox/windows/appcontainer.rs` (dynamic loader for AppContainer APIs in `userenv.dll`)
 - Reusable Win32 wrappers + tests (not yet fully wired into the renderer spawner):
-  - `crates/win-sandbox/` (`Job`, AppContainer SID helpers, mitigation policy builder + verifier)
+  - `crates/win-sandbox/`
+    - `Job` (job object wrapper + limits)
+    - AppContainer SID helpers (`AppContainerProfile`, `derive_appcontainer_sid`)
+    - Mitigation policy builder + verifier (`mitigations::*`)
+    - A separate Windows spawn helper that applies mitigations: `win_sandbox::spawn_sandboxed(...)`
 
 ## Threat model (renderer on Windows)
 
@@ -90,6 +94,17 @@ This means:
 
 If a future change wants to add a capability, it must be treated as a security-sensitive change
 (and this doc must be updated).
+
+### How AppContainer is applied (process creation)
+
+We create the renderer as an AppContainer process by calling `CreateProcessW` with `STARTUPINFOEXW`
+and setting:
+
+- `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` → a `SECURITY_CAPABILITIES` struct containing:
+  - `AppContainerSid = <derived AppContainer SID>`
+  - `Capabilities = NULL`, `CapabilityCount = 0` (no capabilities)
+
+This is implemented in `src/sandbox/windows.rs::spawn_appcontainer`.
 
 ### Filesystem expectations
 
@@ -179,6 +194,10 @@ This is an *explicit allowlist* of inheritable handles:
   handles can cross the boundary.
 - When no handles are needed, `bInheritHandles = FALSE` so there is no “ambient inheritance”.
 
+Note: handles still need to be created/marked inheritable (e.g. `bInheritHandle=TRUE` at creation,
+or `SetHandleInformation(HANDLE_FLAG_INHERIT, ...)`). The allowlist prevents *extra* inheritable
+handles from leaking into the sandboxed child.
+
 Why this matters:
 
 - Relying on “make everything non-inheritable” is brittle: a new feature might accidentally create
@@ -204,6 +223,11 @@ In repo reality today:
 - `crates/win-sandbox/src/spawn.rs` can apply it during process creation.
 - Escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1` disables **mitigation policies only** (useful for
   debugging/compatibility).
+
+Important: `src/sandbox/windows.rs::spawn_sandboxed` does **not** currently apply these mitigation
+policies. Do not assume mitigations are active unless the spawn path explicitly uses the
+`crates/win-sandbox` helper (this is expected to be consolidated as the multiprocess architecture
+lands).
 
 These mitigations reduce the renderer’s attack surface against:
 
@@ -236,6 +260,9 @@ If AppContainer is unavailable or fails to initialize, we fall back to a “best
 - Create a **restricted token** via `CreateRestrictedToken(..., DISABLE_MAX_PRIVILEGE, ...)`.
 - Set the token’s **Integrity Level (IL)** to **Low** (`S-1-16-4096`).
 
+Then we spawn the child using `CreateProcessAsUserW` with the restricted primary token (see
+`src/sandbox/windows.rs::spawn_restricted_token`).
+
 This is meaningfully weaker than AppContainer:
 
 - **Network is not reliably blocked.** A restricted/low-IL process can usually still open outbound
@@ -253,6 +280,19 @@ Guidance:
   mode unless explicitly proven otherwise.
 
 ## Debugging / verification tips
+
+### Useful environment variables
+
+From `src/sandbox/windows.rs` (spawn-time sandboxing):
+
+- `FASTR_LOG_SANDBOX=1`: enable verbose stderr logging for sandbox spawn decisions (AppContainer
+  availability, `ERROR_ACCESS_DENIED` retries, breakaway/job assignment warnings).
+- `FASTR_DISABLE_RENDERER_SANDBOX=1` / `FASTR_WINDOWS_RENDERER_SANDBOX=off`: disable Windows
+  renderer sandboxing entirely (**debug only; insecure**).
+
+From `crates/win-sandbox` (mitigation-only escape hatch):
+
+- `FASTR_DISABLE_WIN_MITIGATIONS=1`: do not apply mitigation policies during process spawn.
 
 ### Verify AppContainer / Job in Process Explorer
 
@@ -306,3 +346,30 @@ When debugging, include in logs:
 - the numeric error code
 - whether AppContainer or fallback mode was used
 - which mitigation flags were requested
+
+### Common issue: AppContainer `ERROR_ACCESS_DENIED` executing dev binaries
+
+Unpackaged dev/test binaries are often not executable by an AppContainer token because their
+directory does not grant read/execute access to the derived AppContainer SID.
+
+Repo reality (`src/sandbox/windows.rs::spawn_appcontainer`):
+
+- If the first `CreateProcessW` fails with `ERROR_ACCESS_DENIED`, we copy the image to a temporary
+  directory and grant read/execute ACLs (prefer the derived AppContainer SID; fallback to **ALL
+  APPLICATION PACKAGES**), then retry.
+- We also set `lpCurrentDirectory` to the temp dir on retry to avoid inheriting a parent CWD the
+  AppContainer can’t read.
+
+Enable `FASTR_LOG_SANDBOX=1` to see which path was taken.
+
+## Tests / regression coverage
+
+Windows-only tests that encode the intended boundary:
+
+- Handle allowlisting (no handle leaks): `tests/sandbox/windows_handle_inheritance.rs`
+- No child processes (active process job limit): `tests/sandbox/windows_no_child_process.rs`
+- Parent process handle escape attempt: `tests/sandbox/windows_process_handle_escape.rs`
+- AppContainer spawn smoke: `tests/windows_sandbox_appcontainer_spawn.rs`
+- Job object invariants (kill-on-close, process count): `crates/win-sandbox/tests/job_limits.rs`
+- Mitigation policy verification: `crates/win-sandbox/src/lib.rs` tests +
+  `crates/win-sandbox/src/mitigations.rs::verify_renderer_mitigations_current_process`
