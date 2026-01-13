@@ -220,10 +220,10 @@ where
 /// Convert an ECMAScript value to an IDL `record<K, V>` value.
 ///
 /// This follows the WebIDL "js-to-record" algorithm shape:
-/// - If the input value is not an Object, throw a TypeError.
+/// - If the input value is not an Object, throw a TypeError (no `ToObject` boxing).
 /// - Only own enumerable keys are considered.
 /// - Record conversion applies WebIDL `PropertyKeyToString` / ECMAScript `ToString(key)`, so
-///   enumerable Symbol keys throw a TypeError.
+///   enumerable Symbol keys throw a TypeError (and only string keys contribute entries).
 ///
 /// The bindings layer representation used by the `vm-js` WebIDL backend is a JavaScript plain
 /// object containing the converted values.

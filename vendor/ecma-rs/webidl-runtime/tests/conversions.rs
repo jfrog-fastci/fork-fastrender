@@ -470,6 +470,13 @@ fn record_conversion_rejects_non_objects() {
 
   let err = convert_to_idl(&mut rt, Value::Bool(true), &ty, &ctx).unwrap_err();
   assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
+
+  let err = convert_to_idl(&mut rt, Value::Number(1.0), &ty, &ctx).unwrap_err();
+  assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
+
+  let s = rt.alloc_string_value("x").unwrap();
+  let err = convert_to_idl(&mut rt, s, &ty, &ctx).unwrap_err();
+  assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
 }
 
 #[test]

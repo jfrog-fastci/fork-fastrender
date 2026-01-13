@@ -300,12 +300,13 @@ fn record_conversion_rejects_non_objects() -> Result<(), VmError> {
   let mut rt = BindingsRuntime::from_scope(&mut vm, scope.reborrow());
   let intr = realm.intrinsics();
 
+  let expected_message = "expected object for record";
   let err = conversions::to_record(
     &mut rt,
     &mut dummy_host,
     &mut hooks,
     Value::Bool(true),
-    "expected object for record",
+    expected_message,
     |_rt, _host, _hooks, v| Ok(v),
   )
   .expect_err("expected non-object record input to throw");
@@ -315,16 +316,14 @@ fn record_conversion_rejects_non_objects() -> Result<(), VmError> {
     err,
     intr.type_error_prototype(),
     "TypeError",
-    "expected object for record",
+    expected_message,
   )?;
-
-  let hi = rt.alloc_string("hi")?;
   let err = conversions::to_record(
     &mut rt,
     &mut dummy_host,
     &mut hooks,
-    Value::String(hi),
-    "expected object for record",
+    Value::Number(1.0),
+    expected_message,
     |_rt, _host, _hooks, v| Ok(v),
   )
   .expect_err("expected non-object record input to throw");
@@ -334,7 +333,26 @@ fn record_conversion_rejects_non_objects() -> Result<(), VmError> {
     err,
     intr.type_error_prototype(),
     "TypeError",
-    "expected object for record",
+    expected_message,
+  )?;
+
+  let s = rt.alloc_string("hi")?;
+  let err = conversions::to_record(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::String(s),
+    expected_message,
+    |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected non-object record input to throw");
+  assert_thrown_error(
+    &mut rt,
+    &realm,
+    err,
+    intr.type_error_prototype(),
+    "TypeError",
+    expected_message,
   )?;
 
   drop(rt);
