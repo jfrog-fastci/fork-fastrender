@@ -229,7 +229,7 @@ mod macos {
   "#
           )
         },
-        0,
+        SANDBOX_PROFILE,
       ),
       SandboxMode::Relaxed => (
         r#"(version 1)
@@ -239,7 +239,7 @@ mod macos {
   (deny file-read* (literal "/private/etc/passwd"))
   "#
         .to_string(),
-        0,
+        SANDBOX_PROFILE,
       ),
       SandboxMode::PureComputation => ("pure-computation".to_string(), SANDBOX_NAMED),
     }
@@ -515,12 +515,35 @@ mod macos {
     fn sandbox_free_error(errorbuf: *mut libc::c_char);
   }
 
-  const SANDBOX_NAMED: u64 = 1;
+  const SANDBOX_NAMED: u64 = 0x0001;
+  const SANDBOX_PROFILE: u64 = 0x0002;
   const POSIX_SHM_LEN: usize = 4096;
 
-  fn apply_sandbox(profile: &str, flags: u64) -> Result<(), String> {
-    let profile =
-      CString::new(profile).map_err(|_| "sandbox profile contains NUL byte".to_string())?;
+  // Minimal embedded fallback for the strict `pure-computation` sandbox.
+  //
+  // This matches `src/sandbox/macos.rs`'s embedded fallback: deny filesystem + network while still
+  // allowing enough of the runtime to keep the process alive.
+  const PURE_COMPUTATION_FALLBACK_PROFILE: &str = r#"(version 1)
+(deny default)
+(deny file-read*)
+(deny file-write*)
+(deny network*)
+(allow process*)
+(allow sysctl-read)
+(allow mach-lookup)
+(allow ipc-posix-shm)
+(allow ipc-posix-sem)
+"#;
+
+  fn error_indicates_unknown_profile(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("unknown profile")
+      || lower.contains("no such profile")
+      || lower.contains("profile not found")
+      || lower.contains("invalid profile")
+  }
+
+  fn sandbox_init_profile(profile: &CStr, flags: u64) -> Result<(), String> {
     let mut errorbuf: *mut libc::c_char = std::ptr::null_mut();
     // SAFETY: Calls into macOS' libsandbox. `errorbuf` is either left null or set to a malloc'd
     // C-string that must be released with `sandbox_free_error`.
@@ -538,6 +561,31 @@ mod macos {
     // SAFETY: `sandbox_free_error` is the documented destructor for the returned buffer.
     unsafe { sandbox_free_error(errorbuf) };
     Err(message)
+  }
+
+  fn apply_sandbox(profile: &str, flags: u64) -> Result<(), String> {
+    let profile =
+      CString::new(profile).map_err(|_| "sandbox profile contains NUL byte".to_string())?;
+
+    match sandbox_init_profile(&profile, flags) {
+      Ok(()) => Ok(()),
+      Err(err) => {
+        if flags == SANDBOX_NAMED && error_indicates_unknown_profile(&err) {
+          // Fall back to applying a minimal embedded profile as raw SBPL source.
+          let fallback = CString::new(PURE_COMPUTATION_FALLBACK_PROFILE)
+            .expect("embedded fallback contains no NUL bytes");
+          match sandbox_init_profile(&fallback, SANDBOX_PROFILE) {
+            Ok(()) => Ok(()),
+            Err(fallback_err) => Err(format!(
+              "failed to apply Seatbelt named profile '{}' (error: {err}); fallback profile also failed (error: {fallback_err})",
+              profile.to_string_lossy()
+            )),
+          }
+        } else {
+          Err(err)
+        }
+      }
+    }
   }
 
   // ============================================================================

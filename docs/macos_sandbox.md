@@ -208,6 +208,8 @@ is listening there you may see `connection refused` instead of a sandbox permiss
 - `--mode pure-computation`
   - Applies Apple’s built-in `pure-computation` Seatbelt profile (very strict).
   - This is the closest quick approximation to a “renderer can only compute” sandbox.
+  - Some macOS versions do not ship the named profile (or treat it as invalid). In that case, the
+    probe falls back to an embedded SBPL profile that denies filesystem + network.
 
 Note: on macOS, `/etc` is typically a symlink into `/private/etc` (and similarly `/var` → `/private/var`).
 The probe’s built-in Seatbelt profiles deny both the public and `/private/*` paths so the results are
