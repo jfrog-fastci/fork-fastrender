@@ -78,12 +78,16 @@ impl BrowserDocumentJs {
   }
 
   pub fn with_event_loop_and_js_execution_options(
-    document: BrowserDocumentDom2,
+    mut document: BrowserDocumentDom2,
     mut event_loop: EventLoop<Self>,
     js_execution_options: JsExecutionOptions,
   ) -> Self {
     // Ensure the provided event loop inherits the queue limits from our config surface.
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+    // Align the document animation timeline with the event loop's clock so `requestAnimationFrame`,
+    // timers, and real-time CSS animation sampling can be driven deterministically with a virtual
+    // clock.
+    document.set_animation_clock(event_loop.clock());
     Self {
       document,
       js_runtime: VmJsRuntime::new(),
@@ -150,6 +154,58 @@ impl BrowserDocumentJs {
     // Always restore the event loop, even when JS execution returns an error.
     self.event_loop = Some(event_loop);
     step_result?;
+
+    // Mirror `run_until_stable` by executing one animation frame turn when rAF callbacks are
+    // pending. Any microtasks queued during the frame are drained via a standalone microtask
+    // checkpoint (tasks remain queued for subsequent ticks).
+    if self
+      .event_loop
+      .as_ref()
+      .is_some_and(|event_loop| event_loop.has_pending_animation_frame_callbacks())
+    {
+      let Some(mut event_loop) = self.event_loop.take() else {
+        return Err(Error::Other(
+          "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+            .to_string(),
+        ));
+      };
+
+      let raf_outcome = match event_loop.run_animation_frame(self) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+          // Always restore the event loop, even when JS execution returns an error.
+          self.event_loop = Some(event_loop);
+          return Err(err);
+        }
+      };
+
+      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+        let microtask_limits = RunLimits {
+          max_tasks: 0,
+          max_microtasks: run_limits.max_microtasks,
+          max_wall_time: run_limits.max_wall_time,
+        };
+        match event_loop.run_until_idle(self, microtask_limits) {
+          Ok(RunUntilIdleOutcome::Idle)
+          | Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. })) => {}
+          Ok(RunUntilIdleOutcome::Stopped(reason)) => {
+            // Always restore the event loop, even when JS execution returns an error.
+            self.event_loop = Some(event_loop);
+            return Err(crate::error::Error::Other(format!(
+              "BrowserDocumentJs::tick_frame microtask checkpoint stopped: {reason:?}"
+            )));
+          }
+          Err(err) => {
+            // Always restore the event loop, even when JS execution returns an error.
+            self.event_loop = Some(event_loop);
+            return Err(err);
+          }
+        }
+      }
+
+      // Always restore the event loop, even when JS execution returns an error.
+      self.event_loop = Some(event_loop);
+    }
     self.render_if_needed()
   }
 
@@ -526,6 +582,53 @@ mod tests {
 
     assert!(runtime.tick_frame()?.is_none(), "expected no further work");
     assert!(!runtime.document().is_dirty());
+    Ok(())
+  }
+
+  #[test]
+  fn tick_frame_runs_animation_frame_callbacks() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
+
+    // Clear initial invalidations so the only render is triggered by rAF-driven DOM changes.
+    runtime.document_mut().render_frame()?;
+
+    let microtask_ran: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let microtask_ran_for_raf = Rc::clone(&microtask_ran);
+
+    runtime
+      .event_loop_mut()?
+      .request_animation_frame(move |host, event_loop, _timestamp| {
+        set_first_text(host.document.dom_mut(), "raf");
+
+        let microtask_ran_for_microtask = Rc::clone(&microtask_ran_for_raf);
+        event_loop.queue_microtask(move |_host, _event_loop| {
+          *microtask_ran_for_microtask.borrow_mut() = true;
+          Ok(())
+        })?;
+
+        Ok(())
+      })?;
+
+    let pixmap = runtime.tick_frame()?;
+    assert!(pixmap.is_some(), "expected render after rAF callback");
+
+    let id = first_text_node_id(runtime.document().dom()).expect("text node");
+    let NodeKind::Text { content } = &runtime.document().dom().node(id).kind else {
+      panic!("expected text node");
+    };
+    assert_eq!(content, "raf");
+    assert!(*microtask_ran.borrow(), "expected microtask queued by rAF to run");
+
     Ok(())
   }
 
