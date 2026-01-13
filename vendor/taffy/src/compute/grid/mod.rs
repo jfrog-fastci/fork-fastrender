@@ -475,6 +475,7 @@ fn collect_subgrid_virtual_items_recursive<
   container_item: &GridItem,
   parent_row_names: &[Vec<Ident>],
   parent_col_names: &[Vec<Ident>],
+  parent_template_areas: &[GridTemplateArea<Ident>],
   parent_gap: Size<f32>,
   gap_percentage_basis: Size<Option<f32>>,
   parent_mapping: InBothAbsAxis<SubgridVirtualItemMapping>,
@@ -563,13 +564,37 @@ fn collect_subgrid_virtual_items_recursive<
     Vec::new()
   };
 
+  let template_areas = if subgrid_rows && subgrid_columns {
+    inherited_template_areas_for_subgrid(
+      container_item.row,
+      container_item.column,
+      parent_template_areas,
+    )
+  } else {
+    Vec::new()
+  };
+
   let row_line_names = if subgrid_rows {
-    inherited_line_names(row_span, row_start, parent_row_names, &child_row_extra)
+    let mut extra = inherited_area_line_names(
+      row_span,
+      row_start,
+      parent_template_areas,
+      AbstractAxis::Block,
+    );
+    merge_line_names(&mut extra, &child_row_extra);
+    inherited_line_names(row_span, row_start, parent_row_names, &extra)
   } else {
     to_ident_line_names(&container_style_ref.grid_template_row_names)
   };
   let col_line_names = if subgrid_columns {
-    inherited_line_names(col_span, col_start, parent_col_names, &child_col_extra)
+    let mut extra = inherited_area_line_names(
+      col_span,
+      col_start,
+      parent_template_areas,
+      AbstractAxis::Inline,
+    );
+    merge_line_names(&mut extra, &child_col_extra);
+    inherited_line_names(col_span, col_start, parent_col_names, &extra)
   } else {
     to_ident_line_names(&container_style_ref.grid_template_column_names)
   };
@@ -762,6 +787,7 @@ fn collect_subgrid_virtual_items_recursive<
             &sub_item,
             &row_line_names,
             &col_line_names,
+            template_areas.as_slice(),
             container_gap,
             gap_percentage_basis,
             container_mapping,
@@ -817,6 +843,7 @@ fn collect_subgrid_virtual_items<
   items: &[GridItem],
   parent_row_names: &[Vec<Ident>],
   parent_col_names: &[Vec<Ident>],
+  parent_template_areas: &[GridTemplateArea<Ident>],
   parent_style: &Style,
   gap_percentage_basis: Size<Option<f32>>,
   final_col_counts: TrackCounts,
@@ -858,6 +885,7 @@ fn collect_subgrid_virtual_items<
       item,
       parent_row_names,
       parent_col_names,
+      parent_template_areas,
       parent_gap,
       gap_percentage_basis,
       root_mapping,
@@ -1299,6 +1327,7 @@ where
     &items,
     &parent_row_line_names,
     &parent_col_line_names,
+    template_areas_for_children,
     style,
     gap_percentage_basis,
     final_col_counts,
