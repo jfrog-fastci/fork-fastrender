@@ -19,7 +19,7 @@ Multiprocess architecture & security:
 - Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
 - Sandboxing overview (renderer process): [`docs/sandboxing.md`](sandboxing.md)
 - macOS Seatbelt sandboxing (overview + probe tool): [`docs/macos_sandbox.md`](macos_sandbox.md)
-- macOS `.app` App Sandbox entitlements (future packaging): [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md)
+- macOS renderer sandboxing (Seatbelt now, App Sandbox later): [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md)
 - Site isolation process model (per-origin + OOPIF): [`docs/site_isolation.md`](site_isolation.md)
 - Chrome JS bridge (trusted UI pages): [`docs/chrome_js_bridge.md`](chrome_js_bridge.md)
 - Renderer-chrome internal schemes (`chrome://` assets, `chrome-action:` actions): [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md)

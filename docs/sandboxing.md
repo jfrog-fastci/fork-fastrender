@@ -18,7 +18,7 @@ Related docs (other platforms / tooling):
 - Linux seccomp allowlist workflow: [seccomp_allowlist.md](seccomp_allowlist.md)
 - Windows renderer sandbox boundary (Job/AppContainer details): [windows_sandbox.md](windows_sandbox.md)
 - macOS sandbox probe tool: [macos_sandbox.md](macos_sandbox.md)
-- macOS `.app` App Sandbox entitlements (future packaging): [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md)
+- macOS renderer sandboxing (Seatbelt now, App Sandbox later): [security/macos_renderer_sandbox.md](security/macos_renderer_sandbox.md)
 
 ## Windows sandbox implementation
 
