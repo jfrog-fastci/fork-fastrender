@@ -1,13 +1,13 @@
 #![cfg(windows)]
 
-use win_sandbox::{AppContainerProfile, WinSandboxError};
+use win_sandbox::{AppContainerProfile, SandboxSupport, WinSandboxError};
 
 const APPCONTAINER_NAME: &str = "FastRender.Renderer";
 const APPCONTAINER_DISPLAY_NAME: &str = "FastRender Renderer";
 const APPCONTAINER_DESCRIPTION: &str = "FastRender renderer AppContainer profile";
 
 fn hresult_from_win32_code(hresult: u32) -> Option<u32> {
-  // HRESULT_FROM_WIN32 encodes the original Win32 error code in the low 16 bits with facility 7.
+  // `HRESULT_FROM_WIN32` encodes the original Win32 error code in the low 16 bits with facility 7.
   const FACILITY_WIN32_MASK: u32 = 0xFFFF_0000;
   const FACILITY_WIN32_PREFIX: u32 = 0x8007_0000;
   if (hresult & FACILITY_WIN32_MASK) == FACILITY_WIN32_PREFIX {
@@ -26,7 +26,9 @@ fn win32_code_from_error(err: &WinSandboxError) -> Option<u32> {
 }
 
 fn should_skip_appcontainer_error(err: &WinSandboxError) -> bool {
-  use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_NOT_SUPPORTED, ERROR_PROC_NOT_FOUND};
+  use windows_sys::Win32::Foundation::{
+    ERROR_ACCESS_DENIED, ERROR_NOT_SUPPORTED, ERROR_PROC_NOT_FOUND,
+  };
 
   const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 
@@ -73,5 +75,15 @@ pub(crate) fn require_appcontainer_profile(test_name: &str) -> bool {
 This likely indicates a regression in the AppContainer support code, not missing OS support."
     ),
   }
+}
+
+pub(crate) fn require_full_sandbox_support(test_name: &str) -> bool {
+  let support = SandboxSupport::detect();
+  if support != SandboxSupport::Full {
+    eprintln!("skipping {test_name}: full sandbox support unavailable ({support})");
+    return false;
+  }
+
+  require_appcontainer_profile(test_name)
 }
 

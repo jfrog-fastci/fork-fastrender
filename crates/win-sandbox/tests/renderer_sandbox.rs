@@ -9,7 +9,6 @@ use std::process::Command;
 use tempfile::tempdir;
 
 use win_sandbox::renderer::RendererSandbox;
-use win_sandbox::SandboxSupport;
 
 fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
   let mut grant = OsString::from(sid);
@@ -38,14 +37,9 @@ fn icacls_grant_rx(path: &std::path::Path, sid: &str, inherit: bool) {
 
 #[test]
 fn renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren() {
-  let support = SandboxSupport::detect();
-  if support != SandboxSupport::Full {
-    eprintln!(
-      "skipping win-sandbox renderer sandbox integration test: full sandbox support unavailable ({support})"
-    );
-    return;
-  }
-  if !common::require_appcontainer_profile("win-sandbox renderer sandbox integration test") {
+  if !common::require_full_sandbox_support(
+    "renderer_sandbox_spawns_appcontainer_job_and_blocks_grandchildren",
+  ) {
     return;
   }
 
