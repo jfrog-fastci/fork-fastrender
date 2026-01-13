@@ -9069,6 +9069,64 @@ pub fn function_prototype_to_string(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  fn strip_class_member_static_prefix(snippet: &str) -> &str {
+    const STATIC_KW: &str = "static";
+    if !snippet.starts_with(STATIC_KW) {
+      return snippet;
+    }
+
+    let rest = &snippet[STATIC_KW.len()..];
+
+    // If this span begins with an identifier that merely starts with "static" (e.g. `staticFoo()`),
+    // don't strip anything.
+    //
+    // `Function.prototype.toString` uses the stored source span for correctness, so we must avoid
+    // stripping prefixes on plain identifiers.
+    if matches!(
+      rest.as_bytes().first(),
+      Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$')
+    ) {
+      return snippet;
+    }
+
+    // Skip trivia between `static` and the actual method definition so `static /* comment */ async`
+    // yields the same `toString()` output as `async`.
+    let bytes = rest.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+      match bytes[i] {
+        b' ' | b'\t' | b'\r' | b'\n' => i += 1,
+        b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
+          i += 2;
+          while i < bytes.len() && bytes[i] != b'\n' {
+            i += 1;
+          }
+        }
+        b'/' if i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
+          i += 2;
+          while i + 1 < bytes.len() {
+            if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+              i += 2;
+              break;
+            }
+            i += 1;
+          }
+        }
+        _ => break,
+      }
+    }
+
+    let trimmed = &rest[i..];
+
+    // `static()` is a non-static method whose name is `static`; do not strip the keyword in that
+    // case. (The parser treats `static` as a modifier only when it is not followed by `(`.)
+    if trimmed.starts_with('(') {
+      snippet
+    } else {
+      trimmed
+    }
+  }
+
   if !scope.heap().is_callable(this)? {
     return Err(VmError::TypeError(
       "Function.prototype.toString called on non-callable receiver",
@@ -9151,6 +9209,10 @@ pub fn function_prototype_to_string(
         let s = canonical_native_function_string(scope, name)?;
         return Ok(Value::String(s));
       };
+
+      if kind == crate::vm::EcmaFunctionKind::ClassMember {
+        snippet = strip_class_member_static_prefix(snippet);
+      }
 
       // `parse-js` spans for some expression nodes can include trailing delimiter tokens from the
       // enclosing syntax (e.g. `;` from expression statements). `Function.prototype.toString`
