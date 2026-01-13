@@ -168,8 +168,11 @@ Linux sandbox code lives in:
 Repo reality (today): the Linux seccomp sandbox is designed to:
 
 - deny path-based filesystem opens (`open`, `openat`, `openat2`, `creat`)
-- deny network socket creation by default (including `AF_UNIX`), and deny socket operations
-  (`connect`/`sendmsg`/`recvmsg`/etc).
+- deny network socket creation by default (including `AF_UNIX`), and deny most socket-specific
+  syscalls (`connect`/`sendmsg`/`recvmsg`/etc).
+  - Pre-existing inherited socketpairs can still be used via `read(2)`/`write(2)` (they are just file
+    descriptors at that point), but features like FD passing (`SCM_RIGHTS`) require allowing
+    `sendmsg`/`recvmsg`.
   - When an embedding explicitly opts in (see `NetworkPolicy::AllowUnixSocketsOnly` in
     `src/sandbox/mod.rs`), `socket(AF_UNIX, ...)` / `socketpair(AF_UNIX, ...)` are allowed for local
     IPC while non-Unix socket creation remains denied.
