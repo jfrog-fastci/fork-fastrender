@@ -2494,6 +2494,57 @@ mod tests {
   }
 
   #[test]
+  fn structured_clone_uint8_array_does_not_invoke_shadowed_buffer_getter() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(4);\
+         const u8 = new Uint8Array(ab);\
+         u8[0] = 1; u8[1] = 2; u8[2] = 3; u8[3] = 4;\
+         Object.defineProperty(u8, 'buffer', { get() { throw 1; } });\
+         let threw = false;\
+         try { u8.buffer; } catch (e) { threw = e === 1; }\
+         if (!threw) return false;\
+         const c = structuredClone(u8);\
+         if (!(c instanceof Uint8Array)) return false;\
+         if (Object.getPrototypeOf(c) !== Uint8Array.prototype) return false;\
+         if (c.length !== 4) return false;\
+         if (c[0] !== 1 || c[1] !== 2 || c[2] !== 3 || c[3] !== 4) return false;\
+         if (c.buffer === ab) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn structured_clone_data_view_does_not_invoke_shadowed_buffer_getter() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let ok = realm.exec_script(
+      "(() => {\
+         const ab = new ArrayBuffer(4);\
+         const dv = new DataView(ab);\
+         dv.setUint8(0, 9);\
+         dv.setUint8(1, 8);\
+         Object.defineProperty(dv, 'buffer', { get() { throw 1; } });\
+         let threw = false;\
+         try { dv.buffer; } catch (e) { threw = e === 1; }\
+         if (!threw) return false;\
+         const c = structuredClone(dv);\
+         if (!(c instanceof DataView)) return false;\
+         if (Object.getPrototypeOf(c) !== DataView.prototype) return false;\
+         if (c.byteOffset !== 0 || c.byteLength !== 4) return false;\
+         if (c.getUint8(0) !== 9 || c.getUint8(1) !== 8) return false;\
+         if (c.buffer === ab) return false;\
+         return true;\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
   fn structured_clone_transfer_list_detach_even_if_unreferenced() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(
