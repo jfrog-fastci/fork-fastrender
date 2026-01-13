@@ -180,6 +180,13 @@ fn is_crash_panic_url(url: &str) -> bool {
       .is_some_and(|host| host.eq_ignore_ascii_case("panic"))
 }
 
+/// Rate limit for debug logs emitted when renderer-preorder → dom2 mapping fails during JS event
+/// dispatch.
+///
+/// Mouse move/hover events can be delivered at a very high frequency; keep logs bounded so mapping
+/// bugs show up in integration test output without spamming.
+const JS_EVENT_TARGET_MAPPING_LOG_INTERVAL: Duration = Duration::from_secs(1);
+
 // -----------------------------------------------------------------------------
 // Favicon loading
 // -----------------------------------------------------------------------------
@@ -421,8 +428,8 @@ struct TabState {
   /// `<wbr>` ZWSP text). Use `dom2::RendererDomMapping` instead.
   js_dom_mapping_generation: u64,
   js_dom_mapping: Option<crate::dom2::RendererDomMapping>,
-  /// Debug-log rate limiter for missing JS DOM mappings.
-  js_dom_mapping_miss_logged: bool,
+  /// Debug-log rate limiter for missing JS DOM mappings, keyed by event type.
+  js_dom_mapping_miss_log_last: HashMap<&'static str, Instant>,
   /// True when the JS tab's DOM has changed and needs to be synced into `document` before the next
   /// paint.
   js_dom_dirty: bool,
@@ -469,7 +476,7 @@ impl TabState {
       js_tab: None,
       js_dom_mapping_generation: 0,
       js_dom_mapping: None,
-      js_dom_mapping_miss_logged: false,
+      js_dom_mapping_miss_log_last: HashMap::new(),
       js_dom_dirty: false,
       js_dom_mutation_generation: 0,
       interaction: InteractionEngine::new(),
@@ -504,7 +511,7 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
     tab.js_dom_mutation_generation = 0;
     tab.js_dom_mapping_generation = 0;
     tab.js_dom_mapping = None;
-    tab.js_dom_mapping_miss_logged = false;
+    tab.js_dom_mapping_miss_log_last.clear();
     return;
   };
 
@@ -528,7 +535,7 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
       tab.js_dom_mutation_generation = generation;
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_mapping_miss_log_last.clear();
       return;
     }
   };
@@ -546,7 +553,7 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   });
   tab.js_dom_mapping_generation = generation;
   tab.js_dom_mapping = Some(mapping);
-  tab.js_dom_mapping_miss_logged = false;
+  tab.js_dom_mapping_miss_log_last.clear();
   tab.js_dom_dirty = false;
   tab.js_dom_mutation_generation = generation;
 }
@@ -798,9 +805,10 @@ fn js_dom_node_for_preorder_id_with_log(
   element_id: Option<&str>,
   js_dom_mapping_generation: &mut u64,
   js_dom_mapping: &mut Option<crate::dom2::RendererDomMapping>,
-  js_dom_mapping_miss_logged: &mut bool,
+  js_dom_mapping_miss_log_last: &mut HashMap<&'static str, Instant>,
   event_name: &'static str,
 ) -> Option<crate::dom2::NodeId> {
+  let mapping_cache_existed = js_dom_mapping.is_some();
   let node_id = js_dom_node_for_preorder_id(
     js_tab,
     preorder_id,
@@ -808,14 +816,22 @@ fn js_dom_node_for_preorder_id_with_log(
     js_dom_mapping_generation,
     js_dom_mapping,
   );
-  if debug_log_enabled && node_id.is_none() && !*js_dom_mapping_miss_logged {
-    let _ = ui_tx.send(WorkerToUi::DebugLog {
-      tab_id,
-      line: format!(
-        "js {event_name} event target mapping failed for renderer preorder id {preorder_id}"
-      ),
-    });
-    *js_dom_mapping_miss_logged = true;
+  if debug_log_enabled && node_id.is_none() {
+    let now = Instant::now();
+    let should_emit = match js_dom_mapping_miss_log_last.get(event_name) {
+      None => true,
+      Some(last) => now.duration_since(*last) >= JS_EVENT_TARGET_MAPPING_LOG_INTERVAL,
+    };
+    if should_emit {
+      js_dom_mapping_miss_log_last.insert(event_name, now);
+      let _ = ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!(
+          "js event target mapping failed: type={event_name} preorder_id={preorder_id} element_id_present={} mapping_cache_present={mapping_cache_existed}",
+          element_id.is_some(),
+        ),
+      });
+    }
   }
   node_id
 }
@@ -4218,12 +4234,17 @@ impl BrowserRuntime {
       prev_target
     } else {
       hovered_dom_node_id.and_then(|preorder_id| {
-        js_dom_node_for_preorder_id(
+        js_dom_node_for_preorder_id_with_log(
+          &self.ui_tx,
+          tab_id,
+          self.debug_log_enabled,
           js_tab,
           preorder_id,
           hovered_dom_element_id.as_deref(),
           &mut tab.js_dom_mapping_generation,
           &mut tab.js_dom_mapping,
+          &mut tab.js_dom_mapping_miss_log_last,
+          "mousemove",
         )
       })
     };
@@ -4513,12 +4534,17 @@ impl BrowserRuntime {
         tab.js_tab.as_ref().map(|js_tab| js_tab.dom().mutation_generation());
       let mut dispatched_dom_event = false;
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target = js_dom_node_for_preorder_id(
+        let target = js_dom_node_for_preorder_id_with_log(
+          &self.ui_tx,
+          tab_id,
+          self.debug_log_enabled,
           js_tab,
           target_id,
           target_element_id.as_deref(),
           &mut tab.js_dom_mapping_generation,
           &mut tab.js_dom_mapping,
+          &mut tab.js_dom_mapping_miss_log_last,
+          "mousedown",
         );
         if let Some(node_id) = target {
           dispatched_dom_event = true;
@@ -4620,12 +4646,17 @@ impl BrowserRuntime {
 
       if let Some(target_id) = target_id {
         if let Some(js_tab) = tab.js_tab.as_mut() {
-          let target = js_dom_node_for_preorder_id(
+          let target = js_dom_node_for_preorder_id_with_log(
+            &self.ui_tx,
+            tab_id,
+            self.debug_log_enabled,
             js_tab,
             target_id,
             target_element_id.as_deref(),
             &mut tab.js_dom_mapping_generation,
             &mut tab.js_dom_mapping,
+            &mut tab.js_dom_mapping_miss_log_last,
+            "mouseup",
           );
           if let Some(node_id) = target {
             dispatched_dom_event = true;
@@ -4906,14 +4937,18 @@ impl BrowserRuntime {
 
     if let Some(target_id) = mouseup_target {
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target =
-          js_dom_node_for_preorder_id(
-            js_tab,
-            target_id,
-            mouseup_target_element_id.as_deref(),
-            &mut tab.js_dom_mapping_generation,
-            &mut tab.js_dom_mapping,
-          );
+        let target = js_dom_node_for_preorder_id_with_log(
+          &self.ui_tx,
+          tab_id,
+          self.debug_log_enabled,
+          js_tab,
+          target_id,
+          mouseup_target_element_id.as_deref(),
+          &mut tab.js_dom_mapping_generation,
+          &mut tab.js_dom_mapping,
+          &mut tab.js_dom_mapping_miss_log_last,
+          "mouseup",
+        );
         if let Some(node_id) = target {
           dispatched_dom_event = true;
           let mouse = web_events::MouseEvent {
@@ -4952,10 +4987,11 @@ impl BrowserRuntime {
     let mut default_allowed = true;
     if let Some(target_id) = click_target {
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let click_type = match button {
+        let click_type: &'static str = match button {
           PointerButton::Middle => "auxclick",
           _ => "click",
         };
+
         let target = js_dom_node_for_preorder_id_with_log(
           &self.ui_tx,
           tab_id,
@@ -4965,7 +5001,7 @@ impl BrowserRuntime {
           click_target_element_id.as_deref(),
           &mut tab.js_dom_mapping_generation,
           &mut tab.js_dom_mapping,
-          &mut tab.js_dom_mapping_miss_logged,
+          &mut tab.js_dom_mapping_miss_log_last,
           click_type,
         );
 
@@ -5013,14 +5049,18 @@ impl BrowserRuntime {
     if click_count == 2 && matches!(button, PointerButton::Primary) {
       if let Some(target_id) = click_target {
         if let Some(js_tab) = tab.js_tab.as_mut() {
-          let target =
-            js_dom_node_for_preorder_id(
-              js_tab,
-              target_id,
-              click_target_element_id.as_deref(),
-              &mut tab.js_dom_mapping_generation,
-              &mut tab.js_dom_mapping,
-            );
+          let target = js_dom_node_for_preorder_id_with_log(
+            &self.ui_tx,
+            tab_id,
+            self.debug_log_enabled,
+            js_tab,
+            target_id,
+            click_target_element_id.as_deref(),
+            &mut tab.js_dom_mapping_generation,
+            &mut tab.js_dom_mapping,
+            &mut tab.js_dom_mapping_miss_log_last,
+            "dblclick",
+          );
           if let Some(node_id) = target {
             dispatched_dom_event = true;
             let mouse = web_events::MouseEvent {
@@ -5062,28 +5102,27 @@ impl BrowserRuntime {
     if default_allowed {
       if let Some(submitter_id) = form_submitter {
         if let Some(js_tab) = tab.js_tab.as_mut() {
-          let submitter_node =
-            js_dom_node_for_preorder_id_with_log(
-              &self.ui_tx,
-              tab_id,
-              self.debug_log_enabled,
-              js_tab,
-              submitter_id,
-              form_submitter_element_id.as_deref(),
-              &mut tab.js_dom_mapping_generation,
-              &mut tab.js_dom_mapping,
-              &mut tab.js_dom_mapping_miss_logged,
-              "submit",
-            );
-            if let Some(submitter_node) = submitter_node {
-              if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
-              {
-                dispatched_dom_event = true;
-                match js_tab.dispatch_submit_event(form_node) {
-                  Ok(allowed) => default_allowed = allowed,
-                  Err(err) => {
-                    if self.debug_log_enabled {
-                      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          let submitter_node = js_dom_node_for_preorder_id_with_log(
+            &self.ui_tx,
+            tab_id,
+            self.debug_log_enabled,
+            js_tab,
+            submitter_id,
+            form_submitter_element_id.as_deref(),
+            &mut tab.js_dom_mapping_generation,
+            &mut tab.js_dom_mapping,
+            &mut tab.js_dom_mapping_miss_log_last,
+            "submit",
+          );
+          if let Some(submitter_node) = submitter_node {
+            if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), submitter_node)
+            {
+              dispatched_dom_event = true;
+              match js_tab.dispatch_submit_event(form_node) {
+                Ok(allowed) => default_allowed = allowed,
+                Err(err) => {
+                  if self.debug_log_enabled {
+                    let _ = self.ui_tx.send(WorkerToUi::DebugLog {
                       tab_id,
                       line: format!("js submit event dispatch failed: {err}"),
                     });
@@ -5165,7 +5204,7 @@ impl BrowserRuntime {
               mouseup_target_element_id.as_deref(),
               &mut tab.js_dom_mapping_generation,
               &mut tab.js_dom_mapping,
-              &mut tab.js_dom_mapping_miss_logged,
+              &mut tab.js_dom_mapping_miss_log_last,
               "drop",
             );
             if let Some(node_id) = target {
@@ -5707,19 +5746,18 @@ impl BrowserRuntime {
     let mut dispatched_dom_event = false;
     if let Some(target_id) = hit_info.dispatch_target_id {
       if let Some(js_tab) = tab.js_tab.as_mut() {
-        let target =
-          js_dom_node_for_preorder_id_with_log(
-            &self.ui_tx,
-            tab_id,
-            self.debug_log_enabled,
-            js_tab,
-            target_id,
-            hit_info.dispatch_target_element_id.as_deref(),
-            &mut tab.js_dom_mapping_generation,
-            &mut tab.js_dom_mapping,
-            &mut tab.js_dom_mapping_miss_logged,
-            "contextmenu",
-          );
+        let target = js_dom_node_for_preorder_id_with_log(
+          &self.ui_tx,
+          tab_id,
+          self.debug_log_enabled,
+          js_tab,
+          target_id,
+          hit_info.dispatch_target_element_id.as_deref(),
+          &mut tab.js_dom_mapping_generation,
+          &mut tab.js_dom_mapping,
+          &mut tab.js_dom_mapping_miss_log_last,
+          "contextmenu",
+        );
         if let Some(node_id) = target {
           dispatched_dom_event = true;
           let mouse = web_events::MouseEvent {
@@ -6826,7 +6864,7 @@ impl BrowserRuntime {
             click_target_element_id,
             &mut tab.js_dom_mapping_generation,
             &mut tab.js_dom_mapping,
-            &mut tab.js_dom_mapping_miss_logged,
+            &mut tab.js_dom_mapping_miss_log_last,
             "click",
           );
           if let Some(node_id) = target {
@@ -6889,9 +6927,9 @@ impl BrowserRuntime {
                 submit_source_element_id,
                 &mut tab.js_dom_mapping_generation,
                 &mut tab.js_dom_mapping,
-                &mut tab.js_dom_mapping_miss_logged,
-                "submit",
-              );
+                &mut tab.js_dom_mapping_miss_log_last,
+              "submit",
+            );
             if let Some(source_node) = source_node {
               if let Some(form_node) = js_find_form_owner_for_submitter(js_tab.dom(), source_node) {
                 dispatched_dom_event = true;
@@ -7324,7 +7362,7 @@ impl BrowserRuntime {
       tab.js_tab = None;
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_mapping_miss_log_last.clear();
       tab.js_dom_dirty = false;
       tab.js_dom_mutation_generation = 0;
       return;
@@ -7333,7 +7371,7 @@ impl BrowserRuntime {
       tab.js_tab = None;
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_mapping_miss_log_last.clear();
       tab.js_dom_dirty = false;
       tab.js_dom_mutation_generation = 0;
       return;
@@ -7352,7 +7390,7 @@ impl BrowserRuntime {
         tab.js_tab = None;
         tab.js_dom_mapping_generation = 0;
         tab.js_dom_mapping = None;
-        tab.js_dom_mapping_miss_logged = false;
+        tab.js_dom_mapping_miss_log_last.clear();
         tab.js_dom_dirty = false;
         tab.js_dom_mutation_generation = 0;
         if debug_log_enabled {
@@ -7368,7 +7406,7 @@ impl BrowserRuntime {
       // Navigation replaces the JS document, invalidating any preorder→NodeId mapping cache.
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_mapping_miss_log_last.clear();
       return;
     }
 
@@ -7404,7 +7442,7 @@ impl BrowserRuntime {
     tab.js_tab = Some(js_tab);
     tab.js_dom_mapping_generation = 0;
     tab.js_dom_mapping = None;
-    tab.js_dom_mapping_miss_logged = false;
+    tab.js_dom_mapping_miss_log_last.clear();
     tab.js_dom_dirty = false;
     tab.js_dom_mutation_generation = generation;
   }
@@ -8299,7 +8337,7 @@ impl BrowserRuntime {
     tab.js_tab = None;
     tab.js_dom_mapping_generation = 0;
     tab.js_dom_mapping = None;
-    tab.js_dom_mapping_miss_logged = false;
+    tab.js_dom_mapping_miss_log_last.clear();
     tab.js_dom_dirty = false;
     tab.js_dom_mutation_generation = 0;
     tab.tick_time = Duration::ZERO;
