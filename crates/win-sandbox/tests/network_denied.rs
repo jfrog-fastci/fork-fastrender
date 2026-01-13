@@ -110,10 +110,8 @@ unsafe fn token_capability_sids(token: HANDLE) -> io::Result<Vec<String>> {
   let mut out = Vec::with_capacity(count);
   for entry in slice {
     let mut sid_str: *mut u16 = std::ptr::null_mut();
-    let ok = windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(
-      entry.sid,
-      &mut sid_str,
-    );
+    let ok =
+      windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW(entry.sid, &mut sid_str);
     if ok == 0 || sid_str.is_null() {
       return Err(io::Error::last_os_error());
     }
@@ -135,7 +133,12 @@ fn appcontainer_denies_network() {
     unsafe {
       let mut token: HANDLE = std::ptr::null_mut();
       let ok = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token);
-      assert_ne!(ok, 0, "OpenProcessToken failed: {}", io::Error::last_os_error());
+      assert_ne!(
+        ok,
+        0,
+        "OpenProcessToken failed: {}",
+        io::Error::last_os_error()
+      );
       assert!(!token.is_null(), "OpenProcessToken returned null handle");
       let token_guard = HandleGuard(token);
 

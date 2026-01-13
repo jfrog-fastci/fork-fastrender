@@ -33,7 +33,9 @@ use windows_sys::Win32::Security::ACL;
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
 const PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES: usize = 0x0002_0009;
 
-// `NO_INHERITANCE` is defined as 0 in Windows headers. `windows-sys` does not currently export it.
+// `EXPLICIT_ACCESS_W::grfInheritance` value for "do not propagate ACEs".
+//
+// Defined as 0 in the Win32 headers; `windows-sys` does not currently export it.
 const NO_INHERITANCE: u32 = 0;
 
 /// Sandbox configuration for spawning untrusted renderer processes.
@@ -252,8 +254,8 @@ fn relocate_exe_for_appcontainer(
     .filter(|name| !name.is_empty())
     .unwrap_or_else(|| OsStr::new("renderer.exe"));
 
-  let temp_dir = TempDir::new("fastrender-appcontainer-image-")
-    .map_err(|err| WinSandboxError::Win32 {
+  let temp_dir =
+    TempDir::new("fastrender-appcontainer-image-").map_err(|err| WinSandboxError::Win32 {
       func: "create temp dir",
       code: err.raw_os_error().unwrap_or(1) as u32,
       message: err.to_string(),
@@ -286,7 +288,9 @@ fn all_application_packages_sid() -> Result<OwnedSid> {
   let mut sid: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
   let ok = unsafe { ConvertStringSidToSidW(sid_string.as_ptr(), &mut sid) };
   if ok == 0 {
-    return Err(WinSandboxError::last("ConvertStringSidToSidW(ALL APPLICATION PACKAGES)"));
+    return Err(WinSandboxError::last(
+      "ConvertStringSidToSidW(ALL APPLICATION PACKAGES)",
+    ));
   }
   if sid.is_null() {
     return Err(WinSandboxError::NullPointer {
@@ -428,7 +432,7 @@ impl Drop for AttributeList {
         DeleteProcThreadAttributeList(self.list);
       }
     }
-    // `buffer` is dropped automatically.
+    // `_buffer` is dropped automatically.
   }
 }
 

@@ -368,7 +368,7 @@ pub use spawn::{spawn_sandboxed, ChildProcess, SandboxRequest, SpawnConfig};
 pub mod support;
 pub use support::{is_appcontainer_supported, is_nested_job_supported, SandboxSupport};
 
-/// Runtime sandbox configuration for the Windows renderer sandbox.
+/// Runtime sandbox mode selection for the Windows renderer sandbox.
 ///
 /// `RendererSandboxMode::new_default()` enforces a "no silent downgrade" policy:
 /// - If the host supports the required primitives, the sandbox is enabled.
