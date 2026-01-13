@@ -3199,6 +3199,8 @@ const WRAPPER_SHARED_METHOD_KEYS: &[&str] = &[
   // Attr / NamedNodeMap prototypes (used by `Element.attributes` and `Document.createAttribute*`).
   ATTR_PROTOTYPE_KEY,
   NAMED_NODE_MAP_PROTOTYPE_KEY,
+  // TreeWalker prototype (used by Document.createTreeWalker).
+  TREE_WALKER_PROTOTYPE_KEY,
   // EventTarget shared methods.
   EVENT_TARGET_ADD_EVENT_LISTENER_KEY,
   EVENT_TARGET_REMOVE_EVENT_LISTENER_KEY,
@@ -3323,6 +3325,24 @@ const RESIZE_OBSERVER_NOTIFY_KEY: &str = "__fastrender_resize_observer_notify";
 const MUTATION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 const INTERSECTION_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
 const RESIZE_OBSERVER_NOTIFY_DOCUMENT_SLOT: usize = 0;
+
+// --- DOM Traversal (NodeIterator / TreeWalker / NodeFilter) -------------------
+//
+// These are minimal handwritten shims for the curated WPT traversal tests. They are intentionally
+// implemented as plain JS wrapper objects (not `DomPlatform` node wrappers).
+//
+// Spec: https://dom.spec.whatwg.org/#traversal
+const TRAVERSAL_IS_ACTIVE_KEY: &str = "__fastrender_traversal_is_active";
+const TREE_WALKER_BRAND_KEY: &str = "__fastrender_tree_walker";
+const TREE_WALKER_ROOT_KEY: &str = "__fastrender_tree_walker_root";
+const TREE_WALKER_CURRENT_NODE_KEY: &str = "__fastrender_tree_walker_current_node";
+const TREE_WALKER_WHAT_TO_SHOW_KEY: &str = "__fastrender_tree_walker_what_to_show";
+const TREE_WALKER_FILTER_KEY: &str = "__fastrender_tree_walker_filter";
+const TREE_WALKER_PROTOTYPE_KEY: &str = "__fastrender_tree_walker_prototype";
+const NODE_FILTER_FILTER_ACCEPT: u16 = 1;
+const NODE_FILTER_FILTER_REJECT: u16 = 2;
+const NODE_FILTER_FILTER_SKIP: u16 = 3;
+const NODE_FILTER_SHOW_ALL: u32 = 0xFFFF_FFFF;
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_ACTIVE_EVENT_ID: AtomicU64 = AtomicU64::new(1);
@@ -13983,6 +14003,475 @@ fn document_create_document_fragment_native(
   let node_id = unsafe { dom_ptr.as_mut() }.create_document_fragment();
   let dom = unsafe { dom_ptr.as_ref() };
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
+fn to_uint32_wrapping(n: f64) -> u32 {
+  // ECMA-262 ToUint32 / WebIDL `unsigned long` conversion (mod 2^32).
+  //
+  // NOTE: This intentionally mirrors JS semantics (including the lossy nature for numbers outside
+  // the 2^53 integer range) rather than saturating.
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let n = n.trunc();
+  let two32 = 4294967296.0_f64;
+  let mut n = n % two32;
+  if n < 0.0 {
+    n += two32;
+  }
+  n as u32
+}
+
+fn to_uint16_wrapping(n: f64) -> u16 {
+  // ECMA-262 ToUint16 / WebIDL `unsigned short` conversion (mod 2^16).
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  let n = n.trunc();
+  let two16 = 65536.0_f64;
+  let mut n = n % two16;
+  if n < 0.0 {
+    n += two16;
+  }
+  n as u16
+}
+
+fn tree_walker_require_this(scope: &mut Scope<'_>, this: Value) -> Result<GcObject, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let brand_key = alloc_key(scope, TREE_WALKER_BRAND_KEY)?;
+  match scope
+    .heap()
+    .object_get_own_data_property_value(obj, &brand_key)?
+  {
+    Some(Value::Bool(true)) => Ok(obj),
+    _ => Err(VmError::TypeError("Illegal invocation")),
+  }
+}
+
+fn tree_walker_internal_data_value(
+  scope: &mut Scope<'_>,
+  walker_obj: GcObject,
+  key_name: &str,
+) -> Result<Value, VmError> {
+  let key = alloc_key(scope, key_name)?;
+  Ok(
+    scope
+      .heap()
+      .object_get_own_data_property_value(walker_obj, &key)?
+      .unwrap_or(Value::Undefined),
+  )
+}
+
+fn tree_walker_filter_node(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  walker_obj: GcObject,
+  dom: &dom2::Document,
+  node_id: NodeId,
+  node_wrapper: Value,
+  what_to_show: u32,
+  filter: Value,
+) -> Result<u16, VmError> {
+  // DOM "filter a node" algorithm (WHATWG DOM).
+  //
+  // Spec: https://dom.spec.whatwg.org/#concept-node-filter
+  let is_active_key = alloc_key(scope, TRAVERSAL_IS_ACTIVE_KEY)?;
+  if matches!(
+    scope
+      .heap()
+      .object_get_own_data_property_value(walker_obj, &is_active_key)?,
+    Some(Value::Bool(true))
+  ) {
+    return Err(VmError::Throw(make_dom_exception(scope, "InvalidStateError", "")?));
+  }
+
+  let node_type = match &dom.node(node_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => 1_u32,
+    NodeKind::Text { .. } => 3,
+    NodeKind::ProcessingInstruction { .. } => 7,
+    NodeKind::Comment { .. } => 8,
+    NodeKind::Document { .. } => 9,
+    NodeKind::Doctype { .. } => 10,
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
+  };
+  let bit = node_type.saturating_sub(1);
+  if bit < 32 {
+    let mask = 1_u32 << bit;
+    if (what_to_show & mask) == 0 {
+      return Ok(NODE_FILTER_FILTER_SKIP);
+    }
+  } else {
+    // Node types above 32 are never exposed by dom2, but treat them as skipped for safety.
+    return Ok(NODE_FILTER_FILTER_SKIP);
+  }
+
+  if matches!(filter, Value::Null | Value::Undefined) {
+    return Ok(NODE_FILTER_FILTER_ACCEPT);
+  }
+
+  scope.define_property(walker_obj, is_active_key, data_desc(Value::Bool(true)))?;
+  struct ActiveFlagGuard<'a> {
+    scope: *mut Scope<'a>,
+    walker_obj: GcObject,
+    is_active_key: PropertyKey,
+    active: bool,
+  }
+  impl Drop for ActiveFlagGuard<'_> {
+    fn drop(&mut self) {
+      if !self.active {
+        return;
+      }
+      // Best-effort: if the call is already unwinding due to OOM/termination, clearing the flag can
+      // fail; in that case the whole realm is likely tearing down anyway.
+      let scope = unsafe { &mut *self.scope };
+      let _ = scope.define_property(
+        self.walker_obj,
+        self.is_active_key,
+        data_desc(Value::Bool(false)),
+      );
+    }
+  }
+  let _guard = ActiveFlagGuard {
+    scope,
+    walker_obj,
+    is_active_key,
+    active: true,
+  };
+
+  let result_value = if scope.heap().is_callable(filter).unwrap_or(false) {
+    vm.call_with_host_and_hooks(host, scope, hooks, filter, Value::Undefined, &[node_wrapper])?
+  } else {
+    let Value::Object(filter_obj) = filter else {
+      return Err(VmError::TypeError("TreeWalker filter is not callable"));
+    };
+    let accept_node_key = alloc_key(scope, "acceptNode")?;
+    let accept_node = vm.get(scope, filter_obj, accept_node_key)?;
+    vm.call_with_host_and_hooks(
+      host,
+      scope,
+      hooks,
+      accept_node,
+      Value::Object(filter_obj),
+      &[node_wrapper],
+    )?
+  };
+
+  let result_num = scope.to_number(vm, host, hooks, result_value)?;
+  Ok(to_uint16_wrapping(result_num))
+}
+
+fn document_create_tree_walker_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createTreeWalker must be called on a document object",
+    ));
+  };
+  // Require a document wrapper so callers can't borrow the method onto arbitrary objects.
+  dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createTreeWalker must be called on a document object",
+    ))?
+    .require_document_handle(scope.heap(), Value::Object(document_obj))
+    .map_err(|_| VmError::TypeError("document.createTreeWalker must be called on a document object"))?;
+
+  let root_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let root_handle = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError(
+      "document.createTreeWalker requires a node argument",
+    ))?
+    .require_node_handle(scope.heap(), root_value)
+    .map_err(|_| VmError::TypeError("document.createTreeWalker requires a node argument"))?;
+  let Value::Object(root_obj) = root_value else {
+    return Err(VmError::TypeError(
+      "document.createTreeWalker requires a node argument",
+    ));
+  };
+
+  let what_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let what_to_show = if matches!(what_value, Value::Undefined) {
+    NODE_FILTER_SHOW_ALL
+  } else {
+    let n = scope.to_number(vm, host, hooks, what_value)?;
+    to_uint32_wrapping(n)
+  };
+
+  let filter_value = args.get(2).copied().unwrap_or(Value::Undefined);
+  let filter_value = if matches!(filter_value, Value::Undefined) {
+    Value::Null
+  } else {
+    filter_value
+  };
+
+  // WebIDL callback interface conversion: NodeFilter must be callable or an object.
+  if !matches!(filter_value, Value::Null) {
+    let is_callable = scope.heap().is_callable(filter_value).unwrap_or(false);
+    if !is_callable && !matches!(filter_value, Value::Object(_)) {
+      return Err(VmError::TypeError(
+        "document.createTreeWalker filter is not a function",
+      ));
+    }
+  }
+
+  let walker_obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(walker_obj))?;
+
+  let proto_key = alloc_key(scope, TREE_WALKER_PROTOTYPE_KEY)?;
+  let proto_val = object_get_data_property_value(scope.heap(), document_obj, &proto_key)?
+    .unwrap_or(Value::Undefined);
+  let Value::Object(proto_obj) = proto_val else {
+    return Err(VmError::InvariantViolation(
+      "document.createTreeWalker missing TreeWalker prototype",
+    ));
+  };
+  scope
+    .heap_mut()
+    .object_set_prototype(walker_obj, Some(proto_obj))?;
+
+  // Internal branding + slots.
+  let brand_key = alloc_key(scope, TREE_WALKER_BRAND_KEY)?;
+  scope.define_property(
+    walker_obj,
+    brand_key,
+    non_configurable_read_only_data_desc(Value::Bool(true)),
+  )?;
+
+  let root_key = alloc_key(scope, TREE_WALKER_ROOT_KEY)?;
+  scope.define_property(
+    walker_obj,
+    root_key,
+    non_configurable_read_only_data_desc(root_value),
+  )?;
+
+  let current_key = alloc_key(scope, TREE_WALKER_CURRENT_NODE_KEY)?;
+  scope.define_property(walker_obj, current_key, data_desc(root_value))?;
+
+  let what_key = alloc_key(scope, TREE_WALKER_WHAT_TO_SHOW_KEY)?;
+  scope.define_property(
+    walker_obj,
+    what_key,
+    non_configurable_read_only_data_desc(Value::Number(what_to_show as f64)),
+  )?;
+
+  let filter_key = alloc_key(scope, TREE_WALKER_FILTER_KEY)?;
+  scope.define_property(
+    walker_obj,
+    filter_key,
+    non_configurable_read_only_data_desc(filter_value),
+  )?;
+
+  let is_active_key = alloc_key(scope, TRAVERSAL_IS_ACTIVE_KEY)?;
+  scope.define_property(walker_obj, is_active_key, data_desc(Value::Bool(false)))?;
+
+  // Ensure the root node belongs to the same document as the TreeWalker instance.
+  //
+  // This is not required by the spec (it can be used with any `Node`), but helps keep the
+  // implementation's dom2 lookups coherent while the engine does not yet support cross-realm node
+  // wrappers.
+  let _root_document_obj = node_wrapper_document_obj(scope, root_obj, root_handle.node_id)?;
+
+  Ok(Value::Object(walker_obj))
+}
+
+fn tree_walker_root_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let walker_obj = tree_walker_require_this(scope, this)?;
+  Ok(tree_walker_internal_data_value(scope, walker_obj, TREE_WALKER_ROOT_KEY)?)
+}
+
+fn tree_walker_what_to_show_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let walker_obj = tree_walker_require_this(scope, this)?;
+  Ok(tree_walker_internal_data_value(
+    scope,
+    walker_obj,
+    TREE_WALKER_WHAT_TO_SHOW_KEY,
+  )?)
+}
+
+fn tree_walker_filter_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let walker_obj = tree_walker_require_this(scope, this)?;
+  Ok(tree_walker_internal_data_value(
+    scope,
+    walker_obj,
+    TREE_WALKER_FILTER_KEY,
+  )?)
+}
+
+fn tree_walker_current_node_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let walker_obj = tree_walker_require_this(scope, this)?;
+  Ok(tree_walker_internal_data_value(
+    scope,
+    walker_obj,
+    TREE_WALKER_CURRENT_NODE_KEY,
+  )?)
+}
+
+fn tree_walker_current_node_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let walker_obj = tree_walker_require_this(scope, this)?;
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("TreeWalker.currentNode must be a Node"))?;
+  let key = alloc_key(scope, TREE_WALKER_CURRENT_NODE_KEY)?;
+  scope.define_property(walker_obj, key, data_desc(node_value))?;
+  Ok(Value::Undefined)
+}
+
+fn tree_walker_next_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let walker_obj = tree_walker_require_this(scope, this)?;
+
+  let root_value = tree_walker_internal_data_value(scope, walker_obj, TREE_WALKER_ROOT_KEY)?;
+  let current_value = tree_walker_internal_data_value(scope, walker_obj, TREE_WALKER_CURRENT_NODE_KEY)?;
+  let what_value = tree_walker_internal_data_value(scope, walker_obj, TREE_WALKER_WHAT_TO_SHOW_KEY)?;
+  let filter_value = tree_walker_internal_data_value(scope, walker_obj, TREE_WALKER_FILTER_KEY)?;
+
+  let Value::Object(root_obj) = root_value else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  let root_handle = platform.require_node_handle(scope.heap(), root_value)?;
+  let current_handle = platform.require_node_handle(scope.heap(), current_value)?;
+  if root_handle.document_id != current_handle.document_id {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let what_to_show = match what_value {
+    Value::Number(n) if n.is_finite() && n >= 0.0 => n as u32,
+    _ => NODE_FILTER_SHOW_ALL,
+  };
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, root_handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is derived from the current JS call turn's host and valid for the duration
+  // of this call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let document_obj = node_wrapper_document_obj(scope, root_obj, root_handle.node_id)?;
+
+  let mut node = current_handle.node_id;
+  let root_id = root_handle.node_id;
+  let mut result = NODE_FILTER_FILTER_ACCEPT;
+
+  loop {
+    while result != NODE_FILTER_FILTER_REJECT {
+      let Some(child) = node_first_child_for_traversal(dom, node) else {
+        break;
+      };
+      node = child;
+      let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node)?;
+      result = tree_walker_filter_node(
+        vm,
+        scope,
+        host,
+        hooks,
+        walker_obj,
+        dom,
+        node,
+        wrapper,
+        what_to_show,
+        filter_value,
+      )?;
+      if result == NODE_FILTER_FILTER_ACCEPT {
+        let current_key = alloc_key(scope, TREE_WALKER_CURRENT_NODE_KEY)?;
+        scope.define_property(walker_obj, current_key, data_desc(wrapper))?;
+        return Ok(wrapper);
+      }
+    }
+
+    // Find the next sibling (or the next sibling of an ancestor).
+    let mut temporary = node;
+    let next = loop {
+      if temporary == root_id {
+        return Ok(Value::Null);
+      }
+      if let Some(sib) = node_next_sibling_for_traversal(dom, temporary) {
+        break sib;
+      }
+      let Some(parent) = node_parent_node_for_traversal(dom, temporary) else {
+        return Ok(Value::Null);
+      };
+      temporary = parent;
+    };
+
+    node = next;
+    let wrapper = get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node)?;
+    result = tree_walker_filter_node(
+      vm,
+      scope,
+      host,
+      hooks,
+      walker_obj,
+      dom,
+      node,
+      wrapper,
+      what_to_show,
+      filter_value,
+    )?;
+    if result == NODE_FILTER_FILTER_ACCEPT {
+      let current_key = alloc_key(scope, TREE_WALKER_CURRENT_NODE_KEY)?;
+      scope.define_property(walker_obj, current_key, data_desc(wrapper))?;
+      return Ok(wrapper);
+    }
+  }
 }
 
 fn dom_parser_constructor_native(
@@ -40670,6 +41159,28 @@ fn init_window_globals(
     data_desc(Value::Object(create_fragment_func)),
   )?;
 
+  // document.createTreeWalker
+  let create_tree_walker_key = alloc_key(&mut scope, "createTreeWalker")?;
+  let create_tree_walker_call_id = vm.register_native_call(document_create_tree_walker_native)?;
+  let create_tree_walker_name = scope.alloc_string("createTreeWalker")?;
+  scope.push_root(Value::String(create_tree_walker_name))?;
+  let create_tree_walker_func = scope.alloc_native_function(
+    create_tree_walker_call_id,
+    None,
+    create_tree_walker_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    create_tree_walker_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_tree_walker_func))?;
+  scope.define_property(
+    document_obj,
+    create_tree_walker_key,
+    data_desc(Value::Object(create_tree_walker_func)),
+  )?;
+
   // document.importNode
   let import_node_key = alloc_key(&mut scope, "importNode")?;
   let import_node_call_id = vm.register_native_call(document_import_node_native)?;
@@ -43934,6 +44445,182 @@ fn init_window_globals(
         configurable: false,
         kind: PropertyKind::Data {
           value: Value::Object(node_list_proto),
+          writable: false,
+        },
+      },
+    )?;
+
+    // TreeWalker prototype (minimal: root/currentNode/whatToShow/filter + nextNode).
+    //
+    // TreeWalker instances are plain JS wrapper objects created by `document.createTreeWalker`.
+    let tree_walker_proto = scope.alloc_object()?;
+    scope.push_root(Value::Object(tree_walker_proto))?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_proto,
+      Some(realm.intrinsics().object_prototype()),
+    )?;
+
+    // `Object.prototype.toString.call(walker)` should yield `[object TreeWalker]`.
+    let tree_walker_to_string_tag_key =
+      PropertyKey::from_symbol(realm.intrinsics().well_known_symbols().to_string_tag);
+    let tree_walker_to_string_tag_value = scope.alloc_string("TreeWalker")?;
+    scope.push_root(Value::String(tree_walker_to_string_tag_value))?;
+    scope.define_property(
+      tree_walker_proto,
+      tree_walker_to_string_tag_key,
+      read_only_data_desc(Value::String(tree_walker_to_string_tag_value)),
+    )?;
+
+    let tree_walker_root_get_call_id = vm.register_native_call(tree_walker_root_get_native)?;
+    let tree_walker_root_get_name = scope.alloc_string("get root")?;
+    scope.push_root(Value::String(tree_walker_root_get_name))?;
+    let tree_walker_root_get_func = scope.alloc_native_function(
+      tree_walker_root_get_call_id,
+      None,
+      tree_walker_root_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_root_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tree_walker_root_get_func))?;
+
+    let tree_walker_what_to_show_get_call_id =
+      vm.register_native_call(tree_walker_what_to_show_get_native)?;
+    let tree_walker_what_to_show_get_name = scope.alloc_string("get whatToShow")?;
+    scope.push_root(Value::String(tree_walker_what_to_show_get_name))?;
+    let tree_walker_what_to_show_get_func = scope.alloc_native_function(
+      tree_walker_what_to_show_get_call_id,
+      None,
+      tree_walker_what_to_show_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_what_to_show_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tree_walker_what_to_show_get_func))?;
+
+    let tree_walker_filter_get_call_id = vm.register_native_call(tree_walker_filter_get_native)?;
+    let tree_walker_filter_get_name = scope.alloc_string("get filter")?;
+    scope.push_root(Value::String(tree_walker_filter_get_name))?;
+    let tree_walker_filter_get_func = scope.alloc_native_function(
+      tree_walker_filter_get_call_id,
+      None,
+      tree_walker_filter_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_filter_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tree_walker_filter_get_func))?;
+
+    let tree_walker_current_get_call_id =
+      vm.register_native_call(tree_walker_current_node_get_native)?;
+    let tree_walker_current_get_name = scope.alloc_string("get currentNode")?;
+    scope.push_root(Value::String(tree_walker_current_get_name))?;
+    let tree_walker_current_get_func = scope.alloc_native_function(
+      tree_walker_current_get_call_id,
+      None,
+      tree_walker_current_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_current_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tree_walker_current_get_func))?;
+
+    let tree_walker_current_set_call_id =
+      vm.register_native_call(tree_walker_current_node_set_native)?;
+    let tree_walker_current_set_name = scope.alloc_string("set currentNode")?;
+    scope.push_root(Value::String(tree_walker_current_set_name))?;
+    let tree_walker_current_set_func = scope.alloc_native_function(
+      tree_walker_current_set_call_id,
+      None,
+      tree_walker_current_set_name,
+      1,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_current_set_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tree_walker_current_set_func))?;
+
+    let tree_walker_next_node_call_id = vm.register_native_call(tree_walker_next_node_native)?;
+    let tree_walker_next_node_name = scope.alloc_string("nextNode")?;
+    scope.push_root(Value::String(tree_walker_next_node_name))?;
+    let tree_walker_next_node_func = scope.alloc_native_function(
+      tree_walker_next_node_call_id,
+      None,
+      tree_walker_next_node_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      tree_walker_next_node_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(tree_walker_next_node_func))?;
+
+    // TreeWalker.prototype.root (readonly)
+    let tree_walker_root_key = alloc_key(&mut scope, "root")?;
+    scope.define_property(
+      tree_walker_proto,
+      tree_walker_root_key,
+      idl_attribute_desc(Value::Object(tree_walker_root_get_func), Value::Undefined),
+    )?;
+
+    // TreeWalker.prototype.whatToShow (readonly)
+    let tree_walker_what_to_show_key = alloc_key(&mut scope, "whatToShow")?;
+    scope.define_property(
+      tree_walker_proto,
+      tree_walker_what_to_show_key,
+      idl_attribute_desc(
+        Value::Object(tree_walker_what_to_show_get_func),
+        Value::Undefined,
+      ),
+    )?;
+
+    // TreeWalker.prototype.filter (readonly)
+    let tree_walker_filter_key = alloc_key(&mut scope, "filter")?;
+    scope.define_property(
+      tree_walker_proto,
+      tree_walker_filter_key,
+      idl_attribute_desc(Value::Object(tree_walker_filter_get_func), Value::Undefined),
+    )?;
+
+    // TreeWalker.prototype.currentNode (read/write)
+    let tree_walker_current_key = alloc_key(&mut scope, "currentNode")?;
+    scope.define_property(
+      tree_walker_proto,
+      tree_walker_current_key,
+      idl_attribute_desc(
+        Value::Object(tree_walker_current_get_func),
+        Value::Object(tree_walker_current_set_func),
+      ),
+    )?;
+
+    // TreeWalker.prototype.nextNode()
+    let tree_walker_next_node_key = alloc_key(&mut scope, "nextNode")?;
+    scope.define_property(
+      tree_walker_proto,
+      tree_walker_next_node_key,
+      data_desc(Value::Object(tree_walker_next_node_func)),
+    )?;
+
+    // Store the TreeWalker prototype on `document` so `createTreeWalker` can wire it up without
+    // walking the global object.
+    let tree_walker_proto_internal_key = alloc_key(&mut scope, TREE_WALKER_PROTOTYPE_KEY)?;
+    scope.define_property(
+      document_obj,
+      tree_walker_proto_internal_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(tree_walker_proto),
           writable: false,
         },
       },
