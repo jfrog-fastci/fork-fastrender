@@ -543,6 +543,59 @@ fn module_async_evaluation_order_is_deterministic() -> Result<(), VmError> {
 }
 
 #[test]
+fn module_async_evaluation_order_is_repeatable_on_same_vm() -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let mut graph = ModuleGraph::new();
+  let a = graph.add_module_with_specifier(
+    "a.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        import "b.js";
+        export {};
+      "#,
+    )?,
+  );
+  let b = graph.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      r#"
+        await 0;
+        export {};
+      "#,
+    )?,
+  );
+  graph.link_all_by_specifier();
+
+  graph.inner_module_evaluation(&mut vm, a)?;
+  let order_a_1 = graph
+    .module_async_evaluation_order(a)
+    .expect("a should have an async evaluation order");
+  let order_b_1 = graph
+    .module_async_evaluation_order(b)
+    .expect("b should have an async evaluation order");
+  assert_ne!(order_a_1, order_b_1);
+
+  // Re-run `InnerModuleEvaluation` on the same VM/graph and ensure the per-module integer orders
+  // are stable, rather than drifting due to the VM's `[[ModuleAsyncEvaluationCount]]`.
+  graph.inner_module_evaluation(&mut vm, a)?;
+  let order_a_2 = graph
+    .module_async_evaluation_order(a)
+    .expect("a should have an async evaluation order (2nd run)");
+  let order_b_2 = graph
+    .module_async_evaluation_order(b)
+    .expect("b should have an async evaluation order (2nd run)");
+
+  assert_eq!(order_a_1, order_a_2);
+  assert_eq!(order_b_1, order_b_2);
+
+  Ok(())
+}
+
+#[test]
 fn throw_await_rejects_module_evaluation_promise() -> Result<(), VmError> {
   let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
   let mut hooks = TestHostHooks::new("https://example.invalid/m.js");

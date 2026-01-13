@@ -562,6 +562,10 @@ impl ModuleGraph {
   /// `execList` sorting (evaluation order + pending dependency counts + async-parent links). It
   /// intentionally does **not** execute module code.
   pub fn inner_module_evaluation(&mut self, vm: &mut Vm, module: ModuleId) -> Result<(), VmError> {
+    // Reset the VM's async evaluation counter so repeated invocations on the same VM/graph assign
+    // deterministic `[[AsyncEvaluationOrder]]` integers.
+    vm.reset_module_async_evaluation_count();
+
     // Reset per-module async evaluation state so callers can invoke this deterministically on a
     // fresh graph (e.g. unit tests).
     for state in &mut self.async_eval_states {
