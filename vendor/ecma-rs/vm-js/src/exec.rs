@@ -2454,40 +2454,13 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res = (|| -> Result<Value, VmError> {
-            if let Value::Object(obj) = await_value {
-              if root_scope.heap().is_promise_object(obj) {
-                let ctor_key_s = root_scope.alloc_string("constructor")?;
-                root_scope.push_root(Value::String(ctor_key_s))?;
-                let ctor_key = PropertyKey::from_string(ctor_key_s);
-                let _ = root_scope.ordinary_get_with_host_and_hooks(
-                  &mut *vm_frame,
-                  host,
-                  &mut hooks,
-                  obj,
-                  ctor_key,
-                  Value::Object(obj),
-                )?;
-                Ok(await_value)
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut root_scope,
-                  host,
-                  &mut hooks,
-                  await_value,
-                )
-              }
-            } else {
-              crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut root_scope,
-                host,
-                &mut hooks,
-                await_value,
-              )
-            }
-          })();
+          let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+            &mut *vm_frame,
+            &mut root_scope,
+            host,
+            &mut hooks,
+            await_value,
+          );
           let resolve_res =
             resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
@@ -2933,40 +2906,8 @@ impl JsRuntime {
             return Err(err);
           }
 
-          let resolve_res = (|| -> Result<Value, VmError> {
-            if let Value::Object(obj) = await_value {
-              if root_scope.heap().is_promise_object(obj) {
-                let ctor_key_s = root_scope.alloc_string("constructor")?;
-                root_scope.push_root(Value::String(ctor_key_s))?;
-                let ctor_key = PropertyKey::from_string(ctor_key_s);
-                let _ = root_scope.ordinary_get_with_host_and_hooks(
-                  &mut *vm_frame,
-                  host,
-                  hooks,
-                  obj,
-                  ctor_key,
-                  Value::Object(obj),
-                )?;
-                Ok(await_value)
-              } else {
-                crate::promise_ops::promise_resolve_with_host_and_hooks(
-                  &mut *vm_frame,
-                  &mut root_scope,
-                  host,
-                  hooks,
-                  await_value,
-                )
-              }
-            } else {
-              crate::promise_ops::promise_resolve_with_host_and_hooks(
-                &mut *vm_frame,
-                &mut root_scope,
-                host,
-                hooks,
-                await_value,
-              )
-            }
-          })();
+          let resolve_res =
+            promise_resolve_for_await_with_host_and_hooks(&mut *vm_frame, &mut root_scope, host, hooks, await_value);
           let resolve_res =
             resolve_res.map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut root_scope, err));
 
@@ -14433,6 +14374,48 @@ pub(crate) fn async_teardown_continuation(scope: &mut Scope<'_>, mut cont: Async
   }
 }
 
+/// Promise resolution used by the spec's `Await` abstract operation.
+///
+/// `Await` conceptually performs `PromiseResolve(%Promise%, value)` followed by
+/// `PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability = undefined)`.
+///
+/// vm-js intentionally deviates from the full `PromiseResolve` algorithm for *Promise objects*:
+/// if `value` is already a Promise, we still perform `Get(value, "constructor")` for
+/// side-effects/throws, but we do **not** wrap it into a new Promise (which can add an extra
+/// microtask turn and consult `constructor[Symbol.species]` via `.then`).
+#[inline]
+fn promise_resolve_for_await_with_host_and_hooks(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  value: Value,
+) -> Result<Value, VmError> {
+  if let Value::Object(obj) = value {
+    if scope.heap().is_promise_object(obj) {
+      // Root the promise object across key allocation and the `Get` operation (which can run user
+      // code and trigger GC).
+      let mut scope = scope.reborrow();
+      let value = scope.push_root(value)?;
+
+      let ctor_key_s = scope.alloc_string("constructor")?;
+      scope.push_root(Value::String(ctor_key_s))?;
+      let ctor_key = PropertyKey::from_string(ctor_key_s);
+      let _ = scope.ordinary_get_with_host_and_hooks(
+        vm,
+        host,
+        hooks,
+        obj,
+        ctor_key,
+        Value::Object(obj),
+      )?;
+      return Ok(value);
+    }
+  }
+
+  crate::promise_ops::promise_resolve_with_host_and_hooks(vm, scope, host, hooks, value)
+}
+
 fn async_handle_body_result(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -14502,32 +14485,8 @@ fn async_handle_body_result(
       // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
       // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
       // undefined)` is sufficient and avoids Promise species side effects.
-      let resolve_res = (|| -> Result<Value, VmError> {
-        if let Value::Object(obj) = await_value {
-          if await_scope.heap().is_promise_object(obj) {
-            let ctor_key_s = await_scope.alloc_string("constructor")?;
-            await_scope.push_root(Value::String(ctor_key_s))?;
-            let ctor_key = PropertyKey::from_string(ctor_key_s);
-            let _ = await_scope.ordinary_get_with_host_and_hooks(
-              vm,
-              host,
-              hooks,
-              obj,
-              ctor_key,
-              Value::Object(obj),
-            )?;
-            return Ok(await_value);
-          }
-        }
-
-        crate::promise_ops::promise_resolve_with_host_and_hooks(
-          vm,
-          &mut await_scope,
-          host,
-          hooks,
-          await_value,
-        )
-      })();
+      let resolve_res =
+        promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
       let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
       let awaited_promise = match resolve_res {
@@ -19681,7 +19640,7 @@ fn async_for_await_of_close(
 
     // Await `return` result via `PromiseResolve(%Promise%, returnResult)`.
     close_scope.push_root(return_result)?;
-    let awaited = crate::promise_ops::promise_resolve_with_host_and_hooks(
+    let awaited = promise_resolve_for_await_with_host_and_hooks(
       evaluator.vm,
       &mut close_scope,
       &mut *evaluator.host,
@@ -32919,40 +32878,13 @@ pub(crate) fn run_ecma_function(
           return Err(err);
         }
 
-        let resolve_res = (|| -> Result<Value, VmError> {
-          if let Value::Object(obj) = await_value {
-            if root_scope.heap().is_promise_object(obj) {
-              let ctor_key_s = root_scope.alloc_string("constructor")?;
-              root_scope.push_root(Value::String(ctor_key_s))?;
-              let ctor_key = PropertyKey::from_string(ctor_key_s);
-              let _ = root_scope.ordinary_get_with_host_and_hooks(
-                evaluator.vm,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                obj,
-                ctor_key,
-                Value::Object(obj),
-              )?;
-              Ok(await_value)
-            } else {
-              crate::promise_ops::promise_resolve_with_host_and_hooks(
-                evaluator.vm,
-                &mut root_scope,
-                &mut *evaluator.host,
-                &mut *evaluator.hooks,
-                await_value,
-              )
-            }
-          } else {
-            crate::promise_ops::promise_resolve_with_host_and_hooks(
-              evaluator.vm,
-              &mut root_scope,
-              &mut *evaluator.host,
-              &mut *evaluator.hooks,
-              await_value,
-            )
-          }
-        })();
+        let resolve_res = promise_resolve_for_await_with_host_and_hooks(
+          evaluator.vm,
+          &mut root_scope,
+          &mut *evaluator.host,
+          &mut *evaluator.hooks,
+          await_value,
+        );
         let resolve_res =
           resolve_res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut root_scope, err));
 
@@ -33482,13 +33414,14 @@ pub(crate) fn start_module_tla_evaluation(
       let awaited_promise_res = {
         let mut promise_scope = scope.reborrow();
         promise_scope.push_root(await_value)?;
-        crate::promise_ops::promise_resolve_with_host_and_hooks(
+        let res = promise_resolve_for_await_with_host_and_hooks(
           evaluator.vm,
           &mut promise_scope,
           &mut *evaluator.host,
           &mut *evaluator.hooks,
           await_value,
-        )
+        );
+        res.map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut promise_scope, err))
       };
 
       let awaited_promise = match awaited_promise_res {
@@ -33692,13 +33625,15 @@ pub(crate) fn resume_module_tla_evaluation(
         }
         Ok(AsyncBodyResult::Await { await_value, frames, .. }) => {
           // Suspend again: PromiseResolve + PerformPromiseThen(p, onFulfilled, onRejected).
-          match crate::promise_ops::promise_resolve_with_host_and_hooks(
+          let awaited_promise_res = promise_resolve_for_await_with_host_and_hooks(
             evaluator.vm,
             scope,
             &mut *evaluator.host,
             &mut *evaluator.hooks,
             await_value,
-          ) {
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, scope, err));
+          match awaited_promise_res {
             Ok(awaited_promise) => {
               // Root the awaited promise across root creation.
               if let Err(err) = scope.push_root(awaited_promise) {
@@ -33931,13 +33866,14 @@ pub(crate) fn run_module_async_start(
           // `Await` uses `? PromiseResolve(%Promise%, value)`.
           let mut await_scope = scope.reborrow();
           await_scope.push_root(suspend.await_value)?;
-          let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+          let awaited_promise = promise_resolve_for_await_with_host_and_hooks(
             &mut *vm_frame,
             &mut await_scope,
             host,
             hooks,
             suspend.await_value,
-          )?;
+          )
+          .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
           await_scope.push_root(awaited_promise)?;
           let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
           cont
@@ -34065,13 +34001,14 @@ pub(crate) fn run_module_async_resume(
 
         let mut await_scope = scope.reborrow();
         await_scope.push_root(await_value)?;
-        let awaited_promise = crate::promise_ops::promise_resolve_with_host_and_hooks(
+        let awaited_promise = promise_resolve_for_await_with_host_and_hooks(
           &mut *vm_frame,
           &mut await_scope,
           host,
           hooks,
           await_value,
-        )?;
+        )
+        .map_err(|err| coerce_error_to_throw_for_async(&mut *vm_frame, &mut await_scope, err))?;
         await_scope.push_root(awaited_promise)?;
         let awaited_root = await_scope.heap_mut().add_root(awaited_promise)?;
         cont
