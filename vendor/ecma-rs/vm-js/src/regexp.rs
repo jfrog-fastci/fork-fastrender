@@ -4322,6 +4322,16 @@ mod tests {
       }
       other => panic!("expected syntax error, got {other:?}"),
     }
+
+    // Duplicate `v` should also be rejected.
+    let mut tick = || Ok(());
+    let err = RegExpFlags::parse(&[b'v' as u16, b'v' as u16], &mut tick).unwrap_err();
+    match err {
+      RegExpCompileError::Syntax(e) => {
+        assert_eq!(e.message, "Invalid flags supplied to RegExp constructor")
+      }
+      other => panic!("expected syntax error, got {other:?}"),
+    }
   }
 
   #[test]
@@ -4336,6 +4346,11 @@ mod tests {
       &mut rt,
       r#"(function () { const r = /a/v; return r.unicode === false && r.unicodeSets === true && r.flags === "v"; })()"#,
     )?);
+    // Canonical `flags` ordering should include `v`.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = /a/vig; return r.flags === "giv"; })()"#,
+    )?);
 
     // RegExp constructor with `v`.
     assert!(eval_bool(&mut rt, r#"(new RegExp("a", "v").test("a"))"#)?);
@@ -4343,11 +4358,20 @@ mod tests {
       &mut rt,
       r#"(function () { const r = new RegExp("a", "v"); return r.unicode === false && r.unicodeSets === true && r.flags === "v"; })()"#,
     )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { const r = new RegExp("a", "vig"); return r.flags === "giv"; })()"#,
+    )?);
 
     // `u` and `v` are mutually exclusive.
     assert!(eval_bool(
       &mut rt,
       r#"(function () { try { new RegExp("a", "uv"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid flags supplied to RegExp constructor"; } })()"#,
+    )?);
+    // Duplicate `v` is invalid.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("a", "vv"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid flags supplied to RegExp constructor"; } })()"#,
     )?);
 
     Ok(())
