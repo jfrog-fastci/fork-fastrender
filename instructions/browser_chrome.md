@@ -31,6 +31,8 @@ A change counts if it lands at least one of:
 - **Bug fix**: A broken feature now works reliably (with regression test).
 - **Keyboard/mouse parity**: Shortcuts and interactions match user expectations from Chrome/Firefox/Safari.
 - **Platform parity**: Feature works correctly on Linux, macOS, and Windows.
+- **Accessibility parity**: Chrome UI is usable with screen readers (labels, focus order, state) — see
+  [`docs/chrome_accessibility.md`](../docs/chrome_accessibility.md).
 
 ## Scope
 
@@ -46,6 +48,7 @@ A change counts if it lands at least one of:
 - **Status bar**: Loading progress, link hover preview, zoom level display
 - **Find in page**: Ctrl+F find bar with match highlighting
 - **Downloads**: Download manager, download progress, download location
+- **Chrome accessibility**: Screen-reader support for chrome UI (AccessKit labels/roles/focus/state)
 
 ### NOT owned (see other workstreams)
 
