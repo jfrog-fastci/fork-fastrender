@@ -5465,6 +5465,61 @@ impl App {
     }
   }
 
+  fn select_dropdown_option_a11y_label(base: &str, selected: bool, disabled: bool) -> String {
+    let base = base.trim();
+    let mut out = if base.is_empty() {
+      "Option".to_string()
+    } else {
+      base.to_string()
+    };
+    if selected {
+      out.push_str(" (selected)");
+    }
+    if disabled {
+      out.push_str(" (disabled)");
+    }
+    out
+  }
+
+  fn select_dropdown_optgroup_a11y_label(label: &str, disabled: bool) -> String {
+    let label = label.trim();
+    let mut out = if label.is_empty() {
+      "Group".to_string()
+    } else {
+      label.to_string()
+    };
+    if disabled {
+      out.push_str(" (disabled)");
+    }
+    out
+  }
+
+  fn select_dropdown_focus_target_item_index(
+    control: &fastrender::tree::box_tree::SelectControl,
+  ) -> Option<usize> {
+    use fastrender::tree::box_tree::SelectItem;
+
+    let mut first_enabled: Option<usize> = None;
+    for (idx, item) in control.items.iter().enumerate() {
+      match item {
+        SelectItem::OptGroupLabel { .. } => {}
+        SelectItem::Option {
+          selected,
+          disabled,
+          ..
+        } => {
+          if first_enabled.is_none() && !*disabled {
+            first_enabled = Some(idx);
+          }
+          if *selected && !*disabled {
+            return Some(idx);
+          }
+        }
+      }
+    }
+    first_enabled
+  }
+
   fn render_select_dropdown(&mut self, ctx: &egui::Context) {
     use fastrender::tree::box_tree::SelectItem;
     use fastrender::ui::motion::UiMotion;
@@ -5656,6 +5711,7 @@ impl App {
             let check_col_width = 18.0;
             let base_padding_x = 10.0;
             let mut focus_requested = false;
+            let focus_target_idx = Self::select_dropdown_focus_target_item_index(&control);
 
             for (idx, item) in control.items.iter().enumerate() {
               match item {
@@ -5666,11 +5722,8 @@ impl App {
                     egui::Sense::hover(),
                   );
                   response.widget_info({
-                    let mut a11y_label = label.trim().to_string();
-                    if a11y_label.is_empty() {
-                      a11y_label = "Group".to_string();
-                    }
-                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, a11y_label.clone())
+                    let label = Self::select_dropdown_optgroup_a11y_label(label, *disabled);
+                    move || egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
                   });
                   let label_color = if *disabled {
                     visuals.weak_text_color()
@@ -5710,18 +5763,13 @@ impl App {
                     .inner;
 
                   response.widget_info({
-                    let mut a11y_label = base.trim().to_string();
-                    if a11y_label.is_empty() {
-                      a11y_label = "(empty)".to_string();
-                    }
+                    let label = Self::select_dropdown_option_a11y_label(base, *selected, *disabled);
                     let selected = *selected;
                     move || {
-                      // Model each row like a `SelectableLabel` so screen readers can announce the
-                      // selected state.
                       egui::WidgetInfo::selected(
                         egui::WidgetType::SelectableLabel,
                         selected,
-                        a11y_label.clone(),
+                        label.clone(),
                       )
                     }
                   });
@@ -5735,7 +5783,10 @@ impl App {
                     scroll_to_selected = false;
                   }
 
-                  if *selected && !*disabled && !focus_requested {
+                  if !*disabled
+                    && !focus_requested
+                    && focus_target_idx.is_some_and(|target| target == idx)
+                  {
                     response.request_focus();
                     focus_requested = true;
                   }
@@ -9652,5 +9703,106 @@ mod warning_toast_a11y_tests {
     run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Tab));
     run_toast_frame(&ctx, &mut expanded, key_press_release(egui::Key::Enter));
     assert!(expanded, "expected Enter to toggle expanded when focused via Tab");
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod select_dropdown_a11y_tests {
+  use super::App;
+  use fastrender::tree::box_tree::{SelectControl, SelectItem};
+  use std::sync::Arc;
+
+  fn make_control() -> SelectControl {
+    let items = vec![
+      SelectItem::OptGroupLabel {
+        label: "Group A".to_string(),
+        disabled: false,
+      },
+      SelectItem::Option {
+        node_id: 1,
+        label: "Enabled option".to_string(),
+        value: "enabled".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: true,
+      },
+      SelectItem::Option {
+        node_id: 2,
+        label: "Disabled option".to_string(),
+        value: "disabled".to_string(),
+        selected: false,
+        disabled: true,
+        in_optgroup: true,
+      },
+      SelectItem::Option {
+        node_id: 3,
+        label: "Selected option".to_string(),
+        value: "selected".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+      },
+    ];
+
+    SelectControl {
+      multiple: false,
+      size: 1,
+      items: Arc::new(items),
+      selected: vec![3],
+    }
+  }
+
+  #[test]
+  fn select_dropdown_row_a11y_labels_include_state() {
+    let control = make_control();
+
+    let mut optgroup_labels = Vec::new();
+    let mut option_labels = Vec::new();
+    for item in control.items.iter() {
+      match item {
+        SelectItem::OptGroupLabel { label, disabled } => {
+          optgroup_labels.push(App::select_dropdown_optgroup_a11y_label(label, *disabled));
+        }
+        SelectItem::Option {
+          label,
+          value,
+          selected,
+          disabled,
+          ..
+        } => {
+          let base = if label.trim().is_empty() { value } else { label };
+          option_labels.push(App::select_dropdown_option_a11y_label(base, *selected, *disabled));
+        }
+      }
+    }
+
+    assert_eq!(optgroup_labels, vec!["Group A".to_string()]);
+    assert_eq!(
+      option_labels,
+      vec![
+        "Enabled option".to_string(),
+        "Disabled option (disabled)".to_string(),
+        "Selected option (selected)".to_string(),
+      ]
+    );
+    assert!(option_labels.iter().all(|label| !label.trim().is_empty()));
+  }
+
+  #[test]
+  fn select_dropdown_focus_target_prefers_selected_enabled_else_first_enabled() {
+    let control = make_control();
+    assert_eq!(App::select_dropdown_focus_target_item_index(&control), Some(3));
+
+    // If the selected option is disabled, focus should fall back to the first enabled option.
+    let mut items = (*control.items).clone();
+    match &mut items[3] {
+      SelectItem::Option { disabled, .. } => *disabled = true,
+      _ => panic!("expected option"),
+    }
+    let control = SelectControl {
+      items: Arc::new(items),
+      ..control
+    };
+    assert_eq!(App::select_dropdown_focus_target_item_index(&control), Some(1));
   }
 }
