@@ -4593,23 +4593,31 @@ pub(crate) fn apply_dom_compatibility_mutations(
     extract(&parsed)
   }
 
+  fn sanitize_url_attr(value: &str) -> Option<String> {
+    let trimmed = trim_ascii_whitespace(value);
+    if trimmed.is_empty() {
+      return None;
+    }
+    if let Some(url) = url_from_jsonish(trimmed) {
+      return Some(url);
+    }
+    // Some sites store URLs inside JSON-ish `data-*` attributes. If parsing failed but the value
+    // still looks like JSON, skip it rather than promoting garbage into a URL attribute.
+    if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+      return None;
+    }
+    if img_src_is_placeholder(trimmed) {
+      return None;
+    }
+    Some(trimmed.to_string())
+  }
+
   fn first_non_empty_url_attr(attrs: &[(String, String)], names: &[&str]) -> Option<String> {
     for &name in names {
       if let Some((_, value)) = attrs.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
-        let trimmed = trim_ascii_whitespace(value);
-        if trimmed.is_empty() {
-          continue;
-        }
-        if let Some(url) = url_from_jsonish(trimmed) {
+        if let Some(url) = sanitize_url_attr(value) {
           return Some(url);
         }
-        if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
-          continue;
-        }
-        if img_src_is_placeholder(trimmed) {
-          continue;
-        }
-        return Some(trimmed.to_string());
       }
     }
     None
@@ -4885,9 +4893,44 @@ pub(crate) fn apply_dom_compatibility_mutations(
           None => true,
         };
         if needs_src {
-          if let Some(candidate) =
-            first_non_empty_url_attr(attributes, &["data-src", "data-live-path"])
-          {
+          let candidate = first_non_empty_url_attr(attributes, &["data-src"]).or_else(|| {
+            // MDN-style "live sample" iframes can specify a directory `data-live-path` plus a
+            // `data-live-id` identifying the specific sample file.
+            //
+            // Example:
+            //   <iframe src="about:blank" data-live-path="frame/" data-live-id="demo">
+            //
+            // Without JS, the iframe stays on `about:blank`. If we only promote `data-live-path`,
+            // we would point at a directory (e.g. `frame/`), which often isn't a renderable
+            // document. When both attributes are present, derive a conservative HTML path.
+            let live_path = first_non_empty_url_attr(attributes, &["data-live-path"])?;
+            let live_id = attributes
+              .iter()
+              .find(|(name, _)| name.eq_ignore_ascii_case("data-live-id"))
+              .map(|(_, value)| trim_ascii_whitespace(value))
+              .filter(|value| !value.is_empty())?;
+
+            let id_lower = live_id.to_ascii_lowercase();
+            let filename = if !live_id.contains('.') && !id_lower.ends_with(".html") {
+              format!("{live_id}.html")
+            } else {
+              live_id.to_string()
+            };
+
+            let mut url = String::with_capacity(live_path.len() + 1 + filename.len());
+            url.push_str(&live_path);
+            if !live_path.ends_with('/') {
+              url.push('/');
+            }
+            url.push_str(&filename);
+
+            sanitize_url_attr(&url)
+          });
+
+          if let Some(candidate) = candidate.or_else(|| {
+            // Fallback for older patterns where `data-live-path` already points at a full document.
+            first_non_empty_url_attr(attributes, &["data-live-path"])
+          }) {
             match src_idx {
               Some(idx) => {
                 if img_src_is_placeholder(&attributes[idx].1) {
@@ -11040,6 +11083,28 @@ mod tests {
       compat_iframe.get_attribute_ref("src"),
       Some("frame.html"),
       "compat mode should lift iframe data-live-path into src when authored src is placeholder"
+    );
+  }
+
+  #[test]
+  fn compatibility_mode_lifts_iframe_src_from_data_live_path_and_id() {
+    let html = r#"<html><body><iframe src="about:blank" data-live-path="frame/" data-live-id="demo"></iframe></body></html>"#;
+
+    let standard_dom = parse_html(html).expect("parse standard DOM");
+    let standard_iframe = find_element(&standard_dom, "iframe").expect("standard iframe element");
+    assert_eq!(
+      standard_iframe.get_attribute_ref("src"),
+      Some("about:blank"),
+      "standard mode should preserve authored iframe src"
+    );
+
+    let compat_dom =
+      parse_html_with_options(html, DomParseOptions::compatibility()).expect("parse compat DOM");
+    let compat_iframe = find_element(&compat_dom, "iframe").expect("compat iframe element");
+    assert_eq!(
+      compat_iframe.get_attribute_ref("src"),
+      Some("frame/demo.html"),
+      "compat mode should derive iframe src from data-live-path + data-live-id"
     );
   }
 
