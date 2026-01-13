@@ -296,15 +296,40 @@ fn crypto_random_uuid_native(
 }
 
 fn subtle_unimplemented_native(
-  _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHost,
-  _hooks: &mut dyn VmHostHooks,
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::TypeError("Unimplemented"))
+  // WebCrypto spec shape: SubtleCrypto methods always return a Promise (reject immediately for
+  // unimplemented methods in this MVP implementation).
+  let cap: PromiseCapability =
+    new_promise_capability_with_host_and_hooks(vm, scope, &mut *host, &mut *hooks)?;
+
+  let intr = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // Root the Promise capability components while allocating the error object.
+  let mut scope = scope.reborrow();
+  scope.push_root(cap.promise)?;
+  scope.push_root(cap.resolve)?;
+  scope.push_root(cap.reject)?;
+
+  let err = new_type_error_object(&mut scope, &intr, "Unimplemented")?;
+  vm.call_with_host_and_hooks(
+    &mut *host,
+    &mut scope,
+    &mut *hooks,
+    cap.reject,
+    Value::Undefined,
+    &[err],
+  )?;
+
+  Ok(cap.promise)
 }
 
 fn subtle_digest_native(
@@ -336,25 +361,6 @@ fn subtle_digest_native(
   let algorithm = args.get(0).copied().unwrap_or(Value::Undefined);
   let data = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let algorithm_name: Option<String> = match algorithm {
-    Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
-    Value::Object(obj) => {
-      scope.push_root(Value::Object(obj))?;
-      let name_key_s = scope.alloc_string("name")?;
-      scope.push_root(Value::String(name_key_s))?;
-      let name_key = PropertyKey::from_string(name_key_s);
-      match scope
-        .heap()
-        .object_get_own_data_property_value(obj, &name_key)?
-        .unwrap_or(Value::Undefined)
-      {
-        Value::String(s) => Some(scope.heap().get_string(s)?.to_utf8_lossy()),
-        _ => None,
-      }
-    }
-    _ => None,
-  };
-
   enum DigestAlg {
     Sha1,
     Sha256,
@@ -362,8 +368,91 @@ fn subtle_digest_native(
     Sha512,
   }
 
-  let digest_alg: Option<DigestAlg> = algorithm_name.as_deref().and_then(|name| {
-    let name = name.trim();
+  let reject_with_value = |vm: &mut Vm,
+                           scope: &mut Scope<'_>,
+                           host: &mut dyn VmHost,
+                           hooks: &mut dyn VmHostHooks,
+                           cap: PromiseCapability,
+                           err_value: Value|
+   -> Result<Value, VmError> {
+    vm.call_with_host_and_hooks(
+      &mut *host,
+      scope,
+      &mut *hooks,
+      cap.reject,
+      Value::Undefined,
+      &[err_value],
+    )?;
+    Ok(cap.promise)
+  };
+
+  let reject_with_vm_error = |vm: &mut Vm,
+                              scope: &mut Scope<'_>,
+                              host: &mut dyn VmHost,
+                              hooks: &mut dyn VmHostHooks,
+                              cap: PromiseCapability,
+                              err: VmError|
+   -> Result<Value, VmError> {
+    if let Some(thrown) = err.thrown_value() {
+      return reject_with_value(vm, scope, host, hooks, cap, thrown);
+    }
+    match err {
+      VmError::TypeError(msg) => {
+        let err_value = new_type_error_object(scope, &intr, msg)?;
+        reject_with_value(vm, scope, host, hooks, cap, err_value)
+      }
+      VmError::RangeError(msg) => {
+        // Minimal compatibility: surface RangeErrors from conversions as TypeError instances.
+        let err_value = new_type_error_object(scope, &intr, msg)?;
+        reject_with_value(vm, scope, host, hooks, cap, err_value)
+      }
+      other if other.is_throw_completion() => {
+        let err_value = new_type_error_object(scope, &intr, &other.to_string())?;
+        reject_with_value(vm, scope, host, hooks, cap, err_value)
+      }
+      other => Err(other),
+    }
+  };
+
+  // --- Normalize AlgorithmIdentifier ----------------------------------------------------------
+  // Spec-ish behavior:
+  // - If passed a string, use it.
+  // - If passed an object, read `algorithm.name` using ordinary property get and coerce to string.
+  let algorithm_name: String = match algorithm {
+    Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
+    Value::Object(obj) => {
+      scope.push_root(Value::Object(obj))?;
+      let name_key = alloc_key(&mut scope, "name")?;
+      let name_value = match vm.get_with_host_and_hooks(&mut *host, &mut scope, &mut *hooks, obj, name_key) {
+        Ok(v) => v,
+        Err(err) => return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err),
+      };
+      if matches!(name_value, Value::Undefined) {
+        let err = new_type_error_object(
+          &mut scope,
+          &intr,
+          "crypto.subtle.digest expects an algorithm name string",
+        )?;
+        return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
+      }
+      let name_string = match scope.to_string(vm, &mut *host, &mut *hooks, name_value) {
+        Ok(s) => s,
+        Err(err) => return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err),
+      };
+      scope.heap().get_string(name_string)?.to_utf8_lossy()
+    }
+    _ => {
+      let err = new_type_error_object(
+        &mut scope,
+        &intr,
+        "crypto.subtle.digest expects an algorithm name string",
+      )?;
+      return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
+    }
+  };
+
+  let digest_alg: Option<DigestAlg> = {
+    let name = algorithm_name.trim();
     if name.eq_ignore_ascii_case("SHA-1") || name.eq_ignore_ascii_case("SHA1") {
       Some(DigestAlg::Sha1)
     } else if name.eq_ignore_ascii_case("SHA-256") || name.eq_ignore_ascii_case("SHA256") {
@@ -375,79 +464,90 @@ fn subtle_digest_native(
     } else {
       None
     }
-  });
+  };
 
-  let data_bytes: Option<Vec<u8>> = match data {
+  let Some(digest_alg) = digest_alg else {
+    let message = format!("Unsupported digest algorithm: {algorithm_name}");
+    let err = create_dom_exception_like(&mut scope, "NotSupportedError", &message)?;
+    return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
+  };
+
+  // --- Read BufferSource ----------------------------------------------------------------------
+  let data_bytes: Vec<u8> = match data {
     Value::Object(obj) => {
       scope.push_root(Value::Object(obj))?;
       let heap = scope.heap();
       if heap.is_array_buffer_object(obj) {
-        Some(heap.array_buffer_data(obj)?.to_vec())
-      } else if heap.is_uint8_array_object(obj) {
-        Some(heap.uint8_array_data(obj)?.to_vec())
+        match heap.array_buffer_data(obj) {
+          Ok(bytes) => bytes.to_vec(),
+          Err(err) => {
+            return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
+          }
+        }
+      } else if heap.is_typed_array_object(obj) {
+        let (buffer_obj, byte_offset, byte_len) = match heap.typed_array_view_bytes(obj) {
+          Ok(v) => v,
+          Err(err) => {
+            return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
+          }
+        };
+        let buf_bytes = match heap.array_buffer_data(buffer_obj) {
+          Ok(b) => b,
+          Err(err) => {
+            return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
+          }
+        };
+        let end = byte_offset
+          .checked_add(byte_len)
+          .ok_or(VmError::InvariantViolation("TypedArray byte offset overflow"))?;
+        buf_bytes[byte_offset..end].to_vec()
+      } else if heap.is_data_view_object(obj) {
+        let buffer_obj = heap.data_view_buffer(obj)?;
+        let byte_offset = heap.data_view_byte_offset(obj)?;
+        let byte_len = heap.data_view_byte_length(obj)?;
+        let buf_bytes = match heap.array_buffer_data(buffer_obj) {
+          Ok(b) => b,
+          Err(err) => {
+            return reject_with_vm_error(vm, &mut scope, &mut *host, &mut *hooks, cap, err)
+          }
+        };
+        let end = byte_offset
+          .checked_add(byte_len)
+          .ok_or(VmError::InvariantViolation("DataView byte offset overflow"))?;
+        buf_bytes
+          .get(byte_offset..end)
+          .unwrap_or_default()
+          .to_vec()
       } else {
-        None
+        let err = new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
+        return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
       }
     }
-    _ => None,
+    _ => {
+      let err = new_type_error_object(&mut scope, &intr, "crypto.subtle.digest expects a BufferSource")?;
+      return reject_with_value(vm, &mut scope, &mut *host, &mut *hooks, cap, err);
+    }
   };
 
-  let result: Result<Vec<u8>, Value> = match (algorithm_name.as_deref(), digest_alg, data_bytes) {
-    (Some(_name), Some(alg), Some(data)) => {
-      let digest = match alg {
-        DigestAlg::Sha1 => Sha1::digest(&data).to_vec(),
-        DigestAlg::Sha256 => Sha256::digest(&data).to_vec(),
-        DigestAlg::Sha384 => Sha384::digest(&data).to_vec(),
-        DigestAlg::Sha512 => Sha512::digest(&data).to_vec(),
-      };
-      Ok(digest)
-    }
-    (None, _, _) => Err(new_type_error_object(
-      &mut scope,
-      &intr,
-      "crypto.subtle.digest expects an algorithm name string",
-    )?),
-    (Some(name), None, _) => {
-      let message = format!("Unsupported digest algorithm: {name}");
-      Err(create_dom_exception_like(
-        &mut scope,
-        "NotSupportedError",
-        &message,
-      )?)
-    }
-    (_, _, None) => Err(new_type_error_object(
-      &mut scope,
-      &intr,
-      "crypto.subtle.digest expects an ArrayBuffer or Uint8Array",
-    )?),
+  let digest = match digest_alg {
+    DigestAlg::Sha1 => Sha1::digest(&data_bytes).to_vec(),
+    DigestAlg::Sha256 => Sha256::digest(&data_bytes).to_vec(),
+    DigestAlg::Sha384 => Sha384::digest(&data_bytes).to_vec(),
+    DigestAlg::Sha512 => Sha512::digest(&data_bytes).to_vec(),
   };
 
-  match result {
-    Ok(digest) => {
-      let ab = scope.alloc_array_buffer_from_u8_vec(digest)?;
-      scope
-        .heap_mut()
-        .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
-      vm.call_with_host_and_hooks(
-        &mut *host,
-        &mut scope,
-        &mut *hooks,
-        cap.resolve,
-        Value::Undefined,
-        &[Value::Object(ab)],
-      )?;
-    }
-    Err(err_value) => {
-      vm.call_with_host_and_hooks(
-        &mut *host,
-        &mut scope,
-        &mut *hooks,
-        cap.reject,
-        Value::Undefined,
-        &[err_value],
-      )?;
-    }
-  }
+  let ab = scope.alloc_array_buffer_from_u8_vec(digest)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(ab, Some(intr.array_buffer_prototype()))?;
+  vm.call_with_host_and_hooks(
+    &mut *host,
+    &mut scope,
+    &mut *hooks,
+    cap.resolve,
+    Value::Undefined,
+    &[Value::Object(ab)],
+  )?;
 
   Ok(cap.promise)
 }
@@ -559,7 +659,16 @@ pub(crate) fn install_window_crypto_bindings(
     HostSlots {
       a: SUBTLE_CRYPTO_HOST_TAG,
       b: 0,
-    },
+      },
+    )?;
+
+  // Object.prototype.toString branding ([object SubtleCrypto]) via Symbol.toStringTag.
+  let subtle_tag = scope.alloc_string("SubtleCrypto")?;
+  scope.push_root(Value::String(subtle_tag))?;
+  scope.define_property(
+    subtle_obj,
+    to_string_tag_key,
+    read_only_data_desc(Value::String(subtle_tag)),
   )?;
 
   let subtle_unimpl_id = vm.register_native_call(subtle_unimplemented_native)?;
@@ -986,5 +1095,214 @@ mod tests {
       )
       .expect("script should catch and return");
     assert_eq!(js_value_to_utf8(realm.heap(), v), "ok");
+  }
+
+  fn assert_sha256_abc_digest(realm: &WindowRealm, ab_obj: vm_js::GcObject) {
+    let bytes = realm
+      .heap()
+      .array_buffer_data(ab_obj)
+      .expect("ArrayBuffer data");
+    assert_eq!(
+      bytes,
+      &[
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+        0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+        0xf2, 0x00, 0x15, 0xad,
+      ][..]
+    );
+  }
+
+  #[test]
+  fn subtle_digest_sha256_text_encoder_bytes_resolves_to_known_digest() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    realm
+      .exec_script(
+        r#"
+        globalThis.__digest_done = false;
+        globalThis.__digest_ab = null;
+        (async () => {
+          const data = new TextEncoder().encode('abc');
+          const ab = await crypto.subtle.digest('SHA-256', data);
+          globalThis.__digest_ab = ab;
+          globalThis.__digest_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let ab_val = realm.exec_script("globalThis.__digest_ab").unwrap();
+    let Value::Object(ab_obj) = ab_val else {
+      panic!("expected ArrayBuffer, got {ab_val:?}");
+    };
+    assert_sha256_abc_digest(&realm, ab_obj);
+  }
+
+  #[test]
+  fn subtle_digest_accepts_dataview_with_byte_offset() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    realm
+      .exec_script(
+        r#"
+        globalThis.__digest_done = false;
+        globalThis.__digest_ab = null;
+        (async () => {
+          const u8 = new TextEncoder().encode('xabcx');
+          const dv = new DataView(u8.buffer, 1, 3);
+          const ab = await crypto.subtle.digest('SHA-256', dv);
+          globalThis.__digest_ab = ab;
+          globalThis.__digest_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let ab_val = realm.exec_script("globalThis.__digest_ab").unwrap();
+    let Value::Object(ab_obj) = ab_val else {
+      panic!("expected ArrayBuffer, got {ab_val:?}");
+    };
+    assert_sha256_abc_digest(&realm, ab_obj);
+  }
+
+  #[test]
+  fn subtle_digest_accepts_algorithm_object_name_via_prototype_getter() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    realm
+      .exec_script(
+        r#"
+        globalThis.__digest_done = false;
+        globalThis.__digest_ab = null;
+        (async () => {
+          const alg = Object.create({ get name() { return 'SHA-256'; } });
+          const data = new TextEncoder().encode('abc');
+          const ab = await crypto.subtle.digest(alg, data);
+          globalThis.__digest_ab = ab;
+          globalThis.__digest_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let ab_val = realm.exec_script("globalThis.__digest_ab").unwrap();
+    let Value::Object(ab_obj) = ab_val else {
+      panic!("expected ArrayBuffer, got {ab_val:?}");
+    };
+    assert_sha256_abc_digest(&realm, ab_obj);
+  }
+
+  #[test]
+  fn subtle_digest_unsupported_algorithm_rejects_with_not_supported_error() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    realm
+      .exec_script(
+        r#"
+        globalThis.__digest_done = false;
+        globalThis.__digest_err_name = null;
+        (async () => {
+          try {
+            await crypto.subtle.digest('MD5', new TextEncoder().encode('abc'));
+          } catch (e) {
+            globalThis.__digest_err_name = e && e.name;
+          }
+          globalThis.__digest_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__digest_done").unwrap(),
+      Value::Bool(true)
+    );
+    let err_name = realm.exec_script("globalThis.__digest_err_name").unwrap();
+    assert_eq!(js_value_to_utf8(realm.heap(), err_name), "NotSupportedError");
+  }
+
+  #[test]
+  fn subtle_unimplemented_methods_return_promise_and_reject() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    // Must not throw synchronously.
+    assert_eq!(
+      realm
+        .exec_script(
+          r#"
+          (() => {
+            try {
+              const p = crypto.subtle.encrypt('nope', null, new Uint8Array([1,2,3]));
+              return p instanceof Promise;
+            } catch (e) {
+              return false;
+            }
+          })()
+          "#,
+        )
+        .unwrap(),
+      Value::Bool(true)
+    );
+
+    // And the returned Promise must reject.
+    realm
+      .exec_script(
+        r#"
+        globalThis.__encrypt_done = false;
+        globalThis.__encrypt_outcome = null;
+        (async () => {
+          try {
+            await crypto.subtle.encrypt('nope', null, new Uint8Array([1,2,3]));
+            globalThis.__encrypt_outcome = 'resolved';
+          } catch (e) {
+            globalThis.__encrypt_outcome = 'rejected';
+          }
+          globalThis.__encrypt_done = true;
+        })();
+        "#,
+      )
+      .unwrap();
+    realm.perform_microtask_checkpoint().unwrap();
+
+    assert_eq!(
+      realm.exec_script("globalThis.__encrypt_done").unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      js_value_to_utf8(realm.heap(), realm.exec_script("globalThis.__encrypt_outcome").unwrap()),
+      "rejected"
+    );
+  }
+
+  #[test]
+  fn subtle_crypto_object_to_string_tag_is_branded() {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.invalid/"))
+      .expect("create realm");
+
+    let v = realm
+      .exec_script("Object.prototype.toString.call(crypto.subtle)")
+      .unwrap();
+    assert_eq!(js_value_to_utf8(realm.heap(), v), "[object SubtleCrypto]");
   }
 }
