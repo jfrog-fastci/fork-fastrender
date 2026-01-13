@@ -83,6 +83,8 @@ end-to-end:
 - **Menu bar**: browser-style menu bar (File/Edit/View/History/Bookmarks/Window/Help) for discoverability.
 - **Accessibility (chrome)**: the egui-based chrome UI exposes widget semantics to OS assistive tech
   via AccessKit (VoiceOver/Narrator/Orca). See [chrome_accessibility.md](chrome_accessibility.md).
+- **Accessibility (page semantics)**: the renderer can compute a page accessibility tree (roles/names/states)
+  as JSON via `dump_a11y` (no OS integration yet). See [page_accessibility.md](page_accessibility.md).
 - **Navigation**:
   - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
     → `https://example.com/`, filesystem paths → `file://...`)
