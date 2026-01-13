@@ -5,6 +5,8 @@
 //! when the renderer is compromised.
 
 pub mod websocket_manager;
+#[cfg(feature = "direct_websocket")]
+pub mod websocket_runtime;
 
 #[doc(hidden)]
 pub mod ipc;
