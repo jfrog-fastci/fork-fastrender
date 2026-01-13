@@ -1974,11 +1974,7 @@ fn collect_labels(
         return Ok(Some(current));
       }
 
-      if current
-        .node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("template"))
-      {
+      if current.node.template_contents_are_inert() {
         continue;
       }
 
@@ -2022,11 +2018,7 @@ fn collect_labels(
       }
     }
 
-    if node
-      .node
-      .tag_name()
-      .is_some_and(|tag| tag.eq_ignore_ascii_case("template"))
-    {
+    if node.node.template_contents_are_inert() {
       continue;
     }
 

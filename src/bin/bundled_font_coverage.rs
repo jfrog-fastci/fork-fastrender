@@ -404,7 +404,7 @@ fn collect_codepoints_from_dom(
         ..
       } => {
         let tag = tag_name.as_str();
-        if tag.eq_ignore_ascii_case("script") || tag.eq_ignore_ascii_case("template") {
+        if tag.eq_ignore_ascii_case("script") || node.template_contents_are_inert() {
           continue;
         }
 
