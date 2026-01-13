@@ -46,6 +46,39 @@ fn extract_fast_array_elems3(
   Ok([a, b, c])
 }
 
+fn extract_fast_array_elems4(
+  rt: &mut JsRuntime,
+  array_val: Value,
+) -> Result<[Value; 4], VmError> {
+  let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut scope = heap.scope();
+
+  // Root the array object while we read its fast elements.
+  scope.push_root(array_val)?;
+  let Value::Object(array_obj) = array_val else {
+    return Err(VmError::TypeError("expected array object"));
+  };
+
+  let a = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 0)?
+    .ok_or(VmError::TypeError("missing array[0]"))?;
+  let b = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 1)?
+    .ok_or(VmError::TypeError("missing array[1]"))?;
+  let c = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 2)?
+    .ok_or(VmError::TypeError("missing array[2]"))?;
+  let d = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 3)?
+    .ok_or(VmError::TypeError("missing array[3]"))?;
+
+  Ok([a, b, c, d])
+}
+
 #[test]
 fn array_buffer_ctor_roots_options_across_gc_in_toindex() -> Result<(), VmError> {
   let mut rt = new_runtime_with_tiny_gc()?;
@@ -567,7 +600,9 @@ fn data_view_get_roots_optional_little_endian_across_gc_in_toindex() -> Result<(
       const offset = { valueOf() { ({});
         return 0;
       }};
-      const littleEndian = {};
+      // Use a String so `ToBoolean(littleEndian)` must dereference a `GcString` handle (and will
+      // crash on stale handles if it was GC'd during offset coercion).
+      const littleEndian = "x";
       return [view, offset, littleEndian];
     })()"#,
   )?;
@@ -601,6 +636,67 @@ fn data_view_get_roots_optional_little_endian_across_gc_in_toindex() -> Result<(
   );
 
   assert_eq!(out, Value::Number(0x1234 as f64));
+  Ok(())
+}
+
+#[test]
+fn data_view_set_roots_value_and_little_endian_across_gc_in_toindex() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(2);
+      const view = new DataView(buf);
+      const offset = { valueOf() { ({});
+        return 0;
+      }};
+      // Use a String so `ToNumber(value)` must dereference a `GcString` handle.
+      const value = "4660"; // 0x1234
+      // Use a String so `ToBoolean(littleEndian)` must dereference a `GcString` handle.
+      const littleEndian = "x";
+      return [view, offset, value, littleEndian];
+    })()"#,
+  )?;
+
+  let [view_val, offset_val, value_val, little_endian_val] =
+    extract_fast_array_elems4(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.data_view();
+  let args = [offset_val, value_val, little_endian_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::data_view_prototype_set_uint16(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    view_val,
+    &args,
+  )?;
+  assert_eq!(out, Value::Undefined);
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected setUint16() to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(view_obj) = view_val else {
+    return Err(VmError::InvariantViolation("DataView receiver is not an object"));
+  };
+  let buffer = scope.heap().data_view_buffer(view_obj)?;
+  scope.push_root(Value::Object(buffer))?;
+  let data = scope.heap().array_buffer_data(buffer)?;
+  assert_eq!(data.get(0), Some(&0x34));
+  assert_eq!(data.get(1), Some(&0x12));
+
   Ok(())
 }
 
