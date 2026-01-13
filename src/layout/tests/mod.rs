@@ -329,6 +329,7 @@ mod legend_shrink_to_fit;
 mod line_height_normal_metrics;
 mod list_marker_outside_whitespace;
 mod manual_multicol_breaks;
+mod mdn_text_orientation_upright;
 mod multicol;
 mod multicol_forced_page_breaks;
 mod multicol_writing_modes;
