@@ -28,6 +28,10 @@ ICU 78 corresponds to **Unicode 17.0.0** property data, which is the Unicode ver
 current test262 RegExp Unicode property escape tests. This makes ICU4X’s compiled data a plausible
 drop-in backing store for ECMA-262 code-point properties.
 
+As a lightweight sanity check, `src/regexp_unicode_icu.rs` includes a unit test asserting that
+U+16D40 (KIRAT RAI VOWEL SIGN AA, a Unicode 17.0.0 character) has `sc=Kirat_Rai` in the ICU4X
+compiled data.
+
 ## Property coverage
 
 ### Binary properties

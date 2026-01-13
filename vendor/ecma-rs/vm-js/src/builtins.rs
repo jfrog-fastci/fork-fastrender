@@ -19113,6 +19113,13 @@ pub fn string_prototype_to_lower_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.tolowercase
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
   let s = scope.to_string(vm, host, hooks, o)?;
@@ -19181,6 +19188,13 @@ pub fn string_prototype_to_upper_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-string.prototype.touppercase
+  if matches!(this, Value::Undefined | Value::Null) {
+    return Err(VmError::TypeError(
+      "Cannot convert undefined or null to object",
+    ));
+  }
+
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
   let s = scope.to_string(vm, host, hooks, o)?;
@@ -19317,7 +19331,6 @@ pub fn string_prototype_locale_compare(
     Ok(Value::Number(0.0))
   }
 }
-
 /// `%String.prototype%[@@iterator]` (ECMA-262).
 ///
 /// This returns an iterator object with internal slots:

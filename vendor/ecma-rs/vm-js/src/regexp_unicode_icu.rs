@@ -470,6 +470,21 @@ mod tests {
     );
     assert_eq!(resolve_property_value(PropertyName::GeneralCategory, "letter"), None);
 
+    // General_Category aliases (Unicode v17.0.0 / ECMA-262 tables).
+    assert_eq!(
+      resolve_property_value(PropertyName::GeneralCategory, "Lu"),
+      Some(ResolvedProperty::GeneralCategory(GcGroup::UppercaseLetter))
+    );
+    assert_eq!(
+      resolve_property_value(PropertyName::GeneralCategory, "Uppercase_Letter"),
+      Some(ResolvedProperty::GeneralCategory(GcGroup::UppercaseLetter))
+    );
+    // Reject non-UCD spellings (no underscore).
+    assert_eq!(
+      resolve_property_value(PropertyName::GeneralCategory, "UppercaseLetter"),
+      None
+    );
+
     // Script long name and short code.
     assert_eq!(
       resolve_property_value(PropertyName::Script, "Latin"),
@@ -480,6 +495,18 @@ mod tests {
       Some(ResolvedProperty::Script(Script::Latin))
     );
     assert_eq!(resolve_property_value(PropertyName::Script, "latin"), None);
+
+    // Script values introduced in Unicode 17 (used as a proxy that ICU4X compiled data is >= 17).
+    assert_eq!(
+      resolve_property_value(PropertyName::Script, "Kirat_Rai"),
+      Some(ResolvedProperty::Script(Script::KiratRai))
+    );
+    assert_eq!(
+      resolve_property_value(PropertyName::Script, "Krai"),
+      Some(ResolvedProperty::Script(Script::KiratRai))
+    );
+    // Reject Rust-style identifier spelling (not part of ECMA/UCD alias set).
+    assert_eq!(resolve_property_value(PropertyName::Script, "KiratRai"), None);
 
     assert_eq!(
       resolve_property_value(PropertyName::Binary(BinaryProperty::Alphabetic), "true"),
@@ -493,6 +520,21 @@ mod tests {
       resolve_property_value(PropertyName::Binary(BinaryProperty::Alphabetic), "False"),
       None
     );
+  }
+
+  #[test]
+  fn compiled_data_contains_unicode17_script_assignment() {
+    // U+16D40 KIRAT RAI VOWEL SIGN AA (Unicode 17.0.0; Script=Kirat_Rai).
+    //
+    // This is a sanity check that the ICU4X `compiled_data` used by this crate is at least
+    // Unicode 17.0.0 (the version required by current test262 RegExp property escape tables).
+    use icu_properties::props::Script;
+
+    assert_eq!(
+      CodePointMapData::<Script>::new().get32(0x16D40),
+      Script::KiratRai
+    );
+    assert!(icu_properties::script::ScriptWithExtensions::new().has_script32(0x16D40, Script::KiratRai));
   }
 
   #[test]
