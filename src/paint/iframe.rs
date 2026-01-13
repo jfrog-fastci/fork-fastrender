@@ -165,7 +165,9 @@ fn render_iframe_out_of_process(
   //
   // This is implemented by setting `FD_CLOEXEC` on all inherited FDs except stdio. Unlike closing
   // FDs directly, this does not interfere with `std::process::Command`'s internal exec-error pipes.
-  #[cfg(unix)]
+  // On macOS, avoid `CommandExt::pre_exec`: it forces a `fork(2)`-based spawn, which is unsafe in
+  // multithreaded parents and bypasses the platform's `posix_spawn` fast path.
+  #[cfg(all(unix, target_os = "linux"))]
   {
     use std::os::unix::process::CommandExt as _;
     let keep = [0, 1, 2];
