@@ -678,7 +678,7 @@ fn template_content(raw: &str, is_end: bool) -> Option<(usize, &str)> {
   raw.get(start..end).map(|body| (start, body))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RegexErrorKind {
   LineTerminator,
   Unterminated,
@@ -3133,60 +3133,94 @@ fn validate_regex_pattern(
 }
 
 fn validate_regex_literal(raw: &str) -> Result<(), RegexError> {
-  let mut offset = '/'.len_utf8();
-  let mut in_charset = false;
-  while offset < raw.len() {
-    let mut iter = raw[offset..].char_indices();
-    let (rel, ch) = iter.next().unwrap();
-    debug_assert_eq!(rel, 0);
-    if ch == '\\' {
-      let after_backslash = offset + ch.len_utf8();
-      let Some(escaped) = raw[after_backslash..].chars().next() else {
-        return Err(RegexError {
-          kind: RegexErrorKind::Unterminated,
-          offset: after_backslash,
-          len: 0,
-        });
-      };
-      offset = after_backslash + escaped.len_utf8();
-      continue;
+  fn scan_terminator(raw: &str, nested: bool) -> Result<Option<usize>, RegexError> {
+    let mut escaped = false;
+    let mut class_depth: usize = 0;
+    for (i, ch) in raw.char_indices().skip(1) {
+      if escaped {
+        escaped = false;
+        continue;
+      }
+      match ch {
+        '\\' => escaped = true,
+        '[' => {
+          if nested {
+            class_depth = class_depth.saturating_add(1);
+          } else if class_depth == 0 {
+            class_depth = 1;
+          }
+        }
+        ']' if class_depth > 0 => {
+          if nested {
+            class_depth -= 1;
+          } else {
+            class_depth = 0;
+          }
+        }
+        '/' if class_depth == 0 => return Ok(Some(i)),
+        c if is_line_terminator(c) => {
+          return Err(RegexError {
+            kind: RegexErrorKind::LineTerminator,
+            offset: i,
+            len: ch.len_utf8(),
+          });
+        }
+        _ => {}
+      }
     }
-    if !in_charset && ch == '/' {
-      let flags_start = offset + ch.len_utf8();
-      validate_regex_flags(raw, flags_start)?;
-      let flags = &raw[flags_start..];
-      let unicode_mode = flags.as_bytes().iter().any(|b| *b == b'u' || *b == b'v');
-      let unicode_sets_mode = flags.as_bytes().iter().any(|b| *b == b'v');
-      let pattern = &raw['/'.len_utf8()..offset];
-      let (capture_groups, has_named_groups) = regex_capture_info(pattern, unicode_sets_mode);
-      validate_regex_pattern(
-        pattern,
-        '/'.len_utf8(),
-        unicode_mode,
-        unicode_sets_mode,
-        has_named_groups,
-        capture_groups,
-      )?;
-      return Ok(());
-    }
-    if ch == '[' {
-      in_charset = true;
-    } else if ch == ']' && in_charset {
-      in_charset = false;
-    } else if is_line_terminator(ch) {
+
+    // If the literal ends immediately after a backslash escape, treat it as unterminated (matching
+    // the previous validator behaviour).
+    if escaped {
       return Err(RegexError {
-        kind: RegexErrorKind::LineTerminator,
-        offset,
-        len: ch.len_utf8(),
+        kind: RegexErrorKind::Unterminated,
+        offset: raw.len(),
+        len: 0,
       });
     }
-    offset += ch.len_utf8();
+
+    Ok(None)
   }
-  Err(RegexError {
-    kind: RegexErrorKind::Unterminated,
-    offset: raw.len(),
-    len: 0,
-  })
+
+  // Stage 1: scan using classic RegExp character-class termination rules to locate the pattern
+  // terminator and extract the flags suffix.
+  let Some(mut end_pat) = scan_terminator(raw, false)? else {
+    return Err(RegexError {
+      kind: RegexErrorKind::Unterminated,
+      offset: raw.len(),
+      len: 0,
+    });
+  };
+
+  // If the raw flags suffix contains `v`, do a nested character-class aware scan so we don't
+  // mis-detect the closing `/` when Unicode Sets mode contains nested character classes.
+  //
+  // If the nested scan fails to find a terminator (e.g. unbalanced `[`/`]` pairs under nesting
+  // semantics), fall back to the classic terminator position; the pattern validator will report
+  // the error.
+  let has_v_flag = raw[end_pat + 1..].as_bytes().iter().any(|b| *b == b'v');
+  if has_v_flag {
+    if let Some(i) = scan_terminator(raw, true)? {
+      end_pat = i;
+    }
+  }
+
+  let flags_start = end_pat + '/'.len_utf8();
+  validate_regex_flags(raw, flags_start)?;
+  let flags = &raw[flags_start..];
+  let unicode_mode = flags.as_bytes().iter().any(|b| *b == b'u' || *b == b'v');
+  let unicode_sets_mode = flags.as_bytes().iter().any(|b| *b == b'v');
+  let pattern = &raw['/'.len_utf8()..end_pat];
+  let (capture_groups, has_named_groups) = regex_capture_info(pattern, unicode_sets_mode);
+  validate_regex_pattern(
+    pattern,
+    '/'.len_utf8(),
+    unicode_mode,
+    unicode_sets_mode,
+    has_named_groups,
+    capture_groups,
+  )?;
+  Ok(())
 }
 
 fn regex_error_to_syntax(err: RegexError, token_start: usize) -> SyntaxError {
@@ -3216,6 +3250,11 @@ mod regex_validation_tests {
       validate_regex_literal(raw).is_err(),
       "expected regex to be rejected: {raw}",
     );
+  }
+
+  fn assert_invalid_kind(raw: &str, kind: super::RegexErrorKind) {
+    let err = validate_regex_literal(raw).expect_err("expected regex to be rejected");
+    assert_eq!(err.kind, kind, "unexpected error kind for {raw}");
   }
 
   #[test]
@@ -3331,6 +3370,22 @@ mod regex_validation_tests {
     // character classes via ClassSetReservedPunctuator.
     assert_valid(r"/[\!!]/v");
     assert_valid(r"/[\&\&]/v");
+  }
+
+  #[test]
+  fn unicode_sets_mode_scans_regex_terminator_with_nested_classes() {
+    // The classic scan treats the first `]` as closing the class, so it would incorrectly split
+    // flags at `]/v` and report an invalid-flag error. Ensure we instead report an invalid pattern.
+    assert_invalid_kind(r"/[[0-9]/]/v", super::RegexErrorKind::InvalidPattern);
+  }
+
+  #[test]
+  fn unicode_sets_mode_nested_scan_falls_back_to_classic_terminator() {
+    // `/[[]/v` is a well-terminated literal, but is an invalid pattern in UnicodeSets mode. A
+    // fully nested scan would treat it as unterminated (because `[` would start a nested class),
+    // so ensure we fall back to the classic terminator position and still report an invalid
+    // pattern.
+    assert_invalid_kind(r"/[[]/v", super::RegexErrorKind::InvalidPattern);
   }
 
   #[test]
