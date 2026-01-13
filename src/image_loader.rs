@@ -1571,6 +1571,16 @@ fn append_url_fragment_if_missing<'a>(base_url: &'a str, requested_url: &str) ->
   Cow::Owned(out)
 }
 
+fn referrer_url_for_svg_importer<'a>(
+  importer_url: &'a str,
+  ctx: Option<&'a ResourceContext>,
+) -> Option<&'a str> {
+  if Url::parse(importer_url).is_ok() {
+    return Some(importer_url);
+  }
+  ctx.and_then(|ctx| ctx.document_url.as_deref())
+}
+
 #[derive(Debug, Clone)]
 struct SvgUseInlineElement {
   tag_name: String,
@@ -1827,6 +1837,8 @@ fn inline_svg_use_references<'a>(
 
   check_root(RenderStage::Paint).map_err(Error::Render)?;
 
+  let importer_referrer_url = referrer_url_for_svg_importer(svg_url, ctx);
+
   let svg_for_parse = svg_markup_for_roxmltree(svg_content);
   let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     roxmltree::Document::parse(svg_for_parse.as_ref())
@@ -1942,7 +1954,7 @@ fn inline_svg_use_references<'a>(
           if let Some(origin) = ctx.policy.document_origin.as_ref() {
             req = req.with_client_origin(origin);
           }
-          if let Some(referrer_url) = ctx.document_url.as_deref() {
+          if let Some(referrer_url) = importer_referrer_url {
             req = req.with_referrer_url(referrer_url);
           }
           req = req.with_referrer_policy(ctx.referrer_policy);
@@ -1976,7 +1988,7 @@ fn inline_svg_use_references<'a>(
         if let Some(origin) = ctx.policy.document_origin.as_ref() {
           req = req.with_client_origin(origin);
         }
-        if let Some(referrer_url) = ctx.document_url.as_deref() {
+        if let Some(referrer_url) = importer_referrer_url {
           req = req.with_referrer_url(referrer_url);
         }
         req = req.with_referrer_policy(ctx.referrer_policy);
@@ -2333,7 +2345,7 @@ fn inline_svg_use_references<'a>(
           if let Some(origin) = ctx.policy.document_origin.as_ref() {
             req = req.with_client_origin(origin);
           }
-          if let Some(referrer_url) = ctx.document_url.as_deref() {
+          if let Some(referrer_url) = importer_referrer_url {
             req = req.with_referrer_url(referrer_url);
           }
           req = req.with_referrer_policy(ctx.referrer_policy);
@@ -2824,6 +2836,7 @@ fn inline_svg_image_references<'a>(
       .and_then(|ctx| ctx.document_url.as_deref())
       .filter(|doc_url| Url::parse(doc_url).is_ok())
   });
+  let importer_referrer_url = referrer_url_for_svg_importer(svg_url, ctx);
 
   let mut deadline_counter = 0usize;
   let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
@@ -3039,7 +3052,7 @@ fn inline_svg_image_references<'a>(
             if let Some(origin) = ctx.policy.document_origin.as_ref() {
               req = req.with_client_origin(origin);
             }
-            if let Some(referrer_url) = ctx.document_url.as_deref() {
+            if let Some(referrer_url) = importer_referrer_url {
               req = req.with_referrer_url(referrer_url);
             }
             req = req.with_referrer_policy(ctx.referrer_policy);
@@ -3295,7 +3308,7 @@ fn inline_svg_image_references<'a>(
           if let Some(origin) = ctx.policy.document_origin.as_ref() {
             req = req.with_client_origin(origin);
           }
-          if let Some(referrer_url) = ctx.document_url.as_deref() {
+          if let Some(referrer_url) = importer_referrer_url {
             req = req.with_referrer_url(referrer_url);
           }
           req = req.with_referrer_policy(ctx.referrer_policy);
@@ -3856,8 +3869,10 @@ fn fetch_svg_stylesheet_import(
     }
     req = req.with_referrer_policy(ctx.referrer_policy);
   }
-  let referrer_url =
-    importer_url.or_else(|| ctx.and_then(|ctx| ctx.document_url.as_deref()));
+
+  let referrer_url = importer_url
+    .and_then(|importer_url| referrer_url_for_svg_importer(importer_url, ctx))
+    .or_else(|| ctx.and_then(|ctx| ctx.document_url.as_deref()));
   if let Some(referrer_url) = referrer_url {
     req = req.with_referrer_url(referrer_url);
   }
@@ -4368,6 +4383,7 @@ fn inline_svg_external_url_fragment_references<'a>(
       .and_then(|ctx| ctx.document_url.as_deref())
       .filter(|doc_url| Url::parse(doc_url).is_ok())
   });
+  let importer_referrer_url = referrer_url_for_svg_importer(svg_url, ctx);
 
   // Scan the raw SVG text for `url(...)` tokens and record external fragments.
   let bytes = svg_content.as_bytes();
@@ -4547,7 +4563,7 @@ fn inline_svg_external_url_fragment_references<'a>(
       if let Some(origin) = ctx.policy.document_origin.as_ref() {
         req = req.with_client_origin(origin);
       }
-      if let Some(referrer_url) = ctx.document_url.as_deref() {
+      if let Some(referrer_url) = importer_referrer_url {
         req = req.with_referrer_url(referrer_url);
       }
       req = req.with_referrer_policy(ctx.referrer_policy);
@@ -12702,6 +12718,7 @@ mod tests_inline {
     url: String,
     destination: FetchDestination,
     referrer_url: Option<String>,
+    credentials_mode: FetchCredentialsMode,
   }
 
   #[derive(Clone, Default)]
@@ -12749,6 +12766,7 @@ mod tests_inline {
           url: req.url.to_string(),
           destination: req.destination,
           referrer_url: req.referrer_url.map(|url| url.to_string()),
+          credentials_mode: req.credentials_mode,
         });
       self.fetch(req.url)
     }
@@ -17736,6 +17754,143 @@ mod tests_inline {
       }),
       "expected stylesheet fetch for {style_url} to use referrer_url={doc_url}, got: {requests:?}"
     );
+  }
+
+  #[test]
+  fn svg_subresource_fetches_use_svg_url_as_referrer_when_parseable() {
+    let svg_url = "https://example.test/sprite.svg";
+    let doc_url = "https://example.test/page.html";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <image href="img.png" width="1" height="1"/>
+    </svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([0, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+
+    let _ = inline_svg_image_references(svg, svg_url, &fetcher, Some(&ctx), None)
+      .expect("inline svg <image>");
+
+    let requests = fetcher.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, img_url);
+    assert_eq!(requests[0].destination, FetchDestination::Image);
+    assert_eq!(requests[0].referrer_url.as_deref(), Some(svg_url));
+  }
+
+  #[test]
+  fn svg_use_sprite_fetch_uses_host_svg_url_as_referrer() {
+    let main_svg_url = "https://example.test/main.svg";
+    let sprite_url = "https://example.test/sprite.svg";
+    let doc_url = "https://example.test/page.html";
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <use href="sprite.svg#icon" width="1" height="1"/>
+    </svg>"#;
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <symbol id="icon"><rect width="1" height="1" fill="red"/></symbol>
+    </svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+
+    let _ = inline_svg_use_references(main_svg, main_svg_url, &fetcher, Some(&ctx), None)
+      .expect("inline external <use>");
+
+    let requests = fetcher.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, sprite_url);
+    assert_eq!(requests[0].destination, FetchDestination::Image);
+    assert_eq!(requests[0].referrer_url.as_deref(), Some(main_svg_url));
+  }
+
+  #[test]
+  fn svg_external_url_fragment_fetch_uses_host_svg_url_as_referrer() {
+    let main_svg_url = "https://example.test/main.svg";
+    let defs_url = "https://example.test/defs.svg";
+    let doc_url = "https://example.test/page.html";
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <rect width="1" height="1" fill="url(defs.svg#p)"/>
+    </svg>"#;
+
+    let defs_svg = r#"<svg xmlns="http://www.w3.org/2000/svg">
+      <defs><pattern id="p"><rect width="1" height="1"/></pattern></defs>
+    </svg>"#;
+
+    let mut defs_res = FetchedResource::new(
+      defs_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    defs_res.status = Some(200);
+    defs_res.final_url = Some(defs_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([(defs_url.to_string(), defs_res)]);
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+
+    let _ = inline_svg_external_url_fragment_references(
+      main_svg,
+      main_svg_url,
+      &fetcher,
+      Some(&ctx),
+      None,
+    )
+    .expect("inline external url(#id)");
+
+    let requests = fetcher.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, defs_url);
+    assert_eq!(requests[0].destination, FetchDestination::Image);
+    assert_eq!(requests[0].referrer_url.as_deref(), Some(main_svg_url));
+  }
+
+  #[test]
+  fn svg_subresource_fetches_fall_back_to_document_url_when_svg_url_invalid() {
+    let svg_url = "inline-svg";
+    let doc_url = "https://example.test/page.html";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+      <image href="img.png" width="1" height="1"/>
+    </svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([0, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = RecordingFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+
+    let _ = inline_svg_image_references(svg, svg_url, &fetcher, Some(&ctx), None)
+      .expect("inline svg <image>");
+
+    let requests = fetcher.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, img_url);
+    assert_eq!(requests[0].destination, FetchDestination::Image);
+    assert_eq!(requests[0].referrer_url.as_deref(), Some(doc_url));
   }
 
   #[test]
