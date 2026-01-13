@@ -42,6 +42,19 @@ fn main() {
             }
             format!("x86_64-darwin{}-gcc", detect_darwin_major().unwrap_or(22))
         }
+        ("macos", "aarch64", _) => {
+            // Apple Silicon. libvpx uses `arm64` in its toolchain naming.
+            if !host.contains("apple-darwin") {
+                unsupported(
+                    &target,
+                    &host,
+                    "macOS target requested but build host is not macOS. Cross-compiling the bundled libvpx is not supported; build on macOS or provide a prebuilt libvpx.",
+                );
+            }
+            // arm64 support starts at darwin20 (macOS 11). Clamp to a known toolchain name.
+            let darwin = detect_darwin_major().unwrap_or(22).max(20);
+            format!("arm64-darwin{darwin}-gcc")
+        }
         ("windows", "x86_64", "gnu") => "x86_64-win64-gcc".to_string(),
         ("windows", "x86_64", "msvc") => {
             unsupported(
@@ -57,7 +70,7 @@ Alternatively, link against a system-provided libvpx.",
         _ => unsupported(
             &target,
             &host,
-            "unsupported target for bundled libvpx build. Supported targets: linux x86_64, macOS x86_64, Windows x86_64-gnu (MinGW).",
+            "unsupported target for bundled libvpx build. Supported targets: linux x86_64, macOS x86_64/aarch64, Windows x86_64-gnu (MinGW).",
         ),
     };
 
@@ -89,8 +102,12 @@ Alternatively, link against a system-provided libvpx.",
         "--disable-tools",
         "--disable-unit-tests",
         "--disable-docs",
-        "--enable-vp9",
-        "--enable-vp8",
+        // We only need decoding for the browser/video pipeline; avoid building encoder
+        // code (and C++ sources) by default.
+        "--enable-vp8-decoder",
+        "--enable-vp9-decoder",
+        "--disable-vp8-encoder",
+        "--disable-vp9-encoder",
         "--disable-webm-io",
         "--enable-static",
         "--disable-shared",
