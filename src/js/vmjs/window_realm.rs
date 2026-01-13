@@ -62887,6 +62887,126 @@ mod tests {
   }
 
   #[test]
+  fn html_video_element_wrapper_dispatch_event_exposes_targets_and_event_phase() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=outer><div id=inner><video id=v></video></div></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const outer = document.getElementById('outer');\n\
+        const inner = document.getElementById('inner');\n\
+        const video = document.getElementById('v');\n\
+        if (!outer || !inner || !video) return 'missing';\n\
+\n\
+        const log = [];\n\
+        const checks = [];\n\
+        function mk(label, expectedThis, expectedCurrentTarget, expectedPhase) {\n\
+          return function (e) {\n\
+            log.push(label);\n\
+            checks.push(this === expectedThis);\n\
+            checks.push(e.target === video);\n\
+            checks.push(e.currentTarget === expectedCurrentTarget);\n\
+            checks.push(e.eventPhase === expectedPhase);\n\
+          };\n\
+        }\n\
+\n\
+        window.addEventListener('x', mk('w-c', window, window, 1), { capture: true });\n\
+        document.addEventListener('x', mk('d-c', document, document, 1), { capture: true });\n\
+        outer.addEventListener('x', mk('o-c', outer, outer, 1), { capture: true });\n\
+        inner.addEventListener('x', mk('i-c', inner, inner, 1), { capture: true });\n\
+        video.addEventListener('x', mk('v-c', video, video, 2), { capture: true });\n\
+\n\
+        video.addEventListener('x', mk('v-b', video, video, 2));\n\
+        inner.addEventListener('x', mk('i-b', inner, inner, 3));\n\
+        outer.addEventListener('x', mk('o-b', outer, outer, 3));\n\
+        document.addEventListener('x', mk('d-b', document, document, 3));\n\
+        window.addEventListener('x', mk('w-b', window, window, 3));\n\
+\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        video.dispatchEvent(ev);\n\
+        const after = (\n\
+          ev.target === video &&\n\
+          ev.currentTarget === null &&\n\
+          ev.eventPhase === 0\n\
+        );\n\
+        return log.join(',') + '|' + checks.every(Boolean) + '|' + after;\n\
+      })()",
+    )?;
+
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "w-c,d-c,o-c,i-c,v-c,v-b,i-b,o-b,d-b,w-b|true|true"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn html_audio_element_wrapper_dispatch_event_exposes_targets_and_event_phase() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=outer><div id=inner><audio id=a></audio></div></div></body></html>",
+    )
+    .unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const outer = document.getElementById('outer');\n\
+        const inner = document.getElementById('inner');\n\
+        const audio = document.getElementById('a');\n\
+        if (!outer || !inner || !audio) return 'missing';\n\
+\n\
+        const log = [];\n\
+        const checks = [];\n\
+        function mk(label, expectedThis, expectedCurrentTarget, expectedPhase) {\n\
+          return function (e) {\n\
+            log.push(label);\n\
+            checks.push(this === expectedThis);\n\
+            checks.push(e.target === audio);\n\
+            checks.push(e.currentTarget === expectedCurrentTarget);\n\
+            checks.push(e.eventPhase === expectedPhase);\n\
+          };\n\
+        }\n\
+\n\
+        window.addEventListener('x', mk('w-c', window, window, 1), { capture: true });\n\
+        document.addEventListener('x', mk('d-c', document, document, 1), { capture: true });\n\
+        outer.addEventListener('x', mk('o-c', outer, outer, 1), { capture: true });\n\
+        inner.addEventListener('x', mk('i-c', inner, inner, 1), { capture: true });\n\
+        audio.addEventListener('x', mk('a-c', audio, audio, 2), { capture: true });\n\
+\n\
+        audio.addEventListener('x', mk('a-b', audio, audio, 2));\n\
+        inner.addEventListener('x', mk('i-b', inner, inner, 3));\n\
+        outer.addEventListener('x', mk('o-b', outer, outer, 3));\n\
+        document.addEventListener('x', mk('d-b', document, document, 3));\n\
+        window.addEventListener('x', mk('w-b', window, window, 3));\n\
+\n\
+        const ev = new Event('x', { bubbles: true });\n\
+        audio.dispatchEvent(ev);\n\
+        const after = (\n\
+          ev.target === audio &&\n\
+          ev.currentTarget === null &&\n\
+          ev.eventPhase === 0\n\
+        );\n\
+        return log.join(',') + '|' + checks.every(Boolean) + '|' + after;\n\
+      })()",
+    )?;
+
+    assert_eq!(
+      get_string(realm.heap(), result),
+      "w-c,d-c,o-c,i-c,a-c,a-b,i-b,o-b,d-b,w-b|true|true"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn event_handler_onclick_runs_returning_false_cancels_and_reassigns() -> Result<(), VmError> {
     let renderer_dom = crate::dom::parse_html(
       "<!doctype html><html><body><button id=\"b\"></button></body></html>",
