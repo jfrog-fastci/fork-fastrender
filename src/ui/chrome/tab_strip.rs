@@ -3579,6 +3579,44 @@ mod tests {
   }
 
   #[test]
+  fn pinned_viewport_uses_content_width_when_under_caps() {
+    let total = 800.0;
+    let pinned_content = PINNED_TAB_WIDTH * 2.0 + TAB_GAP;
+    let (pinned, unpinned) = compute_pinned_viewport_width(total, pinned_content, true);
+    assert!(
+      (pinned - pinned_content).abs() < 0.01,
+      "expected pinned viewport to match content width when it fits"
+    );
+    let gap = total - pinned - unpinned;
+    assert!((gap - TAB_GAP).abs() < 0.01, "expected default inter-segment gap");
+  }
+
+  #[test]
+  fn pinned_viewport_is_zero_when_no_pinned_content() {
+    let total = 500.0;
+    let (pinned, unpinned) = compute_pinned_viewport_width(total, 0.0, true);
+    assert!((pinned - 0.0).abs() < f32::EPSILON);
+    assert!((unpinned - total).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn pinned_viewport_takes_full_width_when_only_pinned_tabs_exist() {
+    let total = 500.0;
+    let (pinned, unpinned) = compute_pinned_viewport_width(total, 10_000.0, false);
+    assert!((pinned - total).abs() < f32::EPSILON);
+    assert!((unpinned - 0.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn pinned_viewport_drops_gap_when_strip_is_too_narrow() {
+    let total = PINNED_TAB_WIDTH + 2.0;
+    let (pinned, unpinned) = compute_pinned_viewport_width(total, 10_000.0, true);
+    assert!(unpinned > 0.0, "expected some width reserved for unpinned viewport");
+    let gap = total - pinned - unpinned;
+    assert!(gap.abs() < 0.01, "expected gap to be dropped under narrow widths");
+  }
+
+  #[test]
   fn group_chip_a11y_label_uses_expand_collapse_semantics() {
     assert_eq!(
       group_chip_a11y_label("Reading list", true),
