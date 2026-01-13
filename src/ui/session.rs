@@ -11,6 +11,7 @@ use crate::ui::zoom;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,15 @@ const MAX_WINDOW_POS_ABS_PX: i64 = 1_000_000;
 const FALLBACK_WINDOW_WIDTH_PX: i64 = 1_024;
 const FALLBACK_WINDOW_HEIGHT_PX: i64 = 768;
 const MAX_SCROLL_CSS: f32 = 1e9;
+
+fn session_backup_path(path: &Path) -> PathBuf {
+  let Some(ext) = path.extension() else {
+    return path.with_extension("bak");
+  };
+  let mut backup_ext = OsString::from(ext);
+  backup_ext.push(".bak");
+  path.with_extension(backup_ext)
+}
 
 fn default_did_exit_cleanly() -> bool {
   true
@@ -1303,6 +1313,35 @@ mod tests {
     drop(lock);
     acquire_session_lock(&session_path).expect("lock should be acquirable after drop");
   }
+
+  #[test]
+  fn load_session_falls_back_to_backup_when_primary_is_corrupted() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let session_path = dir.path().join("session.json");
+    let backup_path = session_backup_path(&session_path);
+
+    std::fs::write(&session_path, "{not valid json").expect("write corrupted primary session");
+
+    let backup_json = r#"{
+      "version": 2,
+      "home_url": "about:blank",
+      "windows": [{
+        "tabs": [
+          {"url": "about:blank", "zoom": 1.25},
+          {"url": "about:error", "zoom": 0.75, "pinned": true}
+        ],
+        "active_tab_index": 1
+      }],
+      "active_window_index": 0
+    }"#;
+    std::fs::write(&backup_path, backup_json).expect("write backup session");
+
+    let expected = parse_session_json(backup_json).expect("parse expected backup session JSON");
+    let loaded = load_session(&session_path)
+      .expect("load session")
+      .expect("expected session");
+    assert_eq!(loaded, expected);
+  }
 }
 
 /// Determine the on-disk session file location.
@@ -1333,12 +1372,61 @@ pub fn load_session(path: &Path) -> Result<Option<BrowserSession>, String> {
   let data = match std::fs::read_to_string(path) {
     Ok(data) => data,
     Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-    Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
+    Err(err) => {
+      let backup = session_backup_path(path);
+      match std::fs::read_to_string(&backup) {
+        Ok(data) => {
+          let session = parse_session_json(&data).map_err(|backup_err| {
+            format!(
+              "failed to read {}: {err}; also failed to parse backup {}: {backup_err}",
+              path.display(),
+              backup.display()
+            )
+          })?;
+          return Ok(Some(session));
+        }
+        Err(backup_err) if backup_err.kind() == std::io::ErrorKind::NotFound => {
+          return Err(format!("failed to read {}: {err}", path.display()))
+        }
+        Err(backup_err) => {
+          return Err(format!(
+            "failed to read {}: {err}; also failed to read backup {}: {backup_err}",
+            path.display(),
+            backup.display()
+          ))
+        }
+      }
+    }
   };
 
-  let session = parse_session_json(&data)
-    .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
-  Ok(Some(session))
+  match parse_session_json(&data) {
+    Ok(session) => Ok(Some(session)),
+    Err(err) => {
+      let backup = session_backup_path(path);
+      let backup_data = match std::fs::read_to_string(&backup) {
+        Ok(data) => data,
+        Err(backup_err) if backup_err.kind() == std::io::ErrorKind::NotFound => {
+          return Err(format!("failed to parse {}: {err}", path.display()))
+        }
+        Err(backup_err) => {
+          return Err(format!(
+            "failed to parse {}: {err}; also failed to read backup {}: {backup_err}",
+            path.display(),
+            backup.display()
+          ))
+        }
+      };
+
+      let session = parse_session_json(&backup_data).map_err(|backup_err| {
+        format!(
+          "failed to parse {}: {err}; also failed to parse backup {}: {backup_err}",
+          path.display(),
+          backup.display()
+        )
+      })?;
+      Ok(Some(session))
+    }
+  }
 }
 
 /// Write the session file atomically (write temp file + rename).
