@@ -7850,11 +7850,11 @@ mod unit_tests {
         .unwrap_or_default();
       format!(
         "<svg xmlns='http://www.w3.org/2000/svg'>\
-           <filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='userSpaceOnUse'\
-                   x='0' y='0' width='5' height='1' color-interpolation-filters='sRGB'>\
-             <feConvolveMatrix order='2 1' kernelMatrix='0.5 0.5'{ku_attr} edgeMode='duplicate'/>\
-           </filter>\
-         </svg>"
+           <filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='userSpaceOnUse' \
+                    x='0' y='0' width='5' height='1' color-interpolation-filters='sRGB'>\
+              <feConvolveMatrix order='2 1' kernelMatrix='0.5 0.5'{ku_attr} edgeMode='duplicate'/>\
+            </filter>\
+          </svg>"
       )
     };
 
