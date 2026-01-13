@@ -50,10 +50,12 @@ When `--js` is enabled in the render CLIs above, they use the `vm-js`-backed
 
 `BrowserTab::run_until_stable` is a deterministic “converge then snapshot” loop: it does **not**
 sleep in real time. It repeatedly drains runnable tasks/microtasks/timers, runs
-`requestAnimationFrame` callbacks, and renders frames until the document reaches a quiescent state
+`requestAnimationFrame` callbacks (frame turns) and `requestIdleCallback` callbacks (idle periods),
+and renders frames until the document reaches a quiescent state
 (or `--js-max-frames` is hit).
 
-Time-based APIs (`setTimeout`, `requestAnimationFrame`, `Date.now()`, `performance.now()`, etc.) are
+Time-based APIs (`setTimeout`, `requestAnimationFrame`, `requestIdleCallback`, `Date.now()`,
+`performance.now()`, etc.) are
 driven by the tab’s monotonic clock (`js::Clock`). The render CLIs drive `run_until_stable` **without
 sleeping** and do not attempt to fast-forward time, so timers that are not already due may not fire
 before the snapshot render (this is intentional for deterministic “load then render” workflows).
