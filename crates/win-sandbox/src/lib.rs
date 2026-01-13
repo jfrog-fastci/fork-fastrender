@@ -7,6 +7,11 @@
 //! The public API is intentionally safe; internal Win32 calls are wrapped so
 //! callers never need to use `unsafe` directly.
 
+#[cfg(windows)]
+mod job;
+#[cfg(windows)]
+pub use job::Job;
+
 use thiserror::Error;
 
 /// Result type alias for win-sandbox operations.
