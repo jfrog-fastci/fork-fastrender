@@ -3320,7 +3320,9 @@ impl JsRuntime {
     name: &str,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new_charged(&mut self.heap, name, source)?);
+    // `Arc::new` aborts the process on allocator OOM; allocate the `Arc<SourceText>` fallibly so
+    // hostile module sources can surface `VmError::OutOfMemory` instead of crashing.
+    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, name, source)?)?;
     self.exec_module_source_with_host_and_hooks(host, hooks, source)
   }
 
@@ -3353,7 +3355,9 @@ impl JsRuntime {
     name: &str,
     source: &str,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(SourceText::new_charged(&mut self.heap, name, source)?);
+    // `Arc::new` aborts the process on allocator OOM; allocate the `Arc<SourceText>` fallibly so
+    // hostile module sources can surface `VmError::OutOfMemory` instead of crashing.
+    let source = arc_try_new_vm(SourceText::new_charged(&mut self.heap, name, source)?)?;
     self.exec_module_source_with_host(host, source)
   }
 
@@ -35394,6 +35398,22 @@ mod oom_arc_tests {
     let _guard = FailNextMatchingAllocGuard::new(size, align);
 
     let err = rt.exec_script("1").expect_err("expected OOM error");
+    assert!(matches!(err, VmError::OutOfMemory));
+  }
+
+  #[test]
+  fn exec_module_returns_out_of_memory_on_source_arc_alloc_failure() {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap).expect("JsRuntime::new");
+
+    let size = std::mem::size_of::<ArcInner<SourceText>>();
+    let align = std::mem::align_of::<ArcInner<SourceText>>();
+    let _guard = FailNextMatchingAllocGuard::new(size, align);
+
+    let err = rt
+      .exec_module("m.js", "export const x = 1;")
+      .expect_err("expected OOM error");
     assert!(matches!(err, VmError::OutOfMemory));
   }
 }
