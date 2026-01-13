@@ -45,6 +45,9 @@ mod linux_seccomp_hardening_v2;
 #[cfg(target_os = "linux")]
 mod linux_seccomp_socket_domain;
 
+#[cfg(target_os = "linux")]
+mod linux_seccomp_fs_metadata;
+
 #[cfg(windows)]
 mod windows_process_handle_escape;
 

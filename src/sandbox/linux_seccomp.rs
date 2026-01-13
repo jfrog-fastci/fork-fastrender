@@ -148,7 +148,14 @@ fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter
     libc::SYS_newfstatat,
     libc::SYS_access,
     libc::SYS_faccessat,
+    // `faccessat2` is a newer variant used by modern glibc; deny it explicitly when available so
+    // filesystem probing fails with EPERM instead of hitting the default KILL action.
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    libc::SYS_faccessat2,
     libc::SYS_getdents64,
+    // 32-bit ABIs may use `getdents` instead of `getdents64`.
+    #[cfg(any(target_arch = "x86", target_arch = "arm"))]
+    libc::SYS_getdents,
     libc::SYS_readlink,
     libc::SYS_readlinkat,
     libc::SYS_statfs,
@@ -228,6 +235,12 @@ fn build_renderer_filter(config: RendererSandboxConfig) -> Vec<libc::sock_filter
   // Filesystem notification (expand kernel surface; should never be needed in a renderer).
   #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
   deny.extend_from_slice(&[libc::SYS_fanotify_init, libc::SYS_fanotify_mark]);
+
+  // 32-bit x86 uses the `socketcall(2)` multiplexer for socket operations. Seccomp cannot safely
+  // restrict socket families because the arguments live behind a user-space pointer, so we deny the
+  // syscall entirely for security.
+  #[cfg(target_arch = "x86")]
+  deny.push(libc::SYS_socketcall);
 
   // Socket operations are denied by default, but can be allowed for Unix-domain IPC.
   //
