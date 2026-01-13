@@ -543,7 +543,14 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   // Preserve live form control state stored in dom2 (values/checkedness/selectedness) when syncing
   // to the renderer DOM snapshot. Without this, the UI-side interaction engine can update dom1
   // attributes and later dom2→dom1 resync would clobber user edits.
-  patch_dom2_form_control_state_into_renderer_dom(dom2, &mut dom_snapshot, &mapping);
+  //
+  // This projects dom2's internal form-control state slots into the snapshot DOM attributes used by
+  // the renderer:
+  // - input.value -> value= (except type=file; never leak user file paths/bytes),
+  // - input.checked -> checked for checkbox/radio,
+  // - textarea.value -> data-fastr-value (dirty only),
+  // - option.selected -> selected.
+  dom2.project_form_control_state_into_renderer_dom_snapshot(&mut dom_snapshot, &mapping);
 
   // Replace the renderer document's DOM in-place so we preserve its configured viewport/dpr/scroll
   // state/animation clock.
@@ -834,94 +841,6 @@ fn js_dom_node_for_preorder_id_with_log(
     }
   }
   node_id
-}
-
-fn patch_dom2_form_control_state_into_renderer_dom(
-  dom2: &crate::dom2::Document,
-  snapshot_dom: &mut crate::dom::DomNode,
-  mapping: &crate::dom2::RendererDomMapping,
-) {
-  for idx in 0..dom2.nodes_len() {
-    let node_id = match dom2.node_id_from_index(idx) {
-      Ok(id) => id,
-      Err(_) => continue,
-    };
-    let node = dom2.node(node_id);
-    let crate::dom2::NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } = &node.kind
-    else {
-      continue;
-    };
-    if !dom2.is_html_case_insensitive_namespace(namespace) {
-      continue;
-    }
-
-    if tag_name.eq_ignore_ascii_case("input") {
-      let Ok(value) = dom2.input_value(node_id) else {
-        continue;
-      };
-      let Ok(checked) = dom2.input_checked(node_id) else {
-        continue;
-      };
-      let Some(preorder_id) = mapping.preorder_for_node_id(node_id) else {
-        continue;
-      };
-      let Some(node) = crate::dom::find_node_mut_by_preorder_id(snapshot_dom, preorder_id) else {
-        continue;
-      };
-      if !node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-      {
-        continue;
-      }
-      node.set_attribute("value", value);
-      node.toggle_bool_attribute("checked", checked);
-      continue;
-    }
-
-    if tag_name.eq_ignore_ascii_case("textarea") {
-      let Ok(value) = dom2.textarea_value(node_id) else {
-        continue;
-      };
-      let Some(preorder_id) = mapping.preorder_for_node_id(node_id) else {
-        continue;
-      };
-      let Some(node) = crate::dom::find_node_mut_by_preorder_id(snapshot_dom, preorder_id) else {
-        continue;
-      };
-      if !node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
-      {
-        continue;
-      }
-      node.set_attribute("data-fastr-value", &value);
-      continue;
-    }
-
-    if tag_name.eq_ignore_ascii_case("option") {
-      let Ok(selected) = dom2.option_selected(node_id) else {
-        continue;
-      };
-      let Some(preorder_id) = mapping.preorder_for_node_id(node_id) else {
-        continue;
-      };
-      let Some(node) = crate::dom::find_node_mut_by_preorder_id(snapshot_dom, preorder_id) else {
-        continue;
-      };
-      if !node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
-      {
-        continue;
-      }
-      node.toggle_bool_attribute("selected", selected);
-    }
-  }
 }
 
 fn dom_node_by_preorder_id<'a>(
