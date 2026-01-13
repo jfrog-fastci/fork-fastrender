@@ -5,7 +5,7 @@ use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom2_bindings;
 use crate::js::dom_host::DomHostVmJs;
-use crate::js::dom_platform::{DomInterface, DomPlatform};
+use crate::js::dom_platform::{DocumentId, DomInterface, DomPlatform};
 use crate::js::window_realm::{
   abort_signal_listener_cleanup_native, event_target_add_event_listener_dom2,
   event_target_dispatch_event_dom2, event_target_remove_event_listener_dom2, WindowRealmUserData,
@@ -54,8 +54,12 @@ const INTERNAL_NODE_ID_KEY: &str = "__fastrender_node_id";
 const INTERNAL_WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 // Must match `window_realm::NODE_CHILDREN_KEY`.
 const INTERNAL_NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
+// Must match `window_realm::NODE_CHILD_NODES_KEY`.
+const INTERNAL_NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
 // Must match `window_realm::HTML_COLLECTION_PROTOTYPE_KEY`.
 const INTERNAL_HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
+// Must match `window_realm::NODE_LIST_PROTOTYPE_KEY`.
+const INTERNAL_NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 // Must match `window_realm::HTML_COLLECTION_ROOT_KEY`.
 const INTERNAL_HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
 // Must match `window_realm::NODE_LIST_PROTOTYPE_KEY`.
@@ -1517,6 +1521,118 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     Ok(Value::Undefined)
   }
 
+  fn sync_cached_child_nodes_for_wrapper(
+    &mut self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    wrapper_obj: GcObject,
+    node_id: NodeId,
+    document_id: DocumentId,
+  ) -> Result<(), VmError>
+  where
+    Host: DomHost,
+  {
+    let child_nodes_key = key_from_str(scope, INTERNAL_NODE_CHILD_NODES_KEY)?;
+    let Some(Value::Object(list_obj)) = scope
+      .heap()
+      .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
+    else {
+      return Ok(());
+    };
+
+    #[derive(Debug)]
+    enum SyncChildNodesError {
+      Dom(DomError),
+      OutOfMemory,
+    }
+
+    let children: Result<Vec<(NodeId, DomInterface)>, SyncChildNodesError> =
+      self.with_dom_host(vm, |host| {
+        Ok(host.with_dom(|dom| {
+        if node_id.index() >= dom.nodes_len() {
+          return Err(SyncChildNodesError::Dom(DomError::NotFoundError));
+        }
+
+        let parent_node = dom.node(node_id);
+        // `dom2` stores `ShadowRoot` as a child of its host element; light-DOM traversal via
+        // `childNodes` must never expose those shadow root nodes.
+        let filter_shadow_roots = !matches!(parent_node.kind, NodeKind::ShadowRoot { .. });
+
+        let mut out: Vec<(NodeId, DomInterface)> = Vec::new();
+        out
+          .try_reserve(parent_node.children.len())
+          .map_err(|_| SyncChildNodesError::OutOfMemory)?;
+
+        for &child_id in parent_node.children.iter() {
+          if child_id.index() >= dom.nodes_len() {
+            continue;
+          }
+          let child_node = dom.node(child_id);
+          if child_node.parent != Some(node_id) {
+            continue;
+          }
+          if filter_shadow_roots && matches!(child_node.kind, NodeKind::ShadowRoot { .. }) {
+            continue;
+          }
+          let primary = DomInterface::primary_for_node_kind(&child_node.kind);
+          out.push((child_id, primary));
+        }
+
+        Ok(out)
+        }))
+      })?;
+
+    let children = match children {
+      Ok(v) => v,
+      Err(SyncChildNodesError::Dom(err)) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+      Err(SyncChildNodesError::OutOfMemory) => return Err(VmError::OutOfMemory),
+    };
+
+    // Root the list object while allocating keys and wrappers.
+    scope.push_root(Value::Object(list_obj))?;
+
+    let length_key = key_from_str(scope, "length")?;
+    let old_len = match scope
+      .heap()
+      .object_get_own_data_property_value(list_obj, &length_key)?
+    {
+      Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+      _ => 0,
+    };
+
+    for (idx, (child_id, primary)) in children.iter().copied().enumerate() {
+      let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+        scope,
+        document_id,
+        child_id,
+        primary,
+      )?;
+      scope.push_root(Value::Object(child_wrapper))?;
+
+      let idx_key = key_from_str(scope, &idx.to_string())?;
+      scope.define_property(
+        list_obj,
+        idx_key,
+        data_property(Value::Object(child_wrapper), true, true, true),
+      )?;
+    }
+
+    for idx in children.len()..old_len {
+      let idx_key = key_from_str(scope, &idx.to_string())?;
+      scope.heap_mut().delete_property_or_throw(list_obj, idx_key)?;
+    }
+
+    // Keep `length` non-configurable; make it writable so we can update the value in-place on each
+    // DOM mutation.
+    scope.define_property(
+      list_obj,
+      length_key,
+      data_property(Value::Number(children.len() as f64), true, false, false),
+    )?;
+
+    Ok(())
+  }
+
   fn try_delegate_dom_call_operation(
     &mut self,
     vm: &mut Vm,
@@ -2777,81 +2893,65 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(wrapper))
       }
       ("Node", "childNodes", 0) => {
-        // Transitional: return a JS Array of node wrappers in tree order.
-        //
-        // Follow-up task: replace with a real `NodeList` platform object wrapper.
         let receiver = receiver.unwrap_or(Value::Undefined);
-        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
-        let node_id = handle.node_id;
-        let document_id = handle.document_id;
-        let children = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-          Ok(host.with_dom(|dom| {
-            if node_id.index() >= dom.nodes_len() {
-              return Err(DomError::NotFoundError);
-            }
-
-            let node_kind = &dom.node(node_id).kind;
-            let mut out: Vec<NodeId> = Vec::new();
-            let children = dom.children(node_id)?;
-            // Light DOM traversal must not expose ShadowRoot nodes: for element-like parents,
-            // `childNodes` must skip `NodeKind::ShadowRoot` children (dom2 stores shadow roots as
-            // children of their host element).
-            let filter_shadow_root_children =
-              matches!(node_kind, NodeKind::Element { .. } | NodeKind::Slot { .. });
-            for &child_id in children {
-              if filter_shadow_root_children
-                && child_id.index() < dom.nodes_len()
-                && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
-              {
-                continue;
-              }
-              out.push(child_id);
-            }
-            Ok(out)
-          }))
-        })?;
-        let children = match children {
-          Ok(v) => v,
-          Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+        let Value::Object(wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
         };
 
-        let intr = vm
-          .intrinsics()
-          .ok_or(VmError::InvariantViolation("missing intrinsics"))?;
+        let handle =
+          require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
 
-        let arr = scope.alloc_array(children.len())?;
-        scope.push_root(Value::Object(arr))?;
-        scope
-          .heap_mut()
-          .object_set_prototype(arr, Some(intr.array_prototype()))?;
+        // WebIDL wrapper objects store a back-reference to their owning `Document` wrapper via an
+        // internal `__fastrender_*` property; use the same scheme as the handwritten `childNodes`
+        // shim so we can adopt the realm's NodeList prototype (`instanceof NodeList`).
+        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
 
-        for (idx, child_id) in children.into_iter().enumerate() {
-          let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
-            Ok(host.with_dom(|dom| {
-              if child_id.index() >= dom.nodes_len() {
-                DomInterface::Node
-              } else {
-                DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+        let child_nodes_key = key_from_str(scope, INTERNAL_NODE_CHILD_NODES_KEY)?;
+        let list_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => {
+            let list_obj = scope.alloc_object()?;
+            scope.push_root(Value::Object(list_obj))?;
+
+            let proto_key = key_from_str(scope, INTERNAL_NODE_LIST_PROTOTYPE_KEY)?;
+            let proto = match scope
+              .heap()
+              .object_get_own_data_property_value(document_obj, &proto_key)?
+            {
+              Some(Value::Object(obj)) => obj,
+              _ => {
+                return Err(VmError::InvariantViolation(
+                  "missing NodeList prototype for Node.childNodes",
+                ))
               }
-            }))
-          })?;
-          let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
-            scope,
-            document_id,
-            child_id,
-            primary,
-          )?;
-          scope.push_root(Value::Object(child_wrapper))?;
+            };
+            scope.heap_mut().object_set_prototype(list_obj, Some(proto))?;
 
-          let idx_key = key_from_str(scope, &idx.to_string())?;
-          scope.define_property(
-            arr,
-            idx_key,
-            data_property(Value::Object(child_wrapper), true, true, true),
-          )?;
-        }
+            scope.define_property(
+              wrapper_obj,
+              child_nodes_key,
+              data_property(Value::Object(list_obj), false, false, false),
+            )?;
+            list_obj
+          }
+        };
 
-        Ok(Value::Object(arr))
+        // Keep the cached NodeList live.
+        self.sync_cached_child_nodes_for_wrapper(vm, scope, wrapper_obj, node_id, document_id)?;
+        Ok(Value::Object(list_obj))
       }
       ("Node", "firstChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
@@ -3195,15 +3295,26 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
       ("Node", "appendChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(parent_wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let platform = require_dom_platform_mut(vm)?;
-        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_handle =
+          platform.require_node_handle(scope.heap(), Value::Object(parent_wrapper_obj))?;
         let parent_id = parent_handle.node_id;
         let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
         let child_id = platform.require_node_id(scope.heap(), child_value)?;
+        let Value::Object(child_wrapper_obj) = child_value else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
 
         let result = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
           Ok(host.mutate_dom(|dom| {
+            let old_parent = match dom.parent(child_id) {
+              Ok(v) => v,
+              Err(err) => return (Err(err), false),
+            };
             let res = if child_id.index() < dom.nodes_len()
               && matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. })
             {
@@ -3212,13 +3323,45 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               dom.append_child(parent_id, child_id)
             };
             match res {
-              Ok(changed) => (Ok(()), changed),
+              Ok(changed) => (Ok(old_parent), changed),
               Err(err) => (Err(err), false),
             }
           }))
         })?;
         match result {
-          Ok(()) => {
+          Ok(old_parent_id) => {
+            // Keep cached `childNodes` live NodeLists updated for both the target parent and the
+            // inserted node (DocumentFragment insertion mutates the fragment's children too).
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              parent_wrapper_obj,
+              parent_id,
+              document_id,
+            )?;
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              child_wrapper_obj,
+              child_id,
+              document_id,
+            )?;
+            if let Some(old_parent_id) = old_parent_id {
+              if old_parent_id != parent_id {
+                if let Some(old_parent_wrapper) = require_dom_platform_mut(vm)?
+                  .get_existing_wrapper_for_document_id(scope.heap(), document_id, old_parent_id)
+                {
+                  self.sync_cached_child_nodes_for_wrapper(
+                    vm,
+                    scope,
+                    old_parent_wrapper,
+                    old_parent_id,
+                    document_id,
+                  )?;
+                }
+              }
+            }
+
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
@@ -3294,8 +3437,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
       }
       ("Node", "removeChild", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(parent_wrapper_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
         let platform = require_dom_platform_mut(vm)?;
-        let parent_handle = platform.require_node_handle(scope.heap(), receiver)?;
+        let parent_handle =
+          platform.require_node_handle(scope.heap(), Value::Object(parent_wrapper_obj))?;
         let parent_id = parent_handle.node_id;
         let document_id = parent_handle.document_id;
         let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -3318,6 +3465,13 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
         match result {
           Ok(()) => {
+            self.sync_cached_child_nodes_for_wrapper(
+              vm,
+              scope,
+              parent_wrapper_obj,
+              parent_id,
+              document_id,
+            )?;
             let primary = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
               Ok(host.with_dom(|dom| {
                 if child_id.index() >= dom.nodes_len() {
@@ -8645,11 +8799,11 @@ mod dom_dispatch_tests {
         &[],
       )
     })?;
-    let Value::Object(child_nodes_arr) = child_nodes else {
-      return Err(VmError::TypeError("expected childNodes to return an array object"));
+    let Value::Object(child_nodes_list) = child_nodes else {
+      return Err(VmError::TypeError("expected childNodes to return an object"));
     };
-    assert_eq!(child_list_len(&mut scope, child_nodes_arr)?, 1);
-    assert_eq!(child_at(&mut scope, child_nodes_arr, 0)?, Value::Object(child_wrapper));
+    assert_eq!(child_list_len(&mut scope, child_nodes_list)?, 1);
+    assert_eq!(child_at(&mut scope, child_nodes_list, 0)?, Value::Object(child_wrapper));
 
     Ok(())
   }
