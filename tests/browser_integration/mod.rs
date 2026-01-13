@@ -146,6 +146,7 @@ mod ui_text_editing;
 mod ui_tabindex_negative_pointer_focus;
 mod ui_worker_about_pages;
 mod ui_worker_a11y_actions;
+mod ui_worker_anchor_empty_href;
 mod ui_worker_anchor_scroll;
 mod ui_worker_anchor_scroll_percent_encoded;
 mod ui_worker_anchor_scroll_percent_escaped_percent;

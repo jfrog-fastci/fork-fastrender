@@ -11,14 +11,11 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 ///
 /// This is shared across interaction paths (pointer clicks, form submission, hover status).
 ///
-/// - Returns `None` for empty/whitespace-only hrefs.
+/// - Empty/whitespace-only hrefs resolve to the base URL (`Url::join(\"\")` semantics).
 /// - Rejects `javascript:` URLs (both raw and after resolution).
 /// - Uses `url::Url::join` for relative/absolute resolution when `base_url` parses.
 pub fn resolve_url(base_url: &str, href: &str) -> Option<String> {
   let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return None;
-  }
   if href
     .as_bytes()
     .get(.."javascript:".len())
@@ -34,6 +31,17 @@ pub fn resolve_url(base_url: &str, href: &str) -> Option<String> {
       }
       return Some(joined.to_string());
     }
+    // Empty hrefs are valid same-document navigations; if `Url::join` fails (e.g. for
+    // cannot-be-a-base URLs), still treat the base as the resolved URL.
+    if href.is_empty() && !base.scheme().eq_ignore_ascii_case("javascript") {
+      let mut base = base;
+      base.set_fragment(None);
+      return Some(base.to_string());
+    }
+  }
+
+  if href.is_empty() {
+    return None;
   }
 
   // Fallback: if base URL parsing fails, accept absolute hrefs.
@@ -74,6 +82,18 @@ mod tests {
     assert_eq!(
       resolve_url("https://example.com/dir/page.html", "a b.html").as_deref(),
       Some("https://example.com/dir/a%20b.html")
+    );
+  }
+
+  #[test]
+  fn empty_href_resolves_to_base_url() {
+    assert_eq!(
+      resolve_url("https://example.com/dir/page.html", "").as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+    assert_eq!(
+      resolve_url("https://example.com/dir/page.html", "   ").as_deref(),
+      Some("https://example.com/dir/page.html")
     );
   }
 }

@@ -23,11 +23,12 @@ fn is_anchor_with_href(node: &DomNode) -> bool {
     (tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
       && node.get_attribute_ref("href").is_some_and(|href| {
         let href = trim_ascii_whitespace(href);
-        !href.is_empty()
-          && !href
-            .as_bytes()
-            .get(.."javascript:".len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+        // Match browser behavior: an explicit `href` attribute is a link target even when it is
+        // empty/whitespace-only (`<a href="">`).
+        !href
+          .as_bytes()
+          .get(.."javascript:".len())
+          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
       })
   })
 }
@@ -256,11 +257,12 @@ fn dom2_is_anchor_with_href(dom: &dom2::Document, node: dom2::NodeId) -> bool {
     (tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
       && dom2_get_attribute_ref(dom, node, "href").is_some_and(|href| {
         let href = trim_ascii_whitespace(href);
-        !href.is_empty()
-          && !href
-            .as_bytes()
-            .get(.."javascript:".len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+        // Match browser behavior: an explicit `href` attribute is a link target even when it is
+        // empty/whitespace-only (`<a href="">`).
+        !href
+          .as_bytes()
+          .get(.."javascript:".len())
+          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
       })
   })
 }

@@ -2689,11 +2689,13 @@ fn is_anchor_with_href(node: &DomNode) -> bool {
     (tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
       && node.get_attribute_ref("href").is_some_and(|href| {
         let href = trim_ascii_whitespace(href);
-        !href.is_empty()
-          && !href
-            .as_bytes()
-            .get(.."javascript:".len())
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+        // Treat an explicitly present `href` attribute as a valid same-document navigation target,
+        // even when the value is empty/whitespace-only (matches common browser behavior for
+        // `<a href="">`).
+        !href
+          .as_bytes()
+          .get(.."javascript:".len())
+          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
       })
   })
 }
@@ -2709,9 +2711,6 @@ fn is_focusable_anchor(node: &DomNode) -> bool {
     return false;
   };
   let href = trim_ascii_whitespace(href);
-  if href.is_empty() {
-    return false;
-  }
   // The browser UI doesn't execute JS, so `javascript:` URLs aren't meaningful navigation targets
   // and should not appear in the Tab sequence.
   if href
