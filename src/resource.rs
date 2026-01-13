@@ -12100,6 +12100,129 @@ fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
     .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ParsedContentRange {
+  /// A satisfiable byte range response.
+  ///
+  /// `start`/`end` are inclusive. When `size` is `Some`, it is the full entity length in bytes.
+  Range {
+    start: u64,
+    end: u64,
+    size: Option<u64>,
+  },
+  /// An unsatisfied range response (typically used with HTTP 416).
+  Unsatisfied { size: Option<u64> },
+}
+
+pub(crate) fn parse_content_range(value: &str) -> Option<ParsedContentRange> {
+  fn is_http_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\t')
+  }
+
+  fn skip_http_ws(bytes: &[u8], idx: &mut usize) {
+    while *idx < bytes.len() && is_http_ws(bytes[*idx]) {
+      *idx += 1;
+    }
+  }
+
+  fn parse_u64_ascii(bytes: &[u8], idx: &mut usize) -> Option<u64> {
+    let start = *idx;
+    while *idx < bytes.len() && bytes[*idx].is_ascii_digit() {
+      *idx += 1;
+    }
+    if *idx == start {
+      return None;
+    }
+    let mut value: u64 = 0;
+    for &b in &bytes[start..*idx] {
+      value = value
+        .checked_mul(10)?
+        .checked_add(u64::from(b.wrapping_sub(b'0')))?;
+    }
+    Some(value)
+  }
+
+  fn parse_size(bytes: &[u8], idx: &mut usize) -> Option<Option<u64>> {
+    if *idx >= bytes.len() {
+      return None;
+    }
+    if bytes[*idx] == b'*' {
+      *idx += 1;
+      return Some(None);
+    }
+    Some(Some(parse_u64_ascii(bytes, idx)?))
+  }
+
+  let value = trim_http_whitespace(value);
+  if value.is_empty() {
+    return None;
+  }
+  let bytes = value.as_bytes();
+
+  let mut unit_end = 0usize;
+  while unit_end < bytes.len() && !is_http_ws(bytes[unit_end]) {
+    unit_end += 1;
+  }
+  if unit_end == 0 || unit_end == bytes.len() {
+    return None;
+  }
+  let unit = &value[..unit_end];
+  if !unit.eq_ignore_ascii_case("bytes") {
+    return None;
+  }
+
+  let mut idx = unit_end;
+  skip_http_ws(bytes, &mut idx);
+  if idx >= bytes.len() {
+    return None;
+  }
+
+  if bytes[idx] == b'*' {
+    idx += 1;
+    skip_http_ws(bytes, &mut idx);
+    if idx >= bytes.len() || bytes[idx] != b'/' {
+      return None;
+    }
+    idx += 1;
+    skip_http_ws(bytes, &mut idx);
+    let size = parse_size(bytes, &mut idx)?;
+    skip_http_ws(bytes, &mut idx);
+    if idx != bytes.len() {
+      return None;
+    }
+    return Some(ParsedContentRange::Unsatisfied { size });
+  }
+
+  let start = parse_u64_ascii(bytes, &mut idx)?;
+  skip_http_ws(bytes, &mut idx);
+  if idx >= bytes.len() || bytes[idx] != b'-' {
+    return None;
+  }
+  idx += 1;
+  skip_http_ws(bytes, &mut idx);
+  let end = parse_u64_ascii(bytes, &mut idx)?;
+  if end < start {
+    return None;
+  }
+  skip_http_ws(bytes, &mut idx);
+  if idx >= bytes.len() || bytes[idx] != b'/' {
+    return None;
+  }
+  idx += 1;
+  skip_http_ws(bytes, &mut idx);
+  let size = parse_size(bytes, &mut idx)?;
+  if let Some(size) = size {
+    if start >= size || end >= size {
+      return None;
+    }
+  }
+  skip_http_ws(bytes, &mut idx);
+  if idx != bytes.len() {
+    return None;
+  }
+  Some(ParsedContentRange::Range { start, end, size })
+}
+
 fn parse_cors_response_headers(headers: &HeaderMap) -> (Option<String>, bool) {
   let allow_origin = header_values_joined(headers, "access-control-allow-origin");
   let credentials_values: Vec<&str> = headers
@@ -12757,6 +12880,72 @@ mod tests {
     }
 
     Some(listener)
+  }
+
+  #[test]
+  fn parse_content_range_parses_valid_ranges() {
+    assert_eq!(
+      parse_content_range("bytes 0-99/1000"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 99,
+        size: Some(1000)
+      })
+    );
+
+    // Extra ASCII HTTP whitespace is tolerated.
+    assert_eq!(
+      parse_content_range(" \tbytes\t0 - 99 / 1000\t"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 99,
+        size: Some(1000)
+      })
+    );
+
+    // RFC allows unknown instance length.
+    assert_eq!(
+      parse_content_range("bytes 0-0/*"),
+      Some(ParsedContentRange::Range {
+        start: 0,
+        end: 0,
+        size: None
+      })
+    );
+
+    assert_eq!(
+      parse_content_range("bytes */1000"),
+      Some(ParsedContentRange::Unsatisfied { size: Some(1000) })
+    );
+  }
+
+  #[test]
+  fn parse_content_range_rejects_invalid_values() {
+    // Wrong unit.
+    assert_eq!(parse_content_range("items 0-99/1000"), None);
+
+    // Negative numbers.
+    assert_eq!(parse_content_range("bytes -1-99/1000"), None);
+    assert_eq!(parse_content_range("bytes 0--1/1000"), None);
+
+    // End < start.
+    assert_eq!(parse_content_range("bytes 10-9/1000"), None);
+
+    // Overflow.
+    assert_eq!(
+      parse_content_range("bytes 18446744073709551616-99/1000"),
+      None
+    );
+
+    // Garbage suffix.
+    assert_eq!(parse_content_range("bytes 0-99/1000 trailing"), None);
+
+    // Claimed size must be consistent with the returned range.
+    assert_eq!(parse_content_range("bytes 0-99/50"), None);
+
+    // NBSP must not be treated as HTTP whitespace.
+    assert_eq!(parse_content_range("bytes\u{00A0}0-99/1000"), None);
+    assert_eq!(parse_content_range("bytes 0\u{00A0}-99/1000"), None);
   }
 
   #[test]
