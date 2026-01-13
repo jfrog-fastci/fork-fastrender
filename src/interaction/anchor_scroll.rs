@@ -131,10 +131,22 @@ pub fn scroll_offset_for_fragment_target(
 
   // BoxTree: find all boxes produced by the target styled node.
   let mut target_box_ids: FxHashSet<usize> = FxHashSet::default();
+  let mut scroll_margin_top: Option<f32> = None;
+  let mut scroll_margin_left: Option<f32> = None;
   let mut box_stack = vec![&box_tree.root];
   while let Some(node) = box_stack.pop() {
     if node.styled_node_id == Some(target_dom_id) {
       target_box_ids.insert(node.id);
+      if scroll_margin_top.is_none() || scroll_margin_left.is_none() {
+        if scroll_margin_top.is_none() {
+          let top = node.style.scroll_margin_top.to_px();
+          scroll_margin_top = Some(if top.is_finite() { top } else { 0.0 });
+        }
+        if scroll_margin_left.is_none() {
+          let left = node.style.scroll_margin_left.to_px();
+          scroll_margin_left = Some(if left.is_finite() { left } else { 0.0 });
+        }
+      }
     }
     if let Some(body) = node.footnote_body.as_deref() {
       box_stack.push(body);
@@ -150,8 +162,6 @@ pub fn scroll_offset_for_fragment_target(
   // FragmentTree: find all fragments for those box ids, compute minimum absolute x/y.
   let mut min_target_y: Option<f32> = None;
   let mut min_target_x: Option<f32> = None;
-  let mut scroll_margin_top: Option<f32> = None;
-  let mut scroll_margin_left: Option<f32> = None;
   let mut frag_stack: Vec<(&crate::tree::fragment_tree::FragmentNode, Point)> = Vec::new();
   for root in fragment_tree.additional_fragments.iter().rev() {
     frag_stack.push((root, Point::ZERO));
@@ -166,18 +176,6 @@ pub fn scroll_offset_for_fragment_target(
         let y = abs_bounds.y();
         min_target_x = Some(min_target_x.map_or(x, |min| min.min(x)));
         min_target_y = Some(min_target_y.map_or(y, |min| min.min(y)));
-        if scroll_margin_top.is_none() || scroll_margin_left.is_none() {
-          if let Some(style) = fragment.style.as_deref() {
-            if scroll_margin_top.is_none() {
-              let top = style.scroll_margin_top.to_px();
-              scroll_margin_top = Some(if top.is_finite() { top } else { 0.0 });
-            }
-            if scroll_margin_left.is_none() {
-              let left = style.scroll_margin_left.to_px();
-              scroll_margin_left = Some(if left.is_finite() { left } else { 0.0 });
-            }
-          }
-        }
       }
     }
 
@@ -547,8 +545,12 @@ mod tests {
     let id_map = dom::enumerate_dom_ids(&dom);
     let target_id = id_map[&target_ptr];
 
-    let mut target_box =
-      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    let mut style = ComputedStyle::default();
+    style.scroll_margin_top = Length::px(10.0);
+    style.scroll_margin_left = Length::px(20.0);
+    let target_style = Arc::new(style);
+
+    let mut target_box = BoxNode::new_block(target_style, FormattingContextType::Block, vec![]);
     target_box.styled_node_id = Some(target_id);
     let root_box = BoxNode::new_block(
       default_style(),
@@ -558,18 +560,12 @@ mod tests {
     let box_tree = BoxTree::new(root_box);
     let target_box_id = box_tree.root.children[0].id;
 
-    let mut style = ComputedStyle::default();
-    style.scroll_margin_top = Length::px(10.0);
-    style.scroll_margin_left = Length::px(20.0);
-    let style = Arc::new(style);
-
-    let target_fragment = FragmentNode::new_with_style(
+    let target_fragment = FragmentNode::new(
       Rect::from_xywh(100.0, 100.0, 10.0, 10.0),
       FragmentContent::Block {
         box_id: Some(target_box_id),
       },
       vec![],
-      style,
     );
     let root_fragment = FragmentNode::new(
       Rect::from_xywh(0.0, 0.0, 1000.0, 1000.0),
