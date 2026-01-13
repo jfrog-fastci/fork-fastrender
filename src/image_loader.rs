@@ -5859,7 +5859,7 @@ pub struct CachedImageMetadata {
   pub is_vector: bool,
   /// True when the source image is animated (e.g. multi-frame GIF).
   ///
-  /// This is populated by [`ImageCache::probe`] so upstream systems can schedule animation ticks
+  /// This is populated by [`ImageCache::probe`] so upstream systems can schedule periodic ticks
   /// without fully decoding the image.
   pub is_animated: bool,
   pub intrinsic_ratio: Option<f32>,
