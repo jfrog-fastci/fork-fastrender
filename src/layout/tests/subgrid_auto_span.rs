@@ -1,7 +1,7 @@
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::grid::GridFormattingContext;
 use crate::style::display::Display;
-use crate::style::types::{GridAutoFlow, GridTrack};
+use crate::style::types::{GridAutoFlow, GridTrack, WritingMode};
 use crate::style::values::Length;
 use crate::FormattingContext;
 use crate::{BoxNode, ComputedStyle, FormattingContextType};
@@ -138,4 +138,81 @@ fn row_subgrid_auto_span_is_derived_from_line_names() {
     80.0 + 5.0,
     "third item moved to second column due to subgrid row span",
   );
+}
+
+#[test]
+fn nested_subgrid_auto_span_defaults_to_all_parent_tracks_when_line_name_list_omitted() {
+  // Mirrors WPT `css/subgrid/subgrid-nested-writing-mode-001`.
+  //
+  // A nested subgrid chain with `grid-template-columns/rows: subgrid` and *no explicit placement*
+  // should default to spanning all parent tracks. Otherwise, grandchildren placed into column 2 get
+  // clamped into column 1.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(28.0)),
+    GridTrack::Length(Length::px(42.0)),
+  ];
+  parent_style.grid_template_rows = vec![GridTrack::Auto];
+  parent_style.grid_column_gap = Length::px(5.0);
+  parent_style.width = Some(Length::px(75.0));
+  // Style parsing normally populates line-name vectors (tracks + 1). The auto-span synthesis relies
+  // on this length.
+  parent_style.grid_column_line_names = vec![Vec::new(), Vec::new(), Vec::new()];
+  parent_style.grid_row_line_names = vec![Vec::new(), Vec::new()];
+
+  let mut outer_style = ComputedStyle::default();
+  outer_style.display = Display::Grid;
+  outer_style.writing_mode = WritingMode::VerticalRl;
+  outer_style.grid_column_subgrid = true;
+  outer_style.grid_row_subgrid = true;
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.writing_mode = WritingMode::VerticalRl;
+  inner_style.grid_column_subgrid = true;
+  inner_style.grid_row_subgrid = true;
+
+  let mut first_style = ComputedStyle::default();
+  first_style.display = Display::Block;
+  first_style.grid_column_start = 1;
+  first_style.grid_column_end = 2;
+  first_style.height = Some(Length::px(12.0));
+
+  let mut second_style = ComputedStyle::default();
+  second_style.display = Display::Block;
+  second_style.grid_column_start = 2;
+  second_style.grid_column_end = 3;
+  second_style.height = Some(Length::px(12.0));
+
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![first, second],
+  );
+  let outer = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Grid, vec![inner]);
+  let grid = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let outer_fragment = &fragment.children[0];
+  let inner_fragment = &outer_fragment.children[0];
+  assert_eq!(inner_fragment.children.len(), 2);
+  let first = &inner_fragment.children[0];
+  let second = &inner_fragment.children[1];
+
+  assert_approx(first.bounds.x(), 0.0, "first column x");
+  assert_approx(first.bounds.width(), 28.0, "first column width");
+  assert_approx(second.bounds.x(), 33.0, "second column x (gap + first track)");
+  assert_approx(second.bounds.width(), 42.0, "second column width");
 }

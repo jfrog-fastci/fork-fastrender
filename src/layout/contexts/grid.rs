@@ -247,6 +247,13 @@ struct GridAxisStyle {
   direction: Direction,
 }
 
+fn subgrid_line_name_list_is_omitted(line_names: &[Vec<String>]) -> bool {
+  // The optional `<line-name-list>` for `subgrid` can be omitted. The style parser represents this
+  // omission as an empty Vec. (An explicit empty line-name-list, i.e. `subgrid []`, is represented
+  // as `[[]]` and must not be treated as omitted.)
+  line_names.is_empty()
+}
+
 impl GridAxisStyle {
   fn from_style(style: &ComputedStyle) -> Self {
     Self {
@@ -3967,6 +3974,54 @@ impl GridFormattingContext {
       GridAxisStyle::from_style(style)
     };
 
+    // Subgrid containers with an omitted `<line-name-list>` implicitly span all parent tracks. That
+    // span is encoded for Taffy via a synthetic line-name vector whose length equals the parent
+    // line count. Nested subgrids need to see that synthesized line count as well, so when we are
+    // about to convert children under such a subgrid we pass a derived containing-grid style with
+    // `grid_*_line_names` populated from the parent grid.
+    //
+    // This is intentionally limited to the fully-auto placement case: if the subgrid item is
+    // explicitly placed, its span is derived from placement and may cover only a subset of parent
+    // tracks.
+    let containing_grid_for_children_override: Option<Arc<ComputedStyle>> = if is_grid_container
+      && (style.grid_row_subgrid || style.grid_column_subgrid)
+    {
+      if let Some(parent_grid) = containing_grid {
+        let column_omitted_auto = style.grid_column_subgrid
+          && subgrid_line_name_list_is_omitted(&style.subgrid_column_line_names)
+          && style.grid_column_start == 0
+          && style.grid_column_end == 0
+          && style.grid_column_raw.is_none();
+        let row_omitted_auto = style.grid_row_subgrid
+          && subgrid_line_name_list_is_omitted(&style.subgrid_row_line_names)
+          && style.grid_row_start == 0
+          && style.grid_row_end == 0
+          && style.grid_row_raw.is_none();
+
+        if column_omitted_auto || row_omitted_auto {
+          let mut derived = style.clone();
+          if column_omitted_auto {
+            derived.grid_column_line_names = parent_grid.grid_column_line_names.clone();
+            derived.grid_column_names = parent_grid.grid_column_names.clone();
+          }
+          if row_omitted_auto {
+            derived.grid_row_line_names = parent_grid.grid_row_line_names.clone();
+            derived.grid_row_names = parent_grid.grid_row_names.clone();
+          }
+          Some(Arc::new(derived))
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+    let containing_grid_for_children: &ComputedStyle = containing_grid_for_children_override
+      .as_deref()
+      .unwrap_or(style);
+
     let node_id = if include_children {
       let mut taffy_children = Vec::with_capacity(children_iter.len());
       for child in children_iter {
@@ -3980,7 +4035,7 @@ impl GridFormattingContext {
           child,
           child_style,
           false,
-          Some(style),
+          Some(containing_grid_for_children),
           Some(axis_style_for_children),
           None,
           positioned_children,
@@ -4266,6 +4321,10 @@ impl GridFormattingContext {
       let has_parent_grid = containing_grid_axis.is_some();
       let css_row_subgrid = style.grid_row_subgrid && has_parent_grid;
       let css_column_subgrid = style.grid_column_subgrid && has_parent_grid;
+      let css_column_line_names_omitted =
+        css_column_subgrid && subgrid_line_name_list_is_omitted(&style.subgrid_column_line_names);
+      let css_row_line_names_omitted =
+        css_row_subgrid && subgrid_line_name_list_is_omitted(&style.subgrid_row_line_names);
 
       // Taffy always interprets columns as the physical X axis and rows as the physical Y axis.
       // CSS Grid axes, however, are defined in terms of the element's writing-mode (inline/block).
@@ -4393,19 +4452,84 @@ impl GridFormattingContext {
       } else {
         css_row_subgrid
       };
-      if swap_grid_axes {
-        if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
-          taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
-        }
-        if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
-          taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
+
+      let (parent_physical_column_line_count, parent_physical_row_line_count) = if has_parent_grid {
+        if let Some(containing_grid) = containing_grid {
+          let physical_column_line_count = if swap_grid_axes {
+            // CSS rows map to physical columns when axes are swapped.
+            let len = containing_grid.grid_row_line_names.len();
+            let tracks = if len > 0 {
+              len.saturating_sub(1)
+            } else {
+              containing_grid.grid_template_rows.len()
+            };
+            tracks.saturating_add(1)
+          } else {
+            let len = containing_grid.grid_column_line_names.len();
+            let tracks = if len > 0 {
+              len.saturating_sub(1)
+            } else {
+              containing_grid.grid_template_columns.len()
+            };
+            tracks.saturating_add(1)
+          };
+
+          let physical_row_line_count = if swap_grid_axes {
+            // CSS columns map to physical rows when axes are swapped.
+            let len = containing_grid.grid_column_line_names.len();
+            let tracks = if len > 0 {
+              len.saturating_sub(1)
+            } else {
+              containing_grid.grid_template_columns.len()
+            };
+            tracks.saturating_add(1)
+          } else {
+            let len = containing_grid.grid_row_line_names.len();
+            let tracks = if len > 0 {
+              len.saturating_sub(1)
+            } else {
+              containing_grid.grid_template_rows.len()
+            };
+            tracks.saturating_add(1)
+          };
+
+          (physical_column_line_count.max(1), physical_row_line_count.max(1))
+        } else {
+          (1usize, 1usize)
         }
       } else {
-        if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
-          taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
+        (1usize, 1usize)
+      };
+
+      if swap_grid_axes {
+        if css_row_subgrid && !css_row_line_names_omitted && !style.subgrid_row_line_names.is_empty() {
+          taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
+        } else if css_row_line_names_omitted {
+          taffy_style.subgrid_column_names =
+            vec![Vec::<String>::new(); parent_physical_column_line_count];
         }
-        if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
+        if css_column_subgrid
+          && !css_column_line_names_omitted
+          && !style.subgrid_column_line_names.is_empty()
+        {
+          taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
+        } else if css_column_line_names_omitted {
+          taffy_style.subgrid_row_names = vec![Vec::<String>::new(); parent_physical_row_line_count];
+        }
+      } else {
+        if css_column_subgrid
+          && !css_column_line_names_omitted
+          && !style.subgrid_column_line_names.is_empty()
+        {
+          taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
+        } else if css_column_line_names_omitted {
+          taffy_style.subgrid_column_names =
+            vec![Vec::<String>::new(); parent_physical_column_line_count];
+        }
+        if css_row_subgrid && !css_row_line_names_omitted && !style.subgrid_row_line_names.is_empty() {
           taffy_style.subgrid_row_names = style.subgrid_row_line_names.clone();
+        } else if css_row_line_names_omitted {
+          taffy_style.subgrid_row_names = vec![Vec::<String>::new(); parent_physical_row_line_count];
         }
       }
 
