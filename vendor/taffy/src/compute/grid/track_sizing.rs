@@ -956,6 +956,22 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
       && track.min_track_sizing_function.is_auto()
       && !track.max_track_sizing_function.is_min_content()
   });
+  let has_intrinsic_min_track_sizing_function =
+    |track: &GridTrack| match track.min_track_sizing_function.0.tag() {
+      CompactLength::AUTO_TAG | CompactLength::MIN_CONTENT_TAG | CompactLength::MAX_CONTENT_TAG => {
+        true
+      }
+      CompactLength::PERCENT_TAG => percentage_basis(track).is_none(),
+      #[cfg(feature = "calc")]
+      _ if track.min_track_sizing_function.0.is_calc() => percentage_basis(track).is_none(),
+      _ => false,
+    };
+  let any_intrinsic_min_track_sizing_function = axis_tracks
+    .iter()
+    .any(|track| has_intrinsic_min_track_sizing_function(track));
+  let any_flexible_intrinsic_min_track_sizing_function = axis_tracks
+    .iter()
+    .any(|track| track.is_flexible() && has_intrinsic_min_track_sizing_function(track));
   let any_intrinsic_max_track_sizing_function = axis_tracks.iter().any(|track| {
     !track
       .max_track_sizing_function
@@ -1143,95 +1159,80 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
 
     // 1. For intrinsic minimums:
     // First increase the base size of tracks with an intrinsic min track sizing function
-    for item in batch
-      .iter_mut()
-      .filter(|item| item.crosses_intrinsic_track(axis))
-    {
-      // Avoid computing intrinsic contributions (expensive) if this item doesn't span any track
-      // that will actually participate in this distribution step.
-      //
-      // Note: for flex batches, `distribute_item_space_to_base_size` only distributes to flexible
-      // tracks, so we include `track.is_flexible()` in the filter here as well.
-      let has_affected_track = {
-        let track_range = item.track_range_excluding_lines(axis);
-        let spanned_tracks = &axis_tracks[track_range];
-        spanned_tracks.iter().any(|track| {
-          let affected = track
-            .min_track_sizing_function
-            .definite_value(percentage_basis(track), |val, basis| item_sizer.calc(val, basis))
-            .is_none();
-          if is_flex {
-            track.is_flexible() && affected
-          } else {
-            affected
-          }
-        })
-      };
-      if !has_affected_track {
-        continue;
-      }
+    let any_track_affected_by_step = if is_flex {
+      any_flexible_intrinsic_min_track_sizing_function
+    } else {
+      any_intrinsic_min_track_sizing_function
+    };
+    if any_track_affected_by_step {
+      for item in batch
+        .iter_mut()
+        .filter(|item| item.crosses_intrinsic_track(axis))
+      {
+        // Skip expensive intrinsic contribution computations if none of the tracks spanned by this
+        // item can be affected by this step.
+        let item_track_range = item.track_range_excluding_lines(axis);
+        let item_spans_affected_track = axis_tracks[item_track_range.clone()].iter().any(|track| {
+          has_intrinsic_min_track_sizing_function(track) && (!is_flex || track.is_flexible())
+        });
+        if !item_spans_affected_track {
+          continue;
+        }
 
-      // ...by distributing extra space as needed to accommodate these items’ minimum contributions.
-      //
-      // QUIRK: The spec says that:
-      //
-      //   If the grid container is being sized under a min- or max-content constraint, use the items’ limited min-content contributions
-      //   in place of their minimum contributions here.
-      //
-      // However, in practice browsers only seem to apply this rule if the item is not a scroll container (note that overflow:hidden counts as
-      // a scroll container), giving the automatic minimum size of scroll containers (zero) precedence over the min-content contributions.
-      let space = match axis_available_grid_space {
-        AvailableSpace::MinContent | AvailableSpace::MaxContent
-          if !item.overflow.get(axis).is_scroll_container() =>
-        {
-          let axis_minimum_size = item_sizer.minimum_contribution(item, axis_tracks);
-          let axis_min_content_size = item_sizer.min_content_contribution(item);
-          let limit =
-            item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
-              item_sizer.calc(val, basis)
-            });
-          axis_min_content_size
-            .maybe_min(limit)
-            .max(axis_minimum_size)
-        }
-        _ => item_sizer.minimum_contribution(item, axis_tracks),
-      };
-      let tracks = &mut axis_tracks[item.track_range_excluding_lines(axis)];
-      if space > 0.0 {
-        let has_intrinsic_min_track_sizing_function = |track: &GridTrack| {
-          track
-            .min_track_sizing_function
-            .definite_value(percentage_basis(track), |val, basis| {
-              item_sizer.calc(val, basis)
-            })
-            .is_none()
+        // ...by distributing extra space as needed to accommodate these items’ minimum contributions.
+        //
+        // QUIRK: The spec says that:
+        //
+        //   If the grid container is being sized under a min- or max-content constraint, use the items’ limited min-content contributions
+        //   in place of their minimum contributions here.
+        //
+        // However, in practice browsers only seem to apply this rule if the item is not a scroll container (note that overflow:hidden counts as
+        // a scroll container), giving the automatic minimum size of scroll containers (zero) precedence over the min-content contributions.
+        let space = match axis_available_grid_space {
+          AvailableSpace::MinContent | AvailableSpace::MaxContent
+            if !item.overflow.get(axis).is_scroll_container() =>
+          {
+            let axis_minimum_size = item_sizer.minimum_contribution(item, axis_tracks);
+            let axis_min_content_size = item_sizer.min_content_contribution(item);
+            let limit =
+              item.spanned_track_limit(axis, axis_tracks, axis_inner_node_size, &|val, basis| {
+                item_sizer.calc(val, basis)
+              });
+            axis_min_content_size
+              .maybe_min(limit)
+              .max(axis_minimum_size)
+          }
+          _ => item_sizer.minimum_contribution(item, axis_tracks),
         };
-        if item.overflow.get(axis).is_scroll_container() {
-          let fit_content_limit =
-            |track: &GridTrack| track.fit_content_limited_growth_limit(percentage_basis(track));
-          distribute_item_space_to_base_size(
-            is_flex,
-            use_flex_factor_for_distribution,
-            space,
-            tracks,
-            has_intrinsic_min_track_sizing_function,
-            fit_content_limit,
-            IntrinsicContributionType::Minimum,
-          );
-        } else {
-          distribute_item_space_to_base_size(
-            is_flex,
-            use_flex_factor_for_distribution,
-            space,
-            tracks,
-            has_intrinsic_min_track_sizing_function,
-            |track| track.growth_limit,
-            IntrinsicContributionType::Minimum,
-          );
+        let tracks = &mut axis_tracks[item_track_range];
+        if space > 0.0 {
+          if item.overflow.get(axis).is_scroll_container() {
+            let fit_content_limit =
+              |track: &GridTrack| track.fit_content_limited_growth_limit(percentage_basis(track));
+            distribute_item_space_to_base_size(
+              is_flex,
+              use_flex_factor_for_distribution,
+              space,
+              tracks,
+              &has_intrinsic_min_track_sizing_function,
+              fit_content_limit,
+              IntrinsicContributionType::Minimum,
+            );
+          } else {
+            distribute_item_space_to_base_size(
+              is_flex,
+              use_flex_factor_for_distribution,
+              space,
+              tracks,
+              &has_intrinsic_min_track_sizing_function,
+              |track| track.growth_limit,
+              IntrinsicContributionType::Minimum,
+            );
+          }
         }
       }
+      flush_planned_base_size_increases(axis_tracks);
     }
-    flush_planned_base_size_increases(axis_tracks);
 
     // 2. For content-based minimums:
     // Next continue to increase the base size of tracks with a min track sizing function of min-content or max-content
@@ -3087,6 +3088,66 @@ mod tests {
 
     assert_eq!(max_content_probe_count, 0);
 
+  }
+
+  #[test]
+  fn min_content_constraint_spanning_item_over_minmax_0_fr_should_not_measure_min_content_when_no_tracks_are_affected() {
+    // Step 11.5.1 ("intrinsic minimums") only affects tracks with an intrinsic *min* sizing function.
+    // For flex-item batches, distribution further restricts to flexible tracks. If an item crosses a
+    // flexible track whose min sizing function is definite (e.g. `minmax(0, 1fr)`), then the step is a
+    // no-op and should not trigger min-content contribution probes.
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let child = taffy
+      .new_leaf(Style {
+        grid_column: Line {
+          start: line(1),
+          end: span(2),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          // First track is flexible but with a fixed min (minmax(0, 1fr)).
+          // Second track has an intrinsic max so the item is still part of the intrinsic-sizing batch.
+          grid_template_columns: vec![
+            flex(1.0),
+            minmax(
+              MinTrackSizingFunction::length(0.0),
+              MaxTrackSizingFunction::auto(),
+            ),
+          ],
+          grid_template_rows: vec![length(10.0); 1],
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let mut min_content_probe_count = 0usize;
+    taffy
+      .compute_layout_with_measure(
+        root,
+        Size {
+          width: AvailableSpace::MinContent,
+          height: AvailableSpace::Definite(100.0),
+        },
+        |_, available_space, _, _, _| {
+          if matches!(available_space.width, AvailableSpace::MinContent)
+            || matches!(available_space.height, AvailableSpace::MinContent)
+          {
+            min_content_probe_count += 1;
+          }
+          MeasureOutput::from_size(Size { width: 10.0, height: 10.0 })
+        },
+      )
+      .unwrap();
+
+    assert_eq!(min_content_probe_count, 0);
   }
 
   #[test]

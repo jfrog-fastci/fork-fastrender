@@ -1378,10 +1378,44 @@ where
         running_row_sum += track.base_size + track.content_alignment_adjustment;
         row_prefix_sum.push(running_row_sum);
       }
+      let gutter_percentage_basis = Some(inner_node_size.width.unwrap_or(0.0));
+      let column_percentage_basis = |track: &GridTrack| {
+        if track.kind == GridTrackKind::Gutter {
+          gutter_percentage_basis
+        } else {
+          inner_node_size.width
+        }
+      };
 
       let min_content_contribution_changed = items
         .iter_mut()
         .filter(|item| item.crosses_intrinsic_column && item.aspect_ratio.is_some())
+        .filter(|item| {
+          // Column rerun detection only needs to probe min-content contributions if those contributions
+          // could affect the track sizing algorithm for this item.
+          //
+          // In the flex batch, min-content contributions can matter for flexible tracks whose *minimum*
+          // sizing function is intrinsic (step 11.5.1 minimum contributions may depend on min-content
+          // sizing, and step 11.5.2 distributes min-content contributions). Growth-limit steps (11.5.5/11.5.6)
+          // do not run for flex batches.
+          //
+          // In the non-flex batch, min-content contributions can affect both:
+          // - base sizes via intrinsic minimums / content-based minimums (11.5.1 / 11.5.2)
+          // - growth limits via intrinsic maximums (11.5.5)
+          let spanned_tracks = &columns[item.track_range_excluding_lines(AbstractAxis::Inline)];
+          if item.crosses_flexible_column {
+            spanned_tracks.iter().any(|track| {
+              track.is_flexible() && track.min_track_sizing_function.is_intrinsic()
+            })
+          } else {
+            spanned_tracks.iter().any(|track| {
+              track.min_track_sizing_function.is_intrinsic()
+                || !track
+                  .max_track_sizing_function
+                  .has_definite_value(column_percentage_basis(track))
+            })
+          }
+        })
         .any(|item| {
           let range = item.track_range_excluding_lines(AbstractAxis::Block);
           let other_axis_sum = row_prefix_sum[range.end] - row_prefix_sum[range.start];
