@@ -10566,6 +10566,80 @@ fn compiled_object_destructuring_rest_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_object_destructuring_rest_copies_symbol_properties() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let sym = Symbol("s");
+      let src = {};
+      src[sym] = 1;
+      let { ...rest } = src;
+      rest[sym]
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_destructuring_rest_does_not_trigger_proto_setter() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Object rest uses CopyDataProperties/CreateDataProperty, so copying an own `"__proto__"` data
+  // property must not mutate the rest object's prototype.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let proto = { y: 1 };
+      let src = {};
+      Object.defineProperty(src, "__proto__", { value: proto, enumerable: true, configurable: true, writable: true });
+      let { ...rest } = src;
+      let desc = Object.getOwnPropertyDescriptor(rest, "__proto__");
+      Object.getPrototypeOf(rest) === Object.prototype &&
+        desc !== undefined &&
+        desc.value === proto
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_destructuring_rest_skips_non_enumerable_getters() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let log = "";
+      let src = {};
+      Object.defineProperty(src, "x", { get() { log += "x"; return 1; }, enumerable: false, configurable: true });
+      let { ...rest } = src;
+      log === "" && Object.getOwnPropertyDescriptor(rest, "x") === undefined
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_parameter_object_destructuring_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
