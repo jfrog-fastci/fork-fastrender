@@ -1307,6 +1307,10 @@ glob = "built-ins/RegExp/prototype/unicode/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/RegExp/prototype/unicodeSets/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/RegExp/prototype/sticky/**"
 status = "pass"
 
