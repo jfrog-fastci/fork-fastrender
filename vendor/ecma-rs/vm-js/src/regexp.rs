@@ -2225,6 +2225,22 @@ pub(crate) fn compile_regexp_with_budget(
     }
     .into());
   }
+
+  // UnicodeMode (`u`/`v`) early errors for DecimalEscape/backreferences.
+  // The total capture count is only known after the full parse, so validate here.
+  if flags.has_either_unicode_flag() {
+    for (i, &backref) in parser.backrefs.iter().enumerate() {
+      if i != 0 {
+        ctx.tick_every(i)?;
+      }
+      if backref > parser.capture_count {
+        return Err(RegExpSyntaxError {
+          message: "Invalid regular expression",
+        }
+        .into());
+      }
+    }
+  }
   let capture_count = parser.capture_count as usize + 1;
   let named_capture_groups = mem::take(&mut parser.named_capture_groups);
   let mut builder = ProgramBuilder::new(capture_count, named_capture_groups);
@@ -2248,6 +2264,7 @@ struct Parser<'a> {
   flags: RegExpFlags,
   capture_count: u32,
   named_capture_groups: Vec<NamedCaptureGroup>,
+  backrefs: Vec<u32>,
 }
 
 #[inline]
@@ -2268,6 +2285,7 @@ impl<'a> Parser<'a> {
       flags,
       capture_count: 0,
       named_capture_groups: Vec::new(),
+      backrefs: Vec::new(),
     }
   }
 
@@ -3053,16 +3071,15 @@ impl<'a> Parser<'a> {
             .saturating_add((d - (b'0' as u16)) as u32);
         }
 
-        if n <= self.capture_count {
+        if self.flags.has_either_unicode_flag() {
+          // UnicodeMode: treat as a DecimalEscape/backreference. Bounds are validated after the full
+          // parse so forward references (e.g. `/\\1(a)/u`) work correctly.
+          ctx.vec_try_push(&mut self.backrefs, n)?;
           return Ok(Atom::BackRef(n));
         }
 
-        if self.flags.has_either_unicode_flag() {
-          // In unicode mode, numeric escapes must be valid backreferences.
-          return Err(RegExpSyntaxError {
-            message: "Invalid regular expression",
-          }
-          .into());
+        if n <= self.capture_count {
+          return Ok(Atom::BackRef(n));
         }
 
         // Non-unicode: invalid backreference => legacy octal escape (if possible) or identity

@@ -963,3 +963,37 @@ fn regexp_lookbehind_nested_lookaround_sanity() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn regexp_unicode_mode_rejects_legacy_octal_and_oob_backrefs() {
+  let mut rt = new_runtime();
+
+  let value = rt
+    .exec_script(
+      r#"
+        function errName(thunk) {
+          try { thunk(); return "no"; } catch (e) { return e.name; }
+        }
+        [
+          errName(() => new RegExp("\\1", "u")),
+          errName(() => new RegExp("\\1", "v")),
+          errName(() => new RegExp("\\8", "u")),
+          errName(() => new RegExp("\\8", "v")),
+          errName(() => new RegExp("(a)\\10", "u")),
+          errName(() => new RegExp("(a)\\10", "v")),
+          errName(() => new RegExp("\\00", "u")),
+          errName(() => new RegExp("\\00", "v")),
+          errName(() => new RegExp("[\\00]", "u")),
+          errName(() => new RegExp("[\\00]", "v")),
+          errName(() => eval('/\\1/u')),
+          errName(() => eval('/\\1/v')),
+        ].join(",")
+      "#,
+    )
+    .unwrap();
+
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError,SyntaxError"
+  );
+}
