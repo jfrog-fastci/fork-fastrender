@@ -2,6 +2,7 @@ use crate::api::{render_html_with_shared_resources, ResourceContext, ResourceKin
 use crate::debug::runtime;
 use crate::error::{Error, RenderStage};
 use crate::geometry::Rect;
+use crate::html::iframe_url::{iframe_navigation_from_src, IframeNavigation};
 use crate::html::content_security_policy::CspPolicy;
 use crate::html::encoding::decode_html_bytes;
 use crate::image_loader::ImageCache;
@@ -41,10 +42,6 @@ fn iframe_render_cache_limits_from_env() -> (usize, usize) {
     DEFAULT_IFRAME_RENDER_CACHE_MAX_BYTES,
   );
   (max_entries, max_bytes)
-}
-
-fn trim_ascii_whitespace(value: &str) -> &str {
-  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
 #[inline]
@@ -311,20 +308,6 @@ fn stable_hash_bytes(bytes: &[u8]) -> u64 {
   hasher.finish()
 }
 
-fn is_about_blank(url: &str) -> bool {
-  const PREFIX: &str = "about:blank";
-  let Some(head) = url.get(..PREFIX.len()) else {
-    return false;
-  };
-  if !head.eq_ignore_ascii_case(PREFIX) {
-    return false;
-  }
-  matches!(
-    url.as_bytes().get(PREFIX.len()),
-    None | Some(b'#') | Some(b'?')
-  )
-}
-
 fn policy_fingerprint(policy: &ResourceAccessPolicy) -> u64 {
   // The nested document origin is derived from the iframe's URL/base URL. That value is already
   // part of the cache key, so we avoid hashing it here. This allows identical iframe URLs to share
@@ -573,23 +556,15 @@ pub(crate) fn render_iframe_src(
   device_pixel_ratio: f32,
   max_iframe_depth: usize,
 ) -> Option<Arc<ImageData>> {
-  fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value
-      .as_bytes()
-      .get(..prefix.len())
-      .map(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
-      .unwrap_or(false)
-  }
+  let base_url = image_cache.base_url();
+  let (resolved, is_about_blank) =
+    match iframe_navigation_from_src(Some(src), base_url.as_deref().unwrap_or("")) {
+      IframeNavigation::None => return None,
+      IframeNavigation::AboutBlank => ("about:blank".to_string(), true),
+      IframeNavigation::Url(url) => (url, false),
+    };
 
-  let src = trim_ascii_whitespace(src);
-  if src.is_empty() {
-    return None;
-  }
-  if src.starts_with('#')
-    || starts_with_ignore_ascii_case(src, "javascript:")
-    || starts_with_ignore_ascii_case(src, "vbscript:")
-    || starts_with_ignore_ascii_case(src, "mailto:")
-  {
+  if resolved.is_empty() {
     return None;
   }
   let width = content_rect.width().ceil() as u32;
@@ -599,10 +574,6 @@ pub(crate) fn render_iframe_src(
   }
 
   let context = image_cache.resource_context();
-  let resolved = image_cache.resolve_url(src);
-  if resolved.is_empty() {
-    return None;
-  }
   let remaining_depth = context
     .as_ref()
     .and_then(|ctx| ctx.iframe_depth_remaining)
@@ -629,7 +600,7 @@ pub(crate) fn render_iframe_src(
   // See `render_iframe_srcdoc` for why iframe documents are rendered into a transparent surface.
   let background = Rgba::TRANSPARENT;
 
-  if is_about_blank(&resolved) {
+  if is_about_blank {
     // about:blank is a browser-provided empty document. Treat it as an empty iframe instead of a
     // resource fetch so offline fixtures do not record spurious fetch errors.
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
@@ -654,7 +625,6 @@ pub(crate) fn render_iframe_src(
     .map(|ctx| ctx.policy.clone())
     .unwrap_or_default();
 
-  let base_url = image_cache.base_url();
   let referrer_url = context
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())

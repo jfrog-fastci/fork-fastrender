@@ -8,6 +8,7 @@ pub(crate) mod document_write;
 pub mod dom2_tree_sink;
 pub mod encoding;
 pub mod favicon;
+pub(crate) mod iframe_url;
 pub mod image_attrs;
 pub mod image_prefetch;
 pub mod images;
