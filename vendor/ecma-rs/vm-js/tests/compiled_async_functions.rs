@@ -169,20 +169,48 @@ fn compiled_async_unimplemented_does_not_leak_env_roots() -> Result<(), VmError>
     )?;
     scope.push_root(Value::Object(f_obj))?;
 
-    match vm.call_without_host(&mut scope, Value::Object(f_obj), Value::Undefined, &[]) {
-      // Async compiled execution is not yet implemented; ensure we didn't leak the function's env root.
-      Err(VmError::Unimplemented(msg)) if msg.contains("async functions (hir-js compiled path)") => {
-        assert_eq!(
-          scope.heap().persistent_env_root_count(),
-          baseline_env_roots,
-          "unimplemented async compiled call leaked a persistent env root"
-        );
-        Ok(())
-      }
-      // Once async compiled execution exists, this test becomes redundant with
-      // `compiled_async_function_suspension_does_not_teardown_env`.
+    let call_res = vm.call_without_host(&mut scope, Value::Object(f_obj), Value::Undefined, &[]);
+    match call_res {
       Ok(_) => Ok(()),
-      Err(err) => Err(err),
+      Err(err) => {
+        // `Vm::call` routes errors through `coerce_error_to_throw`, which converts
+        // `VmError::Unimplemented` into a thrown `Error("unimplemented: …")`. Detect both the raw
+        // and thrown forms here.
+        let is_unimplemented_async = match &err {
+          VmError::Unimplemented(msg) => msg.contains("async functions (hir-js compiled path)"),
+          _ => {
+            let Some(thrown) = err.thrown_value() else {
+              return Err(err);
+            };
+            let Value::Object(err_obj) = thrown else {
+              return Err(err);
+            };
+            if scope.heap().object_prototype(err_obj)? != Some(realm.intrinsics().error_prototype()) {
+              return Err(err);
+            }
+            scope.push_root(Value::Object(err_obj))?;
+            let message_key = PropertyKey::from_string(scope.alloc_string("message")?);
+            let Some(Value::String(message_s)) =
+              scope.heap().object_get_own_data_property_value(err_obj, &message_key)?
+            else {
+              return Err(err);
+            };
+            let message = scope.heap().get_string(message_s)?.to_utf8_lossy();
+            message.contains("async functions (hir-js compiled path)")
+          }
+        };
+
+        if is_unimplemented_async {
+          assert_eq!(
+            scope.heap().persistent_env_root_count(),
+            baseline_env_roots,
+            "unimplemented async compiled call leaked a persistent env root"
+          );
+          Ok(())
+        } else {
+          Err(err)
+        }
+      }
     }
   })();
 
