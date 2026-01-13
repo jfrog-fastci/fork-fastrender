@@ -1085,16 +1085,91 @@ status = "pass"
 glob = "built-ins/String/prototype/split/**"
 status = "pass"
 
-# RegExp work-in-progress buckets (kept xfail so improvements show up as XPASS).
+# RegExp work-in-progress buckets.
+#
+# `RegExp.prototype.exec` is mostly implemented, so keep it `pass` and xfail only the known failing
+# cases (so regressions in the passing surface are not hidden).
 [[expectations]]
 glob = "built-ins/RegExp/prototype/exec/**"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/S15.10.6.2_A12.js"
 status = "xfail"
-reason = "vm-js: RegExp.prototype.exec semantics are still incomplete (named groups, indices /d, unicode sets, etc)."
+reason = "parse-js/vm-js: RegExp constructor does not accept literal CR/LF characters in pattern strings."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/S15.10.6.2_A1_T6.js"
+status = "xfail"
+reason = "vm-js: RegExp backtracking/repetition capture semantics are still incorrect for some nested groups."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/failure-lastindex-access.js"
+status = "xfail"
+reason = "vm-js: RegExpBuiltinExec should Get/ToLength(lastIndex) (with side effects) even when global/sticky are unset."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/success-lastindex-access.js"
+status = "xfail"
+reason = "vm-js: RegExpBuiltinExec should Get/ToLength(lastIndex) (with side effects) even when global/sticky are unset."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/u-captured-value.js"
+status = "xfail"
+reason = "vm-js: /u capture encoding for astral symbols is incorrect (should return UTF-16 surrogate pairs)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/u-lastindex-value.js"
+status = "xfail"
+reason = "vm-js: /u lastIndex update should use UTF-16 code unit indices."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/duplicate-named-groups-properties.js"
+status = "xfail"
+reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/duplicate-named-indices-groups-properties.js"
+status = "xfail"
+reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+
+[[expectations]]
+id = "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js"
+status = "xfail"
+reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
 
 [[expectations]]
 glob = "built-ins/RegExp/named-groups/**"
 status = "xfail"
 reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-matchall.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-search.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/duplicate-names-split.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/string-replace-escaped.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/string-replace-nocaptures.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/string-replace-numbered.js"
+status = "pass"
+
+[[expectations]]
+id = "built-ins/RegExp/named-groups/string-replace-unclosed.js"
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/RegExp/lookBehind/**"
@@ -1105,6 +1180,10 @@ reason = "vm-js: RegExp lookbehind assertions are not implemented."
 glob = "built-ins/RegExp/match-indices/**"
 status = "xfail"
 reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
+
+[[expectations]]
+id = "built-ins/RegExp/match-indices/no-indices-array.js"
+status = "pass"
 
 [[expectations]]
 glob = "built-ins/RegExp/property-escapes/**"
