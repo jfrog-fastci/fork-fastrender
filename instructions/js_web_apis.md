@@ -226,7 +226,7 @@ vs `src/js/`), see [`docs/webidl_stack.md`](../docs/webidl_stack.md).
     - `response.body` (ReadableStream)
     - Stream reading and piping
 
-18. **IndexedDB** (complex, lower priority)
+18. **IndexedDB** (currently: presence shim only; see [`docs/indexeddb_mvp.md`](../docs/indexeddb_mvp.md))
 
 19. **WebSocket** (network feature)
 
