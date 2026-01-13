@@ -1677,6 +1677,83 @@ fn estimate_svg_subresource_cache_entry_bytes(key: &str, value: &SvgSubresourceC
   bytes
 }
 
+fn fetch_destination_cache_tag(dest: FetchDestination) -> &'static str {
+  match dest {
+    FetchDestination::Document => "document",
+    FetchDestination::DocumentNoUser => "document-no-user",
+    FetchDestination::Iframe => "iframe",
+    FetchDestination::Style => "style",
+    FetchDestination::StyleCors => "style-cors",
+    FetchDestination::Script => "script",
+    FetchDestination::ScriptCors => "script-cors",
+    FetchDestination::Image => "image",
+    FetchDestination::ImageCors => "image-cors",
+    FetchDestination::Font => "font",
+    FetchDestination::Other => "other",
+    FetchDestination::Fetch => "fetch",
+  }
+}
+
+fn fetch_credentials_mode_cache_tag(mode: FetchCredentialsMode) -> &'static str {
+  match mode {
+    FetchCredentialsMode::Omit => "omit",
+    FetchCredentialsMode::SameOrigin => "same-origin",
+    FetchCredentialsMode::Include => "include",
+  }
+}
+
+fn svg_subresource_cache_key(kind: &str, request: &FetchRequest<'_>) -> String {
+  // svg_subresource_cache sits above ResourceFetcher and must be partitioned by request context.
+  // Otherwise, we could reuse a sprite/data URL fetched under a different referrer/origin/
+  // credentials policy.
+  //
+  // Keep the key bounded by hashing long strings like the referrer URL.
+  let resolved_url = strip_url_fragment(request.url);
+
+  let referrer_hash = request.referrer_url.map(|url| {
+    let mut hasher = DefaultHasher::new();
+    url.hash(&mut hasher);
+    (hasher.finish(), url.len())
+  });
+
+  let client_origin = request.client_origin.map(|origin| origin.to_string());
+
+  let effective_referrer_policy = match request.referrer_policy {
+    ReferrerPolicy::EmptyString => ReferrerPolicy::CHROMIUM_DEFAULT,
+    other => other,
+  };
+
+  let mut key = String::new();
+  key.push_str(kind);
+  key.push(':');
+  key.push_str(resolved_url.as_ref());
+
+  key.push_str("@@dest=");
+  key.push_str(fetch_destination_cache_tag(request.destination));
+
+  key.push_str("@@cred=");
+  key.push_str(fetch_credentials_mode_cache_tag(request.credentials_mode));
+
+  key.push_str("@@client_origin=");
+  match client_origin.as_deref() {
+    Some(origin) => key.push_str(origin),
+    None => key.push_str("none"),
+  }
+
+  key.push_str("@@referrer=");
+  match referrer_hash {
+    Some((hash, len)) => {
+      key.push_str(&format!("{hash:016x}:{len}"));
+    }
+    None => key.push_str("none"),
+  }
+
+  key.push_str("@@referrer_policy=");
+  key.push_str(effective_referrer_policy.as_str());
+
+  key
+}
+
 fn svg_xmlns_attributes_for_node(node: roxmltree::Node<'_, '_>) -> Vec<(String, String)> {
   // Namespace declarations in SVG sprites are often on the root element (e.g.
   // `<svg:svg xmlns:svg="http://www.w3.org/2000/svg">`). When we splice only a subtree into the
@@ -1860,7 +1937,17 @@ fn inline_svg_use_references<'a>(
 
     if !sprite_cache.contains_key(&resolved_url) {
       if let Some(shared) = subresource_cache {
-        let cache_key = format!("svg-sprite:{resolved_url}");
+        let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+        if let Some(ctx) = ctx {
+          if let Some(origin) = ctx.policy.document_origin.as_ref() {
+            req = req.with_client_origin(origin);
+          }
+          if let Some(referrer_url) = ctx.document_url.as_deref() {
+            req = req.with_referrer_url(referrer_url);
+          }
+          req = req.with_referrer_policy(ctx.referrer_policy);
+        }
+        let cache_key = svg_subresource_cache_key("svg-sprite", &req);
         if let Ok(mut cache) = shared.lock() {
           if let Some(SvgSubresourceCacheValue::Sprite(entry)) = cache.get_cloned(&cache_key) {
             if let Some(ctx) = ctx {
@@ -2241,7 +2328,17 @@ fn inline_svg_use_references<'a>(
         defs_injection_cache: HashMap::new(),
       };
       if let Some(shared) = subresource_cache {
-        let cache_key = format!("svg-sprite:{resolved_url}");
+        let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+        if let Some(ctx) = ctx {
+          if let Some(origin) = ctx.policy.document_origin.as_ref() {
+            req = req.with_client_origin(origin);
+          }
+          if let Some(referrer_url) = ctx.document_url.as_deref() {
+            req = req.with_referrer_url(referrer_url);
+          }
+          req = req.with_referrer_policy(ctx.referrer_policy);
+        }
+        let cache_key = svg_subresource_cache_key("svg-sprite", &req);
         let entry = SvgCachedSprite {
           sprite: Arc::new(sprite.clone()),
           final_url: sprite_final_url.clone(),
@@ -2937,9 +3034,20 @@ fn inline_svg_image_references<'a>(
             break 'node_loop;
           }
 
+          let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+          if let Some(ctx) = ctx {
+            if let Some(origin) = ctx.policy.document_origin.as_ref() {
+              req = req.with_client_origin(origin);
+            }
+            if let Some(referrer_url) = ctx.document_url.as_deref() {
+              req = req.with_referrer_url(referrer_url);
+            }
+            req = req.with_referrer_policy(ctx.referrer_policy);
+          }
+          let cache_key = svg_subresource_cache_key("svg-img", &req);
+
           let mut cached: Option<SvgCachedDataUrl> = None;
           if let Some(shared) = subresource_cache {
-            let cache_key = format!("svg-img:{resolved_url}");
             if let Ok(mut cache) = shared.lock() {
               if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) = cache.get_cloned(&cache_key)
               {
@@ -2965,17 +3073,6 @@ fn inline_svg_image_references<'a>(
             hit
           } else {
             check_root(RenderStage::Paint).map_err(Error::Render)?;
-
-            let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
-            if let Some(ctx) = ctx {
-              if let Some(origin) = ctx.policy.document_origin.as_ref() {
-                req = req.with_client_origin(origin);
-              }
-              if let Some(referrer_url) = ctx.document_url.as_deref() {
-                req = req.with_referrer_url(referrer_url);
-              }
-              req = req.with_referrer_policy(ctx.referrer_policy);
-            }
 
             let res = match fetcher.fetch_with_request(req) {
               Ok(res) => res,
@@ -3068,7 +3165,7 @@ fn inline_svg_image_references<'a>(
               bytes_len,
               final_url: res.final_url.clone(),
             };
-            fetched_entry = Some((entry.clone(), format!("svg-img:{resolved_url}")));
+            fetched_entry = Some((entry.clone(), cache_key.clone()));
             entry
           };
 
@@ -3193,9 +3290,20 @@ fn inline_svg_image_references<'a>(
           break 'node_loop;
         }
 
+        let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+        if let Some(ctx) = ctx {
+          if let Some(origin) = ctx.policy.document_origin.as_ref() {
+            req = req.with_client_origin(origin);
+          }
+          if let Some(referrer_url) = ctx.document_url.as_deref() {
+            req = req.with_referrer_url(referrer_url);
+          }
+          req = req.with_referrer_policy(ctx.referrer_policy);
+        }
+        let cache_key = svg_subresource_cache_key("svg-img", &req);
+
         let mut cached: Option<SvgCachedDataUrl> = None;
         if let Some(shared) = subresource_cache {
-          let cache_key = format!("svg-img:{resolved_url}");
           if let Ok(mut cache) = shared.lock() {
             if let Some(SvgSubresourceCacheValue::ImageDataUrl(entry)) = cache.get_cloned(&cache_key) {
               if let Some(ctx) = ctx {
@@ -3220,17 +3328,6 @@ fn inline_svg_image_references<'a>(
           hit
         } else {
           check_root(RenderStage::Paint).map_err(Error::Render)?;
-
-          let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
-          if let Some(ctx) = ctx {
-            if let Some(origin) = ctx.policy.document_origin.as_ref() {
-              req = req.with_client_origin(origin);
-            }
-            if let Some(referrer_url) = ctx.document_url.as_deref() {
-              req = req.with_referrer_url(referrer_url);
-            }
-            req = req.with_referrer_policy(ctx.referrer_policy);
-          }
 
           let res = match fetcher.fetch_with_request(req) {
             Ok(res) => res,
@@ -3323,7 +3420,7 @@ fn inline_svg_image_references<'a>(
             bytes_len,
             final_url: res.final_url.clone(),
           };
-          fetched_entry = Some((entry.clone(), format!("svg-img:{resolved_url}")));
+          fetched_entry = Some((entry.clone(), cache_key.clone()));
           entry
         };
 

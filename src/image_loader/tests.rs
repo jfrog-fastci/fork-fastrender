@@ -1,3 +1,6 @@
+use crate::api::ResourceContext;
+use crate::error::{Error, Result};
+use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use crate::image_loader::ImageCache;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -5,8 +8,56 @@ use image::{ImageFormat, Rgba, RgbaImage};
 use resvg::usvg;
 use std::fs;
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
 use url::Url;
+
+#[derive(Default)]
+struct RecordingFetcher {
+  calls: Mutex<Vec<(String, Option<String>)>>,
+}
+
+impl RecordingFetcher {
+  fn count_url(&self, url: &str) -> usize {
+    self
+      .calls
+      .lock()
+      .expect("lock")
+      .iter()
+      .filter(|(u, _)| u == url)
+      .count()
+  }
+}
+
+impl ResourceFetcher for RecordingFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+    self
+      .calls
+      .lock()
+      .expect("lock")
+      .push((req.url.to_string(), req.referrer_url.map(|r| r.to_string())));
+
+    let referrer = req.referrer_url.unwrap_or_default();
+    match req.url {
+      "https://example.com/sprite.svg" => {
+        let color = if referrer.ends_with("/a.svg") { "red" } else { "blue" };
+        let svg = format!(
+          r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="{color}"/></symbol></svg>"#
+        );
+        Ok(FetchedResource::new(svg.into_bytes(), Some("image/svg+xml".to_string())))
+      }
+      "https://example.com/img.png" => {
+        let bytes = if referrer.ends_with("/a.svg") { b"A".to_vec() } else { b"B".to_vec() };
+        Ok(FetchedResource::new(bytes, None))
+      }
+      other => Err(Error::Other(format!("unexpected url {other}"))),
+    }
+  }
+}
 
 #[test]
 fn svg_root_viewport_resolves_percent_lengths_for_rasterization() {
@@ -220,5 +271,128 @@ fn svg_render_to_image_preserve_aspect_ratio_xmax_ymin_meet() {
     composite_pixel_over_white(*rgba.get_pixel(18, 5)),
     Rgba([255, 0, 0, 255]),
     "expected right side to be red"
+  );
+}
+
+#[test]
+fn svg_subresource_cache_partitions_by_referrer_for_sprites() {
+  let fetcher = RecordingFetcher::default();
+  let subresource_cache: super::SvgSubresourceCache =
+    Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
+
+  let ctx_a = ResourceContext {
+    document_url: Some("https://example.com/a.svg".to_string()),
+    ..Default::default()
+  };
+  let ctx_b = ResourceContext {
+    document_url: Some("https://example.com/b.svg".to_string()),
+    ..Default::default()
+  };
+
+  let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><use href="https://example.com/sprite.svg#icon"/></svg>"#;
+
+  let out_a_1 = super::inline_svg_use_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <use> (a)")
+  .into_owned();
+  let out_b = super::inline_svg_use_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_b),
+    Some(&subresource_cache),
+  )
+  .expect("inline <use> (b)")
+  .into_owned();
+  let out_a_2 = super::inline_svg_use_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <use> (a again)")
+  .into_owned();
+
+  assert!(
+    out_a_1.contains(r#"fill="red""#),
+    "expected sprite variant for ctx_a, got: {out_a_1}"
+  );
+  assert!(
+    out_b.contains(r#"fill="blue""#),
+    "expected sprite variant for ctx_b, got: {out_b}"
+  );
+  assert_eq!(out_a_1, out_a_2, "expected ctx_a to hit svg_subresource_cache");
+  assert_eq!(
+    fetcher.count_url("https://example.com/sprite.svg"),
+    2,
+    "expected sprite to be fetched once per referrer context"
+  );
+}
+
+#[test]
+fn svg_subresource_cache_partitions_by_referrer_for_inlined_images() {
+  let fetcher = RecordingFetcher::default();
+  let subresource_cache: super::SvgSubresourceCache =
+    Arc::new(Mutex::new(super::SizedLruCache::new(64, 1024 * 1024)));
+
+  let ctx_a = ResourceContext {
+    document_url: Some("https://example.com/a.svg".to_string()),
+    ..Default::default()
+  };
+  let ctx_b = ResourceContext {
+    document_url: Some("https://example.com/b.svg".to_string()),
+    ..Default::default()
+  };
+
+  let svg =
+    r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://example.com/img.png" width="1" height="1"/></svg>"#;
+
+  let out_a_1 = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (a)")
+  .into_owned();
+  let out_b = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_b),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (b)")
+  .into_owned();
+  let out_a_2 = super::inline_svg_image_references(
+    svg,
+    "https://example.com/importer.svg",
+    &fetcher,
+    Some(&ctx_a),
+    Some(&subresource_cache),
+  )
+  .expect("inline <image> (a again)")
+  .into_owned();
+
+  assert!(
+    out_a_1.contains("QQ=="),
+    "expected data URL for ctx_a (base64 A=QQ==), got: {out_a_1}"
+  );
+  assert!(
+    out_b.contains("Qg=="),
+    "expected data URL for ctx_b (base64 B=Qg==), got: {out_b}"
+  );
+  assert_eq!(out_a_1, out_a_2, "expected ctx_a to hit svg_subresource_cache");
+  assert_eq!(
+    fetcher.count_url("https://example.com/img.png"),
+    2,
+    "expected image to be fetched once per referrer context"
   );
 }
