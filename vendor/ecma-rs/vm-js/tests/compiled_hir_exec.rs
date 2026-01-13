@@ -6365,6 +6365,78 @@ fn compiled_switch_function_fallthrough() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_switch_fallthrough_and_break() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(x){
+        switch(x){
+          case 1: 10;
+          case 2: return 20;
+          default: return 30;
+        }
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut scope = heap.scope();
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  let r1 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0)],
+  )?;
+  assert_eq!(r1, Value::Number(20.0));
+
+  let r3 = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(3.0)],
+  )?;
+  assert_eq!(r3, Value::Number(30.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_switch_break_exits_only_switch() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f(){
+        let i = 0;
+        let out = 0;
+        while (i < 3) {
+          switch(i){
+            case 0: out = out + 1; break;
+            case 1: out = out + 10; break;
+            default: out = out + 100; break;
+          }
+          i = i + 1;
+        }
+        return out;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(111.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_switch_function_labeled_break_exits_outer_statement() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(
