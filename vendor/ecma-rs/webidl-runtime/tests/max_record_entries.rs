@@ -110,3 +110,51 @@ fn max_record_entries_is_enforced_in_both_conversion_paths() {
   }
 }
 
+#[test]
+fn record_conversion_rejects_non_objects_in_both_conversion_paths() {
+  let record_ty = IdlType::Record(
+    Box::new(IdlType::String(StringType::DomString)),
+    Box::new(IdlType::Numeric(NumericType::Long)),
+  );
+
+  // `convert_to_idl` (bindings conversions).
+  {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let err = convert_to_idl(&mut rt, Value::Bool(true), &record_ty, &ctx).unwrap_err();
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected throw");
+    };
+    assert_eq!(thrown_message(&mut rt, thrown), "Value is not an object");
+    assert!(
+      thrown_to_string(&mut rt, thrown).starts_with("TypeError"),
+      "expected TypeError"
+    );
+  }
+
+  // `resolve_overload` (overload resolution conversions).
+  {
+    let mut rt = VmJsRuntime::new();
+
+    let overloads = vec![OverloadSig {
+      args: vec![OverloadArg {
+        ty: record_ty.clone(),
+        optionality: Optionality::Required,
+        default: None,
+      }],
+      decl_index: 0,
+      distinguishing_arg_index_by_arg_count: None,
+    }];
+
+    let err = resolve_overload(&mut rt, &overloads, &[Value::Bool(true)]).unwrap_err();
+    let Some(thrown) = err.thrown_value() else {
+      panic!("expected throw");
+    };
+    assert_eq!(thrown_message(&mut rt, thrown), "value is not an object");
+    assert!(
+      thrown_to_string(&mut rt, thrown).starts_with("TypeError"),
+      "expected TypeError"
+    );
+  }
+}
