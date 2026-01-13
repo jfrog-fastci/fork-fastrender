@@ -20,6 +20,7 @@ struct PrefetchAssetsCapabilities {
 struct PrefetchAssetsCapabilitiesFlags {
   prefetch_fonts: bool,
   prefetch_images: bool,
+  prefetch_media: bool,
   prefetch_scripts: bool,
   prefetch_iframes: bool,
   prefetch_embeds: bool,
@@ -29,6 +30,8 @@ struct PrefetchAssetsCapabilitiesFlags {
   max_discovered_assets_per_page: bool,
   max_images_per_page: bool,
   max_image_urls_per_element: bool,
+  max_media_bytes_per_file: bool,
+  max_media_bytes_per_page: bool,
   report_json: bool,
   report_per_page_dir: bool,
   max_report_urls_per_kind: bool,
@@ -40,6 +43,7 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
     PrefetchAssetsCapabilitiesFlags {
       prefetch_fonts: true,
       prefetch_images: true,
+      prefetch_media: true,
       prefetch_scripts: true,
       prefetch_iframes: true,
       prefetch_embeds: true,
@@ -49,6 +53,8 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
       max_discovered_assets_per_page: true,
       max_images_per_page: true,
       max_image_urls_per_element: true,
+      max_media_bytes_per_file: true,
+      max_media_bytes_per_page: true,
       report_json: true,
       report_per_page_dir: true,
       max_report_urls_per_kind: true,
@@ -58,6 +64,7 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
     PrefetchAssetsCapabilitiesFlags {
       prefetch_fonts: false,
       prefetch_images: false,
+      prefetch_media: false,
       prefetch_scripts: false,
       prefetch_iframes: false,
       prefetch_embeds: false,
@@ -67,6 +74,8 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
       max_discovered_assets_per_page: false,
       max_images_per_page: false,
       max_image_urls_per_element: false,
+      max_media_bytes_per_file: false,
+      max_media_bytes_per_page: false,
       report_json: false,
       report_per_page_dir: false,
       max_report_urls_per_kind: false,
@@ -119,6 +128,7 @@ mod capabilities_tests {
     for key in [
       "prefetch_fonts",
       "prefetch_images",
+      "prefetch_media",
       "prefetch_scripts",
       "prefetch_iframes",
       "prefetch_embeds",
@@ -128,6 +138,8 @@ mod capabilities_tests {
       "max_discovered_assets_per_page",
       "max_images_per_page",
       "max_image_urls_per_element",
+      "max_media_bytes_per_file",
+      "max_media_bytes_per_page",
       "report_json",
       "report_per_page_dir",
       "max_report_urls_per_kind",
@@ -257,6 +269,19 @@ mod disk_cache_main {
     )]
     prefetch_images: bool,
 
+    /// Prefetch media sources referenced directly from HTML (`<video src>`, `<audio src>`, `<source src>`) (true/false)
+    ///
+    /// This is opt-in because media files can be large; use `--max-media-bytes-per-file` and
+    /// `--max-media-bytes-per-page` as safety valves.
+    #[arg(
+      long,
+      default_value_t = false,
+      action = ArgAction::Set,
+      num_args = 0..=1,
+      default_missing_value = "true"
+    )]
+    prefetch_media: bool,
+
     /// Prefetch script resources referenced directly from HTML (`<script src>`, script preloads, modulepreload) (true/false)
     #[arg(
       long,
@@ -274,6 +299,14 @@ mod disk_cache_main {
     /// Maximum number of URLs to prefetch per image element (primary + fallback(s))
     #[arg(long, default_value_t = 2)]
     max_image_urls_per_element: usize,
+
+    /// Maximum bytes to prefetch for a single media file (0 disables the cap).
+    #[arg(long, default_value_t = 10_u64 * 1024 * 1024, value_name = "BYTES")]
+    max_media_bytes_per_file: u64,
+
+    /// Maximum total bytes to prefetch for all media files discovered in a page (0 disables the cap).
+    #[arg(long, default_value_t = 50_u64 * 1024 * 1024, value_name = "BYTES")]
+    max_media_bytes_per_page: u64,
 
     /// Prefetch iframe documents referenced directly from HTML (true/false)
     ///
@@ -393,6 +426,7 @@ mod disk_cache_main {
     imports: UrlOutcomeSet,
     fonts: UrlOutcomeSet,
     images: UrlOutcomeSet,
+    media: UrlOutcomeSet,
     scripts: UrlOutcomeSet,
     documents: UrlOutcomeSet,
     css_url_assets: UrlOutcomeSet,
@@ -411,6 +445,10 @@ mod disk_cache_main {
     discovered_images: usize,
     fetched_images: usize,
     failed_images: usize,
+    discovered_media: usize,
+    fetched_media: usize,
+    failed_media: usize,
+    skipped_media: usize,
     discovered_scripts: usize,
     fetched_scripts: usize,
     failed_scripts: usize,
@@ -428,6 +466,7 @@ mod disk_cache_main {
   struct PrefetchOptions {
     prefetch_fonts: bool,
     prefetch_images: bool,
+    prefetch_media: bool,
     prefetch_scripts: bool,
     prefetch_icons: bool,
     prefetch_video_posters: bool,
@@ -436,6 +475,8 @@ mod disk_cache_main {
     prefetch_css_url_assets: bool,
     max_discovered_assets_per_page: usize,
     image_limits: ImagePrefetchLimits,
+    max_media_bytes_per_file: u64,
+    max_media_bytes_per_page: u64,
     dry_run: bool,
   }
 
@@ -462,6 +503,7 @@ mod disk_cache_main {
     imports: PrefetchAssetsReportKind,
     fonts: PrefetchAssetsReportKind,
     images: PrefetchAssetsReportKind,
+    media: PrefetchAssetsReportKind,
     scripts: PrefetchAssetsReportKind,
     documents: PrefetchAssetsReportKind,
     css_url_assets: PrefetchAssetsReportKind,
@@ -523,6 +565,7 @@ mod disk_cache_main {
           imports: build_kind_report(&page.report.imports, max_report_urls_per_kind),
           fonts: build_kind_report(&page.report.fonts, max_report_urls_per_kind),
           images: build_kind_report(&page.report.images, max_report_urls_per_kind),
+          media: build_kind_report(&page.report.media, max_report_urls_per_kind),
           scripts: build_kind_report(&page.report.scripts, max_report_urls_per_kind),
           documents: build_kind_report(&page.report.documents, max_report_urls_per_kind),
           css_url_assets: build_kind_report(&page.report.css_url_assets, max_report_urls_per_kind),
@@ -567,6 +610,10 @@ mod disk_cache_main {
     into.discovered_images += other.discovered_images;
     into.fetched_images += other.fetched_images;
     into.failed_images += other.failed_images;
+    into.discovered_media += other.discovered_media;
+    into.fetched_media += other.fetched_media;
+    into.failed_media += other.failed_media;
+    into.skipped_media += other.skipped_media;
     into.discovered_scripts += other.discovered_scripts;
     into.fetched_scripts += other.fetched_scripts;
     into.failed_scripts += other.failed_scripts;
@@ -581,6 +628,7 @@ mod disk_cache_main {
     merge_outcomes(&mut into.report.imports, other.report.imports);
     merge_outcomes(&mut into.report.fonts, other.report.fonts);
     merge_outcomes(&mut into.report.images, other.report.images);
+    merge_outcomes(&mut into.report.media, other.report.media);
     merge_outcomes(&mut into.report.scripts, other.report.scripts);
     merge_outcomes(&mut into.report.documents, other.report.documents);
     merge_outcomes(&mut into.report.css_url_assets, other.report.css_url_assets);
@@ -818,6 +866,19 @@ mod disk_cache_main {
   }
 
   fn record_document_candidate(
+    all: &RefCell<BTreeSet<String>>,
+    set: &mut BTreeSet<String>,
+    url: &str,
+    max_total: usize,
+    max_set: usize,
+  ) {
+    let Some(normalized) = normalize_prefetch_url(url) else {
+      return;
+    };
+    let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
+  }
+
+  fn record_media_candidate(
     all: &RefCell<BTreeSet<String>>,
     set: &mut BTreeSet<String>,
     url: &str,
@@ -1329,6 +1390,127 @@ mod disk_cache_main {
       }
       for child in node.children.iter().rev() {
         stack.push(child);
+      }
+    }
+  }
+
+  fn record_media_source_candidates_from_html(
+    all: &RefCell<BTreeSet<String>>,
+    html: &str,
+    base_url: &str,
+    out: &mut BTreeSet<String>,
+    max_total: usize,
+  ) {
+    // Keep worst-case work bounded for pages that embed many media tags.
+    const MAX_MEDIA_SOURCES_PER_PAGE: usize = 64;
+    static MEDIA_TAG: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+
+    let media_tag = match MEDIA_TAG.get_or_init(|| {
+      Regex::new(concat!(
+        "(?is)",
+        "<video[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+        "|",
+        "<audio[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+        "|",
+        "<source[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+      ))
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+
+    let mut inserted = 0usize;
+    for caps in media_tag.captures_iter(html) {
+      if max_total != 0 && all.borrow().len() >= max_total {
+        break;
+      }
+      if inserted >= MAX_MEDIA_SOURCES_PER_PAGE {
+        break;
+      }
+      let raw = caps
+        .get(1)
+        .or_else(|| caps.get(2))
+        .or_else(|| caps.get(3))
+        .or_else(|| caps.get(4))
+        .or_else(|| caps.get(5))
+        .or_else(|| caps.get(6))
+        .or_else(|| caps.get(7))
+        .or_else(|| caps.get(8))
+        .or_else(|| caps.get(9))
+        .map(|m| m.as_str())
+        .unwrap_or("");
+      if trim_ascii_whitespace(raw).is_empty() {
+        continue;
+      }
+      if let Some(resolved) = resolve_href(base_url, raw) {
+        let before = out.len();
+        record_media_candidate(all, out, &resolved, max_total, max_total);
+        if out.len() > before {
+          inserted += 1;
+        }
+      }
+    }
+  }
+
+  fn record_media_source_candidates(
+    all: &RefCell<BTreeSet<String>>,
+    dom: &DomNode,
+    base_url: &str,
+    out: &mut BTreeSet<String>,
+    max_total: usize,
+  ) {
+    // Keep worst-case work bounded for pages that embed many <video>/<audio> tags with many
+    // <source> children.
+    const MAX_MEDIA_SOURCES_PER_PAGE: usize = 64;
+
+    let mut stack: Vec<(&DomNode, bool)> = vec![(dom, false)];
+    let mut inserted = 0usize;
+
+    while let Some((node, in_media)) = stack.pop() {
+      if max_total != 0 && all.borrow().len() >= max_total {
+        break;
+      }
+      if inserted >= MAX_MEDIA_SOURCES_PER_PAGE {
+        break;
+      }
+
+      let mut child_in_media = in_media;
+      if let Some(tag) = node.tag_name() {
+        if tag.eq_ignore_ascii_case("video") || tag.eq_ignore_ascii_case("audio") {
+          child_in_media = true;
+          if let Some(src) = node
+            .get_attribute_ref("src")
+            .filter(|value| !trim_ascii_whitespace(value).is_empty())
+          {
+            if let Some(resolved) = resolve_href(base_url, src) {
+              let before = out.len();
+              record_media_candidate(all, out, &resolved, max_total, max_total);
+              if out.len() > before {
+                inserted += 1;
+              }
+            }
+          }
+        } else if child_in_media && tag.eq_ignore_ascii_case("source") {
+          if let Some(src) = node
+            .get_attribute_ref("src")
+            .filter(|value| !trim_ascii_whitespace(value).is_empty())
+          {
+            if let Some(resolved) = resolve_href(base_url, src) {
+              let before = out.len();
+              record_media_candidate(all, out, &resolved, max_total, max_total);
+              if out.len() > before {
+                inserted += 1;
+              }
+            }
+          }
+        }
+      }
+
+      if node.template_contents_are_inert() {
+        continue;
+      }
+      for child in node.children.iter().rev() {
+        stack.push((child, child_in_media));
       }
     }
   }
@@ -2126,6 +2308,7 @@ mod disk_cache_main {
     }
     if tasks.is_empty()
       && !(opts.prefetch_images
+        || opts.prefetch_media
         || opts.prefetch_scripts
         || opts.prefetch_icons
         || opts.prefetch_video_posters
@@ -2143,6 +2326,7 @@ mod disk_cache_main {
 
     let mut image_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_image_urls: BTreeMap<String, CrossOriginAttribute> = BTreeMap::new();
+    let mut media_urls: BTreeSet<String> = BTreeSet::new();
     let mut script_urls: BTreeSet<String> = BTreeSet::new();
     let mut cors_script_urls: BTreeMap<String, CorsMode> = BTreeMap::new();
     let mut document_urls: BTreeSet<String> = BTreeSet::new();
@@ -2255,6 +2439,26 @@ mod disk_cache_main {
           html,
           base_url,
           &mut image_urls,
+          opts.max_discovered_assets_per_page,
+        );
+      }
+    }
+
+    if opts.prefetch_media {
+      if let Some(dom) = dom.as_ref() {
+        record_media_source_candidates(
+          &all_asset_urls,
+          dom,
+          base_url,
+          &mut media_urls,
+          opts.max_discovered_assets_per_page,
+        );
+      } else {
+        record_media_source_candidates_from_html(
+          &all_asset_urls,
+          html,
+          base_url,
+          &mut media_urls,
           opts.max_discovered_assets_per_page,
         );
       }
@@ -2605,6 +2809,7 @@ mod disk_cache_main {
           .keys()
           .filter(|url| !image_urls.contains(*url))
           .count();
+      summary.discovered_media = media_urls.len();
       summary.discovered_scripts = script_urls.len()
         + cors_script_urls
           .keys()
@@ -2623,6 +2828,11 @@ mod disk_cache_main {
         .images
         .discovered
         .extend(cors_image_urls.keys().cloned());
+      summary
+        .report
+        .media
+        .discovered
+        .extend(media_urls.iter().cloned());
       summary
         .report
         .scripts
@@ -2750,6 +2960,150 @@ mod disk_cache_main {
         summary
           .report
           .images
+          .record_fetch_result(url.clone(), success);
+      }
+    }
+
+    if !opts.dry_run && opts.prefetch_media {
+      let per_file_cap = opts.max_media_bytes_per_file;
+      let page_cap = opts.max_media_bytes_per_page;
+      let mut remaining_budget = page_cap;
+
+      let mut summary = summary.borrow_mut();
+      for url in &media_urls {
+        if page_cap != 0 && remaining_budget == 0 {
+          summary.skipped_media += 1;
+          summary
+            .report
+            .media
+            .record_fetch_result(url.clone(), false);
+          eprintln!(
+            "Skipping media {} (no remaining page media budget: max_media_bytes_per_page={})",
+            url, page_cap
+          );
+          continue;
+        }
+
+        let remaining_before = remaining_budget;
+        let mut max_allowed = u64::MAX;
+        if per_file_cap != 0 {
+          max_allowed = max_allowed.min(per_file_cap);
+        }
+        if page_cap != 0 {
+          max_allowed = max_allowed.min(remaining_budget);
+        }
+
+        // When both limits are disabled, do a single fetch just like other asset types.
+        if max_allowed == u64::MAX {
+          let mut request = FetchRequest::new(url.as_str(), FetchDestination::Other)
+            .with_referrer_url(base_hint)
+            .with_referrer_policy(referrer_policy);
+          if let Some(origin) = document_origin.as_ref() {
+            request = request.with_client_origin(origin);
+          }
+          let success = match fetcher.fetch_with_request(request) {
+            Ok(res) => ensure_http_success(&res, url).is_ok(),
+            Err(_) => false,
+          };
+          if success {
+            summary.fetched_media += 1;
+          } else {
+            summary.failed_media += 1;
+          }
+          summary
+            .report
+            .media
+            .record_fetch_result(url.clone(), success);
+          continue;
+        }
+
+        // Clamp the probe to `usize::MAX` to keep allocations bounded on 32-bit targets.
+        let probe_max_bytes = max_allowed
+          .saturating_add(1)
+          .min(usize::MAX as u64) as usize;
+
+        let mut probe_request = FetchRequest::new(url.as_str(), FetchDestination::Other)
+          .with_referrer_url(base_hint)
+          .with_referrer_policy(referrer_policy);
+        if let Some(origin) = document_origin.as_ref() {
+          probe_request = probe_request.with_client_origin(origin);
+        }
+
+        let probe_size: u64 = match fetcher.fetch_partial_with_request(probe_request, probe_max_bytes)
+        {
+          Ok(res) => {
+            if ensure_http_success(&res, url).is_ok() {
+              res.bytes.len() as u64
+            } else {
+              summary.failed_media += 1;
+              summary
+                .report
+                .media
+                .record_fetch_result(url.clone(), false);
+              continue;
+            }
+          }
+          Err(_) => {
+            summary.failed_media += 1;
+            summary
+              .report
+              .media
+              .record_fetch_result(url.clone(), false);
+            continue;
+          }
+        };
+
+        if probe_size > max_allowed {
+          summary.skipped_media += 1;
+          summary
+            .report
+            .media
+            .record_fetch_result(url.clone(), false);
+
+          let mut reasons: Vec<String> = Vec::new();
+          if per_file_cap != 0 && probe_size > per_file_cap {
+            reasons.push(format!("max_media_bytes_per_file={per_file_cap}"));
+          }
+          if page_cap != 0 && probe_size > remaining_before {
+            reasons.push(format!("remaining_page_budget={remaining_before}"));
+          }
+          if reasons.is_empty() {
+            reasons.push(format!("max_allowed={max_allowed}"));
+          }
+          eprintln!(
+            "Skipping media {} (size exceeds budget; {})",
+            url,
+            reasons.join(", ")
+          );
+          continue;
+        }
+
+        if page_cap != 0 {
+          remaining_budget = remaining_budget.saturating_sub(probe_size);
+        }
+
+        let mut request = FetchRequest::new(url.as_str(), FetchDestination::Other)
+          .with_referrer_url(base_hint)
+          .with_referrer_policy(referrer_policy);
+        if let Some(origin) = document_origin.as_ref() {
+          request = request.with_client_origin(origin);
+        }
+        let success = match fetcher.fetch_with_request(request) {
+          Ok(res) => ensure_http_success(&res, url).is_ok(),
+          Err(_) => false,
+        };
+        if success {
+          summary.fetched_media += 1;
+        } else {
+          summary.failed_media += 1;
+          // Restore budget so subsequent media URLs are still eligible when this fetch failed.
+          if page_cap != 0 {
+            remaining_budget = remaining_budget.saturating_add(probe_size);
+          }
+        }
+        summary
+          .report
+          .media
           .record_fetch_result(url.clone(), success);
       }
     }
@@ -3182,6 +3536,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: true,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3193,6 +3548,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: true,
       };
       let fetcher: Arc<dyn ResourceFetcher> = Arc::new(PanicOnFetch);
@@ -3387,6 +3744,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3398,6 +3756,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -3466,6 +3826,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3477,6 +3838,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -3640,6 +4003,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3651,6 +4015,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -3757,6 +4123,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3768,6 +4135,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -3869,6 +4238,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3880,6 +4250,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -3986,6 +4358,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -3997,6 +4370,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4087,6 +4462,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4098,6 +4474,8 @@ mod disk_cache_main {
           max_image_elements: n,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4175,6 +4553,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4186,6 +4565,8 @@ mod disk_cache_main {
           max_image_elements: n,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4250,6 +4631,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4261,6 +4643,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4359,6 +4743,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4370,6 +4755,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4474,6 +4861,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4485,6 +4873,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4573,6 +4963,7 @@ mod disk_cache_main {
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4584,6 +4975,8 @@ mod disk_cache_main {
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4659,6 +5052,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4670,6 +5064,8 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4744,6 +5140,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4755,6 +5152,8 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4829,6 +5228,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: true,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4840,6 +5240,8 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -4955,6 +5357,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: false,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -4966,6 +5369,8 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -5106,6 +5511,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -5117,6 +5523,8 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -5276,6 +5684,7 @@ body { background-image: url(/bg.png); }
       let opts = PrefetchOptions {
         prefetch_fonts: false,
         prefetch_images: true,
+        prefetch_media: false,
         prefetch_scripts: false,
         prefetch_icons: false,
         prefetch_video_posters: false,
@@ -5287,6 +5696,8 @@ body { background-image: url(/bg.png); }
           max_image_elements: 150,
           max_urls_per_element: 2,
         },
+        max_media_bytes_per_file: 10_u64 * 1024 * 1024,
+        max_media_bytes_per_page: 50_u64 * 1024 * 1024,
         dry_run: false,
       };
 
@@ -5469,6 +5880,7 @@ body { background-image: url(/bg.png); }
     let opts = PrefetchOptions {
       prefetch_fonts: args.prefetch_fonts,
       prefetch_images: args.prefetch_images,
+      prefetch_media: args.prefetch_media,
       prefetch_scripts: args.prefetch_scripts,
       prefetch_icons: args.prefetch_icons,
       prefetch_video_posters: args.prefetch_video_posters,
@@ -5477,19 +5889,23 @@ body { background-image: url(/bg.png); }
       prefetch_css_url_assets: args.prefetch_css_url_assets,
       max_discovered_assets_per_page: args.max_discovered_assets_per_page,
       image_limits,
+      max_media_bytes_per_file: args.max_media_bytes_per_file,
+      max_media_bytes_per_page: args.max_media_bytes_per_page,
       dry_run: args.dry_run,
     };
     let prefetch_any_images =
       args.prefetch_images || args.prefetch_icons || args.prefetch_video_posters;
+    let prefetch_any_media = args.prefetch_media;
     let prefetch_any_documents = args.prefetch_iframes || args.prefetch_embeds;
 
     println!(
-      "Prefetching assets for {} page(s) ({} parallel, {}s timeout, fonts={} images={} scripts={} iframes={} embeds={} icons={} video_posters={} css_url_assets={} max_assets_per_page={} dry_run={})...",
+      "Prefetching assets for {} page(s) ({} parallel, {}s timeout, fonts={} images={} media={} scripts={} iframes={} embeds={} icons={} video_posters={} css_url_assets={} max_assets_per_page={} dry_run={})...",
       selected.len(),
       args.jobs,
       per_request_timeout_label,
       args.prefetch_fonts,
       args.prefetch_images,
+      args.prefetch_media,
       args.prefetch_scripts,
       args.prefetch_iframes,
       args.prefetch_embeds,
@@ -5500,6 +5916,7 @@ body { background-image: url(/bg.png); }
       args.dry_run
     );
     if args.prefetch_images
+      || args.prefetch_media
       || args.prefetch_scripts
       || args.prefetch_iframes
       || args.prefetch_embeds
@@ -5507,8 +5924,9 @@ body { background-image: url(/bg.png); }
       || args.prefetch_video_posters
     {
       println!(
-        "HTML assets: images={} scripts={} documents={} embeds={} icons={} video_posters={}",
+        "HTML assets: images={} media={} scripts={} documents={} embeds={} icons={} video_posters={}",
         args.prefetch_images,
+        args.prefetch_media,
         args.prefetch_scripts,
         args.prefetch_iframes,
         args.prefetch_embeds,
@@ -5520,6 +5938,12 @@ body { background-image: url(/bg.png); }
       println!(
         "Image prefetch limits: max_images_per_page={} max_urls_per_element={}",
         args.max_images_per_page, args.max_image_urls_per_element
+      );
+    }
+    if args.prefetch_media {
+      println!(
+        "Media prefetch limits: max_media_bytes_per_file={} max_media_bytes_per_page={}",
+        args.max_media_bytes_per_file, args.max_media_bytes_per_page
       );
     }
     if let Some((index, total)) = args.shard {
@@ -5612,6 +6036,10 @@ body { background-image: url(/bg.png); }
     let mut total_images_discovered = 0usize;
     let mut total_images_fetched = 0usize;
     let mut total_images_failed = 0usize;
+    let mut total_media_discovered = 0usize;
+    let mut total_media_fetched = 0usize;
+    let mut total_media_failed = 0usize;
+    let mut total_media_skipped = 0usize;
     let mut total_scripts_discovered = 0usize;
     let mut total_scripts_fetched = 0usize;
     let mut total_scripts_failed = 0usize;
@@ -5638,6 +6066,10 @@ body { background-image: url(/bg.png); }
       total_images_discovered += r.discovered_images;
       total_images_fetched += r.fetched_images;
       total_images_failed += r.failed_images;
+      total_media_discovered += r.discovered_media;
+      total_media_fetched += r.fetched_media;
+      total_media_failed += r.failed_media;
+      total_media_skipped += r.skipped_media;
       total_scripts_discovered += r.discovered_scripts;
       total_scripts_fetched += r.fetched_scripts;
       total_scripts_failed += r.failed_scripts;
@@ -5663,6 +6095,12 @@ body { background-image: url(/bg.png); }
         line.push_str(&format!(
           " images={} img_fetched={} img_failed={}",
           r.discovered_images, r.fetched_images, r.failed_images
+        ));
+      }
+      if prefetch_any_media {
+        line.push_str(&format!(
+          " media={} media_fetched={} media_failed={} media_skipped={}",
+          r.discovered_media, r.fetched_media, r.failed_media, r.skipped_media
         ));
       }
       if args.prefetch_scripts {
@@ -5702,6 +6140,12 @@ body { background-image: url(/bg.png); }
       done.push_str(&format!(
         " images_discovered={} images_fetched={} images_failed={}",
         total_images_discovered, total_images_fetched, total_images_failed
+      ));
+    }
+    if prefetch_any_media {
+      done.push_str(&format!(
+        " media_discovered={} media_fetched={} media_failed={} media_skipped={}",
+        total_media_discovered, total_media_fetched, total_media_failed, total_media_skipped
       ));
     }
     if args.prefetch_scripts {

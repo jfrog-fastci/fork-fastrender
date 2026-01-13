@@ -3,8 +3,9 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
 use fastrender::pageset::pageset_stem;
 use fastrender::resource::{
-  normalize_user_agent_for_log, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher,
-  FetchDestination, FetchRequest, FetchedResource, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  normalize_user_agent_for_log, origin_from_url, CachingFetcherConfig, DiskCacheConfig,
+  DiskCachingFetcher, FetchDestination, FetchRequest, FetchedResource, DEFAULT_ACCEPT_LANGUAGE,
+  DEFAULT_USER_AGENT,
 };
 use fastrender::Error;
 use fastrender::ResourceFetcher;
@@ -31,10 +32,10 @@ fn disk_cache_namespace() -> String {
   let ua = normalize_user_agent_for_log(DEFAULT_USER_AGENT).trim();
   let lang = DEFAULT_ACCEPT_LANGUAGE.trim();
   if HTTP_BROWSER_HEADERS_ENABLED {
-    format!("fetch-profile:contextual-v1\nuser-agent:{ua}\naccept-language:{lang}")
+    format!("fetch-profile:contextual-v2\nuser-agent:{ua}\naccept-language:{lang}")
   } else {
     format!(
-      "fetch-profile:contextual-v1\nuser-agent:{ua}\naccept-language:{lang}\nhttp-browser-headers:0"
+      "fetch-profile:contextual-v2\nuser-agent:{ua}\naccept-language:{lang}\nhttp-browser-headers:0"
     )
   }
 }
@@ -198,6 +199,7 @@ fn prefetch_assets_warms_disk_cache_with_imports_and_fonts() {
   let a_css = format!("http://{}/a.css", addr);
   let b_css = format!("http://{}/b.css", addr);
   let font = format!("http://{}/f.woff2", addr);
+  let origin = origin_from_url(&page_url).expect("origin");
 
   let offline = DiskCachingFetcher::with_configs(
     FailFetcher,
@@ -225,7 +227,9 @@ fn prefetch_assets_warms_disk_cache_with_imports_and_fonts() {
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&font, FetchDestination::Font))
+      .fetch_with_request(
+        FetchRequest::new(&font, FetchDestination::Font).with_client_origin(&origin),
+      )
       .is_ok(),
     "font url referenced by @font-face should be cached on disk"
   );
@@ -304,6 +308,7 @@ fn prefetch_assets_warms_disk_cache_with_layer_imports_and_fonts() {
   let a_css = format!("http://{}/a.css", addr);
   let b_css = format!("http://{}/b.css", addr);
   let font = format!("http://{}/f2.woff2", addr);
+  let origin = origin_from_url(&page_url).expect("origin");
 
   let offline = DiskCachingFetcher::with_configs(
     FailFetcher,
@@ -332,7 +337,9 @@ fn prefetch_assets_warms_disk_cache_with_layer_imports_and_fonts() {
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&font, FetchDestination::Font))
+      .fetch_with_request(
+        FetchRequest::new(&font, FetchDestination::Font).with_client_origin(&origin),
+      )
       .is_ok(),
     "font url referenced by imported stylesheet should be cached on disk"
   );
@@ -406,6 +413,7 @@ fn prefetch_assets_warms_disk_cache_with_inline_style_import_and_fonts() {
 
   let a_css = format!("http://{}/a.css", addr);
   let font = format!("http://{}/font?x=1", addr);
+  let origin = origin_from_url(&page_url).expect("origin");
 
   let offline = DiskCachingFetcher::with_configs(
     FailFetcher,
@@ -427,7 +435,9 @@ fn prefetch_assets_warms_disk_cache_with_inline_style_import_and_fonts() {
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&font, FetchDestination::Font))
+      .fetch_with_request(
+        FetchRequest::new(&font, FetchDestination::Font).with_client_origin(&origin),
+      )
       .is_ok(),
     "font url referenced by imported stylesheet should be cached on disk"
   );
@@ -1199,6 +1209,10 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
     (b"dummy-poster".to_vec(), "image/png"),
   );
   responses.insert(
+    "/media.mp4".to_string(),
+    (b"dummy-media".to_vec(), "video/mp4"),
+  );
+  responses.insert(
     "/icon.png".to_string(),
     (b"dummy-icon".to_vec(), "image/png"),
   );
@@ -1247,7 +1261,7 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
     "<!doctype html><html><head><link rel=\"icon\" href=\"/icon.png\"></head><body>\
       <img src=\"/img.png\">\
       <iframe src=\"/frame.html\"></iframe>\
-      <video poster=\"/poster.png\"></video>\
+      <video src=\"/media.mp4\" poster=\"/poster.png\"></video>\
       <picture><source srcset=\"/picture-1x.png 1x, /picture-2x.png 2x\"><img src=\"/fallback.png\"></picture>\
       <object data=\"/object.bin\"></object>\
       <embed src=\"/embed.bin\">\
@@ -1290,6 +1304,7 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
 
   let iframe = format!("http://{}/frame.html", addr);
   let poster = format!("http://{}/poster.png", addr);
+  let media = format!("http://{}/media.mp4", addr);
   let icon = format!("http://{}/icon.png", addr);
   let embed = format!("http://{}/embed.bin", addr);
   let object = format!("http://{}/object.bin", addr);
@@ -1320,6 +1335,12 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
       .fetch_with_request(FetchRequest::new(&poster, FetchDestination::Image))
       .is_ok(),
     "video poster should be cached"
+  );
+  assert!(
+    offline
+      .fetch_with_request(FetchRequest::new(&media, FetchDestination::Other))
+      .is_err(),
+    "video src should not be cached without --prefetch-media"
   );
   assert!(
     offline
@@ -1355,6 +1376,116 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
   let hits = hits.lock().unwrap();
   assert_eq!(hits.get("/img.png").copied().unwrap_or(0), 0);
   assert_eq!(hits.get("/picture-1x.png").copied().unwrap_or(0), 0);
+  assert_eq!(hits.get("/media.mp4").copied().unwrap_or(0), 0);
+}
+
+#[test]
+fn prefetch_assets_warms_disk_cache_with_media_sources_when_enabled() {
+  let _net_guard = net_test_lock();
+  let Some(listener) =
+    try_bind_localhost("prefetch_assets_warms_disk_cache_with_media_sources_when_enabled")
+  else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+  let hits = Arc::new(Mutex::new(HashMap::new()));
+  let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
+  responses.insert(
+    "/media.mp4".to_string(),
+    (b"dummy-media-mp4".to_vec(), "video/mp4"),
+  );
+  responses.insert(
+    "/media.webm".to_string(),
+    (b"dummy-media-webm".to_vec(), "video/webm"),
+  );
+  responses.insert(
+    "/__shutdown__".to_string(),
+    (b"shutdown".to_vec(), "text/plain"),
+  );
+
+  let handle = spawn_server(
+    listener,
+    Arc::clone(&hits),
+    responses,
+    vec!["/media.mp4", "/media.webm", "/__shutdown__"],
+  );
+
+  let tmp = TempDir::new().expect("tempdir");
+  let page_url = format!("http://{}/", addr);
+  let stem = pageset_stem(&page_url).expect("stem");
+
+  let html_dir = tmp.path().join("fetches/html");
+  std::fs::create_dir_all(&html_dir).expect("create html dir");
+
+  let html_path = html_dir.join(format!("{stem}.html"));
+  std::fs::write(
+    &html_path,
+    "<!doctype html><html><body>\
+      <video src=\"/media.mp4\"></video>\
+      <video><source src=\"/media.webm\"></video>\
+    </body></html>",
+  )
+  .expect("write html cache");
+
+  let meta_path = html_path.with_extension("html.meta");
+  std::fs::write(&meta_path, format!("url: {page_url}\n")).expect("write html meta");
+
+  let status = std::process::Command::new(env!("CARGO_BIN_EXE_prefetch_assets"))
+    .current_dir(tmp.path())
+    .env("FASTR_PAGESET_URLS", page_url.clone())
+    .env(
+      "FASTR_HTTP_BROWSER_HEADERS",
+      if HTTP_BROWSER_HEADERS_ENABLED { "1" } else { "0" },
+    )
+    .arg("--jobs")
+    .arg("1")
+    .arg("--timeout")
+    .arg("5")
+    .arg("--prefetch-media")
+    .status()
+    .expect("run prefetch_assets");
+  assert!(status.success(), "prefetch_assets should succeed");
+
+  let shutdown_url = format!("http://{}/__shutdown__", addr);
+  let _ = ureq::get(&shutdown_url).call();
+
+  handle.join().unwrap();
+
+  let asset_dir = tmp.path().join("fetches/assets");
+  assert!(asset_dir.is_dir(), "disk cache dir should be created");
+
+  let mp4 = format!("http://{}/media.mp4", addr);
+  let webm = format!("http://{}/media.webm", addr);
+
+  let offline = DiskCachingFetcher::with_configs(
+    FailFetcher,
+    asset_dir.clone(),
+    CachingFetcherConfig {
+      honor_http_cache_freshness: true,
+      ..CachingFetcherConfig::default()
+    },
+    DiskCacheConfig {
+      namespace: Some(disk_cache_namespace()),
+      ..DiskCacheConfig::default()
+    },
+  );
+
+  assert!(
+    offline
+      .fetch_with_request(FetchRequest::new(&mp4, FetchDestination::Other))
+      .is_ok(),
+    "video src should be cached when --prefetch-media is enabled"
+  );
+  assert!(
+    offline
+      .fetch_with_request(FetchRequest::new(&webm, FetchDestination::Other))
+      .is_ok(),
+    "video <source src> should be cached when --prefetch-media is enabled"
+  );
+
+  let hits = hits.lock().unwrap();
+  assert!(hits.get("/media.mp4").copied().unwrap_or(0) > 0);
+  assert!(hits.get("/media.webm").copied().unwrap_or(0) > 0);
 }
 
 #[test]

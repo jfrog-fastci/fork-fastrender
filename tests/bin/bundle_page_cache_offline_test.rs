@@ -21,10 +21,10 @@ fn disk_cache_namespace_for(user_agent: &str, accept_language: &str) -> String {
   let ua = normalize_user_agent_for_log(user_agent).trim();
   let lang = accept_language.trim();
   if HTTP_BROWSER_HEADERS_ENABLED {
-    format!("fetch-profile:contextual-v1\nuser-agent:{ua}\naccept-language:{lang}")
+    format!("fetch-profile:contextual-v2\nuser-agent:{ua}\naccept-language:{lang}")
   } else {
     format!(
-      "fetch-profile:contextual-v1\nuser-agent:{ua}\naccept-language:{lang}\nhttp-browser-headers:0"
+      "fetch-profile:contextual-v2\nuser-agent:{ua}\naccept-language:{lang}\nhttp-browser-headers:0"
     )
   }
 }
