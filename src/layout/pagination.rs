@@ -4716,4 +4716,346 @@ mod tests {
     let res = resolve_pending_footnote_slice_boundary(5.0, 10.0, 5.0, 5.0);
     assert_eq!(res, PendingFootnoteSliceBoundary::Complete);
   }
+
+  fn fixed_margin_box_plan(width: Option<f32>, height: Option<f32>) -> MarginBoxPlan {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.width = width.map(Length::px);
+    style.height = height.map(Length::px);
+    let style = Arc::new(style);
+    let root = BoxNode::new_block(Arc::clone(&style), FormattingContextType::Block, vec![]);
+    MarginBoxPlan {
+      style,
+      tree: BoxTree::new(root),
+      element_placeholders: HashMap::new(),
+    }
+  }
+
+  fn assert_rect_approx(rect: Rect, x: f32, y: f32, w: f32, h: f32) {
+    let eps = 0.001;
+    assert!(
+      (rect.x() - x).abs() < eps
+        && (rect.y() - y).abs() < eps
+        && (rect.width() - w).abs() < eps
+        && (rect.height() - h).abs() < eps,
+      "expected rect=({x},{y},{w},{h}), got ({},{},{},{})",
+      rect.x(),
+      rect.y(),
+      rect.width(),
+      rect.height(),
+    );
+  }
+
+  #[test]
+  fn margin_box_bounds_place_abc_boxes_with_trim_and_bleed_offsets() {
+    // Page geometry chosen so all expected coordinates are integers, keeping this test deterministic
+    // and easy to audit.
+    let style = ResolvedPageStyle {
+      page_size: Size::new(200.0, 300.0),
+      total_size: Size::new(216.0, 316.0), // page_size + 2*bleed
+      content_size: Size::new(170.0, 242.0),
+      content_origin: Point::new(22.0, 32.0),
+      margin_top: 20.0,
+      margin_right: 12.0,
+      margin_bottom: 30.0,
+      margin_left: 10.0,
+      bleed: 8.0,
+      trim: 4.0,
+      marks: PageMarks::default(),
+      margin_boxes: BTreeMap::new(),
+      footnote_style: ComputedStyle::default(),
+      page_style: ComputedStyle::default(),
+    };
+    let mut plans: HashMap<PageMarginArea, MarginBoxPlan> = HashMap::new();
+
+    // Corner boxes (fixed size based on the page margins).
+    plans.insert(
+      PageMarginArea::TopLeftCorner,
+      fixed_margin_box_plan(None, None),
+    );
+    plans.insert(
+      PageMarginArea::TopRightCorner,
+      fixed_margin_box_plan(None, None),
+    );
+    plans.insert(
+      PageMarginArea::BottomLeftCorner,
+      fixed_margin_box_plan(None, None),
+    );
+    plans.insert(
+      PageMarginArea::BottomRightCorner,
+      fixed_margin_box_plan(None, None),
+    );
+
+    // Horizontal A/B/C (variable width).
+    plans.insert(PageMarginArea::TopLeft, fixed_margin_box_plan(Some(30.0), None));
+    plans.insert(
+      PageMarginArea::TopCenter,
+      fixed_margin_box_plan(Some(40.0), None),
+    );
+    plans.insert(
+      PageMarginArea::TopRight,
+      fixed_margin_box_plan(Some(50.0), None),
+    );
+    plans.insert(
+      PageMarginArea::BottomLeft,
+      fixed_margin_box_plan(Some(20.0), None),
+    );
+    plans.insert(
+      PageMarginArea::BottomCenter,
+      fixed_margin_box_plan(Some(30.0), None),
+    );
+    plans.insert(
+      PageMarginArea::BottomRight,
+      fixed_margin_box_plan(Some(40.0), None),
+    );
+
+    // Vertical A/B/C (variable height).
+    plans.insert(PageMarginArea::LeftTop, fixed_margin_box_plan(None, Some(30.0)));
+    plans.insert(
+      PageMarginArea::LeftMiddle,
+      fixed_margin_box_plan(None, Some(40.0)),
+    );
+    plans.insert(
+      PageMarginArea::LeftBottom,
+      fixed_margin_box_plan(None, Some(50.0)),
+    );
+    plans.insert(
+      PageMarginArea::RightTop,
+      fixed_margin_box_plan(None, Some(20.0)),
+    );
+    plans.insert(
+      PageMarginArea::RightMiddle,
+      fixed_margin_box_plan(None, Some(30.0)),
+    );
+    plans.insert(
+      PageMarginArea::RightBottom,
+      fixed_margin_box_plan(None, Some(40.0)),
+    );
+
+    let intrinsic_engine = LayoutEngine::with_defaults();
+    let bounds = compute_margin_box_bounds(&style, &plans, &intrinsic_engine);
+
+    let origin = style.bleed + style.trim;
+    let trimmed_width = style.page_size.width - 2.0 * style.trim;
+    let trimmed_height = style.page_size.height - 2.0 * style.trim;
+    let available_width = trimmed_width - style.margin_left - style.margin_right;
+    let available_height = trimmed_height - style.margin_top - style.margin_bottom;
+
+    let right_margin_x = origin + trimmed_width - style.margin_right;
+    let bottom_margin_y = origin + trimmed_height - style.margin_bottom;
+
+    // Trim/bleed regression: all bounds are offset by bleed + trim.
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::TopLeftCorner).unwrap(),
+      origin,
+      origin,
+      style.margin_left,
+      style.margin_top,
+    );
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::TopRightCorner).unwrap(),
+      right_margin_x,
+      origin,
+      style.margin_right,
+      style.margin_top,
+    );
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::BottomLeftCorner).unwrap(),
+      origin,
+      bottom_margin_y,
+      style.margin_left,
+      style.margin_bottom,
+    );
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::BottomRightCorner).unwrap(),
+      right_margin_x,
+      bottom_margin_y,
+      style.margin_right,
+      style.margin_bottom,
+    );
+
+    // Top A/B/C placement + centering.
+    let cb_x = origin + style.margin_left;
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::TopLeft).unwrap(),
+      cb_x,
+      origin,
+      30.0,
+      style.margin_top,
+    );
+    let top_center = *bounds.get(&PageMarginArea::TopCenter).unwrap();
+    assert_rect_approx(top_center, cb_x + (available_width - 40.0) / 2.0, origin, 40.0, 20.0);
+    assert!(
+      (top_center.x() + top_center.width() / 2.0 - (cb_x + available_width / 2.0)).abs() < 0.001,
+      "top-center margin box not centered: {:?}",
+      top_center
+    );
+    let top_right = *bounds.get(&PageMarginArea::TopRight).unwrap();
+    assert_rect_approx(top_right, cb_x + available_width - 50.0, origin, 50.0, 20.0);
+    assert!(
+      (top_right.max_x() - (cb_x + available_width)).abs() < 0.001,
+      "top-right should end at the right margin edge"
+    );
+
+    // Bottom A/B/C placement.
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::BottomLeft).unwrap(),
+      cb_x,
+      bottom_margin_y,
+      20.0,
+      style.margin_bottom,
+    );
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::BottomCenter).unwrap(),
+      cb_x + (available_width - 30.0) / 2.0,
+      bottom_margin_y,
+      30.0,
+      style.margin_bottom,
+    );
+    let bottom_right = *bounds.get(&PageMarginArea::BottomRight).unwrap();
+    assert_rect_approx(
+      bottom_right,
+      cb_x + available_width - 40.0,
+      bottom_margin_y,
+      40.0,
+      style.margin_bottom,
+    );
+    assert!(
+      (bottom_right.max_x() - (cb_x + available_width)).abs() < 0.001,
+      "bottom-right should end at the right margin edge"
+    );
+
+    // Left A/B/C placement + centering.
+    let cb_y = origin + style.margin_top;
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::LeftTop).unwrap(),
+      origin,
+      cb_y,
+      style.margin_left,
+      30.0,
+    );
+    let left_middle = *bounds.get(&PageMarginArea::LeftMiddle).unwrap();
+    assert_rect_approx(
+      left_middle,
+      origin,
+      cb_y + (available_height - 40.0) / 2.0,
+      style.margin_left,
+      40.0,
+    );
+    assert!(
+      (left_middle.y() + left_middle.height() / 2.0 - (cb_y + available_height / 2.0)).abs()
+        < 0.001,
+      "left-middle margin box not centered: {:?}",
+      left_middle
+    );
+    let left_bottom = *bounds.get(&PageMarginArea::LeftBottom).unwrap();
+    assert_rect_approx(
+      left_bottom,
+      origin,
+      cb_y + available_height - 50.0,
+      style.margin_left,
+      50.0,
+    );
+    assert!(
+      (left_bottom.max_y() - (cb_y + available_height)).abs() < 0.001,
+      "left-bottom should end at the bottom margin edge"
+    );
+
+    // Right A/B/C placement.
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::RightTop).unwrap(),
+      right_margin_x,
+      cb_y,
+      style.margin_right,
+      20.0,
+    );
+    assert_rect_approx(
+      *bounds.get(&PageMarginArea::RightMiddle).unwrap(),
+      right_margin_x,
+      cb_y + (available_height - 30.0) / 2.0,
+      style.margin_right,
+      30.0,
+    );
+    let right_bottom = *bounds.get(&PageMarginArea::RightBottom).unwrap();
+    assert_rect_approx(
+      right_bottom,
+      right_margin_x,
+      cb_y + available_height - 40.0,
+      style.margin_right,
+      40.0,
+    );
+    assert!(
+      (right_bottom.max_y() - (cb_y + available_height)).abs() < 0.001,
+      "right-bottom should end at the bottom margin edge"
+    );
+  }
+
+  #[test]
+  fn margin_box_minmax_constraints_clamp_used_outer_sizes_without_overlap() {
+    // Simulate a CSS Page 3 A/B/C line where:
+    // - A has a min-width larger than its tentative used size.
+    // - C has a max-width smaller than its tentative used size.
+    // - B is auto-sized using the imaginary AC box so it remains centered and doesn't overlap.
+    let a = VariableMarginBox {
+      generated: true,
+      outer: Some(10.0),
+      outer_min: 10.0,
+      outer_max: 10.0,
+      min_constraint: 40.0,
+      max_constraint: f32::INFINITY,
+      margin_start: 0.0,
+      margin_end: 0.0,
+    };
+    let b = VariableMarginBox {
+      generated: true,
+      outer: None,
+      outer_min: 0.0,
+      outer_max: 0.0,
+      min_constraint: 0.0,
+      max_constraint: f32::INFINITY,
+      margin_start: 0.0,
+      margin_end: 0.0,
+    };
+    let c = VariableMarginBox {
+      generated: true,
+      outer: Some(30.0),
+      outer_min: 30.0,
+      outer_max: 30.0,
+      min_constraint: 0.0,
+      max_constraint: 20.0,
+      margin_start: 0.0,
+      margin_end: 0.0,
+    };
+
+    let available = 100.0;
+    let (used_a, used_b, used_c) = compute_used_outer_sizes_with_minmax(a, b, c, available);
+
+    assert!(
+      (used_a - 40.0).abs() < 0.001,
+      "expected A to clamp up to min-width (40), got {used_a}"
+    );
+    assert!(
+      (used_c - 20.0).abs() < 0.001,
+      "expected C to clamp down to max-width (20), got {used_c}"
+    );
+    assert!(
+      (used_b - 20.0).abs() < 0.001,
+      "expected B to shrink based on the imaginary AC box, got {used_b}"
+    );
+
+    // Verify that the resulting boxes can be positioned using the CSS Page 3 algorithm without
+    // overlap: A at start, C at end, B centered.
+    let b_start = (available - used_b) / 2.0;
+    let b_end = b_start + used_b;
+    let a_end = used_a;
+    let c_start = available - used_c;
+    assert!(
+      a_end <= b_start + 0.001,
+      "A overlaps B: A ends at {a_end}, B starts at {b_start}"
+    );
+    assert!(
+      b_end <= c_start + 0.001,
+      "B overlaps C: B ends at {b_end}, C starts at {c_start}"
+    );
+  }
 }
