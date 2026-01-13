@@ -744,6 +744,94 @@ fn js_dom_node_for_preorder_id_with_log(
   node_id
 }
 
+fn patch_dom2_form_control_state_into_renderer_dom(
+  dom2: &crate::dom2::Document,
+  snapshot_dom: &mut crate::dom::DomNode,
+  mapping: &crate::dom2::RendererDomMapping,
+) {
+  for idx in 0..dom2.nodes_len() {
+    let node_id = match dom2.node_id_from_index(idx) {
+      Ok(id) => id,
+      Err(_) => continue,
+    };
+    let node = dom2.node(node_id);
+    let crate::dom2::NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &node.kind
+    else {
+      continue;
+    };
+    if !dom2.is_html_case_insensitive_namespace(namespace) {
+      continue;
+    }
+
+    if tag_name.eq_ignore_ascii_case("input") {
+      let Ok(value) = dom2.input_value(node_id) else {
+        continue;
+      };
+      let Ok(checked) = dom2.input_checked(node_id) else {
+        continue;
+      };
+      let Some(preorder_id) = mapping.preorder_for_node_id(node_id) else {
+        continue;
+      };
+      let Some(node) = crate::dom::find_node_mut_by_preorder_id(snapshot_dom, preorder_id) else {
+        continue;
+      };
+      if !node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      {
+        continue;
+      }
+      node.set_attribute("value", value);
+      node.toggle_bool_attribute("checked", checked);
+      continue;
+    }
+
+    if tag_name.eq_ignore_ascii_case("textarea") {
+      let Ok(value) = dom2.textarea_value(node_id) else {
+        continue;
+      };
+      let Some(preorder_id) = mapping.preorder_for_node_id(node_id) else {
+        continue;
+      };
+      let Some(node) = crate::dom::find_node_mut_by_preorder_id(snapshot_dom, preorder_id) else {
+        continue;
+      };
+      if !node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
+      {
+        continue;
+      }
+      node.set_attribute("data-fastr-value", &value);
+      continue;
+    }
+
+    if tag_name.eq_ignore_ascii_case("option") {
+      let Ok(selected) = dom2.option_selected(node_id) else {
+        continue;
+      };
+      let Some(preorder_id) = mapping.preorder_for_node_id(node_id) else {
+        continue;
+      };
+      let Some(node) = crate::dom::find_node_mut_by_preorder_id(snapshot_dom, preorder_id) else {
+        continue;
+      };
+      if !node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+      {
+        continue;
+      }
+      node.toggle_bool_attribute("selected", selected);
+    }
+  }
+}
+
 fn js_find_form_owner_for_submitter(
   dom: &crate::dom2::Document,
   submitter: crate::dom2::NodeId,
@@ -3021,8 +3109,11 @@ impl BrowserRuntime {
       return;
     };
 
-    // Only schedule animation sampling when the document contains time-dependent primitives.
+    // ---------------------------------------------------------------------------
+    // CSS animations/transitions
+    // ---------------------------------------------------------------------------
     //
+    // Only schedule animation sampling when the document contains time-dependent primitives.
     // `BrowserDocument` resolves time-based CSS animations/transitions to a deterministic settled
     // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
     // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
@@ -6992,13 +7083,24 @@ impl BrowserRuntime {
 
     if tab.js_dom_dirty {
       if let Some(js_tab) = tab.js_tab.as_ref() {
-        let snapshot = js_tab.dom().to_renderer_dom();
+        let dom2 = js_tab.dom();
+        let generation = dom2.mutation_generation();
+        let snapshot = dom2.to_renderer_dom_with_mapping();
+        let mut dom_snapshot = snapshot.dom;
+        let mapping = snapshot.mapping;
+        patch_dom2_form_control_state_into_renderer_dom(dom2, &mut dom_snapshot, &mapping);
         let _ = doc.mutate_dom(|dom| {
-          *dom = snapshot;
+          *dom = dom_snapshot;
           true
         });
+
+        // Cache the freshly-built preorder mapping so subsequent JS event dispatches can translate
+        // renderer preorder ids back into the `dom2` tree without rebuilding a snapshot.
+        tab.js_dom_mapping_generation = generation;
+        tab.js_dom_mapping = Some(mapping);
+        tab.js_dom_mapping_miss_logged = false;
         tab.js_dom_dirty = false;
-        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+        tab.js_dom_mutation_generation = generation;
       } else {
         tab.js_dom_dirty = false;
         tab.js_dom_mutation_generation = 0;
