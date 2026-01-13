@@ -1652,3 +1652,48 @@ fn range_point_methods_handle_disconnected_and_other_roots() {
     Err(DomError::InvalidNodeTypeError)
   ));
 }
+
+#[test]
+fn range_collapsed_reports_start_equals_end() {
+  let mut doc: Document =
+    parse_html("<!doctype html><html><body><p id=a>abcd</p></body></html>").unwrap();
+
+  let p = doc.get_element_by_id("a").expect("missing <p id=a>");
+  let text = doc.node(p).children[0];
+
+  let range = doc.create_range();
+  doc.range_set_start(range, text, 1).unwrap();
+  doc.range_set_end(range, text, 1).unwrap();
+  assert!(doc.range_collapsed(range).unwrap());
+
+  doc.range_set_end(range, text, 2).unwrap();
+  assert!(!doc.range_collapsed(range).unwrap());
+}
+
+#[test]
+fn range_compare_boundary_points_constant_mapping_matches_wpt() {
+  // Mirrors `tests/wpt_dom/tests/dom/range_setstart_setend.window.js`.
+  let mut doc: Document = parse_html(concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=p><span id=a></span><span id=b></span></div>",
+    "</body></html>",
+  ))
+  .unwrap();
+
+  let p = doc.get_element_by_id("p").expect("missing <div id=p>");
+
+  let r1 = doc.create_range();
+  doc.range_set_start(r1, p, 0).unwrap(); // before a
+  doc.range_set_end(r1, p, 1).unwrap(); // between a and b
+
+  let r2 = doc.create_range();
+  doc.range_set_start(r2, p, 1).unwrap(); // between a and b
+  doc.range_set_end(r2, p, 2).unwrap(); // after b
+
+  assert_eq!(doc.range_compare_boundary_points(r1, 0, r2).unwrap(), -1);
+  assert_eq!(doc.range_compare_boundary_points(r2, 0, r1).unwrap(), 1);
+  assert_eq!(doc.range_compare_boundary_points(r1, 1, r2).unwrap(), 0);
+  assert_eq!(doc.range_compare_boundary_points(r1, 3, r2).unwrap(), -1);
+  assert_eq!(doc.range_compare_boundary_points(r2, 2, r1).unwrap(), 1);
+}

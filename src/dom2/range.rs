@@ -411,6 +411,14 @@ impl Document {
     Ok(self.range(range)?.end.offset)
   }
 
+  /// Whether the range is collapsed (its start and end boundary points are equal).
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-collapsed
+  pub fn range_collapsed(&self, range: RangeId) -> DomResult<bool> {
+    let range = self.range(range)?;
+    Ok(range.start == range.end)
+  }
+
   /// Returns the common ancestor container of a live range.
   ///
   /// Spec: https://dom.spec.whatwg.org/#dom-range-commonancestorcontainer
@@ -560,7 +568,6 @@ impl Document {
 
     Ok(out)
   }
-
   pub fn range_set_start(&mut self, range: RangeId, node: NodeId, offset: usize) -> DomResult<()> {
     self.range_set_start_or_end(range, node, offset, /* is_start */ true)
   }
