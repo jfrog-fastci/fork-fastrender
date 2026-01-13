@@ -5854,6 +5854,13 @@ fn request_location_navigation(
 
   let parsed = Url::parse(&resolved)
     .map_err(|err| throw_type_error(vm, scope, host, hooks, &err.to_string()))?;
+  // Defense-in-depth: chrome:// documents must never be able to navigate to arbitrary network
+  // schemes via `window.location` (even if the embedder forgets to set
+  // `WindowRealm::set_privileged_chrome_realm(true)`).
+  let privileged_chrome_realm = privileged_chrome_realm
+    || Url::parse(&current_document_url)
+      .ok()
+      .is_some_and(|url| url.scheme() == "chrome");
   let scheme = parsed.scheme();
   let scheme_allowed = if privileged_chrome_realm {
     // Privileged chrome realms should never be able to navigate to untrusted content via
@@ -6327,9 +6334,23 @@ fn location_protocol_set_native(
 
   // Match `request_location_navigation` supported schemes. For invalid/unsupported schemes, behave
   // browser-like and no-op instead of throwing.
-  match scheme.as_str() {
-    "http" | "https" | "file" | "data" | "about" => {}
-    _ => return Ok(Value::Undefined),
+  let (current_document_url, privileged_chrome_realm) = {
+    let Some(data) = vm.user_data::<WindowRealmUserData>() else {
+      return Err(VmError::InvariantViolation("window realm missing user data"));
+    };
+    (data.document_url.clone(), data.privileged_chrome_realm)
+  };
+  let chrome_scheme_document = Url::parse(&current_document_url)
+    .ok()
+    .is_some_and(|url| url.scheme() == "chrome");
+  let privileged_chrome_realm = privileged_chrome_realm || chrome_scheme_document;
+  let scheme_allowed = if privileged_chrome_realm {
+    matches!(scheme.as_str(), "chrome" | "about")
+  } else {
+    matches!(scheme.as_str(), "http" | "https" | "file" | "data" | "about")
+  };
+  if !scheme_allowed {
+    return Ok(Value::Undefined);
   }
 
   let Some(mut url) = parse_location_url(scope, location_obj)? else {
@@ -61131,6 +61152,28 @@ mod tests {
   }
 
   #[test]
+  fn chrome_scheme_document_rejects_https_navigation_via_location_href() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://settings/page"))?;
+
+    let err_name_v = realm.exec_script(
+      "(() => {\n\
+         try {\n\
+           location.href = 'https://example.com';\n\
+           return 'no error';\n\
+         } catch (e) {\n\
+           return e && e.name;\n\
+         }\n\
+       })()",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_name_v), "TypeError");
+    assert!(realm.take_pending_navigation_request().is_none());
+
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), "chrome://settings/page");
+    Ok(())
+  }
+
+  #[test]
   fn restore_location_url_to_document_url_repairs_location_assign_after_canceled_navigation(
   ) -> Result<(), VmError> {
     assert_restore_location_url_after_canceled_navigation(
@@ -61148,6 +61191,22 @@ mod tests {
       "https://example.com/rel",
       true,
     )
+  }
+
+  #[test]
+  fn chrome_scheme_document_allows_chrome_navigation_via_location_href() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new("chrome://settings/page"))?;
+    assert!(realm
+      .exec_script("location.href = 'chrome://settings/other'; 1 + 2")
+      .is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req, LocationNavigationRequest {
+      url: "chrome://settings/other".to_string(),
+      replace: false,
+    });
+    Ok(())
   }
 
   #[test]
