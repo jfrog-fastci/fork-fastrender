@@ -782,7 +782,9 @@ impl<NodeId: Clone> HtmlScriptScheduler<NodeId> {
 #[cfg(test)]
 mod state_machine_tests {
   use super::*;
+  use crate::cli_utils::prng::SplitMix64;
   use crate::js::{EventLoop, RunLimits, TaskSource};
+  use std::collections::{HashMap, HashSet};
 
   #[derive(Default)]
   struct Host {
@@ -1527,6 +1529,895 @@ mod state_machine_tests {
     h.run_event_loop()?;
     assert_eq!(h.import_map_version, 0);
     assert!(h.host.log.is_empty());
+    Ok(())
+  }
+
+  // ---------------------------------------------------------------------------
+  // Randomized stress tests for ordering invariants.
+  // ---------------------------------------------------------------------------
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  enum ExpectedMode {
+    ImmediateExecuteNow,
+    ImmediateQueueTask,
+    ParserBlocking,
+    Async,
+    OrderedAsap,
+    PostParse,
+  }
+
+  #[derive(Debug, Clone)]
+  struct ScriptMeta {
+    kind: ScriptType,
+    mode: ExpectedMode,
+    parser_inserted: bool,
+    external: bool,
+  }
+
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  enum WorkActionKind {
+    ExecuteNow,
+    QueueTask,
+  }
+
+  #[derive(Debug, Clone)]
+  struct WorkRecord {
+    step: usize,
+    action: WorkActionKind,
+    script_id: HtmlScriptId,
+    work: HtmlScriptWork,
+  }
+
+  fn make_classic_external_with_force_async(
+    src: &str,
+    async_attr: bool,
+    defer_attr: bool,
+    parser_inserted: bool,
+    force_async: bool,
+  ) -> ScriptElementSpec {
+    let mut spec = classic_external(src, async_attr, defer_attr, parser_inserted);
+    spec.force_async = force_async;
+    spec
+  }
+
+  fn make_module_external_with_force_async(
+    src: &str,
+    async_attr: bool,
+    parser_inserted: bool,
+    force_async: bool,
+  ) -> ScriptElementSpec {
+    let mut spec = module_external(src, async_attr, parser_inserted);
+    spec.force_async = force_async;
+    spec
+  }
+
+  fn make_import_map_inline_with_parser_inserted(source: &str, parser_inserted: bool) -> ScriptElementSpec {
+    let mut spec = import_map_inline(source);
+    spec.parser_inserted = parser_inserted;
+    spec
+  }
+
+  fn expected_mode_for_spec(spec: &ScriptElementSpec) -> ExpectedMode {
+    match spec.script_type {
+      ScriptType::Classic => {
+        if !spec.src_attr_present {
+          return ExpectedMode::ImmediateExecuteNow;
+        }
+        let is_async = spec.async_attr || spec.force_async;
+        if spec.parser_inserted && !is_async && !spec.defer_attr {
+          ExpectedMode::ParserBlocking
+        } else if is_async {
+          ExpectedMode::Async
+        } else if spec.parser_inserted {
+          ExpectedMode::PostParse
+        } else {
+          ExpectedMode::OrderedAsap
+        }
+      }
+      ScriptType::Module => {
+        let is_async = spec.async_attr || spec.force_async;
+        if is_async {
+          ExpectedMode::Async
+        } else if spec.parser_inserted {
+          ExpectedMode::PostParse
+        } else {
+          ExpectedMode::OrderedAsap
+        }
+      }
+      ScriptType::ImportMap => {
+        if spec.parser_inserted {
+          ExpectedMode::ImmediateExecuteNow
+        } else {
+          ExpectedMode::ImmediateQueueTask
+        }
+      }
+      ScriptType::Unknown => ExpectedMode::ImmediateExecuteNow,
+    }
+  }
+
+  struct StressHarness {
+    scheduler: HtmlScriptScheduler<u32>,
+    next_node_id: u32,
+
+    // Global state for validating parser-blocking behavior.
+    parser_blocked_on: Option<HtmlScriptId>,
+
+    parsing_completed_step: Option<usize>,
+
+    // Metadata/expectations.
+    meta: HashMap<HtmlScriptId, ScriptMeta>,
+
+    // Ordering lists in discovery order.
+    ordered_asap: Vec<HtmlScriptId>,
+    ordered_asap_idx: HashMap<HtmlScriptId, usize>,
+    post_parse: Vec<HtmlScriptId>,
+    post_parse_idx: HashMap<HtmlScriptId, usize>,
+
+    // Completion tracking for ordered lists: "completed" means either:
+    // - a work action was emitted (success or classic failure), or
+    // - a module failure was emitted via QueueScriptEventTask.
+    ordered_asap_completed: HashSet<HtmlScriptId>,
+    post_parse_completed: HashSet<HtmlScriptId>,
+
+    // Pending fetches to drive completion events.
+    pending_classic_fetches: Vec<HtmlScriptId>,
+    pending_module_fetches: Vec<HtmlScriptId>,
+    classic_fetch_outcome: HashMap<HtmlScriptId, bool>,
+    module_fetch_outcome: HashMap<HtmlScriptId, bool>,
+
+    // Logs for assertions.
+    seen_work_action: HashSet<HtmlScriptId>,
+    executed: HashSet<HtmlScriptId>,
+    module_failed: HashSet<HtmlScriptId>,
+    work_log: Vec<WorkRecord>,
+  }
+
+  impl StressHarness {
+    fn new() -> Self {
+      Self {
+        scheduler: HtmlScriptScheduler::new(),
+        next_node_id: 1,
+        parser_blocked_on: None,
+        parsing_completed_step: None,
+        meta: HashMap::new(),
+        ordered_asap: Vec::new(),
+        ordered_asap_idx: HashMap::new(),
+        post_parse: Vec::new(),
+        post_parse_idx: HashMap::new(),
+        ordered_asap_completed: HashSet::new(),
+        post_parse_completed: HashSet::new(),
+        pending_classic_fetches: Vec::new(),
+        pending_module_fetches: Vec::new(),
+        classic_fetch_outcome: HashMap::new(),
+        module_fetch_outcome: HashMap::new(),
+        seen_work_action: HashSet::new(),
+        executed: HashSet::new(),
+        module_failed: HashSet::new(),
+        work_log: Vec::new(),
+      }
+    }
+
+    fn discover(&mut self, spec: ScriptElementSpec, step: usize) -> Result<HtmlScriptId> {
+      let node_id = self.next_node_id;
+      self.next_node_id += 1;
+
+      let mode = expected_mode_for_spec(&spec);
+      let meta = ScriptMeta {
+        kind: spec.script_type,
+        mode,
+        parser_inserted: spec.parser_inserted,
+        external: spec.src_attr_present,
+      };
+
+      let discovered = if spec.parser_inserted {
+        // Exercise the parser-specific API as well.
+        self
+          .scheduler
+          .discovered_parser_script(spec, node_id, /* base_url_at_discovery */ None)?
+      } else {
+        self
+          .scheduler
+          .discovered_script(spec, node_id, /* base_url_at_discovery */ None)?
+      };
+      let id = discovered.id;
+      self.meta.insert(id, meta);
+
+      // Record membership in ordering lists based on expected scheduling mode.
+      match mode {
+        ExpectedMode::OrderedAsap => {
+          let idx = self.ordered_asap.len();
+          self.ordered_asap.push(id);
+          self.ordered_asap_idx.insert(id, idx);
+        }
+        ExpectedMode::PostParse => {
+          let idx = self.post_parse.len();
+          self.post_parse.push(id);
+          self.post_parse_idx.insert(id, idx);
+        }
+        _ => {}
+      }
+
+      self.apply_actions(discovered.actions, step)?;
+      Ok(id)
+    }
+
+    fn complete_classic_fetch(&mut self, id: HtmlScriptId, success: bool, step: usize) -> Result<()> {
+      assert!(
+        self.classic_fetch_outcome.insert(id, success).is_none(),
+        "classic fetch completed twice for script_id={}",
+        id.as_u64()
+      );
+      let actions = if success {
+        self
+          .scheduler
+          .classic_fetch_completed(id, format!("classic:{}", id.as_u64()))?
+      } else {
+        self.scheduler.classic_fetch_failed(id)?
+      };
+      self.apply_actions(actions, step)
+    }
+
+    fn complete_module_graph(&mut self, id: HtmlScriptId, success: bool, step: usize) -> Result<()> {
+      assert!(
+        self.module_fetch_outcome.insert(id, success).is_none(),
+        "module graph completed twice for script_id={}",
+        id.as_u64()
+      );
+      let actions = if success {
+        self
+          .scheduler
+          .module_graph_completed(id, format!("module:{}", id.as_u64()))?
+      } else {
+        self.scheduler.module_graph_failed(id)?
+      };
+      self.apply_actions(actions, step)
+    }
+
+    fn parsing_completed(&mut self, step: usize) -> Result<()> {
+      if self.parsing_completed_step.is_none() {
+        self.parsing_completed_step = Some(step);
+      }
+      let actions = self.scheduler.parsing_completed()?;
+      self.apply_actions(actions, step)
+    }
+
+    fn apply_actions(&mut self, actions: Vec<HtmlScriptSchedulerAction<u32>>, step: usize) -> Result<()> {
+      for action in actions {
+        match action {
+          HtmlScriptSchedulerAction::StartClassicFetch { script_id, .. } => {
+            self.pending_classic_fetches.push(script_id);
+          }
+          HtmlScriptSchedulerAction::StartModuleGraphFetch { script_id, .. }
+          | HtmlScriptSchedulerAction::StartInlineModuleGraphFetch { script_id, .. } => {
+            self.pending_module_fetches.push(script_id);
+          }
+          HtmlScriptSchedulerAction::BlockParserUntilExecuted { script_id, .. } => {
+            assert!(
+              self.parser_blocked_on.is_none(),
+              "attempted to block parser twice (existing={:?}, new={})",
+              self.parser_blocked_on,
+              script_id.as_u64()
+            );
+            let meta = self
+              .meta
+              .get(&script_id)
+              .unwrap_or_else(|| panic!("missing meta for blocked script_id={}", script_id.as_u64()));
+            assert_eq!(
+              meta.mode,
+              ExpectedMode::ParserBlocking,
+              "BlockParserUntilExecuted must only be emitted for parser-blocking classic scripts"
+            );
+            assert_eq!(meta.kind, ScriptType::Classic);
+            self.parser_blocked_on = Some(script_id);
+          }
+          HtmlScriptSchedulerAction::ExecuteNow {
+            script_id, work, ..
+          } => {
+            self.on_work_action(step, WorkActionKind::ExecuteNow, script_id, work);
+          }
+          HtmlScriptSchedulerAction::QueueTask {
+            script_id, work, ..
+          } => {
+            self.on_work_action(step, WorkActionKind::QueueTask, script_id, work);
+          }
+          HtmlScriptSchedulerAction::QueueScriptEventTask {
+            script_id, event, ..
+          } => {
+            if event == ScriptEventKind::Error {
+              if let Some(meta) = self.meta.get(&script_id) {
+                if meta.kind == ScriptType::Module {
+                  // Module graph failure completion. This is intentionally dispatched ASAP and can
+                  // happen even for deferred scripts; treat it as completing the script so ordered
+                  // queues can advance.
+                  self.module_failed.insert(script_id);
+                  if meta.mode == ExpectedMode::OrderedAsap {
+                    self.ordered_asap_completed.insert(script_id);
+                  }
+                  if meta.mode == ExpectedMode::PostParse {
+                    self.post_parse_completed.insert(script_id);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      Ok(())
+    }
+
+    fn on_work_action(&mut self, step: usize, kind: WorkActionKind, script_id: HtmlScriptId, work: HtmlScriptWork) {
+      assert!(
+        self.seen_work_action.insert(script_id),
+        "script_id={} scheduled for work more than once (step={step})",
+        script_id.as_u64()
+      );
+
+      let meta = self
+        .meta
+        .get(&script_id)
+        .unwrap_or_else(|| panic!("missing meta for script_id={}", script_id.as_u64()));
+
+      // Validate that the scheduler chose the expected execution mechanism for this script.
+      match meta.mode {
+        ExpectedMode::ImmediateExecuteNow => {
+          assert_eq!(
+            kind,
+            WorkActionKind::ExecuteNow,
+            "expected ExecuteNow for script_id={} mode={:?} (step={step})",
+            script_id.as_u64(),
+            meta.mode
+          );
+        }
+        ExpectedMode::ImmediateQueueTask => {
+          assert_eq!(
+            kind,
+            WorkActionKind::QueueTask,
+            "expected QueueTask for script_id={} mode={:?} (step={step})",
+            script_id.as_u64(),
+            meta.mode
+          );
+        }
+        ExpectedMode::ParserBlocking => {
+          assert_eq!(
+            kind,
+            WorkActionKind::ExecuteNow,
+            "parser-blocking scripts must ExecuteNow (script_id={}, step={step})",
+            script_id.as_u64()
+          );
+        }
+        ExpectedMode::Async | ExpectedMode::OrderedAsap | ExpectedMode::PostParse => {
+          assert_eq!(
+            kind,
+            WorkActionKind::QueueTask,
+            "non-blocking scripts must QueueTask (script_id={}, mode={:?}, step={step})",
+            script_id.as_u64(),
+            meta.mode
+          );
+        }
+      }
+
+      // Validate work kind matches script kind (import maps are only work items; they are not tracked
+      // in ordered queues).
+      match (&work, meta.kind) {
+        (HtmlScriptWork::Classic { .. }, ScriptType::Classic)
+        | (HtmlScriptWork::Module { .. }, ScriptType::Module)
+        | (HtmlScriptWork::ImportMap { .. }, ScriptType::ImportMap) => {}
+        _ => panic!(
+          "work kind mismatch for script_id={} meta.kind={:?} work={:?}",
+          script_id.as_u64(),
+          meta.kind,
+          work
+        ),
+      }
+
+      // A script must never execute more than once.
+      let source_present = match &work {
+        HtmlScriptWork::Classic { source_text } => source_text.is_some(),
+        HtmlScriptWork::Module { source_text } => source_text.is_some(),
+        HtmlScriptWork::ImportMap { .. } => true,
+      };
+      if source_present {
+        assert!(
+          self.executed.insert(script_id),
+          "script_id={} executed more than once (step={step})",
+          script_id.as_u64()
+        );
+      }
+
+      // Parser-blocking scripts must not "unblock" until the work action fires (success or error).
+      if meta.mode == ExpectedMode::ParserBlocking {
+        assert_eq!(
+          self.parser_blocked_on,
+          Some(script_id),
+          "parser-blocking work must correspond to the currently blocked script_id={} (blocked_on={:?}, step={step})",
+          script_id.as_u64(),
+          self.parser_blocked_on
+        );
+        self.parser_blocked_on = None;
+      }
+
+      // Post-parse scripts must not be queued before parsing completes.
+      if meta.mode == ExpectedMode::PostParse {
+        assert!(
+          self.parsing_completed_step.is_some(),
+          "post-parse work queued before parsing_completed (script_id={}, step={step})",
+          script_id.as_u64()
+        );
+      }
+
+      // Ordering invariants:
+      // - ordered-asap scripts may only be queued once all earlier ordered-asap scripts have
+      //   completed (executed or errored).
+      // - post-parse scripts may only be queued once all earlier post-parse scripts have completed
+      //   (including module failures that were reported early).
+      match meta.mode {
+        ExpectedMode::OrderedAsap => {
+          let idx = *self.ordered_asap_idx.get(&script_id).unwrap();
+          for prior in &self.ordered_asap[..idx] {
+            assert!(
+              self.ordered_asap_completed.contains(prior),
+              "ordered-asap script_id={} queued before earlier script_id={} completed (step={step})",
+              script_id.as_u64(),
+              prior.as_u64()
+            );
+          }
+          self.ordered_asap_completed.insert(script_id);
+        }
+        ExpectedMode::PostParse => {
+          let idx = *self.post_parse_idx.get(&script_id).unwrap();
+          for prior in &self.post_parse[..idx] {
+            assert!(
+              self.post_parse_completed.contains(prior),
+              "post-parse script_id={} queued before earlier script_id={} completed (step={step})",
+              script_id.as_u64(),
+              prior.as_u64()
+            );
+          }
+          self.post_parse_completed.insert(script_id);
+        }
+        _ => {}
+      }
+
+      self.work_log.push(WorkRecord {
+        step,
+        action: kind,
+        script_id,
+        work,
+      });
+    }
+  }
+
+  #[test]
+  fn randomized_state_machine_stress_ordering_invariants() -> Result<()> {
+    // Multiple seeds to cover a variety of interleavings, while remaining fully deterministic.
+    for seed in [1_u64, 2, 3, 4, 5] {
+      let mut rng = SplitMix64::new(seed);
+      let mut h = StressHarness::new();
+
+      // Pre-seed with a baseline mix to guarantee coverage even if the RNG happens to skew.
+      let mut parser_specs: Vec<ScriptElementSpec> = vec![
+        // Classic defer (post-parse, document order).
+        classic_external(
+          "p_defer_classic.js",
+          /* async */ false,
+          /* defer */ true,
+          /* parser_inserted */ true,
+        ),
+        // Non-async module (post-parse by default).
+        module_external("p_defer_mod.js", /* async */ false, /* parser_inserted */ true),
+        // Import map (sync at discovery when parser-inserted).
+        import_map_inline("{\"imports\":{}}"),
+        // Async classic script.
+        classic_external(
+          "p_async_classic.js",
+          /* async */ true,
+          /* defer */ false,
+          /* parser_inserted */ true,
+        ),
+        // Parser-blocking classic script.
+        classic_external(
+          "p_blocking.js",
+          /* async */ false,
+          /* defer */ false,
+          /* parser_inserted */ true,
+        ),
+        // Inline module script (post-parse when non-async and parser inserted).
+        module_inline(
+          "export const x = 1;",
+          /* async */ false,
+          /* parser_inserted */ true,
+        ),
+      ];
+
+      let mut dynamic_specs: Vec<ScriptElementSpec> = vec![
+        // Ordered-asap dynamic classic.
+        classic_external(
+          "d_ordered_classic.js",
+          /* async */ false,
+          /* defer */ false,
+          /* parser_inserted */ false,
+        ),
+        // Ordered-asap dynamic module.
+        module_external("d_ordered_mod.js", /* async */ false, /* parser_inserted */ false),
+        // Async-like dynamic classic via force_async.
+        make_classic_external_with_force_async(
+          "d_force_async_classic.js",
+          /* async_attr */ false,
+          /* defer_attr */ false,
+          /* parser_inserted */ false,
+          /* force_async */ true,
+        ),
+        // Async module.
+        make_module_external_with_force_async(
+          "d_async_mod.js",
+          /* async_attr */ true,
+          /* parser_inserted */ false,
+          /* force_async */ false,
+        ),
+        // Dynamically inserted import map (queued task).
+        make_import_map_inline_with_parser_inserted("{\"imports\":{\"x\":\"./x.js\"}}", false),
+        // Inline dynamic module (ordered-asap when non-async).
+        module_inline(
+          "export const y = 2;",
+          /* async */ false,
+          /* parser_inserted */ false,
+        ),
+      ];
+
+      // Add a randomized tail to shake out edge cases.
+      const EXTRA_PARSER: usize = 12;
+      const EXTRA_DYNAMIC: usize = 12;
+
+      for i in 0..EXTRA_PARSER {
+        let roll = rng.next_usize(100);
+        let spec = if roll < 55 {
+          // Classic external, with parser-blocking/defer/async variants.
+          let variant = rng.next_usize(3);
+          let (async_attr, defer_attr) = match variant {
+            0 => (false, false), // parser-blocking
+            1 => (false, true),  // defer
+            _ => (true, false),  // async
+          };
+          classic_external(
+            &format!("p_rand_classic_{i}.js"),
+            async_attr,
+            defer_attr,
+            /* parser_inserted */ true,
+          )
+        } else if roll < 85 {
+          // Module (external or inline).
+          let async_attr = rng.next_usize(4) == 0;
+          if rng.next_usize(2) == 0 {
+            make_module_external_with_force_async(
+              &format!("p_rand_mod_{i}.js"),
+              async_attr,
+              /* parser_inserted */ true,
+              /* force_async */ false,
+            )
+          } else {
+            module_inline(
+              &format!("export const p{i} = {i};"),
+              async_attr,
+              /* parser_inserted */ true,
+            )
+          }
+        } else {
+          import_map_inline(&format!("{{\"imports\":{{\"p{i}\":\"./p{i}.js\"}}}}"))
+        };
+        parser_specs.push(spec);
+      }
+
+      for i in 0..EXTRA_DYNAMIC {
+        let roll = rng.next_usize(100);
+        let spec = if roll < 55 {
+          // Dynamic classic external.
+          let ordered = rng.next_usize(2) == 0;
+          if ordered {
+            classic_external(
+              &format!("d_rand_ordered_classic_{i}.js"),
+              /* async */ false,
+              /* defer */ rng.next_usize(2) == 0,
+              /* parser_inserted */ false,
+            )
+          } else {
+            make_classic_external_with_force_async(
+              &format!("d_rand_async_classic_{i}.js"),
+              /* async_attr */ rng.next_usize(2) == 0,
+              /* defer_attr */ false,
+              /* parser_inserted */ false,
+              /* force_async */ true,
+            )
+          }
+        } else if roll < 90 {
+          // Dynamic module.
+          let ordered = rng.next_usize(2) == 0;
+          let async_attr = !ordered && rng.next_usize(2) == 0;
+          let force_async = !ordered && !async_attr && rng.next_usize(2) == 0;
+          if rng.next_usize(2) == 0 {
+            make_module_external_with_force_async(
+              &format!("d_rand_mod_{i}.js"),
+              async_attr,
+              /* parser_inserted */ false,
+              force_async,
+            )
+          } else {
+            let mut spec = module_inline(
+              &format!("export const d{i} = {i};"),
+              async_attr,
+              /* parser_inserted */ false,
+            );
+            spec.force_async = force_async;
+            spec
+          }
+        } else {
+          make_import_map_inline_with_parser_inserted(
+            &format!("{{\"imports\":{{\"d{i}\":\"./d{i}.js\"}}}}"),
+            false,
+          )
+        };
+        dynamic_specs.push(spec);
+      }
+
+      let mut next_parser = 0usize;
+      let mut next_dynamic = 0usize;
+      let mut parsing_completed = false;
+
+      // Drive a randomized interleaving of discovery and fetch completions.
+      // This is intentionally not a perfect HTML model; it's meant to stress the scheduler's
+      // state machine without using full DOM parsing.
+      const MAX_STEPS: usize = 4096;
+      for step in 0..MAX_STEPS {
+        // Termination: all scripts discovered, parsing completed, and all fetches finished.
+        if parsing_completed
+          && next_parser >= parser_specs.len()
+          && next_dynamic >= dynamic_specs.len()
+          && h.pending_classic_fetches.is_empty()
+          && h.pending_module_fetches.is_empty()
+        {
+          break;
+        }
+
+        let mut choices: Vec<&'static str> = Vec::new();
+        if !parsing_completed && h.parser_blocked_on.is_none() && next_parser < parser_specs.len()
+        {
+          choices.push("discover_parser");
+        }
+        if next_dynamic < dynamic_specs.len() {
+          choices.push("discover_dynamic");
+        }
+        if !h.pending_classic_fetches.is_empty() {
+          choices.push("complete_classic");
+        }
+        if !h.pending_module_fetches.is_empty() {
+          choices.push("complete_module");
+        }
+        if !parsing_completed
+          && next_parser >= parser_specs.len()
+          && h.parser_blocked_on.is_none()
+        {
+          choices.push("parsing_completed");
+        }
+
+        assert!(
+          !choices.is_empty(),
+          "deadlock in stress harness (seed={seed})"
+        );
+
+        let choice = choices[rng.next_usize(choices.len())];
+        match choice {
+          "discover_parser" => {
+            let spec = parser_specs[next_parser].clone();
+            next_parser += 1;
+            let _ = h.discover(spec, step)?;
+          }
+          "discover_dynamic" => {
+            let spec = dynamic_specs[next_dynamic].clone();
+            next_dynamic += 1;
+            let _ = h.discover(spec, step)?;
+          }
+          "complete_classic" => {
+            let idx = rng.next_usize(h.pending_classic_fetches.len());
+            let id = h.pending_classic_fetches.swap_remove(idx);
+            let success = rng.next_usize(5) != 0; // ~80% success.
+            h.complete_classic_fetch(id, success, step)?;
+          }
+          "complete_module" => {
+            let idx = rng.next_usize(h.pending_module_fetches.len());
+            let id = h.pending_module_fetches.swap_remove(idx);
+            let success = rng.next_usize(5) != 0; // ~80% success.
+            h.complete_module_graph(id, success, step)?;
+          }
+          "parsing_completed" => {
+            parsing_completed = true;
+            h.parsing_completed(step)?;
+          }
+          other => panic!("unexpected choice: {other}"),
+        }
+
+        if step == MAX_STEPS - 1 {
+          panic!("stress test exceeded max steps (seed={seed})");
+        }
+      }
+
+      assert!(
+        h.parser_blocked_on.is_none(),
+        "parser remained blocked at end of run (seed={seed})"
+      );
+
+      // Every completed classic fetch must result in exactly one work action (success or failure).
+      for (&id, _) in &h.classic_fetch_outcome {
+        assert!(
+          h.seen_work_action.contains(&id),
+          "classic script_id={} fetch finished but no work action was emitted (seed={seed})",
+          id.as_u64()
+        );
+      }
+
+      // Every completed module graph fetch must either:
+      // - succeed and emit exactly one work action, or
+      // - fail and emit exactly one error event task (with no work action).
+      for (&id, &success) in &h.module_fetch_outcome {
+        if success {
+          assert!(
+            h.seen_work_action.contains(&id),
+            "module script_id={} graph fetch succeeded but no work action was emitted (seed={seed})",
+            id.as_u64()
+          );
+          assert!(
+            !h.module_failed.contains(&id),
+            "module script_id={} graph fetch succeeded but error event was emitted (seed={seed})",
+            id.as_u64()
+          );
+        } else {
+          assert!(
+            h.module_failed.contains(&id),
+            "module script_id={} graph fetch failed but no error event was emitted (seed={seed})",
+            id.as_u64()
+          );
+          assert!(
+            !h.seen_work_action.contains(&id),
+            "module script_id={} graph fetch failed but a work action was emitted (seed={seed})",
+            id.as_u64()
+          );
+        }
+      }
+
+      for (&id, meta) in &h.meta {
+        match meta.kind {
+          ScriptType::Classic => {
+            if meta.external {
+              assert!(
+                h.classic_fetch_outcome.contains_key(&id),
+                "classic external script_id={} missing fetch completion (seed={seed})",
+                id.as_u64()
+              );
+            } else {
+              assert!(
+                h.seen_work_action.contains(&id),
+                "classic inline script_id={} missing ExecuteNow action (seed={seed})",
+                id.as_u64()
+              );
+            }
+          }
+          ScriptType::Module => {
+            assert!(
+              h.module_fetch_outcome.contains_key(&id),
+              "module script_id={} missing module graph completion (seed={seed})",
+              id.as_u64()
+            );
+          }
+          ScriptType::ImportMap => {
+            assert!(
+              h.seen_work_action.contains(&id),
+              "importmap script_id={} missing work action (seed={seed})",
+              id.as_u64()
+            );
+          }
+          ScriptType::Unknown => {}
+        }
+      }
+
+      // Validate classic defer ordering invariant (document order after parsing complete).
+      let parsing_step = h
+        .parsing_completed_step
+        .unwrap_or_else(|| panic!("missing parsing_completed_step (seed={seed})"));
+      let defer_classic_ids: Vec<HtmlScriptId> = h
+        .post_parse
+        .iter()
+        .copied()
+        .filter(|id| h.meta.get(id).is_some_and(|m| m.kind == ScriptType::Classic))
+        .collect();
+      let defer_classic_work: Vec<(HtmlScriptId, usize)> = h
+        .work_log
+        .iter()
+        .filter_map(|rec| {
+          let meta = h.meta.get(&rec.script_id)?;
+          if meta.kind != ScriptType::Classic || meta.mode != ExpectedMode::PostParse {
+            return None;
+          }
+          Some((rec.script_id, rec.step))
+        })
+        .collect();
+      // Ensure all deferred classic work actions are after parsing completion.
+      for (id, step) in &defer_classic_work {
+        assert!(
+          *step >= parsing_step,
+          "defer classic script_id={} queued before parsing_completed (queued_at={step}, parsing_completed_at={parsing_step}, seed={seed})",
+          id.as_u64()
+        );
+      }
+      // Ensure they are queued in document order (relative order of the post-parse list).
+      let mut expected_idx = 0usize;
+      for (id, _step) in &defer_classic_work {
+        while expected_idx < defer_classic_ids.len() && defer_classic_ids[expected_idx] != *id {
+          expected_idx += 1;
+        }
+        assert!(
+          expected_idx < defer_classic_ids.len(),
+          "defer classic script_id={} not found in expected document order list (seed={seed})",
+          id.as_u64()
+        );
+        expected_idx += 1;
+      }
+
+      // Validate ordered-asap invariant: scripts that execute as "ordered as soon as possible"
+      // cannot be queued until all earlier ordered-asap scripts have completed.
+      let ordered_asap_work: Vec<HtmlScriptId> = h
+        .work_log
+        .iter()
+        .filter_map(|rec| {
+          let meta = h.meta.get(&rec.script_id)?;
+          (meta.mode == ExpectedMode::OrderedAsap).then_some(rec.script_id)
+        })
+        .collect();
+      let mut expected_idx = 0usize;
+      for id in ordered_asap_work {
+        while expected_idx < h.ordered_asap.len() && h.ordered_asap[expected_idx] != id {
+          expected_idx += 1;
+        }
+        assert!(
+          expected_idx < h.ordered_asap.len(),
+          "ordered-asap script_id={} not found in insertion-order list (seed={seed})",
+          id.as_u64()
+        );
+        expected_idx += 1;
+      }
+
+      // Validate non-async module scripts: parser-inserted non-async modules behave as deferred
+      // (post-parse) and preserve ordering.
+      let deferred_module_exec: Vec<(HtmlScriptId, usize)> = h
+        .work_log
+        .iter()
+        .filter_map(|rec| {
+          let meta = h.meta.get(&rec.script_id)?;
+          if meta.kind != ScriptType::Module || meta.mode != ExpectedMode::PostParse {
+            return None;
+          }
+          let executed = matches!(
+            &rec.work,
+            HtmlScriptWork::Module {
+              source_text: Some(_)
+            }
+          );
+          executed.then_some((rec.script_id, rec.step))
+        })
+        .collect();
+      for (id, step) in &deferred_module_exec {
+        assert!(
+          *step >= parsing_step,
+          "deferred module script_id={} queued before parsing_completed (queued_at={step}, parsing_completed_at={parsing_step}, seed={seed})",
+          id.as_u64()
+        );
+      }
+
+      // Sanity: every script that was scheduled to run (ExecuteNow or QueueTask) should appear only
+      // once, and every execution (source present) should be unique.
+      assert_eq!(
+        h.seen_work_action.len(),
+        h.work_log.len(),
+        "work action log contains duplicate script_ids (seed={seed})"
+      );
+    }
     Ok(())
   }
 }
