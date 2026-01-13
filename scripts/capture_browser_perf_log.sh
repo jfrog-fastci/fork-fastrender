@@ -197,7 +197,9 @@ with open(path, "r", encoding="utf-8", errors="replace") as f:
             obj = json.loads(line)
         except Exception:
             continue
-        if isinstance(obj, dict):
+        # Only keep perf-log-like records. `browser_perf_log_summary` expects an object containing at
+        # least an `event` field; dropping other JSON avoids corrupting the captured stream.
+        if isinstance(obj, dict) and isinstance(obj.get("event"), str):
             sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
 PY
   else
