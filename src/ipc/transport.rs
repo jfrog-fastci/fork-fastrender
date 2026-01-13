@@ -14,7 +14,8 @@
 //! incremental `read(2)`/`write(2)` calls, enforcing a hard wall-clock timeout.
 
 use super::error::IpcError;
-use super::framing::{decode_bincode_payload, encode_bincode_payload, IPC_LENGTH_PREFIX_BYTES, MAX_IPC_MESSAGE_BYTES};
+use super::framing::{decode_bincode_payload, encode_bincode_payload, IPC_LENGTH_PREFIX_BYTES};
+use super::limits::MAX_IPC_MESSAGE_BYTES;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{Read, Write};
@@ -79,7 +80,14 @@ fn read_frame_unchecked<R: Read>(reader: &mut R) -> Result<Vec<u8>, IpcError> {
   reader.read_exact(&mut len_prefix)?;
   let bytes_len = u32::from_le_bytes(len_prefix);
   let len = validate_len_prefix(bytes_len)?;
-  let mut payload = vec![0u8; len];
+  let mut payload = Vec::new();
+  payload.try_reserve_exact(len).map_err(|err| {
+    IpcError::Io(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      format!("IPC frame allocation failed (len={len}): {err:?}"),
+    ))
+  })?;
+  payload.resize(len, 0);
   reader.read_exact(&mut payload)?;
   Ok(payload)
 }
@@ -204,8 +212,15 @@ mod unix_deadlines {
     read_exact_with_deadline(reader, &mut len_prefix, deadline)?;
     let bytes_len = u32::from_le_bytes(len_prefix);
     let len = validate_len_prefix(bytes_len)?;
- 
-    let mut payload = vec![0u8; len];
+
+    let mut payload = Vec::new();
+    payload.try_reserve_exact(len).map_err(|err| {
+      IpcError::Io(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("IPC frame allocation failed (len={len}): {err:?}"),
+      ))
+    })?;
+    payload.resize(len, 0);
     read_exact_with_deadline(reader, &mut payload, deadline)?;
     decode_bincode_payload(&payload)
   }

@@ -223,4 +223,5 @@ mod pattern_fill_allocation_failure_test;
 mod selector_bloom_allocation_failure_test;
 mod shape_outside_allocation_failure_test;
 mod stacking_context_no_translate_clone;
+mod ipc_transport_allocation_failure_test;
 mod window_title_sync_test;
