@@ -74,11 +74,6 @@ mod windows {
 
   use win_sandbox::{mitigations, AppContainerProfile, Job, RestrictedToken, WinSandboxError};
 
-  #[link(name = "advapi32")]
-  extern "system" {
-    fn ConvertSidToStringSidW(sid: PSID, string_sid: *mut *mut u16) -> i32;
-  }
-
   // WaitForSingleObject return codes.
   const WAIT_OBJECT_0: u32 = 0;
   const WAIT_TIMEOUT: u32 = 0x0000_0102;
