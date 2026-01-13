@@ -915,9 +915,6 @@ fn p3_unhandledrejection_event_fires_for_unhandled_promise_rejections() -> Resul
   Ok(())
 }
 
-// Note: image loading is not yet fully modeled by the `load` event pipeline, so the image-specific
-// test below remains ignored.
-
 #[test]
 fn p3_beforeunload_can_cancel_navigation() -> Result<()> {
   let js_options = JsExecutionOptions::default();
@@ -1091,6 +1088,48 @@ fn p3_load_event_waits_for_images() -> Result<()> {
   assert_eq!(
     console_logs(&h.tab),
     vec!["dcl".to_string(), "timer".to_string(), "load".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn p3_load_event_waits_for_images_inserted_after_domcontentloaded() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p3_images_dynamic.html", js_options)?;
+
+  // Insert an image after DOMContentLoaded (via a microtask) and ensure it still delays `load`.
+  //
+  // This exercises the edge case where `load` may already have been queued by the time the image
+  // enters the DOM: the lifecycle must discover the new load blocker before dispatch.
+  let img_url = "https://example.invalid/dyn.png";
+  h.register_script_source(img_url, "fake image bytes");
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          Promise.resolve().then(() => {{
+            console.log("microtask");
+            const img = document.createElement("img");
+            img.src = "{img_url}";
+            document.body.appendChild(img);
+            setTimeout(() => console.log("timer"), 0);
+          }});
+        }});
+        window.addEventListener("load", () => console.log("load"));
+      </script>
+    </body>"#
+  ));
+  h.navigate()?;
+  h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "dcl".to_string(),
+      "microtask".to_string(),
+      "timer".to_string(),
+      "load".to_string()
+    ]
   );
   Ok(())
 }
