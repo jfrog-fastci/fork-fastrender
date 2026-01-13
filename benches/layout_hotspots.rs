@@ -1019,6 +1019,7 @@ fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
 
 fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   common::bench_print_config_once("layout_hotspots", &[]);
+  const GRID_ITEM_COUNT: usize = 256;
   let viewport = Size::new(800.0, 600.0);
   let font_ctx = common::fixed_font_context();
   let engine = LayoutEngine::with_font_context(
@@ -1027,7 +1028,7 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   );
 
   // 256 grid items * ~3 nodes/item ~= 769 nodes total.
-  let box_tree = build_grid_track_sizing_measure_tree(256);
+  let box_tree = build_grid_track_sizing_measure_tree(GRID_ITEM_COUNT);
 
   // Document the workload once (and assert we are actually exercising grid measurement).
   {
@@ -1040,9 +1041,12 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
     let perf = taffy_perf_counters();
     let usage = taffy_counters();
     assert!(perf.grid_measure_calls > 0);
+    let calls_per_item = perf.grid_measure_calls as f64 / GRID_ITEM_COUNT as f64;
     eprintln!(
-      "layout_hotspots grid_track_sizing: taffy_grid_measure_calls={} taffy_grid_compute_cpu_ms={:.2} taffy_nodes_built={} taffy_nodes_reused={}",
+      "layout_hotspots grid_track_sizing: grid_items={} taffy_grid_measure_calls={} taffy_grid_measure_calls_per_item={:.2} taffy_grid_compute_cpu_ms={:.2} taffy_nodes_built={} taffy_nodes_reused={}",
+      GRID_ITEM_COUNT,
       perf.grid_measure_calls,
+      calls_per_item,
       perf.grid_compute_ns as f64 / 1_000_000.0,
       usage.grid_nodes_built,
       usage.grid_nodes_reused,
@@ -1058,7 +1062,7 @@ fn bench_grid_track_sizing_measure_fanout(c: &mut Criterion) {
   // measurement window small so `cargo bench --bench layout_hotspots` stays quick.
   group.warm_up_time(Duration::from_millis(100));
   group.measurement_time(Duration::from_millis(400));
-  group.throughput(Throughput::Elements(256));
+  group.throughput(Throughput::Elements(GRID_ITEM_COUNT as u64));
   group.bench_function("grid_track_sizing_measure_fanout", |b| {
     b.iter(|| {
       reset_taffy_counters();
