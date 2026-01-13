@@ -115,6 +115,12 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
     // Force external_build so configure doesn't require a GCC-like toolchain for probing.
     if is_msvc_target {
         configure_args.push("--enable-external-build".to_string());
+        // libvpx's VCXProj generator only accepts -I/-D/-L/-l style flags. If optimizations are
+        // enabled, configure injects `-O3` into CFLAGS, which breaks project generation.
+        //
+        // MSVC Release builds still use optimized compiler settings via the generated VC projects,
+        // so disable configure's generic `-O` flags here.
+        configure_args.push("--disable-optimizations".to_string());
     }
     for arg in disable_yasm_nasm_by_default(target_arch.as_str()) {
         configure_args.push(arg.to_string());
@@ -188,7 +194,14 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
     // Setting `AS` to any non-empty value bypasses that detection; we use `true` (a harmless
     // no-op) and ensure no `.asm` sources are enabled via configure flags.
     let effective_as = if matches!(target_arch.as_str(), "x86" | "x86_64") && as_env.is_empty() {
-        "true".to_string()
+        if is_msvc_target {
+            // MSVC toolchains still compile a small amount of yasm/nasm assembly (e.g.
+            // vpx_ports/float_control_word.asm). Require an assembler rather than using the
+            // yasm/nasm-free `AS=true` hack.
+            default_msvc_assembler(&target, &host)
+        } else {
+            "true".to_string()
+        }
     } else {
         as_env
     };
@@ -380,6 +393,23 @@ fn find_windows_posix_shell(target: &str, host: &str) -> String {
         host,
         "Windows builds of bundled libvpx require a POSIX shell (`sh`/`bash`) in PATH. \
 Install MSYS2 or Cygwin and ensure the shell is available.",
+    );
+}
+
+fn default_msvc_assembler(target: &str, host: &str) -> String {
+    if tool_in_path("yasm") || tool_in_path("yasm.exe") {
+        return "yasm".to_string();
+    }
+    if tool_in_path("nasm") || tool_in_path("nasm.exe") {
+        // libvpx's project generator uses yasm-style flags (`-Xvc`); nasm may or may not be
+        // compatible depending on version, but accept it as a fallback.
+        return "nasm".to_string();
+    }
+    unsupported(
+        target,
+        host,
+        "Windows MSVC builds of bundled libvpx require an assembler (`yasm` preferred). \
+Install yasm (recommended) or nasm and ensure it is available in PATH.",
     );
 }
 
