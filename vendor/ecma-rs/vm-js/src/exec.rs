@@ -7083,18 +7083,18 @@ impl<'a> Evaluator<'a> {
         continue;
       };
 
-      if ctor_method.is_some() {
-        return Err(syntax_error(member.loc, "A class may only have one constructor"));
-      }
-      ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+    if ctor_method.is_some() {
+      return Err(syntax_error(member.loc, "A class may only have one constructor"));
     }
+    ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
+  }
 
-      let mut ctor_length: u32 = 0;
-      let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
-        if func_node.stx.generator {
-          return Err(syntax_error(
-            loc,
-            "Class constructor may not be a generator",
+    let mut ctor_length: u32 = 0;
+    let ctor_body_func = if let Some((func_node, member_loc_start, loc)) = ctor_method {
+      if func_node.stx.generator {
+        return Err(syntax_error(
+          loc,
+          "Class constructor may not be a generator",
           ));
         }
 
@@ -17632,6 +17632,12 @@ fn async_eval_class_after_super(
     }
 
     if member.stx.static_ {
+      continue;
+    }
+    let ClassOrObjKey::Direct(direct) = &member.stx.key else {
+      continue;
+    };
+    if direct.stx.key != "constructor" {
       continue;
     }
     let ClassOrObjKey::Direct(direct) = &member.stx.key else {

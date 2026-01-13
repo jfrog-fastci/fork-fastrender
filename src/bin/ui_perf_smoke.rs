@@ -31,6 +31,8 @@ const DEFAULT_THRESHOLD: f64 = 0.05;
 
 const ACTION_TIMEOUT: Duration = Duration::from_secs(60);
 
+const DEFAULT_WARMUP: usize = 1;
+
 const SCROLL_WARMUP: usize = 5;
 const SCROLL_SAMPLES: usize = 40;
 const SCROLL_DELTA_CSS: f32 = 140.0;
@@ -85,7 +87,7 @@ struct Args {
   /// warmup iterations when you want more stable p95 numbers.
   ///
   /// Warmup iterations are executed but excluded from reported metrics/statistics.
-  #[arg(long, default_value_t = 0)]
+  #[arg(long, default_value_t = DEFAULT_WARMUP)]
   warmup: usize,
 
   /// Override the per-scenario default number of measured iterations.
@@ -222,6 +224,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   } else {
     args.isolate || isolate_default
   };
+  if isolate {
+    eprintln!("ui_perf_smoke: isolate enabled; spawning a fresh worker per scenario");
+  }
 
   if std::env::var_os("FASTR_USE_BUNDLED_FONTS").is_none() {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");

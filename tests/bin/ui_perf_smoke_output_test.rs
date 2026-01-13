@@ -38,6 +38,22 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
     Some(1),
     "ui_perf_smoke schema_version should be current"
   );
+
+  assert_eq!(
+    summary["run_config"]["warmup"].as_u64(),
+    Some(1),
+    "run_config.warmup should default to 1"
+  );
+  assert_eq!(
+    summary["run_config"]["isolate"].as_bool(),
+    Some(false),
+    "run_config.isolate should default to false"
+  );
+  assert!(
+    summary["run_config"]["rayon_threads"].as_u64().is_some(),
+    "run_config.rayon_threads should be present"
+  );
+
   let scenarios = summary["scenarios"]
     .as_array()
     .expect("scenarios array must exist");
@@ -67,4 +83,44 @@ fn ui_perf_smoke_emits_tab_switch_scenario_summary() {
       "scenario metrics_ms should include numeric {key}"
     );
   }
+}
+
+#[test]
+fn ui_perf_smoke_records_isolate_and_warmup_overrides() {
+  let temp = tempdir().expect("create temp dir");
+  let output = temp.path().join("ui-perf-smoke.json");
+
+  let result = Command::new(env!("CARGO_BIN_EXE_ui_perf_smoke"))
+    .args([
+      "--output",
+      output.to_str().unwrap(),
+      "--warmup",
+      "0",
+      "--isolate",
+      "--only",
+      "ttfp_newtab",
+      "--no-fail-on-failure",
+    ])
+    .stdout(Stdio::null())
+    .output()
+    .expect("run ui_perf_smoke --isolate");
+
+  assert!(
+    result.status.success(),
+    "ui_perf_smoke --isolate should exit successfully; stderr: {}",
+    String::from_utf8_lossy(&result.stderr)
+  );
+
+  let data = fs::read_to_string(&output).expect("read ui_perf_smoke output");
+  let summary: Value = serde_json::from_str(&data).expect("parse ui_perf_smoke json");
+  assert_eq!(
+    summary["run_config"]["warmup"].as_u64(),
+    Some(0),
+    "run_config.warmup should reflect the CLI override"
+  );
+  assert_eq!(
+    summary["run_config"]["isolate"].as_bool(),
+    Some(true),
+    "run_config.isolate should reflect the CLI override"
+  );
 }
