@@ -2945,7 +2945,16 @@ pub fn chrome_ui_with_bookmarks(
             resp = resp.on_hover_text(label);
             show_tooltip_on_focus(ui, &resp, label);
             paint_focus_ring(ui, &resp, focus_ring);
-            if resp.clicked() {
+            // `Sense::click` widgets don't automatically activate on keyboard (Enter/Space), so wire
+            // it up explicitly for keyboard-only workflows.
+            let mut choose_requested = resp.clicked();
+            if resp.has_focus() {
+              choose_requested |= ui.input_mut(|i| {
+                i.consume_key(Default::default(), egui::Key::Enter)
+                  || i.consume_key(Default::default(), egui::Key::Space)
+              });
+            }
+            if choose_requested {
               app.appearance.accent_color = Some(format_hex_color(rgba));
             }
           }
