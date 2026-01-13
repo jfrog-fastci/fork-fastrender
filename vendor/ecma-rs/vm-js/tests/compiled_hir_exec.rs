@@ -258,6 +258,29 @@ fn compiled_for_of_let_creates_per_iteration_envs() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_of_const_creates_per_iteration_envs() -> Result<(), VmError> {
+  // Same as the `let` test, but for `const`.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let f0;
+        let f1;
+        let f2;
+        for (const i of [0, 1, 2]) {
+          if (i === 0) f0 = function() { return i; };
+          if (i === 1) f1 = function() { return i; };
+          if (i === 2) f2 = function() { return i; };
+        }
+        return f0() + f1() + f2();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_for_in_let_creates_per_iteration_envs() -> Result<(), VmError> {
   // `for (let k in obj)` should create a fresh lexical binding each iteration so closures capture
   // the key from the iteration when they were created.
@@ -289,6 +312,38 @@ fn compiled_for_in_let_creates_per_iteration_envs() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_in_const_creates_per_iteration_envs() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let f_a;
+        let f_b;
+        for (const k in ({a: 1, b: 2})) {
+          if (k === 'a') f_a = function() { return k; };
+          if (k === 'b') f_b = function() { return k; };
+        }
+        return f_a() + f_b();
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  // Order doesn't matter here; `f_a`/`f_b` are assigned based on key value.
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "ab");
+  Ok(())
+}
+
+#[test]
 fn compiled_for_triple_var_does_not_create_per_iteration_binding() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -314,6 +369,7 @@ fn compiled_for_triple_var_does_not_create_per_iteration_binding() -> Result<(),
   Ok(())
 }
 
+#[test]
 fn compiled_for_triple_let_restores_lexical_env_on_break() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
