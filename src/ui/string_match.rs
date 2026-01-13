@@ -145,4 +145,36 @@ mod tests {
     assert_eq!(find_ascii_case_insensitive("a€b", "ab"), None);
     assert_eq!(find_ascii_case_insensitive("€Hello", "hello"), Some(3));
   }
+
+  #[test]
+  fn token_matching_matches_any_field_and_ands_tokens() {
+    // Mirrors the `about:` / history-panel call pattern:
+    // - query is lowercased once
+    // - tokens are ANDed
+    // - each token may match either URL or title
+    let query_lower = "RUST programming".to_ascii_lowercase();
+    let tokens: Vec<&str> = query_lower.split_whitespace().collect();
+
+    // `rust` matches the URL only; `programming` matches the title only.
+    let url = "https://example.com/RuStacean";
+    let title = Some("Systems PROGRAMMING guide");
+    assert!(tokens.iter().all(|t| {
+      contains_ascii_case_insensitive(url, t)
+        || title.is_some_and(|title| contains_ascii_case_insensitive(title, t))
+    }));
+
+    // If the title is missing, the `programming` token should fail to match.
+    let title_missing: Option<&str> = None;
+    assert!(!tokens.iter().all(|t| {
+      contains_ascii_case_insensitive(url, t)
+        || title_missing.is_some_and(|title| contains_ascii_case_insensitive(title, t))
+    }));
+
+    // A title that's present but doesn't match should also fail.
+    let title_wrong = Some("Rustacean guide");
+    assert!(!tokens.iter().all(|t| {
+      contains_ascii_case_insensitive(url, t)
+        || title_wrong.is_some_and(|title| contains_ascii_case_insensitive(title, t))
+    }));
+  }
 }
