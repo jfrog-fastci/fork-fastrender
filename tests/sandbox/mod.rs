@@ -8,5 +8,9 @@ mod macos_seatbelt;
 
 #[cfg(windows)]
 mod windows_process_handle_escape;
+
 #[cfg(windows)]
 mod windows_no_child_process;
+
+#[cfg(windows)]
+mod windows_renderer_smoke;
