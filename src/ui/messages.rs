@@ -2,6 +2,7 @@ use crate::geometry::Rect;
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollBounds;
 use crate::scroll::ScrollState;
+use crate::style::media::{ColorScheme, ContrastPreference};
 use crate::tree::box_tree::SelectControl;
 use crate::ui::cancel::CancelGens;
 use std::path::PathBuf;
@@ -209,6 +210,27 @@ pub struct RenderedFrame {
   pub wants_ticks: bool,
 }
 
+/// Media preference defaults supplied by the browser UI (theme/accessibility settings).
+///
+/// These are used to populate the page’s media-query surface (`prefers-*`) when explicit renderer
+/// overrides (e.g. `FASTR_PREFERS_COLOR_SCHEME`) are not set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BrowserMediaPreferences {
+  pub prefers_color_scheme: ColorScheme,
+  pub prefers_contrast: ContrastPreference,
+  pub prefers_reduced_motion: bool,
+}
+
+impl Default for BrowserMediaPreferences {
+  fn default() -> Self {
+    Self {
+      prefers_color_scheme: ColorScheme::Light,
+      prefers_contrast: ContrastPreference::NoPreference,
+      prefers_reduced_motion: false,
+    }
+  }
+}
+
 impl std::fmt::Debug for RenderedFrame {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("RenderedFrame")
@@ -225,6 +247,14 @@ impl std::fmt::Debug for RenderedFrame {
 /// Messages sent from the UI thread to the render worker.
 #[derive(Debug)]
 pub enum UiToWorker {
+  /// Update browser appearance-derived media preferences used for page rendering.
+  ///
+  /// The worker should treat these values as **defaults**: explicit renderer overrides (e.g.
+  /// `FASTR_PREFERS_COLOR_SCHEME`, `FASTR_PREFERS_CONTRAST`, `FASTR_PREFERS_REDUCED_MOTION`) take
+  /// precedence when set.
+  SetMediaPreferences {
+    prefs: BrowserMediaPreferences,
+  },
   CreateTab {
     tab_id: TabId,
     /// Optional URL to navigate immediately after creating the tab.

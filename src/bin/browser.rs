@@ -2514,6 +2514,16 @@ impl App {
   const MULTI_CLICK_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
   const MULTI_CLICK_MAX_DIST_POINTS: f32 = 4.0;
 
+  fn sync_media_preferences_to_worker(&mut self, system_theme: Option<winit::window::Theme>) {
+    use fastrender::ui::UiToWorker;
+
+    let prefs = fastrender::ui::media_prefs::media_prefs_from_appearance(
+      &self.applied_appearance,
+      fastrender::ui::media_prefs::SystemTheme::from_winit(system_theme),
+    );
+    self.send_worker_msg(UiToWorker::SetMediaPreferences { prefs });
+  }
+
   fn refresh_theme_from_system_theme(&mut self, system_theme: Option<winit::window::Theme>) -> bool {
     use fastrender::ui::theme::ThemeMode;
 
@@ -2569,6 +2579,7 @@ impl App {
       a: bg.a() as f64 / 255.0,
     };
 
+    self.sync_media_preferences_to_worker(system_theme);
     true
   }
 
@@ -2603,9 +2614,11 @@ impl App {
     let accent_changed = desired.accent.as_deref() != prev.accent.as_deref();
 
     let mut needs_redraw = false;
+    let mut media_prefs_changed = false;
 
     if desired.reduced_motion != prev.reduced_motion {
       needs_redraw = true;
+      media_prefs_changed = true;
     }
 
     if (desired.ui_scale - prev.ui_scale).abs() > 1e-6 {
@@ -2632,6 +2645,7 @@ impl App {
     }
 
     if desired.theme != prev.theme || desired.high_contrast != prev.high_contrast {
+      media_prefs_changed = true;
       self.theme_override = match desired.theme {
         fastrender::ui::theme_parsing::BrowserTheme::Light => {
           Some(fastrender::ui::theme::ThemeMode::Light)
@@ -2664,6 +2678,10 @@ impl App {
       || desired.reduced_motion != prev.reduced_motion
     {
       self.sync_renderer_media_prefs_to_runtime_toggles();
+    }
+
+    if media_prefs_changed {
+      self.sync_media_preferences_to_worker(self.window.theme());
     }
 
     needs_redraw
@@ -3008,6 +3026,10 @@ impl App {
       );
     }
 
+    // Ensure pages see the current theme/accessibility preferences via `prefers-*` media queries
+    // from the start (before any initial navigations).
+    self.sync_media_preferences_to_worker(self.window.theme());
+
     let mut tab_ids = Vec::with_capacity(tabs.len());
 
     for tab in tabs {
@@ -3278,6 +3300,7 @@ impl App {
     }
 
     let tab_id = match &msg {
+      UiToWorker::SetMediaPreferences { .. } => None,
       UiToWorker::SetDownloadDirectory { .. } => None,
       UiToWorker::CancelDownload { .. } => None,
       UiToWorker::CreateTab { tab_id, .. }
@@ -3358,6 +3381,7 @@ impl App {
           | UiToWorker::RequestRepaint { .. } => cancel.bump_paint(),
           // `Tick` and tab-management messages should not force cancellation.
           UiToWorker::Tick { .. }
+          | UiToWorker::SetMediaPreferences { .. }
           | UiToWorker::ContextMenuRequest { .. }
           | UiToWorker::CreateTab { .. }
           | UiToWorker::NewTab { .. }

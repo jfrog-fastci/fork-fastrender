@@ -61,6 +61,15 @@ impl RuntimeToggles {
     self.raw.get(key).map(String::as_str)
   }
 
+  /// Clone the underlying raw `FASTR_*` key/value map.
+  ///
+  /// This is primarily intended for embedders (including the browser UI worker) that need to
+  /// construct a derived [`RuntimeToggles`] instance while preserving all other environment-derived
+  /// configuration.
+  pub(crate) fn raw_clone(&self) -> HashMap<String, String> {
+    self.raw.clone()
+  }
+
   /// Returns true when the toggle is present and truthy (`!= 0`/`false`/`off`).
   pub fn truthy(&self, key: &str) -> bool {
     self.truthy_with_default(key, false)

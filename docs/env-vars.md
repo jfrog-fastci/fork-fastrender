@@ -108,10 +108,13 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - `system` follows the OS light/dark preference when available.
   - `light` / `dark` force a specific theme regardless of the OS preference.
   - Interaction with content rendering:
-    - In the windowed `browser` UI, the resolved chrome theme is propagated to rendered pages by
-      default via `prefers-color-scheme` (implemented by installing `FASTR_PREFERS_COLOR_SCHEME`
-      defaults into the renderer’s runtime toggles).
-    - Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` still take precedence.
+    - The browser UI appearance settings provide **defaults** for the page media-query surface
+      (`prefers-*`):
+      - Theme → `prefers-color-scheme` (`light`/`dark`).
+      - `FASTR_BROWSER_HIGH_CONTRAST=1` → `prefers-contrast: more`.
+      - `FASTR_BROWSER_REDUCED_MOTION=1` → `prefers-reduced-motion: reduce`.
+    - Explicit renderer overrides (`FASTR_PREFERS_COLOR_SCHEME`, `FASTR_PREFERS_CONTRAST`,
+      `FASTR_PREFERS_REDUCED_MOTION`) take precedence over any browser UI preference.
 - `FASTR_BROWSER_ACCENT=#RRGGBB[AA]` – override the browser chrome accent color (links, selection, loading progress line, focus rings).
   - Takes precedence over the in-app persisted accent color setting (session file).
   - Accepted formats: `#RGB`, `#RRGGBB`, `#RRGGBBAA` (leading `#` optional).
@@ -123,13 +126,13 @@ Not all builds implement all of these toggles yet; unsupported values are expect
 - `FASTR_BROWSER_HIGH_CONTRAST=0|1` – enable a high-contrast UI theme / stronger focus indicators.
   - Default: `0`.
   - Interaction with content rendering:
-    - In the windowed `browser` UI, this maps to `prefers-contrast` for pages by default unless
-      explicitly overridden via `FASTR_PREFERS_CONTRAST=...`.
+    - Pages see `prefers-contrast: more` by default unless explicitly overridden via
+      `FASTR_PREFERS_CONTRAST=...`.
 - `FASTR_BROWSER_REDUCED_MOTION=0|1` – reduce/disable non-essential UI animations.
   - Default: `0`.
   - Interaction with content rendering:
-    - In the windowed `browser` UI, this maps to `prefers-reduced-motion` for pages by default unless
-      explicitly overridden via `FASTR_PREFERS_REDUCED_MOTION=...`.
+    - Pages see `prefers-reduced-motion: reduce` by default unless explicitly overridden via
+      `FASTR_PREFERS_REDUCED_MOTION=...`.
 - `FASTR_BROWSER_HUD=0|1` – show an in-app HUD overlay with browser/debug metrics.
   - Default: `0`.
 - `FASTR_BROWSER_DEBUG_LOG=0|1` – enable browser/worker debug logging UI.

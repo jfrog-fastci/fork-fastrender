@@ -159,9 +159,13 @@ scripting/CI); see [env-vars.md](env-vars.md).
 
 Interaction with rendered pages:
 
-- The windowed browser UI propagates its resolved theme to rendered pages by default via
-  `prefers-color-scheme`.
-- Explicit renderer overrides like `FASTR_PREFERS_COLOR_SCHEME=...` take precedence.
+- The browser UI preference also drives the default `prefers-*` media query surface for page
+  rendering:
+  - Theme (resolved light/dark, including `system`) → `prefers-color-scheme` (`light`/`dark`).
+  - High contrast → `prefers-contrast: more`.
+  - Reduced motion → `prefers-reduced-motion: reduce`.
+- Explicit renderer overrides (`FASTR_PREFERS_COLOR_SCHEME`, `FASTR_PREFERS_CONTRAST`,
+  `FASTR_PREFERS_REDUCED_MOTION`) take precedence.
 
 ### Accent color
 
@@ -176,10 +180,10 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 
 - `FASTR_BROWSER_HIGH_CONTRAST=1` is intended to enable a higher-contrast chrome theme and stronger
   focus indicators.
-  - Maps to `prefers-contrast` for pages by default unless explicitly overridden via
+  - Pages see `prefers-contrast: more` by default unless explicitly overridden via
     `FASTR_PREFERS_CONTRAST=...`.
 - `FASTR_BROWSER_REDUCED_MOTION=1` is intended to reduce/disable non-essential UI animations.
-  - Maps to `prefers-reduced-motion` for pages by default unless explicitly overridden via
+  - Pages see `prefers-reduced-motion: reduce` by default unless explicitly overridden via
     `FASTR_PREFERS_REDUCED_MOTION=...`.
 
 ### UI scale vs page zoom

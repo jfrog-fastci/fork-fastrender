@@ -1,4 +1,5 @@
 use crate::animation::TransitionState;
+use crate::debug::runtime::RuntimeToggles;
 use crate::dom::DomNode;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
@@ -763,6 +764,23 @@ impl BrowserDocument {
   /// This is a control knob (e.g. for UI-level cancellation) and does not mark the document dirty.
   pub fn set_timeout(&mut self, timeout: Option<std::time::Duration>) {
     self.options.timeout = timeout;
+  }
+
+  /// Updates (or clears) the runtime toggle override used by the renderer.
+  ///
+  /// Runtime toggles can affect the media-query surface (e.g. `prefers-*`) via
+  /// [`crate::style::media::MediaContext::with_env_overrides`], so changing them must invalidate
+  /// style/layout (and therefore paint).
+  pub fn set_runtime_toggles(&mut self, toggles: Option<Arc<RuntimeToggles>>) {
+    let changed = match (&self.options.runtime_toggles, &toggles) {
+      (None, None) => false,
+      (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+      _ => true,
+    };
+    if changed {
+      self.options.runtime_toggles = toggles;
+      self.invalidate_all();
+    }
   }
 
   /// Returns the current scroll state used by this document.

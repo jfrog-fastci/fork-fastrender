@@ -30,6 +30,7 @@ pub mod omnibox;
 pub mod load_progress;
 pub mod search_suggest;
 pub mod messages;
+pub mod media_prefs;
 pub mod downloads;
 pub mod render_worker;
 pub mod scrollbars;
@@ -94,8 +95,8 @@ pub mod session_autosave;
 pub mod browser_cli;
 
 pub use messages::{
-  CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton, PointerModifiers,
-  RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+  BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
+  PointerModifiers, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the

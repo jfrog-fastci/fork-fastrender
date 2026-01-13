@@ -9,6 +9,7 @@ use crate::api::{
   BrowserDocument, BrowserTab, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig,
   RenderOptions, VmJsBrowserTabExecutor,
 };
+use crate::debug::runtime::RuntimeToggles;
 use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
@@ -32,8 +33,8 @@ use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
-  CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton, RenderedFrame,
-  ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  BrowserMediaPreferences, CursorKind, DownloadId, DownloadOutcome, NavigationReason, PointerButton,
+  RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
 };
 use crate::ui::{resolve_link_url, validate_user_navigation_url_scheme};
 use crate::web::events as web_events;
@@ -854,6 +855,9 @@ struct BrowserRuntime {
   ui_rx: Receiver<UiToWorker>,
   ui_tx: Sender<WorkerToUi>,
   factory: FastRenderFactory,
+  base_runtime_toggles: Arc<RuntimeToggles>,
+  runtime_toggles: Arc<RuntimeToggles>,
+  media_prefs: BrowserMediaPreferences,
   limits: BrowserLimits,
   download_dir: PathBuf,
   /// In-flight downloads keyed by ID.
@@ -876,10 +880,14 @@ impl BrowserRuntime {
     factory: FastRenderFactory,
     downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>>,
   ) -> Self {
+    let base_runtime_toggles = factory.runtime_toggles();
     Self {
       ui_rx,
       ui_tx,
       factory,
+      runtime_toggles: Arc::clone(&base_runtime_toggles),
+      base_runtime_toggles,
+      media_prefs: BrowserMediaPreferences::default(),
       limits: BrowserLimits::from_env(),
       download_dir: crate::ui::downloads::default_download_dir(),
       downloads,
@@ -1122,6 +1130,28 @@ impl BrowserRuntime {
     }
 
     match msg {
+      UiToWorker::SetMediaPreferences { prefs } => {
+        if prefs == self.media_prefs {
+          return;
+        }
+
+        self.runtime_toggles = crate::ui::media_prefs::runtime_toggles_with_browser_media_prefs(
+          &self.base_runtime_toggles,
+          prefs,
+        );
+        self.media_prefs = prefs;
+
+        // Updating media preferences can change `@media (prefers-*)` query results. Ensure existing
+        // documents invalidate style/layout so the next paint reflects the new environment.
+        for tab in self.tabs.values_mut() {
+          if let Some(doc) = tab.document.as_mut() {
+            doc.set_runtime_toggles(Some(Arc::clone(&self.runtime_toggles)));
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+            tab.force_repaint = true;
+          }
+        }
+      }
       UiToWorker::CreateTab {
         tab_id,
         initial_url,
@@ -4661,6 +4691,7 @@ impl BrowserRuntime {
   }
 
   fn sync_js_tab_for_committed_navigation(
+    &self,
     tab_id: TabId,
     tab: &mut TabState,
     committed_url: &str,
@@ -4679,9 +4710,10 @@ impl BrowserRuntime {
       return;
     };
 
-    let options = RenderOptions::default()
+    let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
+    options.runtime_toggles = Some(Arc::clone(&self.runtime_toggles));
     let fetcher = doc.fetcher();
     let blank_html =
       "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
@@ -4791,6 +4823,7 @@ impl BrowserRuntime {
     let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
+    options.runtime_toggles = Some(Arc::clone(&self.runtime_toggles));
     options.cancel_callback = Some(prepare_cancel_callback.clone());
 
     // -----------------------------
@@ -5067,7 +5100,7 @@ impl BrowserRuntime {
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
 
-          Self::sync_js_tab_for_committed_navigation(
+          self.sync_js_tab_for_committed_navigation(
             tab_id,
             tab,
             &committed_url,
@@ -5196,7 +5229,7 @@ impl BrowserRuntime {
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
 
-    Self::sync_js_tab_for_committed_navigation(
+    self.sync_js_tab_for_committed_navigation(
       tab_id,
       tab,
       &committed_url,
@@ -5332,6 +5365,7 @@ impl BrowserRuntime {
     let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
+    options.runtime_toggles = Some(Arc::clone(&self.runtime_toggles));
     options.cancel_callback = Some(cancel_callback.clone());
 
     // Lazily create the long-lived document/renderer if we don't have one yet.
@@ -5678,9 +5712,10 @@ impl BrowserRuntime {
       "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>".to_string()
     });
 
-    let options = RenderOptions::default()
+    let mut options = RenderOptions::default()
       .with_viewport(viewport_css.0, viewport_css.1)
       .with_device_pixel_ratio(dpr);
+    options.runtime_toggles = Some(Arc::clone(&self.runtime_toggles));
 
     let mut doc = BrowserDocument::new(renderer, &html, options)?;
     doc.set_navigation_urls(
