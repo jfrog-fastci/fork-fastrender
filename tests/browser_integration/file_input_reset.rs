@@ -122,7 +122,7 @@ fn form_reset_clears_file_input_selection() -> Result<()> {
   })?;
 
   // File selection should be reflected in internal state and the synthetic value attribute.
-  assert_eq!(engine.interaction_state().form_state.file_inputs.len(), 3);
+  assert_eq!(engine.interaction_state().form_state().file_inputs.len(), 3);
   for (id, expected_name) in [("in", "a.txt"), ("out", "b.txt"), ("unrelated", "c.txt")] {
     let file_node = find_element_by_id(doc.dom(), id);
     let stored = file_node
@@ -182,7 +182,7 @@ fn form_reset_clears_file_input_selection() -> Result<()> {
   // Reset should clear the internal file selection state and synthetic value string.
   let remaining: Vec<String> = engine
     .interaction_state()
-    .form_state
+    .form_state()
     .file_inputs
     .values()
     .flat_map(|files| files.iter().map(|f| f.filename.clone()))

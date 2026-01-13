@@ -101,7 +101,7 @@ fn dropping_file_on_label_targets_associated_file_input() -> Result<()> {
 
   let files = engine
     .interaction_state()
-    .form_state
+    .form_state()
     .files_for(input_node_id)
     .expect("expected file input selection to be stored in form state");
   assert_eq!(
@@ -126,4 +126,3 @@ fn dropping_file_on_label_targets_associated_file_input() -> Result<()> {
 
   Ok(())
 }
-

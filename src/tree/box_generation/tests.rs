@@ -2465,7 +2465,7 @@ fn form_state_overrides_text_input_value() {
   let input_id = find_input_id(&styled).expect("expected input element in styled tree");
   let mut interaction_state = InteractionState::default();
   interaction_state
-    .form_state
+    .form_state_mut()
     .values
     .insert(input_id, "override".to_string());
 
@@ -2518,7 +2518,7 @@ fn form_state_overrides_checkbox_checkedness() {
   let checkbox_id = find_checkbox_id(&styled).expect("expected checkbox element in styled tree");
   let mut interaction_state = InteractionState::default();
   interaction_state
-    .form_state
+    .form_state_mut()
     .checked
     .insert(checkbox_id, false);
 
@@ -2591,7 +2591,7 @@ fn form_state_overrides_select_selected_options() {
   selected.insert(option_two_id);
   let mut interaction_state = InteractionState::default();
   interaction_state
-    .form_state
+    .form_state_mut()
     .select_selected
     .insert(select_id, selected);
 

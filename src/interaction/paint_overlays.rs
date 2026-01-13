@@ -1,7 +1,9 @@
 use crate::interaction::form_controls;
 use crate::interaction::InteractionState;
 use crate::text::caret::CaretAffinity;
-use crate::tree::box_tree::{BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType};
+use crate::tree::box_tree::{
+  BoxNode, BoxTree, FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem,
+};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -15,7 +17,8 @@ use std::sync::Arc;
 ///
 /// Overlays applied:
 /// - Document selection highlights.
-/// - Form-control caret/selection/IME preedit (including `appearance: none` controls).
+/// - Form-control paint state (caret/selection/IME preedit + live form-state overrides like
+///   out-of-DOM values/checkedness/select selection).
 pub(crate) fn apply_interaction_state_paint_overlays_to_fragment_tree(
   box_tree: &BoxTree,
   fragment_tree: &mut FragmentTree,
@@ -92,6 +95,29 @@ fn collect_box_id_to_styled_node_id(box_tree: &BoxTree) -> FxHashMap<usize, usiz
   mapping
 }
 
+fn select_placeholder_label_option_index(control: &SelectControl, required: bool) -> Option<usize> {
+  if !required || control.multiple || control.size != 1 {
+    return None;
+  }
+
+  // HTML: the placeholder label option exists when the first option in tree order has an empty
+  // value attribute and is a direct child of `<select>` (i.e. not under `<optgroup>`).
+  for (idx, item) in control.items.iter().enumerate() {
+    match item {
+      SelectItem::OptGroupLabel { .. } => continue,
+      SelectItem::Option {
+        value, in_optgroup, ..
+      } => {
+        if !*in_optgroup && value.is_empty() {
+          return Some(idx);
+        }
+        return None;
+      }
+    }
+  }
+
+  None
+}
 fn apply_form_control_paint_state(
   control: &mut FormControl,
   node_id: usize,
@@ -105,6 +131,22 @@ fn apply_form_control_paint_state(
       selection,
       ..
     } => {
+      let prev_empty = value.is_empty();
+      let prev_invalid = control.invalid;
+      if let Some(next_value) = interaction_state
+        .and_then(|state| state.form_state().value_for(node_id))
+        .filter(|v| *v != value.as_str())
+      {
+        *value = next_value.to_string();
+      }
+      if control.required {
+        if value.is_empty() {
+          control.invalid = true;
+        } else if prev_invalid && prev_empty {
+          // The previous snapshot was invalid with an empty value; assume requiredness and clear.
+          control.invalid = false;
+        }
+      }
       let value_char_len = value.chars().count();
       let (next_caret, next_affinity, next_selection) =
         form_controls::text_edit_state_for_value_char_len(
@@ -125,6 +167,21 @@ fn apply_form_control_paint_state(
       selection,
       ..
     } => {
+      let prev_empty = value.is_empty();
+      let prev_invalid = control.invalid;
+      if let Some(next_value) = interaction_state
+        .and_then(|state| state.form_state().value_for(node_id))
+        .filter(|v| *v != value.as_str())
+      {
+        *value = next_value.to_string();
+      }
+      if control.required {
+        if value.is_empty() {
+          control.invalid = true;
+        } else if prev_invalid && prev_empty {
+          control.invalid = false;
+        }
+      }
       let value_char_len = value.chars().count();
       let (next_caret, next_affinity, next_selection) =
         form_controls::text_edit_state_for_value_char_len(
@@ -139,11 +196,105 @@ fn apply_form_control_paint_state(
       control.ime_preedit = form_controls::ime_preedit_for_node(interaction_state, node_id);
     }
     FormControlKind::File { value } => {
+      let prev_empty = value.is_none();
+      let prev_invalid = control.invalid;
       *value = form_controls::file_input_display_value(interaction_state, node_id);
+      if control.required {
+        if value.is_none() {
+          control.invalid = true;
+        } else if prev_invalid && prev_empty {
+          control.invalid = false;
+        }
+      }
+      control.ime_preedit = None;
+    }
+    FormControlKind::Checkbox {
+      is_radio, checked, ..
+    } => {
+      let prev_checked = *checked;
+      let prev_invalid = control.invalid;
+      if let Some(next) =
+        interaction_state.and_then(|state| state.form_state().checked_for(node_id))
+      {
+        *checked = next;
+      }
+      if control.required && !*is_radio {
+        if !*checked {
+          control.invalid = true;
+        } else if prev_invalid && !prev_checked {
+          control.invalid = false;
+        }
+      }
+      control.ime_preedit = None;
+    }
+    FormControlKind::Select(select) => {
+      if let Some(selected_set) =
+        interaction_state.and_then(|state| state.form_state().select_selected_options(node_id))
+      {
+        let mut needs_update = false;
+        for item in select.items.iter() {
+          if let SelectItem::Option {
+            node_id, selected, ..
+          } = item
+          {
+            if selected_set.contains(node_id) != *selected {
+              needs_update = true;
+              break;
+            }
+          }
+        }
+        if !needs_update {
+          control.ime_preedit = None;
+          return;
+        }
+
+        let mut items = (*select.items).clone();
+        let mut selected = Vec::new();
+        for (idx, item) in items.iter_mut().enumerate() {
+          if let SelectItem::Option {
+            node_id,
+            selected: item_selected,
+            ..
+          } = item
+          {
+            let is_selected = selected_set.contains(node_id);
+            *item_selected = is_selected;
+            if is_selected {
+              selected.push(idx);
+            }
+          }
+        }
+        select.items = Arc::new(items);
+        select.selected = selected;
+      }
+      // `select` constraint validation currently only cares about requiredness.
+      if control.required {
+        let invalid = if select.multiple || select.size != 1 {
+          !select.selected.iter().any(|&idx| {
+            matches!(
+              select.items.get(idx),
+              Some(SelectItem::Option {
+                disabled: false,
+                ..
+              })
+            )
+          })
+        } else {
+          if select.selected.is_empty() {
+            true
+          } else if let Some(placeholder_idx) = select_placeholder_label_option_index(select, true)
+          {
+            select.selected.as_slice() == [placeholder_idx]
+          } else {
+            false
+          }
+        };
+        control.invalid = invalid;
+      }
       control.ime_preedit = None;
     }
     _ => {
-      // Other control types (checkbox, select, button, etc.) do not have text editing state.
+      // Other control types (button, range, progress, etc.) do not have text editing state.
       control.ime_preedit = None;
     }
   }

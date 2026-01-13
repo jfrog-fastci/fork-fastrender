@@ -14,7 +14,7 @@ pub(crate) fn file_input_display_value(
   node_id: usize,
 ) -> Option<String> {
   interaction_state
-    .and_then(|state| state.form_state.files_for(node_id))
+    .and_then(|state| state.form_state().files_for(node_id))
     .and_then(|files| file_input_display_value_from_files(files))
 }
 
@@ -100,11 +100,11 @@ mod tests {
     assert_eq!(file_input_display_value(Some(&state), node_id), None);
 
     // Empty entry.
-    state.form_state.file_inputs.insert(node_id, Vec::new());
+    state.file_inputs_mut().insert(node_id, Vec::new());
     assert_eq!(file_input_display_value(Some(&state), node_id), None);
 
     // Single file uses its path.
-    state.form_state.file_inputs.insert(
+    state.file_inputs_mut().insert(
       node_id,
       vec![FileSelection {
         path: PathBuf::from("/tmp/example.txt"),
@@ -119,7 +119,7 @@ mod tests {
     );
 
     // Multiple files uses a count.
-    state.form_state.file_inputs.insert(
+    state.file_inputs_mut().insert(
       node_id,
       vec![
         FileSelection {

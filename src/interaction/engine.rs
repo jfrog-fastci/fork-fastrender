@@ -676,6 +676,21 @@ mod tests {
   }
 
   #[test]
+  fn interaction_hash_form_state_value_changes_paint_not_css() {
+    let mut state = InteractionState::default();
+    let css_before = state.interaction_css_hash();
+    let paint_before = state.interaction_paint_hash();
+
+    state.form_state_mut().values.insert(1, "hello".to_string());
+
+    let css_after = state.interaction_css_hash();
+    let paint_after = state.interaction_paint_hash();
+
+    assert_eq!(css_before, css_after, "form-state overrides must not affect css hash");
+    assert_ne!(paint_before, paint_after, "form-state overrides must affect paint hash");
+  }
+
+  #[test]
   fn style_for_styled_node_id_ignores_pseudo_boxes() {
     let styled_node_id = 42;
 
@@ -5992,7 +6007,7 @@ impl InteractionEngine {
       check_node_id("active_chain", id);
     }
     self.state.debug_assert_chain_caches_consistent();
-    for (&id, _) in &self.state.form_state.file_inputs {
+    for (&id, _) in &self.state.form_state().file_inputs {
       check_node_id("file_inputs", id);
     }
 
@@ -6285,7 +6300,7 @@ impl InteractionEngine {
     // Reset `<input type="file">` selections.
     //
     // File input state lives outside markup:
-    // - selected files are stored in `InteractionState.form_state.file_inputs` so form submission
+    // - selected files are stored in `InteractionState`'s live form state so form submission
     //   can include file bytes without leaking paths/bytes into the DOM, and
     // - a synthetic `data-fastr-file-value` attribute mirrors the "value string" for validation /
     //   accessibility (`C:\fakepath\...`), matching browser behavior where markup `value=` is ignored.
@@ -6303,9 +6318,9 @@ impl InteractionEngine {
         continue;
       }
 
-      if self.state.form_state.file_inputs.remove(&node_id).is_some() {
+      if self.state.form_state().file_inputs.contains_key(&node_id) {
+        self.state.form_state_mut().file_inputs.remove(&node_id);
         changed = true;
-        self.state.mark_paint_hash_dirty();
       }
       if let Some(node_mut) = index.node_mut(node_id) {
         changed |= remove_node_attr(node_mut, "data-fastr-file-value");
@@ -9643,22 +9658,17 @@ impl InteractionEngine {
       .and_then(|node| node.get_attribute_ref("accept"));
     let filtered_paths = filter_paths_by_file_accept(paths, accept);
     let selected = build_file_selections_from_paths(filtered_paths.as_ref(), multiple);
-    let selection_unchanged = match self.state.form_state.file_inputs.get(&target_id) {
+    let selection_unchanged = match self.state.form_state().file_inputs.get(&target_id) {
       Some(prev) => prev.as_slice() == selected.as_slice(),
       None => selected.is_empty(),
     };
     if !selection_unchanged {
       changed = true;
       if selected.is_empty() {
-        self.state.form_state.file_inputs.remove(&target_id);
+        self.state.form_state_mut().file_inputs.remove(&target_id);
       } else {
-        self
-          .state
-          .form_state
-          .file_inputs
-          .insert(target_id, selected);
+        self.state.form_state_mut().file_inputs.insert(target_id, selected);
       }
-      self.state.mark_paint_hash_dirty();
 
       // Selecting files flips HTML user validity so `:user-invalid` can match after interaction.
       changed |= self.mark_user_validity(target_id);
@@ -9668,7 +9678,7 @@ impl InteractionEngine {
     // Mirror browser value semantics: the value string reflects the first filename only.
     let value_string = self
       .state
-      .form_state
+      .form_state()
       .file_input_value_string(target_id)
       .unwrap_or_default();
     if let Some(node_mut) = index.node_mut(target_id) {
@@ -9717,22 +9727,17 @@ impl InteractionEngine {
       .and_then(|node| node.get_attribute_ref("accept"));
     let filtered_paths = filter_paths_by_file_accept(paths, accept);
     let selected = build_file_selections_from_paths(filtered_paths.as_ref(), multiple);
-    let selection_unchanged = match self.state.form_state.file_inputs.get(&input_node_id) {
+    let selection_unchanged = match self.state.form_state().file_inputs.get(&input_node_id) {
       Some(prev) => prev.as_slice() == selected.as_slice(),
       None => selected.is_empty(),
     };
     if !selection_unchanged {
       changed = true;
       if selected.is_empty() {
-        self.state.form_state.file_inputs.remove(&input_node_id);
+        self.state.form_state_mut().file_inputs.remove(&input_node_id);
       } else {
-        self
-          .state
-          .form_state
-          .file_inputs
-          .insert(input_node_id, selected);
+        self.state.form_state_mut().file_inputs.insert(input_node_id, selected);
       }
-      self.state.mark_paint_hash_dirty();
 
       // Selecting files flips HTML user validity so `:user-invalid` can match after interaction.
       changed |= self.mark_user_validity(input_node_id);
@@ -9742,7 +9747,7 @@ impl InteractionEngine {
     // Mirror browser value semantics: the value string reflects the first filename only.
     let value_string = self
       .state
-      .form_state
+      .form_state()
       .file_input_value_string(input_node_id)
       .unwrap_or_default();
     if let Some(node_mut) = index.node_mut(input_node_id) {

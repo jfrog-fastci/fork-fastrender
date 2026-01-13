@@ -600,10 +600,9 @@ pub(crate) fn document_selection_contains_point_dom2(
 /// Note: `visited_links` and `user_validity` are kept private; use
 /// [`visited_links_mut`](Self::visited_links_mut) / [`user_validity_mut`](Self::user_validity_mut)
 /// (or the `insert_*` helpers) to mutate them, which automatically dirties the CSS hash.
-///
-/// For paint-only state (`document_selection`, `text_edit`, `ime_preedit`, and file-input state),
-/// prefer the helper setters/mutable accessors on [`InteractionState`] so the cached paint hash is
-/// dirtied automatically.
+/// For paint-only state (`document_selection`, `text_edit`, `ime_preedit`, and `form_state`), prefer
+/// the helper setters/mutable accessors on [`InteractionState`] so the cached paint hash is dirtied
+/// automatically.
 #[derive(Debug)]
 pub struct InteractionState {
   /// Currently focused element node id (pre-order id from `crate::dom::enumerate_dom_ids`).
@@ -638,7 +637,7 @@ pub struct InteractionState {
   pub text_edit: Option<TextEditPaintState>,
 
   /// Live form state for value-bearing and toggleable controls.
-  pub form_state: FormState,
+  form_state: FormState,
 
   /// Current document (non-form-control) selection.
   pub document_selection: Option<DocumentSelectionState>,
@@ -993,6 +992,22 @@ impl InteractionState {
   }
 
   #[inline]
+  pub fn form_state(&self) -> &FormState {
+    &self.form_state
+  }
+
+  /// Mutably access live form state overrides.
+  ///
+  /// This automatically marks the cached paint interaction hash dirty so render caching observes
+  /// changes without requiring callers to remember to invoke
+  /// [`mark_paint_hash_dirty`](Self::mark_paint_hash_dirty).
+  #[inline]
+  pub fn form_state_mut(&mut self) -> &mut FormState {
+    self.mark_paint_hash_dirty();
+    &mut self.form_state
+  }
+
+  #[inline]
   pub fn has_user_validity(&self, node_id: usize) -> bool {
     self.user_validity.contains(&node_id)
   }
@@ -1032,9 +1047,9 @@ impl InteractionState {
 
   /// Mark the cached paint interaction hash as dirty.
   ///
-  /// Callers that mutate IME preedit, caret/selection state, document selection, or out-of-DOM file
-  /// input state must invoke this so render caching can observe the change without re-hashing large
-  /// structures every frame.
+  /// Callers that mutate paint-only interaction state (IME preedit, caret/selection state, document
+  /// selection, or live form-state overrides) must invoke this so render caching can observe the
+  /// change without re-hashing large structures every frame.
   #[inline]
   pub fn mark_paint_hash_dirty(&self) {
     self.paint_hash_dirty.store(true, AtomicOrdering::Release);
@@ -1150,6 +1165,39 @@ fn compute_css_hash(state: &InteractionState) -> u64 {
 
 fn compute_paint_hash(state: &InteractionState) -> u64 {
   let mut hasher = DefaultHasher::new();
+
+  // Live form-control state can change without DOM mutations (e.g. JS/property edits). Include it so
+  // cached paint paths observe updates without forcing a full cascade/layout.
+  if !state.form_state.values.is_empty() {
+    let mut keys: Vec<usize> = state.form_state.values.keys().copied().collect();
+    keys.sort_unstable();
+    for node_id in keys {
+      node_id.hash(&mut hasher);
+      if let Some(value) = state.form_state.values.get(&node_id) {
+        value.hash(&mut hasher);
+      }
+    }
+  }
+  if !state.form_state.checked.is_empty() {
+    let mut keys: Vec<usize> = state.form_state.checked.keys().copied().collect();
+    keys.sort_unstable();
+    for node_id in keys {
+      node_id.hash(&mut hasher);
+      if let Some(checked) = state.form_state.checked.get(&node_id) {
+        checked.hash(&mut hasher);
+      }
+    }
+  }
+  if !state.form_state.select_selected.is_empty() {
+    let mut keys: Vec<usize> = state.form_state.select_selected.keys().copied().collect();
+    keys.sort_unstable();
+    for select_id in keys {
+      select_id.hash(&mut hasher);
+      if let Some(selected) = state.form_state.select_selected.get(&select_id) {
+        hash_usize_set(&mut hasher, selected);
+      }
+    }
+  }
 
   // File input state is stored out-of-DOM, so include it so file drops trigger repaints (label
   // updates and form submission semantics).

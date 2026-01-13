@@ -68,9 +68,9 @@ fn file_input_accept_filters_drop_files() -> Result<()> {
   })?;
 
   assert!(
-    engine.interaction_state().form_state.file_inputs.is_empty(),
+    engine.interaction_state().form_state().file_inputs.is_empty(),
     "expected file input accept=.txt to reject dropped .png; state={:?}",
-    engine.interaction_state().form_state.file_inputs
+    engine.interaction_state().form_state().file_inputs
   );
   let file_node = find_element_by_id(doc.dom(), "f");
   assert_eq!(
@@ -94,7 +94,7 @@ fn file_input_accept_filters_drop_files() -> Result<()> {
 
   let selected: Vec<String> = engine
     .interaction_state()
-    .form_state
+    .form_state()
     .file_inputs
     .values()
     .flat_map(|files| files.iter().map(|file| file.filename.clone()))

@@ -78,11 +78,11 @@ fn accessibility_live_form_state_overrides_dom_attributes() {
   let real_id = *ids.get(&(real_node as *const DomNode)).expect("real option id");
 
   let mut state = InteractionState::default();
-  state.form_state.values.insert(text_id, "hello".to_string());
-  state.form_state.checked.insert(check_id, false);
+  state.form_state_mut().values.insert(text_id, "hello".to_string());
+  state.form_state_mut().checked.insert(check_id, false);
   let mut selected = FxHashSet::default();
   selected.insert(real_id);
-  state.form_state.select_selected.insert(select_id, selected);
+  state.form_state_mut().select_selected.insert(select_id, selected);
 
   let tree = renderer
     .accessibility_tree_with_interaction_state(&dom, 800, 600, Some(&state))
@@ -286,7 +286,7 @@ fn accessibility_live_file_input_value_and_validation() {
   // With a live file selection, the accessibility value should mirror browser behavior and
   // required validation should pass.
   let mut state = InteractionState::default();
-  state.form_state.file_inputs.insert(
+  state.file_inputs_mut().insert(
     file_id,
     vec![FileSelection {
       path: PathBuf::from("/tmp/a.txt"),
@@ -307,7 +307,7 @@ fn accessibility_live_file_input_value_and_validation() {
   );
 
   // Multiple selected files still expose only the first filename in the value string.
-  state.form_state.file_inputs.insert(
+  state.file_inputs_mut().insert(
     file_id,
     vec![
       FileSelection {

@@ -497,7 +497,7 @@ fn collect_form_entries(
 
       if ty.eq_ignore_ascii_case("file") {
         let files = interaction_state
-          .and_then(|state| state.form_state.files_for(node_id))
+          .and_then(|state| state.form_state().files_for(node_id))
           .map(|files| files.as_slice())
           .unwrap_or(&[]);
 

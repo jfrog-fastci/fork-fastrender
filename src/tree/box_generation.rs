@@ -7151,7 +7151,7 @@ fn create_form_control_replaced(
     }
   }
   let textarea_value = if tag.eq_ignore_ascii_case("textarea") {
-    if let Some(value) = interaction_state.and_then(|state| state.form_state.value_for(styled.node_id))
+    if let Some(value) = interaction_state.and_then(|state| state.form_state().value_for(styled.node_id))
     {
       Some(value.to_string())
     } else {
@@ -7168,7 +7168,7 @@ fn create_form_control_replaced(
     let mut control = build_select_control(styled);
     if let Some(selected_set) = interaction_state.and_then(|state| {
       state
-        .form_state
+        .form_state()
         .select_selected_options(styled.node_id)
     }) {
       let mut items = (*control.items).clone();
@@ -7332,7 +7332,7 @@ fn create_form_control_replaced(
  
     let control = if input_type.eq_ignore_ascii_case("checkbox") {
       let checked = interaction_state
-        .and_then(|state| state.form_state.checked_for(styled.node_id))
+        .and_then(|state| state.form_state().checked_for(styled.node_id))
         .unwrap_or_else(|| styled.node.get_attribute_ref("checked").is_some());
       FormControlKind::Checkbox {
         is_radio: false,
@@ -7350,7 +7350,7 @@ fn create_form_control_replaced(
       }
     } else if input_type.eq_ignore_ascii_case("radio") {
       let checked = interaction_state
-        .and_then(|state| state.form_state.checked_for(styled.node_id))
+        .and_then(|state| state.form_state().checked_for(styled.node_id))
         .unwrap_or_else(|| styled.node.get_attribute_ref("checked").is_some());
       FormControlKind::Checkbox {
         is_radio: true,
@@ -7403,7 +7403,7 @@ fn create_form_control_replaced(
         .filter(|p| !p.is_empty())
         .map(|p| p.to_string());
       let value = interaction_state
-        .and_then(|state| state.form_state.value_for(styled.node_id))
+        .and_then(|state| state.form_state().value_for(styled.node_id))
         .map(|v| v.to_string())
         .unwrap_or_else(|| element_ref.accessibility_value().unwrap_or_default());
 

@@ -328,7 +328,7 @@ pub fn build_accessibility_tree(
        .get_attribute_ref("name")
        .is_some_and(|name| !name.is_empty())
   });
-  let has_form_overrides = interaction_state.is_some_and(|state| state.form_state.has_overrides());
+  let has_form_overrides = interaction_state.is_some_and(|state| state.form_state().has_overrides());
   let needs_validation_dom = needs_validation_dom || has_form_overrides;
   let validation_dom = needs_validation_dom.then(|| ValidationDomIndex::build(root, interaction_state));
 
@@ -521,7 +521,7 @@ struct ValidationDomIndex {
 impl ValidationDomIndex {
   fn build(root: &StyledNode, interaction_state: Option<&InteractionState>) -> Self {
     let mut root = Box::new(clone_dom_subtree(root));
-    if let Some(state) = interaction_state.filter(|state| state.form_state.has_overrides()) {
+    if let Some(state) = interaction_state.filter(|state| state.form_state().has_overrides()) {
       apply_form_state_overrides(&mut root, state);
     }
     let mut node_by_id: Vec<*const DomNode> = Vec::new();
@@ -1677,7 +1677,7 @@ fn debug_info_for_node(node: &StyledNode, ctx: &BuildContext<'_, '_>) -> Option<
 }
 
 fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &InteractionState) {
-  if !interaction_state.form_state.has_overrides() {
+  if !interaction_state.form_state().has_overrides() {
     return;
   }
 
@@ -1720,12 +1720,12 @@ fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &Interactio
         .is_some_and(|t| t.eq_ignore_ascii_case("option"));
 
       // Propagate select override state to descendants.
-      if is_select && interaction_state.form_state.select_selected.contains_key(&frame.node_id)
+      if is_select && interaction_state.form_state().select_selected.contains_key(&frame.node_id)
       {
         frame.select_override = Some(frame.node_id);
       }
 
-      if let Some(value) = interaction_state.form_state.values.get(&frame.node_id) {
+      if let Some(value) = interaction_state.form_state().values.get(&frame.node_id) {
         if is_textarea {
           // Mirror the DOM layer's current-value representation used by painting and validation.
           node.set_attribute("data-fastr-value", value);
@@ -1734,7 +1734,7 @@ fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &Interactio
         }
       }
 
-      if let Some(checked) = interaction_state.form_state.checked.get(&frame.node_id).copied() {
+      if let Some(checked) = interaction_state.form_state().checked.get(&frame.node_id).copied() {
         if is_input {
           let is_checkbox_or_radio = node.get_attribute_ref("type").is_some_and(|t| {
             t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio")
@@ -1747,7 +1747,7 @@ fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &Interactio
 
       if is_input && node.get_attribute_ref("type").is_some_and(|t| t.eq_ignore_ascii_case("file")) {
         if let Some(value_string) = interaction_state
-          .form_state
+          .form_state()
           .file_input_value_string(frame.node_id)
         {
           if value_string.is_empty() {
@@ -1760,7 +1760,7 @@ fn apply_form_state_overrides(root: &mut DomNode, interaction_state: &Interactio
 
       if let Some(select_id) = frame.select_override {
         if is_option {
-          if let Some(selected) = interaction_state.form_state.select_selected.get(&select_id) {
+          if let Some(selected) = interaction_state.form_state().select_selected.get(&select_id) {
             node.toggle_bool_attribute("selected", selected.contains(&frame.node_id));
           }
         }
@@ -3180,7 +3180,7 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
       if input_type == "file" {
         if let Some(value) = ctx
           .interaction_state
-          .and_then(|state| state.form_state.file_input_value_string(node.node_id))
+          .and_then(|state| state.form_state().file_input_value_string(node.node_id))
         {
           return Some(value);
         }
@@ -3189,7 +3189,7 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
       }
       if let Some(value) = ctx
         .interaction_state
-        .and_then(|state| state.form_state.value_for(node.node_id))
+        .and_then(|state| state.form_state().value_for(node.node_id))
       {
         return Some(value.to_string());
       }
@@ -3204,7 +3204,7 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
     "textarea" => {
       if let Some(value) = ctx
         .interaction_state
-        .and_then(|state| state.form_state.value_for(node.node_id))
+        .and_then(|state| state.form_state().value_for(node.node_id))
       {
         return Some(value.to_string());
       }
@@ -3241,7 +3241,7 @@ fn select_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
 fn first_selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
   let selected_override = ctx
     .interaction_state
-    .and_then(|state| state.form_state.select_selected_options(node.node_id));
+    .and_then(|state| state.form_state().select_selected_options(node.node_id));
 
   let mut stack: Vec<&StyledNode> = vec![node];
   while let Some(current) = stack.pop() {
@@ -3355,7 +3355,7 @@ fn select_placeholder_label_option_node_id(
 fn selected_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usize> {
   if let Some(selected) = ctx
     .interaction_state
-    .and_then(|state| state.form_state.select_selected_options(node.node_id))
+    .and_then(|state| state.form_state().select_selected_options(node.node_id))
   {
     let explicit = find_selected_option_node_id_override(node, false, selected, ctx);
     if explicit.is_some() {
@@ -4208,7 +4208,7 @@ fn compute_checked(
     }
     let checked = ctx
       .interaction_state
-      .and_then(|state| state.form_state.checked_for(node.node_id))
+      .and_then(|state| state.form_state().checked_for(node.node_id))
       .unwrap_or_else(|| element_ref.accessibility_checked());
     if checked {
       return Some(CheckState::True);
@@ -4257,7 +4257,7 @@ fn compute_selected(
       if select.node.get_attribute_ref("multiple").is_some() {
         if let Some(selected) = ctx
           .interaction_state
-          .and_then(|state| state.form_state.select_selected_options(select.node_id))
+          .and_then(|state| state.form_state().select_selected_options(select.node_id))
         {
           return Some(selected.contains(&node.node_id));
         }
