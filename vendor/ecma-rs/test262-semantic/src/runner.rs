@@ -37,7 +37,26 @@ pub fn build_filter(pattern: Option<&str>) -> Result<Filter> {
   match pattern {
     None => Ok(Filter::All),
     Some(raw) => {
-      if let Ok(glob) = Glob::new(raw) {
+      // Convenience: if a filter looks like a directory prefix (no glob metacharacters and does not
+      // end in `.js`), treat it as `<prefix>/**` so callers can write:
+      //   --filter built-ins/String/prototype/matchAll
+      // instead of:
+      //   --filter built-ins/String/prototype/matchAll/**
+      //
+      // This keeps the UX closer to substring/prefix filtering while still allowing explicit glob
+      // patterns when needed.
+      let raw = raw.trim();
+      let mut normalized = raw.to_string();
+      let has_glob_chars = raw.contains('*') || raw.contains('?') || raw.contains('[') || raw.contains('{');
+      if !has_glob_chars && !raw.ends_with(".js") {
+        if raw.ends_with('/') {
+          normalized.push_str("**");
+        } else {
+          normalized.push_str("/**");
+        }
+      }
+
+      if let Ok(glob) = Glob::new(&normalized) {
         let mut builder = GlobSetBuilder::new();
         builder.add(glob);
         let set = builder

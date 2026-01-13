@@ -167,6 +167,7 @@ include = [
   "built-ins/String/prototype/concat/**/*.js",
   "built-ins/String/prototype/includes/**/*.js",
   "built-ins/String/prototype/indexOf/**/*.js",
+  "built-ins/String/prototype/matchAll/**/*.js",
   "built-ins/String/prototype/replace/**/*.js",
   "built-ins/String/prototype/replaceAll/**/*.js",
   "built-ins/String/prototype/slice/**/*.js",
