@@ -20409,12 +20409,20 @@ impl App {
     }
 
     match request.action {
-      accesskit::Action::Focus => {
+      accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default => {
         if request.target == compositor_a11y::page_node_id() {
-          self.page_has_focus = true;
+          let focus_changed = apply_page_focus_for_accesskit_action(
+            request.action,
+            &mut self.page_has_focus,
+            &mut self.browser_state.chrome,
+          );
+          // Cancel any in-flight address bar edit so chrome doesn't keep capturing keyboard input.
+          self.browser_state.set_address_bar_editing(false);
           self.chrome_has_text_focus = false;
-          self.window.request_redraw();
-        } else if request.target == compositor_a11y::chrome_node_id() {
+          if focus_changed {
+            self.window.request_redraw();
+          }
+        } else if request.target == compositor_a11y::chrome_node_id() && self.page_has_focus {
           self.page_has_focus = false;
           self.window.request_redraw();
         }
@@ -21442,15 +21450,23 @@ impl App {
         let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping);
         self.page_input_tab = Some(active_tab);
         self.page_input_mapping = Some(mapping);
-        let page_host_accesskit_focus_requested =
-          handle_page_host_accesskit_focus_actions(ui, &response, &mut self.page_has_focus);
-        if page_host_accesskit_focus_requested {
-          // AccessKit focus actions can arrive after the address bar/text controls have already been
-          // painted for this frame. Clear any cached chrome text-focus state immediately so
-          // subsequent keyboard input is routed to the page (mirroring pointer click focus
-          // semantics).
-          self.browser_state.set_address_bar_editing(false);
-          self.chrome_has_text_focus = false;
+        if !self.clear_browsing_data_dialog_open {
+          let focus_changed = handle_page_host_accesskit_focus_actions(
+            ui,
+            &response,
+            &mut self.page_has_focus,
+            &mut self.browser_state.chrome,
+          );
+          if focus_changed {
+            // AccessKit focus actions can arrive after the address bar/text controls have already been
+            // painted for this frame. Cancel any in-flight address bar edit and clear cached chrome
+            // text-focus state immediately so subsequent keyboard input is routed to the page.
+            self.browser_state.set_address_bar_editing(false);
+            self.chrome_has_text_focus = false;
+            // `response.request_focus()` is called when `page_has_focus` is true, so after flipping
+            // focus we need one more frame for egui/AccessKit to publish the updated focus node.
+            self.window.request_redraw();
+          }
         }
         if self.page_has_focus {
           response.request_focus();
@@ -22602,27 +22618,80 @@ fn ensure_page_focus_cleared_for_chrome_click(
 }
 
 #[cfg(feature = "browser_ui")]
+fn apply_page_focus_for_accesskit_action(
+  action: accesskit::Action,
+  page_has_focus: &mut bool,
+  chrome: &mut fastrender::ui::ChromeState,
+) -> bool {
+  let is_focus_action = matches!(
+    action,
+    accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default
+  );
+  if !is_focus_action {
+    return false;
+  }
+
+  let was_page_focused = *page_has_focus;
+  let was_address_bar_focused = chrome.address_bar_has_focus;
+  let was_request_focus = chrome.request_focus_address_bar;
+  let was_request_select_all = chrome.request_select_all_address_bar;
+  let was_address_bar_editing = chrome.address_bar_editing;
+  let was_tab_search_open = chrome.tab_search.open;
+  let was_appearance_popup_open = chrome.appearance_popup_open;
+  let was_tab_context_menu_open = chrome.open_tab_context_menu.is_some();
+
+  *page_has_focus = true;
+
+  // Treat the page as the active focus surface: clear chrome-level focus requests so egui doesn't
+  // immediately steal focus back (e.g. from the address bar) on the next frame.
+  chrome.request_focus_address_bar = false;
+  chrome.request_select_all_address_bar = false;
+  chrome.address_bar_has_focus = false;
+  chrome.address_bar_editing = false;
+  chrome.omnibox.reset();
+  chrome.tab_search.open = false;
+  chrome.appearance_popup_open = false;
+  chrome.open_tab_context_menu = None;
+  chrome.tab_context_menu_rect = None;
+  chrome.clear_tab_drag();
+  chrome.clear_link_drag();
+
+  !was_page_focused
+    || was_address_bar_focused
+    || was_request_focus
+    || was_request_select_all
+    || was_address_bar_editing
+    || was_tab_search_open
+    || was_appearance_popup_open
+    || was_tab_context_menu_open
+}
+
+#[cfg(feature = "browser_ui")]
 fn handle_page_host_accesskit_focus_actions(
   ui: &egui::Ui,
   response: &egui::Response,
   page_has_focus: &mut bool,
+  chrome: &mut fastrender::ui::ChromeState,
 ) -> bool {
   // Some assistive technologies trigger actions on the page host container node (the egui widget
   // that hosts the page viewport) instead of a descendant. Treat these actions as a request to
   // focus the rendered page so subsequent keyboard input is routed to the page worker.
-  let focus_requested = ui.input(|i| {
-    i.has_accesskit_action_request(response.id, accesskit::Action::Focus)
-  });
-  let default_requested = ui.input(|i| {
-    i.has_accesskit_action_request(response.id, accesskit::Action::Default)
+  let action = ui.input(|i| {
+    if i.has_accesskit_action_request(response.id, accesskit::Action::Focus) {
+      Some(accesskit::Action::Focus)
+    } else if i.has_accesskit_action_request(response.id, accesskit::Action::Click) {
+      Some(accesskit::Action::Click)
+    } else if i.has_accesskit_action_request(response.id, accesskit::Action::Default) {
+      Some(accesskit::Action::Default)
+    } else {
+      None
+    }
   });
 
-  if focus_requested || default_requested {
-    *page_has_focus = true;
-    return true;
-  }
-
-  false
+  let Some(action) = action else {
+    return false;
+  };
+  apply_page_focus_for_accesskit_action(action, page_has_focus, chrome)
 }
 
 #[cfg(test)]
@@ -22956,6 +23025,7 @@ mod page_host_accesskit_action_tests {
   fn run_page_host_frame(
     ctx: &egui::Context,
     page_has_focus: &mut bool,
+    chrome: &mut fastrender::ui::ChromeState,
     action_requests: Vec<accesskit::ActionRequest>,
   ) -> egui::FullOutput {
     let mut raw = egui::RawInput::default();
@@ -22979,7 +23049,7 @@ mod page_host_accesskit_action_tests {
       response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, "Web page content (rendered image)")
       });
-      let _ = handle_page_host_accesskit_focus_actions(ui, &response, page_has_focus);
+      let _ = handle_page_host_accesskit_focus_actions(ui, &response, page_has_focus, chrome);
       if *page_has_focus {
         response.request_focus();
       }
@@ -23010,7 +23080,12 @@ mod page_host_accesskit_action_tests {
     ctx.enable_accesskit();
 
     let mut page_has_focus = false;
-    let output = run_page_host_frame(&ctx, &mut page_has_focus, Vec::new());
+    let mut chrome = fastrender::ui::ChromeState::default();
+    chrome.address_bar_has_focus = true;
+    chrome.request_focus_address_bar = true;
+    chrome.request_select_all_address_bar = true;
+    chrome.address_bar_editing = true;
+    let output = run_page_host_frame(&ctx, &mut page_has_focus, &mut chrome, Vec::new());
     assert!(
       !page_has_focus,
       "expected page to start unfocused before any AccessKit action"
@@ -23023,10 +23098,45 @@ mod page_host_accesskit_action_tests {
       data: None,
     };
 
-    let _ = run_page_host_frame(&ctx, &mut page_has_focus, vec![focus_request]);
+    let _ = run_page_host_frame(&ctx, &mut page_has_focus, &mut chrome, vec![focus_request]);
     assert!(
       page_has_focus,
       "expected AccessKit Focus action on page host to set page_has_focus"
+    );
+    assert!(
+      !chrome.address_bar_has_focus
+        && !chrome.request_focus_address_bar
+        && !chrome.request_select_all_address_bar
+        && !chrome.address_bar_editing,
+      "expected chrome focus surfaces to be cleared when the page host receives focus"
+    );
+  }
+
+  #[test]
+  fn accesskit_click_action_on_page_host_sets_page_focus() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut page_has_focus = false;
+    let mut chrome = fastrender::ui::ChromeState::default();
+    chrome.address_bar_has_focus = true;
+    let output = run_page_host_frame(&ctx, &mut page_has_focus, &mut chrome, Vec::new());
+
+    let node_id = accesskit_node_id_for_page_host(&output);
+    let click_request = accesskit::ActionRequest {
+      action: accesskit::Action::Click,
+      target: node_id,
+      data: None,
+    };
+
+    let _ = run_page_host_frame(&ctx, &mut page_has_focus, &mut chrome, vec![click_request]);
+    assert!(
+      page_has_focus,
+      "expected AccessKit Click action on page host to set page_has_focus"
+    );
+    assert!(
+      !chrome.address_bar_has_focus,
+      "expected chrome address bar focus to be cleared"
     );
   }
 }
