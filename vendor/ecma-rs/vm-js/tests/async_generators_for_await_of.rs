@@ -325,3 +325,149 @@ fn for_await_of_throw_inside_async_generator_awaits_iterator_return() -> Result<
   rt.teardown_microtasks();
   result
 }
+
+#[test]
+fn for_await_of_async_generator_return_closes_inner_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  let result: Result<(), VmError> = (|| {
+    let value = rt.exec_script(
+      r#"
+        var out = "";
+
+        async function f() {
+          var closed = false;
+          const iterable = {};
+          iterable[Symbol.asyncIterator] = function () {
+            var i = 0;
+            return {
+              next() {
+                i++;
+                if (i === 1) return Promise.resolve({ value: 1, done: false });
+                if (i === 2) return Promise.resolve({ value: 2, done: false });
+                return Promise.resolve({ done: true });
+              },
+              return() {
+                // Side effect happens asynchronously to ensure the async generator's `.return()`
+                // request awaits the inner iterator close.
+                return Promise.resolve().then(function () {
+                  closed = true;
+                  return { done: true };
+                });
+              },
+            };
+          };
+
+          async function* g() {
+            for await (const x of iterable) {
+              yield x;
+            }
+          }
+
+          const it = g();
+          const r1 = await it.next();
+          const rret = await it.return("stop");
+          return (
+            String(r1.value) + "," +
+            String(rret.value) + "," + String(rret.done) + "," +
+            String(closed)
+          );
+        }
+
+        f().then(
+          function (v) { out = v; },
+          function (e) { out = "err:" + ((e && e.name) || e); }
+        );
+
+        out
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "1,stop,true,true");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
+
+#[test]
+fn for_await_of_async_generator_throw_closes_inner_iterator() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  let result: Result<(), VmError> = (|| {
+    let value = rt.exec_script(
+      r#"
+        var out = "";
+
+        async function f() {
+          var closed = false;
+          const iterable = {};
+          iterable[Symbol.asyncIterator] = function () {
+            var i = 0;
+            return {
+              next() {
+                i++;
+                if (i === 1) return Promise.resolve({ value: 1, done: false });
+                if (i === 2) return Promise.resolve({ value: 2, done: false });
+                return Promise.resolve({ done: true });
+              },
+              return() {
+                // Side effect happens asynchronously to ensure the async generator's `.throw()`
+                // request awaits the inner iterator close.
+                return Promise.resolve().then(function () {
+                  closed = true;
+                  return { done: true };
+                });
+              },
+            };
+          };
+
+          async function* g() {
+            for await (const x of iterable) {
+              yield x;
+            }
+          }
+
+          const it = g();
+          const r1 = await it.next();
+          try {
+            await it.throw("boom");
+            return "no-throw";
+          } catch (e) {
+            return String(r1.value) + "," + String(e) + "," + String(closed);
+          }
+        }
+
+        f().then(
+          function (v) { out = v; },
+          function (e) { out = "err:" + ((e && e.name) || e); }
+        );
+
+        out
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let out = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, out), "1,boom,true");
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
