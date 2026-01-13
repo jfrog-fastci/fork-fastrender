@@ -19052,7 +19052,6 @@ pub fn string_prototype_to_lower_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let this = crate::spec_ops::require_object_coercible(this)?;
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
   let s = scope.to_string(vm, host, hooks, o)?;
@@ -19121,7 +19120,6 @@ pub fn string_prototype_to_upper_case(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let this = crate::spec_ops::require_object_coercible(this)?;
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
   let s = scope.to_string(vm, host, hooks, o)?;
@@ -19226,7 +19224,6 @@ pub fn string_prototype_locale_compare(
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  crate::spec_ops::require_object_coercible(this)?;
   let mut scope = scope.reborrow();
   let o = crate::spec_ops::require_object_coercible(this)?;
   let a = scope.to_string(vm, host, hooks, o)?;
