@@ -2005,92 +2005,98 @@ mod bookmarks_bar_ui {
         ui.set_min_height(ui.spacing().interact_size.y);
 
         for &id in &visible_ids {
-          let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
-            continue;
-          };
+          // Stable widget IDs are critical for AccessKit. Without a deterministic id scope,
+          // reordering or changing the visible subset can cause egui's auto IDs to shift, which in
+          // turn churns AccessKit NodeIds (breaking screen reader cursor / focus persistence).
+          ui.push_id(("bookmark_bar_item", id.0), |ui| {
+            let Some(BookmarkNode::Bookmark(entry)) = bookmarks.nodes.get(&id) else {
+              return;
+            };
 
-          let url = entry.url.trim();
-          if url.is_empty() {
-            continue;
-          }
-
-          let title = entry
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty());
-          let label = title
-            .map(str::to_string)
-            .unwrap_or_else(|| crate::ui::url_display::truncate_url_middle(url, 36));
-
-          let tooltip = if let Some(title) = title {
-            format!("{title}\n{url}")
-          } else {
-            url.to_string()
-          };
-          let a11y_label = super::format_bookmark_widget_info_label(title, url);
-
-          let button = egui::Button::new(label)
-            .small()
-            .sense(egui::Sense::click_and_drag());
-          let response = ui.add(button).on_hover_text(tooltip.clone());
-          if response.has_focus() && !response.hovered() {
-            // Egui tooltips only show on pointer hover. Mirror the hover tooltip while
-            // keyboard-focused so bookmark buttons remain discoverable for keyboard-only users.
-            egui::show_tooltip_text(ui.ctx(), response.id.with("focus_tooltip"), tooltip);
-          }
-          response.widget_info({
-            let a11y_label = a11y_label.clone();
-            move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
-          });
-          item_rects.push((id, response.rect));
-
-          let open_new_tab =
-            response.middle_clicked() || (response.clicked() && ui.input(|i| i.modifiers.command));
-          if response.clicked() || response.middle_clicked() {
-            out.navigate_to = Some(url.to_string());
-            out.navigate_new_tab = open_new_tab;
-          }
-          if response.drag_started() {
-            drag.dragging = Some(id);
-            drag.drop_index = None;
-          }
-          if response.drag_released() {
-            drag_released = Some(id);
-          }
-
-          // Keyboard-accessible reorder.
-          response.context_menu(|ui| {
-            ui.set_min_width(140.0);
-            if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
-              ui.add_enabled_ui(idx > 0, |ui| {
-                let move_left = ui.button("Move left");
-                move_left.widget_info(|| {
-                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
-                });
-                if move_left.clicked() {
-                  if let Some(new_order) =
-                    move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
-                  {
-                    out.reorder_roots = Some(new_order);
-                  }
-                  ui.close_menu();
-                }
-              });
-              ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
-                let move_right = ui.button("Move right");
-                move_right.widget_info(|| {
-                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
-                });
-                if move_right.clicked() {
-                  if let Some(new_order) = move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
-                  {
-                    out.reorder_roots = Some(new_order);
-                  }
-                  ui.close_menu();
-                }
-              });
+            let url = entry.url.trim();
+            if url.is_empty() {
+              return;
             }
+
+            let title = entry
+              .title
+              .as_deref()
+              .map(str::trim)
+              .filter(|t| !t.is_empty());
+            let label = title
+              .map(str::to_string)
+              .unwrap_or_else(|| crate::ui::url_display::truncate_url_middle(url, 36));
+
+            let tooltip = if let Some(title) = title {
+              format!("{title}\n{url}")
+            } else {
+              url.to_string()
+            };
+            let a11y_label = super::format_bookmark_widget_info_label(title, url);
+
+            let button = egui::Button::new(label)
+              .small()
+              .sense(egui::Sense::click_and_drag());
+            let response = ui.add(button).on_hover_text(tooltip.clone());
+            if response.has_focus() && !response.hovered() {
+              // Egui tooltips only show on pointer hover. Mirror the hover tooltip while
+              // keyboard-focused so bookmark buttons remain discoverable for keyboard-only users.
+              egui::show_tooltip_text(ui.ctx(), response.id.with("focus_tooltip"), tooltip);
+            }
+            response.widget_info({
+              let a11y_label = a11y_label.clone();
+              move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
+            });
+            item_rects.push((id, response.rect));
+
+            let open_new_tab = response.middle_clicked()
+              || (response.clicked() && ui.input(|i| i.modifiers.command));
+            if response.clicked() || response.middle_clicked() {
+              out.navigate_to = Some(url.to_string());
+              out.navigate_new_tab = open_new_tab;
+            }
+            if response.drag_started() {
+              drag.dragging = Some(id);
+              drag.drop_index = None;
+            }
+            if response.drag_released() {
+              drag_released = Some(id);
+            }
+
+            // Keyboard-accessible reorder.
+            response.context_menu(|ui| {
+              ui.set_min_width(140.0);
+              if let Some(idx) = visible_ids.iter().position(|x| *x == id) {
+                ui.add_enabled_ui(idx > 0, |ui| {
+                  let move_left = ui.button("Move left");
+                  move_left.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark left")
+                  });
+                  if move_left.clicked() {
+                    if let Some(new_order) =
+                      move_before_id(&bookmarks.roots, id, visible_ids[idx - 1])
+                    {
+                      out.reorder_roots = Some(new_order);
+                    }
+                    ui.close_menu();
+                  }
+                });
+                ui.add_enabled_ui(idx + 1 < visible_ids.len(), |ui| {
+                  let move_right = ui.button("Move right");
+                  move_right.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, "Move bookmark right")
+                  });
+                  if move_right.clicked() {
+                    if let Some(new_order) =
+                      move_after_id(&bookmarks.roots, id, visible_ids[idx + 1])
+                    {
+                      out.reorder_roots = Some(new_order);
+                    }
+                    ui.close_menu();
+                  }
+                });
+              }
+            });
           });
         }
       },
@@ -3008,5 +3014,90 @@ mod tests {
 
     other.apply_deltas(&deltas).unwrap();
     assert_eq!(other.roots, vec![a, c, d, b]);
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod a11y_id_tests {
+  use super::*;
+  use crate::ui::a11y_test_util;
+
+  fn begin_frame(ctx: &egui::Context) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 200.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+    ctx.begin_frame(raw);
+  }
+
+  fn render_bookmarks_bar(ctx: &egui::Context, store: &BookmarkStore) -> egui::FullOutput {
+    begin_frame(ctx);
+    egui::CentralPanel::default().show(ctx, |ui| {
+      let _ = super::bookmarks_bar_ui(ui, store, 12);
+    });
+    ctx.end_frame()
+  }
+
+  fn accesskit_button_id(output: &egui::FullOutput, name: &str) -> String {
+    let snapshot = a11y_test_util::accesskit_snapshot_from_full_output(output);
+    snapshot
+      .nodes
+      .iter()
+      .find(|n| n.role == "Button" && n.name == name)
+      .map(|n| n.id.clone())
+      .unwrap_or_else(|| {
+        let pretty = a11y_test_util::accesskit_pretty_json_from_full_output(output);
+        panic!("failed to find AccessKit Button with name {name:?}.\n\n{pretty}");
+      })
+  }
+
+  #[test]
+  fn bookmarks_bar_bookmark_buttons_have_stable_accesskit_ids_across_reorder() {
+    let ctx = egui::Context::default();
+    // AccessKit output is typically enabled/disabled by the platform adapter (egui-winit).
+    // In headless unit tests we force it on to ensure egui emits an update.
+    ctx.enable_accesskit();
+
+    let mut store = BookmarkStore::default();
+    let a = store
+      .add(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+      )
+      .unwrap();
+    let b = store
+      .add(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        None,
+      )
+      .unwrap();
+
+    let name_a = format_bookmark_widget_info_label(Some("A"), "https://a.example/");
+    let name_b = format_bookmark_widget_info_label(Some("B"), "https://b.example/");
+
+    let first = render_bookmarks_bar(&ctx, &store);
+    let first_id_a = accesskit_button_id(&first, &name_a);
+    let first_id_b = accesskit_button_id(&first, &name_b);
+
+    store.reorder_root(&[b, a]).unwrap();
+
+    let second = render_bookmarks_bar(&ctx, &store);
+    let second_id_a = accesskit_button_id(&second, &name_a);
+    let second_id_b = accesskit_button_id(&second, &name_b);
+
+    assert_eq!(
+      first_id_a, second_id_a,
+      "expected bookmark A to keep the same AccessKit node id across reorder"
+    );
+    assert_eq!(
+      first_id_b, second_id_b,
+      "expected bookmark B to keep the same AccessKit node id across reorder"
+    );
   }
 }
