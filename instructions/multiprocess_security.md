@@ -175,6 +175,13 @@ safely run `CommandExt::pre_exec`). This path is opt-in and gated by:
 Note: when sandboxing is disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1` or
 `FASTR_MACOS_RENDERER_SANDBOX=off`, the `sandbox-exec` wrapper helpers become no-ops.
 
+Other useful macOS debug overrides:
+
+- Disable Seatbelt sandboxing entirely (INSECURE): `FASTR_DISABLE_RENDERER_SANDBOX=1` or
+  `FASTR_MACOS_RENDERER_SANDBOX=off`.
+- Select a relaxed “system fonts” Seatbelt profile for bring-up:
+  `FASTR_MACOS_RENDERER_SANDBOX=system-fonts` (still blocks network + user filesystem reads).
+
 See `src/sandbox/macos_spawn.rs` (`wrap_command_with_sandbox_exec` /
 `maybe_wrap_command_with_sandbox_exec`). Prefer in-process `sandbox_init` for long-term sandboxing.
 
