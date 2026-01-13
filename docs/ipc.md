@@ -576,6 +576,11 @@ relaxation here is a potential browser crash/DoS primitive.
 ## Protocol versioning + upgrade strategy
 
 **Bincode is not self-describing**: adding/removing enum variants or fields can break decoding.
+
+Even for self-describing formats like JSON, our security posture is to **fail closed** on unexpected
+fields (via `#[serde(deny_unknown_fields)]`), which means additive schema changes are *also*
+effectively breaking unless explicitly negotiated.
+
 Therefore versioning must be explicit and checked **before** attempting to decode arbitrary payloads.
 
 Repo reality:
