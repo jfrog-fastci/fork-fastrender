@@ -5,7 +5,7 @@ use crate::ui::browser_app::{
 use crate::ui::icons::paint_icon_in_rect;
 use crate::ui::messages::TabId;
 use crate::ui::motion::UiMotion;
-use crate::ui::{icon_button, BrowserIcon};
+use crate::ui::{icon_button_with_id, BrowserIcon};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, Vec2};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -4209,7 +4209,13 @@ pub(super) fn tab_strip_ui(
     .allocate_ui_at_rect(button_rect, |ui| {
       ui.spacing_mut().interact_size = Vec2::splat(button_rect.height());
       ui.spacing_mut().icon_width = ICON_SIZE;
-      icon_button(ui, BrowserIcon::NewTab, "New tab (Ctrl/Cmd+T)", true)
+      icon_button_with_id(
+        ui,
+        egui::Id::new("chrome_tab_strip_new_tab_button"),
+        BrowserIcon::NewTab,
+        "New tab (Ctrl/Cmd+T)",
+        true,
+      )
     })
     .inner;
   #[cfg(test)]
@@ -4218,6 +4224,12 @@ pub(super) fn tab_strip_ui(
   new_tab_resp.widget_info(|| {
     egui::WidgetInfo::labeled(egui::WidgetType::Button, BrowserIcon::NewTab.a11y_label())
   });
+  #[cfg(test)]
+  super::store_test_id(
+    ui.ctx(),
+    "chrome_tab_strip_new_tab_button_id",
+    new_tab_resp.id,
+  );
   if new_tab_resp.clicked() {
     actions.push(ChromeAction::NewTab);
   }

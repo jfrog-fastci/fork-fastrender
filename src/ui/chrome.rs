@@ -31,8 +31,8 @@ use crate::ui::url::{
 };
 use crate::ui::url_display;
 use crate::ui::zoom;
+use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
 use crate::ui::ChromeAction;
-use crate::ui::{icon_button, icon_tinted, spinner, BrowserIcon};
 use url::Url;
 
 const ADDRESS_BAR_DISPLAY_MAX_CHARS: usize = 80;
@@ -2343,7 +2343,7 @@ pub fn chrome_ui_with_bookmarks(
       //
       // NOTE: This is rendered *after* the address bar so Tab/Shift+Tab focus traversal matches the
       // left-to-right visual order.
-      let menu_id = ui.make_persistent_id("chrome_menu");
+      let menu_id = egui::Id::new("chrome_menu");
       let menu_open_id = menu_id.with("open");
       let menu_popup_id = menu_id.with("popup");
       let menu_opener_id = menu_id.with("opener_id");
@@ -2353,7 +2353,13 @@ pub fn chrome_ui_with_bookmarks(
         .unwrap_or(false);
       let menu_open_prev = menu_open;
 
-      let menu_button = icon_button(ui, BrowserIcon::Menu, "Menu", true);
+      let menu_button = icon_button_with_id(
+        ui,
+        menu_id.with("button"),
+        BrowserIcon::Menu,
+        "Menu",
+        true,
+      );
       #[cfg(test)]
       store_test_rect(ctx, "chrome_menu_button_rect", menu_button.rect);
       #[cfg(test)]
@@ -2567,11 +2573,13 @@ pub fn chrome_ui_with_bookmarks(
         d.insert_temp(menu_open_id, menu_open);
       });
 
-      let appearance_response = ui
-        .push_id("appearance_button", |ui| {
-          icon_button(ui, BrowserIcon::Appearance, "Appearance", true)
-        })
-        .inner;
+      let appearance_response = icon_button_with_id(
+        ui,
+        egui::Id::new("chrome_appearance_button"),
+        BrowserIcon::Appearance,
+        "Appearance",
+        true,
+      );
       #[cfg(test)]
       store_test_id(ctx, "chrome_appearance_button_id", appearance_response.id);
       appearance_button_rect = Some(appearance_response.rect);
@@ -7574,6 +7582,108 @@ frame={idx} repaint_after={:?}\n",
       expect_temp_id(ctx, "chrome_menu_button_id"),
       expect_temp_id(ctx, "chrome_appearance_button_id"),
     ]
+  }
+
+  #[test]
+  fn chrome_key_controls_have_stable_ids_across_identical_renders() {
+    let mut app = BrowserAppState::new();
+    app.push_tab(
+      BrowserTabState::new(TabId(1), "about:newtab".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let first = (
+      expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    );
+
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let second = (
+      expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    );
+
+    assert_eq!(
+      first, second,
+      "expected ids for key chrome controls to remain stable across identical renders"
+    );
+  }
+
+  #[test]
+  fn chrome_key_control_ids_remain_stable_across_common_state_changes() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+
+    let ctx = egui::Context::default();
+    let regular = egui::vec2(800.0, 600.0);
+    let compact = egui::vec2(500.0, 600.0);
+
+    // Baseline (non-compact, not loading).
+    begin_frame_with_screen_size(&ctx, regular, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let baseline = (
+      expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    );
+
+    // Toggle loading (Reload → Stop loading). This should not perturb ids for unrelated controls.
+    app.active_tab_mut().unwrap().loading = true;
+    begin_frame_with_screen_size(&ctx, regular, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let loading_ids = (
+      expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    );
+    assert_eq!(
+      baseline, loading_ids,
+      "expected key chrome control ids to remain stable when loading toggles"
+    );
+
+    // Switch to compact layout (zoom buttons are removed). Key control ids should remain stable.
+    begin_frame_with_screen_size(&ctx, compact, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let compact_ids = (
+      expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    );
+    assert_eq!(
+      baseline, compact_ids,
+      "expected key chrome control ids to remain stable when switching to compact layout"
+    );
+
+    // In compact mode, enabling a non-default zoom inserts a reset pill. Ensure ids remain stable.
+    app.active_tab_mut().unwrap().zoom = 1.25;
+    begin_frame_with_screen_size(&ctx, compact, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app, true, |_| None);
+    let _ = ctx.end_frame();
+    let compact_zoom_ids = (
+      expect_temp_id(&ctx, "chrome_tab_strip_new_tab_button_id"),
+      expect_temp_id(&ctx, "chrome_menu_button_id"),
+      expect_temp_id(&ctx, "chrome_appearance_button_id"),
+    );
+    assert_eq!(
+      baseline, compact_zoom_ids,
+      "expected key chrome control ids to remain stable when compact zoom controls toggle"
+    );
   }
 
   #[test]

@@ -453,13 +453,23 @@ pub fn icon_tinted(
 }
 
 struct IconButton {
+  id: Option<egui::Id>,
   icon: BrowserIcon,
   tooltip: egui::WidgetText,
 }
 
 impl IconButton {
   fn new(icon: BrowserIcon, tooltip: egui::WidgetText) -> Self {
-    Self { icon, tooltip }
+    Self {
+      id: None,
+      icon,
+      tooltip,
+    }
+  }
+
+  fn with_id(mut self, id: egui::Id) -> Self {
+    self.id = Some(id);
+    self
   }
 }
 
@@ -468,10 +478,14 @@ impl egui::Widget for IconButton {
     let icon = self.icon;
     let side_points = ui.spacing().interact_size.y;
     let tooltip = self.tooltip;
-    let (rect, mut response) = ui.allocate_exact_size(
-      egui::vec2(side_points, side_points),
-      egui::Sense::click(),
-    );
+    let desired_size = egui::vec2(side_points, side_points);
+    let (rect, mut response) = if let Some(id) = self.id {
+      let rect = ui.allocate_space(desired_size);
+      let response = ui.interact(rect, id, egui::Sense::click());
+      (rect, response)
+    } else {
+      ui.allocate_exact_size(desired_size, egui::Sense::click())
+    };
 
     // Micro-interaction: fade between inactive/hovered button visuals.
     //
@@ -560,6 +574,20 @@ pub fn icon_button(
   enabled: bool,
 ) -> egui::Response {
   ui.add_enabled(enabled, IconButton::new(icon, tooltip.into()))
+}
+
+/// A toolbar-friendly icon button with an explicit egui id.
+///
+/// Use this for important, long-lived chrome controls so their widget ids (and derived AccessKit
+/// node ids) remain stable even if surrounding UI structure changes.
+pub fn icon_button_with_id(
+  ui: &mut egui::Ui,
+  id: egui::Id,
+  icon: BrowserIcon,
+  tooltip: impl Into<egui::WidgetText>,
+  enabled: bool,
+) -> egui::Response {
+  ui.add_enabled(enabled, IconButton::new(icon, tooltip.into()).with_id(id))
 }
 
 /// A lightweight loading spinner.

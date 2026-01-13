@@ -288,7 +288,7 @@ pub use session::{
 #[cfg(feature = "browser_ui")]
 pub use session_autosave::SessionAutosave;
 #[cfg(feature = "browser_ui")]
-pub use icons::{icon, icon_button, icon_tinted, paint_icon_in_rect, spinner, BrowserIcon};
+pub use icons::{icon, icon_button, icon_button_with_id, icon_tinted, paint_icon_in_rect, spinner, BrowserIcon};
 #[cfg(feature = "browser_ui")]
 pub use panel_widgets::{
   danger_button, panel_empty_state, panel_header, panel_header_with_actions, panel_list_row,
