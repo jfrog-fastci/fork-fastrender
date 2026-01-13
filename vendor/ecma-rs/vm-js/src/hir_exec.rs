@@ -8542,13 +8542,13 @@ pub(crate) fn run_compiled_script(
 }
 
 #[cfg(test)]
-mod async_function_allocation_tests {
+mod async_function_ast_fallback_tests {
   use crate::function::CallHandler;
   use crate::{CompiledScript, Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
   use std::sync::Arc;
 
   #[test]
-  fn compiled_hir_allocates_async_functions_as_compiled_user_functions() -> Result<(), VmError> {
+  fn compiled_script_with_async_function_falls_back_to_ast_executor() -> Result<(), VmError> {
     let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
     let mut rt = JsRuntime::new(vm, heap)?;
@@ -8569,6 +8569,14 @@ mod async_function_allocation_tests {
       .expect("compiled script Arc should be uniquely owned in this unit test")
       .requires_ast_fallback = false;
 
+    assert!(script.contains_async_functions);
+    assert!(!script.contains_generators);
+    assert!(!script.contains_async_generators);
+    assert!(
+      script.requires_ast_fallback,
+      "async function bodies are not yet supported by the compiled (HIR) executor, so compiled scripts must fall back to the AST interpreter"
+    );
+
     let result = rt.exec_compiled_script(script)?;
     let Value::Object(func_obj) = result else {
       panic!("expected async function object, got {result:?}");
@@ -8576,8 +8584,8 @@ mod async_function_allocation_tests {
 
     let call_handler = rt.heap.get_function_call_handler(func_obj)?;
     assert!(
-      matches!(call_handler, CallHandler::User(_)),
-      "expected CallHandler::User for async function allocated in compiled HIR executor, got {call_handler:?}"
+      matches!(call_handler, CallHandler::Ecma(_)),
+      "expected async function to be allocated as an interpreter-backed ECMAScript function when falling back from compiled scripts, got {call_handler:?}"
     );
     Ok(())
   }
