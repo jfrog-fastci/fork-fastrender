@@ -18513,6 +18513,43 @@ fn add_plus_to_exponent(s: &str) -> Result<String, VmError> {
   Ok(out)
 }
 
+/// A `fmt::Write` wrapper that performs fallible `String` growth via `try_reserve`.
+///
+/// `std::fmt` formatting APIs use infallible `String::push_str`/`push` internally, which can abort
+/// the host process on allocator OOM. By routing writes through this wrapper, we can convert
+/// allocation failures into `fmt::Error` and surface them as `VmError::OutOfMemory`.
+struct FallibleStringWriter<'a> {
+  out: &'a mut String,
+}
+
+impl Write for FallibleStringWriter<'_> {
+  fn write_str(&mut self, s: &str) -> std::fmt::Result {
+    self
+      .out
+      .try_reserve(s.len())
+      .map_err(|_| std::fmt::Error)?;
+    self.out.push_str(s);
+    Ok(())
+  }
+
+  fn write_char(&mut self, c: char) -> std::fmt::Result {
+    let mut buf = [0u8; 4];
+    let encoded = c.encode_utf8(&mut buf);
+    self
+      .out
+      .try_reserve(encoded.len())
+      .map_err(|_| std::fmt::Error)?;
+    self.out.push(c);
+    Ok(())
+  }
+}
+
+#[inline]
+fn try_write_fmt(out: &mut String, args: std::fmt::Arguments<'_>) -> Result<(), VmError> {
+  let mut w = FallibleStringWriter { out };
+  w.write_fmt(args).map_err(|_| VmError::OutOfMemory)
+}
+
 /// `Number.prototype.toString(radix)` (ECMA-262).
 pub fn number_prototype_to_string(
   vm: &mut Vm,
@@ -18616,10 +18653,17 @@ pub fn number_prototype_to_fixed(
   let x = if x == 0.0 { 0.0 } else { x };
 
   let mut buf = String::new();
+  // For |x| < 1e21, `toFixed` uses fixed notation with up to 100 fractional digits.
+  //
+  // The formatted output is bounded by:
+  //   [optional '-'] + up to 22 integer digits (rounding can carry into 1e21) + ['.' + f digits]
+  let reserve = 1usize
+    .saturating_add(22)
+    .saturating_add(if f > 0 { 1usize.saturating_add(f) } else { 0 });
   buf
-    .try_reserve_exact(256)
+    .try_reserve_exact(reserve)
     .map_err(|_| VmError::OutOfMemory)?;
-  write!(&mut buf, "{:.*}", f, x).unwrap();
+  try_write_fmt(&mut buf, format_args!("{:.*}", f, x))?;
   let out = scope.alloc_string(&buf)?;
   Ok(Value::String(out))
 }
@@ -18651,8 +18695,12 @@ pub fn number_prototype_to_exponential(
   let fd_val = args.get(0).copied().unwrap_or(Value::Undefined);
   let raw = if matches!(fd_val, Value::Undefined) {
     let mut buf = String::new();
-    buf.try_reserve_exact(64).map_err(|_| VmError::OutOfMemory)?;
-    write!(&mut buf, "{:e}", x).unwrap();
+    // `{:e}` uses the shortest round-trippable representation of an f64, which has at most 17
+    // significant digits. In `1.xxxxxe±ddd` form, that's at most:
+    //   [optional '-'] + 1 digit + '.' + 16 digits + 'e' + [optional '-'] + 3 exponent digits
+    let reserve = 1usize + 1 + 1 + 16 + 1 + 1 + 3;
+    buf.try_reserve_exact(reserve).map_err(|_| VmError::OutOfMemory)?;
+    try_write_fmt(&mut buf, format_args!("{:e}", x))?;
     buf
   } else {
     let mut f = scope.to_number(vm, host, hooks, fd_val)?;
@@ -18673,8 +18721,22 @@ pub fn number_prototype_to_exponential(
     let f = f as usize;
 
     let mut buf = String::new();
-    buf.try_reserve_exact(256).map_err(|_| VmError::OutOfMemory)?;
-    write!(&mut buf, "{:.*e}", f, x).unwrap();
+    // With an explicit precision, Rust's `{:.*e}` prints exactly `f` digits after the decimal
+    // point.
+    //
+    // For f64, the base-10 exponent is always within [-324, 308], so the exponent component is
+    // bounded by `e±ddd`.
+    //
+    // Total bound:
+    //   [optional '-'] + (1 digit + ['.' + f digits]) + 'e' + [optional '-'] + 3 digits
+    let mantissa_len = 1usize.saturating_add(if f > 0 { 1usize.saturating_add(f) } else { 0 });
+    let reserve = 1usize
+      .saturating_add(mantissa_len)
+      .saturating_add(1) // 'e'
+      .saturating_add(1) // exponent sign
+      .saturating_add(3); // exponent digits
+    buf.try_reserve_exact(reserve).map_err(|_| VmError::OutOfMemory)?;
+    try_write_fmt(&mut buf, format_args!("{:.*e}", f, x))?;
     buf
   };
 
@@ -18733,10 +18795,19 @@ pub fn number_prototype_to_precision(
 
   // Start with exponential form at the requested precision so any rounding is consistent.
   let mut exp_buf = String::new();
+  let exp_precision = p.saturating_sub(1);
+  // f64 base-10 exponent fits in `e±ddd` ([-324, 308]), and the mantissa is `d[.ffff]` where
+  // `f = exp_precision` digits are printed after the decimal point.
+  let mantissa_len =
+    1usize.saturating_add(if exp_precision > 0 { 1usize.saturating_add(exp_precision) } else { 0 });
+  let reserve = mantissa_len
+    .saturating_add(1) // 'e'
+    .saturating_add(1) // exponent sign
+    .saturating_add(3); // exponent digits
   exp_buf
-    .try_reserve_exact(256)
+    .try_reserve_exact(reserve)
     .map_err(|_| VmError::OutOfMemory)?;
-  write!(&mut exp_buf, "{:.*e}", p.saturating_sub(1), abs).unwrap();
+  try_write_fmt(&mut exp_buf, format_args!("{:.*e}", exp_precision, abs))?;
 
   let Some((mantissa, exp_part)) = exp_buf.split_once('e') else {
     return Err(VmError::InvariantViolation("expected exponential formatting to contain 'e'"));

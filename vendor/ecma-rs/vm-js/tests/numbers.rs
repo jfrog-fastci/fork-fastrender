@@ -83,6 +83,43 @@ fn number_prototype_formatting_methods_work() -> Result<(), VmError> {
   )?;
   assert_eq!(as_utf8_lossy(&rt, s), "1.23,1.00e+0,7.7e+1,123.5,1e+1");
 
+  // Max length / range edge cases (fractionDigits/precision upper bound is 100).
+  let s = rt.exec_script(r#"(-0).toFixed(100)"#)?;
+  assert_eq!(as_utf8_lossy(&rt, s), format!("0.{}", "0".repeat(100)));
+
+  let s = rt.exec_script(r#"(1e20).toFixed(100)"#)?;
+  let out = as_utf8_lossy(&rt, s);
+  assert!(!out.contains('e'), "toFixed must not use exponential notation");
+  let Some((_int, frac)) = out.split_once('.') else {
+    panic!("expected fixed notation, got {out:?}");
+  };
+  assert_eq!(frac.len(), 100);
+  assert!(frac.bytes().all(|b| b'0' <= b && b <= b'9'));
+
+  let s = rt.exec_script(r#"(1.23).toExponential(100)"#)?;
+  let out = as_utf8_lossy(&rt, s);
+  assert!(out.ends_with("e+0"));
+  let Some((mantissa, exp)) = out.split_once('e') else {
+    panic!("expected exponential form, got {out:?}");
+  };
+  assert_eq!(exp, "+0");
+  let Some((leading, frac)) = mantissa.split_once('.') else {
+    panic!("expected decimal point in mantissa, got {mantissa:?}");
+  };
+  assert_eq!(leading, "1");
+  assert_eq!(frac.len(), 100);
+  assert!(frac.bytes().all(|b| b'0' <= b && b <= b'9'));
+
+  let s = rt.exec_script(r#"(1.23).toPrecision(100)"#)?;
+  let out = as_utf8_lossy(&rt, s);
+  assert!(!out.contains('e'), "expected fixed notation, got {out:?}");
+  let Some((leading, frac)) = out.split_once('.') else {
+    panic!("expected fixed decimal point, got {out:?}");
+  };
+  assert_eq!(leading, "1");
+  assert_eq!(frac.len(), 99);
+  assert!(frac.bytes().all(|b| b'0' <= b && b <= b'9'));
+
   // toLocaleString is present (minimal placeholder).
   assert_eq!(
     rt.exec_script(r#"typeof (1).toLocaleString === "function" && (1).toLocaleString() === "1""#)?,
