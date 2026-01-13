@@ -14506,12 +14506,14 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           && self.page_has_focus
           && !self.chrome_has_text_focus
         {
-          // Media keyboard shortcuts should only trigger for the plain key (no command modifiers),
-          // otherwise reserved browser shortcuts like Alt+Left/Right should keep working.
-          let has_command_modifiers = self.modifiers.ctrl()
-            || self.modifiers.alt()
-            || self.modifiers.logo()
-            || self.modifiers.shift();
+          // Media keyboard shortcuts should only trigger for the plain key (no browser/chrome
+          // command modifiers), otherwise reserved shortcuts like Alt+Left/Right should keep
+          // working.
+          //
+          // Note: do not treat Shift as a command modifier here so uppercase shortcuts (Shift+M/F)
+          // still work.
+          let has_command_modifiers =
+            self.modifiers.ctrl() || self.modifiers.alt() || self.modifiers.logo();
           if !has_command_modifiers {
             if let Some(controls) = self.open_media_controls.as_ref() {
               match key {
@@ -14539,6 +14541,20 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
                     node_id: controls.media_node_id,
                     command: fastrender::ui::messages::MediaCommand::SeekBySeconds(5.0),
                   });
+                  self.window.request_redraw();
+                  return;
+                }
+                VirtualKeyCode::M => {
+                  let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
+                    tab_id: controls.tab_id,
+                    node_id: controls.media_node_id,
+                    command: fastrender::ui::messages::MediaCommand::ToggleMute,
+                  });
+                  self.window.request_redraw();
+                  return;
+                }
+                VirtualKeyCode::F => {
+                  self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ToggleFullScreen]);
                   self.window.request_redraw();
                   return;
                 }
@@ -14982,26 +14998,14 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         if ch.is_control() {
           return;
         }
-        if self.open_media_controls.is_some() {
-          if let Some(controls) = self.open_media_controls.as_ref() {
-            match *ch {
-              'm' | 'M' => {
-                let _ = self.send_worker_msg(fastrender::ui::UiToWorker::MediaCommand {
-                  tab_id: controls.tab_id,
-                  node_id: controls.media_node_id,
-                  command: fastrender::ui::messages::MediaCommand::ToggleMute,
-                });
-                self.window.request_redraw();
-                return;
-              }
-              'f' | 'F' => {
-                self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ToggleFullScreen]);
-                self.window.request_redraw();
-                return;
-              }
-              _ => {}
-            }
-          }
+        if self.open_media_controls.is_some()
+          && matches!(*ch, ' ' | 'm' | 'M' | 'f' | 'F')
+        {
+          // Media overlay keyboard shortcuts should not be forwarded to the page as text input.
+          //
+          // These keys are handled at the `KeyboardInput` layer so they work reliably regardless of
+          // IME/`ReceivedCharacter` behaviour.
+          return;
         }
         if self.open_select_dropdown.is_some() {
           self.handle_select_dropdown_typeahead(*ch);
