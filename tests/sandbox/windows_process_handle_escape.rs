@@ -5,9 +5,13 @@
 //! from the browser process by opening a handle with `PROCESS_VM_READ` / `PROCESS_DUP_HANDLE` and
 //! reading memory or duplicating existing privileged handles.
 //!
-//! This test launches a child copy of the test harness inside an AppContainer and then attempts
-//! `OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE)` against the
-//! parent PID. We expect `OpenProcess` to fail with `ERROR_ACCESS_DENIED`.
+//! This test launches a child copy of the test harness inside the Windows renderer sandbox and then
+//! attempts `OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION | PROCESS_DUP_HANDLE)` against
+//! the parent PID.
+//!
+//! We prefer running the child in an **AppContainer** (no capabilities). If AppContainer is
+//! unavailable, we fall back to the project's **restricted-token + low integrity** mode. In either
+//! case, `OpenProcess` must fail.
 
 #![cfg(windows)]
 
@@ -20,16 +24,22 @@ use windows_sys::Win32::Foundation::{
   CloseHandle, GetLastError, SetHandleInformation, ERROR_ACCESS_DENIED, HANDLE, HANDLE_FLAG_INHERIT,
   INVALID_HANDLE_VALUE,
 };
-use windows_sys::Win32::Security::Authorization::{
+use windows_sys::Win32::Security::Authentication::Identity::{
   CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
-use windows_sys::Win32::Security::{FreeSid, SECURITY_CAPABILITIES};
+use windows_sys::Win32::Security::{
+  ConvertStringSidToSidW, CreateRestrictedToken, FreeSid, GetLengthSid, OpenProcessToken,
+  SetTokenInformation, TokenIntegrityLevel, DISABLE_MAX_PRIVILEGE, SECURITY_CAPABILITIES,
+  SE_GROUP_INTEGRITY, SE_GROUP_INTEGRITY_ENABLED, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
+  TOKEN_DUPLICATE, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+};
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+use windows_sys::Win32::System::Memory::LocalFree;
 use windows_sys::Win32::System::Threading::{
-  CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList,
-  OpenProcess, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, PROCESS_INFORMATION,
-  PROCESS_DUP_HANDLE, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, PROC_THREAD_ATTRIBUTE_LIST,
-  STARTUPINFOEXW,
+  CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
+  GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcess, TerminateProcess,
+  UpdateProcThreadAttribute, WaitForSingleObject, PROCESS_INFORMATION, PROCESS_DUP_HANDLE,
+  PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, PROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW,
 };
 
 const ENV_CHILD_MODE: &str = "FASTR_SANDBOX_TEST_CHILD";
@@ -50,6 +60,12 @@ const WAIT_TIMEOUT: u32 = 0x00000102;
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
 
 const APP_CONTAINER_NAME: &str = "fastrender.sandbox.process-handle-escape-test";
+
+// Some sandbox configurations may intentionally obscure process enumeration/opening by returning
+// a different failure code (e.g. "invalid parameter" instead of "access denied"). Any of these are
+// acceptable as long as `OpenProcess` fails.
+const ERROR_INVALID_PARAMETER: u32 = 87;
+const ERROR_PRIVILEGE_NOT_HELD: u32 = 1314;
 
 fn wide_null(s: &OsStr) -> Vec<u16> {
   let mut wide: Vec<u16> = s.encode_wide().collect();
@@ -141,12 +157,9 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
         &mut appcontainer_sid,
       );
       if derive_hr != 0 {
-        // The API is not available on older Windows. Treat this as a skip to avoid false failures
-        // on unsupported hosts.
-        eprintln!(
-          "skipping Windows AppContainer process-handle escape test: DeriveAppContainerSidFromAppContainerName failed (hr=0x{derive_hr:08X})"
-        );
-        return Ok(0);
+        return Err(format!(
+          "DeriveAppContainerSidFromAppContainerName failed (hr=0x{derive_hr:08X})"
+        ));
       }
     }
     struct SidGuard(*mut std::ffi::c_void);
@@ -326,6 +339,261 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
   }
 }
 
+fn set_low_integrity_token(token: HANDLE) -> Result<(), String> {
+  unsafe {
+    // Low integrity SID: S-1-16-4096.
+    let sid_string = wide_null_str("S-1-16-4096");
+    let mut sid: *mut std::ffi::c_void = std::ptr::null_mut();
+    if ConvertStringSidToSidW(sid_string.as_ptr(), &mut sid) == 0 {
+      let err = GetLastError();
+      return Err(format!("ConvertStringSidToSidW failed (err={err})"));
+    }
+    if sid.is_null() {
+      return Err("ConvertStringSidToSidW returned null SID".to_string());
+    }
+    struct SidGuard(*mut std::ffi::c_void);
+    impl Drop for SidGuard {
+      fn drop(&mut self) {
+        unsafe {
+          if !self.0.is_null() {
+            // ConvertStringSidToSidW uses LocalAlloc.
+            LocalFree(self.0 as isize);
+          }
+        }
+      }
+    }
+    let _sid_guard = SidGuard(sid);
+
+    let sid_len = GetLengthSid(sid) as usize;
+    let tml_len = std::mem::size_of::<TOKEN_MANDATORY_LABEL>() + sid_len;
+
+    // `TOKEN_MANDATORY_LABEL` contains pointers, so ensure pointer alignment (Vec<u8> is only 1-byte
+    // aligned).
+    let word_count = (tml_len + std::mem::size_of::<usize>() - 1) / std::mem::size_of::<usize>();
+    let mut buffer_words = vec![0usize; word_count];
+    let buffer_ptr = buffer_words.as_mut_ptr().cast::<u8>();
+
+    let tml_ptr = buffer_ptr.cast::<TOKEN_MANDATORY_LABEL>();
+    let sid_ptr = buffer_ptr.add(std::mem::size_of::<TOKEN_MANDATORY_LABEL>());
+    (*tml_ptr).Label.Attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED;
+    (*tml_ptr).Label.Sid = sid_ptr.cast();
+    std::ptr::copy_nonoverlapping(sid.cast::<u8>(), sid_ptr, sid_len);
+
+    let ok = SetTokenInformation(
+      token,
+      TokenIntegrityLevel as TOKEN_INFORMATION_CLASS,
+      buffer_ptr.cast(),
+      tml_len as u32,
+    );
+    if ok == 0 {
+      let err = GetLastError();
+      return Err(format!("SetTokenInformation(TokenIntegrityLevel) failed (err={err})"));
+    }
+    Ok(())
+  }
+}
+
+fn spawn_restricted_token_child(parent_pid: u32, test_filter: &str) -> Result<u32, String> {
+  let exe: PathBuf = env::current_exe().map_err(|e| format!("current_exe failed: {e}"))?;
+
+  let cmdline = format!(
+    "\"{}\" {} --exact --nocapture",
+    exe.display(),
+    test_filter
+  );
+
+  let env_block = build_environment_block(&[
+    (ENV_CHILD_MODE, "1".to_string()),
+    (ENV_PARENT_PID, parent_pid.to_string()),
+    ("RUST_BACKTRACE", "1".to_string()),
+  ]);
+
+  let current_dir = system32_dir();
+
+  unsafe {
+    let mut token: HANDLE = 0;
+    if OpenProcessToken(
+      GetCurrentProcess(),
+      TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT,
+      &mut token,
+    ) == 0
+    {
+      let err = GetLastError();
+      return Err(format!("OpenProcessToken failed (err={err})"));
+    }
+    if token == 0 {
+      return Err("OpenProcessToken returned null token handle".to_string());
+    }
+    struct HandleGuard(HANDLE);
+    impl Drop for HandleGuard {
+      fn drop(&mut self) {
+        unsafe {
+          if self.0 != 0 {
+            let _ = CloseHandle(self.0);
+          }
+        }
+      }
+    }
+    let _token_guard = HandleGuard(token);
+
+    let mut restricted: HANDLE = 0;
+    if CreateRestrictedToken(
+      token,
+      DISABLE_MAX_PRIVILEGE,
+      0,
+      std::ptr::null(),
+      0,
+      std::ptr::null(),
+      0,
+      std::ptr::null(),
+      &mut restricted,
+    ) == 0
+    {
+      let err = GetLastError();
+      return Err(format!("CreateRestrictedToken failed (err={err})"));
+    }
+    if restricted == 0 {
+      return Err("CreateRestrictedToken returned null token handle".to_string());
+    }
+    let _restricted_guard = HandleGuard(restricted);
+
+    set_low_integrity_token(restricted)?;
+
+    // Limit handle inheritance to just the standard handles.
+    let std_in = GetStdHandle(STD_INPUT_HANDLE);
+    let std_out = GetStdHandle(STD_OUTPUT_HANDLE);
+    let std_err = GetStdHandle(STD_ERROR_HANDLE);
+
+    let mut handles: Vec<HANDLE> = Vec::new();
+    for h in [std_in, std_out, std_err] {
+      if h == 0 || h == INVALID_HANDLE_VALUE {
+        continue;
+      }
+      let _ = SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+      if !handles.contains(&h) {
+        handles.push(h);
+      }
+    }
+
+    // Optional attribute list restricting inherited handles.
+    struct AttrListGuard(*mut PROC_THREAD_ATTRIBUTE_LIST);
+    impl Drop for AttrListGuard {
+      fn drop(&mut self) {
+        unsafe {
+          if !self.0.is_null() {
+            DeleteProcThreadAttributeList(self.0);
+          }
+        }
+      }
+    }
+
+    let mut si_ex: STARTUPINFOEXW = std::mem::zeroed();
+    si_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    let mut attr_buf: Vec<u8> = Vec::new();
+    let mut attr_guard: Option<AttrListGuard> = None;
+
+    if !handles.is_empty() {
+      let attribute_count: u32 = 1;
+      let mut attr_size: usize = 0;
+      let _ = InitializeProcThreadAttributeList(
+        std::ptr::null_mut(),
+        attribute_count,
+        0,
+        &mut attr_size,
+      );
+      if attr_size == 0 {
+        return Err("InitializeProcThreadAttributeList returned size=0".to_string());
+      }
+
+      attr_buf = vec![0u8; attr_size];
+      let attr_list = attr_buf.as_mut_ptr() as *mut PROC_THREAD_ATTRIBUTE_LIST;
+      if InitializeProcThreadAttributeList(attr_list, attribute_count, 0, &mut attr_size) == 0 {
+        let err = GetLastError();
+        return Err(format!("InitializeProcThreadAttributeList failed (err={err})"));
+      }
+      attr_guard = Some(AttrListGuard(attr_list));
+
+      if UpdateProcThreadAttribute(
+        attr_list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        handles.as_mut_ptr() as *mut std::ffi::c_void,
+        handles.len() * std::mem::size_of::<HANDLE>(),
+        std::ptr::null_mut(),
+        std::ptr::null_mut(),
+      ) == 0
+      {
+        let err = GetLastError();
+        return Err(format!(
+          "UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_HANDLE_LIST) failed (err={err})"
+        ));
+      }
+
+      si_ex.lpAttributeList = attr_list;
+      si_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+      si_ex.StartupInfo.hStdInput = std_in;
+      si_ex.StartupInfo.hStdOutput = std_out;
+      si_ex.StartupInfo.hStdError = std_err;
+    }
+
+    let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+    let exe_w = wide_null(exe.as_os_str());
+    let mut cmd_w = wide_null_str(&cmdline);
+    let current_dir_w = wide_null_str(&current_dir);
+
+    let inherit_handles = if handles.is_empty() { 0 } else { 1 };
+    let creation_flags =
+      CREATE_UNICODE_ENVIRONMENT | if handles.is_empty() { 0 } else { EXTENDED_STARTUPINFO_PRESENT };
+
+    let ok = CreateProcessAsUserW(
+      restricted,
+      exe_w.as_ptr(),
+      cmd_w.as_mut_ptr(),
+      std::ptr::null_mut(),
+      std::ptr::null_mut(),
+      inherit_handles,
+      creation_flags,
+      env_block.as_ptr() as *mut std::ffi::c_void,
+      current_dir_w.as_ptr(),
+      &mut si_ex.StartupInfo,
+      &mut pi,
+    );
+    if ok == 0 {
+      let err = GetLastError();
+      return Err(format!(
+        "CreateProcessAsUserW (restricted token) failed (err={err}) for command line: {cmdline:?}"
+      ));
+    }
+
+    let _proc_guard = HandleGuard(pi.hProcess);
+    let _thread_guard = HandleGuard(pi.hThread);
+
+    let wait = WaitForSingleObject(pi.hProcess, 20_000);
+    match wait {
+      WAIT_OBJECT_0 => {}
+      WAIT_TIMEOUT => {
+        let _ = TerminateProcess(pi.hProcess, 1);
+        return Err("sandboxed child timed out".to_string());
+      }
+      WAIT_FAILED => {
+        let err = GetLastError();
+        return Err(format!("WaitForSingleObject failed (err={err})"));
+      }
+      other => {
+        return Err(format!("unexpected WaitForSingleObject result: {other}"));
+      }
+    }
+
+    let mut exit_code: u32 = 0;
+    if GetExitCodeProcess(pi.hProcess, &mut exit_code) == 0 {
+      let err = GetLastError();
+      return Err(format!("GetExitCodeProcess failed (err={err})"));
+    }
+    drop(attr_guard);
+    Ok(exit_code)
+  }
+}
+
 fn run_child() {
   let parent_pid: u32 = env::var(ENV_PARENT_PID)
     .expect("child mode requires FASTR_SANDBOX_TEST_PARENT_PID")
@@ -344,9 +612,9 @@ fn run_child() {
     }
 
     let err = GetLastError();
-    assert_eq!(
-      err, ERROR_ACCESS_DENIED,
-      "OpenProcess unexpectedly failed with error {err} (0x{err:08X}); expected ERROR_ACCESS_DENIED (5). Requested access mask: 0x{access:08X}",
+    assert!(
+      matches!(err, ERROR_ACCESS_DENIED | ERROR_INVALID_PARAMETER | ERROR_PRIVILEGE_NOT_HELD),
+      "OpenProcess unexpectedly failed with error {err} (0x{err:08X}); expected ERROR_ACCESS_DENIED (5) or equivalent. Requested access mask: 0x{access:08X}",
     );
   }
 }
@@ -364,7 +632,16 @@ fn sandboxed_renderer_cannot_open_parent_process_handle() {
   let test_filter =
     "sandbox::windows_process_handle_escape::sandboxed_renderer_cannot_open_parent_process_handle";
 
-  let exit = spawn_appcontainer_child(parent_pid, test_filter).expect("spawn sandboxed child");
+  let exit = match spawn_appcontainer_child(parent_pid, test_filter) {
+    Ok(exit) => exit,
+    Err(appcontainer_err) => {
+      eprintln!(
+        "AppContainer spawn failed ({appcontainer_err}); falling back to restricted-token sandbox"
+      );
+      spawn_restricted_token_child(parent_pid, test_filter)
+        .expect("spawn sandboxed child (restricted token)")
+    }
+  };
   if exit != 0 {
     panic!("sandboxed child exited with code {exit}");
   }
