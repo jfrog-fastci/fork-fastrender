@@ -9673,7 +9673,7 @@ mod tests {
     tab.host.executor.execute_classic_script(
       r#"
       globalThis.__unhandled = false;
-      globalThis.addEventListener('unhandledrejection', () => { globalThis.__unhandled = true; });
+      globalThis.addEventListener('unhandledrejection', (e) => { globalThis.__unhandled = true; e.preventDefault(); });
       Promise.reject('boom');
       "#,
       &spec,
@@ -10712,7 +10712,7 @@ mod tests {
       };
       host.executor.execute_classic_script(
         "globalThis.__unhandled = '';\n\
-         addEventListener('unhandledrejection', function (e) { globalThis.__unhandled = e.reason; });\n\
+         addEventListener('unhandledrejection', function (e) { globalThis.__unhandled = e.reason; e.preventDefault(); });\n\
          Promise.reject('boom');\n",
         &spec,
         None,

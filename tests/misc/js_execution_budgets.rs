@@ -175,7 +175,8 @@ fn vm_js_infinite_loop_in_unhandledrejection_listener_is_bounded() {
   host
     .exec_script(
       "globalThis.__unhandledrejection_ran = false;\n\
-       window.addEventListener('unhandledrejection', function () {\n\
+       window.addEventListener('unhandledrejection', function (e) {\n\
+         e.preventDefault();\n\
          globalThis.__unhandledrejection_ran = true;\n\
          while (true) {}\n\
        });\n\

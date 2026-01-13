@@ -6028,7 +6028,7 @@ mod tests {
       host_state.exec_script_in_event_loop(
         event_loop,
         "this.__unhandled = undefined;\n\
-         addEventListener('unhandledrejection', function (e) { this.__unhandled = e.reason; });\n\
+         addEventListener('unhandledrejection', function (e) { this.__unhandled = e.reason; e.preventDefault(); });\n\
          Promise.reject('x');\n",
       )?;
       Ok(())
@@ -6055,7 +6055,7 @@ mod tests {
       host_state.exec_script_in_event_loop(
         event_loop,
         "globalThis.__host_ok = false;\n\
-         addEventListener('unhandledrejection', function () { globalThis.__host_ok = recordHost(); });\n\
+         addEventListener('unhandledrejection', function (e) { globalThis.__host_ok = recordHost(); e.preventDefault(); });\n\
          Promise.reject('x');\n",
       )?;
       Ok(())
@@ -6154,6 +6154,7 @@ mod tests {
         event_loop,
         "this.__called = false;\n\
          this.__reason = undefined;\n\
+         this.onunhandledrejection = function (e) { e.preventDefault(); };\n\
          this.onrejectionhandled = function (e) {\n\
            this.__called = true;\n\
            this.__reason = e.reason;\n\
@@ -6196,18 +6197,19 @@ mod tests {
          this.__reason_after = undefined;\n\
          this.__reason_assign_err = undefined;\n\
          this.__promise_assign_err = undefined;\n\
-         addEventListener('unhandledrejection', function (e) {\n\
-           \"use strict\";\n\
-           this.__ctor_name = e && e.constructor && e.constructor.name;\n\
-           this.__is_instance = (typeof PromiseRejectionEvent === 'function') && (e instanceof PromiseRejectionEvent);\n\
-           this.__promise_then = !!(e.promise && typeof e.promise.then === 'function');\n\
-           this.__reason = e.reason;\n\
-           try { e.reason = 'y'; } catch (err) { this.__reason_assign_err = err && err.name; }\n\
-           try { e.promise = null; } catch (err) { this.__promise_assign_err = err && err.name; }\n\
-           this.__reason_after = e.reason;\n\
-           this.__promise_then_after = !!(e.promise && typeof e.promise.then === 'function');\n\
-         });\n\
-         Promise.reject('x');\n",
+          addEventListener('unhandledrejection', function (e) {\n\
+            \"use strict\";\n\
+            this.__ctor_name = e && e.constructor && e.constructor.name;\n\
+            this.__is_instance = (typeof PromiseRejectionEvent === 'function') && (e instanceof PromiseRejectionEvent);\n\
+            this.__promise_then = !!(e.promise && typeof e.promise.then === 'function');\n\
+            this.__reason = e.reason;\n\
+            try { e.reason = 'y'; } catch (err) { this.__reason_assign_err = err && err.name; }\n\
+            try { e.promise = null; } catch (err) { this.__promise_assign_err = err && err.name; }\n\
+            this.__reason_after = e.reason;\n\
+            this.__promise_then_after = !!(e.promise && typeof e.promise.then === 'function');\n\
+            e.preventDefault();\n\
+          });\n\
+          Promise.reject('x');\n",
       )?;
       Ok(())
     })?;
@@ -6403,14 +6405,15 @@ mod tests {
         "this.__order = '';\n\
          this.__unhandled = undefined;\n\
          this.__handled = undefined;\n\
-         addEventListener('unhandledrejection', function (e) {\n\
-           this.__order += 'u';\n\
-           this.__unhandled = e.reason;\n\
-         });\n\
-         addEventListener('rejectionhandled', function (e) {\n\
-           this.__order += 'h';\n\
-           this.__handled = e.reason;\n\
-         });\n\
+          addEventListener('unhandledrejection', function (e) {\n\
+            this.__order += 'u';\n\
+            this.__unhandled = e.reason;\n\
+            e.preventDefault();\n\
+          });\n\
+          addEventListener('rejectionhandled', function (e) {\n\
+            this.__order += 'h';\n\
+            this.__handled = e.reason;\n\
+          });\n\
          var p = Promise.reject('x');\n\
          setTimeout(function () { p.catch(function () {}); }, 0);\n",
       )?;
