@@ -1577,10 +1577,19 @@ impl<'vm> HirEvaluator<'vm> {
     op: hir_js::UnaryOp,
     expr: hir_js::ExprId,
   ) -> Result<Value, VmError> {
-    let v = self.eval_expr(scope, body, expr)?;
     match op {
-      hir_js::UnaryOp::Not => Ok(Value::Bool(!scope.heap().to_boolean(v)?)),
+      hir_js::UnaryOp::Not => {
+        let v = self.eval_expr(scope, body, expr)?;
+        Ok(Value::Bool(!scope.heap().to_boolean(v)?))
+      }
+      hir_js::UnaryOp::BitNot => {
+        let v = self.eval_expr(scope, body, expr)?;
+        let mut tick = || self.vm.tick();
+        let n = crate::ops::to_number_with_tick(scope.heap_mut(), v, &mut tick)?;
+        Ok(Value::Number((!to_int32(n)) as f64))
+      }
       hir_js::UnaryOp::Plus => {
+        let v = self.eval_expr(scope, body, expr)?;
         let mut tick = || self.vm.tick();
         Ok(Value::Number(crate::ops::to_number_with_tick(
           scope.heap_mut(),
@@ -1589,6 +1598,7 @@ impl<'vm> HirEvaluator<'vm> {
         )?))
       }
       hir_js::UnaryOp::Minus => {
+        let v = self.eval_expr(scope, body, expr)?;
         let mut tick = || self.vm.tick();
         Ok(Value::Number(-crate::ops::to_number_with_tick(
           scope.heap_mut(),
@@ -1596,8 +1606,27 @@ impl<'vm> HirEvaluator<'vm> {
           &mut tick,
         )?))
       }
+      hir_js::UnaryOp::Typeof => {
+        // Special-case `typeof unboundIdentifier` so it evaluates to `"undefined"` without
+        // throwing a ReferenceError.
+        let operand_expr = self.get_expr(body, expr)?;
+        let v = if let hir_js::ExprKind::Ident(name_id) = &operand_expr.kind {
+          let name = self.resolve_name(*name_id)?;
+          match self.env.get(self.vm, &mut *self.host, &mut *self.hooks, scope, name.as_str())? {
+            Some(v) => v,
+            None => {
+              return Ok(Value::String(scope.alloc_string("undefined")?));
+            }
+          }
+        } else {
+          self.eval_expr(scope, body, expr)?
+        };
+
+        let type_name = typeof_name(scope.heap(), v)?;
+        Ok(Value::String(scope.alloc_string(type_name)?))
+      }
       hir_js::UnaryOp::Void => {
-        let _ = v;
+        let _ = self.eval_expr(scope, body, expr)?;
         Ok(Value::Undefined)
       }
       _ => Err(VmError::Unimplemented("unary operator (hir-js compiled path)")),
@@ -1739,6 +1768,32 @@ impl<'vm> HirEvaluator<'vm> {
         }
         return Ok(l);
       }
+      hir_js::BinaryOp::In => {
+        // Root `left` across evaluation of `right` in case the RHS allocates and triggers GC.
+        let l = self.eval_expr(scope, body, left)?;
+        let mut rhs_scope = scope.reborrow();
+        rhs_scope.push_root(l)?;
+        let r = self.eval_expr(&mut rhs_scope, body, right)?;
+        let Value::Object(obj) = r else {
+          return Err(VmError::TypeError("Right-hand side of 'in' should be an object"));
+        };
+
+        // Root RHS object across `ToPropertyKey` and `[[HasProperty]]` (which can invoke proxy
+        // traps and user code).
+        rhs_scope.push_root(Value::Object(obj))?;
+
+        let key = rhs_scope.to_property_key(self.vm, &mut *self.host, &mut *self.hooks, l)?;
+        root_property_key(&mut rhs_scope, key)?;
+        let has = crate::spec_ops::internal_has_property_with_host_and_hooks(
+          self.vm,
+          &mut rhs_scope,
+          &mut *self.host,
+          &mut *self.hooks,
+          obj,
+          key,
+        )?;
+        return Ok(Value::Bool(has));
+      }
       _ => {}
     }
 
@@ -1782,6 +1837,45 @@ impl<'vm> HirEvaluator<'vm> {
         let base = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
         let exp = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
         Ok(Value::Number(base.powf(exp)))
+      }
+      hir_js::BinaryOp::ShiftLeft => {
+        let mut tick = || self.vm.tick();
+        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_int32(ln).wrapping_shl(shift) as f64))
+      }
+      hir_js::BinaryOp::ShiftRight => {
+        let mut tick = || self.vm.tick();
+        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_int32(ln).wrapping_shr(shift) as f64))
+      }
+      hir_js::BinaryOp::ShiftRightUnsigned => {
+        let mut tick = || self.vm.tick();
+        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        let shift = to_uint32(rn) & 0x1f;
+        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
+      }
+      hir_js::BinaryOp::BitOr => {
+        let mut tick = || self.vm.tick();
+        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        Ok(Value::Number((to_int32(ln) | to_int32(rn)) as f64))
+      }
+      hir_js::BinaryOp::BitAnd => {
+        let mut tick = || self.vm.tick();
+        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        Ok(Value::Number((to_int32(ln) & to_int32(rn)) as f64))
+      }
+      hir_js::BinaryOp::BitXor => {
+        let mut tick = || self.vm.tick();
+        let ln = crate::ops::to_number_with_tick(scope.heap_mut(), l, &mut tick)?;
+        let rn = crate::ops::to_number_with_tick(scope.heap_mut(), r, &mut tick)?;
+        Ok(Value::Number((to_int32(ln) ^ to_int32(rn)) as f64))
       }
       hir_js::BinaryOp::Equality => Ok(Value::Bool(self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::Inequality => Ok(Value::Bool(!self.abstract_equality_comparison(scope, l, r)?)),
@@ -2623,6 +2717,59 @@ fn bigint_compare_number(
   } else {
     Ordering::Greater
   }))
+}
+
+fn to_int32(n: f64) -> i32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  // ECMA-262 `ToInt32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  const TWO_31: f64 = 2_147_483_648.0;
+
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  if int >= TWO_31 {
+    (int - TWO_32) as i32
+  } else {
+    int as i32
+  }
+}
+
+fn to_uint32(n: f64) -> u32 {
+  if !n.is_finite() || n == 0.0 {
+    return 0;
+  }
+  // ECMA-262 `ToUint32`: truncate then compute modulo 2^32.
+  let int = n.trunc();
+  const TWO_32: f64 = 4_294_967_296.0;
+  let mut int = int % TWO_32;
+  if int < 0.0 {
+    int += TWO_32;
+  }
+  int as u32
+}
+
+fn typeof_name(heap: &crate::Heap, value: Value) -> Result<&'static str, VmError> {
+  Ok(match value {
+    Value::Undefined => "undefined",
+    Value::Null => "object",
+    Value::Bool(_) => "boolean",
+    Value::Number(_) => "number",
+    Value::BigInt(_) => "bigint",
+    Value::String(_) => "string",
+    Value::Symbol(_) => "symbol",
+    Value::Object(_) => {
+      if heap.is_callable(value)? {
+        "function"
+      } else {
+        "object"
+      }
+    }
+  })
 }
 
 pub(crate) fn run_compiled_function(
