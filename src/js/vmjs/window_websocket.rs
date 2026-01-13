@@ -83,6 +83,17 @@ impl WindowWebSocketEnv {
   }
 }
 
+#[derive(Debug)]
+struct IpcNoopFetcher;
+
+impl ResourceFetcher for IpcNoopFetcher {
+  fn fetch(&self, url: &str) -> crate::Result<crate::resource::FetchedResource> {
+    Err(crate::error::Error::Other(format!(
+      "WebSocket IPC backend attempted unexpected in-process fetch for {url}"
+    )))
+  }
+}
+
 struct EnvState {
   env: WindowWebSocketEnv,
   ipc: Option<IpcEnvState>,
@@ -2261,6 +2272,7 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
     cmd_tx,
     event_rx,
   } = env;
+  let fetcher: Arc<dyn ResourceFetcher> = Arc::new(IpcNoopFetcher);
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   let ipc_state = IpcEnvState {
     cmd_tx,
