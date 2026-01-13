@@ -200,7 +200,9 @@ The browser chrome uses an accent color for links, focus rings, and selection.
 - `FASTR_BROWSER_HUD=1` shows an in-app HUD overlay with browser/debug metrics.
 - Debug log UI:
   - In **debug** builds it is enabled by default.
-  - In **release** builds, set `FASTR_BROWSER_DEBUG_LOG=1` to enable it.
+  - In **release** builds it is disabled by default:
+    - set `FASTR_BROWSER_DEBUG_LOG=1` to enable it at startup, or
+    - enable it at runtime via the menu bar: **View → Debug log**.
 
 ### Persistence (session file)
 
