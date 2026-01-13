@@ -5434,6 +5434,91 @@ fn compiled_for_of_body_throw_closes_iterator() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_of_labeled_continue_to_outer_closes_iterator() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let it = {
+        i: 0,
+        closed: 0,
+        [Symbol.iterator]: function() { return this; },
+        next: function() {
+          this.i = this.i + 1;
+          return { value: 1, done: this.i > 1 };
+        },
+        return: function() {
+          this.closed = this.closed + 1;
+          return { done: true };
+        },
+      };
+      let ran = false;
+      outer: while (!ran) {
+        for (let x of it) {
+          ran = true;
+          continue outer;
+        }
+      }
+      it.closed
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_return_closes_iterator_before_finally() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let it = {
+          i: 0,
+          closed: 0,
+          [Symbol.iterator]: function() { return this; },
+          next: function() {
+            this.i = this.i + 1;
+            return { value: 1, done: this.i > 1 };
+          },
+          return: function() {
+            this.closed = this.closed + 1;
+            return { done: true };
+          },
+        };
+        let r = { before: 0, after: 0 };
+        try {
+          for (let x of it) {
+            r.before = it.closed;
+            return r;
+          }
+        } finally {
+          r.after = it.closed;
+        }
+      }
+      let r = f();
+      r.before * 10 + r.after
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  // `r.before` captures the value before IteratorClose runs, while `r.after` is observed in
+  // `finally` after the iterator has been closed.
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_destructuring_decl_default_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
