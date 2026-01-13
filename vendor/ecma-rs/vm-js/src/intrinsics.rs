@@ -987,9 +987,12 @@ impl Intrinsics {
     let array_prototype_map = vm.register_native_call(builtins::array_prototype_map)?;
     let array_prototype_for_each = vm.register_native_call(builtins::array_prototype_for_each)?;
     let array_prototype_index_of = vm.register_native_call(builtins::array_prototype_index_of)?;
+    let array_prototype_last_index_of =
+      vm.register_native_call(builtins::array_prototype_last_index_of)?;
     let array_prototype_includes = vm.register_native_call(builtins::array_prototype_includes)?;
     let array_prototype_filter = vm.register_native_call(builtins::array_prototype_filter)?;
     let array_prototype_reduce = vm.register_native_call(builtins::array_prototype_reduce)?;
+    let array_prototype_reduce_right = vm.register_native_call(builtins::array_prototype_reduce_right)?;
     let array_prototype_some = vm.register_native_call(builtins::array_prototype_some)?;
     let array_prototype_every = vm.register_native_call(builtins::array_prototype_every)?;
     let array_prototype_find = vm.register_native_call(builtins::array_prototype_find)?;
@@ -998,6 +1001,8 @@ impl Intrinsics {
     let array_prototype_reverse = vm.register_native_call(builtins::array_prototype_reverse)?;
     let array_prototype_sort = vm.register_native_call(builtins::array_prototype_sort)?;
     let array_prototype_join = vm.register_native_call(builtins::array_prototype_join)?;
+    let array_prototype_to_locale_string =
+      vm.register_native_call(builtins::array_prototype_to_locale_string)?;
     let array_prototype_to_string = vm.register_native_call(builtins::array_prototype_to_string)?;
     let array_prototype_slice = vm.register_native_call(builtins::array_prototype_slice)?;
     let array_prototype_push = vm.register_native_call(builtins::array_prototype_push)?;
@@ -2217,6 +2222,21 @@ impl Intrinsics {
           data_desc(Value::Object(index_of_fn), true, false, true),
         )?;
 
+        let last_index_of_s = scope.alloc_string("lastIndexOf")?;
+        scope.push_root(Value::String(last_index_of_s))?;
+        let last_index_of_key = PropertyKey::from_string(last_index_of_s);
+        let last_index_of_fn =
+          scope.alloc_native_function(array_prototype_last_index_of, None, last_index_of_s, 1)?;
+        scope.push_root(Value::Object(last_index_of_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(last_index_of_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          last_index_of_key,
+          data_desc(Value::Object(last_index_of_fn), true, false, true),
+        )?;
+
         let includes_s = scope.alloc_string("includes")?;
         scope.push_root(Value::String(includes_s))?;
         let includes_key = PropertyKey::from_string(includes_s);
@@ -2258,6 +2278,21 @@ impl Intrinsics {
           array_prototype,
           reduce_key,
           data_desc(Value::Object(reduce_fn), true, false, true),
+        )?;
+
+        let reduce_right_s = scope.alloc_string("reduceRight")?;
+        scope.push_root(Value::String(reduce_right_s))?;
+        let reduce_right_key = PropertyKey::from_string(reduce_right_s);
+        let reduce_right_fn =
+          scope.alloc_native_function(array_prototype_reduce_right, None, reduce_right_s, 1)?;
+        scope.push_root(Value::Object(reduce_right_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(reduce_right_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          reduce_right_key,
+          data_desc(Value::Object(reduce_right_fn), true, false, true),
         )?;
 
         let some_s = scope.alloc_string("some")?;
@@ -2372,6 +2407,21 @@ impl Intrinsics {
           array_prototype,
           to_string_key,
           data_desc(Value::Object(to_string_fn), true, false, true),
+        )?;
+
+        let to_locale_string_s = scope.alloc_string("toLocaleString")?;
+        scope.push_root(Value::String(to_locale_string_s))?;
+        let to_locale_string_key = PropertyKey::from_string(to_locale_string_s);
+        let to_locale_string_fn =
+          scope.alloc_native_function(array_prototype_to_locale_string, None, to_locale_string_s, 0)?;
+        scope.push_root(Value::Object(to_locale_string_fn))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(to_locale_string_fn, Some(function_prototype))?;
+        scope.define_property(
+          array_prototype,
+          to_locale_string_key,
+          data_desc(Value::Object(to_locale_string_fn), true, false, true),
         )?;
 
         let join_s = scope.alloc_string("join")?;

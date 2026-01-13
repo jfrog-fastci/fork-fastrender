@@ -11261,6 +11261,100 @@ pub fn array_prototype_index_of(
   Ok(Value::Number(-1.0))
 }
 
+/// `Array.prototype.lastIndexOf` (ECMA-262) (minimal).
+pub fn array_prototype_last_index_of(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  // `ToObject` performs `RequireObjectCoercible` for `null`/`undefined`.
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let search = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+  if len == 0 {
+    return Ok(Value::Number(-1.0));
+  }
+
+  // Default `fromIndex` is `len - 1`.
+  let n = if args.len() > 1 {
+    scope.to_integer_or_infinity(vm, host, hooks, args[1])?
+  } else {
+    (len as f64) - 1.0
+  };
+
+  // Determine the starting index `k`.
+  let mut k: i64 = if n.is_infinite() {
+    if n.is_sign_negative() {
+      return Ok(Value::Number(-1.0));
+    }
+    (len.saturating_sub(1)) as i64
+  } else {
+    let n_i = n as i64; // saturating float->int cast
+    if n_i >= 0 {
+      let max = (len.saturating_sub(1)) as i64;
+      n_i.min(max)
+    } else {
+      (len as i64).saturating_add(n_i)
+    }
+  };
+
+  if k < 0 {
+    return Ok(Value::Number(-1.0));
+  }
+
+  loop {
+    let idx = k as usize;
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = alloc_string_from_usize(&mut iter_scope, idx)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
+      let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+
+      let equal = match (search, value) {
+        (Value::Undefined, Value::Undefined) => true,
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Number(a), Value::Number(b)) => a == b,
+        (Value::BigInt(a), Value::BigInt(b)) => a == b,
+        (Value::String(a), Value::String(b)) => {
+          let a_units = iter_scope.heap().get_string(a)?.as_code_units();
+          let b_units = iter_scope.heap().get_string(b)?.as_code_units();
+          crate::tick::code_units_eq_with_ticks(a_units, b_units, || vm.tick())?
+        }
+        (Value::Symbol(a), Value::Symbol(b)) => a == b,
+        (Value::Object(a), Value::Object(b)) => a == b,
+        _ => false,
+      };
+
+      if equal {
+        return Ok(Value::Number(idx as f64));
+      }
+    }
+
+    if k == 0 {
+      break;
+    }
+    k -= 1;
+  }
+
+  Ok(Value::Number(-1.0))
+}
+
 /// `Array.prototype.includes` (ECMA-262) (minimal).
 pub fn array_prototype_includes(
   vm: &mut Vm,
@@ -11500,6 +11594,143 @@ pub fn array_prototype_reduce(
     if !ok {
       return Err(VmError::TypeError("Array.prototype.reduce failed"));
     }
+  }
+
+  Ok(accumulator)
+}
+
+/// `Array.prototype.reduceRight` (ECMA-262) (minimal).
+pub fn array_prototype_reduce_right(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  if !scope.heap().is_callable(callback)? {
+    return Err(VmError::TypeError(
+      "Array.prototype.reduceRight callback is not callable",
+    ));
+  }
+  scope.push_root(callback)?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+
+  let intr = require_intrinsics(vm)?;
+  let acc_holder = scope.alloc_object()?;
+  scope.push_root(Value::Object(acc_holder))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(acc_holder, Some(intr.object_prototype()))?;
+
+  let acc_sym = scope.alloc_symbol(Some("vm-js.internal.ArrayReduceRightAccumulator"))?;
+  scope.push_root(Value::Symbol(acc_sym))?;
+  let acc_key = PropertyKey::from_symbol(acc_sym);
+
+  let has_initial = args.len() > 1;
+  let mut accumulator: Value;
+
+  // `k` is the next index to process (inclusive) after initializing the accumulator. Use `i64` so
+  // we can represent `-1` cleanly.
+  let mut k: i64;
+
+  if has_initial {
+    accumulator = args[1];
+    k = (len as i64) - 1;
+  } else {
+    // Find the first present element from the right.
+    k = (len as i64) - 1;
+    loop {
+      if k < 0 {
+        return Err(VmError::TypeError(
+          "Reduce of empty array with no initial value",
+        ));
+      }
+
+      if (k as usize) % 1024 == 0 {
+        vm.tick()?;
+      }
+
+      let idx = k as usize;
+      let mut iter_scope = scope.reborrow();
+      let key_s = alloc_string_from_usize(&mut iter_scope, idx)?;
+      iter_scope.push_root(Value::String(key_s))?;
+      let key = PropertyKey::from_string(key_s);
+      if iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
+        accumulator =
+          iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+        k -= 1;
+        break;
+      }
+      k -= 1;
+    }
+  }
+
+  // Root the accumulator value by storing it on a rooted helper object.
+  scope.define_property(
+    acc_holder,
+    acc_key,
+    data_desc(
+      accumulator,
+      /* writable */ true,
+      /* enumerable */ false,
+      /* configurable */ false,
+    ),
+  )?;
+
+  while k >= 0 {
+    let idx = k as usize;
+    if idx % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    let mut iter_scope = scope.reborrow();
+    let key_s = alloc_string_from_usize(&mut iter_scope, idx)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+    if !iter_scope.has_property_with_host_and_hooks(vm, host, hooks, obj, key)? {
+      k -= 1;
+      continue;
+    }
+
+    let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
+    let call_args = [
+      accumulator,
+      value,
+      Value::Number(idx as f64),
+      Value::Object(obj),
+    ];
+    accumulator = vm.call_with_host_and_hooks(
+      host,
+      &mut iter_scope,
+      hooks,
+      callback,
+      Value::Undefined,
+      &call_args,
+    )?;
+
+    let ok = iter_scope.ordinary_set_with_host_and_hooks(
+      vm,
+      host,
+      hooks,
+      acc_holder,
+      acc_key,
+      accumulator,
+      Value::Object(acc_holder),
+    )?;
+    if !ok {
+      return Err(VmError::TypeError("Array.prototype.reduceRight failed"));
+    }
+
+    k -= 1;
   }
 
   Ok(accumulator)
@@ -12269,6 +12500,86 @@ pub fn array_prototype_join(
 
     let part = iter_scope.to_string(vm, host, hooks, value)?;
     let units = iter_scope.heap().get_string(part)?.as_code_units();
+    if JsString::heap_size_bytes_for_len(out.len().saturating_add(units.len())) > max_bytes {
+      return Err(VmError::OutOfMemory);
+    }
+    vec_try_extend_from_slice(&mut out, units, || vm.tick())?;
+  }
+
+  let s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(s))
+}
+
+/// `Array.prototype.toLocaleString` (ECMA-262) (minimal).
+///
+/// Spec: https://tc39.es/ecma262/#sec-array.prototype.tolocalestring
+pub fn array_prototype_to_locale_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let mut scope = scope.reborrow();
+
+  let obj = scope.to_object(vm, host, hooks, this)?;
+  scope.push_root(Value::Object(obj))?;
+
+  let len = length_of_array_like_usize(vm, &mut scope, host, hooks, obj)?;
+  if len == 0 {
+    return Ok(Value::String(scope.alloc_string("")?));
+  }
+
+  // Root the method key string across the loop (allocations/calls).
+  let to_locale_string_key = string_key(&mut scope, "toLocaleString")?;
+
+  let mut out: Vec<u16> = Vec::new();
+  let max_bytes = scope.heap().limits().max_bytes;
+
+  for i in 0..len {
+    if i % 1024 == 0 {
+      vm.tick()?;
+    }
+
+    if i > 0 {
+      if JsString::heap_size_bytes_for_len(out.len().saturating_add(1)) > max_bytes {
+        return Err(VmError::OutOfMemory);
+      }
+      out.push(b',' as u16);
+    }
+
+    // Use a nested scope so per-iteration roots do not accumulate.
+    let mut iter_scope = scope.reborrow();
+
+    let key_s = alloc_string_from_usize(&mut iter_scope, i)?;
+    iter_scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let element = vm.get_with_host_and_hooks(host, &mut iter_scope, hooks, obj, key)?;
+    if matches!(element, Value::Undefined | Value::Null) {
+      continue;
+    }
+
+    // `Invoke(element, "toLocaleString", args)`
+    iter_scope.push_root(element)?;
+
+    let receiver = element;
+    let element_obj = match element {
+      Value::Object(o) => o,
+      _ => iter_scope.to_object(vm, host, hooks, element)?,
+    };
+    iter_scope.push_root(Value::Object(element_obj))?;
+
+    let func =
+      iter_scope.get_with_host_and_hooks(vm, host, hooks, element_obj, to_locale_string_key, receiver)?;
+    iter_scope.push_root(func)?;
+
+    let part_val = vm.call_with_host_and_hooks(host, &mut iter_scope, hooks, func, receiver, args)?;
+    let part_str = iter_scope.to_string(vm, host, hooks, part_val)?;
+    let units = iter_scope.heap().get_string(part_str)?.as_code_units();
+
     if JsString::heap_size_bytes_for_len(out.len().saturating_add(units.len())) > max_bytes {
       return Err(VmError::OutOfMemory);
     }
