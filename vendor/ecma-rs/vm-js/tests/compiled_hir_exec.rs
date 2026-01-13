@@ -1608,6 +1608,28 @@ fn compiled_try_catch_binds_exception_value() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_try_catch_tdz_shadowing_throws() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      try { throw 1 } catch (e) { e; let e = 2; }
+      'no'
+    "#,
+  )?;
+
+  let err = rt.exec_compiled_script(script).unwrap_err();
+  match err {
+    VmError::ThrowWithStack { .. } => Ok(()),
+    other => panic!("expected ThrowWithStack, got {other:?}"),
+  }
+}
+
+#[test]
 fn compiled_try_finally_runs_and_preserves_return() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
