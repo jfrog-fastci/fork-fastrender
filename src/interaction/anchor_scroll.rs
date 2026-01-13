@@ -103,8 +103,8 @@ fn nearest_map_ancestor<'a>(dom: &'a DomNode, target: *const DomNode) -> Option<
 
 /// Compute a suggested viewport scroll offset for a same-document fragment navigation target.
 ///
-/// The returned point aligns the top edge of the target's first fragment to the top edge of the
-/// viewport (y-only for now).
+/// The returned point aligns the start edges of the target's first fragment to the start edges of
+/// the viewport (x and y).
 pub fn scroll_offset_for_fragment_target(
   dom: &DomNode,
   box_tree: &BoxTree,
@@ -147,8 +147,11 @@ pub fn scroll_offset_for_fragment_target(
     return None;
   }
 
-  // FragmentTree: find all fragments for those box ids, compute minimum absolute y.
+  // FragmentTree: find all fragments for those box ids, compute minimum absolute x/y.
   let mut min_target_y: Option<f32> = None;
+  let mut min_target_x: Option<f32> = None;
+  let mut scroll_margin_top: Option<f32> = None;
+  let mut scroll_margin_left: Option<f32> = None;
   let mut frag_stack: Vec<(&crate::tree::fragment_tree::FragmentNode, Point)> = Vec::new();
   for root in fragment_tree.additional_fragments.iter().rev() {
     frag_stack.push((root, Point::ZERO));
@@ -159,8 +162,22 @@ pub fn scroll_offset_for_fragment_target(
     let abs_bounds = fragment.bounds.translate(parent_origin);
     if let Some(box_id) = fragment.box_id() {
       if target_box_ids.contains(&box_id) {
+        let x = abs_bounds.x();
         let y = abs_bounds.y();
+        min_target_x = Some(min_target_x.map_or(x, |min| min.min(x)));
         min_target_y = Some(min_target_y.map_or(y, |min| min.min(y)));
+        if scroll_margin_top.is_none() || scroll_margin_left.is_none() {
+          if let Some(style) = fragment.style.as_deref() {
+            if scroll_margin_top.is_none() {
+              let top = style.scroll_margin_top.to_px();
+              scroll_margin_top = Some(if top.is_finite() { top } else { 0.0 });
+            }
+            if scroll_margin_left.is_none() {
+              let left = style.scroll_margin_left.to_px();
+              scroll_margin_left = Some(if left.is_finite() { left } else { 0.0 });
+            }
+          }
+        }
       }
     }
 
@@ -170,12 +187,21 @@ pub fn scroll_offset_for_fragment_target(
     }
   }
 
-  let Some(target_y) = min_target_y else {
+  let (Some(target_x), Some(target_y)) = (min_target_x, min_target_y) else {
     return None;
   };
 
-  // Align top-of-target to top-of-viewport.
+  // Align start-of-target to start-of-viewport.
+  let mut scroll_x = target_x;
   let mut scroll_y = target_y;
+
+  // Best-effort support for `scroll-margin-*`, matching the UA behavior for `scrollIntoView()`.
+  if let Some(margin_left) = scroll_margin_left {
+    scroll_x -= margin_left;
+  }
+  if let Some(margin_top) = scroll_margin_top {
+    scroll_y -= margin_top;
+  }
 
   // Clamp to the document scroll range.
   //
@@ -187,16 +213,22 @@ pub fn scroll_offset_for_fragment_target(
   let bounds = build_scroll_chain(&fragment_tree.root, viewport, &[])
     .first()
     .map(|state| state.bounds);
+  if !scroll_x.is_finite() {
+    scroll_x = 0.0;
+  }
   if !scroll_y.is_finite() {
     scroll_y = 0.0;
   }
   if let Some(bounds) = bounds {
-    scroll_y = bounds.clamp(Point::new(0.0, scroll_y)).y;
+    let clamped = bounds.clamp(Point::new(scroll_x, scroll_y));
+    scroll_x = clamped.x;
+    scroll_y = clamped.y;
   } else {
+    scroll_x = scroll_x.max(0.0);
     scroll_y = scroll_y.max(0.0);
   }
 
-  Some(Point::new(0.0, scroll_y))
+  Some(Point::new(scroll_x, scroll_y))
 }
 
 #[cfg(test)]
@@ -206,7 +238,7 @@ mod tests {
   use crate::dom::{self, DomNode, DomNodeType};
   use crate::{
     BoxNode, BoxTree, ComputedStyle, FormattingContextType, FragmentContent, FragmentNode,
-    FragmentTree, Rect, Size,
+    FragmentTree, Length, Rect, Size,
   };
   use selectors::context::QuirksMode;
 
@@ -463,5 +495,96 @@ mod tests {
       scroll_offset_for_fragment_target(&dom, &box_tree, &fragment_tree, "target", viewport)
         .expect("should find <area name=target>");
     assert_eq!(offset.y, 500.0);
+  }
+
+  #[test]
+  fn anchor_scrolls_to_id_target_x() {
+    let dom = document_with_child(element("div", vec![("id", "target")], vec![]));
+    let target_ptr = &dom.children[0] as *const DomNode;
+    let id_map = dom::enumerate_dom_ids(&dom);
+    let target_id = id_map[&target_ptr];
+
+    let mut target_box =
+      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    target_box.styled_node_id = Some(target_id);
+    let root_box = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![target_box],
+    );
+    let box_tree = BoxTree::new(root_box);
+    let target_box_id = box_tree.root.children[0].id;
+
+    let target_fragment = FragmentNode::new(
+      Rect::from_xywh(500.0, 0.0, 10.0, 10.0),
+      FragmentContent::Block {
+        box_id: Some(target_box_id),
+      },
+      vec![],
+    );
+    // Content width 1000, viewport width 100 => max scroll x = 900.
+    let root_fragment = FragmentNode::new(
+      Rect::from_xywh(0.0, 0.0, 1000.0, 100.0),
+      FragmentContent::Block {
+        box_id: Some(box_tree.root.id),
+      },
+      vec![target_fragment],
+    );
+    let fragment_tree = FragmentTree::new(root_fragment);
+
+    let viewport = Size::new(100.0, 100.0);
+    let offset =
+      scroll_offset_for_fragment_target(&dom, &box_tree, &fragment_tree, "target", viewport)
+        .expect("should find #target");
+    assert_eq!(offset.x, 500.0);
+    assert_eq!(offset.y, 0.0);
+  }
+
+  #[test]
+  fn anchor_scroll_applies_scroll_margin() {
+    let dom = document_with_child(element("div", vec![("id", "target")], vec![]));
+    let target_ptr = &dom.children[0] as *const DomNode;
+    let id_map = dom::enumerate_dom_ids(&dom);
+    let target_id = id_map[&target_ptr];
+
+    let mut target_box =
+      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    target_box.styled_node_id = Some(target_id);
+    let root_box = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![target_box],
+    );
+    let box_tree = BoxTree::new(root_box);
+    let target_box_id = box_tree.root.children[0].id;
+
+    let mut style = ComputedStyle::default();
+    style.scroll_margin_top = Length::px(10.0);
+    style.scroll_margin_left = Length::px(20.0);
+    let style = Arc::new(style);
+
+    let target_fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(100.0, 100.0, 10.0, 10.0),
+      FragmentContent::Block {
+        box_id: Some(target_box_id),
+      },
+      vec![],
+      style,
+    );
+    let root_fragment = FragmentNode::new(
+      Rect::from_xywh(0.0, 0.0, 1000.0, 1000.0),
+      FragmentContent::Block {
+        box_id: Some(box_tree.root.id),
+      },
+      vec![target_fragment],
+    );
+    let fragment_tree = FragmentTree::new(root_fragment);
+
+    let viewport = Size::new(100.0, 100.0);
+    let offset =
+      scroll_offset_for_fragment_target(&dom, &box_tree, &fragment_tree, "target", viewport)
+        .expect("should find #target");
+    assert_eq!(offset.x, 80.0);
+    assert_eq!(offset.y, 90.0);
   }
 }
