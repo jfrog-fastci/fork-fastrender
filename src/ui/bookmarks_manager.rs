@@ -39,6 +39,8 @@ pub struct BookmarksManagerState {
   list_cache: Option<BookmarksListCache>,
   /// Incremented when folder open/closed state changes so the flattened view can be rebuilt.
   folder_open_revision: u64,
+  /// Cached folder dropdown options + parent-label map (rebuilt on store revision changes).
+  folder_cache: Option<BookmarksFolderCache>,
 }
 
 impl BookmarksManagerState {
@@ -58,6 +60,39 @@ struct BookmarksListCache {
   search_query: String,
   folder_open_revision: u64,
   rows: Vec<BookmarkRow>,
+}
+
+#[derive(Debug, Clone)]
+struct BookmarksFolderCache {
+  store_revision: u64,
+  folder_options: Vec<(Option<BookmarkId>, String)>,
+  folder_labels: HashMap<Option<BookmarkId>, String>,
+}
+
+impl BookmarksFolderCache {
+  fn new(store: &BookmarkStore) -> Self {
+    let folder_options = folder_options(store);
+    let folder_labels = folder_options.iter().cloned().collect::<HashMap<_, _>>();
+    Self {
+      store_revision: store.revision(),
+      folder_options,
+      folder_labels,
+    }
+  }
+
+  fn ensure_up_to_date(&mut self, store: &BookmarkStore) {
+    let revision = store.revision();
+    if self.store_revision == revision {
+      return;
+    }
+    self.store_revision = revision;
+    self.folder_options = folder_options(store);
+    self.folder_labels = self
+      .folder_options
+      .iter()
+      .cloned()
+      .collect::<HashMap<_, _>>();
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +145,11 @@ pub fn bookmarks_manager_side_panel(
   store: &mut BookmarkStore,
 ) -> BookmarksManagerOutput {
   let mut out = BookmarksManagerOutput::default();
+  let mut folder_cache = state
+    .folder_cache
+    .take()
+    .unwrap_or_else(|| BookmarksFolderCache::new(store));
+  folder_cache.ensure_up_to_date(store);
 
   egui::SidePanel::left("fastr_bookmarks_manager")
     .resizable(true)
@@ -122,9 +162,7 @@ pub fn bookmarks_manager_side_panel(
         out.close_requested = true;
       });
 
-      let folder_options = folder_options(store);
-      let folder_labels: HashMap<Option<BookmarkId>, String> =
-        folder_options.iter().cloned().collect::<HashMap<_, _>>();
+      folder_cache.ensure_up_to_date(store);
 
       ui.add_space(ui.spacing().item_spacing.y.max(6.0));
 
@@ -171,12 +209,20 @@ pub fn bookmarks_manager_side_panel(
       // Create folder / edit bookmark flows (cards)
       // -----------------------------------------------------------------------
       if state.creating_folder.is_some() {
-        create_folder_card(ui, state, store, &folder_options, &mut out);
+        {
+          let folder_options = folder_cache.folder_options.as_slice();
+          create_folder_card(ui, state, store, folder_options, &mut out);
+        }
+        folder_cache.ensure_up_to_date(store);
         ui.add_space(ui.spacing().item_spacing.y.max(8.0));
       }
 
       if state.editing_bookmark.is_some() {
-        edit_bookmark_card(ui, state, store, &folder_options, &mut out);
+        {
+          let folder_options = folder_cache.folder_options.as_slice();
+          edit_bookmark_card(ui, state, store, folder_options, &mut out);
+        }
+        folder_cache.ensure_up_to_date(store);
         ui.add_space(ui.spacing().item_spacing.y.max(8.0));
       }
 
@@ -389,8 +435,14 @@ pub fn bookmarks_manager_side_panel(
       // -----------------------------------------------------------------------
       // Bookmarks list
       // -----------------------------------------------------------------------
-      bookmarks_list(ui, state, store, &folder_labels, &mut out);
+      folder_cache.ensure_up_to_date(store);
+      {
+        let folder_labels = &folder_cache.folder_labels;
+        bookmarks_list(ui, state, store, folder_labels, &mut out);
+      }
     });
+
+  state.folder_cache = Some(folder_cache);
 
   // Clear edit state if the underlying node disappeared.
   if state
@@ -823,12 +875,17 @@ fn bookmarks_list(
           let row = cache.rows[row_idx];
           match row.kind {
             BookmarkRowKind::Folder => {
-              let Some(BookmarkNode::Folder(folder)) = store.nodes.get(&row.id).cloned() else {
+              let Some((title, item_count)) =
+                store.nodes.get(&row.id).and_then(|node| match node {
+                  BookmarkNode::Folder(folder) => Some((folder.title.clone(), folder.children.len())),
+                  _ => None,
+                })
+              else {
                 // Keep row spacing stable until the cache is rebuilt next frame.
                 list_row(ui, ("missing_folder_row", row.id.0), false, |_| {});
                 continue;
               };
-              render_folder_row(ui, state, store, folder, row.depth, out);
+              render_folder_row(ui, state, store, row.id, title, item_count, row.depth, out);
             }
             BookmarkRowKind::Bookmark => {
               let Some(BookmarkNode::Bookmark(entry)) = store.nodes.get(&row.id).cloned() else {
@@ -924,11 +981,12 @@ fn render_folder_row(
   ui: &mut egui::Ui,
   state: &mut BookmarksManagerState,
   store: &mut BookmarkStore,
-  folder: super::bookmarks::BookmarkFolder,
+  folder_id: BookmarkId,
+  title: String,
+  item_count: usize,
   depth: usize,
   out: &mut BookmarksManagerOutput,
 ) {
-  let folder_id = folder.id;
   let open_id = folder_open_id(folder_id);
   let mut open = ui
     .ctx()
@@ -936,8 +994,6 @@ fn render_folder_row(
     .unwrap_or(false);
 
   let mut delete_clicked = false;
-  let title = folder.title.clone();
-  let item_count = folder.children.len();
 
   let row_resp = list_row(ui, ("folder_row", folder_id.0), false, |ui| {
     let indent = depth as f32 * ui.spacing().indent;
@@ -972,7 +1028,7 @@ fn render_folder_row(
   });
 
   row_resp.widget_info({
-    let title = folder.title.clone();
+    let title = title.clone();
     move || {
       egui::WidgetInfo::labeled(
         egui::WidgetType::Button,
