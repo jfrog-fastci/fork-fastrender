@@ -2303,28 +2303,24 @@ impl TextItem {
       }];
     }
 
-    let mut run_indices: Vec<usize> = (0..runs.len()).collect();
-    run_indices.sort_by_key(|idx| runs[*idx].start);
-
     let mut advances = Vec::new();
     let mut cumulative = 0.0;
-
-    for run_idx in run_indices {
+    let mut process_run = |run_idx: usize, advances: &mut Vec<ClusterBoundary>, cumulative: &mut f32| {
       let run = &runs[run_idx];
       let axis = run_inline_axis(run);
       if run.glyphs.is_empty() {
         if run.advance > 0.0 {
           let run_advance = run.advance.max(0.0);
-          cumulative += run_advance;
+          *cumulative += run_advance;
           advances.push(ClusterBoundary {
             byte_offset: Self::previous_char_boundary_in_text(text, run.end).min(text_len),
-            advance: cumulative,
+            advance: *cumulative,
             run_index: Some(run_idx),
             glyph_end: None,
             run_advance,
           });
         }
-        continue;
+        return;
       }
 
       let mut glyph_idx = 0;
@@ -2340,7 +2336,7 @@ impl TextItem {
         }
 
         run_advance += cluster_width;
-        cumulative += cluster_width;
+        *cumulative += cluster_width;
         // `glyph.cluster` values point to the start of the cluster in logical text order. For
         // line-breaking we need cumulative advances *at* boundary positions, which are the end
         // offsets of clusters (the start of the next cluster, or the run end).
@@ -2353,7 +2349,7 @@ impl TextItem {
           Self::previous_char_boundary_in_text(text, run.start + next_cluster_value).min(text_len);
         advances.push(ClusterBoundary {
           byte_offset: offset,
-          advance: cumulative,
+          advance: *cumulative,
           run_index: Some(run_idx),
           glyph_end: Some(glyph_idx),
           run_advance,
@@ -2368,11 +2364,44 @@ impl TextItem {
       {
         advances.push(ClusterBoundary {
           byte_offset: run_end,
-          advance: cumulative,
+          advance: *cumulative,
           run_index: Some(run_idx),
           glyph_end: Some(run.glyphs.len()),
           run_advance,
         });
+      }
+    };
+
+    // Runs are usually already in increasing logical order for LTR text. Avoid allocating an
+    // index vector + sorting in that common case.
+    let mut needs_sort = false;
+    let mut monotonic_decreasing = true;
+    let mut last_start: Option<usize> = None;
+    for run in runs.iter() {
+      if let Some(prev) = last_start {
+        if run.start < prev {
+          needs_sort = true;
+        }
+        if run.start > prev {
+          monotonic_decreasing = false;
+        }
+      }
+      last_start = Some(run.start);
+    }
+
+    if !needs_sort {
+      for run_idx in 0..runs.len() {
+        process_run(run_idx, &mut advances, &mut cumulative);
+      }
+    } else if monotonic_decreasing {
+      for run_idx in (0..runs.len()).rev() {
+        process_run(run_idx, &mut advances, &mut cumulative);
+      }
+    } else {
+      let mut run_indices: Vec<usize> = (0..runs.len()).collect();
+      run_indices.sort_by_key(|idx| runs[*idx].start);
+      for run_idx in run_indices {
+        process_run(run_idx, &mut advances, &mut cumulative);
       }
     }
 
