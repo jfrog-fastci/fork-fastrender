@@ -14,6 +14,7 @@ pub mod cancel;
 pub mod connection;
 pub mod error;
 pub mod framing;
+pub mod framed_codec;
 pub mod frame_pool;
 pub mod network;
 pub mod pixels;
