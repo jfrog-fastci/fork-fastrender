@@ -203,6 +203,7 @@ pub mod bench;
 pub mod cli_utils;
 #[doc(hidden)]
 pub mod bench_utils;
+pub mod audio;
 pub mod css;
 pub mod debug;
 pub mod dom;
