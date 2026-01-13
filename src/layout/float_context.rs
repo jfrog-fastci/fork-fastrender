@@ -2888,6 +2888,33 @@ impl FloatContext {
     (left_edge, available_width)
   }
 
+  /// Like [`Self::available_width_at_y`], but also returns the next float boundary.
+  ///
+  /// Returns `(left_edge, available_width, next_boundary)`, where `next_boundary` matches the
+  /// clamping behavior of [`Self::next_float_boundary_after`] (it is guaranteed to be finite and
+  /// `>= y` for finite `y`).
+  pub fn available_width_at_y_with_next_boundary(&self, y: f32) -> (f32, f32, f32) {
+    profile_count_width_query();
+    if !y.is_finite() {
+      return (
+        0.0,
+        clamp_positive_finite(self.containing_block_width),
+        0.0,
+      );
+    }
+
+    let mut state = self.ensure_sweep_state(y);
+    self.advance_sweep_to(y, &mut state);
+
+    let (left_edge, right_edge) = self.edges_at_with_state(&mut state, y);
+    let available_width = (right_edge - left_edge).max(0.0);
+
+    let next = self.next_float_boundary_after_internal(&mut state, y);
+    let next_boundary = if next.is_finite() && next > y { next } else { y };
+
+    (left_edge, available_width, next_boundary)
+  }
+
   /// Compute available width at a given Y position within a specific containing block span.
   ///
   /// This is required when the float context is shared with an ancestor BFC and the current
@@ -2924,6 +2951,46 @@ impl FloatContext {
     );
     let available_width = (right_edge - left_edge).max(0.0);
     (left_edge, available_width)
+  }
+
+  /// Like [`Self::available_width_at_y_in_containing_block`], but also returns the next float
+  /// boundary.
+  ///
+  /// Returns `(left_edge, available_width, next_boundary)`, where `next_boundary` matches the
+  /// clamping behavior of [`Self::next_float_boundary_after`].
+  pub fn available_width_at_y_in_containing_block_with_next_boundary(
+    &self,
+    y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+  ) -> (f32, f32, f32) {
+    profile_count_width_query();
+    let containing_left = if containing_block_left.is_finite() {
+      containing_block_left
+    } else {
+      0.0
+    };
+    let containing_width = clamp_positive_finite(containing_block_width);
+    let containing_right = containing_left + containing_width;
+    if !y.is_finite() {
+      return (containing_left, containing_width, 0.0);
+    }
+
+    let mut state = self.ensure_sweep_state(y);
+    self.advance_sweep_to(y, &mut state);
+
+    let (left_edge, right_edge) = self.edges_at_in_containing_block_with_state(
+      &mut state,
+      y,
+      containing_left,
+      containing_right,
+    );
+    let available_width = (right_edge - left_edge).max(0.0);
+
+    let next = self.next_float_boundary_after_internal(&mut state, y);
+    let next_boundary = if next.is_finite() && next > y { next } else { y };
+
+    (left_edge, available_width, next_boundary)
   }
 
   /// Compute available width over a vertical range

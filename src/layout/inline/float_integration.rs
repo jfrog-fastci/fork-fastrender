@@ -299,13 +299,12 @@ impl<'a> InlineFloatIntegration<'a> {
     // For zero-height lines, just check if width fits
     let mut y = start_y;
     loop {
-      let (left_edge, width) = self.float_ctx.available_width_at_y(y);
+      let (left_edge, width, next_y) = self.float_ctx.available_width_at_y_with_next_boundary(y);
       if width >= min_width {
         return LineSpace::new(y, left_edge, width);
       }
 
       // Find the next position where width might change
-      let next_y = self.float_ctx.next_float_boundary_after(y);
       if next_y <= y {
         // No more float boundaries, return current position
         return LineSpace::new(y, left_edge, width);
@@ -369,16 +368,17 @@ impl<'a> InlineFloatIntegration<'a> {
 
     let mut y = start_y;
     loop {
-      let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
-        y,
-        containing_left,
-        containing_width,
-      );
+      let (left_edge, width, next_y) = self
+        .float_ctx
+        .available_width_at_y_in_containing_block_with_next_boundary(
+          y,
+          containing_left,
+          containing_width,
+        );
       if width >= min_width {
         return LineSpace::new(y, left_edge, width);
       }
 
-      let next_y = self.float_ctx.next_float_boundary_after(y);
       if next_y <= y {
         return LineSpace::new(y, left_edge, width);
       }
@@ -522,12 +522,11 @@ impl<'a> InlineFloatIntegrationMut<'a> {
 
     let mut y = start_y;
     loop {
-      let (left_edge, width) = self.float_ctx.available_width_at_y(y);
+      let (left_edge, width, next_y) = self.float_ctx.available_width_at_y_with_next_boundary(y);
       if width >= min_width {
         return LineSpace::new(y, left_edge, width);
       }
 
-      let next_y = self.float_ctx.next_float_boundary_after(y);
       if next_y <= y {
         return LineSpace::new(y, left_edge, width);
       }
@@ -583,16 +582,17 @@ impl<'a> InlineFloatIntegrationMut<'a> {
 
     let mut y = start_y;
     loop {
-      let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
-        y,
-        containing_left,
-        containing_width,
-      );
+      let (left_edge, width, next_y) = self
+        .float_ctx
+        .available_width_at_y_in_containing_block_with_next_boundary(
+          y,
+          containing_left,
+          containing_width,
+        );
       if width >= min_width {
         return LineSpace::new(y, left_edge, width);
       }
 
-      let next_y = self.float_ctx.next_float_boundary_after(y);
       if next_y <= y {
         return LineSpace::new(y, left_edge, width);
       }
@@ -740,14 +740,13 @@ impl<'a> Iterator for LineSpaceIterator<'a> {
       return None;
     }
 
-    let (left_edge, width) = self.float_ctx.available_width_at_y(self.current_y);
+    let (left_edge, width, next_boundary) = self
+      .float_ctx
+      .available_width_at_y_with_next_boundary(self.current_y);
     let space = LineSpace::new(self.current_y, left_edge, width);
 
     // Find the next position where width might change
-    let next_y = self
-      .float_ctx
-      .next_float_boundary_after(self.current_y)
-      .min(self.end_y);
+    let next_y = next_boundary.min(self.end_y);
     self.current_y = if next_y <= self.current_y {
       self.end_y
     } else {

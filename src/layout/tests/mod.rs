@@ -197,6 +197,7 @@ mod float_logical_sides;
 mod float_range_cache_incremental_update_timeout;
 mod float_range_scan_cache;
 mod inline_float_find_fit_no_double_range_query;
+mod inline_float_zero_height_next_boundary;
 mod float_shrink_to_min;
 mod font_relative_units_test;
 mod form_control_baseline;
