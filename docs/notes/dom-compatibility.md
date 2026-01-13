@@ -1,7 +1,8 @@
 # DOM compatibility mode
 
-FastRender parses HTML without executing author JavaScript. By default it also avoids applying
-non-standard mutations to the parsed DOM.
+FastRender’s one-shot render APIs parse HTML without executing author JavaScript. (For JS + event
+loop support, use `BrowserTab`; see [`docs/runtime_stacks.md`](../runtime_stacks.md).) By default it
+also avoids applying non-standard mutations to the parsed DOM.
 
 Some pages rely on early “bootstrap JS” to:
 
