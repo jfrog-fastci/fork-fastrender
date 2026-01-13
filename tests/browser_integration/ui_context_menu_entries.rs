@@ -55,6 +55,40 @@ fn context_menu_entries_include_image_actions_when_image_url_present() {
 }
 
 #[test]
+fn context_menu_entries_include_link_actions_when_link_url_present() {
+  let _lock = super::stage_listener_test_lock();
+  let bookmarks = BookmarkStore::default();
+  let link_url = "https://example.com/target";
+
+  let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
+    link_url: Some(link_url),
+    image_url: None,
+    page_url: Some("https://example.com/"),
+    bookmarks: &bookmarks,
+    history_panel_open: false,
+    bookmarks_panel_open: false,
+    can_copy: false,
+    can_cut: false,
+    can_paste: false,
+    can_select_all: false,
+  });
+
+  let actions = actions(&entries);
+  assert!(
+    actions.contains(&PageContextMenuAction::OpenLinkInNewTab(link_url.to_string())),
+    "expected OpenLinkInNewTab action (got {actions:?})"
+  );
+  assert!(
+    actions.contains(&PageContextMenuAction::DownloadLink(link_url.to_string())),
+    "expected DownloadLink action (got {actions:?})"
+  );
+  assert!(
+    actions.contains(&PageContextMenuAction::CopyLinkAddress(link_url.to_string())),
+    "expected CopyLinkAddress action (got {actions:?})"
+  );
+}
+
+#[test]
 fn context_menu_entries_include_clipboard_actions_when_enabled() {
   let _lock = super::stage_listener_test_lock();
   let bookmarks = BookmarkStore::default();
