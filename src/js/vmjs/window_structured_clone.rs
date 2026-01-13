@@ -1875,7 +1875,7 @@ fn throw_data_clone_error(vm: &mut Vm, scope: &mut Scope<'_>, global: GcObject, 
       }
     }
   }
-  match make_dom_exception(scope, "DataCloneError", message) {
+  match make_dom_exception(vm, scope, "DataCloneError", message) {
     Ok(v) => VmError::Throw(v),
     Err(err) => err,
   }

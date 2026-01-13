@@ -2255,8 +2255,7 @@ fn storage_set_item_native(
   let change = match area.lock().set_item(&key, &value) {
     Ok(change) => change,
     Err(web_storage::StorageError::QuotaExceeded) => {
-      return Err(VmError::Throw(make_dom_exception(
-        scope,
+      return Err(VmError::Throw(make_dom_exception(vm, scope,
         "QuotaExceededError",
         "The quota has been exceeded.",
       )?));
@@ -3247,7 +3246,20 @@ pub(crate) fn dataset_exotic_set(
       Err(_) => return Ok(None),
     };
     if let Err(err) = host_dom.dataset_set(node_id, &prop, &value) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+      let window_obj = match scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &document_window_key)?
+      {
+        Some(Value::Object(obj)) => obj,
+        _ => return Err(VmError::Throw(make_dom_exception_fallback_object(scope, err.code(), "")?)),
+      };
+      return Err(VmError::Throw(make_dom_exception_for_global(
+        scope,
+        window_obj,
+        err.code(),
+        "",
+      )?));
     }
     ctx.record_dataset_mutation(document_obj);
     return Ok(Some(true));
@@ -3263,7 +3275,20 @@ pub(crate) fn dataset_exotic_set(
     Err(_) => return Ok(None),
   };
   if let Err(err) = dom.dataset_set(node_id, &prop, &value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+    let window_obj = match scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &document_window_key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => return Err(VmError::Throw(make_dom_exception_fallback_object(scope, err.code(), "")?)),
+    };
+    return Err(VmError::Throw(make_dom_exception_for_global(
+      scope,
+      window_obj,
+      err.code(),
+      "",
+    )?));
   }
   ctx.record_dataset_mutation(document_obj);
 
@@ -3332,7 +3357,20 @@ pub(crate) fn dataset_exotic_delete(
       Err(_) => return Ok(None),
     };
     if let Err(err) = host_dom.dataset_delete(node_id, &prop) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+      let window_obj = match scope
+        .heap()
+        .object_get_own_data_property_value(document_obj, &document_window_key)?
+      {
+        Some(Value::Object(obj)) => obj,
+        _ => return Err(VmError::Throw(make_dom_exception_fallback_object(scope, err.code(), "")?)),
+      };
+      return Err(VmError::Throw(make_dom_exception_for_global(
+        scope,
+        window_obj,
+        err.code(),
+        "",
+      )?));
     }
     ctx.record_dataset_mutation(document_obj);
     return Ok(Some(true));
@@ -3348,7 +3386,20 @@ pub(crate) fn dataset_exotic_delete(
     Err(_) => return Ok(None),
   };
   if let Err(err) = dom.dataset_delete(node_id, &prop) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    let document_window_key = alloc_key(scope, DOCUMENT_WINDOW_KEY)?;
+    let window_obj = match scope
+      .heap()
+      .object_get_own_data_property_value(document_obj, &document_window_key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => return Err(VmError::Throw(make_dom_exception_fallback_object(scope, err.code(), "")?)),
+    };
+    return Err(VmError::Throw(make_dom_exception_for_global(
+      scope,
+      window_obj,
+      err.code(),
+      "",
+    )?));
   }
   ctx.record_dataset_mutation(document_obj);
 
@@ -4265,7 +4316,7 @@ fn window_report_error_native(
 }
 
 fn window_btoa_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -4281,8 +4332,7 @@ fn window_btoa_native(
   let code_units = scope.heap().get_string(s)?.as_code_units();
 
   if code_units.len() > MAX_BASE64_INPUT_LEN {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be encoded is too large.",
     )?));
@@ -4294,8 +4344,7 @@ fn window_btoa_native(
     .map_err(|_| VmError::OutOfMemory)?;
   for &u in code_units {
     if u > 0xFF {
-      return Err(VmError::Throw(make_dom_exception(
-        scope,
+      return Err(VmError::Throw(make_dom_exception(vm, scope,
         "InvalidCharacterError",
         "The string to be encoded contains characters outside of the Latin1 range.",
       )?));
@@ -4305,8 +4354,7 @@ fn window_btoa_native(
 
   let expected_len = (bytes.len().saturating_add(2) / 3).saturating_mul(4);
   if expected_len > MAX_BASE64_OUTPUT_LEN {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be encoded is too large.",
     )?));
@@ -4315,8 +4363,7 @@ fn window_btoa_native(
   // HTML's "forgiving-base64 encode" uses the standard alphabet with padding and no line breaks.
   let encoded = general_purpose::STANDARD.encode(bytes);
   if encoded.len() > MAX_BASE64_OUTPUT_LEN {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be encoded is too large.",
     )?));
@@ -4326,7 +4373,7 @@ fn window_btoa_native(
 }
 
 fn window_atob_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -4342,8 +4389,7 @@ fn window_atob_native(
   let code_units = scope.heap().get_string(s)?.as_code_units();
 
   if code_units.len() > MAX_BASE64_INPUT_LEN {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be decoded is too large.",
     )?));
@@ -4360,8 +4406,7 @@ fn window_atob_native(
       continue;
     }
     if unit > 0xFF {
-      return Err(VmError::Throw(make_dom_exception(
-        scope,
+      return Err(VmError::Throw(make_dom_exception(vm, scope,
         "InvalidCharacterError",
         "The string to be decoded is not correctly encoded.",
       )?));
@@ -4380,8 +4425,7 @@ fn window_atob_native(
 
   // If length mod 4 is 1, fail.
   if stripped.len() % 4 == 1 {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be decoded is not correctly encoded.",
     )?));
@@ -4393,8 +4437,7 @@ fn window_atob_native(
     .copied()
     .any(|b| !is_base64_alphabet_byte(b))
   {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be decoded is not correctly encoded.",
     )?));
@@ -4408,8 +4451,7 @@ fn window_atob_native(
   let decoded = match general_purpose::STANDARD.decode(&stripped) {
     Ok(decoded) => decoded,
     Err(_) => {
-      return Err(VmError::Throw(make_dom_exception(
-        scope,
+      return Err(VmError::Throw(make_dom_exception(vm, scope,
         "InvalidCharacterError",
         "The string to be decoded is not correctly encoded.",
       )?));
@@ -4417,8 +4459,7 @@ fn window_atob_native(
   };
 
   if decoded.len() > MAX_BASE64_OUTPUT_LEN {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "The string to be decoded is too large.",
     )?));
@@ -4434,6 +4475,28 @@ fn window_atob_native(
 }
 
 pub(crate) fn make_dom_exception(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  name: &str,
+  message: &str,
+) -> Result<Value, VmError> {
+  // Prefer creating a real `DOMException` instance so `err instanceof DOMException` works in WPT.
+  //
+  // Note: `init_window_globals` installs `DOMException` early, but this helper is also used in
+  // fallback/test-only code paths. If we cannot recover the current realm's global object or
+  // intrinsics, fall back to a plain object so we still throw *something*.
+  let window_obj = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.window_obj);
+  if let (Some(window_obj), Some(intr)) = (window_obj, vm.intrinsics()) {
+    let dom_exception = DomExceptionClassVmJs::install_for_global(vm, scope, window_obj, intr)?;
+    return dom_exception.new_instance(scope, name, message);
+  }
+
+  make_dom_exception_fallback_object(scope, name, message)
+}
+
+fn make_dom_exception_fallback_object(
   scope: &mut Scope<'_>,
   name: &str,
   message: &str,
@@ -4477,25 +4540,49 @@ pub(crate) fn make_dom_exception(
   Ok(Value::Object(obj))
 }
 
-fn make_dom_exception_in_realm(
-  vm: &mut Vm,
+fn dom_exception_class_for_global(
   scope: &mut Scope<'_>,
+  global: GcObject,
+) -> Result<Option<DomExceptionClassVmJs>, VmError> {
+  // Root `global` while allocating property keys: `alloc_key` can GC.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(global))?;
+
+  let dom_exception_key = alloc_key(&mut scope, "DOMException")?;
+  let ctor = match scope
+    .heap()
+    .object_get_own_data_property_value(global, &dom_exception_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+  scope.push_root(Value::Object(ctor))?;
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let prototype = match scope
+    .heap()
+    .object_get_own_data_property_value(ctor, &prototype_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => return Ok(None),
+  };
+
+  Ok(Some(DomExceptionClassVmJs {
+    constructor: ctor,
+    prototype,
+  }))
+}
+
+fn make_dom_exception_for_global(
+  scope: &mut Scope<'_>,
+  global: GcObject,
   name: &str,
   message: &str,
 ) -> Result<Value, VmError> {
-  if let Some(intr) = vm.intrinsics() {
-    if let Some(global) = vm
-      .user_data::<WindowRealmUserData>()
-      .and_then(|data| data.window_obj())
-    {
-      if let Ok(dom_exception) = DomExceptionClassVmJs::install_for_global(vm, scope, global, intr) {
-        if let Ok(value) = dom_exception.new_instance(scope, name, message) {
-          return Ok(value);
-        }
-      }
-    }
+  if let Some(dom_exception) = dom_exception_class_for_global(scope, global)? {
+    return dom_exception.new_instance(scope, name, message);
   }
-  make_dom_exception(scope, name, message)
+  make_dom_exception_fallback_object(scope, name, message)
 }
 
 fn sanitize_scroll_coord(n: f64) -> f32 {
@@ -5740,9 +5827,8 @@ fn location_port_set_native(
   )
 }
 
-fn throw_data_clone_error(scope: &mut Scope<'_>) -> Result<VmError, VmError> {
-  Ok(VmError::Throw(make_dom_exception(
-    scope,
+fn throw_data_clone_error(vm: &mut Vm, scope: &mut Scope<'_>) -> Result<VmError, VmError> {
+  Ok(VmError::Throw(make_dom_exception(vm, scope,
     "DataCloneError",
     "",
   )?))
@@ -5819,7 +5905,7 @@ fn history_state_structured_clone_inner(
     | Value::Number(_)
     | Value::BigInt(_)
     | Value::String(_) => Ok(value),
-    Value::Symbol(_) => Err(throw_data_clone_error(scope)?),
+    Value::Symbol(_) => Err(throw_data_clone_error(vm, scope)?),
     Value::Object(obj) => {
       if let Some(cloned) = seen.get(&obj).copied() {
         return Ok(cloned);
@@ -5827,13 +5913,13 @@ fn history_state_structured_clone_inner(
 
       // Uncloneable types (subset).
       if scope.heap().is_callable(value)? {
-        return Err(throw_data_clone_error(scope)?);
+        return Err(throw_data_clone_error(vm, scope)?);
       }
       if scope.heap().is_promise_object(obj) {
-        return Err(throw_data_clone_error(scope)?);
+        return Err(throw_data_clone_error(vm, scope)?);
       }
       if history_state_is_uncloneable_dom_object(scope, obj)? {
-        return Err(throw_data_clone_error(scope)?);
+        return Err(throw_data_clone_error(vm, scope)?);
       }
 
       let intr = vm
@@ -6046,8 +6132,7 @@ fn history_state_change_native(
       match crate::js::url_resolve::resolve_url(&url_input, Some(&current_document_url)) {
         Ok(resolved) => resolved,
         Err(err) => {
-          return Err(VmError::Throw(make_dom_exception(
-            scope,
+          return Err(VmError::Throw(make_dom_exception(vm, scope,
             "SecurityError",
             &err.to_string(),
           )?));
@@ -6056,8 +6141,7 @@ fn history_state_change_native(
     let parsed = match Url::parse(&resolved) {
       Ok(parsed) => parsed,
       Err(err) => {
-        return Err(VmError::Throw(make_dom_exception(
-          scope,
+        return Err(VmError::Throw(make_dom_exception(vm, scope,
           "SecurityError",
           &err.to_string(),
         )?));
@@ -6067,8 +6151,7 @@ fn history_state_change_native(
     match parsed.scheme() {
       "http" | "https" | "file" | "data" | "about" => {}
       other => {
-        return Err(VmError::Throw(make_dom_exception(
-          scope,
+        return Err(VmError::Throw(make_dom_exception(vm, scope,
           "SecurityError",
           &format!("history state updates to {other}: URLs are not supported"),
         )?));
@@ -6093,8 +6176,7 @@ fn history_state_change_native(
     if current_origin != new_origin
       || (current_origin == "null" && current.scheme() != parsed.scheme())
     {
-      return Err(VmError::Throw(make_dom_exception(
-        scope,
+      return Err(VmError::Throw(make_dom_exception(vm, scope,
         "SecurityError",
         "history state updates may not change origin",
       )?));
@@ -9586,7 +9668,7 @@ fn maybe_adopt_node_into_document(
       .adopt_node_from(unsafe { src_dom_ptr.as_mut() }, node.node_id)
     {
       Ok(adopted) => adopted,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let mapping: HashMap<NodeId, NodeId> = adopted.mapping.into_iter().collect();
     (adopted.new_root, mapping)
@@ -10855,7 +10937,7 @@ fn document_query_selector_native(
           ("InvalidStateError", message)
         }
       };
-      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+      Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?))
     }
   }
 }
@@ -10916,7 +10998,7 @@ fn document_query_selector_all_native(
             ("InvalidStateError", message)
           }
         };
-        return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?));
       }
     }
   };
@@ -11171,7 +11253,7 @@ fn element_query_selector_native(
           ("InvalidStateError", message)
         }
       };
-      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+      Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?))
     }
   }
 }
@@ -11253,7 +11335,7 @@ fn element_query_selector_all_native(
           ("InvalidStateError", message)
         }
       };
-      return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?));
     }
   };
 
@@ -11266,7 +11348,7 @@ fn element_query_selector_all_native(
 }
 
 fn element_matches_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -11329,7 +11411,7 @@ fn element_matches_native(
           ("InvalidStateError", message)
         }
       };
-      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+      Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?))
     }
   }
 }
@@ -11416,7 +11498,7 @@ fn element_closest_native(
           ("InvalidStateError", message)
         }
       };
-      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+      Err(VmError::Throw(make_dom_exception(vm, scope, name, &message)?))
     }
   }
 }
@@ -12360,12 +12442,7 @@ fn document_create_element_native(
     .unwrap_or_default();
 
   if let Err(err) = dom2::validate_element_qualified_name(tag_name.as_ref()) {
-    return Err(VmError::Throw(make_dom_exception_in_realm(
-      vm,
-      scope,
-      err.code(),
-      "",
-    )?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let mut dom_ptr =
@@ -12382,7 +12459,11 @@ fn document_create_element_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
-fn value_to_rust_utf16_string(scope: &mut Scope<'_>, value: Value) -> Result<String, VmError> {
+fn value_to_rust_utf16_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> Result<String, VmError> {
   let value_s = match value {
     Value::String(s) => s,
     other => scope.heap_mut().to_string(other)?,
@@ -12390,8 +12471,7 @@ fn value_to_rust_utf16_string(scope: &mut Scope<'_>, value: Value) -> Result<Str
   let units = scope.heap().get_string(value_s)?.as_code_units();
   match String::from_utf16(units) {
     Ok(s) => Ok(s),
-    Err(_) => Err(VmError::Throw(make_dom_exception(
-      scope,
+    Err(_) => Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidCharacterError",
       "Invalid UTF-16 string.",
     )?)),
@@ -12417,13 +12497,13 @@ fn document_create_element_ns_native(
   let namespace: Option<String> = match namespace_value {
     Value::Null | Value::Undefined => None,
     other => {
-      let ns = value_to_rust_utf16_string(scope, other)?;
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
       (!ns.is_empty()).then_some(ns)
     }
   };
 
   let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let qualified_name = value_to_rust_utf16_string(scope, qualified_name_value)?;
+  let qualified_name = value_to_rust_utf16_string(vm, scope, qualified_name_value)?;
 
   let dom = dom_from_vm_host_mut(host).ok_or(VmError::TypeError(
     "document.createElementNS requires a DOM-backed document",
@@ -12432,7 +12512,7 @@ fn document_create_element_ns_native(
   let dom2::ParsedQualifiedName { prefix, mut local_name } =
     match dom2::validate_and_extract_element(namespace.as_deref(), &qualified_name) {
       Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
 
   // DOM: HTML namespace elements have an ASCII-lowercased localName in HTML documents.
@@ -12450,7 +12530,7 @@ fn document_create_element_ns_native(
 }
 
 fn document_create_attribute_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -12465,9 +12545,9 @@ fn document_create_attribute_native(
   };
 
   let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let mut local_name = value_to_rust_utf16_string(scope, name_value)?;
+  let mut local_name = value_to_rust_utf16_string(vm, scope, name_value)?;
   if let Err(err) = dom2::validate_attribute_local_name(&local_name) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let is_html_document = dom_from_vm_host_mut(host)
@@ -12516,7 +12596,7 @@ fn document_create_attribute_native(
 }
 
 fn document_create_attribute_ns_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -12534,18 +12614,18 @@ fn document_create_attribute_ns_native(
   let namespace: Option<String> = match namespace_value {
     Value::Null | Value::Undefined => None,
     other => {
-      let ns = value_to_rust_utf16_string(scope, other)?;
+      let ns = value_to_rust_utf16_string(vm, scope, other)?;
       (!ns.is_empty()).then_some(ns)
     }
   };
 
   let qualified_name_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let qualified_name = value_to_rust_utf16_string(scope, qualified_name_value)?;
+  let qualified_name = value_to_rust_utf16_string(vm, scope, qualified_name_value)?;
 
   let dom2::ParsedQualifiedName { prefix, mut local_name } =
     match dom2::validate_and_extract_attribute(namespace.as_deref(), &qualified_name) {
       Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
 
   // HTML documents lowercase attribute local names when the namespace is null.
@@ -13049,7 +13129,7 @@ fn document_import_node_native(
   let imported = match dst_dom.import_node_from(src_dom, node_key.node_id, deep) {
     Ok(imported) => imported,
     Err(err) => {
-      let exc = make_dom_exception(scope, err.code(), "")?;
+      let exc = make_dom_exception(vm, scope, err.code(), "")?;
       return Err(VmError::Throw(exc));
     }
   };
@@ -17473,7 +17553,7 @@ fn mutation_observer_observe_native(
   };
 
   if let Err(err) = observe_result {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   // Ensure the observer stays alive while it is observing.
@@ -18193,7 +18273,7 @@ fn intersection_observer_observe_native(
   let init = intersection_observer_init_from_obj(scope, dom, observer_obj)?;
 
   if let Err(err) = dom.intersection_observer_observe(observer_id, target_id, init) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   // Ensure the observer stays alive while it is observing.
@@ -18716,7 +18796,7 @@ fn resize_observer_observe_native(
   }
 
   if let Err(err) = dom.resize_observer_observe(observer_id, target_id, box_opt) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let registry = resize_observer_registry_from_document(scope, document_obj)?;
@@ -23472,8 +23552,7 @@ pub(crate) fn event_target_dispatch_event_dom2(
     ));
   }
   if !is_event_initialized(scope, event_obj)? {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidStateError",
       "Event has not been initialized",
     )?));
@@ -23488,8 +23567,7 @@ pub(crate) fn event_target_dispatch_event_dom2(
       .object_get_own_data_property_value(event_obj, &initialized_key)?,
     Some(Value::Bool(false))
   ) {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidStateError",
       "",
     )?));
@@ -23501,8 +23579,7 @@ pub(crate) fn event_target_dispatch_event_dom2(
       .object_get_own_data_property_value(event_obj, &dispatching_key)?,
     Some(Value::Bool(true))
   ) {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "InvalidStateError",
       "",
     )?));
@@ -23894,7 +23971,7 @@ fn event_target_dispatch_event_native(
 }
 
 fn document_create_event_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -23951,8 +24028,7 @@ fn document_create_event_native(
   } else if name.eq_ignore_ascii_case("StorageEvent") {
     Kind::StorageEvent
   } else {
-    return Err(VmError::Throw(make_dom_exception(
-      scope,
+    return Err(VmError::Throw(make_dom_exception(vm, scope,
       "NotSupportedError",
       &format!("Unsupported event interface: {name}"),
     )?));
@@ -24219,7 +24295,7 @@ fn node_append_child_native(
         unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_handle.node_id)
       };
       if let Err(err) = insert_result {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for &child_id in &fragment_children {
         let _ = maybe_adopt_node_into_document(
@@ -24254,7 +24330,7 @@ fn node_append_child_native(
           err => err,
         })?;
         if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, adopted.node_id) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
         inserted.push(adopted.node_id);
       }
@@ -24270,7 +24346,7 @@ fn node_append_child_native(
         unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_handle.node_id)
       };
       if let Err(err) = insert_result {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       fragment_children.clone()
     } else {
@@ -24283,7 +24359,7 @@ fn node_append_child_native(
           .node_id;
 
       if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_for_insert) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       vec![child_for_insert]
     }
@@ -24457,8 +24533,7 @@ fn node_insert_before_native(
   let reference_node_id = match reference_handle {
     Some(reference_handle) => {
       if reference_handle.document_id != parent_handle.document_id {
-        return Err(VmError::Throw(make_dom_exception(
-          scope,
+        return Err(VmError::Throw(make_dom_exception(vm, scope,
           "NotFoundError",
           "",
         )?));
@@ -24472,7 +24547,7 @@ fn node_insert_before_native(
           &dom.node(reference_handle.node_id).kind,
           NodeKind::ShadowRoot { .. }
         ) {
-          return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
         }
       }
       Some(reference_handle.node_id)
@@ -24498,7 +24573,7 @@ fn node_insert_before_native(
         )
       };
       if let Err(err) = insert_result {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for &child_id in &fragment_children {
         let _ = maybe_adopt_node_into_document(
@@ -24531,7 +24606,7 @@ fn node_insert_before_native(
           adopted.node_id,
           reference_node_id,
         ) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
         inserted.push(adopted.node_id);
       }
@@ -24547,7 +24622,7 @@ fn node_insert_before_native(
         unsafe { dom_ptr.as_mut() }.insert_before(parent_handle.node_id, new_child_handle.node_id, reference_node_id)
       };
       if let Err(err) = insert_result {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       fragment_children.clone()
     } else {
@@ -24566,7 +24641,7 @@ fn node_insert_before_native(
       if let Err(err) =
         unsafe { dom_ptr.as_mut() }.insert_before(parent_handle.node_id, new_child_for_insert, reference_node_id)
       {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       vec![new_child_for_insert]
     }
@@ -24676,7 +24751,7 @@ fn node_remove_child_native(
   // Spec-wise this is observable as a NotFoundError because the node cannot be a child of this
   // parent when it belongs to a different document.
   if child_handle.document_id != parent_handle.document_id {
-    return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
   }
 
   let document_id = parent_handle.document_id;
@@ -24701,7 +24776,7 @@ fn node_remove_child_native(
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_ref() };
     if matches!(&dom.node(child_node_id).kind, NodeKind::ShadowRoot { .. }) {
-      return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
     }
   }
 
@@ -24711,7 +24786,7 @@ fn node_remove_child_native(
     let dom = unsafe { dom_ptr.as_mut() };
 
     if let Err(err) = dom.remove_child(parent_node_id, child_node_id) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
     }
 
     sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, parent_obj, parent_node_id)?;
@@ -24781,7 +24856,7 @@ fn node_replace_child_native(
     .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
 
   if old_child_handle.document_id != parent_handle.document_id {
-    return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
   }
 
   let document_obj = node_wrapper_document_obj(scope, parent_obj, parent_handle.node_id)
@@ -24802,7 +24877,7 @@ fn node_replace_child_native(
       &dom.node(old_child_handle.node_id).kind,
       NodeKind::ShadowRoot { .. }
     ) {
-      return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, "NotFoundError", "")?));
     }
   }
 
@@ -24858,7 +24933,7 @@ fn node_replace_child_native(
         )
       };
       if let Err(err) = replace_result {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for &child_id in &fragment_children {
         let _ = maybe_adopt_node_into_document(
@@ -24891,12 +24966,12 @@ fn node_replace_child_native(
           adopted.node_id,
           Some(old_child_handle.node_id),
         ) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
         inserted.push(adopted.node_id);
       }
       if let Err(err) = unsafe { dom_ptr.as_mut() }.remove_child(parent_handle.node_id, old_child_handle.node_id) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       inserted
     }
@@ -24918,7 +24993,7 @@ fn node_replace_child_native(
         )
       };
       if let Err(err) = replace_result {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       fragment_children.clone()
     } else {
@@ -24939,7 +25014,7 @@ fn node_replace_child_native(
         new_child_for_replace,
         old_child_handle.node_id,
       ) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       vec![new_child_for_replace]
     }
@@ -25051,7 +25126,7 @@ fn node_clone_node_native(
     let dom = unsafe { dom_ptr.as_mut() };
     match dom.clone_node(node_id, deep) {
       Ok(cloned) => cloned,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
   };
 
@@ -25440,7 +25515,7 @@ fn node_node_value_set_native(
         (Ok(needs), changed)
       }
       Err(err) => {
-        let exc = match make_dom_exception(scope, err.code(), "") {
+        let exc = match make_dom_exception(vm, scope, err.code(), "") {
           Ok(v) => VmError::Throw(v),
           Err(e) => e,
         };
@@ -25582,7 +25657,7 @@ fn dom_implementation_has_feature_native(
 }
 
 fn dom_implementation_create_document_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -25590,8 +25665,7 @@ fn dom_implementation_create_document_native(
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(VmError::Throw(make_dom_exception(
-    scope,
+  Err(VmError::Throw(make_dom_exception(vm, scope,
     "NotSupportedError",
     "DOMImplementation.createDocument is not supported yet.",
   )?))
@@ -25625,11 +25699,12 @@ fn dom_implementation_create_document_type_native(
     }
   };
 
-  let name = value_to_rust_utf16_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let name =
+    value_to_rust_utf16_string(vm, scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
   let public_id =
-    value_to_rust_utf16_string(scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
+    value_to_rust_utf16_string(vm, scope, args.get(1).copied().unwrap_or(Value::Undefined))?;
   let system_id =
-    value_to_rust_utf16_string(scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
+    value_to_rust_utf16_string(vm, scope, args.get(2).copied().unwrap_or(Value::Undefined))?;
 
   if is_host_document_id(vm, document_id) {
     let node_id =
@@ -25786,7 +25861,7 @@ fn dom_implementation_create_html_document_native(
     macro_rules! append_child_or_throw {
       ($parent:expr, $child:expr) => {{
         if let Err(err) = dom.append_child($parent, $child) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
       }};
     }
@@ -26543,7 +26618,7 @@ fn node_remove_native(
     };
 
     if let Err(err) = dom.remove_child(parent, node_id) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
     }
 
     // Keep cached `childNodes` live NodeLists updated.
@@ -26703,7 +26778,7 @@ fn node_text_content_set_native(
 
     match result {
       Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
   } else {
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
@@ -26714,7 +26789,7 @@ fn node_text_content_set_native(
         // Side effects (scripts, microtasks) are only driven for the host document.
         maybe_script_children_changed: None,
       },
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
   };
 
@@ -26816,7 +26891,7 @@ fn text_data_set_native(
           (Ok((changed, maybe_script_parent)), changed)
         }
         Err(err) => {
-          let exc = match make_dom_exception(scope, err.code(), "") {
+          let exc = match make_dom_exception(vm, scope, err.code(), "") {
             Ok(v) => VmError::Throw(v),
             Err(e) => e,
           };
@@ -26829,7 +26904,7 @@ fn text_data_set_native(
     // SAFETY: `dom_ptr` is valid for the duration of this native call.
     let dom = unsafe { dom_ptr.as_mut() };
     if let Err(err) = dom.set_text_data(node_key.node_id, &new_value) {
-      let exc = make_dom_exception(scope, err.code(), "")?;
+      let exc = make_dom_exception(vm, scope, err.code(), "")?;
       return Err(VmError::Throw(exc));
     }
     None
@@ -26922,7 +26997,7 @@ fn comment_data_set_native(
         (Ok(needs), false)
       }
     Err(err) => {
-      let exc = match make_dom_exception(scope, err.code(), "") {
+      let exc = match make_dom_exception(vm, scope, err.code(), "") {
         Ok(v) => VmError::Throw(v),
         Err(e) => e,
       };
@@ -27000,7 +27075,7 @@ fn processing_instruction_data_set_native(
         (Ok(needs), false)
       }
       Err(err) => {
-        let exc = match make_dom_exception(scope, err.code(), "") {
+        let exc = match make_dom_exception(vm, scope, err.code(), "") {
           Ok(v) => VmError::Throw(v),
           Err(e) => e,
         };
@@ -27771,7 +27846,7 @@ fn element_attach_shadow_native(
     let dom = unsafe { dom_ptr.as_mut() };
     match dom.attach_shadow_root(handle.node_id, mode, clonable, serializable, delegates_focus, slot_assignment) {
       Ok(id) => id,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
   };
 
@@ -28567,7 +28642,7 @@ fn element_reflected_string_set_native(
       .unwrap_or_default();
 
     if let Err(err) = dom.set_attribute(handle.node_id, &attr, &new_value) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
     }
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
     let _ = dom.take_mutation_observer_microtask_needed();
@@ -28587,7 +28662,7 @@ fn element_reflected_string_set_native(
     .unwrap_or_default();
 
   if let Err(err) = unsafe { dom_ptr.as_mut() }.set_attribute(handle.node_id, &attr, &new_value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
   let should_run_src_attribute_changed_steps =
     attr.eq_ignore_ascii_case("src") && is_html_script_element(unsafe { dom_ptr.as_ref() }, handle.node_id);
@@ -28686,16 +28761,16 @@ fn element_reflected_bool_set_native(
     // mutation hooks, so we only need to explicitly clear it for the `false` path here.
     if !present {
       if let Err(err) = dom.set_script_force_async(handle.node_id, false) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
     }
     if let Err(err) = dom.set_bool_attribute(handle.node_id, "async", present) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
     }
     return Ok(Value::Undefined);
   }
   if let Err(err) = dom.set_bool_attribute(handle.node_id, &attr, present) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   if !is_host_document_id(vm, handle.document_id) {
@@ -29407,22 +29482,22 @@ fn html_select_selected_index_set_native(
   match idx {
     Some(selected) => {
       if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, false) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for (idx, option_id) in options.iter().copied().enumerate() {
         let selected = idx == selected;
         if let Err(err) = dom.set_bool_attribute(option_id, "selected", selected) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
       }
     }
     None => {
       if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, true) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for option_id in options.iter().copied() {
         if let Err(err) = dom.set_bool_attribute(option_id, "selected", false) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
       }
     }
@@ -29518,22 +29593,22 @@ fn html_select_value_set_native(
   match matched {
     Some(selected) => {
       if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, false) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for (idx, option_id) in options.iter().copied().enumerate() {
         let selected = idx == selected;
         if let Err(err) = dom.set_bool_attribute(option_id, "selected", selected) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
       }
     }
     None => {
       if let Err(err) = dom.set_bool_attribute(select_id, HTML_SELECT_CLEARED_ATTR, true) {
-        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+        return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
       }
       for option_id in options.iter().copied() {
         if let Err(err) = dom.set_bool_attribute(option_id, "selected", false) {
-          return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+          return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
         }
       }
     }
@@ -30420,7 +30495,7 @@ fn css_style_set_property_native(
     };
     let changed = match host_dom.style_set_property(node_id, &name, &value) {
       Ok(changed) => changed,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let needs_microtask = if changed {
       host_dom.take_mutation_observer_microtask_needed()
@@ -30444,7 +30519,7 @@ fn css_style_set_property_native(
     Err(_) => return Ok(Value::Undefined),
   };
   if let Err(err) = dom.style_set_property(node_id, &name, &value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -30505,7 +30580,7 @@ fn css_style_remove_property_native(
     let prev = host_dom.style_get_property_value(node_id, &name);
     let changed = match host_dom.style_set_property(node_id, &name, "") {
       Ok(changed) => changed,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let needs_microtask = if changed {
       host_dom.take_mutation_observer_microtask_needed()
@@ -30534,7 +30609,7 @@ fn css_style_remove_property_native(
   };
   let prev = dom.style_get_property_value(node_id, &name);
   if let Err(err) = dom.style_set_property(node_id, &name, "") {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -30636,7 +30711,7 @@ fn css_style_css_text_set_native(
         (Ok(needs_microtask), changed)
       }
       Err(err) => {
-        let exc = match make_dom_exception(scope, err.code(), "") {
+        let exc = match make_dom_exception(vm, scope, err.code(), "") {
           Ok(v) => VmError::Throw(v),
           Err(e) => e,
         };
@@ -30666,7 +30741,7 @@ fn css_style_css_text_set_native(
   };
   let changed = match changed {
     Ok(changed) => changed,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
   let needs_microtask = if changed {
     dom.take_mutation_observer_microtask_needed()
@@ -30756,7 +30831,7 @@ fn css_style_named_set_native(
     };
     let changed = match host_dom.style_set_property(node_id, &prop, &value) {
       Ok(changed) => changed,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let needs_microtask = if changed {
       host_dom.take_mutation_observer_microtask_needed()
@@ -30780,7 +30855,7 @@ fn css_style_named_set_native(
     Err(_) => return Ok(Value::Undefined),
   };
   if let Err(err) = dom.style_set_property(node_id, &prop, &value) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -31093,7 +31168,7 @@ fn element_class_list_add_native(
     };
     let changed = match host_dom.class_list_add(node_id, &token_refs) {
       Ok(changed) => changed,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let needs_microtask = if changed {
       host_dom.take_mutation_observer_microtask_needed()
@@ -31129,7 +31204,7 @@ fn element_class_list_add_native(
       )?;
       Ok(Value::Undefined)
     }
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -31204,7 +31279,7 @@ fn element_class_list_remove_native(
     };
     let changed = match host_dom.class_list_remove(node_id, &token_refs) {
       Ok(changed) => changed,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let needs_microtask = if changed {
       host_dom.take_mutation_observer_microtask_needed()
@@ -31240,12 +31315,12 @@ fn element_class_list_remove_native(
       )?;
       Ok(Value::Undefined)
     }
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
 fn element_class_list_contains_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -31289,7 +31364,7 @@ fn element_class_list_contains_native(
 
   match dom.class_list_contains(node_id, &token) {
     Ok(result) => Ok(Value::Bool(result)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -31357,7 +31432,7 @@ fn element_class_list_toggle_native(
         .map_err(|_| VmError::TypeError("DOMTokenList.toggle must be called on a classList object"))?;
       match dom.class_list_contains(node_id, &token) {
         Ok(v) => v,
-        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
       }
     } else {
       false
@@ -31376,7 +31451,7 @@ fn element_class_list_toggle_native(
     };
     let result = match host_dom.class_list_toggle(node_id, &token, force) {
       Ok(result) => result,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let changed = if force.is_some() { result != before_present } else { true };
     let needs_microtask = if changed {
@@ -31402,7 +31477,7 @@ fn element_class_list_toggle_native(
 
   let result = match dom.class_list_toggle(node_id, &token, force) {
     Ok(result) => result,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -31482,7 +31557,7 @@ fn element_class_list_replace_native(
     };
     let result = match host_dom.class_list_replace(node_id, &token, &new_token) {
       Ok(result) => result,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     };
     let changed = result && token != new_token;
     let needs_microtask = if changed {
@@ -31508,7 +31583,7 @@ fn element_class_list_replace_native(
 
   let result = match dom.class_list_replace(node_id, &token, &new_token) {
     Ok(result) => result,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -31556,7 +31631,7 @@ fn element_get_attribute_native(
   match dom.get_attribute(handle.node_id, &name) {
     Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
     Ok(None) => Ok(Value::Null),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -31598,7 +31673,7 @@ fn element_has_attribute_native(
 
   match dom.has_attribute(handle.node_id, &name) {
     Ok(v) => Ok(Value::Bool(v)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -31631,7 +31706,7 @@ fn element_get_attribute_names_native(
 
   let names = match dom.attribute_names(handle.node_id) {
     Ok(v) => v,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
 
   let array = scope.alloc_array(0)?;
@@ -31710,7 +31785,7 @@ fn element_toggle_attribute_native(
       let before_present = if force.is_none() {
         match document.dom().has_attribute(node_id, &name) {
           Ok(v) => v,
-          Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+          Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
         }
       } else {
         false
@@ -31728,7 +31803,7 @@ fn element_toggle_attribute_native(
       });
       let changed = match result {
         Ok(v) => v,
-        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
       };
 
       if changed && name.eq_ignore_ascii_case("src") && is_html_script_element(document.dom(), node_id)
@@ -31763,7 +31838,7 @@ fn element_toggle_attribute_native(
   let before_present = if force.is_none() {
     match unsafe { dom_ptr.as_ref() }.has_attribute(handle.node_id, &name) {
       Ok(v) => v,
-      Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+      Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
     }
   } else {
     false
@@ -31772,7 +31847,7 @@ fn element_toggle_attribute_native(
 
   let changed = match unsafe { dom_ptr.as_mut() }.set_bool_attribute(handle.node_id, &name, after_present) {
     Ok(v) => v,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
   if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
@@ -31849,7 +31924,7 @@ fn element_get_attribute_ns_native(
   match dom.get_attribute(handle.node_id, &local_name) {
     Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
     Ok(None) => Ok(Value::Null),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -31911,7 +31986,7 @@ fn element_set_attribute_ns_native(
       });
       let changed = match result {
         Ok(v) => v,
-        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
       };
 
       if changed && should_run_src_attribute_changed_steps {
@@ -31944,7 +32019,7 @@ fn element_set_attribute_ns_native(
   let changed = match unsafe { dom_ptr.as_mut() }.set_attribute(handle.node_id, &qualified_name, &value)
   {
     Ok(v) => v,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
   if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
@@ -32028,7 +32103,7 @@ fn element_remove_attribute_ns_native(
       });
       let changed = match result {
         Ok(v) => v,
-        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
       };
 
       if changed && should_run_src_attribute_changed_steps {
@@ -32061,7 +32136,7 @@ fn element_remove_attribute_ns_native(
     ))?;
   let changed = match unsafe { dom_ptr.as_mut() }.remove_attribute(handle.node_id, &local_name) {
     Ok(v) => v,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
   if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
@@ -32135,12 +32210,7 @@ fn element_set_attribute_native(
     .unwrap_or_default();
 
   if let Err(err) = dom2::validate_attribute_qualified_name(name.as_ref()) {
-    return Err(VmError::Throw(make_dom_exception_in_realm(
-      vm,
-      scope,
-      err.code(),
-      "",
-    )?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   if is_host_document_id(vm, handle.document_id) {
@@ -32161,7 +32231,7 @@ fn element_set_attribute_native(
       });
       let changed = match result {
         Ok(v) => v,
-        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
       };
 
       if changed && should_run_src_attribute_changed_steps {
@@ -32192,7 +32262,7 @@ fn element_set_attribute_native(
   ))?;
   let changed = match unsafe { dom_ptr.as_mut() }.set_attribute(handle.node_id, &name, &value) {
     Ok(v) => v,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
   if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
@@ -32275,7 +32345,7 @@ fn element_remove_attribute_native(
       });
       let changed = match result {
         Ok(v) => v,
-        Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+        Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
       };
 
       if changed && should_run_src_attribute_changed_steps {
@@ -32306,7 +32376,7 @@ fn element_remove_attribute_native(
   ))?;
   let changed = match unsafe { dom_ptr.as_mut() }.remove_attribute(handle.node_id, &name) {
     Ok(v) => v,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
   if !is_host_document_id(vm, handle.document_id) {
     // Owned documents: skip dynamic script steps + MutationObserver microtask scheduling.
@@ -32342,7 +32412,7 @@ fn element_remove_attribute_native(
 }
 
 fn element_inner_html_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -32378,7 +32448,7 @@ fn element_inner_html_get_native(
 
   match dom.inner_html(node_id) {
     Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -32439,7 +32509,7 @@ fn element_inner_html_set_native(
     .map_err(|_| VmError::TypeError("Element.innerHTML must be called on an element object"))?;
 
   if let Err(err) = dom.set_inner_html(node_id, &html) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   sync_cached_child_nodes_for_wrapper(vm, scope, document_obj, dom, wrapper_obj, node_id)?;
@@ -32477,7 +32547,7 @@ fn shadow_root_inner_html_get_native(
 
   match dom.shadow_root_inner_html(handle.node_id) {
     Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -32518,7 +32588,7 @@ fn shadow_root_inner_html_set_native(
   // access for the duration of this native call.
   let dom = unsafe { dom_ptr.as_mut() };
   if let Err(err) = dom.set_shadow_root_inner_html(handle.node_id, &html) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   sync_cached_child_nodes_for_wrapper(vm, scope, handle.document_obj, dom, wrapper_obj, handle.node_id)?;
@@ -32531,7 +32601,7 @@ fn shadow_root_inner_html_set_native(
 }
 
 fn element_outer_html_get_native(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -32567,7 +32637,7 @@ fn element_outer_html_get_native(
 
   match dom.outer_html(node_id) {
     Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
-    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   }
 }
 
@@ -32629,7 +32699,7 @@ fn element_outer_html_set_native(
   let parent_node_id = dom.parent_node(node_id);
 
   if let Err(err) = dom.set_outer_html(node_id, &html) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   if let Some(parent_node_id) = parent_node_id {
@@ -32709,7 +32779,7 @@ fn element_insert_adjacent_html_native(
   })?;
 
   if let Err(err) = dom.insert_adjacent_html(node_id, &position, &html) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   if position.eq_ignore_ascii_case("beforebegin") || position.eq_ignore_ascii_case("afterend") {
@@ -32820,7 +32890,7 @@ fn element_insert_adjacent_element_native(
   let result = match unsafe { dom_ptr.as_mut() }.insert_adjacent_element(target_handle.node_id, &position, adopted.node_id) {
     Ok(Some(_)) => element_value,
     Ok(None) => Value::Null,
-    Err(err) => return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
   };
 
   // SAFETY: `dom_ptr` is valid for the duration of this native call.
@@ -32932,7 +33002,7 @@ fn element_insert_adjacent_text_native(
   })?;
 
   if let Err(err) = dom.insert_adjacent_text(node_id, &position, &text) {
-    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+    return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?));
   }
 
   let needs_microtask = dom.take_mutation_observer_microtask_needed();
@@ -33655,6 +33725,11 @@ fn init_window_globals(
   }
   let mut scope = heap.scope();
   let global = realm.global_object();
+  // Cache the realm's global object early so helpers (like DOMException construction) can recover it
+  // even during the remainder of initialization.
+  if let Some(user_data) = vm.user_data_mut::<WindowRealmUserData>() {
+    user_data.window_obj = Some(global);
+  }
   scope.heap_mut().object_set_host_slots(
     global,
     HostSlots {
