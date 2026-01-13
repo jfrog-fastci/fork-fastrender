@@ -271,4 +271,43 @@ mod tests {
     let rect = ctx.border_box_in_viewport(fixed).expect("fixed rect");
     assert_eq!(rect, Rect::from_xywh(20.0, -40.0, 30.0, 40.0));
   }
+
+  #[test]
+  fn nested_fixed_does_not_double_cancel_viewport_scroll() {
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #outer { position: fixed; left: 20px; top: 10px; width: 100px; height: 100px; }
+            #inner { position: fixed; left: 5px; top: 6px; width: 30px; height: 40px; }
+            #spacer { height: 2000px; }
+          </style>
+        </head>
+        <body>
+          <div id="outer">
+            <div id="inner"></div>
+          </div>
+          <div id="spacer"></div>
+        </body>
+      </html>"#;
+
+    let mut renderer = test_renderer();
+    let prepared = renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(200, 100))
+      .expect("prepare_html");
+
+    let (doc, mapping) = mapping_for_prepared(&prepared);
+    let outer = doc.get_element_by_id("outer").expect("outer element");
+    let inner = doc.get_element_by_id("inner").expect("inner element");
+
+    let scroll_state = ScrollState::with_viewport(Point::new(0.0, 50.0));
+    let ctx = Dom2GeometryContext::new(&renderer, &prepared, &mapping, scroll_state);
+
+    let outer_rect = ctx.border_box_in_viewport(outer).expect("outer rect");
+    assert_eq!(outer_rect, Rect::from_xywh(20.0, 10.0, 100.0, 100.0));
+
+    let inner_rect = ctx.border_box_in_viewport(inner).expect("inner rect");
+    assert_eq!(inner_rect, Rect::from_xywh(5.0, 6.0, 30.0, 40.0));
+  }
 }
