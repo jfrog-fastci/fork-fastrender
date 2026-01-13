@@ -12,6 +12,7 @@ use fastrender::js::{
   DomHost, RunLimits, RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowFetchBindings, WindowFetchEnv,
   WindowRealm, WindowRealmConfig, WindowRealmHost, WindowXhrBindings, WindowXhrEnv,
 };
+use fastrender::js::window_realm::DomBindingsBackend;
 use fastrender::resource::origin_from_url;
 use fastrender::{BrowserDocumentDom2, FastRender, RenderOptions};
 use std::sync::Arc;
@@ -23,6 +24,25 @@ use webidl_vm_js::VmJsHostHooksPayload;
 
 pub(crate) fn is_available() -> bool {
   true
+}
+
+// Opt-in WebIDL DOM backend selection for the vm-js-rendered runner.
+//
+// Default remains `handwritten` so existing CI expectations are not impacted.
+const DOM_BINDINGS_BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BINDINGS_BACKEND";
+
+fn dom_bindings_backend_from_env() -> Result<DomBindingsBackend, RunError> {
+  let Ok(raw) = std::env::var(DOM_BINDINGS_BACKEND_ENV_VAR) else {
+    return Ok(DomBindingsBackend::Handwritten);
+  };
+  let value = raw.trim().to_ascii_lowercase();
+  match value.as_str() {
+    "" | "handwritten" => Ok(DomBindingsBackend::Handwritten),
+    "webidl" | "web-idl" | "web_idl" => Ok(DomBindingsBackend::WebIdl),
+    other => Err(RunError::Js(format!(
+      "invalid {DOM_BINDINGS_BACKEND_ENV_VAR}={other:?} (expected handwritten|webidl)"
+    ))),
+  }
 }
 
 struct RenderedHost {
@@ -227,8 +247,11 @@ impl Backend for VmJsRenderedBackend {
     document.set_animation_clock(virtual_clock.clone());
 
     // Create the WindowRealm (vm-js realm with Window-like globals).
+    let dom_bindings_backend = dom_bindings_backend_from_env()?;
     let mut realm = WindowRealm::new_with_js_execution_options(
-      WindowRealmConfig::new(init.test_url.clone()).with_clock(virtual_clock.clone()),
+      WindowRealmConfig::new(init.test_url.clone())
+        .with_clock(virtual_clock.clone())
+        .with_dom_bindings_backend(dom_bindings_backend),
       options,
     )
     .map_err(|err| RunError::Js(err.to_string()))?;

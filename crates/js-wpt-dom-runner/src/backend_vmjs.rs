@@ -7,6 +7,7 @@ use fastrender::js::{
   EventLoop, JsExecutionOptions, MicrotaskCheckpointLimitedOutcome, RunLimits,
   RunNextTaskLimitedOutcome, RunState, VirtualClock, WindowHostState,
 };
+use fastrender::js::window_realm::DomBindingsBackend;
 use std::sync::Arc;
 use std::time::Duration;
 use vm_js::{
@@ -17,6 +18,25 @@ use webidl_vm_js::VmJsHostHooksPayload;
 
 pub(crate) fn is_available() -> bool {
   true
+}
+
+// Opt-in WebIDL DOM backend selection for the vm-js runner.
+//
+// Default remains `handwritten` so existing CI expectations are not impacted.
+const DOM_BINDINGS_BACKEND_ENV_VAR: &str = "FASTERENDER_WPT_DOM_BINDINGS_BACKEND";
+
+fn dom_bindings_backend_from_env() -> Result<DomBindingsBackend, RunError> {
+  let Ok(raw) = std::env::var(DOM_BINDINGS_BACKEND_ENV_VAR) else {
+    return Ok(DomBindingsBackend::Handwritten);
+  };
+  let value = raw.trim().to_ascii_lowercase();
+  match value.as_str() {
+    "" | "handwritten" => Ok(DomBindingsBackend::Handwritten),
+    "webidl" | "web-idl" | "web_idl" => Ok(DomBindingsBackend::WebIdl),
+    other => Err(RunError::Js(format!(
+      "invalid {DOM_BINDINGS_BACKEND_ENV_VAR}={other:?} (expected handwritten|webidl)"
+    ))),
+  }
 }
 
 /// `vm-js` backend implemented as a thin adapter over FastRender's real Window-shaped runtime:
@@ -169,12 +189,15 @@ impl Backend for VmJsBackend {
     // Keep event-loop queue limits consistent with the VM configuration.
     event_loop.set_queue_limits(options.event_loop_queue_limits);
 
-    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options(
+    let dom_bindings_backend = dom_bindings_backend_from_env()?;
+
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
       dom,
       init.test_url,
       fetcher,
       virtual_clock.clone(),
       options,
+      dom_bindings_backend,
     )
     .map_err(|e| RunError::Js(e.to_string()))?;
 

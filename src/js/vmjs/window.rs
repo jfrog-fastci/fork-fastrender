@@ -12,7 +12,9 @@ use crate::js::web_storage::{
 };
 use crate::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use crate::js::window_file_reader::install_window_file_reader_bindings;
-use crate::js::window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
+use crate::js::window_realm::{
+  ConsoleSink, DomBindingsBackend, WindowRealm, WindowRealmConfig, WindowRealmHost,
+};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings, install_window_websocket_bindings_with_guard,
@@ -586,6 +588,24 @@ impl WindowHostState {
     clock: Arc<dyn Clock>,
     js_execution_options: JsExecutionOptions,
   ) -> Result<Self> {
+    Self::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      document_url,
+      fetcher,
+      clock,
+      js_execution_options,
+      DomBindingsBackend::Handwritten,
+    )
+  }
+
+  pub fn new_with_fetcher_and_clock_and_options_and_dom_backend(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+    clock: Arc<dyn Clock>,
+    js_execution_options: JsExecutionOptions,
+    dom_backend: DomBindingsBackend,
+  ) -> Result<Self> {
     let document_url = document_url.into();
     let host_fetcher = fetcher.clone();
     let document = DocumentHostState::new(dom);
@@ -600,6 +620,7 @@ impl WindowHostState {
     let config = WindowRealmConfig::new(document_url.clone())
       .with_current_script_state(document.current_script_state().clone())
       .with_clock(clock)
+      .with_dom_bindings_backend(dom_backend)
       .with_session_storage_namespace_id(session_storage_namespace);
 
     let mut window = WindowRealm::new_with_js_execution_options(
@@ -1619,6 +1640,45 @@ mod tests {
       exec("Node.prototype.isPrototypeOf(document.createElement('div'))")?,
       Value::Bool(true)
     );
+    Ok(())
+  }
+
+  #[test]
+  fn window_host_state_can_boot_with_webidl_dom_backend_and_call_webidl_document_prototype_methods(
+  ) -> Result<()> {
+    // Build a tiny DOM with a single element so `Document.prototype.getElementById` can find it.
+    let mut dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let target = dom.create_element("div", "");
+    dom
+      .set_attribute(target, "id", "x")
+      .expect("set id attribute");
+    dom.append_child(dom.root(), target).expect("append child");
+
+    let mut event_loop = EventLoop::<WindowHostState>::new();
+    let clock = event_loop.clock();
+
+    let mut host = WindowHostState::new_with_fetcher_and_clock_and_options_and_dom_backend(
+      dom,
+      "https://example.invalid/",
+      Arc::new(HttpFetcher::new()),
+      clock,
+      JsExecutionOptions::default(),
+      DomBindingsBackend::WebIdl,
+    )?;
+
+    assert_eq!(
+      host.exec_script_in_event_loop(&mut event_loop, "typeof Document === 'function'")?,
+      Value::Bool(true)
+    );
+
+    assert_eq!(
+      host.exec_script_in_event_loop(
+        &mut event_loop,
+        "Document.prototype.getElementById.call(document, 'x') !== null",
+      )?,
+      Value::Bool(true)
+    );
+
     Ok(())
   }
 
