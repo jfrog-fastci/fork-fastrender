@@ -379,6 +379,16 @@ impl RendererDomMapping {
       .copied()
       .and_then(|v| (v != 0).then_some(v))
   }
+
+  /// Returns the full renderer-preorder → dom2-node mapping used by this snapshot.
+  ///
+  /// This includes entries for synthetic renderer nodes (currently the implicit ZWSP text child
+  /// generated for `<wbr>`), which map back to their owning real dom2 node. Callers that need to
+  /// validate preorder alignment across snapshots (e.g. before reusing node-id keyed caches) should
+  /// compare this slice, not `node_id_to_preorder`.
+  pub(crate) fn preorder_to_node_id(&self) -> &[Option<NodeId>] {
+    &self.preorder_to_node_id
+  }
 }
 
 #[derive(Debug, Clone)]

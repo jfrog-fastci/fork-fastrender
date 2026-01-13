@@ -6447,6 +6447,23 @@ impl LayoutDocumentOptions {
   }
 }
 
+/// Optional cascade reuse inputs that allow callers to reuse previously computed styled subtrees.
+///
+/// This is currently used by `BrowserDocumentDom2` incremental restyling. The `reuse_map` entries
+/// point into a previous `StyledNode` tree, so the caller must keep that tree alive for the
+/// duration of the cascade pass.
+#[derive(Debug)]
+pub(crate) struct CascadeReuse {
+  pub(crate) restyle_scope: HashSet<usize>,
+  pub(crate) reuse_map: HashMap<usize, *const StyledNode>,
+}
+
+// Safety: `CascadeReuse` stores raw pointers into a previous `StyledNode` tree to enable
+// incremental restyling. Those pointers are only dereferenced during the cascade pass, and the
+// caller guarantees that the referenced styled tree outlives that pass (even when layout runs on a
+// helper thread with a larger stack).
+unsafe impl Send for CascadeReuse {}
+
 fn resolve_fetcher(
   config: &FastRenderConfig,
   fetcher: Option<Arc<dyn ResourceFetcher>>,
@@ -7408,6 +7425,7 @@ impl FastRender {
             trace_handle,
             layout_parallelism,
             None,
+            None,
           )
         })();
 
@@ -7709,6 +7727,7 @@ impl FastRender {
         trace,
         layout_parallelism,
         stats.as_deref_mut(),
+        None,
       )?;
       if let Some(rec) = stats.as_deref_mut() {
         rec.stats.counts.styled_nodes = Some(count_styled_nodes_api(&layout_artifacts.styled_tree));
@@ -8529,6 +8548,7 @@ impl FastRender {
         trace,
         layout_parallelism,
         None,
+        None,
       )
     })();
 
@@ -8839,6 +8859,7 @@ impl FastRender {
         trace,
         layout_parallelism,
         None,
+        None,
       )
     })();
 
@@ -9142,6 +9163,7 @@ impl FastRender {
         options.stage_mem_budget_bytes,
         trace,
         layout_parallelism,
+        None,
         None,
       )
     })();
@@ -12216,6 +12238,7 @@ impl FastRender {
         &trace,
         self.layout_parallelism,
         None,
+        None,
       );
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       let artifacts = artifacts_result?;
@@ -12308,6 +12331,7 @@ impl FastRender {
         &trace,
         self.layout_parallelism,
         None,
+        None,
       );
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       let artifacts = artifacts_result?;
@@ -12329,6 +12353,7 @@ impl FastRender {
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
+    cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
     // Install this renderer's configured runtime toggles while performing layout.
     //
@@ -12357,6 +12382,7 @@ impl FastRender {
           trace,
           layout_parallelism,
           stats,
+          cascade_reuse,
         )
       });
     }
@@ -12374,6 +12400,7 @@ impl FastRender {
       trace,
       layout_parallelism,
       stats,
+      cascade_reuse,
     )
   }
 
@@ -12391,6 +12418,7 @@ impl FastRender {
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
+    cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
     let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
     if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
@@ -12435,6 +12463,7 @@ impl FastRender {
               trace,
               layout_parallelism,
               stats,
+              cascade_reuse,
             )
           })
           .map_err(|e| {
@@ -12464,6 +12493,7 @@ impl FastRender {
       trace,
       layout_parallelism,
       stats,
+      cascade_reuse,
     )
   }
 
@@ -12481,6 +12511,7 @@ impl FastRender {
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
+    cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
     // Layout can consult runtime toggles (e.g. media preference overrides). Install the renderer's
     // configured toggles in thread-local storage so callers can override env-derived behavior
@@ -12516,6 +12547,7 @@ impl FastRender {
         trace,
         layout_parallelism,
         stats,
+        cascade_reuse,
       )
     })
   }
@@ -12567,6 +12599,7 @@ impl FastRender {
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
+    cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
     // Keep animated image (e.g. GIF) frame sampling aligned with the requested animation time, so
     // renders captured at a specific timestamp (fixtures, chrome baselines, etc.) see the same
@@ -12611,11 +12644,13 @@ impl FastRender {
         trace,
         layout_parallelism,
         stats,
+        cascade_reuse,
       );
     }
 
     let mut candidate_width = width;
     let mut candidate_height = height;
+    let mut cascade_reuse = cascade_reuse;
     for iter_idx in 0..MAX_VIEWPORT_GUTTER_ITERATIONS {
       let artifacts = self.layout_document_for_media_with_artifacts_owned_single_pass(
         dom_with_state,
@@ -12633,9 +12668,13 @@ impl FastRender {
         trace,
         layout_parallelism,
         stats.as_deref_mut(),
+        cascade_reuse.take(),
       )?;
 
       needs_top_layer_state = false;
+      // Viewport gutter iteration may adjust the effective viewport size (affecting media queries),
+      // so only apply any cross-frame cascade reuse on the first attempt.
+      cascade_reuse = None;
 
       let params = resolve_viewport_scrollbar_params(&artifacts.styled_tree);
       let viewport = artifacts.fragment_tree.viewport_size();
@@ -12700,6 +12739,7 @@ impl FastRender {
       trace,
       layout_parallelism,
       stats.as_deref_mut(),
+      cascade_reuse,
     )
   }
 
@@ -12721,6 +12761,7 @@ impl FastRender {
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
+    cascade_reuse: Option<CascadeReuse>,
   ) -> Result<LayoutArtifacts> {
     let _deadline_guard = DeadlineGuard::install(deadline);
     let toggles = runtime::runtime_toggles();
@@ -12948,12 +12989,14 @@ impl FastRender {
         false,
         cascade_options,
       )?;
+      let reuse_scope = cascade_reuse.as_ref().map(|reuse| &reuse.restyle_scope);
+      let reuse_map = cascade_reuse.as_ref().map(|reuse| &reuse.reuse_map);
       let styled_tree = prepared.apply(
         target_fragment.as_deref(),
         interaction_state,
         None,
-        None,
-        None,
+        reuse_scope,
+        reuse_map,
         deadline,
       )?;
       (prepared, styled_tree)
@@ -14301,6 +14344,7 @@ impl FastRender {
         None,
         &trace,
         self.layout_parallelism,
+        None,
         None,
       );
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
@@ -24895,6 +24939,7 @@ mod tests {
         &trace,
         LayoutParallelism::default(),
         Some(&mut stats),
+        None,
       )
       .unwrap();
     let stats = stats.finish();
@@ -24936,6 +24981,7 @@ mod tests {
         &trace,
         LayoutParallelism::default(),
         Some(&mut stats),
+        None,
       )
       .unwrap();
     let stats = stats.finish();

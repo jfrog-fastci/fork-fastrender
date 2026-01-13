@@ -578,7 +578,7 @@ impl BrowserDocument {
         ));
         let (prev_self, prev_image, prev_layout_image, prev_font) =
           renderer.push_resource_context(context);
-        let result = prepare_dom_inner(renderer, &dom, options.clone(), trace_handle, None);
+        let result = prepare_dom_inner(renderer, &dom, options.clone(), trace_handle, None, None);
         renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
         drop(_root_span);
         trace.finalize(result)
@@ -1553,6 +1553,7 @@ impl BrowserDocument {
         options.clone(),
         trace_handle,
         interaction_state,
+        None,
       );
       renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
@@ -1586,6 +1587,7 @@ pub(super) fn prepare_dom_inner(
   options: RenderOptions,
   trace: &crate::debug::trace::TraceHandle,
   interaction_state: Option<&InteractionState>,
+  cascade_reuse: Option<super::CascadeReuse>,
 ) -> Result<PreparedDocument> {
   let (width, height) = options
     .viewport
@@ -1714,6 +1716,7 @@ pub(super) fn prepare_dom_inner(
       trace,
       layout_parallelism,
       None,
+      cascade_reuse,
     )
   })();
 

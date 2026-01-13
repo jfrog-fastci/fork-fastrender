@@ -30,7 +30,7 @@ use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 pub struct BrowserDocumentDom2InvalidationCounters {
   /// Full style recomputations (cascade + layout).
   pub full_restyles: u64,
-  /// Incremental style recomputations (not yet implemented; reserved for future work).
+  /// Incremental style recomputations that reused styled subtrees from the previous snapshot.
   pub incremental_restyles: u64,
   /// Full layout recomputations that included a restyle.
   pub full_relayouts: u64,
@@ -830,17 +830,29 @@ impl BrowserDocumentDom2 {
 
     if !did_incremental_layout {
       let prev_prepared = self.prepared.take();
+      let prev_mapping = self.last_dom_mapping.take();
+      let prev_seen_generation = self.last_seen_dom_mutation_generation;
 
-      let mut prepared = match self.prepare_dom_with_options() {
-        Ok(prepared) => prepared,
+      let (mut prepared, did_incremental_restyle) = match self.prepare_dom_with_options(
+        prev_prepared.as_ref(),
+        prev_mapping.as_ref(),
+      ) {
+        Ok(result) => result,
         Err(err) => {
           self.prepared = prev_prepared;
+          self.last_dom_mapping = prev_mapping;
+          self.last_seen_dom_mutation_generation = prev_seen_generation;
           return Err(err);
         }
       };
 
-      self.invalidation_counters.full_restyles =
-        self.invalidation_counters.full_restyles.saturating_add(1);
+      if did_incremental_restyle {
+        self.invalidation_counters.incremental_restyles =
+          self.invalidation_counters.incremental_restyles.saturating_add(1);
+      } else {
+        self.invalidation_counters.full_restyles =
+          self.invalidation_counters.full_restyles.saturating_add(1);
+      }
       self.invalidation_counters.full_relayouts =
         self.invalidation_counters.full_relayouts.saturating_add(1);
 
@@ -2135,7 +2147,11 @@ impl BrowserDocumentDom2 {
     Some((time_ms.min(f32::MAX as f64)) as f32)
   }
 
-  fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
+  fn prepare_dom_with_options(
+    &mut self,
+    prev_prepared: Option<&PreparedDocument>,
+    prev_mapping: Option<&crate::dom2::RendererDomMapping>,
+  ) -> Result<(PreparedDocument, bool)> {
     let options = self.options.clone();
     let dom_generation = self.dom.mutation_generation();
     let snapshot = self.dom.as_ref().to_renderer_dom_with_mapping();
@@ -2148,10 +2164,85 @@ impl BrowserDocumentDom2 {
     let renderer_dom_ref = &renderer_dom;
     let interaction_state = self.interaction_state.as_ref();
 
+    let toggles = self.renderer.resolve_runtime_toggles(&options);
+    let incremental_restyle_enabled = toggles.truthy("FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE");
+
+    // `reuse_map` uses renderer preorder ids as stable keys. Those ids are derived from a DOM
+    // preorder traversal and are only stable across snapshots when the preorder → dom2-node mapping
+    // is identical, including entries for synthetic nodes (e.g. the implicit ZWSP child for
+    // `<wbr>`). When the mapping differs we must disable reuse to avoid reusing a previous
+    // `StyledNode` subtree for the wrong DOM nodes.
+    let can_attempt_incremental_restyle = incremental_restyle_enabled
+      && prev_prepared.is_some()
+      && prev_mapping.is_some()
+      && (!self.dirty_style_nodes.is_empty() || !self.dirty_structure_nodes.is_empty())
+      && prev_mapping.is_some_and(|prev| prev.preorder_to_node_id() == mapping.preorder_to_node_id());
+
+    // Build optional reuse inputs for the cascade pass.
+    let cascade_reuse = can_attempt_incremental_restyle.then(|| {
+      let dom = self.dom.as_ref();
+      let mut dom2_scope: FxHashSet<crate::dom2::NodeId> = FxHashSet::default();
+
+      // Mark subtrees rooted at the parents of dirty style nodes as needing a recascade. This is a
+      // conservative approximation that ensures sibling selectors can be recomputed without
+      // requiring a full-document recascade.
+      for &dirty in &self.dirty_style_nodes {
+        let root = dom.parent_node(dirty).unwrap_or(dirty);
+        let mut stack: Vec<crate::dom2::NodeId> = vec![root];
+        while let Some(node_id) = stack.pop() {
+          if !dom2_scope.insert(node_id) {
+            continue;
+          }
+          let node = dom.node(node_id);
+          for &child in node.children.iter().rev() {
+            stack.push(child);
+          }
+        }
+
+        let mut current = root;
+        while let Some(parent) = dom.parent_node(current) {
+          dom2_scope.insert(parent);
+          current = parent;
+        }
+      }
+
+      // Convert the dom2-node scope to the renderer preorder-id scope expected by the cascade.
+      let mut restyle_scope: std::collections::HashSet<usize> = std::collections::HashSet::new();
+      for (preorder, node_id) in mapping.preorder_to_node_id().iter().enumerate() {
+        let Some(node_id) = node_id else {
+          continue;
+        };
+        if dom2_scope.contains(node_id) {
+          restyle_scope.insert(preorder);
+        }
+      }
+
+      fn collect_reuse_map(
+        node: &StyledNode,
+        out: &mut std::collections::HashMap<usize, *const StyledNode>,
+      ) {
+        out.insert(node.node_id, node as *const _);
+        for child in node.children.iter() {
+          collect_reuse_map(child, out);
+        }
+      }
+
+      let mut reuse_map: std::collections::HashMap<usize, *const StyledNode> =
+        std::collections::HashMap::new();
+      if let Some(prev) = prev_prepared {
+        collect_reuse_map(prev.styled_tree(), &mut reuse_map);
+      }
+
+      super::CascadeReuse {
+        restyle_scope,
+        reuse_map,
+      }
+    });
+    let did_incremental_restyle = cascade_reuse.is_some();
+
     let prepared = {
       let renderer = &mut self.renderer;
 
-      let toggles = renderer.resolve_runtime_toggles(&options);
       let _toggles_guard =
         super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
       crate::debug::runtime::with_runtime_toggles(toggles, || {
@@ -2179,6 +2270,7 @@ impl BrowserDocumentDom2 {
           options.clone(),
           trace_handle,
           interaction_state,
+          cascade_reuse,
         );
         renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
         drop(_root_span);
@@ -2198,7 +2290,7 @@ impl BrowserDocumentDom2 {
     // `mutate_dom` call to see the old entries in `take_mutations()` and potentially force an
     // unnecessary full restyle.
     self.dom.clear_mutations();
-    Ok(prepared)
+    Ok((prepared, did_incremental_restyle))
   }
 
   /// Ensure `self.prepared` + `self.last_dom_mapping` reflect the current live DOM.
@@ -3974,6 +4066,70 @@ mod tests {
     );
     assert_eq!(after_text.full_restyles, after_structural.full_restyles);
     assert_eq!(after_text.full_relayouts, after_structural.full_relayouts);
+
+    Ok(())
+  }
+
+  #[test]
+  fn child_insertion_disables_incremental_restyle_reuse() -> Result<()> {
+    use crate::debug::runtime::RuntimeToggles;
+    use std::collections::HashMap;
+
+    let renderer = renderer_for_tests();
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE".to_string(),
+      "1".to_string(),
+    )]));
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            #target { color: rgb(255, 0, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="target">Hi</div>
+        </body>
+      </html>
+    "#;
+
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new()
+        .with_viewport(32, 32)
+        .with_runtime_toggles(toggles),
+    )?;
+
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.incremental_restyles, 0);
+
+    let target = doc.dom().get_element_by_id("target").expect("#target");
+    let changed = doc.mutate_dom(|dom| dom.set_attribute(target, "class", "changed").expect("set attribute"));
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after_attr = doc.invalidation_counters();
+    assert_eq!(after_attr.full_restyles, before.full_restyles);
+    assert_eq!(after_attr.incremental_restyles, before.incremental_restyles + 1);
+
+    // Structural mutation (child insertion) shifts renderer preorder ids; incremental restyle reuse
+    // must be disabled to avoid misaligned node-id reuse.
+    let body = doc.dom().body().expect("body");
+    let changed = doc.mutate_dom(|dom| {
+      let child = dom.create_element("div", "");
+      dom.append_child(body, child).expect("append child")
+    });
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after_insert = doc.invalidation_counters();
+    assert_eq!(after_insert.full_restyles, after_attr.full_restyles + 1);
+    assert_eq!(after_insert.incremental_restyles, after_attr.incremental_restyles);
+
     Ok(())
   }
 
@@ -4428,7 +4584,7 @@ mod tests {
     let ptr1 = doc.dom_ptr().as_ptr();
     assert_ne!(ptr0, ptr1);
 
-    let prepared = doc.prepare_dom_with_options()?;
+    let (prepared, _) = doc.prepare_dom_with_options(None, None)?;
     doc.reset_with_prepared(prepared, options);
     let ptr2 = doc.dom_ptr().as_ptr();
     assert_ne!(ptr1, ptr2);

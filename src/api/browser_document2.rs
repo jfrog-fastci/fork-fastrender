@@ -539,6 +539,7 @@ impl BrowserDocument2 {
         options.clone(),
         trace_handle,
         None,
+        None,
       );
       renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
