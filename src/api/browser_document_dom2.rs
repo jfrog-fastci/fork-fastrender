@@ -139,6 +139,13 @@ pub struct BrowserDocumentDom2 {
   /// selection / IME preedit / document selection / file-input labels).
   interaction_paint_hash: u64,
   dirty_style_nodes: FxHashSet<crate::dom2::NodeId>,
+  /// Nodes whose style may change due to render-affecting form-control state mutations.
+  ///
+  /// Unlike `dirty_style_nodes`, this set does **not** imply a stylesheet-affecting mutation (and
+  /// must not force `style_dirty = true`). It is only used as an input to incremental restyle reuse
+  /// so the cascade can recompute `:checked`, `:placeholder-shown`, attribute selectors on
+  /// projected `value`, etc without recascading the entire document.
+  dirty_form_state_style_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_text_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_structure_nodes: FxHashSet<crate::dom2::NodeId>,
   /// Whether we observed a `dom2::MutationLog.form_state_changed` mutation since the last layout
@@ -236,6 +243,7 @@ impl BrowserDocumentDom2 {
       interaction_css_hash: interaction_state_css_fingerprint(None),
       interaction_paint_hash: interaction_state_paint_fingerprint(None),
       dirty_style_nodes: FxHashSet::default(),
+      dirty_form_state_style_nodes: FxHashSet::default(),
       dirty_text_nodes: FxHashSet::default(),
       dirty_structure_nodes: FxHashSet::default(),
       form_state_dirty: false,
@@ -441,6 +449,7 @@ impl BrowserDocumentDom2 {
     self.interaction_css_hash = interaction_state_css_fingerprint(None);
     self.interaction_paint_hash = interaction_state_paint_fingerprint(None);
     self.dirty_style_nodes.clear();
+    self.dirty_form_state_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.form_state_dirty = false;
@@ -992,6 +1001,7 @@ impl BrowserDocumentDom2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.dirty_style_nodes.clear();
+    self.dirty_form_state_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.form_state_dirty = false;
@@ -2428,7 +2438,9 @@ impl BrowserDocumentDom2 {
       && !self.author_stylesheet_has_has_selectors
       && prev_prepared.is_some()
       && prev_mapping.is_some()
-      && (!self.dirty_style_nodes.is_empty() || !self.dirty_structure_nodes.is_empty())
+      && (!self.dirty_style_nodes.is_empty()
+        || !self.dirty_structure_nodes.is_empty()
+        || !self.dirty_form_state_style_nodes.is_empty())
       && prev_mapping.is_some_and(|prev| prev.preorder_to_node_id() == mapping.preorder_to_node_id());
 
     // Build optional reuse inputs for the cascade pass.
@@ -2439,7 +2451,11 @@ impl BrowserDocumentDom2 {
       // Mark subtrees rooted at the parents of dirty style nodes as needing a recascade. This is a
       // conservative approximation that ensures sibling selectors can be recomputed without
       // requiring a full-document recascade.
-      for &dirty in &self.dirty_style_nodes {
+      for &dirty in self
+        .dirty_style_nodes
+        .iter()
+        .chain(self.dirty_form_state_style_nodes.iter())
+      {
         let root = dom.parent_node(dirty).unwrap_or(dirty);
         let mut stack: Vec<crate::dom2::NodeId> = vec![root];
         while let Some(node_id) = stack.pop() {
@@ -2561,6 +2577,7 @@ impl BrowserDocumentDom2 {
     self.layout_dirty = true;
     self.paint_dirty = true;
     self.dirty_style_nodes.clear();
+    self.dirty_form_state_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.form_state_dirty = false;
@@ -2572,6 +2589,7 @@ impl BrowserDocumentDom2 {
     self.layout_dirty = false;
     self.paint_dirty = false;
     self.dirty_style_nodes.clear();
+    self.dirty_form_state_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
     self.form_state_dirty = false;
@@ -2690,6 +2708,7 @@ impl BrowserDocumentDom2 {
         self.form_state_dirty = true;
         self.layout_dirty = true;
         self.paint_dirty = true;
+        self.dirty_form_state_style_nodes.insert(node);
       }
     }
 
@@ -5459,6 +5478,79 @@ mod tests {
     );
     assert_eq!(after.incremental_restyles, before.incremental_restyles);
 
+    Ok(())
+  }
+
+  #[test]
+  fn form_state_mutation_uses_incremental_restyle_reuse_when_enabled() -> Result<()> {
+    use crate::debug::runtime::RuntimeToggles;
+    use std::collections::HashMap;
+
+    let renderer = renderer_for_tests();
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_DOM2_INCREMENTAL_RESTYLE_REUSE".to_string(),
+      "1".to_string(),
+    )]));
+
+    let html = r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; background: rgb(255, 255, 255); }
+            /* Keep the checkbox out of layout so the colored box is anchored at (0,0). */
+            input { display: none; }
+            #box { width: 10px; height: 10px; background: rgb(255, 0, 0); }
+            input:checked + #box { background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>
+          <input id="i" type="checkbox">
+          <div id="box"></div>
+        </body>
+      </html>
+    "#;
+
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new()
+        .with_viewport(16, 16)
+        .with_runtime_toggles(toggles),
+    )?;
+
+    let pixmap0 = doc.render_frame()?;
+    let p0 = pixmap0.pixel(5, 5).expect("pixel 5,5");
+    assert_eq!(p0.alpha(), 255);
+    assert_eq!(p0.red(), 255);
+    assert_eq!(p0.green(), 0);
+    assert_eq!(p0.blue(), 0);
+
+    let before = doc.invalidation_counters();
+    assert_eq!(before.full_restyles, 1);
+    assert_eq!(before.incremental_restyles, 0);
+
+    let input = doc.dom().get_element_by_id("i").expect("input element");
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_input_checked(input, true)
+        .expect("set_input_checked");
+      true
+    });
+    assert!(changed);
+
+    let pixmap1 = doc.render_frame()?;
+    let p1 = pixmap1.pixel(5, 5).expect("pixel 5,5 after checked");
+    assert_eq!(p1.alpha(), 255);
+    assert_eq!(p1.red(), 0);
+    assert_eq!(p1.green(), 0);
+    assert_eq!(p1.blue(), 255);
+
+    let after = doc.invalidation_counters();
+    assert_eq!(
+      after.full_restyles, before.full_restyles,
+      "form-state-only changes should avoid full-document restyle when reuse is enabled"
+    );
+    assert_eq!(after.incremental_restyles, before.incremental_restyles + 1);
     Ok(())
   }
 
