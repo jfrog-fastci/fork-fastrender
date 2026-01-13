@@ -2410,6 +2410,7 @@ struct App {
   debug_log_ui_enabled: bool,
   debug_log_ui_open: bool,
   debug_log_filter: String,
+  debug_log_overlay_rect: Option<egui::Rect>,
   hud: Option<BrowserHud>,
 
   tab_notifications: std::collections::HashMap<fastrender::ui::TabId, TabNotificationUiState>,
@@ -2622,6 +2623,9 @@ impl App {
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .open_context_menu_rect
+        .is_some_and(|rect| rect.contains(pos_points))
+      || self
+        .debug_log_overlay_rect
         .is_some_and(|rect| rect.contains(pos_points))
       || self
         .warning_toast_rect
@@ -2902,6 +2906,7 @@ impl App {
       debug_log_ui_enabled,
       debug_log_ui_open: debug_log_ui_enabled,
       debug_log_filter: String::new(),
+      debug_log_overlay_rect: None,
       hud: if browser_hud_enabled_from_env() {
         Some(BrowserHud::new())
       } else {
@@ -4653,12 +4658,13 @@ impl App {
   }
   fn render_debug_log_overlay(&mut self, ctx: &egui::Context) {
     if !self.debug_log_ui_enabled {
+      self.debug_log_overlay_rect = None;
       return;
     }
     let margin = self.theme.sizing.padding;
 
     if !self.debug_log_ui_open {
-      egui::Area::new(egui::Id::new("fastr_debug_log_reopen"))
+      let popup = egui::Area::new(egui::Id::new("fastr_debug_log_reopen"))
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-margin, -margin))
         .show(ctx, |ui| {
@@ -4672,6 +4678,7 @@ impl App {
             self.debug_log_ui_open = true;
           }
         });
+      self.debug_log_overlay_rect = Some(popup.response.rect);
       return;
     }
 
@@ -4694,7 +4701,7 @@ impl App {
       ));
 
     let mut open = self.debug_log_ui_open;
-    egui::Window::new("Debug log")
+    let popup = egui::Window::new("Debug log")
       .open(&mut open)
       .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-margin, -margin))
       .collapsible(true)
@@ -4788,6 +4795,7 @@ impl App {
           });
       });
 
+    self.debug_log_overlay_rect = popup.as_ref().map(|popup| popup.response.rect);
     self.debug_log_ui_open = open;
   }
 
@@ -6575,6 +6583,17 @@ impl App {
           if clicked_input_control {
             return;
           }
+        }
+
+        if !self.pointer_captured
+          && self
+            .debug_log_overlay_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+        {
+          // Treat the debug log UI as an egui overlay: don't forward clicks to the page and clear
+          // focus so keyboard input can remain in egui (e.g. the filter text edit).
+          self.page_has_focus = false;
+          return;
         }
 
         if !self.pointer_captured
