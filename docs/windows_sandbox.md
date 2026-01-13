@@ -26,12 +26,18 @@ Code map (repo reality):
     - `Job` (job object wrapper + limits)
     - AppContainer SID helpers (`AppContainerProfile`, `derive_appcontainer_sid`)
     - Restricted-token fallback builder (`RestrictedToken`)
-    - Generic sandbox spawner (`spawn_sandboxed`, `SpawnConfig`, `SandboxRequest`) → `ChildProcess`
-      - Supports AppContainer (no capabilities), restricted-token fallback, or no token sandboxing.
-      - Always uses a Job object for kill-on-close + active process limit.
-      - Supports handle inheritance allowlisting (`inherit_handles` / `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
+    - `CreateProcessW` spawner (`spawn_sandboxed`, `SpawnConfig`) → `ChildProcess`
+      - Can attach an AppContainer token (no capabilities) via `SECURITY_CAPABILITIES` when the
+        caller provides an `AppContainerProfile`.
+      - Can attach a Job object via `PROC_THREAD_ATTRIBUTE_JOB_LIST` when the caller provides a
+        `Job` (the caller configures job limits separately).
+      - Supports handle inheritance allowlisting (`inherit_handles` /
+        `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`).
       - Can apply a mitigation policy bitmask (`mitigation_policy`) via
         `PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY` (escape hatch: `FASTR_DISABLE_WIN_MITIGATIONS=1`).
+    - Restricted-token `CreateProcessAsUserW` spawner (`restricted_token::spawn_with_token`)
+      - Uses a low-integrity restricted primary token (from `RestrictedToken`).
+      - Also supports job/handle allowlisting and mitigation policies via `STARTUPINFOEX`.
     - AppContainer-only convenience spawner (`RendererSandbox`)
       - Spawns in a no-capabilities AppContainer and allowlists stdio handles.
       - Includes dev/CI executable relocation + ACL fixing for `ERROR_ACCESS_DENIED`.
@@ -47,9 +53,11 @@ Rule of thumb:
 - Use `fastrender::sandbox::windows::spawn_sandboxed(...)` when you want the **full renderer spawn
   sandbox** (AppContainer/restricted token + Job + handle allowlisting).
 - Use `win_sandbox::spawn_sandboxed(&SpawnConfig)` when you want a **reusable spawner** that can
-  apply AppContainer/restricted-token/Job/handle-allowlist and (optionally) mitigations, but you do
-  **not** need the extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env
-  sanitization and AppContainer executable relocation/current-dir workarounds).
+  apply AppContainer/Job/handle-allowlist and (optionally) mitigations, but you do **not** need the
+  extra `fastrender`-specific behavior in `src/sandbox/windows.rs` (notably env sanitization and
+  AppContainer executable relocation/current-dir workarounds).
+- Use `win_sandbox::restricted_token::spawn_with_token(...)` if you specifically want to spawn via
+  the restricted-token fallback path (`CreateProcessAsUserW`).
 - Use `win_sandbox::RendererSandbox` when you specifically want “AppContainer-only spawn + stdio
   allowlist + exe relocation + default mitigations (best-effort)” and will handle job assignment separately.
 
