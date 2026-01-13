@@ -650,8 +650,11 @@ fn update_renderer_media_prefs_runtime_toggles(
     reduced_motion,
   ) {
     // Respect explicit renderer overrides (`FASTR_PREFERS_*` env vars). The browser UI only supplies
-    // defaults when they are unset.
-    if !raw.contains_key(k) {
+    // defaults when they are unset/empty.
+    let has_explicit_override = raw
+      .get(k)
+      .is_some_and(|existing| !existing.trim().is_empty());
+    if !has_explicit_override {
       raw.insert(k.to_string(), v.to_string());
     }
   }
