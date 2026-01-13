@@ -155,7 +155,7 @@ impl<'a> BoxIndex<'a> {
     }
   }
 
-  fn node(&self, box_id: usize) -> Option<&BoxNode> {
+  pub(crate) fn node(&self, box_id: usize) -> Option<&BoxNode> {
     let ptr = *self.id_to_ptr.get(box_id)?;
     if ptr.is_null() {
       return None;
@@ -164,7 +164,7 @@ impl<'a> BoxIndex<'a> {
     Some(unsafe { &*ptr })
   }
 
-  fn parent_id(&self, box_id: usize) -> Option<usize> {
+  pub(crate) fn parent_id(&self, box_id: usize) -> Option<usize> {
     self.parent.get(box_id).copied()
   }
 }

@@ -3481,6 +3481,22 @@ fn box_node_by_id(box_tree: &BoxTree, target_box_id: usize) -> Option<&BoxNode> 
   None
 }
 
+trait BoxNodeLookup {
+  fn node(&self, box_id: usize) -> Option<&BoxNode>;
+}
+
+impl BoxNodeLookup for BoxTree {
+  fn node(&self, box_id: usize) -> Option<&BoxNode> {
+    box_node_by_id(self, box_id)
+  }
+}
+
+impl<'a> BoxNodeLookup for HitTestBoxIndex<'a> {
+  fn node(&self, box_id: usize) -> Option<&BoxNode> {
+    HitTestBoxIndex::node(self, box_id)
+  }
+}
+
 fn byte_offset_for_char_idx(text: &str, char_idx: usize) -> usize {
   if char_idx == 0 {
     return 0;
@@ -3728,7 +3744,7 @@ fn caret_position_for_x_in_text(
 
 fn caret_index_for_text_control_point(
   index: &DomIndexMut,
-  box_tree: &BoxTree,
+  box_lookup: &impl BoxNodeLookup,
   fragment_tree: &FragmentTree,
   scroll: &ScrollState,
   node_id: usize,
@@ -3736,7 +3752,7 @@ fn caret_index_for_text_control_point(
   page_point: Point,
 ) -> Option<(usize, CaretAffinity)> {
   let node = index.node(node_id)?;
-  let box_node = box_node_by_id(box_tree, box_id)?;
+  let box_node = box_lookup.node(box_id)?;
   let style = box_node.style.as_ref();
 
   let border_rect = fragment_rect_for_box_id(fragment_tree, box_id)?;
@@ -3855,15 +3871,16 @@ pub(crate) fn box_is_selectable_for_document_selection(box_node: &BoxNode) -> bo
 }
 
 fn document_selection_point_at_page_point(
-  box_tree: &BoxTree,
+  box_lookup: &impl BoxNodeLookup,
   fragment_tree: &FragmentTree,
   page_point: Point,
 ) -> Option<DocumentSelectionPoint> {
-  document_selection_hit_at_page_point(box_tree, fragment_tree, page_point).map(|(point, _)| point)
+  document_selection_hit_at_page_point(box_lookup, fragment_tree, page_point)
+    .map(|(point, _)| point)
 }
 
 fn document_selection_hit_at_page_point(
-  box_tree: &BoxTree,
+  box_lookup: &impl BoxNodeLookup,
   fragment_tree: &FragmentTree,
   page_point: Point,
 ) -> Option<(DocumentSelectionPoint, usize)> {
@@ -3897,7 +3914,7 @@ fn document_selection_hit_at_page_point(
   let box_id = (*box_id)?;
   let source_range = (*source_range)?;
 
-  let box_node = box_node_by_id(box_tree, box_id)?;
+  let box_node = box_lookup.node(box_id)?;
   if !box_is_selectable_for_document_selection(box_node) {
     return None;
   }
@@ -4447,7 +4464,7 @@ fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) 
 
 fn update_range_value_from_pointer(
   index: &mut DomIndexMut,
-  box_tree: &BoxTree,
+  box_lookup: &impl BoxNodeLookup,
   fragment_tree: &FragmentTree,
   node_id: usize,
   box_id: usize,
@@ -4480,7 +4497,8 @@ fn update_range_value_from_pointer(
   }
   fraction = fraction.clamp(0.0, 1.0);
 
-  let dir = box_node_by_id(box_tree, box_id)
+  let dir = box_lookup
+    .node(box_id)
     .map(|node| node.style.direction)
     .or_else(|| {
       // Fallback when box-tree metadata is unavailable: infer direction from `dir`/`xml:dir`
@@ -4534,7 +4552,7 @@ fn update_range_value_from_pointer(
 
 fn number_input_spin_direction_at_point(
   index: &DomIndexMut,
-  box_tree: &BoxTree,
+  box_lookup: &impl BoxNodeLookup,
   fragment_tree: &FragmentTree,
   node_id: usize,
   box_id: usize,
@@ -4548,7 +4566,7 @@ fn number_input_spin_direction_at_point(
     return None;
   }
 
-  let box_node = box_node_by_id(box_tree, box_id)?;
+  let box_node = box_lookup.node(box_id)?;
   let style = box_node.style.as_ref();
 
   let border_rect = fragment_rect_for_box_id(fragment_tree, box_id)?;
@@ -6982,6 +7000,7 @@ impl InteractionEngine {
   ) -> (bool, Option<HitTestResult>) {
     let page_point = viewport_point.translate(scroll.viewport);
     let mut index = DomIndexMut::new(dom);
+    let box_index = HitTestBoxIndex::new(box_tree);
     let mut dom_changed = false;
 
     // Link drag suppression: native browsers suppress click navigation when the pointer moves past a
@@ -7041,7 +7060,7 @@ impl InteractionEngine {
         self.ensure_form_default_snapshot_for_control(&index, state.node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
-          box_tree,
+          &box_index,
           fragment_tree,
           state.node_id,
           state.box_id,
@@ -7062,20 +7081,20 @@ impl InteractionEngine {
         && page_point.y.is_finite()
         && page_point.x >= 0.0
         && page_point.y >= 0.0
-      {
-        if let Some(edit) = self
-          .text_edit
-          .as_mut()
-          .filter(|edit| edit.node_id == state.node_id)
         {
-          if let Some((raw_caret, raw_affinity)) = caret_index_for_text_control_point(
-            &index,
-            box_tree,
-            fragment_tree,
-            scroll,
-            state.node_id,
-            state.box_id,
-            page_point,
+          if let Some(edit) = self
+            .text_edit
+            .as_mut()
+            .filter(|edit| edit.node_id == state.node_id)
+          {
+            if let Some((raw_caret, raw_affinity)) = caret_index_for_text_control_point(
+              &index,
+              &box_index,
+              fragment_tree,
+              scroll,
+              state.node_id,
+              state.box_id,
+              page_point,
           ) {
             let prev_caret = edit.caret;
             let prev_affinity = edit.caret_affinity;
@@ -7170,7 +7189,7 @@ impl InteractionEngine {
         && page_point.y >= 0.0
       {
         if let Some((point, text_box_id)) =
-          document_selection_hit_at_page_point(box_tree, fragment_tree, page_point)
+          document_selection_hit_at_page_point(&box_index, fragment_tree, page_point)
         {
           if let Some(DocumentSelectionState::Ranges(ranges)) = self.state.document_selection.as_mut()
           {
@@ -7276,7 +7295,6 @@ impl InteractionEngine {
 
     dom_changed |= self.sync_text_edit_paint_state();
 
-    let box_index = HitTestBoxIndex::new(box_tree);
     let hit = hit_test_dom_with_indices(dom, &index, &box_index, fragment_tree, page_point);
     let new_chain = hit
       .as_ref()
@@ -7430,7 +7448,7 @@ impl InteractionEngine {
         self.ensure_form_default_snapshot_for_control(&index, hit.dom_node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
-          box_tree,
+          &box_index,
           fragment_tree,
           hit.dom_node_id,
           hit.box_id,
@@ -7451,7 +7469,7 @@ impl InteractionEngine {
         let focus_before = self.state.focused;
         let spin_direction = number_input_spin_direction_at_point(
           &index,
-          box_tree,
+          &box_index,
           fragment_tree,
           hit.dom_node_id,
           hit.box_id,
@@ -7475,7 +7493,7 @@ impl InteractionEngine {
 
           let (caret, caret_affinity) = caret_index_for_text_control_point(
             &index,
-            box_tree,
+            &box_index,
             fragment_tree,
             scroll,
             hit.dom_node_id,
@@ -7703,7 +7721,7 @@ impl InteractionEngine {
     {
       let click_count = click_count.clamp(1, 3);
       if let Some((point, text_box_id)) =
-        document_selection_hit_at_page_point(box_tree, fragment_tree, page_point)
+        document_selection_hit_at_page_point(&box_index, fragment_tree, page_point)
       {
         let should_start_drag_drop = click_count == 1
           && !modifiers.shift()
@@ -8318,7 +8336,7 @@ impl InteractionEngine {
         self.ensure_form_default_snapshot_for_control(&index, state.node_id);
         let changed = update_range_value_from_pointer(
           &mut index,
-          box_tree,
+          &box_index,
           fragment_tree,
           state.node_id,
           state.box_id,
@@ -8357,7 +8375,7 @@ impl InteractionEngine {
 
             let (caret, caret_affinity) = caret_index_for_text_control_point(
               &index,
-              box_tree,
+              &box_index,
               fragment_tree,
               scroll,
               target_id,
@@ -8433,7 +8451,7 @@ impl InteractionEngine {
               {
                 if let Some((caret, affinity)) = caret_index_for_text_control_point(
                   &index,
-                  box_tree,
+                  &box_index,
                   fragment_tree,
                   scroll,
                   target_id,
@@ -8505,7 +8523,7 @@ impl InteractionEngine {
           // collapsing the document selection to the original down point.
           let before = self.state.document_selection.clone();
           if let Some(point) = document_selection_point_at_page_point(
-            box_tree,
+            &box_index,
             fragment_tree,
             drag_drop.down_page_point,
           ) {
@@ -8814,7 +8832,7 @@ impl InteractionEngine {
                 .and_then(|hit| {
                   number_input_spin_direction_at_point(
                     &index,
-                    box_tree,
+                    &box_index,
                     fragment_tree,
                     target_id,
                     hit.box_id,
