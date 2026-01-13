@@ -315,6 +315,9 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 
   let mut dts_ticks: i64 = 0;
   let mut pts_ns_by_sample = Vec::with_capacity(sample_count);
+  let mut pts_is_monotonic = true;
+  let mut prev_pts_ns = 0_u64;
+  let mut saw_prev_pts = false;
 
   for sample in &mut samples {
     let dur = stts_iter
@@ -328,12 +331,21 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 
     let pts_ticks = dts_ticks.saturating_add(ctts_off);
     let pts_ns = ticks_to_ns(pts_ticks, timescale);
+    if saw_prev_pts && pts_ns < prev_pts_ns {
+      pts_is_monotonic = false;
+    }
+    prev_pts_ns = pts_ns;
+    saw_prev_pts = true;
     pts_ns_by_sample.push(pts_ns);
 
     dts_ticks = dts_ticks.saturating_add(i64::from(dur));
   }
 
-  let pts_index = build_pts_index(&pts_ns_by_sample);
+  let pts_index = if pts_is_monotonic {
+    PtsIndex::Monotonic
+  } else {
+    build_sorted_pts_index(&pts_ns_by_sample)
+  };
 
   Ok(Mp4Track {
     timescale,
@@ -346,19 +358,17 @@ fn build_track(t: TrackBoxes) -> Result<Mp4Track> {
 }
 
 fn build_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
-  // Fast path: monotonic in sample order => binary search directly.
-  let mut is_monotonic = true;
-  for i in 1..pts_ns_by_sample.len() {
-    if pts_ns_by_sample[i] < pts_ns_by_sample[i - 1] {
-      is_monotonic = false;
-      break;
-    }
-  }
-
-  if is_monotonic {
+  // Helper used in tests; production code does the monotonic check while building the table.
+  if pts_ns_by_sample
+    .windows(2)
+    .all(|pair| pair[0] <= pair[1])
+  {
     return PtsIndex::Monotonic;
   }
+  build_sorted_pts_index(pts_ns_by_sample)
+}
 
+fn build_sorted_pts_index(pts_ns_by_sample: &[u64]) -> PtsIndex {
   // Non-monotonic (e.g. B-frames / CTTS reordering). Build a sorted index.
   let mut sample_indices_by_pts = Vec::with_capacity(pts_ns_by_sample.len());
   for i in 0..pts_ns_by_sample.len() {
