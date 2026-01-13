@@ -26,10 +26,12 @@ mod cpal_backend;
 mod null_backend;
 #[cfg(feature = "audio_cpal")]
 mod ring_buffer;
+pub mod queue;
 
 #[cfg(feature = "audio_cpal")]
 pub use cpal_backend::CpalAudioBackend;
 pub use null_backend::NullAudioBackend;
+pub use queue::{pcm_f32_queue, PcmF32QueueConsumer, PcmF32QueueProducer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStreamConfig {
