@@ -1,6 +1,6 @@
 use std::ops::Range;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::protocol::renderer::BrowserToRenderer;
 

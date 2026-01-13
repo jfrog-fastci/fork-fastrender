@@ -1571,14 +1571,14 @@ impl InteractionStateDom2 {
       Vec::new()
     };
 
-    let hover_chain = self
+    let hover_chain: Vec<usize> = self
       .hover_chain
       .iter()
       .copied()
       .filter_map(|id| mapping.preorder_for_node_id(id))
       .collect();
 
-    let active_chain = self
+    let active_chain: Vec<usize> = self
       .active_chain
       .iter()
       .copied()

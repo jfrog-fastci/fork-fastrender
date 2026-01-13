@@ -1787,7 +1787,7 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsWebIdlBindingsCx<'_, Hos
   }
 }
 
-impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
+impl<Host: 'static> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
   type JsValue = Value;
   type PropertyKey = PropertyKey;
   type Error = VmError;
@@ -2364,7 +2364,7 @@ impl<Host> webidl_js_runtime::JsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
   }
 }
 
-impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
+impl<Host: 'static> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host> {
   fn limits(&self) -> webidl::WebIdlLimits {
     self.state.limits
   }
