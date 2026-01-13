@@ -83,6 +83,24 @@ pub(in super::super) struct GridItem {
   pub crosses_flexible_row: bool,
   /// Whether the item crosses a flexible column
   pub crosses_flexible_column: bool,
+  /// Whether the item crosses an intrinsic row track based purely on the track sizing functions.
+  ///
+  /// This excludes the CSS Grid "percentage tracks behave as intrinsic when the container size is indefinite"
+  /// rule, which is applied dynamically during track sizing passes.
+  pub crosses_intrinsic_row_base: bool,
+  /// Whether the item crosses an intrinsic column track based purely on the track sizing functions.
+  ///
+  /// This excludes the CSS Grid "percentage tracks behave as intrinsic when the container size is indefinite"
+  /// rule, which is applied dynamically during track sizing passes.
+  pub crosses_intrinsic_column_base: bool,
+  /// Whether the item crosses any percentage column *track*.
+  ///
+  /// This must ignore gutters (gap tracks).
+  pub crosses_percentage_column: bool,
+  /// Whether the item crosses any percentage row *track*.
+  ///
+  /// This must ignore gutters (gap tracks).
+  pub crosses_percentage_row: bool,
   /// Whether the item crosses a intrinsic row
   pub crosses_intrinsic_row: bool,
   /// Whether the item crosses a intrinsic column
@@ -153,6 +171,10 @@ impl GridItem {
       column_indexes: Line { start: 0, end: 0 }, // Properly initialised later
       crosses_flexible_row: false,            // Properly initialised later
       crosses_flexible_column: false,         // Properly initialised later
+      crosses_intrinsic_row_base: false,      // Properly initialised later
+      crosses_intrinsic_column_base: false,   // Properly initialised later
+      crosses_percentage_column: false,       // Properly initialised later
+      crosses_percentage_row: false,          // Properly initialised later
       crosses_intrinsic_row: false,           // Properly initialised later
       crosses_intrinsic_column: false,        // Properly initialised later
       available_space_cache: None,

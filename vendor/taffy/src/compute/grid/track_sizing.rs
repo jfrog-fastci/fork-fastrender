@@ -316,21 +316,36 @@ pub(super) fn determine_if_item_crosses_flexible_or_intrinsic_tracks(
   let column_flexible_prefix = build_prefix_counts(columns, |track| track.is_flexible());
   let column_intrinsic_prefix =
     build_prefix_counts(columns, |track| track.has_intrinsic_sizing_function());
+  let column_percentage_prefix = build_prefix_counts(columns, |track| {
+    track.kind == GridTrackKind::Track && track.uses_percentage()
+  });
   let row_flexible_prefix = build_prefix_counts(rows, |track| track.is_flexible());
-  let row_intrinsic_prefix = build_prefix_counts(rows, |track| track.has_intrinsic_sizing_function());
+  let row_intrinsic_prefix =
+    build_prefix_counts(rows, |track| track.has_intrinsic_sizing_function());
+  let row_percentage_prefix = build_prefix_counts(rows, |track| {
+    track.kind == GridTrackKind::Track && track.uses_percentage()
+  });
 
   for item in items {
     let col_range = item.track_range_excluding_lines(AbstractAxis::Inline);
     item.crosses_flexible_column =
       range_has_match(&column_flexible_prefix, col_range.start, col_range.end);
-    item.crosses_intrinsic_column =
+    let crosses_intrinsic_column_base =
       range_has_match(&column_intrinsic_prefix, col_range.start, col_range.end);
+    item.crosses_intrinsic_column_base = crosses_intrinsic_column_base;
+    item.crosses_percentage_column =
+      range_has_match(&column_percentage_prefix, col_range.start, col_range.end);
+    item.crosses_intrinsic_column = crosses_intrinsic_column_base;
 
     let row_range = item.track_range_excluding_lines(AbstractAxis::Block);
     item.crosses_flexible_row =
       range_has_match(&row_flexible_prefix, row_range.start, row_range.end);
-    item.crosses_intrinsic_row =
+    let crosses_intrinsic_row_base =
       range_has_match(&row_intrinsic_prefix, row_range.start, row_range.end);
+    item.crosses_intrinsic_row_base = crosses_intrinsic_row_base;
+    item.crosses_percentage_row =
+      range_has_match(&row_percentage_prefix, row_range.start, row_range.end);
+    item.crosses_intrinsic_row = crosses_intrinsic_row_base;
   }
 }
 
@@ -353,38 +368,22 @@ thread_local! {
 fn update_item_crosses_intrinsic_tracks_for_axis(
   axis: AbstractAxis,
   items: &mut [GridItem],
-  axis_tracks: &[GridTrack],
   axis_inner_node_size: Option<f32>,
 ) {
   #[cfg(test)]
   UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(c.get() + 1));
 
-  let treat_percentage_as_intrinsic = axis_inner_node_size.is_none();
-  let intrinsic_prefix = {
-    let mut prefix = Vec::with_capacity(axis_tracks.len() + 1);
-    prefix.push(0u32);
-    let mut count = 0u32;
-    for track in axis_tracks {
-      if track.has_intrinsic_sizing_function()
-        || (treat_percentage_as_intrinsic
-          && track.kind == GridTrackKind::Track
-          && track.uses_percentage())
-      {
-        count += 1;
-      }
-      prefix.push(count);
-    }
-    prefix
-  };
-
-  #[inline(always)]
-  fn range_has_match(prefix: &[u32], start: usize, end: usize) -> bool {
-    start < end && (prefix[end] - prefix[start]) > 0
-  }
-
   for item in items.iter_mut() {
-    let range = item.track_range_excluding_lines(axis);
-    let crosses_intrinsic = range_has_match(&intrinsic_prefix, range.start, range.end);
+    let crosses_intrinsic_base = match axis {
+      AbstractAxis::Inline => item.crosses_intrinsic_column_base,
+      AbstractAxis::Block => item.crosses_intrinsic_row_base,
+    };
+    let crosses_percentage = match axis {
+      AbstractAxis::Inline => item.crosses_percentage_column,
+      AbstractAxis::Block => item.crosses_percentage_row,
+    };
+    let crosses_intrinsic =
+      crosses_intrinsic_base || (axis_inner_node_size.is_none() && crosses_percentage);
 
     match axis {
       AbstractAxis::Inline => item.crosses_intrinsic_column = crosses_intrinsic,
@@ -433,7 +432,7 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     .iter()
     .any(|t| t.kind == GridTrackKind::Track && t.uses_percentage());
   if has_percentage_track {
-    update_item_crosses_intrinsic_tracks_for_axis(axis, items, axis_tracks, axis_inner_node_size);
+    update_item_crosses_intrinsic_tracks_for_axis(axis, items, axis_inner_node_size);
   }
 
   // 11.5.1 Shim item baselines
@@ -2151,8 +2150,7 @@ mod tests {
   use crate::tree::MeasureOutput;
   use crate::CacheTree;
 
-  use crate::geometry::Point;
-  use crate::geometry::AbstractAxis;
+  use crate::geometry::{AbstractAxis, Point};
   use crate::style::{MaxTrackSizingFunction, MinTrackSizingFunction};
   use super::super::types::OriginZeroLine;
 
@@ -2899,7 +2897,6 @@ mod tests {
     super::update_item_crosses_intrinsic_tracks_for_axis(
       AbstractAxis::Inline,
       &mut items,
-      &columns,
       None,
     );
     assert_eq!(
@@ -2916,7 +2913,6 @@ mod tests {
     super::update_item_crosses_intrinsic_tracks_for_axis(
       AbstractAxis::Inline,
       &mut items,
-      &columns,
       Some(100.0),
     );
     assert_eq!(
@@ -2928,7 +2924,6 @@ mod tests {
     super::update_item_crosses_intrinsic_tracks_for_axis(
       AbstractAxis::Block,
       &mut items,
-      &rows,
       None,
     );
     assert_eq!(
@@ -3487,4 +3482,106 @@ mod tests {
       );
     }
   }
-} 
+  #[test]
+  fn percent_track_is_treated_as_intrinsic_when_container_size_is_indefinite() {
+    // A percentage-sized *track* (not gutter) should be treated as intrinsic when the grid
+    // container size is indefinite in that axis.
+
+    let columns = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(
+        MinTrackSizingFunction::percent(0.5),
+        MaxTrackSizingFunction::percent(0.5),
+      ),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+    ];
+
+    let rows = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+    ];
+
+    let mut item = super::GridItem::new_with_placement_style_and_order(
+      NodeId::from(0usize),
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      Style::<crate::sys::DefaultCheapStr>::default(),
+      AlignItems::Stretch,
+      AlignItems::Stretch,
+      0,
+    );
+    // Span the single track (between the outer gutters).
+    item.column_indexes = Line { start: 0, end: 2 };
+    item.row_indexes = Line { start: 0, end: 2 };
+
+    let mut items = vec![item];
+    super::determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
+
+    // Indefinite container size => percentage track behaves as intrinsic.
+    super::update_item_crosses_intrinsic_tracks_for_axis(AbstractAxis::Inline, &mut items, None);
+    assert!(items[0].crosses_intrinsic_track(AbstractAxis::Inline));
+
+    // Definite container size => percentage track behaves as fixed.
+    super::update_item_crosses_intrinsic_tracks_for_axis(
+      AbstractAxis::Inline,
+      &mut items,
+      Some(100.0),
+    );
+    assert!(!items[0].crosses_intrinsic_track(AbstractAxis::Inline));
+  }
+
+  #[test]
+  fn percent_gutter_does_not_count_towards_crosses_percentage() {
+    // Percentage-sized *gutters* (gaps) must not cause an item to be treated as crossing a
+    // percentage track (which would then incorrectly make it participate in intrinsic sizing when
+    // the container size is indefinite).
+
+    let columns = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::gutter(LengthPercentage::percent(0.5)),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+    ];
+
+    let rows = vec![
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+      super::GridTrack::new(MinTrackSizingFunction::ZERO, MaxTrackSizingFunction::ZERO),
+      super::GridTrack::gutter(LengthPercentage::ZERO),
+    ];
+
+    let mut item = super::GridItem::new_with_placement_style_and_order(
+      NodeId::from(0usize),
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(2),
+      },
+      Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(1),
+      },
+      Style::<crate::sys::DefaultCheapStr>::default(),
+      AlignItems::Stretch,
+      AlignItems::Stretch,
+      0,
+    );
+    // Span both tracks so the internal percent gutter is included in the range.
+    item.column_indexes = Line { start: 0, end: 4 };
+    item.row_indexes = Line { start: 0, end: 2 };
+
+    let mut items = vec![item];
+    super::determine_if_item_crosses_flexible_or_intrinsic_tracks(&mut items, &columns, &rows);
+
+    assert!(!items[0].crosses_percentage_column);
+
+    super::update_item_crosses_intrinsic_tracks_for_axis(AbstractAxis::Inline, &mut items, None);
+    assert!(!items[0].crosses_intrinsic_track(AbstractAxis::Inline));
+  }
+}
