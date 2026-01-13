@@ -8,6 +8,7 @@ use super::string_match::{
   contains_ascii_case_insensitive, find_ascii_case_insensitive, AsciiCaseInsensitiveStr,
 };
 use rustc_hash::FxHashSet;
+use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::OnceLock;
@@ -537,7 +538,7 @@ fn build_omnibox_suggestions_with_provider_iter_at_time<'a>(
   // We only ever return the top `limit` suggestions. Keeping a bounded working set avoids the
   // `O(n log n)` sort of potentially large provider outputs (visited/history/bookmarks), reducing
   // per-keystroke omnibox overhead.
-  let mut selected = Vec::<ScoredSuggestion>::new();
+  let mut selected = Vec::<ScoredSuggestion>::with_capacity(limit);
   for provider in providers {
     // If we already have enough suggestions, and even the theoretical max score for this provider
     // cannot beat our current worst score, skip it entirely.
@@ -1024,7 +1025,7 @@ fn cmp_ascii_lowercase(a: &str, b: &str) -> Ordering {
   a.len().cmp(&b.len())
 }
 
-fn tokenize_lower<'a>(input_lower: &'a str) -> Vec<&'a str> {
+fn tokenize_lower<'a>(input_lower: &'a str) -> SmallVec<[&'a str; 4]> {
   // `split_whitespace` never yields empty tokens, but keep the filter for paranoia since this
   // function is used on hot UI paths.
   input_lower
