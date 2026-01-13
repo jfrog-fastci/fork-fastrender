@@ -38,6 +38,16 @@ fn should_show_debug_log_ui(debug_build: bool, env_value: Option<&str>) -> bool 
   debug_build || parse_env_bool(env_value)
 }
 
+#[cfg(any(test, feature = "browser_ui"))]
+fn date_picker_day_a11y_label(year: i32, month: u32, day: u32, selected: bool) -> String {
+  let date = format!("{:04}-{:02}-{:02}", year, month, day);
+  if selected {
+    format!("Selected date: {date}")
+  } else {
+    format!("Select date: {date}")
+  }
+}
+
 #[cfg(feature = "browser_ui")]
 fn main() {
   if let Err(err) = run() {
@@ -496,6 +506,18 @@ mod tests {
     let icon = decode_rgba_icon(APP_ICON_PNG).expect("app icon should decode");
     assert_eq!((icon.width, icon.height), (256, 256));
     assert_eq!(icon.rgba.len(), (256 * 256 * 4) as usize);
+  }
+
+  #[test]
+  fn date_picker_day_a11y_label_formats_full_date() {
+    assert_eq!(
+      date_picker_day_a11y_label(2026, 1, 13, false),
+      "Select date: 2026-01-13"
+    );
+    assert_eq!(
+      date_picker_day_a11y_label(2026, 1, 13, true),
+      "Selected date: 2026-01-13"
+    );
   }
 }
 
@@ -6117,7 +6139,7 @@ impl App {
                     )
                     .inner;
                   response.widget_info({
-                    let label = format!("Select date {:04}-{:02}-{:02}", *year, *month, day);
+                    let label = date_picker_day_a11y_label(*year, *month, day, selected);
                     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                   });
                   if focus_day == Some(day) {
