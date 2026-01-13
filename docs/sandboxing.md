@@ -163,7 +163,8 @@ Linux sandbox code lives in:
 
 - `seccomp-bpf`: [`src/sandbox/linux_seccomp.rs`](../src/sandbox/linux_seccomp.rs) (installed via
   [`src/sandbox/mod.rs`](../src/sandbox/mod.rs))
-- Optional filesystem defense-in-depth: [`src/sandbox/linux_landlock.rs`](../src/sandbox/linux_landlock.rs)
+- Optional filesystem defense-in-depth (Landlock): [`src/sandbox/linux_landlock.rs`](../src/sandbox/linux_landlock.rs)
+- Optional namespace hardening (best-effort, before seccomp): [`src/sandbox/linux_namespaces.rs`](../src/sandbox/linux_namespaces.rs)
 
 Repo reality (today): the Linux seccomp sandbox is designed to:
 
@@ -173,10 +174,17 @@ Repo reality (today): the Linux seccomp sandbox is designed to:
   - Pre-existing inherited socketpairs can still be used via `read(2)`/`write(2)` (they are just file
     descriptors at that point), but features like FD passing (`SCM_RIGHTS`) require allowing
     `sendmsg`/`recvmsg`.
-  - When an embedding explicitly opts in (see `NetworkPolicy::AllowUnixSocketsOnly` in
+ - When an embedding explicitly opts in (see `NetworkPolicy::AllowUnixSocketsOnly` in
     `src/sandbox/mod.rs`), `socket(AF_UNIX, ...)` / `socketpair(AF_UNIX, ...)` are allowed for local
     IPC while non-Unix socket creation remains denied.
 - deny process execution (`execve`, `execveat`)
+
+Landlock note:
+
+- Landlock is **disabled by default** (`RendererLandlockPolicy::Disabled`).
+- When enabled for the renderer (`RendererLandlockPolicy::RestrictWrites`), it is best-effort and is
+  used as defense-in-depth (deny filesystem writes globally while still allowing reads so dynamic
+  linking continues to work).
 
 Maintaining the syscall allowlist is a moving target; use the workflow in
 [seccomp_allowlist.md](seccomp_allowlist.md).
