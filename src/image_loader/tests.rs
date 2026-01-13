@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use image::{ImageFormat, Rgba, RgbaImage};
 use resvg::usvg;
+use std::fs;
 use std::io::Cursor;
 use std::fs;
 use std::sync::{Arc, Mutex};
