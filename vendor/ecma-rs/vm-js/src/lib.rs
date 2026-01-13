@@ -263,6 +263,10 @@ mod private_brand_check_in_operator_tests;
 #[path = "../tests/generators_short_circuit_and_comma.rs"]
 mod generators_short_circuit_and_comma_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/class_inheritance_and_super.rs"]
+mod class_inheritance_and_super_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;
