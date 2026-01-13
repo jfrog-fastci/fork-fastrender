@@ -2317,7 +2317,15 @@ impl BrowserTabHost {
       self
         .lifecycle
         .load_blocker_completed(LoadBlockerKind::Other, event_loop)?;
-      return Err(err);
+      // Queueing failures are treated as a non-fatal image load error: `window.load` must still be
+      // able to fire and the document should keep running.
+      //
+      // Only cooperative render deadline/cancellation errors should abort the run; `queue_task`
+      // reports allocation/queue-limit failures as `Error::Other`.
+      if matches!(&err, Error::Render(_)) {
+        return Err(err);
+      }
+      return Ok(());
     }
 
     Ok(())

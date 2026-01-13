@@ -1030,19 +1030,32 @@ fn p3_window_onerror_fires_for_uncaught_errors() -> Result<()> {
 }
 
 #[test]
-#[ignore = "load currently does not wait for images (only scripts/stylesheets are modeled)"]
 fn p3_load_event_waits_for_images() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p3_images.html", js_options)?;
-  h.register_html_source(
+
+  // Use a non-data URL and override it via the script source registry (the override fetcher is used
+  // for all destinations). This keeps the test deterministic while still exercising the image load
+  // blocker pipeline.
+  let img_url = "https://example.invalid/img.png";
+  h.register_script_source(img_url, "fake image bytes");
+  h.register_html_source(&format!(
     r#"<!doctype html><body>
-      <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+      <img src="{img_url}">
       <script>
-        addEventListener("load", () => console.log("load"));
+        document.addEventListener("DOMContentLoaded", () => {{
+          console.log("dcl");
+          setTimeout(() => console.log("timer"), 0);
+        }});
+        window.addEventListener("load", () => console.log("load"));
       </script>
-    </body>"#,
-  );
+    </body>"#
+  ));
   h.navigate()?;
   h.run_until_idle()?;
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["dcl".to_string(), "timer".to_string(), "load".to_string()]
+  );
   Ok(())
 }
