@@ -48,3 +48,75 @@ fn generator_direct_eval_with_yield_argument_assigns_to_local_var() {
   assert_eq!(value, Value::Bool(true));
 }
 
+#[test]
+fn generator_parenthesized_eval_with_yield_argument_is_indirect() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // `var` creates a global binding visible to indirect eval.
+          var x = 2;
+          function* g(){ let x = 1; return (eval)(yield 0); }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          // Parenthesized eval is *indirect* and must not see the generator's lexical `x`.
+          ok = r.done === true && r.value === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_optional_chain_eval_with_yield_argument_is_indirect() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          function* g(){ let x = 1; return eval?.(yield 0); }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          // Optional-call eval is never a direct eval.
+          ok = r.done === true && r.value === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_shadowed_eval_is_not_direct_even_with_yield_argument() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(){
+            // Shadow `%eval%` with a local binding; syntactic `eval(...)` must not be treated as
+            // direct eval unless the callee is the intrinsic `%eval%` object.
+            let eval = function(_) { return 123; };
+            return eval(yield 0);
+          }
+          var it = g();
+          it.next();
+          var r = it.next("x");
+          ok = r.done === true && r.value === 123;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
