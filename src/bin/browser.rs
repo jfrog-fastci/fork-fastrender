@@ -4621,6 +4621,7 @@ enum StartupSessionSource {
   Restored,
   CliUrl,
   DefaultNewTab,
+  SafeMode,
   HeadlessOverride,
 }
 
@@ -4746,6 +4747,10 @@ mod crash_recovery_prompt_tests {
     ));
     assert!(!should_show_crash_recovery_infobar(
       StartupSessionSource::DefaultNewTab,
+      false
+    ));
+    assert!(!should_show_crash_recovery_infobar(
+      StartupSessionSource::SafeMode,
       false
     ));
     assert!(!should_show_crash_recovery_infobar(
@@ -5976,7 +5981,7 @@ fn determine_startup_session(
           fastrender::ui::about_pages::ABOUT_NEWTAB.to_string(),
           Some(&session),
         );
-        return (safe, StartupSessionSource::DefaultNewTab);
+        return (safe, StartupSessionSource::SafeMode);
       }
 
       if !session.did_exit_cleanly {
@@ -6515,6 +6520,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let startup_session = startup_session.sanitized();
   let show_crash_recovery_infobar =
     should_show_crash_recovery_infobar(source, startup_session.did_exit_cleanly);
+  let show_safe_mode_toast = matches!(source, StartupSessionSource::SafeMode);
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
   let mut startup_profile_notifications: Vec<String> = Vec::new();
@@ -7159,12 +7165,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       active_idx,
     );
 
-    // Surface autosave startup failures via a toast. Prefer the active window when multiple windows
-    // are restored so we don't spam the user with the same warning.
+    // Surface startup failures / safe mode via a toast. Prefer the active window when multiple
+    // windows are restored so we don't spam the user with the same warning.
     if idx == active_idx {
-      if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
-        // Only relevant for windowed UI (headless modes return before reaching this point).
-        let now = std::time::Instant::now();
+      // Only relevant for windowed UI (headless modes return before reaching this point).
+      let now = std::time::Instant::now();
+
+      if show_safe_mode_toast {
+        let mut toast_text =
+          "Safe mode: session restore skipped after repeated crashes.\nUse --restore to force restoring anyway."
+            .to_string();
+        if let Some(extra) = profile_autosave_failure_toast.as_deref() {
+          let extra = extra.trim();
+          if !extra.is_empty() {
+            toast_text.push_str("\n\n");
+            toast_text.push_str(extra);
+          }
+        }
+        app.chrome_toast.show(
+          fastrender::ui::ToastKind::Warning,
+          toast_text,
+          now,
+          std::time::Duration::from_secs(10),
+        );
+      } else if let Some(toast_text) = profile_autosave_failure_toast.as_deref() {
         app.chrome_toast.show(
           fastrender::ui::ToastKind::Warning,
           toast_text.to_string(),
@@ -9280,6 +9304,7 @@ fn run_headless_smoke_mode(
     StartupSessionSource::Restored => "restored",
     StartupSessionSource::CliUrl => "cli",
     StartupSessionSource::DefaultNewTab => "default",
+    StartupSessionSource::SafeMode => "safe",
     StartupSessionSource::HeadlessOverride => "override",
   };
   let session_json = serde_json::to_string(&session).unwrap_or_else(|_| "<invalid>".to_string());

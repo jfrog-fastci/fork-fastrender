@@ -393,7 +393,7 @@ fn browser_skips_restore_after_repeated_unclean_exits_and_starts_safe_session() 
   assert_browser_succeeded(status, &stderr, &stdout);
 
   let (source, session) = parse_headless_session(&stdout);
-  assert_eq!(source, "default", "expected safe-start to avoid restoring");
+  assert_eq!(source, "safe", "expected safe-start to avoid restoring");
   assert_eq!(session.windows.len(), 1);
   assert_eq!(session.windows[0].tabs.len(), 1);
   assert_eq!(session.windows[0].tabs[0].url, "about:newtab");
