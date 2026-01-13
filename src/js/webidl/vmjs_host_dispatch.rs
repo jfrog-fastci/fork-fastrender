@@ -2605,6 +2605,86 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
+      ("Node", "hasChildNodes", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+        let has = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if node_id.index() >= dom.nodes_len() {
+              return Err(DomError::NotFoundError);
+            }
+            let node = dom.node(node_id);
+
+            // Light DOM traversal must not treat the ShadowRoot child as a visible child node.
+            if matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+              for &child_id in &node.children {
+                if child_id.index() >= dom.nodes_len() {
+                  continue;
+                }
+                if matches!(dom.node(child_id).kind, NodeKind::ShadowRoot { .. }) {
+                  continue;
+                }
+                return Ok(true);
+              }
+              return Ok(false);
+            }
+
+            Ok(dom.first_child(node_id).is_some())
+          }))
+        })?;
+        match has {
+          Ok(value) => Ok(Value::Bool(value)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+      ("Node", "contains", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;
+
+        let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        if matches!(other_value, Value::Null | Value::Undefined) {
+          return Ok(Value::Bool(false));
+        }
+        let other_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), other_value)?;
+
+        let contains = with_embedder_state_from_hooks::<Host, _>(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            if node_id.index() >= dom.nodes_len() || other_id.index() >= dom.nodes_len() {
+              return Err(DomError::NotFoundError);
+            }
+
+            // ShadowRoot-safe inclusive descendant check:
+            // - `ShadowRoot` nodes are tree boundaries: traversal stops at the shadow root.
+            // - This prevents `host.contains(shadowRoot)` and `host.contains(nodeInShadow)` from
+            //   returning true (ShadowRoot is not part of the light DOM tree).
+            let mut current = Some(other_id);
+            let mut remaining = dom.nodes_len() + 1;
+            while let Some(id) = current {
+              if remaining == 0 {
+                break;
+              }
+              remaining -= 1;
+
+              if id == node_id {
+                return Ok(true);
+              }
+              if id.index() >= dom.nodes_len() {
+                break;
+              }
+              if matches!(dom.node(id).kind, NodeKind::ShadowRoot { .. }) {
+                current = None;
+                continue;
+              }
+              current = dom.parent(id)?;
+            }
+            Ok(false)
+          }))
+        })?;
+        match contains {
+          Ok(value) => Ok(Value::Bool(value)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
       ("Node", "textContent", 0) => {
         let receiver = receiver.unwrap_or(Value::Undefined);
         let node_id = require_dom_platform_mut(vm)?.require_node_id(scope.heap(), receiver)?;

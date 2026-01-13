@@ -1887,8 +1887,19 @@ mod tests {
         const host = document.createElement('div');\n\
         const sr = host.attachShadow({ mode: 'closed' });\n\
 \n\
+        const inShadow = document.createElement('span');\n\
+        sr.appendChild(inShadow);\n\
+\n\
         if (host.childNodes.length !== 0) return `expected host.childNodes.length === 0, got ${host.childNodes.length}`;\n\
         if (host.firstChild !== null) return 'expected host.firstChild === null';\n\
+        if (host.lastChild !== null) return 'expected host.lastChild === null';\n\
+        if (host.hasChildNodes()) return 'expected host.hasChildNodes() === false';\n\
+\n\
+        if (!sr.hasChildNodes()) return 'expected sr.hasChildNodes() === true';\n\
+        if (host.contains(sr)) return 'expected host.contains(sr) === false';\n\
+        if (host.contains(inShadow)) return 'expected host.contains(inShadow) === false';\n\
+        if (document.contains(inShadow)) return 'expected document.contains(inShadow) === false';\n\
+        if (!sr.contains(inShadow)) return 'expected sr.contains(inShadow) === true';\n\
 \n\
         const light = document.createElement('span');\n\
         host.appendChild(light);\n\
@@ -1896,6 +1907,8 @@ mod tests {
         if (host.childNodes.length !== 1) return `expected host.childNodes.length === 1, got ${host.childNodes.length}`;\n\
         if (host.childNodes[0] !== light) return 'expected host.childNodes[0] to be the light DOM child';\n\
         if (host.firstChild !== light) return 'expected host.firstChild to be the light DOM child';\n\
+        if (host.lastChild !== light) return 'expected host.lastChild to be the light DOM child';\n\
+        if (!host.hasChildNodes()) return 'expected host.hasChildNodes() === true';\n\
         if (light.previousSibling !== null) return 'expected light.previousSibling === null';\n\
         if (light.nextSibling !== null) return 'expected light.nextSibling === null';\n\
 \n\
