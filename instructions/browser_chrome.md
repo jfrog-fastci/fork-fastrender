@@ -154,14 +154,16 @@ src/ui/session.rs       — Session persistence
 - **Worker owns history**: UI sends `GoBack`/`GoForward`, doesn't compute URLs
 - **Cancellation is cooperative**: Use `CancelGens` for stale work
 
- ### Testing
- 
- - Unit tests for URL normalization, history logic, session serialization
- - Integration tests in `tests/browser_integration/`
- - Manual cross-platform regression checklist:
-   [`docs/browser_chrome_manual_test_matrix.md`](../docs/browser_chrome_manual_test_matrix.md)
- 
- ## Current bugs (fix these first)
+### Testing
+  
+- Unit tests for URL normalization, history logic, session serialization
+- Integration tests in `tests/browser_integration/`
+- Manual cross-platform smoke matrix (shortcuts + UX parity):
+  [`docs/chrome_test_matrix.md`](../docs/chrome_test_matrix.md)
+- Manual cross-platform regression checklist (deeper, end-to-end):
+  [`docs/browser_chrome_manual_test_matrix.md`](../docs/browser_chrome_manual_test_matrix.md)
+  
+## Current bugs (fix these first)
 
 Based on user reports:
 - [ ] Address bar "often doesn't work" — needs investigation and fix
