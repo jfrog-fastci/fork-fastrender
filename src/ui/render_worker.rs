@@ -2240,6 +2240,23 @@ impl BrowserRuntime {
     let had_pending_history_entry = tab.pending_history_entry;
     let url = request.url.clone();
 
+    // Test/debug hook: allow a deterministic worker crash so integration tests can exercise
+    // disconnect handling.
+    //
+    // Restrict this to typed navigations so untrusted pages cannot crash the worker via link clicks.
+    if reason == NavigationReason::TypedUrl
+      && url
+        .trim()
+        .trim_end_matches('/')
+        .eq_ignore_ascii_case("crash://panic")
+    {
+      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: "crash://panic requested; simulating worker panic".to_string(),
+      });
+      panic!("crash://panic requested");
+    }
+
     // Fragment-only navigation within the same document: update URL + scroll state in-place.
     //
     // Avoid a full reload/reprepare; we reuse the cached layout artifacts for hit-testing and

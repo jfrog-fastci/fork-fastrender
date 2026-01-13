@@ -9,7 +9,7 @@ use fastrender::ui::messages::{
 };
 use fastrender::ui::spawn_ui_worker;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -456,6 +456,14 @@ pub struct WorkerHarness {
 }
 
 impl WorkerHarness {
+  fn worker_thread_finished(&self) -> Option<bool> {
+    self.handle.as_ref().map(JoinHandle::is_finished)
+  }
+
+  fn worker_thread_name(&self) -> Option<&str> {
+    self.handle.as_ref().and_then(|handle| handle.thread().name())
+  }
+
   pub fn spawn() -> Self {
     let stage_lock = super::stage_listener_test_lock();
 
@@ -493,8 +501,8 @@ impl WorkerHarness {
           let (event, _frame) = split_message(msg);
           events.push(event);
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        Err(RecvTimeoutError::Timeout) => break,
+        Err(RecvTimeoutError::Disconnected) => break,
       }
     }
     events
@@ -515,9 +523,14 @@ impl WorkerHarness {
       let remaining = deadline.saturating_duration_since(now);
       let msg = match self.ui_rx.recv_timeout(remaining) {
         Ok(msg) => msg,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-          panic!("worker channel disconnected while waiting for event; got {events:?}");
+        Err(RecvTimeoutError::Timeout) => continue,
+        Err(RecvTimeoutError::Disconnected) => {
+          let kinds = events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>();
+          let worker_finished = self.worker_thread_finished();
+          let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
+          panic!(
+            "worker channel disconnected while waiting for event (timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; events: {events:?}"
+          );
         }
       };
       let (event, _frame) = split_message(msg);
@@ -544,9 +557,14 @@ impl WorkerHarness {
       let remaining = deadline.saturating_duration_since(now);
       let msg = match self.ui_rx.recv_timeout(remaining) {
         Ok(msg) => msg,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-          panic!("worker channel disconnected while waiting for FrameReady; got {events:?}");
+        Err(RecvTimeoutError::Timeout) => continue,
+        Err(RecvTimeoutError::Disconnected) => {
+          let kinds = events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>();
+          let worker_finished = self.worker_thread_finished();
+          let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
+          panic!(
+            "worker channel disconnected while waiting for FrameReady(tab_id={tab_id:?}, timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; events: {events:?}"
+          );
         }
       };
       let (event, frame) = split_message(msg);
@@ -561,6 +579,34 @@ impl WorkerHarness {
         if msg_tab == tab_id {
           return (frame, events);
         }
+      }
+    }
+  }
+
+  /// Wait until the worker channel disconnects (e.g. worker crash/panic) and return any events that
+  /// were received before shutdown.
+  pub fn wait_for_disconnect(&self, timeout: Duration) -> Vec<WorkerToUiEvent> {
+    let deadline = Instant::now() + timeout;
+    let mut events = Vec::new();
+    loop {
+      let now = Instant::now();
+      if now >= deadline {
+        let kinds = events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>();
+        let worker_finished = self.worker_thread_finished();
+        let worker_name = self.worker_thread_name().unwrap_or("<unnamed>");
+        panic!(
+          "timed out waiting for worker channel to disconnect (timeout={timeout:?}, thread={worker_name}, finished={worker_finished:?}); collected event kinds: {kinds:?}; events: {events:?}"
+        );
+      }
+
+      let remaining = deadline.saturating_duration_since(now);
+      match self.ui_rx.recv_timeout(remaining) {
+        Ok(msg) => {
+          let (event, _frame) = split_message(msg);
+          events.push(event);
+        }
+        Err(RecvTimeoutError::Timeout) => continue,
+        Err(RecvTimeoutError::Disconnected) => return events,
       }
     }
   }
@@ -584,18 +630,22 @@ impl Drop for WorkerHarness {
     // Close the channel first so the runtime exits its recv loop.
     self.ui_tx.take();
     if let Some(handle) = self.handle.take() {
-      // Avoid hanging the entire test suite if the worker is stuck (e.g. during a long render or a
-      // panic while a message is in-flight). Prefer clean teardown, but detach after a short grace
-      // period so we still get useful failure output.
+      // Avoid hanging the entire test suite if the worker is stuck (e.g. during a long render, or
+      // a crash mid-send that prevents the worker thread from noticing channel shutdown). Prefer
+      // clean teardown, but detach after a short grace period so we still get useful failure
+      // output.
       const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
-      let deadline = Instant::now() + JOIN_TIMEOUT;
-      let handle = handle;
-      while !handle.is_finished() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-      }
-      if handle.is_finished() {
-        let _ = handle.join();
-      }
+      let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+      // Join the worker on a helper thread so `Drop` is always bounded even if `JoinHandle::join`
+      // blocks (it has no built-in timeout).
+      let _ = std::thread::Builder::new()
+        .name("fastr-worker-harness-join".to_string())
+        .spawn(move || {
+          let _ = done_tx.send(handle.join());
+        });
+
+      let _ = done_rx.recv_timeout(JOIN_TIMEOUT);
     }
   }
 }
