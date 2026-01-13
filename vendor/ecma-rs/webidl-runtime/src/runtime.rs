@@ -129,7 +129,8 @@ pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
   /// Root and return a WebIDL callback interface handle.
   ///
   /// Callback interfaces accept callable functions or objects with a callable operation method
-  /// (`handleEvent` for `EventListener`, `acceptNode` for `NodeFilter`, etc).
+  /// (`handleEvent` for `EventListener`, `acceptNode` for `NodeFilter`, `lookupNamespaceURI` for
+  /// `XPathNSResolver`, etc).
   fn root_callback_interface(
     &mut self,
     _value: Self::JsValue,

@@ -49,6 +49,10 @@ fn proxy_get_trap(
     // `invoke_callback_interface` / `CallbackHandle` probe `handleEvent` first; return `undefined`
     // so they fall back to `acceptNode`.
     return Ok(Value::Undefined);
+  } else if expected == "lookupNamespaceURI" && (key.as_str() == "handleEvent" || key.as_str() == "acceptNode") {
+    // `invoke_callback_interface` / `CallbackHandle` probe `handleEvent` and `acceptNode` first;
+    // return `undefined` so they fall back to `lookupNamespaceURI`.
+    return Ok(Value::Undefined);
   } else {
     return Err(VmError::TypeError("unexpected property key in Proxy get trap"));
   }
@@ -186,6 +190,37 @@ fn invoke_callback_interface_accept_node_respects_proxy_get_trap() -> Result<(),
 }
 
 #[test]
+fn invoke_callback_interface_lookup_namespace_uri_respects_proxy_get_trap() -> Result<(), VmError> {
+  EXPECTED_OP_KEY.with(|c| c.set("lookupNamespaceURI"));
+  GET_TRAP_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
+
+  let mut vm = Vm::new(VmOptions::default());
+  // Stress rooting: force a GC before each allocation.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let proxy = alloc_proxy_callback_interface(&mut vm, &mut heap)?;
+
+  let mut scope = heap.scope();
+  let mut hooks = MicrotaskQueue::new();
+
+  let out = invoke_callback_interface(
+    &mut vm,
+    &mut scope,
+    &mut hooks,
+    Value::Object(proxy),
+    Value::Undefined,
+    &[Value::Number(123.0)],
+  )?;
+  assert_eq!(out, Value::Number(9.0));
+
+  // `invoke_callback_interface` probes `handleEvent`, then `acceptNode`, then falls back to
+  // `lookupNamespaceURI`.
+  assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 3);
+  assert_eq!(OP_CALLS.with(|c| c.get()), 1);
+  Ok(())
+}
+
+#[test]
 fn callback_handle_handle_event_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
   EXPECTED_OP_KEY.with(|c| c.set("handleEvent"));
   GET_TRAP_CALLS.with(|c| c.set(0));
@@ -253,6 +288,44 @@ fn callback_handle_accept_node_invocation_respects_proxy_get_trap() -> Result<()
   assert_eq!(out, Value::Number(9.0));
   // `CallbackHandle` invocation probes `handleEvent` then falls back to `acceptNode`.
   assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 2);
+  assert_eq!(OP_CALLS.with(|c| c.get()), 1);
+  Ok(())
+}
+
+#[test]
+fn callback_handle_lookup_namespace_uri_invocation_respects_proxy_get_trap() -> Result<(), VmError> {
+  EXPECTED_OP_KEY.with(|c| c.set("lookupNamespaceURI"));
+  GET_TRAP_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
+
+  let mut vm = Vm::new(VmOptions::default());
+  // Stress rooting: force a GC before each allocation.
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let proxy = alloc_proxy_callback_interface(&mut vm, &mut heap)?;
+
+  // Creating the handle performs a `GetMethod` probe; ignore those trap calls for this test.
+  let handle =
+    CallbackHandle::from_callback_interface(&mut vm, &mut heap, Value::Object(proxy), false)?
+      .expect("expected callback interface handle");
+  GET_TRAP_CALLS.with(|c| c.set(0));
+  OP_CALLS.with(|c| c.set(0));
+
+  let mut host = ();
+  let mut hooks = MicrotaskQueue::new();
+  let out = handle.invoke_with_this(
+    &mut vm,
+    &mut heap,
+    &mut host,
+    &mut hooks,
+    Value::Undefined,
+    &[Value::Number(123.0)],
+  )?;
+  handle.unroot(&mut heap);
+
+  assert_eq!(out, Value::Number(9.0));
+  // `CallbackHandle` invocation probes `handleEvent`, then `acceptNode`, then falls back to
+  // `lookupNamespaceURI`.
+  assert_eq!(GET_TRAP_CALLS.with(|c| c.get()), 3);
   assert_eq!(OP_CALLS.with(|c| c.get()), 1);
   Ok(())
 }

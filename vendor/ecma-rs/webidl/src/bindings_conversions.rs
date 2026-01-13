@@ -753,8 +753,9 @@ pub fn to_callback_interface<R: WebIdlJsRuntime>(
     // WebIDL callback interfaces are structural: non-callable objects are accepted only when they
     // expose a callable method for the callback's operation.
     //
-    // `EventListener` uses `handleEvent`, while `NodeFilter` uses `acceptNode`. This conversion
-    // helper does not currently receive the callback interface operation name, so support both.
+    // `EventListener` uses `handleEvent`, `NodeFilter` uses `acceptNode`, and `XPathNSResolver` uses
+    // `lookupNamespaceURI`. This conversion helper does not currently receive the callback
+    // interface operation name, so support all of these.
     //
     // Keep the existing `handleEvent` behavior intact and only fall back to `acceptNode` when
     // `handleEvent` is missing.
@@ -765,6 +766,11 @@ pub fn to_callback_interface<R: WebIdlJsRuntime>(
 
     let accept_node_key = rt.property_key_from_str("acceptNode")?;
     if rt.get_method(value, accept_node_key)?.is_some() {
+      return Ok(value);
+    }
+
+    let lookup_namespace_uri_key = rt.property_key_from_str("lookupNamespaceURI")?;
+    if rt.get_method(value, lookup_namespace_uri_key)?.is_some() {
       return Ok(value);
     }
 
@@ -934,7 +940,8 @@ pub fn convert_to_interface_opaque<R: WebIdlJsRuntime>(
 ///
 /// - If `callback` is callable, it is called with `this = undefined`.
 /// - Otherwise, it is treated as an object and its callback operation method is invoked
-///   (`handleEvent` is preferred; `acceptNode` is used as a fallback when `handleEvent` is missing).
+///   (`handleEvent` is preferred; `acceptNode` / `lookupNamespaceURI` are used as fallbacks when
+///   `handleEvent` is missing).
 pub fn invoke_callback_interface<R: WebIdlJsRuntime>(
   rt: &mut R,
   callback: R::JsValue,
@@ -955,15 +962,24 @@ pub fn invoke_callback_interface<R: WebIdlJsRuntime>(
   roots.push(callback);
   roots.extend_from_slice(args);
   rt.with_stack_roots(&roots, |rt| {
-    // Prefer `handleEvent` (EventListener), but fall back to `acceptNode` (NodeFilter) when missing.
+    // Prefer `handleEvent` (EventListener), but fall back to `acceptNode` (NodeFilter) /
+    // `lookupNamespaceURI` (XPathNSResolver) when missing.
     let handle_event_key = rt.property_key_from_str("handleEvent")?;
     let handle_event = match rt.get_method(callback, handle_event_key)? {
       Some(method) => method,
       None => {
         let accept_node_key = rt.property_key_from_str("acceptNode")?;
-        rt.get_method(callback, accept_node_key)?.ok_or_else(|| {
-          rt.throw_type_error("Callback interface object is missing a callable handleEvent method")
-        })?
+        match rt.get_method(callback, accept_node_key)? {
+          Some(method) => method,
+          None => {
+            let lookup_namespace_uri_key = rt.property_key_from_str("lookupNamespaceURI")?;
+            rt.get_method(callback, lookup_namespace_uri_key)?.ok_or_else(|| {
+              rt.throw_type_error(
+                "Callback interface object is missing a callable handleEvent method",
+              )
+            })?
+          }
+        }
       }
     };
 

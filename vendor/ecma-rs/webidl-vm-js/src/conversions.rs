@@ -386,6 +386,7 @@ pub fn to_callback_function<'a>(
 /// - callable, or
 /// - an object with a callable `handleEvent` method, or
 /// - an object with a callable `acceptNode` method.
+/// - an object with a callable `lookupNamespaceURI` method.
 ///
 /// Spec: <https://webidl.spec.whatwg.org/#es-callback-interface>
 pub fn to_callback_interface<'a>(
@@ -409,12 +410,12 @@ pub fn to_callback_interface<'a>(
   // NOTE: WebIDL callback interfaces are structural: non-callable objects are accepted only when
   // they expose a callable method for the callback's operation.
   //
-  // `EventListener` uses `handleEvent`, while `NodeFilter` uses `acceptNode`. We support both here
-  // to avoid requiring generated bindings to plumb the callback interface operation name through
-  // the conversion helper.
+  // `EventListener` uses `handleEvent`, `NodeFilter` uses `acceptNode`, and `XPathNSResolver` uses
+  // `lookupNamespaceURI`. We support all of these here to avoid requiring generated bindings to
+  // plumb the callback interface operation name through the conversion helper.
   //
-  // Keep the existing `handleEvent` behavior intact, and only fall back to `acceptNode` when
-  // `handleEvent` is missing (`undefined`/`null`).
+  // Keep the existing `handleEvent` behavior intact, and only fall back to the other known
+  // operation names when `handleEvent` is missing (`undefined`/`null`).
   let handle_event_key = rt.property_key("handleEvent")?;
   let method = rt
     .scope
@@ -430,6 +431,22 @@ pub fn to_callback_interface<'a>(
   let method = rt
     .scope
     .ordinary_get_with_host_and_hooks(&mut *rt.vm, host, hooks, obj, accept_node_key, v)?;
+  if !matches!(method, Value::Undefined | Value::Null) {
+    if !rt.scope.heap().is_callable(method)? {
+      return Err(rt.throw_type_error("GetMethod: target is not callable"));
+    }
+    return Ok(v);
+  }
+
+  let lookup_namespace_uri_key = rt.property_key("lookupNamespaceURI")?;
+  let method = rt.scope.ordinary_get_with_host_and_hooks(
+    &mut *rt.vm,
+    host,
+    hooks,
+    obj,
+    lookup_namespace_uri_key,
+    v,
+  )?;
   if matches!(method, Value::Undefined | Value::Null) {
     return Err(
       rt.throw_type_error("Callback interface object is missing a callable handleEvent method"),

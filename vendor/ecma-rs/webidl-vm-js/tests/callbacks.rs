@@ -219,3 +219,51 @@ globalThis.filter = {
 
   Ok(())
 }
+
+#[test]
+fn invoke_callback_interface_calls_lookup_namespace_uri_with_object_this() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut rt = vm_js::JsRuntime::new(vm, heap)?;
+
+  rt.exec_script(
+    r#"
+globalThis.seenThis = undefined;
+globalThis.seenArg = undefined;
+globalThis.resolver = {
+  lookupNamespaceURI(p) {
+    "use strict";
+    globalThis.seenThis = this;
+    globalThis.seenArg = p;
+    return 13;
+  }
+};
+"#,
+  )?;
+
+  let mut hooks = JobQueueHooks::default();
+
+  {
+    let (vm, realm, heap) = rt.vm_realm_and_heap_mut();
+    let global = realm.global_object();
+    let mut scope = heap.scope();
+    let resolver = get_global(vm, &mut scope, global, "resolver")?;
+
+    let out = invoke_callback_interface(
+      vm,
+      &mut scope,
+      &mut hooks,
+      resolver,
+      Value::Undefined,
+      &[Value::Number(123.0)],
+    )?;
+    assert_eq!(out, Value::Number(13.0));
+
+    let seen_this = get_global(vm, &mut scope, global, "seenThis")?;
+    assert_eq!(seen_this, resolver);
+    let seen_arg = get_global(vm, &mut scope, global, "seenArg")?;
+    assert_eq!(seen_arg, Value::Number(123.0));
+  }
+
+  Ok(())
+}

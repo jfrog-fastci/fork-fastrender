@@ -287,6 +287,42 @@ fn callback_interface_handle_calls_accept_node_with_object_this() -> Result<(), 
 }
 
 #[test]
+fn callback_interface_handle_calls_lookup_namespace_uri_with_object_this() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = vm_js::Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut rt = vm_js::JsRuntime::new(vm, heap)?;
+  rt.register_global_native_function("registerListener", register_callback_interface, 1)?;
+
+  let mut host = StoredHandle::default();
+  rt.exec_script_with_host(
+    &mut host,
+    "const obj = { lookupNamespaceURI(p) { globalThis.ok = (this === obj); globalThis.arg = p; return 7; } }; registerListener(obj);",
+  )?;
+
+  let handle = host.handle.take().expect("expected callback handle");
+  let mut hooks = CapturingHooks::default();
+  let mut host_ctx = ();
+  let out = handle.invoke_with_this(
+    &mut rt.vm,
+    &mut rt.heap,
+    &mut host_ctx,
+    &mut hooks,
+    Value::Undefined,
+    &[Value::Number(123.0)],
+  )?;
+  handle.unroot(&mut rt.heap);
+
+  for (job, _realm) in hooks.jobs.drain(..) {
+    job.discard(&mut rt);
+  }
+
+  assert_eq!(out, Value::Number(7.0));
+  assert_eq!(get_global_bool(&mut rt, "ok")?, Some(true));
+  assert_eq!(get_global_number(&mut rt, "arg")?, Some(123.0));
+  Ok(())
+}
+
+#[test]
 fn callback_interface_handle_invocation_calls_handle_event_getter_with_hooks() -> Result<(), VmError>
 {
   let vm = Vm::new(VmOptions::default());

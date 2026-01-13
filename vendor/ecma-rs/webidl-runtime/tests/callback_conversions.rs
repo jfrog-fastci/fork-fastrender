@@ -67,6 +67,22 @@ fn callback_interface_conversion_accepts_object_with_accept_node_method() {
 }
 
 #[test]
+fn callback_interface_conversion_accepts_object_with_lookup_namespace_uri_method() {
+  let mut rt = VmJsRuntime::new();
+  let lookup = rt
+    .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
+    .unwrap();
+
+  let obj = rt.alloc_object_value().unwrap();
+  let key = rt.property_key_from_str("lookupNamespaceURI").unwrap();
+  rt.define_data_property(obj, key, lookup, true).unwrap();
+
+  let ty = callback_interface_type("XPathNSResolver");
+  let got = convert_to_callback(&mut rt, obj, &ty).unwrap();
+  assert_eq!(got, obj);
+}
+
+#[test]
 fn callback_interface_conversion_accepts_branded_platform_object_without_handle_event() {
   let mut rt = VmJsRuntime::new();
   let obj = rt
@@ -173,4 +189,27 @@ fn invoke_callback_interface_calls_accept_node_with_object_this() {
 
   let result = invoke_callback_interface(&mut rt, obj, &[event]).unwrap();
   assert_eq!(result, Value::Number(3.0));
+}
+
+#[test]
+fn invoke_callback_interface_calls_lookup_namespace_uri_with_object_this() {
+  let mut rt = VmJsRuntime::new();
+  let event = Value::Number(123.0);
+
+  let obj = rt.alloc_object_value().unwrap();
+  let expected_this = obj;
+
+  let lookup = rt
+    .alloc_function_value(move |_rt, this, args| {
+      assert_eq!(this, expected_this);
+      assert_eq!(args, &[event]);
+      Ok(Value::Number(4.0))
+    })
+    .unwrap();
+
+  let key = rt.property_key_from_str("lookupNamespaceURI").unwrap();
+  rt.define_data_property(obj, key, lookup, true).unwrap();
+
+  let result = invoke_callback_interface(&mut rt, obj, &[event]).unwrap();
+  assert_eq!(result, Value::Number(4.0));
 }

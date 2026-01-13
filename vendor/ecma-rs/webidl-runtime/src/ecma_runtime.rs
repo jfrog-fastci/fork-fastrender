@@ -1817,14 +1817,18 @@ impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
     // Callback interface objects are structural: accept them only when they expose a callable
     // operation method.
     //
-    // Prefer `handleEvent` (EventListener) and fall back to `acceptNode` (NodeFilter) when missing.
+    // Prefer `handleEvent` (EventListener) and fall back to `acceptNode` (NodeFilter) /
+    // `lookupNamespaceURI` (XPathNSResolver) when missing.
     let handle_event_key = self.property_key_from_str("handleEvent")?;
     if self.get_method(value, handle_event_key)?.is_none() {
       let accept_node_key = self.property_key_from_str("acceptNode")?;
       if self.get_method(value, accept_node_key)?.is_none() {
-        return Err(self.throw_type_error(
-          "Callback interface object is missing a callable handleEvent method",
-        ));
+        let lookup_namespace_uri_key = self.property_key_from_str("lookupNamespaceURI")?;
+        if self.get_method(value, lookup_namespace_uri_key)?.is_none() {
+          return Err(self.throw_type_error(
+            "Callback interface object is missing a callable handleEvent method",
+          ));
+        }
       }
     }
 

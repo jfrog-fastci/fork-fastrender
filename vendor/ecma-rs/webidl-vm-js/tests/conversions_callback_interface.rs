@@ -119,6 +119,20 @@ fn callback_interface_conversion_accepts_callable_or_operation_object() -> Resul
     conversions::to_callback_interface(&mut rt, &mut dummy_host, &mut hooks, filter_val)?;
   assert_eq!(converted, filter_val);
 
+  // Object with callable lookupNamespaceURI method (XPathNSResolver-style callback interface).
+  let resolver_obj = rt.alloc_object()?;
+  rt.scope.push_root(Value::Object(resolver_obj))?;
+  rt.define_data_property_str(
+    resolver_obj,
+    "lookupNamespaceURI",
+    cb_val,
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+  let resolver_val = Value::Object(resolver_obj);
+  let converted =
+    conversions::to_callback_interface(&mut rt, &mut dummy_host, &mut hooks, resolver_val)?;
+  assert_eq!(converted, resolver_val);
+
   // Object without handleEvent -> TypeError.
   let no_handle = rt.alloc_object()?;
   rt.scope.push_root(Value::Object(no_handle))?;
