@@ -17609,6 +17609,11 @@ impl App {
 
     let Some(open_controls) = self.open_media_controls.as_ref() else {
       // Defensive: ensure stale rect state cannot linger if some code path drops the overlay.
+      //
+      // Note: do *not* clear `media_controls_overlay_pointer_capture` here. The overlay can be
+      // closed while a UI-owned press is still active (e.g. toggle-close on the media element); we
+      // must keep capture until the corresponding release (or egui reports the pointer is up) so we
+      // don't forward a "half click" into the page.
       self.open_media_controls_rect = None;
       return;
     };
