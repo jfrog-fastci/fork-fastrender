@@ -5042,10 +5042,18 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::AssignOp::ShiftRightUnsignedAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_uint32(ln).wrapping_shr(shift) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number((to_uint32(a) >> shift) as f64))
+          }
+          (NumericValue::BigInt(_), NumericValue::BigInt(_)) => Err(VmError::TypeError(
+            "BigInt does not support unsigned right shift",
+          )),
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::BitOrAssign => {
         let mut scope = scope.reborrow();

@@ -6173,6 +6173,38 @@ fn compiled_shift_right_unsigned_assign_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_shift_right_unsigned_assign_throws_type_error() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let msg = 'no';
+      try {
+        let x = 1n;
+        x >>>= 1n;
+      } catch (e) {
+        msg = e.message;
+      }
+      msg
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(
+    rt.heap().get_string(s)?.to_utf8_lossy(),
+    "BigInt does not support unsigned right shift"
+  );
+  Ok(())
+}
+
+#[test]
 fn compiled_bitwise_and_assign_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
