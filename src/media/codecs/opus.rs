@@ -122,10 +122,11 @@ impl OpusDecoder {
 
     let mut pcm = vec![0.0f32; MAX_FRAME_SIZE_SAMPLES_PER_CHANNEL * self.channels as usize];
 
-    let (data_ptr, data_len) = if packet.data.is_empty() {
+    let data = packet.as_slice();
+    let (data_ptr, data_len) = if data.is_empty() {
       (std::ptr::null(), 0i32)
     } else {
-      (packet.data.as_ptr(), packet.data.len() as i32)
+      (data.as_ptr(), data.len() as i32)
     };
 
     // SAFETY:
@@ -242,10 +243,11 @@ mod tests {
 
     let packet = MediaPacket {
       track_id: 1,
+      dts_ns: 0,
       pts_ns: 0,
       // WebM Opus blocks often have no explicit duration.
       duration_ns: 0,
-      data: packet_data,
+      data: packet_data.into(),
       is_keyframe: false,
     };
 
@@ -274,9 +276,10 @@ mod tests {
 
     let packet = MediaPacket {
       track_id: 1,
+      dts_ns: 0,
       pts_ns: 0,
       duration_ns: 0,
-      data: packet_data,
+      data: packet_data.into(),
       is_keyframe: false,
     };
 
@@ -294,4 +297,3 @@ mod tests {
     );
   }
 }
-
