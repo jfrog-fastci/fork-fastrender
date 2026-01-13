@@ -65,16 +65,27 @@ pub fn supports_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
     __ag_support().next();
   "#;
 
-  let supported = match rt.exec_script(probe) {
-    Ok(_) => true,
-    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => false,
+  match rt.exec_script(probe) {
+    Ok(_) => {}
+    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => {
+      rt.teardown_microtasks();
+      return Ok(false);
+    }
     Err(err) => return Err(err),
+  }
+
+  // `AsyncGenerator.prototype.next()` itself can succeed (returning a Promise) even when the async
+  // generator resume job is unimplemented. Run a microtask checkpoint to ensure the queued work can
+  // actually execute; otherwise tests might spuriously activate during partial implementations.
+  let result = match rt.vm.perform_microtask_checkpoint(&mut rt.heap) {
+    Ok(()) => Ok(true),
+    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
+    Err(err) => Err(err),
   };
 
-  if supported {
-    // `.next()` allocates a Promise and queues jobs. Drain them so the probe doesn't leak work into
-    // subsequent assertions (or other tests).
-    rt.teardown_microtasks();
-  }
-  Ok(supported)
+  // Always discard any queued microtasks after the probe (including in the unsupported case) so we
+  // don't leak jobs into later assertions.
+  rt.teardown_microtasks();
+
+  result
 }
