@@ -76,6 +76,14 @@ pub const WS_OPEN: u16 = 1;
 pub const WS_CLOSING: u16 = 2;
 pub const WS_CLOSED: u16 = 3;
 
+// IPC limits are expressed as `u32` (serialized over the wire). Convert them to `usize` for local
+// string/byte-length validation.
+const MAX_WEBSOCKET_URL_BYTES_USIZE: usize = MAX_WEBSOCKET_URL_BYTES as usize;
+const MAX_WEBSOCKET_PROTOCOLS_USIZE: usize = MAX_WEBSOCKET_PROTOCOLS as usize;
+const MAX_WEBSOCKET_PROTOCOL_BYTES_USIZE: usize = MAX_WEBSOCKET_PROTOCOL_BYTES as usize;
+const MAX_WEBSOCKET_MESSAGE_BYTES_USIZE: usize = MAX_WEBSOCKET_MESSAGE_BYTES as usize;
+const MAX_WEBSOCKET_CLOSE_REASON_BYTES_USIZE: usize = MAX_WEBSOCKET_CLOSE_REASON_BYTES as usize;
+
 /// Hard upper bound on the total number of bytes that may be queued for sending (`bufferedAmount`)
 /// per WebSocket.
 ///
