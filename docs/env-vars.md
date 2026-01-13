@@ -19,6 +19,7 @@ Pageset/profiling runners typically invoke FastRender in `--release` mode, so `F
 
 Renderer sandboxing (multiprocess security boundary) is documented in:
 
+- [renderer_sandbox.md](renderer_sandbox.md) (entrypoint)
 - [sandboxing.md](sandboxing.md) (cross-platform overview)
 - [security/sandbox.md](security/sandbox.md) (Linux-focused design notes)
 
