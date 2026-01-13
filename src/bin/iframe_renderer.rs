@@ -131,7 +131,7 @@ fn main() {
 
   let mut builder = fastrender::FastRender::builder()
     .fetcher(Arc::new(RejectAllFetcher))
-    .background_color(Rgba::TRANSPARENT)
+    .background_color(Rgba::WHITE)
     .viewport_size(req.width.max(1), req.height.max(1))
     .device_pixel_ratio(req.device_pixel_ratio)
     .max_iframe_depth(req.max_iframe_depth)

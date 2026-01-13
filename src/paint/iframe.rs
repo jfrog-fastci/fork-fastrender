@@ -801,17 +801,20 @@ pub(crate) fn render_iframe_srcdoc(
     }
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let pixmap = new_pixmap(device_width, device_height)?;
+    let mut pixmap = new_pixmap(device_width, device_height)?;
+    pixmap.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
     return Some(image);
   }
 
-  // Render the nested document into a transparent surface. The iframe element's own background and
-  // border are painted by the outer document, and passing the element background here would cause
-  // it to be composited twice (especially visible for semi-transparent colors).
-  let background = Rgba::TRANSPARENT;
+  // Render the nested document into a default white canvas, matching Chrome's iframe browsing
+  // context background when the iframe document does not paint an explicit background.
+  //
+  // Note: This is *not* the iframe element's background-color (that is painted by the outer
+  // document). This is the nested browsing context canvas background.
+  let background = Rgba::WHITE;
   let base_url = image_cache.base_url();
   let mut cache = image_cache.clone();
   if let Some(base_url) = base_url.clone() {
@@ -958,7 +961,8 @@ pub(crate) fn render_iframe_src(
     }
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let pixmap = new_pixmap(device_width, device_height)?;
+    let mut pixmap = new_pixmap(device_width, device_height)?;
+    pixmap.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
@@ -966,15 +970,16 @@ pub(crate) fn render_iframe_src(
   }
   let nested_depth = remaining_depth.saturating_sub(1);
   let fetcher = Arc::clone(image_cache.fetcher());
-  // See `render_iframe_srcdoc` for why iframe documents are rendered into a transparent surface.
-  let background = Rgba::TRANSPARENT;
+  // See `render_iframe_srcdoc` for why iframe documents use a default white browsing context canvas.
+  let background = Rgba::WHITE;
 
   if is_about_blank {
     // about:blank is a browser-provided empty document. Treat it as an empty iframe instead of a
     // resource fetch so offline fixtures do not record spurious fetch errors.
     let device_width = ((width as f32) * device_pixel_ratio).round().max(1.0) as u32;
     let device_height = ((height as f32) * device_pixel_ratio).round().max(1.0) as u32;
-    let pixmap = new_pixmap(device_width, device_height)?;
+    let mut pixmap = new_pixmap(device_width, device_height)?;
+    pixmap.fill(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
     let image = image_data_from_pixmap(&pixmap, width, height);
     #[cfg(test)]
     record_iframe_cache_hit(false);
@@ -1264,6 +1269,43 @@ mod tests {
         io::ErrorKind::NotFound,
         format!("unexpected fetch: {url}"),
       )))
+    }
+  }
+
+  #[test]
+  fn iframe_about_blank_renders_white_background() {
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::with_fetcher(Arc::new(RejectingFetcher::default()));
+    let rect = Rect::from_xywh(0.0, 0.0, 2.0, 2.0);
+
+    let image =
+      render_iframe_src("about:blank", None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+        .expect("expected about:blank iframe render");
+
+    assert_eq!(image.width, 2);
+    assert_eq!(image.height, 2);
+    assert!(image.premultiplied, "expected premultiplied pixels");
+    for px in image.pixels.chunks_exact(4) {
+      assert_eq!(px, [255, 255, 255, 255]);
+    }
+  }
+
+  #[test]
+  fn iframe_srcdoc_defaults_to_white_background() {
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::with_fetcher(Arc::new(RejectingFetcher::default()));
+    let rect = Rect::from_xywh(0.0, 0.0, 2.0, 2.0);
+    let html = "<html><body></body></html>";
+
+    let image =
+      render_iframe_srcdoc(html, None, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+        .expect("expected srcdoc iframe render");
+
+    assert_eq!(image.width, 2);
+    assert_eq!(image.height, 2);
+    assert!(image.premultiplied, "expected premultiplied pixels");
+    for px in image.pixels.chunks_exact(4) {
+      assert_eq!(px, [255, 255, 255, 255]);
     }
   }
 
@@ -1930,7 +1972,7 @@ mod tests {
       css_height: 16,
       device_pixel_ratio_bits: 1.0f32.to_bits(),
       nested_depth: 2,
-      background: Rgba::TRANSPARENT.into(),
+      background: Rgba::WHITE.into(),
       policy_hash: policy_fingerprint(&ResourceAccessPolicy::default()),
       referrer_url_hash: None,
       request_referrer_policy: ReferrerPolicy::default(),

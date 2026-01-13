@@ -1273,6 +1273,7 @@ impl WorkerToUi {
       | WorkerToUi::MediaControlsOpened { tab_id, .. }
       | WorkerToUi::MediaControlsClosed { tab_id }
       | WorkerToUi::ContextMenu { tab_id, .. }
+      | WorkerToUi::RequestWakeAfter { tab_id, .. }
       | WorkerToUi::HoverChanged { tab_id, .. }
       | WorkerToUi::DatalistOpened { tab_id, .. }
       | WorkerToUi::DatalistClosed { tab_id }
