@@ -1,0 +1,114 @@
+<!doctype html>
+<!--
+  Minimal vendored snapshot of the ECMA-262 “Binary Unicode properties” table.
+
+  The `vendor/ecma-rs/parse-js` crate includes this file at compile time and extracts all
+  backticked identifiers to validate RegExp Unicode property escapes (`\p{…}` / `\P{…}`).
+
+  The parser only cares about the set of names/aliases, not the HTML structure. The list below is
+  derived from `tools/unicode/ucd-17.0.0/PropertyAliases.txt` and intentionally includes only the
+  binary *code point* properties required by ECMA-262 (plus their aliases), not non-binary
+  properties like `Script`/`General_Category` and not the `/v` “properties of strings”.
+-->
+<meta charset="utf-8">
+<title>Binary Unicode properties</title>
+<pre>
+`AHex`
+`ASCII`
+`ASCII_Hex_Digit`
+`Alpha`
+`Alphabetic`
+`Any`
+`Assigned`
+`Bidi_C`
+`Bidi_Control`
+`Bidi_M`
+`Bidi_Mirrored`
+`CI`
+`CWCF`
+`CWCM`
+`CWKCF`
+`CWL`
+`CWT`
+`CWU`
+`Case_Ignorable`
+`Cased`
+`Changes_When_Casefolded`
+`Changes_When_Casemapped`
+`Changes_When_Lowercased`
+`Changes_When_NFKC_Casefolded`
+`Changes_When_Titlecased`
+`Changes_When_Uppercased`
+`DI`
+`Dash`
+`Default_Ignorable_Code_Point`
+`Dep`
+`Deprecated`
+`Dia`
+`Diacritic`
+`EBase`
+`EComp`
+`EMod`
+`EPres`
+`Emoji`
+`Emoji_Component`
+`Emoji_Modifier`
+`Emoji_Modifier_Base`
+`Emoji_Presentation`
+`Ext`
+`ExtPict`
+`Extended_Pictographic`
+`Extender`
+`Gr_Base`
+`Gr_Ext`
+`Grapheme_Base`
+`Grapheme_Extend`
+`Hex`
+`Hex_Digit`
+`IDC`
+`IDS`
+`IDSB`
+`IDST`
+`IDS_Binary_Operator`
+`IDS_Trinary_Operator`
+`ID_Continue`
+`ID_Start`
+`Ideo`
+`Ideographic`
+`Join_C`
+`Join_Control`
+`LOE`
+`Logical_Order_Exception`
+`Lower`
+`Lowercase`
+`Math`
+`NChar`
+`Noncharacter_Code_Point`
+`Pat_Syn`
+`Pat_WS`
+`Pattern_Syntax`
+`Pattern_White_Space`
+`QMark`
+`Quotation_Mark`
+`RI`
+`Radical`
+`Regional_Indicator`
+`SD`
+`STerm`
+`Sentence_Terminal`
+`Soft_Dotted`
+`Term`
+`Terminal_Punctuation`
+`UIdeo`
+`Unified_Ideograph`
+`Upper`
+`Uppercase`
+`VS`
+`Variation_Selector`
+`White_Space`
+`XIDC`
+`XIDS`
+`XID_Continue`
+`XID_Start`
+`space`
+</pre>

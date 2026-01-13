@@ -2840,6 +2840,72 @@ impl BrowserDocumentDom2 {
     }
   }
 
+  /// Returns `Ok(true)` if this document is eligible to satisfy the current style invalidation via
+  /// incremental restyle (instead of a full restyle).
+  ///
+  /// Note: incremental restyle is conservative and must not be used when style changes can trigger
+  /// top-layer derived attribute propagation (`open` toggles, `data-fastr-inert` propagation). In
+  /// that case, the restyle scope would need to expand beyond the mutated subtree, so we force a
+  /// full restyle instead.
+  #[allow(dead_code)]
+  fn incremental_restyle_is_eligible(&self) -> Result<bool> {
+    if self.dirty_style_nodes.is_empty() {
+      return Ok(false);
+    }
+
+    // Conservative safety check: avoid incremental restyle when mutations might affect dialog /
+    // popover open state or modal inert propagation. These states are applied to the *renderer DOM*
+    // snapshot via `dom::apply_top_layer_state_with_deadline`, so reusing styled subtrees outside
+    // the dirty scope can produce stale `StyledNode.node` snapshots and computed styles.
+    if self.dirty_style_nodes_may_affect_top_layer_state() {
+      return Ok(false);
+    }
+
+    Ok(true)
+  }
+
+  #[allow(dead_code)]
+  fn dirty_style_nodes_may_affect_top_layer_state(&self) -> bool {
+    let dom = self.dom();
+    for &node_id in &self.dirty_style_nodes {
+      let node = dom.node(node_id);
+      match &node.kind {
+        crate::dom2::NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+          ..
+        } => {
+          if dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case("dialog") {
+            return true;
+          }
+
+          for (name, _) in attributes {
+            if name.eq_ignore_ascii_case("popover")
+              || name.eq_ignore_ascii_case("data-fastr-open")
+              || name.eq_ignore_ascii_case("data-fastr-modal")
+            {
+              return true;
+            }
+          }
+        }
+        crate::dom2::NodeKind::Slot { attributes, .. } => {
+          for (name, _) in attributes {
+            if name.eq_ignore_ascii_case("popover")
+              || name.eq_ignore_ascii_case("data-fastr-open")
+              || name.eq_ignore_ascii_case("data-fastr-modal")
+            {
+              return true;
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+
+    false
+  }
+
   fn text_node_affects_stylesheet(&self, node: crate::dom2::NodeId) -> bool {
     let parent = self.dom.parent_node(node);
     let Some(parent) = parent else {
@@ -6331,6 +6397,60 @@ mod tests {
       fragment.starting_style.is_some(),
       "incremental relayout should preserve starting-style snapshots for transition sampling"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn dialog_open_state_inert_propagation_forces_full_restyle() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        #outside { background: rgb(0,0,0); }
+        #outside[data-fastr-inert] { background: rgb(255,0,0); }
+      </style>
+      <div id=wrap>
+        <dialog id=dlg data-fastr-open=false></dialog>
+      </div>
+      <div id=outside>Outside</div>
+    "#;
+
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      html,
+      RenderOptions::new().with_viewport(64, 64),
+    )?;
+    let dlg = doc.dom().get_element_by_id("dlg").expect("dlg");
+    let outside = doc.dom().get_element_by_id("outside").expect("outside");
+
+    doc.render_frame()?;
+    let before = doc.invalidation_counters();
+
+    let style0 = doc
+      .computed_style_for_dom_node(outside)
+      .expect("computed style");
+    assert_eq!(style0.background_color, crate::Rgba::BLACK);
+
+    let changed = doc.mutate_dom(|dom| {
+      dom
+        .set_attribute(dlg, "data-fastr-open", "modal")
+        .expect("set data-fastr-open")
+    });
+    assert!(changed);
+
+    doc.render_frame()?;
+    let after = doc.invalidation_counters();
+
+    let style1 = doc
+      .computed_style_for_dom_node(outside)
+      .expect("computed style");
+    assert_eq!(style1.background_color, crate::Rgba::RED);
+
+    assert_eq!(
+      after.incremental_restyles, before.incremental_restyles,
+      "incremental restyle must be disabled for top-layer affecting mutations"
+    );
+    assert_eq!(after.full_restyles, before.full_restyles + 1);
+
     Ok(())
   }
 
