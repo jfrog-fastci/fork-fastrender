@@ -11429,6 +11429,25 @@ mod error_infobar_a11y_tests {
     has_focus: bool,
   }
 
+  fn accesskit_update_from_platform_output(output: &egui::PlatformOutput) -> &accesskit::TreeUpdate {
+    output.accesskit_update.as_ref().expect(
+      "egui did not emit an AccessKit update. Ensure `ctx.enable_accesskit()` was called for the frame under test.",
+    )
+  }
+
+  fn accesskit_names_from_full_output(output: &egui::FullOutput) -> Vec<String> {
+    let update = accesskit_update_from_platform_output(&output.platform_output);
+    let mut names: Vec<String> = update
+      .nodes
+      .iter()
+      .map(|(_id, node)| node.name().unwrap_or("").trim().to_string())
+      .filter(|name| !name.is_empty())
+      .collect();
+    names.sort();
+    names.dedup();
+    names
+  }
+
   fn key_press_release(key: egui::Key) -> Vec<egui::Event> {
     let modifiers = egui::Modifiers::default();
     vec![
@@ -11494,6 +11513,58 @@ mod error_infobar_a11y_tests {
     });
     let _ = ctx.end_frame();
     info.unwrap()
+  }
+
+  fn error_infobar_accesskit_ui(ui: &mut egui::Ui, details_open: &mut bool) {
+    let infobar_id = egui::Id::new("test_error_infobar_accesskit");
+
+    let retry_resp = ui
+      .push_id(infobar_id.with("retry"), |ui| ui.button("Retry"))
+      .inner;
+    retry_resp.widget_info(|| {
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, "Retry navigation")
+    });
+
+    let details_label = if *details_open { "Hide details" } else { "Details" };
+    let details_resp = ui
+      .push_id(infobar_id.with("toggle_details"), |ui| ui.button(details_label))
+      .inner;
+
+    let details_a11y_label = if *details_open {
+      "Hide error details"
+    } else {
+      "Show error details"
+    };
+    details_resp.widget_info(|| {
+      egui::WidgetInfo::labeled(egui::WidgetType::Button, details_a11y_label)
+    });
+    let _ = details_resp.ctx.accesskit_node_builder(details_resp.id, |builder| {
+      builder.set_expanded(*details_open);
+      if *details_open {
+        builder.add_action(accesskit::Action::Collapse);
+        builder.remove_action(accesskit::Action::Expand);
+      } else {
+        builder.add_action(accesskit::Action::Expand);
+        builder.remove_action(accesskit::Action::Collapse);
+      }
+    });
+  }
+
+  fn run_infobar_accesskit_frame(ctx: &egui::Context, details_open: &mut bool) -> egui::FullOutput {
+    let mut raw = egui::RawInput::default();
+    raw.focused = true;
+    raw.time = Some(0.0);
+    raw.pixels_per_point = Some(1.0);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::pos2(0.0, 0.0),
+      egui::vec2(600.0, 240.0),
+    ));
+
+    ctx.begin_frame(raw);
+    egui::CentralPanel::default().show(ctx, |ui| {
+      error_infobar_accesskit_ui(ui, details_open);
+    });
+    ctx.end_frame()
   }
 
   #[test]
@@ -11585,6 +11656,96 @@ mod error_infobar_a11y_tests {
     assert_eq!(
       focused_open.id, initial.id,
       "expected details toggle egui id to be stable across label changes"
+    );
+  }
+
+  #[test]
+  fn error_infobar_emits_accesskit_names_for_retry_and_details_toggle() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut details_open = false;
+    let output = run_infobar_accesskit_frame(&ctx, &mut details_open);
+    let names = accesskit_names_from_full_output(&output);
+    for expected in ["Retry navigation", "Show error details"] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in error infobar output.\n\nnames: {names:#?}"
+      );
+    }
+
+    details_open = true;
+    let output = run_infobar_accesskit_frame(&ctx, &mut details_open);
+    let names = accesskit_names_from_full_output(&output);
+    for expected in ["Retry navigation", "Hide error details"] {
+      assert!(
+        names.iter().any(|n| n == expected),
+        "expected AccessKit name {expected:?} in error infobar output.\n\nnames: {names:#?}"
+      );
+    }
+  }
+
+  fn details_node_from_output<'a>(
+    output: &'a egui::FullOutput,
+    expected_name: &str,
+  ) -> &'a accesskit::Node {
+    let update = output
+      .platform_output
+      .accesskit_update
+      .as_ref()
+      .expect("expected AccessKit update to be emitted");
+    update
+      .nodes
+      .iter()
+      .find_map(|(_id, node)| {
+        let name = node.name().unwrap_or("").trim();
+        (name == expected_name).then_some(node)
+      })
+      .unwrap_or_else(|| {
+        panic!(
+          "expected to find AccessKit node with name {expected_name:?}.\n\nnames: {:#?}",
+          accesskit_names_from_full_output(output)
+        )
+      })
+  }
+
+  #[test]
+  fn error_infobar_details_toggle_exposes_expanded_state_and_expand_collapse_actions() {
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let mut details_open = false;
+    let output = run_infobar_accesskit_frame(&ctx, &mut details_open);
+    let node = details_node_from_output(&output, "Show error details");
+    assert_eq!(
+      node.is_expanded(),
+      Some(false),
+      "expected details toggle to be collapsed when closed"
+    );
+    assert!(
+      node.supports_action(accesskit::Action::Expand),
+      "expected collapsed details toggle to expose Expand action"
+    );
+    assert!(
+      !node.supports_action(accesskit::Action::Collapse),
+      "expected collapsed details toggle to not expose Collapse action"
+    );
+
+    details_open = true;
+    let output = run_infobar_accesskit_frame(&ctx, &mut details_open);
+    let node = details_node_from_output(&output, "Hide error details");
+    assert_eq!(
+      node.is_expanded(),
+      Some(true),
+      "expected details toggle to be expanded when open"
+    );
+    assert!(
+      node.supports_action(accesskit::Action::Collapse),
+      "expected expanded details toggle to expose Collapse action"
+    );
+    assert!(
+      !node.supports_action(accesskit::Action::Expand),
+      "expected expanded details toggle to not expose Expand action"
     );
   }
 }
