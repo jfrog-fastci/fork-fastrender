@@ -283,7 +283,7 @@ mod linux {
     /// On kernels that support seals, this applies:
     /// - `F_SEAL_SHRINK` / `F_SEAL_GROW` (size is immutable)
     /// - `F_SEAL_WRITE` (contents are immutable)
-    /// - `F_SEAL_SEAL` (seal set is immutable)
+    /// - `F_SEAL_SEAL` (seal set is immutable; best-effort defense-in-depth)
     ///
     /// Even when seals are unsupported, this method still transitions the object into a
     /// read-only state for *this* process (future calls to [`OwnedShm::as_mut_slice`] will return
@@ -303,18 +303,30 @@ mod linux {
       // Best-effort: make our mapping read-only to avoid accidental writes in the producer.
       let _ = self.region.mprotect_readonly();
 
-      let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
-      let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, seals) };
-      if rc == 0 {
-        return Ok(SealStatus::Applied);
+      // Apply the required immutability seals first so they still take effect even if locking the
+      // seal set (`F_SEAL_SEAL`) is unsupported/blocked by sandbox policy.
+      let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+      let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, required) };
+      if rc != 0 {
+        let err = io::Error::last_os_error();
+        return match err.raw_os_error() {
+          // Kernel doesn't support sealing or the file isn't sealable (older kernels / seccomp).
+          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => Ok(SealStatus::Unsupported),
+          _ => Err(ShmError::SealFailed { source: err }),
+        };
       }
 
-      let err = io::Error::last_os_error();
-      match err.raw_os_error() {
-        // Kernel doesn't support sealing or the file isn't sealable (older kernels / seccomp).
-        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => Ok(SealStatus::Unsupported),
-        _ => Err(ShmError::SealFailed { source: err }),
+      // Best-effort defense-in-depth: lock the seal set.
+      let rc = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+      if rc != 0 {
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+          Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+          _ => return Err(ShmError::SealFailed { source: err }),
+        }
       }
+
+      Ok(SealStatus::Applied)
     }
   }
 
