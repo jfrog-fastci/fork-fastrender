@@ -4027,57 +4027,87 @@ impl App {
             theme_sizing.padding,
           ));
 
-        frame.show(ui, |ui| {
-          ui.set_min_width(320.0);
+        let presentation = fastrender::ui::classify_warning_toast(Some(&toast_text)).unwrap_or(
+          fastrender::ui::WarningToastPresentation {
+            title: "Warning".to_string(),
+            summary: None,
+            icon: fastrender::ui::WarningToastIcon::Info,
+          },
+        );
+        let title_text = presentation.title.clone();
+        let summary_text = presentation.summary.clone();
+        let icon = match presentation.icon {
+          fastrender::ui::WarningToastIcon::Info => fastrender::ui::BrowserIcon::Info,
+          fastrender::ui::WarningToastIcon::WarningInsecure => {
+            fastrender::ui::BrowserIcon::WarningInsecure
+          }
+        };
 
-          ui.horizontal(|ui| {
-            let icon_side = ui.spacing().icon_width;
-            let icon_resp = fastrender::ui::icon_tinted(
-              ui,
-              fastrender::ui::BrowserIcon::WarningInsecure,
-              icon_side,
-              Self::with_alpha(theme_colors.warn, open_opacity),
-            );
-            icon_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(egui::WidgetType::Label, "Warning: Viewport clamped")
+        frame.show(ui, |ui| {
+          ui.set_min_width(340.0);
+
+          let title_color = Self::with_alpha(theme_colors.text_primary, open_opacity);
+          let summary_color = Self::with_alpha(theme_colors.text_secondary, open_opacity);
+          let accent_color = Self::with_alpha(theme_colors.warn, open_opacity);
+
+          ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+              let icon_side = ui.spacing().icon_width;
+              let icon_resp = fastrender::ui::icon_tinted(ui, icon, icon_side, accent_color);
+              let icon_a11y_label = format!("Warning: {title_text}");
+              icon_resp.widget_info(move || {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, icon_a11y_label)
+              });
+
+              let title_label = title_text.clone();
+              let title_resp = ui
+                .add(
+                  egui::Label::new(egui::RichText::new(&title_label).strong().color(title_color))
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_text(&toast_text);
+              title_resp.widget_info(move || {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, title_label)
+              });
+              if title_resp.clicked() {
+                expanded = !expanded;
+              }
+
+              ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let close_resp = fastrender::ui::icon_button(
+                  ui,
+                  fastrender::ui::BrowserIcon::Close,
+                  "Dismiss",
+                  true,
+                );
+                close_resp.widget_info(|| {
+                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss warning")
+                });
+                if close_resp.clicked() {
+                  dismiss = true;
+                }
+              });
             });
 
-            let title = ui
-              .add(
-                egui::Label::new(
-                  egui::RichText::new("Viewport clamped")
-                    .strong()
-                    .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
-                )
-                .sense(egui::Sense::click()),
-              )
-              .on_hover_text(&toast_text);
-            if title.clicked() {
-              expanded = !expanded;
+            if let Some(summary) = summary_text.as_deref().filter(|s| !s.trim().is_empty()) {
+              ui.add_space(2.0);
+              ui.add(
+                egui::Label::new(egui::RichText::new(summary).color(summary_color)).wrap(true),
+              );
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-              let close_resp =
-                fastrender::ui::icon_button(ui, fastrender::ui::BrowserIcon::Close, "Dismiss", true);
-              close_resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, "Dismiss")
-              });
-              if close_resp.clicked() {
-                dismiss = true;
-              }
-            });
+            if expanded {
+              ui.add_space(6.0);
+              ui.separator();
+              ui.add_space(6.0);
+              ui.add(
+                egui::Label::new(
+                  egui::RichText::new(&toast_text).small().color(title_color),
+                )
+                .wrap(true),
+              );
+            }
           });
-
-          if expanded {
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(
-              egui::RichText::new(&toast_text)
-                .small()
-                .color(Self::with_alpha(theme_colors.text_primary, open_opacity)),
-            );
-          }
         });
 
         dismiss

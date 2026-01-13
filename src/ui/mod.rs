@@ -147,7 +147,10 @@ pub use bookmarks::{
   BookmarkError, BookmarkFolder, BookmarkId, BookmarkNode, BookmarkStore, BookmarkStoreMigration,
   BOOKMARK_STORE_VERSION,
 };
-pub use notifications::{WarningToast, WarningToastState, WARNING_TOAST_DEFAULT_TTL};
+pub use notifications::{
+  classify_warning_toast, WarningToast, WarningToastIcon, WarningToastPresentation, WarningToastState,
+  WARNING_TOAST_DEFAULT_TTL,
+};
 
 pub use frame_upload::FrameUploadCoalescer;
 pub use viewport_throttle::{ViewportThrottle, ViewportThrottleConfig, ViewportUpdate};

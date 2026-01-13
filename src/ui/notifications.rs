@@ -66,6 +66,76 @@ impl WarningToastState {
   }
 }
 
+/// Icon choice for a warning toast.
+///
+/// This is intentionally separate from the egui-only [`crate::ui::BrowserIcon`] type so warning
+/// classification can be unit-tested without compiling the optional GUI stack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarningToastIcon {
+  Info,
+  WarningInsecure,
+}
+
+/// User-facing presentation for a warning string shown in a toast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarningToastPresentation {
+  /// Short title shown in the toast header (e.g. "Viewport clamped").
+  pub title: String,
+  /// Optional one-line summary shown below the header.
+  pub summary: Option<String>,
+  pub icon: WarningToastIcon,
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+  if max_chars == 0 {
+    return String::new();
+  }
+  let mut chars = value.chars();
+  let mut buf = String::new();
+  for _ in 0..max_chars {
+    let Some(ch) = chars.next() else {
+      return value.to_string();
+    };
+    buf.push(ch);
+  }
+
+  if chars.next().is_none() {
+    value.to_string()
+  } else {
+    buf.push('…');
+    buf
+  }
+}
+
+/// Classify a warning string into a reusable presentation model for the warning toast UI.
+///
+/// Deterministic and UI-framework-agnostic (no egui types).
+pub fn classify_warning_toast(warning: Option<&str>) -> Option<WarningToastPresentation> {
+  let warning = warning?.trim();
+  if warning.is_empty() {
+    return None;
+  }
+
+  // Known warning prefixes: special-case stable titles/icons so the toast header stays consistent
+  // even when the warning details include dynamic values.
+  if warning.starts_with("Viewport clamped:") || warning == "Viewport clamped" {
+    return Some(WarningToastPresentation {
+      title: "Viewport clamped".to_string(),
+      summary: Some("Viewport was reduced to stay within safety limits.".to_string()),
+      icon: WarningToastIcon::WarningInsecure,
+    });
+  }
+
+  let first_line = warning.lines().next().unwrap_or(warning).trim();
+  let summary = (!first_line.is_empty()).then(|| truncate_chars(first_line, 160));
+
+  Some(WarningToastPresentation {
+    title: "Warning".to_string(),
+    summary,
+    icon: WarningToastIcon::Info,
+  })
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -127,5 +197,31 @@ mod tests {
     assert!(state.update(Some("Viewport clamped"), t0 + Duration::from_secs(3), ttl));
     assert!(state.toast().is_some());
   }
-}
 
+  #[test]
+  fn classify_warning_toast_none_or_empty_is_none() {
+    assert_eq!(classify_warning_toast(None), None);
+    assert_eq!(classify_warning_toast(Some("")), None);
+    assert_eq!(classify_warning_toast(Some("   ")), None);
+  }
+
+  #[test]
+  fn classify_warning_toast_viewport_clamped() {
+    let presentation =
+      classify_warning_toast(Some("Viewport clamped: requested viewport_css=(1,1) dpr=2")).unwrap();
+    assert_eq!(presentation.title, "Viewport clamped");
+    assert_eq!(
+      presentation.summary.as_deref(),
+      Some("Viewport was reduced to stay within safety limits.")
+    );
+    assert_eq!(presentation.icon, WarningToastIcon::WarningInsecure);
+  }
+
+  #[test]
+  fn classify_warning_toast_generic() {
+    let presentation = classify_warning_toast(Some("Something went wrong")).unwrap();
+    assert_eq!(presentation.title, "Warning");
+    assert_eq!(presentation.summary.as_deref(), Some("Something went wrong"));
+    assert_eq!(presentation.icon, WarningToastIcon::Info);
+  }
+}
