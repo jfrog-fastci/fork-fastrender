@@ -93,8 +93,30 @@ impl DriftController {
   /// Returns the new [`Self::playback_rate`].
   #[inline]
   pub fn update(&mut self, buffered_s: f64, dt_s: f64) -> f64 {
-    debug_assert!(buffered_s.is_finite() && buffered_s >= 0.0);
-    debug_assert!(dt_s.is_finite() && dt_s > 0.0);
+    // Keep this method panic-free and stable even if callers pass bogus values in release builds
+    // (e.g. NaN due to upstream math bugs). The audio callback path should never panic.
+    if !self.playback_rate.is_finite() || self.playback_rate <= 0.0 {
+      self.playback_rate = 1.0;
+    }
+    if !self.integral_error_s.is_finite() {
+      self.integral_error_s = 0.0;
+    }
+
+    let buffered_s = if buffered_s.is_finite() && buffered_s >= 0.0 {
+      buffered_s
+    } else {
+      self.cfg.target_buffer_s
+    };
+    let dt_s = if dt_s.is_finite() && dt_s > 0.0 {
+      dt_s
+    } else {
+      // No time elapsed: keep the current rate.
+      self.playback_rate = self.playback_rate.clamp(
+        1.0 - self.cfg.max_playback_rate_adjust,
+        1.0 + self.cfg.max_playback_rate_adjust,
+      );
+      return self.playback_rate;
+    };
 
     let error_s = buffered_s - self.cfg.target_buffer_s;
 
@@ -123,7 +145,7 @@ impl DriftController {
       self.cfg.max_slew_per_s * dt_s,
     );
 
-    // Ensure clamp invariants even if dt_s is 0 or NaN in release builds.
+    // Ensure clamp invariants.
     self.playback_rate = self.playback_rate.clamp(
       1.0 - self.cfg.max_playback_rate_adjust,
       1.0 + self.cfg.max_playback_rate_adjust,
@@ -271,9 +293,8 @@ impl DriftResampler {
         return out_samples;
       }
       if !self.pop_frame(queue, &mut self.frame1) {
-        // Not enough data for interpolation; keep silence (buffer will recover and re-init later).
-        self.reset();
-        return out_samples;
+        // Not enough data for interpolation yet: hold the first frame until more audio arrives.
+        self.frame1.copy_from_slice(&self.frame0);
       }
       self.initialized = true;
     }
@@ -293,9 +314,10 @@ impl DriftResampler {
         self.phase -= 1.0;
         std::mem::swap(&mut self.frame0, &mut self.frame1);
         if !self.pop_frame(queue, &mut self.frame1) {
-          // Underflow mid-block: reset so we re-sync to the next available audio.
-          self.reset();
-          return out_samples;
+          // Underflow mid-block: hold the last frame rather than discarding already-consumed audio.
+          self.frame1.copy_from_slice(&self.frame0);
+          self.phase = 0.0;
+          break;
         }
       }
     }
