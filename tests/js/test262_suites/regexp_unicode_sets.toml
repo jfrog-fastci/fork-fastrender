@@ -20,6 +20,8 @@
 #
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
+  # RegExp.prototype.unicodeSets accessor + `/v` flag surface tests.
   "built-ins/RegExp/prototype/unicodeSets/**/*.js",
+
   "built-ins/RegExp/unicodeSets/**/*.js",
 ]
