@@ -211,6 +211,7 @@ mod tests {
   use std::io;
   use std::net::{TcpListener, TcpStream};
   use std::process::Command;
+  use std::time::{Instant, SystemTime};
 
   const CHILD_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_CHILD";
   const PORT_ENV: &str = "FASTR_TEST_MACOS_SANDBOX_PORT";
@@ -286,6 +287,65 @@ mod tests {
     let output = Command::new(exe)
       .env(CHILD_ENV, "1")
       .env(PORT_ENV, port)
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process");
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
+  fn seatbelt_pure_computation_allows_basic_rust_runtime_features() {
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      eprintln!("applying Seatbelt pure-computation sandbox");
+      apply_pure_computation_sandbox().expect("apply pure-computation sandbox");
+
+      eprintln!("spawning a thread under sandbox");
+      std::thread::spawn(|| {
+        // Keep it simple: just return a value so the optimizer can't elide the thread.
+        42_u32
+      })
+      .join()
+      .expect("thread should spawn + join successfully under sandbox");
+
+      eprintln!("checking std::thread::available_parallelism()");
+      let parallelism = std::thread::available_parallelism()
+        .expect("available_parallelism should work under the sandbox");
+      assert!(
+        parallelism.get() >= 1,
+        "available_parallelism should return >= 1 (got {})",
+        parallelism.get()
+      );
+
+      eprintln!("checking std::time clocks");
+      let system_now = SystemTime::now();
+      let unix = system_now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system time should be after UNIX_EPOCH");
+      eprintln!("SystemTime::now() OK (unix_ms={})", unix.as_millis());
+      let _instant_now = Instant::now();
+
+      eprintln!("checking getrandom under sandbox");
+      let mut bytes = [0u8; 32];
+      getrandom::getrandom(&mut bytes).expect("getrandom should succeed under sandbox");
+      assert!(
+        bytes.iter().any(|&b| b != 0),
+        "getrandom returned an all-zero buffer, which is unexpectedly unlikely"
+      );
+      return;
+    }
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name = "sandbox::macos::tests::seatbelt_pure_computation_allows_basic_rust_runtime_features";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
       .arg("--exact")
       .arg(test_name)
       .arg("--nocapture")

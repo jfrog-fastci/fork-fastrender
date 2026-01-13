@@ -191,6 +191,7 @@ windows-sys = { version = "0.52", features = [
 [dev-dependencies]
 criterion = "0.5"
 filetime = "0.2"
+getrandom = "0.2"
 usvg = "0.43"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
