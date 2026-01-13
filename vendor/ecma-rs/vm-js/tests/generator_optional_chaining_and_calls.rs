@@ -20,7 +20,7 @@ fn generator_optional_chain_short_circuit_propagates_through_continuation() -> R
 }
 
 #[test]
-fn generator_parenthesized_member_call_binds_this() -> Result<(), VmError> {
+fn generator_parenthesized_member_call_loses_this_binding() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let mut rt = JsRuntime::new(vm, heap)?;
@@ -28,7 +28,7 @@ fn generator_parenthesized_member_call_binds_this() -> Result<(), VmError> {
   let value = rt.exec_script(
     r#"
       function* g(){
-        var obj = { m: function(){ return this === obj; } };
+        var obj = { m: function(){ "use strict"; return this === undefined; } };
         return ((yield obj).m)();
       }
       var it = g();

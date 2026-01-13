@@ -49040,9 +49040,11 @@ fn gen_eval_call(
   expr: &CallExpr,
 ) -> Result<GenEval<Completion>, VmError> {
   // Optional member calls (`obj?.m()` / `obj?.[k]()`) only apply when the optional-chain member
-  // expression is directly in the call callee position (i.e. not parenthesized). Parenthesizing
-  // the callee breaks optional-chain propagation into the call, e.g. `(obj?.m)()` and
-  // `(a?.b.c)()`.
+  // expression is directly in the call callee position (i.e. not parenthesized).
+  //
+  // Parenthesizing the callee breaks optional-chain propagation into the call and forces a value
+  // call (i.e. `this = undefined`) rather than a member call, e.g. `(obj?.m)()`, `(a?.b.c)()`, and
+  // `(obj.m)()`.
   let callee_is_parenthesized = expr.callee.assoc.get::<ParenthesizedExpr>().is_some();
 
   match &*expr.callee.stx {
@@ -49107,59 +49109,55 @@ fn gen_eval_call(
     }
     // Ordinary member call (e.g. `obj.method()`), but with optional-chain propagation when the base
     // expression is an unparenthesized optional chain (e.g. `a?.b.c()`).
-    Expr::Member(member) if !member.stx.optional_chaining => match gen_eval_chain_base(
-      evaluator,
-      scope,
-      &member.stx.left,
-    )? {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(v) => gen_call_member_after_base(
-          evaluator,
-          scope,
-          expr,
-          &member.stx,
-          v.unwrap_or(Value::Undefined),
-        ),
-        abrupt => Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::CallMemberAfterBase {
-            expr: expr as *const CallExpr,
-            member: &*member.stx as *const MemberExpr,
-          },
-        )?;
-        Ok(GenEval::Suspend(suspend))
+    Expr::Member(member) if !member.stx.optional_chaining && !callee_is_parenthesized => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.left)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_call_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::CallMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const MemberExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
       }
-    },
+    }
     // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
-    Expr::ComputedMember(member) if !member.stx.optional_chaining => match gen_eval_chain_base(
-      evaluator,
-      scope,
-      &member.stx.object,
-    )? {
-      GenEval::Complete(c) => match c {
-        Completion::Normal(v) => gen_call_computed_member_after_base(
-          evaluator,
-          scope,
-          expr,
-          &member.stx,
-          v.unwrap_or(Value::Undefined),
-        ),
-        abrupt => Ok(GenEval::Complete(abrupt)),
-      },
-      GenEval::Suspend(mut suspend) => {
-        gen_frames_push(
-          &mut suspend.frames,
-          GenFrame::CallComputedMemberAfterBase {
-            expr: expr as *const CallExpr,
-            member: &*member.stx as *const ComputedMemberExpr,
-          },
-        )?;
-        Ok(GenEval::Suspend(suspend))
+    Expr::ComputedMember(member) if !member.stx.optional_chaining && !callee_is_parenthesized => {
+      match gen_eval_chain_base(evaluator, scope, &member.stx.object)? {
+        GenEval::Complete(c) => match c {
+          Completion::Normal(v) => gen_call_computed_member_after_base(
+            evaluator,
+            scope,
+            expr,
+            &member.stx,
+            v.unwrap_or(Value::Undefined),
+          ),
+          abrupt => Ok(GenEval::Complete(abrupt)),
+        },
+        GenEval::Suspend(mut suspend) => {
+          gen_frames_push(
+            &mut suspend.frames,
+            GenFrame::CallComputedMemberAfterBase {
+              expr: expr as *const CallExpr,
+              member: &*member.stx as *const ComputedMemberExpr,
+            },
+          )?;
+          Ok(GenEval::Suspend(suspend))
+        }
       }
-    },
+    }
     _ => match gen_eval_expr(evaluator, scope, &expr.callee)? {
       GenEval::Complete(c) => match c {
         Completion::Normal(v) => gen_call_begin(
