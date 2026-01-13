@@ -84,8 +84,8 @@ Code map (repo reality):
     - Manual sandbox probe example (`crates/win-sandbox/examples/probe.rs`)
       - `cargo run -p win-sandbox --example probe -- --connect-localhost`
       - Spawns a sandboxed copy of itself and prints observed sandbox state from inside the child
-        (AppContainer + integrity level + Job membership + selected mitigations), with optional
-        filesystem/network probes for quick regression triage.
+        (AppContainer + integrity level + `ALL APPLICATION PACKAGES` group presence + Job membership
+        + selected mitigations), with optional filesystem/network probes for quick regression triage.
     - Mitigation policy builder + verifier (`mitigations::*`)
     - Capability detection helpers (`support::*`, `SandboxSupport`) and opt-in policy wrapper
       (`RendererSandboxMode`) used to avoid silent sandbox downgrades on unsupported hosts.
