@@ -13408,7 +13408,7 @@ fn exit_silently_on_broken_pipe_panic() {
 }
 
 #[cfg(test)]
-mod tests {
+mod progress_merge_tests {
   use super::*;
   use fastrender::api::{RenderDiagnostics, ResourceFetchError, ResourceKind};
   use fastrender::error::RenderStage;
