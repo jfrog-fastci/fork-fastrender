@@ -2724,7 +2724,8 @@ mod tests {
     // One extra fixed-width chip (plus the extra gap it introduces) should force overflow even
     // though the same viewport fits tabs at `TAB_MIN_WIDTH` without it.
     // 4 tabs + 1 chip => 5 items => 4 gaps.
-    let sizing_with_chip = compute_tab_strip_sizing_with_fixed_width(available, tabs, 100.0, tabs);
+    let sizing_with_chip =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, 100.0, tabs);
     assert!(sizing_with_chip.overflow);
     assert!((sizing_with_chip.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
@@ -2739,7 +2740,8 @@ mod tests {
     assert!(!sizing_no_chip.overflow);
 
     // 1 tab + 1 extra item => 2 items => 1 gap.
-    let sizing_with_chip_gap = compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, 1);
+    let sizing_with_chip_gap =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, 1);
     assert!(sizing_with_chip_gap.overflow);
     assert!((sizing_with_chip_gap.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
@@ -2763,6 +2765,39 @@ mod tests {
       compute_tab_strip_sizing_with_fixed_width(available, tabs, 0.0, tabs - 1);
     assert_eq!(sizing_inf_fixed, sizing_fixed_zero);
     assert_eq!(sizing_neg_fixed, sizing_fixed_zero);
+  }
+
+  #[test]
+  fn sizing_scaled_tabs_matches_fixed_width_when_no_scaling() {
+    let available = 600.0;
+    let tabs: usize = 3;
+    let chip_width = 120.0;
+    // 3 tabs + 1 chip => 4 items => 3 gaps.
+    let gap_count = tabs;
+
+    let sizing_fixed =
+      compute_tab_strip_sizing_with_fixed_width(available, tabs, chip_width, gap_count);
+    let sizing_scaled = compute_tab_strip_sizing_with_scaled_tabs(
+      available,
+      tabs as f32,
+      chip_width,
+      TAB_GAP * (gap_count as f32),
+    );
+    assert_eq!(sizing_fixed, sizing_scaled);
+  }
+
+  #[test]
+  fn sizing_scaled_tabs_supports_fractional_tabs_and_gaps() {
+    // Model one partially collapsed group tab (0.5) adjacent to a normal tab (1.0). With a single
+    // gap between them scaled by `min(0.5, 1.0) = 0.5`, the total gap width is `TAB_GAP * 0.5`.
+    let available = 200.0;
+    let tab_units = 1.5;
+    let total_gap_width = TAB_GAP * 0.5;
+
+    let sizing =
+      compute_tab_strip_sizing_with_scaled_tabs(available, tab_units, 0.0, total_gap_width);
+    assert!(sizing.overflow);
+    assert!((sizing.tab_width - TAB_MIN_WIDTH).abs() < f32::EPSILON);
   }
 
   #[test]
