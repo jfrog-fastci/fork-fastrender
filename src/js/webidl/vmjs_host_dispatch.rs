@@ -2130,6 +2130,45 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         scope.push_root(Value::Object(wrapper))?;
         Ok(Value::Object(wrapper))
       }
+      ("Node", "parentElement", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let handle = require_dom_platform_mut(vm)?.require_node_handle(scope.heap(), receiver)?;
+        let node_id = handle.node_id;
+        let document_id = handle.document_id;
+
+        let parent = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let Some(parent_id) = dom.parent_node(node_id) else {
+              return None;
+            };
+
+            let primary = if parent_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              let kind = &dom.node(parent_id).kind;
+              if !matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+                return None;
+              }
+              DomInterface::primary_for_node_kind(kind)
+            };
+
+            Some((parent_id, primary))
+          }))
+        })?;
+
+        let Some((parent_id, primary)) = parent else {
+          return Ok(Value::Null);
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          parent_id,
+          primary,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
       ("Node", "childNodes", 0) => {
         // Transitional: return a JS Array of node wrappers in tree order.
         //
@@ -3405,6 +3444,70 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let js = scope.alloc_string(&tag_name)?;
         scope.push_root(Value::String(js))?;
         Ok(Value::String(js))
+      }
+      ("Element", "nextElementSibling", 0) => {
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
+
+        let sib = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let Some(sib_id) = dom.next_element_sibling(element_id) else {
+              return None;
+            };
+            let primary = if sib_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(sib_id).kind)
+            };
+            Some((sib_id, primary))
+          }))
+        })?;
+
+        let Some((sib_id, primary)) = sib else {
+          return Ok(Value::Null);
+        };
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          sib_id,
+          primary,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
+      }
+      ("Element", "previousElementSibling", 0) => {
+        let (element_id, obj) = require_element_receiver(vm, scope, receiver)?;
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(obj))?
+          .document_id;
+
+        let sib = self.with_dom_host(vm, |host| {
+          Ok(host.with_dom(|dom| {
+            let Some(sib_id) = dom.previous_element_sibling(element_id) else {
+              return None;
+            };
+            let primary = if sib_id.index() >= dom.nodes_len() {
+              DomInterface::Node
+            } else {
+              DomInterface::primary_for_node_kind(&dom.node(sib_id).kind)
+            };
+            Some((sib_id, primary))
+          }))
+        })?;
+
+        let Some((sib_id, primary)) = sib else {
+          return Ok(Value::Null);
+        };
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          document_id,
+          sib_id,
+          primary,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
       }
       ("DOMTokenList", "supports", 0) => {
         let obj = Self::require_receiver_object(receiver)?;
@@ -5024,6 +5127,39 @@ mod element_dispatch_tests {
     )?;
     assert!(matches!(result, Value::Object(_)));
 
+    Ok(())
+  }
+
+  #[test]
+  fn webidl_traversal_props_parent_element_and_siblings_work_without_embedder_state() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html(
+      "<!doctype html><html><body><div id='root'><span id='a'></span><b id='b'></b></div></body></html>",
+    )
+    .expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/")
+        .with_dom_bindings_backend(crate::js::window_realm::DomBindingsBackend::WebIdl),
+    )?;
+
+    let mut dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(realm.global_object());
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+       const root=document.getElementById('root');\
+       const a=document.getElementById('a');\
+       const b=document.getElementById('b');\
+       return a.parentElement===root && a.nextElementSibling===b && b.previousElementSibling===a;\
+       })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
     Ok(())
   }
 }

@@ -270,43 +270,6 @@ pub mod window {
   }
 
   #[allow(dead_code)]
-  fn d_o_m_token_list_supports(
-    vm: &mut Vm,
-    scope: &mut Scope<'_>,
-    host: &mut dyn VmHost,
-    hooks: &mut dyn VmHostHooks,
-    _callee: GcObject,
-    this: Value,
-    args: &[Value],
-  ) -> Result<Value, VmError> {
-    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
-    let rt = &mut rt;
-    rt.scope.push_root(this)?;
-    let receiver = Some(this);
-    {
-      let mut converted_args: Vec<Value> = Vec::new();
-      let v0 = if args.len() > 0 {
-        args[0]
-      } else {
-        Value::Undefined
-      };
-      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
-      let converted = rt.scope.push_root(converted)?;
-      converted_args.push(converted);
-      let bindings_host = host_from_hooks(hooks)?;
-      bindings_host.call_operation(
-        &mut *rt.vm,
-        &mut rt.scope,
-        receiver,
-        "DOMTokenList",
-        "supports",
-        0,
-        &converted_args,
-      )
-    }
-  }
-
-  #[allow(dead_code)]
   fn d_o_m_token_list_entries(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1828,6 +1791,32 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn element_get_attribute_next_element_sibling(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "nextElementSibling",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
   fn element_get_attribute_offset_height(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1926,6 +1915,32 @@ pub mod window {
       receiver,
       "Element",
       "offsetWidth",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn element_get_attribute_previous_element_sibling(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Element",
+      "previousElementSibling",
       0,
       &[],
     )
@@ -2954,6 +2969,32 @@ pub mod window {
       receiver,
       "Node",
       "nodeType",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn node_get_attribute_parent_element(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "Node",
+      "parentElement",
       0,
       &[],
     )
@@ -4872,23 +4913,6 @@ pub mod window {
       }
     }
     {
-      let key = rt.property_key("supports")?;
-      if rt
-        .scope
-        .heap()
-        .object_get_own_property(proto_d_o_m_token_list, &key)?
-        .is_none()
-      {
-        let func = rt.alloc_native_function(d_o_m_token_list_supports, None, "supports", 1)?;
-        rt.define_data_property_str(
-          proto_d_o_m_token_list,
-          "supports",
-          Value::Object(func),
-          DataPropertyAttributes::METHOD,
-        )?;
-      }
-    }
-    {
       let key = rt.property_key("entries")?;
       if rt
         .scope
@@ -5909,6 +5933,30 @@ pub mod window {
       }
     }
     {
+      let key = rt.property_key("nextElementSibling")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_next_element_sibling,
+          None,
+          "get nextElementSibling",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_element,
+          "nextElementSibling",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
       let key = rt.property_key("offsetHeight")?;
       if rt
         .scope
@@ -5990,6 +6038,30 @@ pub mod window {
         rt.define_accessor_property_str(
           proto_element,
           "offsetWidth",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("previousElementSibling")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_element, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          element_get_attribute_previous_element_sibling,
+          None,
+          "get previousElementSibling",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_element,
+          "previousElementSibling",
           Value::Object(get),
           set,
           AccessorPropertyAttributes::ATTRIBUTE,
@@ -6716,6 +6788,30 @@ pub mod window {
         rt.define_accessor_property_str(
           proto_node,
           "nodeType",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("parentElement")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_node, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          node_get_attribute_parent_element,
+          None,
+          "get parentElement",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_node,
+          "parentElement",
           Value::Object(get),
           set,
           AccessorPropertyAttributes::ATTRIBUTE,
