@@ -53,6 +53,7 @@ const DEFAULT_JS_MAX_TASKS: usize = 1024;
 const DEFAULT_JS_MAX_MICROTASKS: usize = 4096;
 const DEFAULT_JS_MAX_WALL_MS: u64 = 500;
 const DEFAULT_JS_MAX_SCRIPT_BYTES: usize = 256 * 1024;
+const DEFAULT_JS_MAX_FRAMES: usize = 50;
 
 fn file_url_path_candidates(url: &str) -> Vec<PathBuf> {
   let mut candidates = Vec::new();
@@ -185,6 +186,17 @@ struct Args {
   #[arg(long = "js", action = ArgAction::SetTrue)]
   js_enabled: bool,
 
+  /// Maximum number of JS/"animation" frames to process while waiting for the page to become stable.
+  ///
+  /// This bounds `BrowserTab::run_until_stable`. Higher values may hang on pages that continually
+  /// schedule timers or `requestAnimationFrame` callbacks.
+  ///
+  /// Use `0` to select a very large upper bound; the render can still be interrupted by the
+  /// cooperative renderer timeout (`--soft-timeout-ms`/`--timeout`) or an external wrapper (e.g.
+  /// `timeout -k`).
+  #[arg(long = "js-max-frames", value_name = "N", default_value_t = DEFAULT_JS_MAX_FRAMES)]
+  js_max_frames: usize,
+
   #[command(flatten)]
   js: JsExecutionArgs,
 
@@ -242,6 +254,7 @@ fn render_page(
   base_url_override: Option<String>,
   js_enabled: bool,
   js_execution_options: JsExecutionOptions,
+  js_max_frames: usize,
 ) -> Result<()> {
   let RenderConfigBundle { options, .. } = bundle;
   let mut log = |line: &str| println!("{line}");
@@ -322,7 +335,11 @@ fn render_page(
 
     // Drive the JS event loop until stable with a bounded number of "frames" so hostile pages
     // cannot hang the CLI indefinitely even if they keep scheduling work.
-    let max_frames = 50usize;
+    let max_frames = if js_max_frames == 0 {
+      usize::MAX
+    } else {
+      js_max_frames
+    };
     match tab.run_until_stable(max_frames)? {
       fastrender::api::RunUntilStableOutcome::Stable { frames_rendered } => {
         log(&format!(
@@ -554,6 +571,7 @@ fn try_main(args: Args) -> Result<()> {
   let output_format = output_format;
   let render_pool = render_pool.clone();
   let fetcher = Arc::clone(&fetcher);
+  let js_max_frames = args.js_max_frames;
   let mut js_options = args.js.to_options();
   // Preserve this binary's conservative defaults unless the user explicitly overrode them.
   if args.js.max_tasks_per_spin.is_none() {
@@ -594,6 +612,7 @@ fn try_main(args: Args) -> Result<()> {
         base_url_override,
         args.js_enabled,
         js_options,
+        js_max_frames,
       );
       let _ = tx.send(res);
     })?;
