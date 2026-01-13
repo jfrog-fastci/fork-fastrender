@@ -125,6 +125,39 @@ struct FocusRingStyle {
   rounding: egui::Rounding,
 }
 
+fn chrome_high_contrast_enabled(app: &BrowserAppState) -> bool {
+  // Treat `FASTR_BROWSER_HIGH_CONTRAST` (when set) as an override for the profile setting so the
+  // focus ring matches the currently applied theme.
+  match std::env::var(crate::ui::theme_parsing::ENV_BROWSER_HIGH_CONTRAST) {
+    Ok(raw) => crate::ui::theme_parsing::parse_high_contrast_env(Some(&raw))
+      .ok()
+      .unwrap_or(app.appearance.high_contrast),
+    Err(_) => app.appearance.high_contrast,
+  }
+}
+
+fn chrome_focus_ring_style(ctx: &egui::Context, app: &BrowserAppState) -> FocusRingStyle {
+  let high_contrast = chrome_high_contrast_enabled(app);
+  // Match the currently applied theme by taking the focus/selection stroke from egui visuals.
+  let mut stroke = ctx.style().visuals.selection.stroke;
+  if !stroke.width.is_finite() || stroke.width < 0.0 {
+    stroke.width = 0.0;
+  }
+  // When the profile high-contrast toggle is enabled, ensure the ring is at least as strong as the
+  // high-contrast theme variant even if the embedding hasn't applied theme changes to egui yet (e.g.
+  // unit tests that render chrome in isolation).
+  if high_contrast {
+    stroke.width = stroke.width.max(2.0);
+  }
+
+  FocusRingStyle {
+    stroke,
+    // Expand beyond the widget rect so the ring reads as an outline around custom-painted widgets.
+    expand: stroke.width.max(2.0),
+    rounding: egui::Rounding::same(4.0),
+  }
+}
+
 fn paint_focus_ring(ui: &egui::Ui, response: &egui::Response, style: FocusRingStyle) {
   if !response.has_focus() {
     return;
@@ -706,12 +739,7 @@ pub fn chrome_ui_with_bookmarks(
   mut favicon_for_tab: impl FnMut(TabId) -> Option<egui::TextureId>,
 ) -> Vec<ChromeAction> {
   theme::apply_high_contrast_if_enabled(ctx);
-  let focus_stroke = ctx.style().visuals.selection.stroke;
-  let focus_ring = FocusRingStyle {
-    stroke: focus_stroke,
-    expand: focus_stroke.width.max(2.0),
-    rounding: egui::Rounding::same(4.0),
-  };
+  let focus_ring = chrome_focus_ring_style(ctx, app);
 
   let mut actions = Vec::new();
   UiMotion::set_ctx_reduced_motion(ctx, app.appearance.reduced_motion);
@@ -3249,7 +3277,7 @@ fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
 
 #[cfg(test)]
 mod tests {
-  use super::{chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches, ChromeAction};
+  use super::{chrome_focus_ring_style, chrome_ui, chrome_ui_with_bookmarks, tab_search_ranked_matches, ChromeAction};
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::{BookmarkStore, OmniboxSuggestionSource, OmniboxUrlSource, TabId};
 
@@ -3499,6 +3527,35 @@ mod tests {
       }
     }
     out.into_iter().collect()
+  }
+
+  #[test]
+  fn focus_ring_strengthens_when_profile_high_contrast_enabled() {
+    let ctx = new_context();
+    let mut app = BrowserAppState::new();
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let normal = chrome_focus_ring_style(&ctx, &app);
+    let _ = ctx.end_frame();
+
+    let ctx = new_context();
+    let mut app = BrowserAppState::new();
+    app.appearance.high_contrast = true;
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let high = chrome_focus_ring_style(&ctx, &app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      high.stroke.width >= normal.stroke.width,
+      "expected high-contrast focus ring stroke width ({}) to be >= normal ({})",
+      high.stroke.width,
+      normal.stroke.width
+    );
+    assert!(
+      high.expand >= normal.expand,
+      "expected high-contrast focus ring expand ({}) to be >= normal ({})",
+      high.expand,
+      normal.expand
+    );
   }
 
   #[test]
