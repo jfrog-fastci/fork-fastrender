@@ -161,9 +161,10 @@ In code today, audio time is surfaced in a few layers:
 
 2. [`AudioClock`](../src/media/audio/mod.rs) — raw backend time.
 
-   * `AudioClock::OutputFrames { .. }` is typically derived from “frames written” in the output
-     callback (via `InterpolatedAudioClock`).
-   * `AudioClock::Instant { .. }` is a wall-clock fallback (used by `NullAudioBackend`).
+    * `AudioClock::OutputFrames { .. }` is typically derived from “frames written” in the output
+      callback (via `InterpolatedAudioClock`).
+    * `AudioClock::Instant { .. }` is a wall-clock fallback used when an output playhead counter is
+      unavailable (e.g. if the `audio_cpal` backend falls back to silence after a device error).
 
    **Important:** `AudioClock::time()` is not guaranteed to mean “time heard”. For
    output-frame-derived clocks it often means “time of frames written/committed to the backend”, which
@@ -405,21 +406,22 @@ The intended test strategy is:
     clock (see the `FakeDeviceClock` used in `src/media/clock.rs` unit tests).
 * A `NullAudioBackend` (`src/media/audio/null_backend.rs`) is used as a silence/CI fallback when real
   audio output is unavailable.
-  * It keeps the pipeline moving, but it currently derives its clock from `Instant` (not
-    deterministic and not an accurate “time heard” estimate).
-  * Deterministic tests should avoid depending on `NullAudioBackend` time and instead inject a fake
-    `MediaClock`/audio clock (see below).
+  * It is driven by an injected monotonic `Clock` (`RealClock` by default; `VirtualClock` in tests).
+  * Its `AudioBackend::clock()` implementation advances a simulated output playhead even when no
+    samples are queued (silence), which makes it suitable as a stable master clock in deterministic
+    A/V sync tests.
 
-Current implementation note: `src/media/audio/null_backend.rs` currently uses `Instant` for its
-clock. That is fine for “best effort” headless runs, but tests that need strict determinism should
-avoid wall time. Two ways to achieve that:
+Current implementation note: for deterministic tests, construct `NullAudioBackend` with a
+`VirtualClock` (see `NullAudioBackend::new_deterministic()` / `NullAudioBackend::new_with_clock(...)`)
+and then:
 
-* Add a `Virtual`/injected-clock variant to `AudioClock` (mirroring `src/js/clock.rs`) and teach
-  `NullAudioBackend` to use it in tests, or
-* Use `AudioClock::OutputFrames` backed by an [`InterpolatedAudioClock`](../src/media/audio_clock.rs)
-  and advance it deterministically by calling `InterpolatedAudioClock::on_callback_end_at(...)` from
-  the test (using a captured `Instant` + deterministic offsets), so the reported time is derived from
-  the known callback frame counts.
+* advance the `VirtualClock` by the desired amount, and
+* call `AudioBackend::clock()` (or `NullAudioBackend::pump()`) to advance the simulated playhead.
+
+Alternatively, tests that want to bypass the backend can use `AudioClock::OutputFrames` backed by an
+[`InterpolatedAudioClock`](../src/media/audio_clock.rs) and advance it deterministically by calling
+`InterpolatedAudioClock::on_callback_end_at(...)` with a captured `Instant` + deterministic offsets,
+so the reported time is derived from the known callback frame counts.
 
 With these pieces, a test can:
 
@@ -474,10 +476,11 @@ When debugging, distinguish:
 * **Offset:** constant error (fix by calibrating latency).
 * **Drift:** error grows over time (fix by ensuring a single master clock is used everywhere).
 
-Current implementation note: FastRender’s existing clocks (`AudioClock` in `src/media/audio/mod.rs`,
-`RealAudioDeviceClock` in `src/media/clock.rs`) do not yet incorporate an explicit output-latency
-estimate, which is equivalent to assuming `output_latency_constant = 0`. Expect a possible constant
-offset until we plumb real latency/timestamps through the backend.
+Current implementation note: backends expose a best-effort output-latency estimate via
+`AudioOutputInfo::estimated_output_latency`, but `AudioClock::time()` does not apply it
+automatically. Treating `AudioClock::time()` as “time heard” is therefore equivalent to assuming
+`output_latency_constant = 0`, which can show up as a constant A/V offset. Subtract the estimated
+latency (or model preroll via `AudioStreamClock`) when you need a “time heard” estimate.
 
 ### Backend timestamp quality varies
 
