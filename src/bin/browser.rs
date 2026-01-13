@@ -1095,58 +1095,7 @@ const NEW_WINDOW_ERROR_DETAIL_MAX_BYTES: usize = 200;
 /// - Adds an ellipsis when truncation occurs (and there is room).
 #[cfg(any(test, feature = "browser_ui"))]
 fn format_new_window_error_detail(raw: &str) -> String {
-  if NEW_WINDOW_ERROR_DETAIL_MAX_BYTES == 0 {
-    return String::new();
-  }
-
-  let raw = raw.trim();
-  if raw.is_empty() {
-    return String::new();
-  }
-
-  // Avoid allocating based on `raw.len()` (could be very large). Pre-allocate up to the limit.
-  let mut out = String::with_capacity(NEW_WINDOW_ERROR_DETAIL_MAX_BYTES.min(128));
-  let mut pending_space = false;
-  let mut truncated = false;
-
-  for ch in raw.chars() {
-    if ch.is_whitespace() || ch.is_control() {
-      pending_space = true;
-      continue;
-    }
-
-    if pending_space && !out.is_empty() {
-      if out.len() + 1 > NEW_WINDOW_ERROR_DETAIL_MAX_BYTES {
-        truncated = true;
-        break;
-      }
-      out.push(' ');
-    }
-    pending_space = false;
-
-    let ch_len = ch.len_utf8();
-    if out.len() + ch_len > NEW_WINDOW_ERROR_DETAIL_MAX_BYTES {
-      truncated = true;
-      break;
-    }
-    out.push(ch);
-  }
-
-  if truncated && !out.is_empty() {
-    const ELLIPSIS: char = '…';
-    let ellipsis_len = ELLIPSIS.len_utf8();
-    if out.len() + ellipsis_len > NEW_WINDOW_ERROR_DETAIL_MAX_BYTES {
-      truncate_utf8_string_in_place(
-        &mut out,
-        NEW_WINDOW_ERROR_DETAIL_MAX_BYTES.saturating_sub(ellipsis_len),
-      );
-    }
-    if !out.is_empty() {
-      out.push(ELLIPSIS);
-    }
-  }
-
-  out
+  sanitize_toast_detail_single_line(raw, NEW_WINDOW_ERROR_DETAIL_MAX_BYTES).unwrap_or_default()
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
