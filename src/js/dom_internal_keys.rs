@@ -13,6 +13,7 @@ pub(crate) const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 
 pub(crate) const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
 pub(crate) const NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
+pub(crate) const COLLECTION_LENGTH_KEY: &str = "__fastrender_collection_length";
 
 pub(crate) const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 pub(crate) const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
@@ -44,4 +45,3 @@ pub(crate) const STYLE_HEIGHT_GET_KEY: &str = "__fastrender_style_height_get";
 pub(crate) const STYLE_HEIGHT_SET_KEY: &str = "__fastrender_style_height_set";
 pub(crate) const STYLE_WIDTH_GET_KEY: &str = "__fastrender_style_width_get";
 pub(crate) const STYLE_WIDTH_SET_KEY: &str = "__fastrender_style_width_set";
-

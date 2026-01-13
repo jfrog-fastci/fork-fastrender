@@ -4,10 +4,10 @@ use crate::dom2::{DomError, NodeId, NodeKind, RangeId};
 use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::dom_internal_keys::{
-  CSS_STYLE_DECL_PROTOTYPE_KEY, EVENT_BRAND_KEY, EVENT_IMMEDIATE_STOP_KEY, EVENT_INITIALIZED_KEY,
-  EVENT_KIND_KEY, HTML_COLLECTION_PROTOTYPE_KEY, HTML_COLLECTION_ROOT_KEY, NODE_CHILD_NODES_KEY,
-  NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY, STYLE_CSS_TEXT_GET_KEY,
-  STYLE_CSS_TEXT_SET_KEY,
+  COLLECTION_LENGTH_KEY, CSS_STYLE_DECL_PROTOTYPE_KEY, EVENT_BRAND_KEY, EVENT_IMMEDIATE_STOP_KEY,
+  EVENT_INITIALIZED_KEY, EVENT_KIND_KEY, HTML_COLLECTION_PROTOTYPE_KEY, HTML_COLLECTION_ROOT_KEY,
+  NODE_CHILD_NODES_KEY, NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY,
+  STYLE_CSS_TEXT_GET_KEY, STYLE_CSS_TEXT_SET_KEY,
   STYLE_CURSOR_GET_KEY,
   STYLE_CURSOR_SET_KEY, STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY, STYLE_GET_PROPERTY_VALUE_KEY,
   STYLE_HEIGHT_GET_KEY, STYLE_HEIGHT_SET_KEY, STYLE_REMOVE_PROPERTY_KEY, STYLE_SET_PROPERTY_KEY,
@@ -259,6 +259,162 @@ fn require_element_receiver(
   let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
   let node_id = platform.require_element_id(scope.heap(), Value::Object(obj))?;
   Ok((node_id, obj))
+}
+
+fn sync_dom_node_collection_object(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  collection_obj: GcObject,
+  document_id: DocumentId,
+  nodes: &[(NodeId, DomInterface)],
+) -> Result<(), VmError> {
+  scope.push_root(Value::Object(collection_obj))?;
+
+  let internal_length_key = key_from_str(scope, COLLECTION_LENGTH_KEY)?;
+  let length_key = key_from_str(scope, "length")?;
+
+  let internal_length_value = scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &internal_length_key)?;
+  let (internal_length_present, internal_len) = match internal_length_value {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => (true, Some(n as usize)),
+    Some(_) => (true, None),
+    None => (false, None),
+  };
+
+  let length_value = match scope
+    .heap()
+    .object_get_own_data_property_value(collection_obj, &length_key)
+  {
+    Ok(value) => value,
+    Err(VmError::PropertyNotData) => None,
+    Err(err) => return Err(err),
+  };
+  let (length_present, length_len) = match length_value {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => (true, Some(n as usize)),
+    Some(_) => (true, None),
+    None => (false, None),
+  };
+
+  let old_len = internal_len.or(length_len).unwrap_or(0);
+
+  for (idx, (child_id, primary)) in nodes.iter().copied().enumerate() {
+    let child_wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+      scope,
+      document_id,
+      child_id,
+      primary,
+    )?;
+    scope.push_root(Value::Object(child_wrapper))?;
+
+    let idx_key = key_from_str(scope, &idx.to_string())?;
+    scope.define_property(
+      collection_obj,
+      idx_key,
+      data_property(Value::Object(child_wrapper), true, true, true),
+    )?;
+  }
+
+  for idx in nodes.len()..old_len {
+    let idx_key = key_from_str(scope, &idx.to_string())?;
+    scope.heap_mut().delete_property_or_throw(collection_obj, idx_key)?;
+  }
+
+  if internal_length_present {
+    scope.define_property(
+      collection_obj,
+      internal_length_key,
+      data_property(Value::Number(nodes.len() as f64), true, false, false),
+    )?;
+  }
+  if length_present {
+    scope.define_property(
+      collection_obj,
+      length_key,
+      data_property(Value::Number(nodes.len() as f64), true, false, false),
+    )?;
+  }
+
+  Ok(())
+}
+
+fn sync_cached_child_nodes_for_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  document_id: DocumentId,
+  node_id: NodeId,
+  dom: &crate::dom2::Document,
+) -> Result<(), VmError> {
+  if node_id.index() >= dom.nodes_len() {
+    return Ok(());
+  }
+
+  let child_nodes_key = key_from_str(scope, NODE_CHILD_NODES_KEY)?;
+  let Some(Value::Object(list_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
+  else {
+    return Ok(());
+  };
+
+  let mut children: Vec<(NodeId, DomInterface)> = Vec::new();
+  children
+    .try_reserve(dom.node(node_id).children.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for &child_id in dom.node(node_id).children.iter() {
+    if child_id.index() >= dom.nodes_len() {
+      continue;
+    }
+    let child = dom.node(child_id);
+    if child.parent != Some(node_id) {
+      continue;
+    }
+    if matches!(child.kind, NodeKind::ShadowRoot { .. }) {
+      continue;
+    }
+    let primary = DomInterface::primary_for_node_kind(&child.kind);
+    children.push((child_id, primary));
+  }
+
+  sync_dom_node_collection_object(vm, scope, list_obj, document_id, &children)
+}
+
+fn sync_cached_children_for_wrapper(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  wrapper_obj: GcObject,
+  document_id: DocumentId,
+  node_id: NodeId,
+  dom: &crate::dom2::Document,
+) -> Result<(), VmError> {
+  if node_id.index() >= dom.nodes_len() {
+    return Ok(());
+  }
+
+  let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
+  let Some(Value::Object(collection_obj)) = scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &children_key)?
+  else {
+    return Ok(());
+  };
+
+  let children: Vec<(NodeId, DomInterface)> = dom
+    .children_elements(node_id)
+    .into_iter()
+    .map(|child_id| {
+      let primary = if child_id.index() >= dom.nodes_len() {
+        DomInterface::Node
+      } else {
+        DomInterface::primary_for_node_kind(&dom.node(child_id).kind)
+      };
+      (child_id, primary)
+    })
+    .collect();
+
+  sync_dom_node_collection_object(vm, scope, collection_obj, document_id, &children)
 }
 
 fn require_dom_token_list_receiver(
@@ -6154,7 +6310,12 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
       ("Element", op @ ("append" | "prepend"), 0) => {
         let prepend = op == "prepend";
-        let (element_id, _obj) = require_element_receiver(vm, scope, receiver)?;
+        let (element_id, wrapper_obj) = require_element_receiver(vm, scope, receiver)?;
+        scope.push_root(Value::Object(wrapper_obj))?;
+
+        let document_id = require_dom_platform_mut(vm)?
+          .require_element_handle(scope.heap(), Value::Object(wrapper_obj))?
+          .document_id;
 
         #[derive(Debug)]
         enum NodeOrDomString {
@@ -6168,20 +6329,24 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             for &value in args {
               // Per WebIDL `(Node or DOMString)`: try Node wrapper conversion first, then fall back
               // to stringification (full ECMAScript `ToString`, which can invoke user code).
-              let node_id = match value {
-                Value::Object(_) => {
-                  let platform = require_dom_platform_mut(vm)?;
-                  platform.require_node_id(scope.heap(), value).ok()
+              if matches!(value, Value::Object(_)) {
+                match require_dom_platform_mut(vm)?.require_node_id(scope.heap(), value) {
+                  Ok(node_id) => {
+                    nodes.push(NodeOrDomString::Node(node_id));
+                    continue;
+                  }
+                  Err(VmError::TypeError("Illegal invocation")) => {}
+                  Err(err) => return Err(err),
                 }
-                _ => None,
-              };
-              if let Some(node_id) = node_id {
-                nodes.push(NodeOrDomString::Node(node_id));
-                continue;
               }
 
-              let s = scope.to_string(vm, host, hooks, value)?;
-              let s = scope.heap().get_string(s)?.to_utf8_lossy();
+              let s = match value {
+                Value::String(_) => js_string_to_rust_string(scope, value)?,
+                other => {
+                  let s = scope.to_string(vm, host, hooks, other)?;
+                  scope.heap().get_string(s)?.to_utf8_lossy()
+                }
+              };
               nodes.push(NodeOrDomString::Text(s));
             }
             Ok(nodes)
@@ -6266,7 +6431,31 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         })?;
 
         match result {
-          Ok(()) => Ok(Value::Undefined),
+          Ok(()) => {
+            let sync_result: Result<(), VmError> = self.with_dom_host(vm, |host| {
+              Ok(host.with_dom(|dom| {
+                sync_cached_child_nodes_for_wrapper(
+                  vm,
+                  scope,
+                  wrapper_obj,
+                  document_id,
+                  element_id,
+                  dom,
+                )?;
+                sync_cached_children_for_wrapper(
+                  vm,
+                  scope,
+                  wrapper_obj,
+                  document_id,
+                  element_id,
+                  dom,
+                )?;
+                Ok(())
+              }))
+            })?;
+            sync_result?;
+            Ok(Value::Undefined)
+          }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
       }
@@ -8826,6 +9015,110 @@ mod element_dispatch_tests {
       assert!(dom.get_element_by_id("a").is_none());
     });
 
+    Ok(())
+  }
+
+  #[test]
+  fn element_append_inserts_text_and_element_in_order() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+        const el = document.createElement('div');\
+        el.append('x', document.createElement('b'));\
+        return el.innerHTML === 'x<b></b>';\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_prepend_inserts_text_and_element_in_order() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+        const el = document.createElement('div');\
+        el.append(document.createElement('i'));\
+        el.prepend('x', document.createElement('b'));\
+        return el.innerHTML === 'x<b></b><i></i>';\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn element_append_and_prepend_sync_cached_collections() -> Result<(), VmError> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>").expect("parse_html");
+    let mut doc_host = DocumentHostState::new(dom);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.invalid/")
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl),
+    )?;
+    let global = realm.global_object();
+
+    let mut host_dispatch = VmJsWebIdlBindingsHostDispatch::<WindowHostState>::new(global);
+    let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new_with_vm_host_and_window_realm(
+      &mut doc_host,
+      &mut realm,
+      Some(&mut host_dispatch),
+    );
+
+    let out = realm.exec_script_with_host_and_hooks(
+      &mut doc_host,
+      &mut hooks,
+      "(() => {\
+        const el = document.createElement('div');\
+        const list = el.childNodes;\
+        const coll = el.children;\
+        const b = document.createElement('b');\
+        el.append('x', b);\
+        if (list.length !== 2) return false;\
+        if (coll.length !== 1) return false;\
+        if (list.item(1) !== b) return false;\
+        if (coll.item(0) !== b) return false;\
+        const i = document.createElement('i');\
+        el.prepend('y', i);\
+        if (list.length !== 4) return false;\
+        if (coll.length !== 2) return false;\
+        if (coll.item(0) !== i) return false;\
+        if (coll.item(1) !== b) return false;\
+        return true;\
+      })()",
+    )?;
+    assert_eq!(out, Value::Bool(true));
     Ok(())
   }
 }
