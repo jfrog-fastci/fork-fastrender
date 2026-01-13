@@ -1781,10 +1781,12 @@ impl TextRasterizer {
     let transform_signature = cache_transform_signature(state.transform, rotation);
     let glyph_opacity = color.a.clamp(0.0, 1.0);
     let color_for_glyph = Rgba { a: 1.0, ..color };
+    let translation_only_state_transform = is_translation_only_transform(state.transform);
+    let hinting = self.hinting_enabled && translation_only_state_transform;
     let snap_glyph_positions = self.snap_glyph_positions
       && rotation.is_none()
       && synthetic_oblique.abs() <= 1e-6
-      && is_translation_only_transform(state.transform);
+      && translation_only_state_transform;
 
     // Render each glyph
     for glyph in glyphs {
@@ -1891,7 +1893,7 @@ impl TextRasterizer {
                 &instance,
                 glyph.glyph_id,
                 font_size,
-                self.hinting_enabled,
+                hinting,
               )
               .and_then(|glyph| glyph.path.clone());
             let after = cache.stats();
@@ -1908,7 +1910,7 @@ impl TextRasterizer {
                 &instance,
                 glyph.glyph_id,
                 font_size,
-                self.hinting_enabled,
+                hinting,
               )
               .and_then(|glyph| glyph.path.clone())
           }
@@ -1942,6 +1944,7 @@ impl TextRasterizer {
               && self.subpixel_aa_enabled
               && state.blend_mode == SkiaBlendMode::SourceOver
               && rotation.is_none()
+              && translation_only_state_transform
             {
               if let Some(stats) = self.subpixel_aa_diagnostics.as_mut() {
                 stats.attempts = stats.attempts.saturating_add(1);
@@ -4080,6 +4083,200 @@ mod tests {
         assert_eq!(px[0], px[1]);
         assert_eq!(px[1], px[2]);
       }
+    });
+  }
+
+  fn count_tinted_pixels(pixmap: &Pixmap) -> usize {
+    pixmap
+      .data()
+      .chunks_exact(4)
+      .filter(|px| px[3] != 0 && (px[0] != px[1] || px[1] != px[2]))
+      .count()
+  }
+
+  #[test]
+  fn subpixel_text_rasterization_is_disabled_for_scaled_transforms() {
+    let font = match get_test_font() {
+      Some(f) => f,
+      None => return,
+    };
+
+    let face = font.as_ttf_face().unwrap();
+    let Some(glyph_id) = face.glyph_index('A').map(|g| g.0 as u32) else {
+      return;
+    };
+
+    let glyphs = [GlyphPosition {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_SUBPIXEL_AA".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      let mut rasterizer = TextRasterizer::new();
+      assert!(rasterizer.subpixel_aa_enabled);
+
+      let mut scaled = new_pixmap(200, 120).unwrap();
+      scaled.fill(tiny_skia::Color::WHITE);
+
+      let state = TextRenderState {
+        transform: Transform::from_scale(1.25, 1.25),
+        ..TextRenderState::default()
+      };
+      rasterizer
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          32.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.3,
+          64.0,
+          Rgba::BLACK,
+          None,
+          state,
+          &mut scaled,
+        )
+        .unwrap();
+
+      assert_eq!(
+        count_tinted_pixels(&scaled),
+        0,
+        "scaled text should fall back to grayscale AA (no RGB fringes)"
+      );
+
+      // Sanity: subpixel AA should still be used for translation-only transforms.
+      let mut identity = new_pixmap(200, 120).unwrap();
+      identity.fill(tiny_skia::Color::WHITE);
+      rasterizer
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          32.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.3,
+          64.0,
+          Rgba::BLACK,
+          None,
+          TextRenderState::default(),
+          &mut identity,
+        )
+        .unwrap();
+      assert!(
+        count_tinted_pixels(&identity) > 0,
+        "expected translation-only text to keep subpixel AA enabled for this test"
+      );
+    });
+  }
+
+  #[test]
+  fn hinting_is_disabled_for_scaled_transforms_to_keep_outline_cache_reusable() {
+    let font = match get_test_font() {
+      Some(f) => f,
+      None => return,
+    };
+
+    let face = font.as_ttf_face().unwrap();
+    let Some(glyph_id) = face.glyph_index('A').map(|g| g.0 as u32) else {
+      return;
+    };
+
+    let glyphs = [GlyphPosition {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_HINTING".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      let mut rasterizer = TextRasterizer::new();
+      assert!(rasterizer.hinting_enabled);
+      rasterizer.reset_cache_stats();
+
+      let state = TextRenderState {
+        transform: Transform::from_scale(1.25, 1.25),
+        ..TextRenderState::default()
+      };
+
+      let mut pixmap = new_pixmap(200, 120).unwrap();
+      pixmap.fill(tiny_skia::Color::WHITE);
+      rasterizer
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          16.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          state,
+          &mut pixmap,
+        )
+        .unwrap();
+
+      let mut pixmap2 = new_pixmap(200, 120).unwrap();
+      pixmap2.fill(tiny_skia::Color::WHITE);
+      rasterizer
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          32.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          None,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          state,
+          &mut pixmap2,
+        )
+        .unwrap();
+
+      let outline_stats = rasterizer
+        .cache
+        .lock()
+        .map(|cache| cache.stats())
+        .unwrap_or_default();
+      assert_eq!(
+        outline_stats.misses, 1,
+        "expected hinting to be suppressed under scale transforms so outlines reuse across font sizes"
+      );
     });
   }
 
