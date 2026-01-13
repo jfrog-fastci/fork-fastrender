@@ -8,7 +8,7 @@
 //!   groups, alternation, quantifiers, `^`/`$`, `.`/dotAll, `\\b`/`\\B`, and basic lookahead.
 //!
 //! This module intentionally does **not** attempt to be a full spec implementation yet (e.g.
-//! unicode property escapes, full unicode case folding, and lookbehind are not implemented).
+//! unicode property escapes and full unicode case folding are not implemented).
 //! Call sites must treat compilation failures as `SyntaxError`.
 
 use crate::tick::{tick_every, DEFAULT_TICK_EVERY};
@@ -792,6 +792,19 @@ pub(crate) struct NamedCaptureGroup {
   pub(crate) capture_indices: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchDir {
+  Forward,
+  Backward,
+}
+
+impl MatchDir {
+  #[inline]
+  fn is_forward(self) -> bool {
+    matches!(self, MatchDir::Forward)
+  }
+}
+
 /// Execution-time memory budget for the RegExp backtracking VM.
 ///
 /// RegExp execution allocates per-backtracking-state `captures`/`repeats` buffers and grows a
@@ -877,6 +890,10 @@ impl RegExpProgram {
           total = total.saturating_add(mem::size_of::<RegExpProgram>());
           total = total.saturating_add(program.heap_size_bytes());
         }
+        Inst::LookBehind { program, .. } => {
+          total = total.saturating_add(mem::size_of::<RegExpProgram>());
+          total = total.saturating_add(program.heap_size_bytes());
+        }
         _ => {}
       }
     }
@@ -888,6 +905,27 @@ impl RegExpProgram {
     input: &[u16],
     start: usize,
     flags: RegExpFlags,
+    tick: &mut dyn FnMut() -> Result<(), VmError>,
+    exec_mem: &'a RegExpExecMemoryBudget,
+    initial_captures: Option<&[usize]>,
+  ) -> Result<Option<RegExpMatch>, VmError> {
+    self.exec_at_dir(
+      input,
+      start,
+      flags,
+      MatchDir::Forward,
+      tick,
+      exec_mem,
+      initial_captures,
+    )
+  }
+
+  fn exec_at_dir<'a>(
+    &self,
+    input: &[u16],
+    start: usize,
+    flags: RegExpFlags,
+    dir: MatchDir,
     tick: &mut dyn FnMut() -> Result<(), VmError>,
     exec_mem: &'a RegExpExecMemoryBudget,
     initial_captures: Option<&[usize]>,
@@ -957,36 +995,99 @@ impl RegExpProgram {
         };
         match inst {
           Inst::Char(ch) => {
-            let Some((cp, len)) = decode_code_point(input, state.pos, flags.has_either_unicode_flag()) else {
-              break;
-            };
-            if canonicalize(flags, *ch) != canonicalize(flags, cp) {
-              break;
+            if dir.is_forward() {
+              let Some((cp, len)) =
+                decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+              else {
+                break;
+              };
+              if canonicalize(flags, *ch) != canonicalize(flags, cp) {
+                break;
+              }
+              state.pos = state.pos.saturating_add(len);
+            } else {
+              let Some((cp, len)) =
+                decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+              else {
+                break;
+              };
+              if canonicalize(flags, *ch) != canonicalize(flags, cp) {
+                break;
+              }
+              state.pos = state.pos.saturating_sub(len);
             }
-            state.pos = state.pos.saturating_add(len);
             state.pc += 1;
           }
           Inst::Any => {
-            let Some((cp, len)) = decode_code_point(input, state.pos, flags.has_either_unicode_flag()) else {
+            let Some((cp, len)) = if dir.is_forward() {
+              decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+            } else {
+              decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+            } else {
               break;
             };
             if !flags.dot_all && cp <= 0xFFFF && is_line_terminator_unit(cp as u16) {
               break;
             }
-            state.pos = state.pos.saturating_add(len);
+            if dir.is_forward() {
+              state.pos = state.pos.saturating_add(len);
+            } else {
+              state.pos = state.pos.saturating_sub(len);
+            }
             state.pc += 1;
           }
           Inst::Class(cls) => {
-            let Some((cp, len)) = decode_code_point(input, state.pos, flags.has_either_unicode_flag()) else {
+            let Some((cp, len)) = if dir.is_forward() {
+              decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+            } else {
+              decode_prev_code_point(input, state.pos, flags.has_either_unicode_flag())
+            } else {
               break;
             };
             if !cls.matches(cp, flags) {
               break;
             }
-            state.pos = state.pos.saturating_add(len);
+            if dir.is_forward() {
+              state.pos = state.pos.saturating_add(len);
+            } else {
+              state.pos = state.pos.saturating_sub(len);
+            }
             state.pc += 1;
           }
           Inst::UnicodeSet(cls) => {
+            if !dir.is_forward() {
+              // `/v` UnicodeSets-mode class matching currently supports only single-code-unit and
+              // empty-string elements in lookbehind (backward direction). Multi-unit string
+              // elements require suffix matching against the trie and are not yet implemented.
+              let next_pc = state.pc.saturating_add(1);
+              let end_pos = state.pos;
+
+              // --- 2) Single-code-unit elements ---
+              if let Some(prev_pos) = end_pos.checked_sub(1) {
+                if let Some(&u) = input.get(prev_pos) {
+                  if cls.single.matches(u as u32, flags) {
+                    // Keep empty as a lower-priority alternative.
+                    if cls.has_empty {
+                      let mut empty_state = state.try_clone(exec_mem)?;
+                      empty_state.pc = next_pc;
+                      stack_try_push(&mut stack, &mut stack_mem, exec_mem, empty_state)?;
+                    }
+                    state.pos = prev_pos;
+                    state.pc = next_pc;
+                    continue;
+                  }
+                }
+              }
+
+              // --- 3) Empty string element ---
+              if cls.has_empty {
+                state.pc = next_pc;
+                continue;
+              }
+
+              break;
+            }
+
             let next_pc = state.pc.saturating_add(1);
             let start_pos = state.pos;
 
@@ -1159,7 +1260,8 @@ impl RegExpProgram {
             state.pc += 1;
           }
           Inst::Save(slot) => {
-            if let Some(dst) = state.captures.get_mut(*slot) {
+            let slot = if dir.is_forward() { *slot } else { *slot ^ 1 };
+            if let Some(dst) = state.captures.get_mut(slot) {
               *dst = state.pos;
             }
             state.pc += 1;
@@ -1186,18 +1288,34 @@ impl RegExpProgram {
               continue;
             }
             let slice = &input[cap_start..cap_end];
-            if state.pos + slice.len() > input.len() {
-              break;
+            if dir.is_forward() {
+              if state.pos + slice.len() > input.len() {
+                break;
+              }
+              if !slice
+                .iter()
+                .copied()
+                .zip(input[state.pos..state.pos + slice.len()].iter().copied())
+                .all(|(a, b)| canonical_eq(a, b, flags))
+              {
+                break;
+              }
+              state.pos += slice.len();
+            } else {
+              if slice.len() > state.pos {
+                break;
+              }
+              let start_pos = state.pos - slice.len();
+              if !slice
+                .iter()
+                .copied()
+                .zip(input[start_pos..state.pos].iter().copied())
+                .all(|(a, b)| canonical_eq(a, b, flags))
+              {
+                break;
+              }
+              state.pos = start_pos;
             }
-            if !slice
-              .iter()
-              .copied()
-              .zip(input[state.pos..state.pos + slice.len()].iter().copied())
-              .all(|(a, b)| canonical_eq(a, b, flags))
-            {
-              break;
-            }
-            state.pos += slice.len();
             state.pc += 1;
           }
           Inst::NamedBackRef(name_id) => {
@@ -1234,28 +1352,51 @@ impl RegExpProgram {
             };
 
             let slice = &input[cap_start..cap_end];
-            if state.pos + slice.len() > input.len() {
-              break;
-            }
-
-            let mut ok = true;
-            for (i, (&a, &b)) in slice
-              .iter()
-              .zip(input[state.pos..state.pos + slice.len()].iter())
-              .enumerate()
-            {
-              if i % 1024 == 0 {
-                tick()?;
-              }
-              if !canonical_eq(a, b, flags) {
-                ok = false;
+            if dir.is_forward() {
+              if state.pos + slice.len() > input.len() {
                 break;
               }
+
+              let mut ok = true;
+              for (i, (&a, &b)) in slice
+                .iter()
+                .zip(input[state.pos..state.pos + slice.len()].iter())
+                .enumerate()
+              {
+                if i % 1024 == 0 {
+                  tick()?;
+                }
+                if !canonical_eq(a, b, flags) {
+                  ok = false;
+                  break;
+                }
+              }
+              if !ok {
+                break;
+              }
+              state.pos += slice.len();
+            } else {
+              if slice.len() > state.pos {
+                break;
+              }
+              let start_pos = state.pos - slice.len();
+
+              let mut ok = true;
+              for (i, (&a, &b)) in slice.iter().zip(input[start_pos..state.pos].iter()).enumerate()
+              {
+                if i % 1024 == 0 {
+                  tick()?;
+                }
+                if !canonical_eq(a, b, flags) {
+                  ok = false;
+                  break;
+                }
+              }
+              if !ok {
+                break;
+              }
+              state.pos = start_pos;
             }
-            if !ok {
-              break;
-            }
-            state.pos += slice.len();
             state.pc += 1;
           }
           Inst::Split(a, b) => {
@@ -1367,6 +1508,38 @@ impl RegExpProgram {
               }
             }
           }
+          Inst::LookBehind { program, negative } => {
+            // Run the nested program anchored at the current position with -1 direction.
+            let sub = program.exec_at_dir(
+              input,
+              state.pos,
+              flags,
+              MatchDir::Backward,
+              tick,
+              exec_mem,
+              Some(&state.captures),
+            )?;
+            match (sub.is_some(), *negative) {
+              (true, true) => {
+                // Negative lookbehind matched => fail this branch.
+                break;
+              }
+              (false, false) => {
+                // Positive lookbehind failed.
+                break;
+              }
+              (false, true) => {
+                // Negative lookbehind failed => success, consume nothing.
+                state.pc += 1;
+              }
+              (true, false) => {
+                // Positive lookbehind matched => merge captures (excluding group 0).
+                let matched = sub.unwrap();
+                state.merge_captures_from(&matched);
+                state.pc += 1;
+              }
+            }
+          }
           Inst::Match => {
             // Success: fill group 0 end.
             if let Some(end) = state.captures.get_mut(1) {
@@ -1441,6 +1614,10 @@ impl RegExpProgram {
         },
         Inst::RepeatEnd { start } => Inst::RepeatEnd { start: *start },
         Inst::LookAhead { program, negative } => Inst::LookAhead {
+          program: box_try_new_vm(program.try_clone()?)?,
+          negative: *negative,
+        },
+        Inst::LookBehind { program, negative } => Inst::LookBehind {
           program: box_try_new_vm(program.try_clone()?)?,
           negative: *negative,
         },
@@ -1642,6 +1819,10 @@ enum Inst {
     start: usize,
   },
   LookAhead {
+    program: Box<RegExpProgram>,
+    negative: bool,
+  },
+  LookBehind {
     program: Box<RegExpProgram>,
     negative: bool,
   },
@@ -2066,6 +2247,25 @@ fn decode_code_point(input: &[u16], pos: usize, unicode: bool) -> Option<(u32, u
   Some((u, 1))
 }
 
+fn decode_prev_code_point(input: &[u16], pos: usize, unicode: bool) -> Option<(u32, usize)> {
+  let end = pos.checked_sub(1)?;
+  let u = input[end] as u32;
+  if !unicode {
+    return Some((u, 1));
+  }
+  // UnicodeMode: treat surrogate pairs as a single code point.
+  if (0xDC00..=0xDFFF).contains(&u) && end >= 1 {
+    let lead_u = input[end - 1] as u32;
+    if (0xD800..=0xDBFF).contains(&lead_u) {
+      let lead = lead_u - 0xD800;
+      let trail = u - 0xDC00;
+      let cp = 0x10000 + (lead << 10) + trail;
+      return Some((cp, 2));
+    }
+  }
+  Some((u, 1))
+}
+
 fn is_line_terminator_unit(u: u16) -> bool {
   matches!(u, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
@@ -2170,6 +2370,7 @@ enum Assertion {
   WordBoundary,
   NotWordBoundary,
   LookAhead { negative: bool, disj: Disjunction },
+  LookBehind { negative: bool, disj: Disjunction },
 }
 
 #[derive(Debug, Clone)]
@@ -2451,9 +2652,30 @@ impl<'a> Parser<'a> {
       .into());
     };
 
-    // Lookahead assertions: `(?=...)` / `(?!...)`.
+    // Lookaround assertions: lookahead `(?=...)` / `(?!...)`, lookbehind `(?<=...)` / `(?<!...)`.
     if u == (b'(' as u16) {
       if self.units.get(self.idx + 1) == Some(&(b'?' as u16)) {
+        // Lookbehind assertions: `(?<=...)` / `(?<!...)`.
+        if self.units.get(self.idx + 2) == Some(&(b'<' as u16)) {
+          if let Some(kind) = self.units.get(self.idx + 3).copied() {
+            if kind == (b'=' as u16) || kind == (b'!' as u16) {
+              // Consume "(?<=" / "(?<!".
+              self.idx += 4;
+              let disj = self.parse_disjunction(ctx, Some(b')' as u16))?;
+              if !self.eat(b')' as u16) {
+                return Err(RegExpSyntaxError {
+                  message: "Unterminated group",
+                }
+                .into());
+              }
+              return Ok(Term::Assertion(Assertion::LookBehind {
+                negative: kind == (b'!' as u16),
+                disj,
+              }));
+            }
+          }
+        }
+
         if let Some(kind) = self.units.get(self.idx + 2).copied() {
           if kind == (b'=' as u16) || kind == (b'!' as u16) {
             // Consume "(?=" / "(?!".
@@ -3426,12 +3648,21 @@ impl ProgramBuilder {
     ctx: &mut CompileCtx<'_>,
     disj: Disjunction,
   ) -> Result<(), RegExpCompileError> {
+    self.compile_disjunction_dir(ctx, disj, MatchDir::Forward)
+  }
+
+  fn compile_disjunction_dir(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    disj: Disjunction,
+    dir: MatchDir,
+  ) -> Result<(), RegExpCompileError> {
     if disj.alts.is_empty() {
       return Ok(());
     }
     let mut alts = disj.alts;
     if alts.len() == 1 {
-      return self.compile_alternative(ctx, alts.pop().unwrap());
+      return self.compile_alternative_dir(ctx, alts.pop().unwrap(), dir);
     }
 
     let last_idx = alts.len().saturating_sub(1);
@@ -3441,7 +3672,7 @@ impl ProgramBuilder {
         ctx.tick_every(i)?;
       }
       if i == last_idx {
-        self.compile_alternative(ctx, alt)?;
+        self.compile_alternative_dir(ctx, alt, dir)?;
         break;
       }
       // Split to this alternative (fallthrough) or the next one (patched).
@@ -3451,7 +3682,7 @@ impl ProgramBuilder {
         .checked_add(1)
         .ok_or(RegExpCompileError::OutOfMemory)?;
       let split_pc = self.emit(ctx, Inst::Split(fallthrough, 0))?;
-      self.compile_alternative(ctx, alt)?;
+      self.compile_alternative_dir(ctx, alt, dir)?;
       let jmp_pc = self.emit(ctx, Inst::Jump(0))?;
       ctx.vec_try_push(&mut end_jumps, jmp_pc)?;
       // Patch the split's second branch to the start of the next alternative.
@@ -3472,30 +3703,41 @@ impl ProgramBuilder {
     Ok(())
   }
 
-  fn compile_alternative(
+  fn compile_alternative_dir(
     &mut self,
     ctx: &mut CompileCtx<'_>,
     alt: Alternative,
+    dir: MatchDir,
   ) -> Result<(), RegExpCompileError> {
-    for (i, term) in alt.terms.into_iter().enumerate() {
-      if i != 0 {
-        ctx.tick_every(i)?;
+    if dir.is_forward() {
+      for (i, term) in alt.terms.into_iter().enumerate() {
+        if i != 0 {
+          ctx.tick_every(i)?;
+        }
+        self.compile_term_dir(ctx, term, dir)?;
       }
-      self.compile_term(ctx, term)?;
+    } else {
+      for (i, term) in alt.terms.into_iter().rev().enumerate() {
+        if i != 0 {
+          ctx.tick_every(i)?;
+        }
+        self.compile_term_dir(ctx, term, dir)?;
+      }
     }
     Ok(())
   }
 
-  fn compile_term(
+  fn compile_term_dir(
     &mut self,
     ctx: &mut CompileCtx<'_>,
     term: Term,
+    dir: MatchDir,
   ) -> Result<(), RegExpCompileError> {
     match term {
       Term::Assertion(a) => self.compile_assertion(ctx, a),
       Term::Atom(atom, quant) => match quant {
-        Some(q) => self.compile_quantified(ctx, atom, q),
-        None => self.compile_atom(ctx, atom),
+        Some(q) => self.compile_quantified_dir(ctx, atom, q, dir),
+        None => self.compile_atom_dir(ctx, atom, dir),
       },
     }
   }
@@ -3535,15 +3777,34 @@ impl ProgramBuilder {
           },
         )?;
       }
+      Assertion::LookBehind { negative, disj } => {
+        // Compile lookbehind into a nested program that shares the outer capture slot numbering.
+        // The nested program is compiled and executed with -1 direction semantics.
+        let cloned_named =
+          ProgramBuilder::try_clone_named_capture_groups(ctx, &self.named_capture_groups)?;
+        let mut nested = ProgramBuilder::new(self.capture_count, cloned_named);
+        nested.compile_disjunction_dir(ctx, disj, MatchDir::Backward)?;
+        nested.emit(ctx, Inst::Match)?;
+        let nested_prog = nested.finish();
+        let boxed = ctx.box_try_new(nested_prog)?;
+        self.emit(
+          ctx,
+          Inst::LookBehind {
+            program: boxed,
+            negative,
+          },
+        )?;
+      }
     }
     Ok(())
   }
 
-  fn compile_quantified(
+  fn compile_quantified_dir(
     &mut self,
     ctx: &mut CompileCtx<'_>,
     atom: Atom,
     q: Quantifier,
+    dir: MatchDir,
   ) -> Result<(), RegExpCompileError> {
     let (clear_from_slot, clear_to_slot) = match &atom {
       Atom::Group {
@@ -3578,7 +3839,7 @@ impl ProgramBuilder {
       clear_from_slot,
       clear_to_slot,
     })?;
-    self.compile_atom(ctx, atom)?;
+    self.compile_atom_dir(ctx, atom, dir)?;
     self.emit(ctx, Inst::RepeatEnd { start: start_pc })?;
     let exit = self.insts.len();
     let Inst::RepeatStart { exit: ref mut e, .. } = self.insts[start_pc] else {
@@ -3588,10 +3849,11 @@ impl ProgramBuilder {
     Ok(())
   }
 
-  fn compile_atom(
+  fn compile_atom_dir(
     &mut self,
     ctx: &mut CompileCtx<'_>,
     atom: Atom,
+    dir: MatchDir,
   ) -> Result<(), RegExpCompileError> {
     match atom {
       Atom::Literal(u) => {
@@ -3632,10 +3894,10 @@ impl ProgramBuilder {
         if let Some(idx) = capture {
           let start_slot = (idx as usize).saturating_mul(2);
           self.emit(ctx, Inst::Save(start_slot))?;
-          self.compile_disjunction(ctx, disj)?;
+          self.compile_disjunction_dir(ctx, disj, dir)?;
           self.emit(ctx, Inst::Save(start_slot.saturating_add(1)))?;
         } else {
-          self.compile_disjunction(ctx, disj)?;
+          self.compile_disjunction_dir(ctx, disj, dir)?;
         }
       }
     }
