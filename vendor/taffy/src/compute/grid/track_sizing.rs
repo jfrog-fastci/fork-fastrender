@@ -2542,6 +2542,69 @@ mod tests {
   }
 
   #[test]
+  fn grid_available_space_includes_alignment_gutter_adjustment_in_other_axis_sum() {
+    // `GridItem::available_space()` includes `track.content_alignment_adjustment` in its other-axis
+    // estimate sum. This test ensures the prefix-sum optimisation preserves that behaviour.
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    // Item spans two rows so it crosses the inner row gutter, which will receive a
+    // `content_alignment_adjustment` when `align-content: space-between` distributes free space.
+    let child = taffy
+      .new_leaf(Style {
+        grid_row: Line {
+          start: line(1),
+          end: line(3),
+        },
+        ..Default::default()
+      })
+      .unwrap();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Grid,
+          size: Size::from_lengths(100.0, 100.0),
+          // Force intrinsic measurement in the inline axis.
+          grid_template_columns: vec![min_content()],
+          // Two fixed-size rows (total 20). With `align-content: space-between` and a definite
+          // height of 100, the free space (80) should be assigned to the inner gutter.
+          grid_template_rows: vec![length(10.0), length(10.0)],
+          align_content: Some(AlignContent::SpaceBetween),
+          ..Default::default()
+        },
+        &[child],
+      )
+      .unwrap();
+
+    let saw_intrinsic_measure = std::cell::Cell::new(false);
+    taffy
+      .compute_layout_with_measure(root, Size::MAX_CONTENT, |_, available_space, node_id, _, _| {
+        // During inline-axis intrinsic sizing we probe min-content widths with an unconstrained
+        // available width (`MinContent`). The other-axis available height should include the
+        // alignment gutter adjustment, yielding the full container height (100).
+        if node_id == child && matches!(available_space.width, AvailableSpace::MinContent) {
+          saw_intrinsic_measure.set(true);
+          assert_eq!(available_space.height, AvailableSpace::Definite(100.0));
+        }
+
+        MeasureOutput {
+          size: Size {
+            width: 10.0,
+            height: 10.0,
+          },
+          first_baselines: Point { x: None, y: None },
+        }
+      })
+      .unwrap();
+
+    assert!(
+      saw_intrinsic_measure.get(),
+      "expected intrinsic measurement probe to run"
+    );
+  }
+
+  #[test]
   fn update_item_crosses_intrinsic_tracks_is_skipped_without_percentage_tracks() {
     super::UPDATE_ITEM_CROSSES_INTRINSIC_TRACKS_FOR_AXIS_CALLS.with(|c| c.set(0));
 
