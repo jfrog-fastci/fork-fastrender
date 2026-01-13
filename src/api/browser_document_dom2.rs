@@ -167,6 +167,7 @@ pub struct BrowserDocumentDom2 {
   animation_clock: Arc<dyn Clock>,
   animation_timeline_origin: Option<Duration>,
   last_painted_animation_clock: Option<Duration>,
+  last_painted_animation_time: Option<f32>,
 }
 
 fn interaction_state_css_fingerprint(state: Option<&InteractionState>) -> u64 {
@@ -254,6 +255,7 @@ impl BrowserDocumentDom2 {
       animation_clock: Arc::new(RealClock::default()),
       animation_timeline_origin: None,
       last_painted_animation_clock: None,
+      last_painted_animation_time: None,
     })
   }
 
@@ -336,6 +338,7 @@ impl BrowserDocumentDom2 {
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.last_painted_animation_clock = None;
+    self.last_painted_animation_time = None;
     self.paint_dirty = true;
   }
 
@@ -349,12 +352,14 @@ impl BrowserDocumentDom2 {
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
       self.last_painted_animation_clock = None;
+      self.last_painted_animation_time = None;
       self.paint_dirty = true;
     } else if !enabled && self.realtime_animations_enabled {
       self.realtime_animations_enabled = false;
       self.animation_timeline_origin = None;
       self.animation_state_store = crate::animation::AnimationStateStore::new();
       self.last_painted_animation_clock = None;
+      self.last_painted_animation_time = None;
       self.paint_dirty = true;
     }
   }
@@ -423,6 +428,7 @@ impl BrowserDocumentDom2 {
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.animation_timeline_origin = None;
     self.last_painted_animation_clock = None;
+    self.last_painted_animation_time = None;
     self.invalidate_all();
   }
 
@@ -455,6 +461,7 @@ impl BrowserDocumentDom2 {
     self.form_state_dirty = false;
     self.animation_timeline_origin = None;
     self.last_painted_animation_clock = None;
+    self.last_painted_animation_time = None;
     self.author_stylesheet_has_has_selectors = author_has_has;
   }
 
@@ -2322,6 +2329,7 @@ impl BrowserDocumentDom2 {
     } else {
       self.last_painted_animation_clock = None;
     }
+    self.last_painted_animation_time = animation_time;
     Ok(frame)
   }
 

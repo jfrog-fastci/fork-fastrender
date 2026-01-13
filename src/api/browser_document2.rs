@@ -33,6 +33,7 @@ pub struct BrowserDocument2 {
   realtime_animations_enabled: bool,
   animation_timeline_origin: Option<Duration>,
   last_painted_animation_clock: Option<Duration>,
+  last_painted_animation_time: Option<f32>,
   animation_state_store: crate::animation::AnimationStateStore,
   style_dirty: bool,
   layout_dirty: bool,
@@ -89,6 +90,7 @@ impl BrowserDocument2 {
       realtime_animations_enabled: false,
       animation_timeline_origin: None,
       last_painted_animation_clock: None,
+      last_painted_animation_time: None,
       animation_state_store: crate::animation::AnimationStateStore::default(),
       // First frame needs a full pipeline run.
       style_dirty: true,
@@ -138,6 +140,7 @@ impl BrowserDocument2 {
     self.mark_full_paint_damage();
     self.animation_timeline_origin = None;
     self.last_painted_animation_clock = None;
+    self.last_painted_animation_time = None;
     self.animation_state_store = crate::animation::AnimationStateStore::default();
 
     Ok(super::BrowserNavigationReport {
@@ -156,6 +159,7 @@ impl BrowserDocument2 {
     self.animation_timeline_origin = None;
     self.animation_state_store = crate::animation::AnimationStateStore::default();
     self.last_painted_animation_clock = None;
+    self.last_painted_animation_time = None;
     self.paint_dirty = true;
     self.mark_full_paint_damage();
   }
@@ -173,6 +177,7 @@ impl BrowserDocument2 {
     if enabled != self.realtime_animations_enabled {
       self.paint_dirty = true;
       self.last_painted_animation_clock = None;
+      self.last_painted_animation_time = None;
       self.mark_full_paint_damage();
     }
     self.realtime_animations_enabled = enabled;
@@ -493,6 +498,7 @@ impl BrowserDocument2 {
     } else {
       self.last_painted_animation_clock = None;
     }
+    self.last_painted_animation_time = animation_time;
 
     Ok(frame)
   }

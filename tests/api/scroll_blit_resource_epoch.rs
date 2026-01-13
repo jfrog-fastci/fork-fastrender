@@ -68,6 +68,7 @@ fn scroll_blit_disabled_when_image_cache_epoch_changes() -> Result<()> {
     viewport: None,
     background: None,
     animation_time: None,
+    ..PreparedPaintOptions::default()
   })?;
 
   assert_eq!(
@@ -78,4 +79,3 @@ fn scroll_blit_disabled_when_image_cache_epoch_changes() -> Result<()> {
 
   Ok(())
 }
-
