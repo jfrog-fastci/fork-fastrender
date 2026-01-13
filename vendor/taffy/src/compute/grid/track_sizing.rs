@@ -960,29 +960,35 @@ fn resolve_intrinsic_track_sizes<Tree: LayoutPartialTree>(
     .map(|track| track.flex_factor())
     .sum::<f32>();
 
-  // Prefix sums of per-track definite max-size limits (used for `GridItem::spanned_track_limit`).
+  // Prefix sums of per-track definite max-size limits (used for clamping limited contributions).
   // This avoids O(span) scans for every item that needs a limited contribution clamp.
-  let mut max_limit_prefix_sum: Vec<f32> = Vec::with_capacity(axis_tracks.len() + 1);
-  let mut max_limit_prefix_none: Vec<u32> = Vec::with_capacity(axis_tracks.len() + 1);
-  max_limit_prefix_sum.push(0.0);
-  max_limit_prefix_none.push(0);
-  let mut running_max_limit_sum = 0.0;
-  let mut running_max_limit_none = 0u32;
-  for track in axis_tracks.iter() {
-    match track
-      .max_track_sizing_function
-      .definite_limit(axis_inner_node_size, |val, basis| tree.calc(val, basis))
-    {
-      Some(v) => {
-        running_max_limit_sum += v;
+  //
+  // These limits are only consulted when sizing under a min/max-content constraint, so avoid the
+  // extra work when sizing under a definite constraint.
+  let needs_max_limit_prefix =
+    matches!(axis_available_grid_space, AvailableSpace::MinContent | AvailableSpace::MaxContent);
+  let (max_limit_prefix_sum, max_limit_prefix_none) = if needs_max_limit_prefix {
+    let mut prefix_sum: Vec<f32> = Vec::with_capacity(axis_tracks.len() + 1);
+    let mut prefix_none: Vec<u32> = Vec::with_capacity(axis_tracks.len() + 1);
+    prefix_sum.push(0.0);
+    prefix_none.push(0);
+    let mut running_sum = 0.0;
+    let mut running_none = 0u32;
+    for track in axis_tracks.iter() {
+      match track
+        .max_track_sizing_function
+        .definite_limit(axis_inner_node_size, |val, basis| tree.calc(val, basis))
+      {
+        Some(v) => running_sum += v,
+        None => running_none += 1,
       }
-      None => {
-        running_max_limit_none += 1;
-      }
+      prefix_sum.push(running_sum);
+      prefix_none.push(running_none);
     }
-    max_limit_prefix_sum.push(running_max_limit_sum);
-    max_limit_prefix_none.push(running_max_limit_none);
-  }
+    (prefix_sum, prefix_none)
+  } else {
+    (Vec::new(), Vec::new())
+  };
 
   // Pre-compute the other-axis track-size estimates used for intrinsic measurement.
   //
