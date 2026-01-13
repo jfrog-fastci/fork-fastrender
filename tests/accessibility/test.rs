@@ -291,11 +291,37 @@ fn accessibility_aria_label_form_scopes_other_landmarks_only_when_label_is_non_e
 
   let tree = render_accessibility_json(html);
 
+  let missing = find_json_node(&tree, "missing").expect("missing form");
+  assert_eq!(missing.get("role").and_then(|v| v.as_str()), Some("generic"));
+
+  let named = find_json_node(&tree, "named").expect("named form");
+  assert_eq!(named.get("role").and_then(|v| v.as_str()), Some("form"));
+  assert_eq!(named.get("name").and_then(|v| v.as_str()), Some("Named"));
+
   let hdr1 = find_json_node(&tree, "hdr1").expect("hdr1");
   assert_eq!(hdr1.get("role").and_then(|v| v.as_str()), Some("banner"));
 
   let hdr2 = find_json_node(&tree, "hdr2").expect("hdr2");
   assert_eq!(hdr2.get("role").and_then(|v| v.as_str()), Some("generic"));
+}
+
+#[test]
+fn accessibility_section_landmark_role_is_gated_by_aria_label_whitespace() {
+  let html = r##"
+    <html><body>
+      <section id="s" aria-label="   ">Section text</section>
+      <section id="s2" aria-label="Named">Section text</section>
+    </body></html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  let s = find_json_node(&tree, "s").expect("s");
+  assert_eq!(s.get("role").and_then(|v| v.as_str()), Some("generic"));
+
+  let s2 = find_json_node(&tree, "s2").expect("s2");
+  assert_eq!(s2.get("role").and_then(|v| v.as_str()), Some("region"));
+  assert_eq!(s2.get("name").and_then(|v| v.as_str()), Some("Named"));
 }
 
 #[test]
