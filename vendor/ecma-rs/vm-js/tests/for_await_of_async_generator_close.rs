@@ -255,3 +255,161 @@ fn for_await_break_awaits_async_generator_finally_await() -> Result<(), VmError>
   rt.teardown_microtasks();
   result
 }
+
+#[test]
+fn for_await_return_awaits_async_generator_finally_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  // Ensure we don't leak queued microtasks even if this test fails.
+  let result: Result<(), VmError> = (|| {
+    let value = rt.exec_script(
+      r#"
+        var out = "";
+        var state = "pending";
+        var log = "";
+
+        var resolveFinally;
+        var finallyPromise = new Promise(function (resolve) {
+          resolveFinally = resolve;
+        });
+
+        async function* gen() {
+          try {
+            yield 1;
+            yield 2;
+          } finally {
+            log += "F";
+            await finallyPromise;
+            log += "A";
+          }
+        }
+
+        async function run() {
+          for await (const _x of gen()) {
+            return "R";
+          }
+          return "bad";
+        }
+
+        run().then(
+          function (v) { out = v + log; state = "fulfilled"; },
+          function (e) { out = "err:" + String(e); state = "rejected"; }
+        );
+        out
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    // Early return should still close the async iterator, and must await the `finally` cleanup
+    // before the async function's returned promise settles.
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "F");
+
+    let value = rt.exec_script("state")?;
+    assert_eq!(value_to_string(&rt, value), "pending");
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.exec_script("resolveFinally()")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "FA");
+
+    let value = rt.exec_script("state")?;
+    assert_eq!(value_to_string(&rt, value), "fulfilled");
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, value), "RFA");
+
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
+
+#[test]
+fn for_await_throw_awaits_async_generator_finally_await() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  if !async_generators_supported(&mut rt)? {
+    return Ok(());
+  }
+
+  let result: Result<(), VmError> = (|| {
+    let value = rt.exec_script(
+      r#"
+        var out = "";
+        var state = "pending";
+        var log = "";
+
+        var resolveFinally;
+        var finallyPromise = new Promise(function (resolve) {
+          resolveFinally = resolve;
+        });
+
+        async function* gen() {
+          try {
+            yield 1;
+            yield 2;
+          } finally {
+            log += "F";
+            await finallyPromise;
+            log += "A";
+          }
+        }
+
+        async function run() {
+          for await (const _x of gen()) {
+            throw "boom";
+          }
+        }
+
+        run().then(
+          function (_v) { out = "ok"; state = "fulfilled"; },
+          function (e) { out = String(e); state = "rejected"; }
+        );
+        out
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    // Throwing from the loop body triggers `AsyncIteratorClose`. The rejection of the async
+    // function's returned promise must be delayed until the generator's awaited `finally` finishes.
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "F");
+
+    let value = rt.exec_script("state")?;
+    assert_eq!(value_to_string(&rt, value), "pending");
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, value), "");
+
+    rt.exec_script("resolveFinally()")?;
+    rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+    let value = rt.exec_script("log")?;
+    assert_eq!(value_to_string(&rt, value), "FA");
+
+    let value = rt.exec_script("state")?;
+    assert_eq!(value_to_string(&rt, value), "rejected");
+
+    let value = rt.exec_script("out")?;
+    assert_eq!(value_to_string(&rt, value), "boom");
+
+    Ok(())
+  })();
+
+  rt.teardown_microtasks();
+  result
+}
