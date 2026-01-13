@@ -365,6 +365,100 @@ fn compiled_for_in_const_creates_per_iteration_envs() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_for_of_var_does_not_create_per_iteration_envs() -> Result<(), VmError> {
+  // `for (var x of ...)` should *not* create a fresh binding per iteration; closures capture the
+  // single function-scoped binding and therefore observe the last assigned value.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        var a;
+        for (var i of [0, 1, 2]) {
+          if (i < 1) a = function() { return i; };
+        }
+        return a();
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_var_does_not_create_per_iteration_envs() -> Result<(), VmError> {
+  // `for (var k in obj)` should *not* create a fresh binding per iteration; closures capture the
+  // single function-scoped binding and therefore observe the last assigned value.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        var a;
+        for (var k in ({a: 1, b: 2})) {
+          if (k === 'a') a = function() { return k; };
+        }
+        return a();
+      }
+      f()
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "b");
+  Ok(())
+}
+
+#[test]
+fn compiled_for_in_var_is_declared_when_rhs_is_null() -> Result<(), VmError> {
+  // Even though `for (var k in null) {}` does not execute the body, the `var` binding is created.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        for (var k in null) {}
+        return k;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
+fn compiled_for_of_var_is_declared_even_when_rhs_throws() -> Result<(), VmError> {
+  // `for..of` throws on null/undefined RHS, but `var` bindings are still created during function
+  // instantiation.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        try {
+          for (var x of null) {}
+        } catch (e) {}
+        return x;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Undefined);
+  Ok(())
+}
+
+#[test]
 fn compiled_for_triple_var_does_not_create_per_iteration_binding() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
