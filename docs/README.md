@@ -18,6 +18,7 @@ Multiprocess architecture & security:
 - IPC transport invariants (framing + size caps + shared memory safety): [`docs/ipc.md`](ipc.md)
 - Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
 - Sandboxing overview (renderer process): [`docs/sandboxing.md`](sandboxing.md)
+- Windows renderer sandboxing (Job objects + AppContainer + restricted token): [`docs/windows_sandbox.md`](windows_sandbox.md)
 - macOS Seatbelt sandboxing (overview + probe tool): [`docs/macos_sandbox.md`](macos_sandbox.md)
 - macOS renderer sandboxing (Seatbelt now, App Sandbox later): [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md)
 - Site isolation process model (per-origin + OOPIF): [`docs/site_isolation.md`](site_isolation.md)
