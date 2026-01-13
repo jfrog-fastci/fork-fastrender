@@ -899,8 +899,8 @@ impl<'vm> HirEvaluator<'vm> {
       }
       hir_js::BinaryOp::Equality => Ok(Value::Bool(self.abstract_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::Inequality => Ok(Value::Bool(!self.abstract_equality_comparison(scope, l, r)?)),
-      hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(l == r)),
-      hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(l != r)),
+      hir_js::BinaryOp::StrictEquality => Ok(Value::Bool(self.strict_equality_comparison(scope, l, r)?)),
+      hir_js::BinaryOp::StrictInequality => Ok(Value::Bool(!self.strict_equality_comparison(scope, l, r)?)),
       hir_js::BinaryOp::LessThan => {
         let mut tick = || self.vm.tick();
         Ok(Value::Bool(
@@ -935,6 +935,40 @@ impl<'vm> HirEvaluator<'vm> {
       }
       _ => Err(VmError::Unimplemented("binary operator (hir-js compiled path)")),
     }
+  }
+
+  /// ECMA-262 Strict Equality Comparison (`===`) for the VM's supported value types.
+  fn strict_equality_comparison(
+    &mut self,
+    scope: &mut Scope<'_>,
+    a: Value,
+    b: Value,
+  ) -> Result<bool, VmError> {
+    use Value::*;
+
+    // Root inputs for the duration of the comparison so accessing their underlying heap data is GC
+    // safe, and so `tick()` calls in the string comparison can't observe freed handles.
+    let mut scope = scope.reborrow();
+    scope.push_roots(&[a, b])?;
+
+    Ok(match (a, b) {
+      (Undefined, Undefined) => true,
+      (Null, Null) => true,
+      (Bool(ax), Bool(by)) => ax == by,
+      // IEEE equality already implements JS semantics for `===`:
+      // - NaN is never equal to NaN
+      // - +0 and -0 compare equal.
+      (Number(ax), Number(by)) => ax == by,
+      (BigInt(ax), BigInt(by)) => scope.heap().get_bigint(ax)? == scope.heap().get_bigint(by)?,
+      (String(ax), String(by)) => {
+        let a = scope.heap().get_string(ax)?.as_code_units();
+        let b = scope.heap().get_string(by)?.as_code_units();
+        crate::tick::code_units_eq_with_ticks(a, b, || self.vm.tick())?
+      }
+      (Symbol(ax), Symbol(by)) => ax == by,
+      (Object(ax), Object(by)) => ax == by,
+      _ => false,
+    })
   }
 
   /// ECMA-262 Abstract Equality Comparison (`==`) for the VM's supported value types.
