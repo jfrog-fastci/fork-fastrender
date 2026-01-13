@@ -4706,28 +4706,24 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     obj: &hir_js::ObjectLiteral,
   ) -> Result<Value, VmError> {
-    let obj_val = scope.alloc_object()?;
     // Object literals inherit from %Object.prototype% (when intrinsics are available).
     //
     // The heap can be used without an initialized realm in some low-level unit tests; in that case
     // `vm.intrinsics()` is `None` and the object remains null-prototype shaped.
-    if let Some(intr) = self.vm.intrinsics() {
-      scope
-        .heap_mut()
-        .object_set_prototype(obj_val, Some(intr.object_prototype()))?;
-    }
+    let obj_val = if let Some(intr) = self.vm.intrinsics() {
+      scope.alloc_object_with_prototype(Some(intr.object_prototype()))?
+    } else {
+      scope.alloc_object()?
+    };
     let mut scope = scope.reborrow();
     scope.push_root(Value::Object(obj_val))?;
 
     for prop in &obj.properties {
       self.vm.tick()?;
+      // Keep per-member roots local so large object literals do not accumulate stack roots.
+      let mut member_scope = scope.reborrow();
       match prop {
-        hir_js::ObjectProperty::KeyValue {
-          key,
-          value,
-          method,
-          ..
-        } => {
+        hir_js::ObjectProperty::KeyValue { key, value, method, .. } => {
           // Spec-ish name inference: for methods and anonymous function definitions used as property
           // values, apply `SetFunctionName` with the property key.
           //
@@ -4742,26 +4738,26 @@ impl<'vm> HirEvaluator<'vm> {
             }
           };
 
-          let key = self.eval_object_key(&mut scope, body, key)?;
-          root_property_key(&mut scope, key)?;
-          let v = self.eval_expr(&mut scope, body, *value)?;
+          let key = self.eval_object_key(&mut member_scope, body, key)?;
+          root_property_key(&mut member_scope, key)?;
+          let v = self.eval_expr(&mut member_scope, body, *value)?;
           if *method || is_anonymous_function_def {
             if let Value::Object(func_obj) = v {
-              if scope.heap().get_function(func_obj).is_ok() {
-                crate::function_properties::set_function_name(&mut scope, func_obj, key, None)?;
+              if member_scope.heap().get_function(func_obj).is_ok() {
+                crate::function_properties::set_function_name(&mut member_scope, func_obj, key, None)?;
               }
             }
           }
-          let _ = scope.create_data_property(obj_val, key, v)?;
+          let _ = member_scope.create_data_property(obj_val, key, v)?;
         }
         hir_js::ObjectProperty::Spread(expr_id) => {
-          let src_value = self.eval_expr(&mut scope, body, *expr_id)?;
+          let src_value = self.eval_expr(&mut member_scope, body, *expr_id)?;
           // Root the spread source across `CopyDataProperties` (which can allocate and invoke user
           // code via Proxy traps and accessors).
-          scope.push_root(src_value)?;
+          member_scope.push_root(src_value)?;
           crate::spec_ops::copy_data_properties_with_host_and_hooks(
             self.vm,
-            &mut scope,
+            &mut member_scope,
             &mut *self.host,
             &mut *self.hooks,
             obj_val,
@@ -4770,28 +4766,28 @@ impl<'vm> HirEvaluator<'vm> {
           )?;
         }
         hir_js::ObjectProperty::Getter { key, body: getter_body } => {
-          let key = self.eval_object_key(&mut scope, body, key)?;
-          root_property_key(&mut scope, key)?;
+          let key = self.eval_object_key(&mut member_scope, body, key)?;
+          root_property_key(&mut member_scope, key)?;
 
           // If a setter was already defined earlier in the literal, preserve it.
           let mut existing_set = Value::Undefined;
-          if let Some(desc) = scope.heap().get_own_property(obj_val, key)? {
+          if let Some(desc) = member_scope.heap().get_own_property(obj_val, key)? {
             if let PropertyKind::Accessor { set, .. } = desc.kind {
               existing_set = set;
             }
           }
 
           let func_obj = self.alloc_user_function_object(
-            &mut scope,
+            &mut member_scope,
             *getter_body,
             /* name */ "",
             /* is_arrow */ false,
             /* name_binding */ None,
           )?;
-          crate::function_properties::set_function_name(&mut scope, func_obj, key, Some("get"))?;
-          scope.push_root(Value::Object(func_obj))?;
+          crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("get"))?;
+          member_scope.push_root(Value::Object(func_obj))?;
 
-          scope.define_property(
+          member_scope.define_property(
             obj_val,
             key,
             PropertyDescriptor {
@@ -4805,28 +4801,28 @@ impl<'vm> HirEvaluator<'vm> {
           )?;
         }
         hir_js::ObjectProperty::Setter { key, body: setter_body } => {
-          let key = self.eval_object_key(&mut scope, body, key)?;
-          root_property_key(&mut scope, key)?;
+          let key = self.eval_object_key(&mut member_scope, body, key)?;
+          root_property_key(&mut member_scope, key)?;
 
           // If a getter was already defined earlier in the literal, preserve it.
           let mut existing_get = Value::Undefined;
-          if let Some(desc) = scope.heap().get_own_property(obj_val, key)? {
+          if let Some(desc) = member_scope.heap().get_own_property(obj_val, key)? {
             if let PropertyKind::Accessor { get, .. } = desc.kind {
               existing_get = get;
             }
           }
 
           let func_obj = self.alloc_user_function_object(
-            &mut scope,
+            &mut member_scope,
             *setter_body,
             /* name */ "",
             /* is_arrow */ false,
             /* name_binding */ None,
           )?;
-          crate::function_properties::set_function_name(&mut scope, func_obj, key, Some("set"))?;
-          scope.push_root(Value::Object(func_obj))?;
+          crate::function_properties::set_function_name(&mut member_scope, func_obj, key, Some("set"))?;
+          member_scope.push_root(Value::Object(func_obj))?;
 
-          scope.define_property(
+          member_scope.define_property(
             obj_val,
             key,
             PropertyDescriptor {
@@ -4839,7 +4835,7 @@ impl<'vm> HirEvaluator<'vm> {
             },
           )?;
         }
-      }
+      };
     }
 
     Ok(Value::Object(obj_val))

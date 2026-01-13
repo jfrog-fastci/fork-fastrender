@@ -683,6 +683,46 @@ fn compiled_object_literal_object_spread_copies_properties() -> Result<(), VmErr
 }
 
 #[test]
+fn compiled_object_literal_object_spread_respects_member_order() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `z` exists in the spread source and is overwritten by the later `z: 3` property, so spread
+  // must occur between `y: 2` and `z: 3`.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      let a = { x: 1, z: 10 };
+      let o = { y: 2, ...a, z: 3 };
+      o.x + o.y + o.z
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(6.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_literal_object_spread_overwrites_earlier_keys() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      ({ x: 1, ...{ x: 2 } }).x
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_getter_executes() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
