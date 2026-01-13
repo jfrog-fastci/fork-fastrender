@@ -1986,6 +1986,80 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn document_fragment_query_selector(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DocumentFragment",
+        "querySelector",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn document_fragment_query_selector_all(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v0)?);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "DocumentFragment",
+        "querySelectorAll",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn document_fragment_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -5861,6 +5935,54 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn range_create_contextual_fragment(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = {
+        let v = v0;
+        if false {
+          Value::Undefined
+        } else if let Value::Object(_) = v {
+          v
+        } else if matches!(v, Value::String(_)) {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        } else {
+          Value::String(rt.scope.to_string(&mut *rt.vm, host, hooks, v)?)
+        }
+      };
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "createContextualFragment",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn range_detach(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -9195,6 +9317,46 @@ pub mod window {
       rt.set_prototype(proto_document_fragment, Some(parent_proto))?;
     }
 
+    {
+      let key = rt.property_key("querySelector")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document_fragment, &key)?
+        .is_none()
+      {
+        let func =
+          rt.alloc_native_function(document_fragment_query_selector, None, "querySelector", 1)?;
+        rt.define_data_property_str(
+          proto_document_fragment,
+          "querySelector",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("querySelectorAll")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document_fragment, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          document_fragment_query_selector_all,
+          None,
+          "querySelectorAll",
+          1,
+        )?;
+        rt.define_data_property_str(
+          proto_document_fragment,
+          "querySelectorAll",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
     Ok(())
   }
 
@@ -13201,6 +13363,28 @@ pub mod window {
         rt.define_data_property_str(
           proto_range,
           "deleteContents",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("createContextualFragment")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(
+          range_create_contextual_fragment,
+          None,
+          "createContextualFragment",
+          1,
+        )?;
+        rt.define_data_property_str(
+          proto_range,
+          "createContextualFragment",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;

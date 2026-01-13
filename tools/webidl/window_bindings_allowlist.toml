@@ -96,6 +96,7 @@ operations = [
   "getElementsByName",
   "querySelector",
   "querySelectorAll",
+  "createRange",
   "createElement",
   "createTextNode",
   "createDocumentFragment",
@@ -134,13 +135,14 @@ operations = [
   "surroundContents",
   "detach",
   "toString",
+  "createContextualFragment",
 ]
 
 [[interface]]
 name = "DocumentFragment"
 constructors = false
 attributes = []
-operations = []
+operations = ["querySelector", "querySelectorAll"]
 
 [[interface]]
 name = "Element"
