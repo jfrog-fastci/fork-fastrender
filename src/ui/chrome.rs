@@ -3,7 +3,7 @@
 use crate::debug::runtime::runtime_toggles;
 use crate::render_control::StageHeartbeat;
 use crate::ui::a11y;
-use crate::ui::address_bar::{format_address_bar_url, AddressBarSecurityState};
+use crate::ui::address_bar::AddressBarSecurityState;
 use crate::ui::appearance::{DEFAULT_UI_SCALE, MAX_UI_SCALE, MIN_UI_SCALE};
 use crate::ui::bookmarks::{bookmarks_bar_ui, BookmarkStore};
 use crate::ui::browser_app::{BrowserAppState, BrowserTabState, UiFocusToken};
@@ -28,7 +28,6 @@ use crate::ui::theme_parsing::{
   RgbaColor, ENV_BROWSER_ACCENT,
 };
 use crate::ui::url::{http_fallback_url_for_failed_https, resolve_omnibox_search_query};
-use crate::ui::url_display;
 use crate::ui::zoom;
 use crate::ui::ChromeAction;
 use crate::ui::{icon_button, icon_button_with_id, icon_tinted, spinner, BrowserIcon};
@@ -1382,24 +1381,30 @@ pub fn chrome_ui_with_bookmarks(
       let active_url = app
         .active_tab()
         .and_then(|t| t.committed_url.as_deref().or_else(|| t.current_url()))
-        .unwrap_or("")
-        .to_string();
+        .unwrap_or("");
       let active_url_trim = active_url.trim();
-      let active_url_is_bookmarked = !active_url_trim.is_empty()
-        && omnibox_bookmarks.is_some_and(|store| store.contains_url(active_url_trim));
-      let formatted_url = format_address_bar_url(&active_url);
-      let indicator = match formatted_url.security_state {
-        AddressBarSecurityState::Https => security_indicator::SecurityIndicator::Secure,
-        AddressBarSecurityState::Http => security_indicator::SecurityIndicator::Insecure,
-        AddressBarSecurityState::File
-        | AddressBarSecurityState::About
-        | AddressBarSecurityState::Other => security_indicator::SecurityIndicator::Neutral,
-      };
 
-      let stage = stage.filter(|s| *s != StageHeartbeat::Done);
-      let loading_text = match stage {
-        Some(stage) => format!("Loading… {}", stage.as_str()),
-        None => "Loading…".to_string(),
+      let (
+        formatted_url,
+        indicator,
+        display_path_query_fragment,
+        active_url_is_bookmarked,
+        loading_text,
+      ) = {
+        let cache = &mut app.chrome.address_bar_cache;
+        cache.update_active_url(active_url, ADDRESS_BAR_DISPLAY_MAX_CHARS);
+        let active_url_is_bookmarked = cache.is_url_bookmarked(active_url_trim, omnibox_bookmarks);
+        let indicator = cache.security_indicator();
+        let loading_text = cache.loading_text(stage);
+        let formatted_url = cache.formatted_url();
+        let display_path_query_fragment = cache.display_path_query_fragment();
+        (
+          formatted_url,
+          indicator,
+          display_path_query_fragment,
+          active_url_is_bookmarked,
+          loading_text,
+        )
       };
       let bar_height = ui.spacing().interact_size.y;
       let button_side = ui.spacing().interact_size.y;
@@ -1564,39 +1569,48 @@ pub fn chrome_ui_with_bookmarks(
         } else {
           0.0
         };
-        let mut right_items = Vec::new();
+        // Avoid per-frame heap allocation here: this runs every frame even while idle.
+        let mut right_sum = 0.0;
+        let mut right_len = 0usize;
         if downloads.active_count > 0 {
-          right_items.push(50.0);
+          right_sum += 50.0;
+          right_len += 1;
         }
         // Downloads button is always visible.
-        right_items.push(button_side);
+        right_sum += button_side;
+        right_len += 1;
         if loading && !is_compact {
           let font_id = egui::TextStyle::Small.resolve(ui.style());
           let label_width = ui.fonts(|f| {
-            f.layout_no_wrap(loading_text.clone(), font_id, ui.visuals().text_color())
+            f.layout_no_wrap(loading_text.to_owned(), font_id, ui.visuals().text_color())
               .size()
               .x
           });
-          right_items.push(label_width);
+          right_sum += label_width;
+          right_len += 1;
         }
         if loading {
-          right_items.push(icon_side);
+          right_sum += icon_side;
+          right_len += 1;
         }
         if warn_t > 0.0 {
-          right_items.push(badge_side);
+          right_sum += badge_side;
+          right_len += 1;
         }
         if err_t > 0.0 {
-          right_items.push(badge_side);
+          right_sum += badge_side;
+          right_len += 1;
         }
         if show_try_http {
-          right_items.push(try_http_button_width);
+          right_sum += try_http_button_width;
+          right_len += 1;
         }
         if omnibox_bookmarks.is_some() {
-          right_items.push(button_side);
+          right_sum += button_side;
+          right_len += 1;
         }
-        let right_width = (right_items.iter().sum::<f32>()
-          + item_spacing * (right_items.len().saturating_sub(1) as f32))
-          .min(full_rect.width());
+        let right_width =
+          (right_sum + item_spacing * (right_len.saturating_sub(1) as f32)).min(full_rect.width());
         let gap = if right_width > 0.0 { item_spacing } else { 0.0 };
         let left_width = (full_rect.width() - right_width - gap).max(0.0);
         let left_rect =
@@ -1674,7 +1688,7 @@ pub fn chrome_ui_with_bookmarks(
                 egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, a11y::ADDRESS_BAR_LABEL)
               });
               text_edit_response = Some(response);
-            } else if active_url.trim().is_empty() {
+            } else if active_url_trim.is_empty() {
               ui.add(
                 egui::Label::new(
                   egui::RichText::new("Enter URL…").color(ui.visuals().weak_text_color()),
@@ -1732,13 +1746,9 @@ pub fn chrome_ui_with_bookmarks(
                 );
               }
 
-              if let Some(rest) = formatted_url
-                .display_path_query_fragment
-                .as_deref()
-                .filter(|s| !s.is_empty())
-              {
+              if let Some(rest) = display_path_query_fragment {
                 job.append(
-                  &url_display::truncate_url_middle(rest, ADDRESS_BAR_DISPLAY_MAX_CHARS),
+                  rest,
                   0.0,
                   egui::text::TextFormat {
                     font_id,
@@ -2041,18 +2051,24 @@ pub fn chrome_ui_with_bookmarks(
             }
 
             // Bookmark star (optional: only available when the caller supplies a bookmarks store).
-            if let Some(bookmarks) = omnibox_bookmarks {
-              let can_toggle = !active_url.trim().is_empty();
-              let is_bookmarked = can_toggle && bookmarks.contains_url(active_url.trim());
+            if omnibox_bookmarks.is_some() {
+              let can_toggle = !active_url_trim.is_empty();
+              let is_bookmarked = can_toggle && active_url_is_bookmarked;
               let action_label = if is_bookmarked {
                 "Remove bookmark"
               } else {
                 "Bookmark this page"
               };
               let tooltip = if cfg!(target_os = "macos") {
-                format!("{action_label} (Cmd+D)")
+                if is_bookmarked {
+                  "Remove bookmark (Cmd+D)"
+                } else {
+                  "Bookmark this page (Cmd+D)"
+                }
+              } else if is_bookmarked {
+                "Remove bookmark (Ctrl+D)"
               } else {
-                format!("{action_label} (Ctrl+D)")
+                "Bookmark this page (Ctrl+D)"
               };
               let icon = if is_bookmarked {
                 BrowserIcon::BookmarkFilled
@@ -2072,11 +2088,11 @@ pub fn chrome_ui_with_bookmarks(
               );
               #[cfg(test)]
               store_test_id(ctx, "chrome_bookmark_star_id", response.id);
-              response = response.on_hover_text(tooltip.as_str());
+              response = response.on_hover_text(tooltip);
               response.widget_info(move || {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, action_label)
               });
-              show_tooltip_on_focus(ui, &response, tooltip.as_str());
+              show_tooltip_on_focus(ui, &response, tooltip);
 
               // Micro-interaction: fade a subtle hover fill in/out.
               let highlight = can_toggle && (response.hovered() || response.has_focus());
@@ -2116,25 +2132,6 @@ pub fn chrome_ui_with_bookmarks(
           });
         });
       });
-
-      // Display mode: click-to-focus and show the full URL on hover.
-      if !show_text_edit {
-        if active_url.trim().is_empty() {
-          bar_response = bar_response.on_hover_text("Enter URL…");
-          show_tooltip_on_focus(ui, &bar_response, "Enter URL…");
-        } else {
-          bar_response = bar_response.on_hover_text(active_url.clone());
-          show_tooltip_on_focus(ui, &bar_response, &active_url);
-        }
-        if bar_response.clicked() {
-          app.chrome.request_focus_address_bar = true;
-          app.chrome.request_select_all_address_bar = true;
-          // Clicking the non-editing address bar flips state that is only observed on the next egui
-          // frame. Without an explicit repaint request, the windowed browser can stay stuck in
-          // display mode until another OS event arrives.
-          ctx.request_repaint();
-        }
-      }
 
       // Border stroke for the pill.
       let border_stroke = if bar_response.hovered() {
@@ -2240,25 +2237,19 @@ pub fn chrome_ui_with_bookmarks(
 
       // Display mode: show the full URL on hover and when keyboard-focused.
       if !show_text_edit {
-        let tooltip = if active_url.trim().is_empty() {
-          "Enter URL…".to_string()
+        let tooltip = if active_url_trim.is_empty() {
+          "Enter URL…"
         } else {
-          active_url.clone()
+          active_url
         };
-        bar_response = bar_response.on_hover_text(tooltip.clone());
-        show_tooltip_on_focus(ui, &bar_response, tooltip.as_str());
+        bar_response = bar_response.on_hover_text(tooltip);
+        show_tooltip_on_focus(ui, &bar_response, tooltip);
 
         // Address bar display-mode context menu (right click / context-menu key).
-        let can_copy_url = !active_url_trim.is_empty();
-        let copy_domain = can_copy_url
-          .then(|| {
-            Url::parse(active_url_trim)
-              .ok()
-              .and_then(|url| url.host_str().map(str::to_string))
-          })
-          .flatten();
         bar_response.context_menu(|ui| {
           ui.set_min_width(140.0);
+
+          let can_copy_url = !active_url_trim.is_empty();
 
           let copy_url_btn = ui.add_enabled(can_copy_url, egui::Button::new("Copy URL"));
           copy_url_btn
@@ -2269,12 +2260,21 @@ pub fn chrome_ui_with_bookmarks(
             ui.close_menu();
           }
 
+          // Only parse the URL when the context menu is actually opened; keep the steady-state idle
+          // path allocation-free.
+          let copy_domain = can_copy_url
+            .then(|| {
+              Url::parse(active_url_trim)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+            })
+            .flatten();
           let copy_domain_btn =
             ui.add_enabled(copy_domain.is_some(), egui::Button::new("Copy domain"));
           copy_domain_btn
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy domain"));
           if copy_domain_btn.clicked() {
-            if let Some(domain) = copy_domain.clone() {
+            if let Some(domain) = copy_domain {
               ui.ctx().output_mut(|o| o.copied_text = domain);
             }
             ui.close_menu();
@@ -4460,14 +4460,28 @@ mod tests {
   fn focus_ring_strengthens_when_profile_high_contrast_enabled() {
     let ctx = new_context();
     let mut app = BrowserAppState::new();
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let normal = chrome_focus_ring_style(&ctx, &app);
     let _ = ctx.end_frame();
 
     let ctx = new_context();
     let mut app = BrowserAppState::new();
     app.appearance.high_contrast = true;
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let high = chrome_focus_ring_style(&ctx, &app);
     let _ = ctx.end_frame();
 
@@ -4962,13 +4976,27 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     let ctx = new_context();
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     app.chrome.address_bar_text = "example".to_string();
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -4994,7 +5022,14 @@ mod tests {
     app.chrome.address_bar_editing = true;
 
     let ctx = new_context();
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com");
@@ -5042,7 +5077,14 @@ mod tests {
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, left_click_at(egui::pos2(400.0, 60.0)));
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let output = ctx.end_frame();
 
     assert_eq!(
@@ -5054,7 +5096,14 @@ mod tests {
     assert!(!app.chrome.request_select_all_address_bar);
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(app.chrome.address_bar_has_focus);
     assert!(app.chrome.address_bar_editing);
@@ -5189,7 +5238,14 @@ frame={idx} repaint_after={:?}\n",
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, events);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus);
@@ -5274,7 +5330,14 @@ frame={idx} repaint_after={:?}\n",
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, events);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5310,7 +5373,14 @@ frame={idx} repaint_after={:?}\n",
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, events);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5347,7 +5417,14 @@ frame={idx} repaint_after={:?}\n",
     app.active_tab_mut().unwrap().hovered_url = Some("https://example.com/".to_string());
 
     let ctx = new_context();
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     super::hover_status_overlay_ui(&ctx, &app, ctx.screen_rect());
     let output = ctx.end_frame();
 
@@ -5373,7 +5450,14 @@ frame={idx} repaint_after={:?}\n",
     );
 
     let ctx = new_context();
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let output = ctx.end_frame();
 
     let texts = collect_text_strings(&output.shapes);
@@ -5599,7 +5683,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::L, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5726,7 +5817,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::K, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5745,7 +5843,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::F, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5764,7 +5869,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::S, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5783,7 +5895,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::P, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5819,7 +5938,14 @@ frame={idx} repaint_after={:?}\n",
         modifiers,
       }],
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(app.active_tab().is_some_and(|tab| tab.find.open));
 
@@ -5833,7 +5959,14 @@ frame={idx} repaint_after={:?}\n",
         modifiers,
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5869,7 +6002,14 @@ frame={idx} repaint_after={:?}\n",
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, events);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5914,13 +6054,27 @@ frame={idx} repaint_after={:?}\n",
     // Focus address bar.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(app.chrome.address_bar_has_focus);
 
     // Type input to open omnibox dropdown.
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(app.chrome.omnibox.open);
     assert!(!app.chrome.omnibox.suggestions.is_empty());
@@ -5938,7 +6092,14 @@ frame={idx} repaint_after={:?}\n",
         },
       }],
     );
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5959,7 +6120,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::D, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5979,7 +6147,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::H, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -5999,7 +6174,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::Y, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6019,7 +6201,14 @@ frame={idx} repaint_after={:?}\n",
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::D, modifiers);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6034,7 +6223,14 @@ frame={idx} repaint_after={:?}\n",
   fn f6_emits_focus_address_bar_action() {
     let mut app = BrowserAppState::new();
     let ctx = new_context_with_key(egui::Key::F6, Default::default());
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6050,7 +6246,14 @@ frame={idx} repaint_after={:?}\n",
     let mut app = BrowserAppState::new();
 
     let ctx = new_context_with_key(egui::Key::F5, Default::default());
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6074,7 +6277,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6098,7 +6308,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6122,7 +6339,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6147,7 +6371,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6237,7 +6468,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6271,7 +6509,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6298,7 +6543,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6325,7 +6577,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let zoom = app.active_tab().unwrap().zoom;
@@ -6348,7 +6607,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let zoom = app.active_tab().unwrap().zoom;
@@ -6372,7 +6638,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(app.active_tab().unwrap().zoom > 1.0);
 
@@ -6384,7 +6657,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!((app.active_tab().unwrap().zoom - crate::ui::zoom::DEFAULT_ZOOM).abs() < f32::EPSILON);
   }
@@ -6440,7 +6720,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6474,7 +6761,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6508,7 +6802,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6543,7 +6844,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6577,7 +6885,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6609,7 +6924,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6632,7 +6954,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6653,7 +6982,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6674,7 +7010,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6697,7 +7040,14 @@ frame={idx} repaint_after={:?}\n",
         ..Default::default()
       },
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6728,12 +7078,26 @@ frame={idx} repaint_after={:?}\n",
     app.chrome.request_focus_address_bar = true;
     app.chrome.request_select_all_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Frame 2: let egui apply the focus request.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6752,7 +7116,14 @@ frame={idx} repaint_after={:?}\n",
     // Now type a character while focus stays in the address bar. This should re-enable the
     // `address_bar_editing` flag so worker updates don't clobber the typed text.
     begin_frame(&ctx, vec![egui::Event::Text("x".to_string())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_editing);
@@ -6776,12 +7147,26 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 1: warm up layout (some egui widgets adjust their final size after their first frame).
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Frame 2: measure the first tab rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let tab_rect = tab_rects
@@ -6791,7 +7176,14 @@ frame={idx} repaint_after={:?}\n",
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, middle_click_at(tab_rect.center()));
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6821,12 +7213,26 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 1: warm up layout.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Frame 2: measure the first tab rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let tab_rect = tab_rects
@@ -6836,7 +7242,14 @@ frame={idx} repaint_after={:?}\n",
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, middle_click_at(tab_rect.center()));
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6922,12 +7335,26 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 1: warm up layout.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Frame 2: grab the tab strip rect so we can click the "+" button (pinned to the right edge).
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (strip_rect, _tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let _ = ctx.end_frame();
@@ -6935,7 +7362,14 @@ frame={idx} repaint_after={:?}\n",
     // Frame 3: click the "+" button and ensure we get the expected action.
     let click_pos = egui::pos2(strip_rect.max.x - 10.0, strip_rect.center().y);
     begin_frame(&ctx, left_click_at(click_pos));
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -6965,12 +7399,26 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 1: warm up layout.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Frame 2: measure the pinned tab rect.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let tab_rect = tab_rects
@@ -6981,7 +7429,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 3: click the pinned tab.
     begin_frame(&ctx, left_click_at(tab_rect.center()));
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -7009,7 +7464,14 @@ frame={idx} repaint_after={:?}\n",
 
     let ctx = egui::Context::default();
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let (_strip_rect, tab_rects) =
       super::tab_strip::load_test_layout(&ctx).expect("missing tab strip layout metrics");
     let output = ctx.end_frame();
@@ -7386,7 +7848,14 @@ frame={idx} repaint_after={:?}\n",
         },
       }],
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let zoom_after_in = app.active_tab().unwrap().zoom;
@@ -7404,7 +7873,14 @@ frame={idx} repaint_after={:?}\n",
         },
       }],
     );
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let zoom_after_out = app.active_tab().unwrap().zoom;
@@ -7575,14 +8051,28 @@ frame={idx} repaint_after={:?}\n",
     // Focus address bar.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus);
 
     // Type input.
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(app.chrome.omnibox.open);
@@ -7590,7 +8080,14 @@ frame={idx} repaint_after={:?}\n",
 
     // ArrowDown previews first suggestion.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
@@ -7616,14 +8113,28 @@ frame={idx} repaint_after={:?}\n",
     // Focus address bar.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(app.chrome.address_bar_has_focus);
 
     // Type input that matches the bookmark.
     begin_frame(&ctx, vec![egui::Event::Text("exam".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(app.chrome.omnibox.open, "expected omnibox dropdown to open");
@@ -7655,22 +8166,50 @@ frame={idx} repaint_after={:?}\n",
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert_eq!(app.chrome.address_bar_text, "https://example.com/");
 
     // Escape should close dropdown and restore original typed input without blurring.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(!app.chrome.omnibox.open);
@@ -7696,26 +8235,61 @@ frame={idx} repaint_after={:?}\n",
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // First Escape closes dropdown and keeps focus.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(app.chrome.address_bar_has_focus);
 
     // Second Escape should blur and revert to active tab URL.
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(!app.chrome.address_bar_has_focus);
@@ -7740,19 +8314,47 @@ frame={idx} repaint_after={:?}\n",
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -7781,15 +8383,36 @@ frame={idx} repaint_after={:?}\n",
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(
@@ -7804,7 +8427,14 @@ frame={idx} repaint_after={:?}\n",
         },
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -7849,22 +8479,50 @@ frame={idx} repaint_after={:?}\n",
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Type something that matches tab_b's URL so OpenTabsProvider yields an ActivateTab suggestion.
     begin_frame(&ctx, vec![egui::Event::Text("example".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // ArrowDown selects the primary suggestion first; ArrowDown again should select the open-tab
     // ("switch to tab") suggestion.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(
@@ -7879,7 +8537,14 @@ frame={idx} repaint_after={:?}\n",
         },
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -7924,17 +8589,38 @@ frame={idx} repaint_after={:?}\n",
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Type a search query (not URL-like) so the primary omnibox suggestion is a Search action.
     begin_frame(&ctx, vec![egui::Event::Text("cats".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     // Select the primary suggestion.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     begin_frame(
@@ -7949,7 +8635,14 @@ frame={idx} repaint_after={:?}\n",
         },
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -8135,14 +8828,28 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once to capture widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     let downloads_id = expect_temp_id(&ctx, "chrome_downloads_button_id");
 
     // Frame 1: move focus to the downloads button.
     ctx.memory_mut(|mem| mem.request_focus(downloads_id));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(downloads_id)),
@@ -8151,7 +8858,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 2: press Enter; should activate like a primary click.
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       actions
@@ -8174,14 +8888,28 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once to capture widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     let bookmark_id = expect_temp_id(&ctx, "chrome_bookmark_star_id");
 
     // Frame 1: move focus to the bookmark star.
     ctx.memory_mut(|mem| mem.request_focus(bookmark_id));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(bookmark_id)),
@@ -8190,7 +8918,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 2: press Space; should activate like a primary click.
     begin_frame(&ctx, vec![key_press(egui::Key::Space)]);
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       actions
@@ -8215,7 +8950,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once to capture the widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let order = nav_row_tab_order(&ctx);
@@ -8223,7 +8965,14 @@ frame={idx} repaint_after={:?}\n",
     // Frame 1: focus the first widget (back button).
     ctx.memory_mut(|mem| mem.request_focus(order[0]));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(order[0])),
@@ -8233,7 +8982,14 @@ frame={idx} repaint_after={:?}\n",
     // Subsequent frames: press Tab and ensure focus advances in the expected order.
     for (idx, expected) in order.iter().enumerate().skip(1) {
       begin_frame(&ctx, vec![key_press(egui::Key::Tab)]);
-      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+      let _ = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        Some(&bookmarks),
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let _ = ctx.end_frame();
 
       let focused = order
@@ -8263,7 +9019,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once to capture the widget ids from `store_test_id`.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let order = nav_row_tab_order(&ctx);
@@ -8272,7 +9035,14 @@ frame={idx} repaint_after={:?}\n",
     // Frame 1: focus the last widget (appearance button).
     ctx.memory_mut(|mem| mem.request_focus(reverse[0]));
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -8295,7 +9065,14 @@ frame={idx} repaint_after={:?}\n",
     // Subsequent frames: press Shift+Tab and ensure focus moves in reverse order.
     for (idx, expected) in reverse.iter().enumerate().skip(1) {
       begin_frame(&ctx, vec![shift_tab_press()]);
-      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+      let _ = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        Some(&bookmarks),
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let _ = ctx.end_frame();
 
       let focused = order
@@ -8325,7 +9102,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once to capture the widget ids from `store_test_id`.
     begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let order = nav_row_tab_order_compact(&ctx);
@@ -8333,7 +9117,14 @@ frame={idx} repaint_after={:?}\n",
     // Frame 1: focus the first widget (back button).
     ctx.memory_mut(|mem| mem.request_focus(order[0]));
     begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(order[0])),
@@ -8342,7 +9133,14 @@ frame={idx} repaint_after={:?}\n",
 
     for (idx, expected) in order.iter().enumerate().skip(1) {
       begin_frame_with_screen_size(&ctx, screen_size, vec![key_press(egui::Key::Tab)]);
-      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+      let _ = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        Some(&bookmarks),
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let _ = ctx.end_frame();
 
       let focused = order
@@ -8372,7 +9170,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once to capture the widget ids from `store_test_id`.
     begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let order = nav_row_tab_order_compact(&ctx);
@@ -8381,7 +9186,14 @@ frame={idx} repaint_after={:?}\n",
     // Frame 1: focus the last widget (appearance button).
     ctx.memory_mut(|mem| mem.request_focus(reverse[0]));
     begin_frame_with_screen_size(&ctx, screen_size, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(reverse[0])),
@@ -8402,7 +9214,14 @@ frame={idx} repaint_after={:?}\n",
 
     for (idx, expected) in reverse.iter().enumerate().skip(1) {
       begin_frame_with_screen_size(&ctx, screen_size, vec![shift_tab_press()]);
-      let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+      let _ = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        Some(&bookmarks),
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let _ = ctx.end_frame();
 
       let focused = order
@@ -8576,14 +9395,28 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      Some(&bookmarks),
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     let bookmark_id = expect_temp_id(&ctx, "chrome_bookmark_star_id");
 
     for key in [egui::Key::Enter, egui::Key::Space] {
       ctx.memory_mut(|mem| mem.request_focus(bookmark_id));
       begin_frame(&ctx, vec![key_press(key)]);
-      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, Some(&bookmarks), ctx.wants_keyboard_input(), true, |_| None);
+      let actions = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        Some(&bookmarks),
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let _ = ctx.end_frame();
 
       assert!(
@@ -8607,14 +9440,28 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
     let downloads_id = expect_temp_id(&ctx, "chrome_downloads_button_id");
 
     for key in [egui::Key::Enter, egui::Key::Space] {
       ctx.memory_mut(|mem| mem.request_focus(downloads_id));
       begin_frame(&ctx, vec![key_press(key)]);
-      let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+      let actions = chrome_ui_with_bookmarks(
+        &ctx,
+        &mut app,
+        None,
+        ctx.wants_keyboard_input(),
+        true,
+        |_| None,
+      );
       let _ = ctx.end_frame();
 
       assert!(
@@ -8696,7 +9543,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
@@ -8705,7 +9559,14 @@ frame={idx} repaint_after={:?}\n",
 
     ctx.memory_mut(|mem| mem.request_focus(display_id));
     begin_frame(&ctx, vec![key_press(egui::Key::Enter)]);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(
@@ -8731,7 +9592,14 @@ frame={idx} repaint_after={:?}\n",
 
     // Frame 0: render once so the chrome stores test ids.
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _ = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     let display_id = expect_temp_id(&ctx, "chrome_address_bar_display_id");
@@ -8740,7 +9608,14 @@ frame={idx} repaint_after={:?}\n",
 
     ctx.memory_mut(|mem| mem.request_focus(display_id));
     begin_frame(&ctx, vec![key_press(egui::Key::Space)]);
-    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, ctx.wants_keyboard_input(), true, |_| None);
+    let _actions = chrome_ui_with_bookmarks(
+      &ctx,
+      &mut app,
+      None,
+      ctx.wants_keyboard_input(),
+      true,
+      |_| None,
+    );
     let _ = ctx.end_frame();
 
     assert!(

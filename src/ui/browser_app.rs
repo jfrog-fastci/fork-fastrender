@@ -1,8 +1,12 @@
+use crate::multiprocess::{RendererProcessId, SiteKey};
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
-use crate::multiprocess::{RendererProcessId, SiteKey};
 use crate::ui::about_pages;
+use crate::ui::address_bar::{
+  format_address_bar_url, AddressBarDisplayParts, AddressBarSecurityState,
+};
 use crate::ui::appearance::AppearanceSettings;
+use crate::ui::bookmarks::BookmarkStore;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{
@@ -13,16 +17,18 @@ use crate::ui::protocol_limits::{
   MAX_DEBUG_LOG_BYTES, MAX_DOWNLOAD_FILE_NAME_BYTES, MAX_ERROR_BYTES, MAX_FIND_QUERY_BYTES,
   MAX_TITLE_BYTES, MAX_URL_BYTES, MAX_WARNING_BYTES,
 };
+use crate::ui::renderer_ipc::{
+  validate_rendered_frame_ready, FrameReadyLimits, FrameReadyViolation,
+};
+use crate::ui::security_indicator::SecurityIndicator;
 use crate::ui::untrusted::{
   sanitize_untrusted_select_control, sanitize_untrusted_text, validate_untrusted_favicon_rgba,
   validate_untrusted_navigation_url,
 };
-use crate::ui::renderer_ipc::{
-  validate_rendered_frame_ready, FrameReadyLimits, FrameReadyViolation,
-};
+use crate::ui::url_display;
 use crate::ui::{
-  protocol_limits, resolve_omnibox_input, validate_user_navigation_url_scheme, GlobalHistorySearcher,
-  GlobalHistoryStore, HistoryVisitDelta, OmniboxSuggestion, VisitedUrlStore,
+  protocol_limits, resolve_omnibox_input, validate_user_navigation_url_scheme,
+  GlobalHistorySearcher, GlobalHistoryStore, HistoryVisitDelta, OmniboxSuggestion, VisitedUrlStore,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -969,12 +975,18 @@ mod tab_tests {
     assert_eq!(tab.cursor, CursorKind::Default);
     assert!(!tab.find.open);
     assert!(
-      tab.error.as_deref().is_some_and(|err| err.contains("Tab crashed")),
+      tab
+        .error
+        .as_deref()
+        .is_some_and(|err| err.contains("Tab crashed")),
       "expected crash error message, got {:?}",
       tab.error
     );
     assert!(
-      tab.crash_reason.as_deref().is_some_and(|r| !r.contains('\n')),
+      tab
+        .crash_reason
+        .as_deref()
+        .is_some_and(|r| !r.contains('\n')),
       "expected sanitized crash reason, got {:?}",
       tab.crash_reason
     );
@@ -1117,6 +1129,264 @@ mod worker_message_validation_tests {
   }
 }
 
+#[derive(Debug)]
+pub struct ChromeAddressBarCache {
+  active_url: String,
+  formatted_url: AddressBarDisplayParts,
+  security_indicator: SecurityIndicator,
+  // Cache the displayed (middle-ellipsis) path/query/fragment string so we don't re-truncate every
+  // frame when the active URL is stable.
+  display_max_chars: usize,
+  truncated_path_query_fragment: Option<String>,
+
+  bookmarked_url: String,
+  bookmarks_revision: Option<u64>,
+  url_is_bookmarked: bool,
+
+  loading_stage: Option<StageHeartbeat>,
+  loading_text: String,
+
+  #[cfg(test)]
+  formatted_url_recompute_count: u64,
+  #[cfg(test)]
+  bookmark_lookup_count: u64,
+  #[cfg(test)]
+  loading_text_rebuild_count: u64,
+}
+
+impl Default for ChromeAddressBarCache {
+  fn default() -> Self {
+    let formatted_url = format_address_bar_url("");
+    let security_indicator =
+      address_bar_indicator_from_security_state(formatted_url.security_state);
+    Self {
+      active_url: String::new(),
+      formatted_url,
+      security_indicator,
+      display_max_chars: 0,
+      truncated_path_query_fragment: None,
+      bookmarked_url: String::new(),
+      bookmarks_revision: None,
+      url_is_bookmarked: false,
+      loading_stage: None,
+      loading_text: String::new(),
+      #[cfg(test)]
+      formatted_url_recompute_count: 0,
+      #[cfg(test)]
+      bookmark_lookup_count: 0,
+      #[cfg(test)]
+      loading_text_rebuild_count: 0,
+    }
+  }
+}
+
+impl ChromeAddressBarCache {
+  pub fn update_active_url(&mut self, url: &str, display_max_chars: usize) {
+    if self.active_url == url && self.display_max_chars == display_max_chars {
+      return;
+    }
+    self.active_url.clear();
+    self.active_url.push_str(url);
+    self.formatted_url = format_address_bar_url(url);
+    self.security_indicator =
+      address_bar_indicator_from_security_state(self.formatted_url.security_state);
+    self.display_max_chars = display_max_chars;
+    self.truncated_path_query_fragment = self
+      .formatted_url
+      .display_path_query_fragment
+      .as_deref()
+      .filter(|s| !s.is_empty())
+      .and_then(|rest| {
+        (rest.chars().count() > display_max_chars)
+          .then(|| url_display::truncate_url_middle(rest, display_max_chars))
+      });
+    #[cfg(test)]
+    {
+      self.formatted_url_recompute_count += 1;
+    }
+  }
+
+  pub fn formatted_url(&self) -> &AddressBarDisplayParts {
+    &self.formatted_url
+  }
+
+  pub fn security_indicator(&self) -> SecurityIndicator {
+    self.security_indicator
+  }
+
+  pub fn display_path_query_fragment(&self) -> Option<&str> {
+    let Some(rest) = self
+      .formatted_url
+      .display_path_query_fragment
+      .as_deref()
+      .filter(|s| !s.is_empty())
+    else {
+      return None;
+    };
+    if let Some(truncated) = self.truncated_path_query_fragment.as_deref() {
+      Some(truncated)
+    } else {
+      Some(rest)
+    }
+  }
+
+  pub fn is_url_bookmarked(&mut self, url_trim: &str, store: Option<&BookmarkStore>) -> bool {
+    let Some(store) = store else {
+      self.bookmarks_revision = None;
+      self.bookmarked_url.clear();
+      self.url_is_bookmarked = false;
+      return false;
+    };
+
+    // Avoid hashing/lookup work when the URL is empty (bookmark toggle is disabled).
+    if url_trim.is_empty() {
+      self.bookmarks_revision = Some(store.revision());
+      self.bookmarked_url.clear();
+      self.url_is_bookmarked = false;
+      return false;
+    }
+
+    let revision = store.revision();
+    if self.bookmarks_revision != Some(revision) || self.bookmarked_url != url_trim {
+      self.bookmarks_revision = Some(revision);
+      self.bookmarked_url.clear();
+      self.bookmarked_url.push_str(url_trim);
+      self.url_is_bookmarked = store.contains_url(url_trim);
+      #[cfg(test)]
+      {
+        self.bookmark_lookup_count += 1;
+      }
+    }
+
+    self.url_is_bookmarked
+  }
+
+  pub fn loading_text(&mut self, stage: Option<StageHeartbeat>) -> &str {
+    let stage = stage.filter(|s| *s != StageHeartbeat::Done);
+    if stage != self.loading_stage {
+      self.loading_stage = stage;
+      if let Some(stage) = stage {
+        self.loading_text.clear();
+        self.loading_text.push_str("Loading… ");
+        self.loading_text.push_str(stage.as_str());
+        #[cfg(test)]
+        {
+          self.loading_text_rebuild_count += 1;
+        }
+      }
+    }
+
+    match self.loading_stage {
+      None => "Loading…",
+      Some(_) => self.loading_text.as_str(),
+    }
+  }
+}
+
+fn address_bar_indicator_from_security_state(state: AddressBarSecurityState) -> SecurityIndicator {
+  match state {
+    AddressBarSecurityState::Https => SecurityIndicator::Secure,
+    AddressBarSecurityState::Http => SecurityIndicator::Insecure,
+    AddressBarSecurityState::File
+    | AddressBarSecurityState::About
+    | AddressBarSecurityState::Other => SecurityIndicator::Neutral,
+  }
+}
+
+#[cfg(test)]
+mod chrome_address_bar_cache_tests {
+  use super::ChromeAddressBarCache;
+  use crate::render_control::StageHeartbeat;
+  use crate::ui::bookmarks::BookmarkStore;
+  use crate::ui::security_indicator::SecurityIndicator;
+
+  #[test]
+  fn url_cache_invalidates_on_url_change_and_tab_switch() {
+    let mut cache = ChromeAddressBarCache::default();
+
+    cache.update_active_url("https://example.com/a", 80);
+    assert_eq!(cache.security_indicator(), SecurityIndicator::Secure);
+    assert_eq!(cache.formatted_url_recompute_count, 1);
+
+    // Same URL: no recompute (steady state).
+    cache.update_active_url("https://example.com/a", 80);
+    assert_eq!(cache.formatted_url_recompute_count, 1);
+
+    // Tab switch (different URL).
+    cache.update_active_url("http://other.example/b", 80);
+    assert_eq!(cache.security_indicator(), SecurityIndicator::Insecure);
+    assert_eq!(cache.formatted_url_recompute_count, 2);
+
+    // Switching back to the original tab should recompute (active URL changed again).
+    cache.update_active_url("https://example.com/a", 80);
+    assert_eq!(cache.formatted_url_recompute_count, 3);
+
+    // Changing the display max chars should trigger recompute so truncation stays correct.
+    cache.update_active_url("https://example.com/a", 40);
+    assert_eq!(cache.formatted_url_recompute_count, 4);
+  }
+
+  #[test]
+  fn bookmark_cache_invalidates_on_revision_bump() {
+    let mut cache = ChromeAddressBarCache::default();
+    let mut store = BookmarkStore::default();
+    let url = "https://example.com/";
+
+    assert!(!cache.is_url_bookmarked(url, Some(&store)));
+    assert_eq!(cache.bookmark_lookup_count, 1);
+
+    // Same URL + revision: no further lookups.
+    assert!(!cache.is_url_bookmarked(url, Some(&store)));
+    assert_eq!(cache.bookmark_lookup_count, 1);
+
+    // Store mutation bumps revision and should invalidate the cache.
+    store.toggle(url, None);
+    assert!(cache.is_url_bookmarked(url, Some(&store)));
+    assert_eq!(cache.bookmark_lookup_count, 2);
+
+    // Same URL + new revision: cached.
+    assert!(cache.is_url_bookmarked(url, Some(&store)));
+    assert_eq!(cache.bookmark_lookup_count, 2);
+  }
+
+  #[test]
+  fn loading_text_cache_rebuilds_only_when_stage_changes() {
+    let mut cache = ChromeAddressBarCache::default();
+
+    assert_eq!(cache.loading_text(None), "Loading…");
+    assert_eq!(cache.loading_text_rebuild_count, 0);
+
+    // Same stage: no rebuild.
+    assert_eq!(cache.loading_text(None), "Loading…");
+    assert_eq!(cache.loading_text_rebuild_count, 0);
+
+    // Stage appears: build string once.
+    assert_eq!(
+      cache.loading_text(Some(StageHeartbeat::Layout)),
+      "Loading… layout"
+    );
+    assert_eq!(cache.loading_text_rebuild_count, 1);
+
+    // Same stage: no rebuild.
+    assert_eq!(
+      cache.loading_text(Some(StageHeartbeat::Layout)),
+      "Loading… layout"
+    );
+    assert_eq!(cache.loading_text_rebuild_count, 1);
+
+    // Done is treated as None.
+    assert_eq!(cache.loading_text(Some(StageHeartbeat::Done)), "Loading…");
+    assert_eq!(cache.loading_text_rebuild_count, 1);
+
+    // New stage: rebuild.
+    assert_eq!(
+      cache.loading_text(Some(StageHeartbeat::CssParse)),
+      "Loading… css_parse"
+    );
+    assert_eq!(cache.loading_text_rebuild_count, 2);
+  }
+}
+
 #[derive(Debug, Default)]
 pub struct ChromeState {
   pub address_bar_text: String,
@@ -1131,6 +1401,7 @@ pub struct ChromeState {
   pub request_focus_address_bar: bool,
   /// One-frame request flag consumed by `chrome_ui` to select all text in the address bar.
   pub request_select_all_address_bar: bool,
+  pub address_bar_cache: ChromeAddressBarCache,
   /// Cached remote search query suggestions (typeahead) for the current omnibox query.
   ///
   /// This is egui-agnostic state: the windowed front-end owns the background fetch worker and
@@ -2473,7 +2744,11 @@ impl BrowserAppState {
           && (pix_w as u64).saturating_mul(pix_h as u64) <= limits.max_pixels;
         let viewport_nonzero = vp_w != 0 && vp_h != 0;
 
-        let mut dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+        let mut dpr = if dpr.is_finite() && dpr > 0.0 {
+          dpr
+        } else {
+          1.0
+        };
         // Keep in sync with `src/ui/browser_limits.rs`'s renderer DPR clamp range.
         dpr = dpr.clamp(0.1, limits.max_dpr);
 
@@ -2483,8 +2758,8 @@ impl BrowserAppState {
         let expected_h = expected_h.max(1.0).min(u32::MAX as f64) as u32;
 
         let tolerance_px = 1u32;
-        let dims_match = pix_w.abs_diff(expected_w) <= tolerance_px
-          && pix_h.abs_diff(expected_h) <= tolerance_px;
+        let dims_match =
+          pix_w.abs_diff(expected_w) <= tolerance_px && pix_h.abs_diff(expected_h) <= tolerance_px;
 
         if pixmap_nonzero && pixmap_within_limits && viewport_nonzero && dims_match {
           if let Some(tab) = self.tab_mut(tab_id) {
@@ -2690,7 +2965,10 @@ impl BrowserAppState {
         if let Some(url) = safe_url.as_ref() {
           // Record global history. This is the single canonical source of truth for what counts as a
           // "visit" (scheme allowlist, fragment stripping, `about:` filtering, etc).
-          if let Some(delta) = self.history.record_with_delta(url.clone(), safe_title.clone()) {
+          if let Some(delta) = self
+            .history
+            .record_with_delta(url.clone(), safe_title.clone())
+          {
             update.history_changed = true;
             // Keep omnibox visited history consistent by recording the normalized URL from the
             // delta (fragment stripped, scheme allowlist applied).
@@ -3339,7 +3617,10 @@ mod browser_app_tests {
     let mut app = BrowserAppState::new_with_initial_tab("https://example.com/".to_string());
     let tab_id = app.active_tab_id().unwrap();
 
-    let before_tab_url = app.active_tab().and_then(|t| t.current_url()).map(str::to_string);
+    let before_tab_url = app
+      .active_tab()
+      .and_then(|t| t.current_url())
+      .map(str::to_string);
     let before_address_bar = app.chrome.address_bar_text.clone();
 
     let update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
@@ -3359,7 +3640,10 @@ mod browser_app_tests {
       "expected no history deltas for disallowed scheme"
     );
     assert_eq!(
-      app.active_tab().and_then(|t| t.current_url()).map(str::to_string),
+      app
+        .active_tab()
+        .and_then(|t| t.current_url())
+        .map(str::to_string),
       before_tab_url,
       "current_url must not be clobbered by disallowed scheme"
     );
@@ -3396,7 +3680,10 @@ mod browser_app_tests {
       MAX_URL_BYTES
     );
     assert!(
-      tab.title.as_deref().is_some_and(|t| t.len() <= MAX_TITLE_BYTES),
+      tab
+        .title
+        .as_deref()
+        .is_some_and(|t| t.len() <= MAX_TITLE_BYTES),
       "expected title to be clamped"
     );
 
@@ -3445,7 +3732,10 @@ mod browser_app_tests {
     let tab_b = TabId(2);
 
     app.push_tab(BrowserTabState::new(tab_a, "about:blank".to_string()), true);
-    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(tab_b, "about:newtab".to_string()),
+      false,
+    );
     assert_eq!(app.active_tab_id(), Some(tab_a));
 
     let viewport_css = (1, 1);
@@ -3468,7 +3758,10 @@ mod browser_app_tests {
       next_tick: None,
     };
 
-    let update = app.apply_worker_msg(WorkerToUi::FrameReady { tab_id: tab_b, frame });
+    let update = app.apply_worker_msg(WorkerToUi::FrameReady {
+      tab_id: tab_b,
+      frame,
+    });
 
     assert!(
       !update.request_redraw,
@@ -4348,7 +4641,8 @@ mod renderer_ipc_violation_tests {
     assert!(tab.renderer_crashed, "expected tab to be marked crashed");
     assert!(tab.crashed, "expected tab crash flag to be set");
     assert!(
-      tab.crash_reason
+      tab
+        .crash_reason
         .as_deref()
         .is_some_and(|reason| reason.contains("Renderer protocol violation")),
       "expected crash reason to mention protocol violation, got {:?}",
@@ -4391,7 +4685,8 @@ mod renderer_ipc_violation_tests {
       assert!(tab.renderer_crashed, "expected tab to be marked crashed");
       assert!(tab.crashed, "expected tab crash flag to be set");
       assert!(
-        tab.crash_reason
+        tab
+          .crash_reason
           .as_deref()
           .is_some_and(|reason| reason.contains("Renderer protocol violation")),
         "expected crash reason to mention protocol violation, got {:?}",
