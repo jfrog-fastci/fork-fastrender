@@ -735,45 +735,89 @@ fn readable_stream_ctor_construct(
     );
     match start_result {
       Ok(start_val) => {
-        // If `start()` returned a promise, ensure rejections error the stream (spec shape) instead
-        // of surfacing as unhandled rejections / leaving the stream readable.
-        if let Value::Object(promise_obj) = start_val {
-          if scope.heap().is_promise_object(promise_obj) {
-            let rejected_call_id = with_realm_state_mut(vm, scope, callee, |state, _heap| {
-              Ok(state.readable_stream_start_rejected_call_id)
-            })?;
-            let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
-            let realm_slot = Value::Number(realm_id.to_raw() as f64);
+        // If `start()` returned a promise/thenable, ensure rejections error the stream (spec shape)
+        // instead of surfacing as unhandled rejections / leaving the stream readable.
+        //
+        // Note: `PromiseResolve` can throw (e.g. if a Promise `constructor` getter throws), and
+        // `PerformPromiseThen` can throw (Promise species side effects). Per WHATWG Streams, we
+        // treat these as start-algorithm failures and error the stream without throwing from the
+        // constructor.
+        let attach_result: Result<(), VmError> = (|| {
+          let start_promise = promise_resolve_with_host_and_hooks(vm, scope, host, hooks, start_val)?;
+          let Value::Object(promise_obj) = start_promise else {
+            return Ok(());
+          };
+          if !scope.heap().is_promise_object(promise_obj) {
+            return Ok(());
+          }
 
-            // Root captured values + promise across callback allocation.
-            let mut scope = scope.reborrow();
-            scope.push_root(Value::Object(obj))?;
-            scope.push_root(start_val)?;
-            scope.push_root(realm_slot)?;
+          let rejected_call_id = with_realm_state_mut(vm, scope, callee, |state, _heap| {
+            Ok(state.readable_stream_start_rejected_call_id)
+          })?;
+          let realm_id = realm_id_for_binding_call(vm, scope.heap(), callee)?;
+          let realm_slot = Value::Number(realm_id.to_raw() as f64);
 
-            let on_rejected_name = scope.alloc_string("ReadableStream start rejected")?;
-            scope.push_root(Value::String(on_rejected_name))?;
-            let on_rejected = scope.alloc_native_function_with_slots(
-              rejected_call_id,
-              None,
-              on_rejected_name,
-              1,
-              &[realm_slot, Value::Object(obj)],
-            )?;
-            scope.push_root(Value::Object(on_rejected))?;
+          // Root captured values + promise across callback allocation.
+          let mut scope = scope.reborrow();
+          scope.push_root(Value::Object(obj))?;
+          scope.push_root(start_promise)?;
+          scope.push_root(realm_slot)?;
 
-            let derived = perform_promise_then_with_host_and_hooks(
+          let on_rejected_name = scope.alloc_string("ReadableStream start rejected")?;
+          scope.push_root(Value::String(on_rejected_name))?;
+          let on_rejected = scope.alloc_native_function_with_slots(
+            rejected_call_id,
+            None,
+            on_rejected_name,
+            1,
+            &[realm_slot, Value::Object(obj)],
+          )?;
+          scope.push_root(Value::Object(on_rejected))?;
+
+          let derived = perform_promise_then_with_host_and_hooks(
+            vm,
+            &mut scope,
+            host,
+            hooks,
+            start_promise,
+            None,
+            Some(Value::Object(on_rejected)),
+          )?;
+          // The derived promise is internal; mark it handled so internal failures do not trigger
+          // `unhandledrejection`.
+          mark_promise_handled(&mut scope, derived)?;
+          Ok(())
+        })();
+
+        if let Err(err) = attach_result {
+          let msg: String = match err {
+            VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. } => {
+              scope.push_root(reason)?;
+              match scope.heap_mut().to_string(reason) {
+                Ok(reason_string) => match scope.heap().get_string(reason_string) {
+                  Ok(s) => s.to_utf8_lossy(),
+                  Err(_) => "ReadableStream start threw".to_string(),
+                },
+                Err(_) => "ReadableStream start threw".to_string(),
+              }
+            }
+            VmError::TypeError(message) => message.to_string(),
+            VmError::NotCallable => "value is not callable".to_string(),
+            VmError::NotConstructable => "value is not a constructor".to_string(),
+            other => return Err(other),
+          };
+
+          let pending = error_readable_stream(vm, scope, callee, obj, msg)?;
+          if let Some(pending) = pending {
+            settle_pending_read(
               vm,
-              &mut scope,
+              scope,
               host,
               hooks,
-              Value::Object(promise_obj),
-              None,
-              Some(Value::Object(on_rejected)),
+              pending.reader,
+              pending.roots,
+              pending.outcome,
             )?;
-            // The derived promise is internal; mark it handled so internal failures do not trigger
-            // `unhandledrejection`.
-            mark_promise_handled(&mut scope, derived)?;
           }
         }
       }
