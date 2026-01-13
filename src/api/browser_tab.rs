@@ -7326,7 +7326,7 @@ impl BrowserTab {
   ///
   /// Each iteration:
   ///
-  /// 1. drains tasks/microtasks/timers until idle (bounded by `RunLimits`),
+  /// 1. drains tasks/microtasks/timers/idle callbacks until idle (bounded by `RunLimits`),
   /// 2. runs one `requestAnimationFrame` turn (if callbacks are queued),
   /// 3. runs the microtask checkpoint after rAF callbacks,
   /// 4. renders if needed.
