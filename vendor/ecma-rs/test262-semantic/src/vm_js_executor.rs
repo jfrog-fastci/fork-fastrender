@@ -1921,6 +1921,63 @@ assert.sameValue(realm2.global.Object !== other.Object, true, 'createRealm is re
   }
 
   #[test]
+  fn create_realm_teardown_clears_vm_owned_state() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(DEFAULT_HEAP_MAX_BYTES, DEFAULT_HEAP_GC_THRESHOLD_BYTES));
+    let mut runtime = vm_js::JsRuntime::new(vm, heap)?;
+    install_test262_host_object(&mut runtime)?;
+
+    // Baseline roots for the main realm/runtime.
+    let baseline_roots = runtime.heap.persistent_root_count();
+
+    let mut hooks = Test262ModuleHooks::new(Path::new("test/create_realm_teardown.js"));
+
+    // Create a new realm, then run a tagged template literal inside that realm so the VM populates
+    // its per-realm template registry (`GetTemplateObject` cache) with a persistent root.
+    let source = r#"
+      (function () {
+        var realm = $262.createRealm();
+        realm.evalScript("function tag(s) { return s; } tag`hello`;");
+      })();
+    "#;
+    let source_text = Arc::new(SourceText::new_charged(
+      &mut runtime.heap,
+      "create_realm_teardown.js",
+      source,
+    )?);
+    runtime.exec_script_source_with_hooks(&mut hooks, source_text)?;
+
+    assert!(
+      !hooks.created_realms.is_empty(),
+      "expected $262.createRealm to record the created realm for teardown"
+    );
+    let created_realm_id = hooks.created_realms[0].id();
+
+    // The created realm (and the VM template registry entry) should add new persistent roots.
+    assert!(
+      runtime.heap.persistent_root_count() > baseline_roots,
+      "expected created realm to allocate persistent roots"
+    );
+
+    // Teardown must clear both heap-owned realm roots and VM-owned per-realm state.
+    teardown_created_realms(&mut runtime, &mut hooks);
+    assert_eq!(
+      runtime.heap.persistent_root_count(),
+      baseline_roots,
+      "expected $262.createRealm teardown to restore baseline persistent roots"
+    );
+
+    // The VM should not allow switching to a torn-down realm.
+    let err = runtime
+      .vm
+      .load_realm_state(&mut runtime.heap, created_realm_id)
+      .expect_err("expected load_realm_state to fail after realm teardown");
+    assert!(matches!(err, VmError::InvariantViolation("unknown realm id")));
+
+    Ok(())
+  }
+
+  #[test]
   fn module_without_separator_executes_entire_source_as_module() {
     let exec = VmJsExecutor::default();
     let cancel = Arc::new(AtomicBool::new(false));
