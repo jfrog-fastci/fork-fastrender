@@ -443,21 +443,18 @@ fn shared_svg_fontdb() -> Arc<resvg::usvg::fontdb::Database> {
   }))
 }
 
-fn usvg_options_for_url(url: &str) -> resvg::usvg::Options<'_> {
+fn usvg_options_for_url(_url: &str) -> resvg::usvg::Options<'_> {
   let mut options = resvg::usvg::Options::default();
   options.fontdb = shared_svg_fontdb();
 
-  if let Ok(parsed) = Url::parse(url) {
-    if parsed.scheme() == "file" {
-      if let Ok(path) = parsed.to_file_path() {
-        if let Some(dir) = path.parent() {
-          options.resources_dir = std::fs::canonicalize(dir)
-            .ok()
-            .or_else(|| Some(dir.to_path_buf()));
-        }
-      }
-    }
-  }
+  // Security: do not give `usvg`/`resvg` a filesystem base directory for resolving relative
+  // resources (e.g. `<image href="...">`). In sandboxed renderers all filesystem access must be
+  // mediated by FastRender's `ResourceFetcher` and policy enforcement; external SVG resources are
+  // instead fetched and inlined during `preprocess_svg_markup` via the `inline_svg_*` pipeline.
+  //
+  // Keeping this unset prevents downstream libraries from performing direct disk reads when
+  // rendering `file://` SVGs.
+  options.resources_dir = None;
 
   options
 }
