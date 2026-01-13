@@ -70,6 +70,11 @@ const MAX_READABLE_STREAM_STRING_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 /// `Uint8Array` / `ArrayBuffer` chunks, so we cap the per-chunk host allocation.
 const MAX_READABLE_STREAM_BYTE_CHUNK_BYTES: usize = 32 * 1024 * 1024;
 
+/// Default `highWaterMark` used by `ReadableStreamDefaultController`.
+///
+/// This matches the spec default for default controllers.
+const DEFAULT_READABLE_STREAM_HIGH_WATER_MARK: f64 = 1.0;
+
 // --- Hidden, internal property keys -----------------------------------------------------------
 
 const READABLE_STREAM_READER_PENDING_RESOLVE_KEY: &str =
@@ -201,6 +206,7 @@ struct PendingReadRoots {
 struct StreamState {
   locked: bool,
   state: StreamLifecycleState,
+  high_water_mark: f64,
   /// `true` if no more bytes will be enqueued into the stream.
   ///
   /// For fixed-byte streams (e.g. `create_readable_byte_stream_from_bytes`), this is `true` from
@@ -227,10 +233,11 @@ struct StreamState {
 }
 
 impl StreamState {
-  fn new_empty() -> Self {
+  fn new_empty(high_water_mark: f64) -> Self {
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      high_water_mark,
       close_requested: false,
       error_message: None,
       bytes: Vec::new(),
@@ -244,10 +251,11 @@ impl StreamState {
     }
   }
 
-  fn new_empty_strings() -> Self {
+  fn new_empty_strings(high_water_mark: f64) -> Self {
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      high_water_mark,
       close_requested: false,
       error_message: None,
       bytes: Vec::new(),
@@ -261,10 +269,11 @@ impl StreamState {
     }
   }
 
-  fn new_empty_uninitialized() -> Self {
+  fn new_empty_uninitialized(high_water_mark: f64) -> Self {
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      high_water_mark,
       close_requested: false,
       error_message: None,
       bytes: Vec::new(),
@@ -278,11 +287,12 @@ impl StreamState {
     }
   }
 
-  fn new_from_bytes(bytes: Vec<u8>) -> Self {
+  fn new_from_bytes(bytes: Vec<u8>, high_water_mark: f64) -> Self {
     let queue = chunk_sizes_for_len(bytes.len());
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      high_water_mark,
       close_requested: true,
       error_message: None,
       bytes,
@@ -296,10 +306,11 @@ impl StreamState {
     }
   }
 
-  fn new_lazy(init: LazyInit) -> Self {
+  fn new_lazy(init: LazyInit, high_water_mark: f64) -> Self {
     Self {
       locked: false,
       state: StreamLifecycleState::Readable,
+      high_water_mark,
       close_requested: true,
       error_message: None,
       bytes: Vec::new(),
@@ -520,6 +531,33 @@ fn readable_stream_ctor_construct(
     },
   )?;
 
+  // Parse strategy `{ highWaterMark }` (minimal).
+  let mut high_water_mark: f64 = DEFAULT_READABLE_STREAM_HIGH_WATER_MARK;
+  let strategy_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  if !matches!(strategy_val, Value::Undefined | Value::Null) {
+    let strategy_obj = scope.to_object(vm, host, hooks, strategy_val)?;
+    scope.push_root(Value::Object(strategy_obj))?;
+    let high_water_mark_key = alloc_key(scope, "highWaterMark")?;
+    let high_water_mark_val =
+      vm.get_with_host_and_hooks(host, scope, hooks, strategy_obj, high_water_mark_key)?;
+    if !matches!(high_water_mark_val, Value::Undefined) {
+      let mut parsed = scope.heap_mut().to_number(high_water_mark_val)?;
+      if parsed.is_nan() || parsed < 0.0 {
+        let intr = require_intrinsics(vm, "ReadableStream requires intrinsics")?;
+        return Err(VmError::Throw(new_range_error(
+          scope,
+          intr,
+          "The highWaterMark value is invalid.",
+        )?));
+      }
+      // Canonicalize -0 to +0.
+      if parsed == 0.0 {
+        parsed = 0.0;
+      }
+      high_water_mark = parsed;
+    }
+  }
+
   let underlying_source = args.get(0).copied().unwrap_or(Value::Undefined);
 
   let mut start_fn: Value = Value::Undefined;
@@ -542,9 +580,9 @@ fn readable_stream_ctor_construct(
     state.streams.insert(
       WeakGcObject::from(obj),
       if has_start {
-        StreamState::new_empty_uninitialized()
+        StreamState::new_empty_uninitialized(high_water_mark)
       } else {
-        StreamState::new_empty()
+        StreamState::new_empty(high_water_mark)
       },
     );
     Ok(())
@@ -3255,6 +3293,44 @@ fn readable_stream_controller_error_native(
   Ok(Value::Undefined)
 }
 
+fn readable_stream_controller_desired_size_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let controller_obj = require_readable_stream_controller(scope, this)?;
+  let stream_obj = readable_stream_controller_stream(scope, controller_obj)?;
+
+  with_realm_state_mut(vm, scope, callee, |state, _heap| {
+    let stream_state = state
+      .streams
+      .get(&WeakGcObject::from(stream_obj))
+      .ok_or(VmError::TypeError(
+        "ReadableStreamDefaultController: illegal invocation",
+      ))?;
+
+    // Match the web-platform shape: closed/errored streams report `null`.
+    if stream_state.state != StreamLifecycleState::Readable {
+      return Ok(Value::Null);
+    }
+
+    let queue_size: f64 = match stream_state.kind {
+      StreamKind::Bytes => stream_state
+        .bytes
+        .len()
+        .saturating_sub(stream_state.offset) as f64,
+      StreamKind::Strings => stream_state.strings.len() as f64,
+      StreamKind::Uninitialized => 0.0,
+    };
+
+    Ok(Value::Number(stream_state.high_water_mark - queue_size))
+  })
+}
+
 fn reader_ctor_call(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
@@ -3886,7 +3962,10 @@ fn create_readable_byte_stream_dynamic(
       .streams
       // Dynamic streams may become either byte streams or string streams depending on the first
       // enqueued chunk (e.g. `TransformStream` may output strings via `TextDecoderStream`).
-      .insert(WeakGcObject::from(obj), StreamState::new_empty_uninitialized());
+      .insert(
+        WeakGcObject::from(obj),
+        StreamState::new_empty_uninitialized(DEFAULT_READABLE_STREAM_HIGH_WATER_MARK),
+      );
     Ok(())
   })?;
 
@@ -4131,7 +4210,10 @@ pub(crate) fn create_readable_byte_stream_from_bytes(
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state
       .streams
-      .insert(WeakGcObject::from(obj), StreamState::new_from_bytes(bytes));
+      .insert(
+        WeakGcObject::from(obj),
+        StreamState::new_from_bytes(bytes, DEFAULT_READABLE_STREAM_HIGH_WATER_MARK),
+      );
     Ok(())
   })?;
 
@@ -4162,7 +4244,7 @@ pub(crate) fn create_readable_byte_stream_lazy(
   with_realm_state_mut(vm, scope, callee, |state, _heap| {
     state.streams.insert(
       WeakGcObject::from(obj),
-      StreamState::new_lazy(Box::new(init)),
+      StreamState::new_lazy(Box::new(init), DEFAULT_READABLE_STREAM_HIGH_WATER_MARK),
     );
     Ok(())
   })?;
@@ -5969,6 +6051,36 @@ pub fn install_window_streams_bindings(
     readable_controller_proto,
     controller_error_key,
     data_desc(Value::Object(controller_error_fn), true),
+  )?;
+
+  let controller_desired_size_get_call_id: NativeFunctionId =
+    vm.register_native_call(readable_stream_controller_desired_size_get_native)?;
+  let controller_desired_size_get_name = scope.alloc_string("get desiredSize")?;
+  scope.push_root(Value::String(controller_desired_size_get_name))?;
+  let controller_desired_size_get_fn = scope.alloc_native_function_with_slots(
+    controller_desired_size_get_call_id,
+    None,
+    controller_desired_size_get_name,
+    0,
+    &[Value::Number(realm_id.to_raw() as f64)],
+  )?;
+  scope.push_root(Value::Object(controller_desired_size_get_fn))?;
+  scope.heap_mut().object_set_prototype(
+    controller_desired_size_get_fn,
+    Some(intr.function_prototype()),
+  )?;
+  let controller_desired_size_key = alloc_key(&mut scope, "desiredSize")?;
+  scope.define_property(
+    readable_controller_proto,
+    controller_desired_size_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(controller_desired_size_get_fn),
+        set: Value::Undefined,
+      },
+    },
   )?;
 
   // --- ReadableStreamDefaultReader --------------------------------------------
