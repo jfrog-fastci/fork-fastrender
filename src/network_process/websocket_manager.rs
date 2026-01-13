@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// Stable identifier for a renderer IPC channel connected to the network process.
 ///
@@ -35,9 +35,22 @@ impl Default for WebSocketManagerLimits {
 pub enum WebSocketCommand {
   /// Establish a new WebSocket connection.
   Connect { conn_id: WebSocketConnId },
+  /// Send a text message over an established WebSocket connection.
+  ///
+  /// Unknown/closed `conn_id`s are ignored (best-effort) so a compromised renderer cannot crash the
+  /// network process by racing teardown.
+  SendText {
+    conn_id: WebSocketConnId,
+    text: String,
+  },
   /// Renderer-initiated close (best-effort; the connection remains active until the backend
   /// confirms closure).
   Close { conn_id: WebSocketConnId },
+  /// Best-effort abort used during renderer teardown.
+  ///
+  /// This is treated the same as `Close` today, but is kept distinct because future backends may
+  /// prefer an immediate abort (no close handshake) during process shutdown.
+  Shutdown { conn_id: WebSocketConnId },
 }
 
 /// Network process → renderer WebSocket events.
@@ -67,17 +80,55 @@ pub trait WebSocketEventSink {
 /// async task, etc.).
 pub trait WebSocketBackend {
   fn connect(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId);
+  fn send_text(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId, text: String);
   fn request_close(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId);
 }
 
 impl WebSocketBackend for () {
   fn connect(&mut self, _renderer: RendererChannelId, _conn_id: WebSocketConnId) {}
+  fn send_text(&mut self, _renderer: RendererChannelId, _conn_id: WebSocketConnId, _text: String) {}
   fn request_close(&mut self, _renderer: RendererChannelId, _conn_id: WebSocketConnId) {}
 }
 
 const REJECT_CLOSE_CODE: u16 = 1008; // Policy Violation.
+const REJECT_REASON_DUPLICATE_CONN_ID: &str = "websocket conn_id already in use";
 const REJECT_REASON_PER_RENDERER: &str = "websocket connection limit exceeded";
 const REJECT_REASON_GLOBAL: &str = "global websocket connection limit exceeded";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebSocketConnState {
+  Open,
+  Closing,
+}
+
+/// Renderer-side event router for WebSocket IPC.
+///
+/// The renderer may observe late events for connections it has already torn down (e.g. the network
+/// process sends a `Close` after the renderer dropped its local handle). These must be treated as
+/// benign races and ignored.
+#[derive(Debug, Default)]
+pub struct RendererWebSocketBackend {
+  conns: HashMap<WebSocketConnId, ()>,
+}
+
+impl RendererWebSocketBackend {
+  pub fn register(&mut self, conn_id: WebSocketConnId) {
+    self.conns.insert(conn_id, ());
+  }
+
+  pub fn unregister(&mut self, conn_id: WebSocketConnId) {
+    self.conns.remove(&conn_id);
+  }
+
+  /// Returns `true` when the event is for a known connection.
+  pub fn handle_event(&mut self, event: &WebSocketEvent) -> bool {
+    let conn_id = match *event {
+      WebSocketEvent::Error { conn_id, .. } => conn_id,
+      WebSocketEvent::Close { conn_id, .. } => conn_id,
+    };
+    self.conns.contains_key(&conn_id)
+  }
+}
 
 /// Tracks active WebSocket connections per renderer IPC channel and enforces hard caps.
 ///
@@ -87,8 +138,7 @@ pub struct WebSocketManager<B: WebSocketBackend> {
   limits: WebSocketManagerLimits,
   backend: B,
   active_total: usize,
-  active_per_renderer: HashMap<RendererChannelId, usize>,
-  active_connections: HashSet<(RendererChannelId, WebSocketConnId)>,
+  active_connections: HashMap<RendererChannelId, HashMap<WebSocketConnId, WebSocketConnState>>,
 }
 
 impl<B: WebSocketBackend> WebSocketManager<B> {
@@ -97,8 +147,7 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
       limits,
       backend,
       active_total: 0,
-      active_per_renderer: HashMap::new(),
-      active_connections: HashSet::new(),
+      active_connections: HashMap::new(),
     }
   }
 
@@ -111,11 +160,15 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
   }
 
   pub fn active_for_renderer(&self, renderer: RendererChannelId) -> usize {
-    self.active_per_renderer.get(&renderer).copied().unwrap_or(0)
+    self
+      .active_connections
+      .get(&renderer)
+      .map(|m| m.len())
+      .unwrap_or(0)
   }
 
   pub fn tracked_connection_count(&self) -> usize {
-    self.active_connections.len()
+    self.active_total
   }
 
   pub fn backend(&self) -> &B {
@@ -135,11 +188,25 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
   ) {
     match cmd {
       WebSocketCommand::Connect { conn_id } => self.handle_connect(renderer, conn_id, sink),
+      WebSocketCommand::SendText { conn_id, text } => {
+        let Some(state) = self
+          .active_connections
+          .get(&renderer)
+          .and_then(|m| m.get(&conn_id))
+        else {
+          return;
+        };
+        if *state == WebSocketConnState::Open {
+          self.backend.send_text(renderer, conn_id, text);
+        }
+      }
       WebSocketCommand::Close { conn_id } => {
         // Best-effort: the connection remains active until `on_connection_closed` is called.
-        if self.active_connections.contains(&(renderer, conn_id)) {
-          self.backend.request_close(renderer, conn_id);
-        }
+        self.request_close_if_tracked(renderer, conn_id);
+      }
+      WebSocketCommand::Shutdown { conn_id } => {
+        // Treat unknown conn_ids as a benign race during shutdown.
+        self.request_close_if_tracked(renderer, conn_id);
       }
     }
   }
@@ -150,8 +217,17 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
     conn_id: WebSocketConnId,
     sink: &mut dyn WebSocketEventSink,
   ) {
-    // Ignore duplicate Connects for an already-active conn_id; this avoids active-count drift.
-    if self.active_connections.contains(&(renderer, conn_id)) {
+    // Reject duplicate Connects deterministically without touching the existing connection state.
+    //
+    // This prevents a compromised renderer from reusing conn_id values to override an existing
+    // connection entry (which would risk misdelivering events to the wrong connection / UAF-style
+    // logic bugs).
+    if self
+      .active_connections
+      .get(&renderer)
+      .map_or(false, |m| m.contains_key(&conn_id))
+    {
+      self.reject_connect(conn_id, REJECT_REASON_DUPLICATE_CONN_ID, sink);
       return;
     }
 
@@ -167,11 +243,12 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
     }
 
     // Accept: record counts before invoking backend so failure paths cannot underflow.
-    self.active_connections.insert((renderer, conn_id));
-    self.active_total = self.active_total.saturating_add(1);
     self
-      .active_per_renderer
-      .insert(renderer, renderer_active.saturating_add(1));
+      .active_connections
+      .entry(renderer)
+      .or_default()
+      .insert(conn_id, WebSocketConnState::Open);
+    self.active_total = self.active_total.saturating_add(1);
 
     self.backend.connect(renderer, conn_id);
   }
@@ -193,30 +270,42 @@ impl<B: WebSocketBackend> WebSocketManager<B> {
   ///
   /// The network backend should call this exactly once per accepted connection.
   pub fn on_connection_closed(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId) {
-    if !self.active_connections.remove(&(renderer, conn_id)) {
+    let Some(renderer_conns) = self.active_connections.get_mut(&renderer) else {
       return;
+    };
+    if renderer_conns.remove(&conn_id).is_none() {
+      return;
+    }
+    if renderer_conns.is_empty() {
+      self.active_connections.remove(&renderer);
     }
 
     self.active_total = self.active_total.saturating_sub(1);
-    let Some(current) = self.active_per_renderer.get_mut(&renderer) else {
-      return;
-    };
-    *current = current.saturating_sub(1);
-    if *current == 0 {
-      self.active_per_renderer.remove(&renderer);
-    }
   }
 
   /// Drop all state associated with a renderer IPC channel (e.g. renderer crashed/disconnected).
   pub fn on_renderer_disconnected(&mut self, renderer: RendererChannelId) {
-    let conns: Vec<WebSocketConnId> = self
+    let Some(conns) = self.active_connections.remove(&renderer) else {
+      return;
+    };
+    // Drop all conn_ids first so a reused `RendererChannelId` cannot reference stale connections.
+    let removed = conns.len();
+    self.active_total = self.active_total.saturating_sub(removed);
+  }
+
+  fn request_close_if_tracked(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId) {
+    let Some(state) = self
       .active_connections
-      .iter()
-      .filter_map(|(r, conn)| if *r == renderer { Some(*conn) } else { None })
-      .collect();
-    for conn_id in conns {
-      self.on_connection_closed(renderer, conn_id);
+      .get_mut(&renderer)
+      .and_then(|m| m.get_mut(&conn_id))
+    else {
+      return;
+    };
+    if *state == WebSocketConnState::Closing {
+      return;
     }
+    *state = WebSocketConnState::Closing;
+    self.backend.request_close(renderer, conn_id);
   }
 }
 
@@ -238,12 +327,17 @@ mod tests {
   #[derive(Default)]
   struct CountingBackend {
     connect_calls: Vec<(RendererChannelId, WebSocketConnId)>,
+    send_calls: Vec<(RendererChannelId, WebSocketConnId, String)>,
     close_calls: Vec<(RendererChannelId, WebSocketConnId)>,
   }
 
   impl WebSocketBackend for CountingBackend {
     fn connect(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId) {
       self.connect_calls.push((renderer, conn_id));
+    }
+
+    fn send_text(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId, text: String) {
+      self.send_calls.push((renderer, conn_id, text));
     }
 
     fn request_close(&mut self, renderer: RendererChannelId, conn_id: WebSocketConnId) {
@@ -382,5 +476,85 @@ mod tests {
     assert_eq!(sink.error, 9_998);
     assert_eq!(sink.close, 9_998);
   }
-}
 
+  #[test]
+  fn duplicate_conn_id_is_rejected_deterministically() {
+    let limits = WebSocketManagerLimits {
+      max_active_per_renderer: 10,
+      max_active_total: 10,
+    };
+    let backend = CountingBackend::default();
+    let mut mgr = WebSocketManager::new(limits, backend);
+    let mut sink = FakeSink::default();
+    let renderer = RendererChannelId(1);
+
+    mgr.handle_command(renderer, &mut sink, WebSocketCommand::Connect { conn_id: 10 });
+    assert_eq!(mgr.active_for_renderer(renderer), 1);
+    assert_eq!(mgr.backend().connect_calls.len(), 1);
+    assert!(sink.events.is_empty());
+
+    mgr.handle_command(renderer, &mut sink, WebSocketCommand::Connect { conn_id: 10 });
+    assert_eq!(mgr.active_for_renderer(renderer), 1);
+    assert_eq!(mgr.backend().connect_calls.len(), 1);
+    assert_eq!(
+      sink.events,
+      vec![
+        WebSocketEvent::Error {
+          conn_id: 10,
+          message: REJECT_REASON_DUPLICATE_CONN_ID,
+        },
+        WebSocketEvent::Close {
+          conn_id: 10,
+          code: REJECT_CLOSE_CODE,
+          reason: REJECT_REASON_DUPLICATE_CONN_ID,
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn send_unknown_conn_id_is_ignored() {
+    let limits = WebSocketManagerLimits {
+      max_active_per_renderer: 10,
+      max_active_total: 10,
+    };
+    let backend = CountingBackend::default();
+    let mut mgr = WebSocketManager::new(limits, backend);
+    let mut sink = FakeSink::default();
+    let renderer = RendererChannelId(1);
+
+    mgr.handle_command(
+      renderer,
+      &mut sink,
+      WebSocketCommand::SendText {
+        conn_id: 999,
+        text: "hello".to_string(),
+      },
+    );
+    assert!(sink.events.is_empty());
+    assert!(mgr.backend().send_calls.is_empty());
+  }
+
+  #[test]
+  fn renderer_backend_drops_unknown_conn_id_events() {
+    let mut backend = RendererWebSocketBackend::default();
+    backend.register(1);
+
+    let unknown = WebSocketEvent::Close {
+      conn_id: 2,
+      code: 1000,
+      reason: "",
+    };
+    assert!(
+      !backend.handle_event(&unknown),
+      "expected unknown conn_id events to be dropped"
+    );
+
+    let known = WebSocketEvent::Close {
+      conn_id: 1,
+      code: 1000,
+      reason: "",
+    };
+    assert!(backend.handle_event(&known));
+  }
+}
