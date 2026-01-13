@@ -1174,7 +1174,7 @@ fn bookmark_reorder_failure_toast(
   let detail =
     sanitize_toast_detail_single_line(&detail_raw, BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES);
 
-  let mut text = "Failed to reorder bookmarks".to_string();
+  let mut text = "Failed to reorder bookmarks. Please retry.".to_string();
   if let Some(detail) = detail {
     text.push('\n');
     text.push_str(&detail);
@@ -4608,7 +4608,7 @@ mod tests {
       bookmark_reorder_failure_toast(&fastrender::ui::BookmarkError::InvalidReorder);
     assert_eq!(kind, fastrender::ui::ToastKind::Error);
     let mut lines = text.lines();
-    assert_eq!(lines.next(), Some("Failed to reorder bookmarks"));
+    assert_eq!(lines.next(), Some("Failed to reorder bookmarks. Please retry."));
     assert!(
       lines
         .next()
@@ -4624,7 +4624,7 @@ mod tests {
     let err = fastrender::ui::BookmarkError::InvalidStore(long_detail);
     let (_kind, text) = bookmark_reorder_failure_toast(&err);
     let mut lines = text.lines();
-    assert_eq!(lines.next(), Some("Failed to reorder bookmarks"));
+    assert_eq!(lines.next(), Some("Failed to reorder bookmarks. Please retry."));
     let detail = lines.next().expect("expected detail line");
     assert!(
       detail.as_bytes().len() <= BOOKMARK_REORDER_TOAST_MAX_DETAIL_BYTES,
