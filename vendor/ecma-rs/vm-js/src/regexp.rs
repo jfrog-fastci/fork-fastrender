@@ -438,6 +438,27 @@ impl RegExpProgram {
       Ok(())
     }
 
+    fn clear_capture_slots(
+      state: &mut ExecState<'_>,
+      from_slot: usize,
+      to_slot: usize,
+      tick: &mut dyn FnMut() -> Result<(), VmError>,
+    ) -> Result<(), VmError> {
+      let end = to_slot.min(state.captures.len());
+      if from_slot >= end {
+        return Ok(());
+      }
+      for (i, slot) in (from_slot..end).enumerate() {
+        // Avoid ticking on the first iteration so small capture ranges don't double-charge fuel;
+        // the surrounding VM loop already ticks once per instruction.
+        if i != 0 {
+          tick_every(i, DEFAULT_TICK_EVERY, tick)?;
+        }
+        state.captures[slot] = UNSET;
+      }
+      Ok(())
+    }
+
     let init = ExecState::new(self, start, initial_captures, exec_mem)?;
     stack_try_push(&mut stack, &mut stack_mem, exec_mem, init)?;
 
@@ -588,6 +609,8 @@ impl RegExpProgram {
             max,
             greedy,
             exit,
+            clear_from_slot,
+            clear_to_slot,
           } => {
             let id = *id;
             let Some(rep) = state.repeats.get(id).copied() else {
@@ -609,6 +632,7 @@ impl RegExpProgram {
                 rep.last_pos = state.pos;
                 rep.count = rep.count.saturating_add(1);
               }
+              clear_capture_slots(&mut state, *clear_from_slot, *clear_to_slot, tick)?;
               state.pc += 1;
               continue;
             }
@@ -628,6 +652,7 @@ impl RegExpProgram {
                 rep.last_pos = state.pos;
                 rep.count = rep.count.saturating_add(1);
               }
+              clear_capture_slots(&mut state, *clear_from_slot, *clear_to_slot, tick)?;
               state.pc += 1;
             } else {
               // Lazy: try stopping first, but keep the "take body" continuation on the stack.
@@ -636,6 +661,7 @@ impl RegExpProgram {
                 body_rep.last_pos = body.pos;
                 body_rep.count = body_rep.count.saturating_add(1);
               }
+              clear_capture_slots(&mut body, *clear_from_slot, *clear_to_slot, tick)?;
               body.pc += 1;
               stack_try_push(&mut stack, &mut stack_mem, exec_mem, body)?;
               state.pc = *exit;
@@ -727,12 +753,16 @@ impl RegExpProgram {
           max,
           greedy,
           exit,
+          clear_from_slot,
+          clear_to_slot,
         } => Inst::RepeatStart {
           id: *id,
           min: *min,
           max: *max,
           greedy: *greedy,
           exit: *exit,
+          clear_from_slot: *clear_from_slot,
+          clear_to_slot: *clear_to_slot,
         },
         Inst::RepeatEnd { start } => Inst::RepeatEnd { start: *start },
         Inst::LookAhead { program, negative } => Inst::LookAhead {
@@ -894,6 +924,8 @@ enum Inst {
     max: Option<u32>,
     greedy: bool,
     exit: usize,
+    clear_from_slot: usize,
+    clear_to_slot: usize,
   },
   RepeatEnd {
     start: usize,
@@ -1098,7 +1130,18 @@ enum Atom {
   Literal(u16),
   Any,
   Class(CharClass),
-  Group { capture: Option<u32>, disj: Disjunction },
+  Group {
+    capture: Option<u32>,
+    /// Inclusive range of capture-group indices contained within this group.
+    ///
+    /// Stored so quantified groups can clear their own capture slots on each iteration without
+    /// rescanning the full sub-AST.
+    ///
+    /// A value of `0` means "no capture groups" (capture-group indices are 1-based).
+    capture_range_start: u32,
+    capture_range_end: u32,
+    disj: Disjunction,
+  },
   BackRef(u32),
 }
 
@@ -1390,6 +1433,7 @@ impl<'a> Parser<'a> {
 
   fn parse_group(&mut self, ctx: &mut CompileCtx<'_>) -> Result<Atom, RegExpCompileError> {
     // `(` has already been consumed.
+    let captures_before = self.capture_count;
     if self.eat(b'?' as u16) {
       let Some(next) = self.next() else {
         return Err(RegExpSyntaxError { message: "Invalid group" }.into());
@@ -1404,7 +1448,21 @@ impl<'a> Parser<'a> {
             }
             .into());
           }
-          Ok(Atom::Group { capture: None, disj })
+          let captures_after = self.capture_count;
+          let (capture_range_start, capture_range_end) = if captures_after > captures_before {
+            (
+              captures_before.saturating_add(1),
+              captures_after,
+            )
+          } else {
+            (0, 0)
+          };
+          Ok(Atom::Group {
+            capture: None,
+            capture_range_start,
+            capture_range_end,
+            disj,
+          })
         }
         x if x == (b'<' as u16) => {
           // Named capturing group: `(?<name>...)`.
@@ -1431,8 +1489,11 @@ impl<'a> Parser<'a> {
             }
             .into());
           }
+          let captures_after = self.capture_count;
           Ok(Atom::Group {
             capture: Some(idx),
+            capture_range_start: idx,
+            capture_range_end: captures_after,
             disj,
           })
         }
@@ -1449,8 +1510,11 @@ impl<'a> Parser<'a> {
         }
         .into());
       }
+      let captures_after = self.capture_count;
       Ok(Atom::Group {
         capture: Some(idx),
+        capture_range_start: idx,
+        capture_range_end: captures_after,
         disj,
       })
     }
@@ -1972,6 +2036,27 @@ impl ProgramBuilder {
     atom: Atom,
     q: Quantifier,
   ) -> Result<(), RegExpCompileError> {
+    let (clear_from_slot, clear_to_slot) = match &atom {
+      Atom::Group {
+        capture_range_start,
+        capture_range_end,
+        ..
+      } if *capture_range_start != 0 && *capture_range_end >= *capture_range_start => {
+        let start = *capture_range_start as usize;
+        let end = *capture_range_end as usize;
+        let clear_from_slot = start
+          .checked_mul(2)
+          .ok_or(RegExpCompileError::OutOfMemory)?;
+        let clear_to_slot = end
+          .checked_add(1)
+          .ok_or(RegExpCompileError::OutOfMemory)?
+          .checked_mul(2)
+          .ok_or(RegExpCompileError::OutOfMemory)?;
+        (clear_from_slot, clear_to_slot)
+      }
+      _ => (0, 0),
+    };
+
     let id = self.repeat_count;
     self.repeat_count = self.repeat_count.saturating_add(1);
     let start_pc = self.emit(ctx, Inst::RepeatStart {
@@ -1980,6 +2065,8 @@ impl ProgramBuilder {
       max: q.max,
       greedy: q.greedy,
       exit: 0, // patch
+      clear_from_slot,
+      clear_to_slot,
     })?;
     self.compile_atom(ctx, atom)?;
     self.emit(ctx, Inst::RepeatEnd { start: start_pc })?;
@@ -2009,7 +2096,7 @@ impl ProgramBuilder {
       Atom::BackRef(n) => {
         self.emit(ctx, Inst::BackRef(n))?;
       }
-      Atom::Group { capture, disj } => {
+      Atom::Group { capture, disj, .. } => {
         if let Some(idx) = capture {
           let start_slot = (idx as usize).saturating_mul(2);
           self.emit(ctx, Inst::Save(start_slot))?;

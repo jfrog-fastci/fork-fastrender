@@ -130,6 +130,25 @@ fn match_all_iterator_is_iterable() {
 }
 
 #[test]
+fn regexp_quantifier_iterations_reset_inner_captures() {
+  // Regression test: capture groups inside quantified atoms must be cleared between iterations so
+  // captures from earlier iterations don't leak when the final iteration doesn't participate.
+  let mut rt = new_runtime();
+
+  let value = rt
+    .exec_script(r#""ab".match(/(?:(a)|b)+/)[1]"#)
+    .unwrap();
+  assert_eq!(value, Value::Undefined);
+
+  // Nested quantifier: the inner optional `(b)?` capture must also be cleared between `{2}`
+  // iterations.
+  let value = rt
+    .exec_script(r#""cba".match(/(?:(a)|c(b)?){2}/)[2]"#)
+    .unwrap();
+  assert_eq!(value, Value::Undefined);
+}
+
+#[test]
 fn regexp_string_iterator_next_proxy_receiver_throws_type_error() {
   let mut rt = new_runtime();
   let value = rt
