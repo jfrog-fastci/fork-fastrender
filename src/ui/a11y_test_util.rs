@@ -254,6 +254,109 @@ impl AccessKitTestTree {
     self.connectivity_snapshot_from_platform_output(&output.platform_output)
   }
 
+  /// Find a unique node by accessible name, searching the provided update first and then falling
+  /// back to this store's previously-seen nodes.
+  ///
+  /// This is useful for incremental `TreeUpdate`s that omit unchanged nodes.
+  ///
+  /// Returns `None` when no match is found. Panics if multiple nodes match the same name (tests
+  /// should disambiguate by using a more specific accessible name).
+  pub fn node_by_name<'a>(
+    &'a self,
+    update: &'a accesskit::TreeUpdate,
+    name: &str,
+  ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+    let needle = name.trim();
+
+    // Track ids present in the update so we don't consider the stored (older) version of the same
+    // node id as a separate match.
+    let update_ids: HashSet<accesskit::NodeId> = update.nodes.iter().map(|(id, _node)| *id).collect();
+
+    let mut found: Option<(accesskit::NodeId, &'a accesskit::Node)> = None;
+    let mut duplicates: Vec<(String, String)> = Vec::new();
+
+    let mut consider = |id: accesskit::NodeId, node: &'a accesskit::Node| {
+      let node_name = node.name().unwrap_or("").trim();
+      if node_name != needle {
+        return;
+      }
+
+      if found.is_some() {
+        duplicates.push((id.0.get().to_string(), format!("{:?}", node.role())));
+        return;
+      }
+      found = Some((id, node));
+    };
+
+    for (id, node) in update.nodes.iter() {
+      consider(*id, node);
+    }
+
+    // Iterate stored nodes in a deterministic order (HashMap iteration order is nondeterministic).
+    let mut stored_nodes: Vec<(accesskit::NodeId, &'a accesskit::Node)> = self
+      .nodes
+      .iter()
+      .filter_map(|(id, node)| (!update_ids.contains(id)).then_some((*id, node)))
+      .collect();
+    stored_nodes.sort_by_key(|(id, _node)| id.0.get());
+
+    for (id, node) in stored_nodes {
+      consider(id, node);
+    }
+
+    if let Some((id, node)) = found {
+      if !duplicates.is_empty() {
+        duplicates.insert(0, (id.0.get().to_string(), format!("{:?}", node.role())));
+        panic!(
+          "multiple AccessKit nodes matched name {needle:?}: {duplicates:?}. \
+          Use a more specific accessible name to disambiguate."
+        );
+      }
+      return Some((id, node));
+    }
+
+    None
+  }
+
+  pub fn node_by_name_from_platform_output<'a>(
+    &'a self,
+    output: &'a egui::PlatformOutput,
+    name: &str,
+  ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+    let update = accesskit_update_from_platform_output(output);
+    self.node_by_name(update, name)
+  }
+
+  pub fn node_by_name_from_full_output<'a>(
+    &'a self,
+    output: &'a egui::FullOutput,
+    name: &str,
+  ) -> Option<(accesskit::NodeId, &'a accesskit::Node)> {
+    self.node_by_name_from_platform_output(&output.platform_output, name)
+  }
+
+  /// Resolve the focused node's accessible name, searching this store when the focused node is not
+  /// included in the update (incremental updates).
+  pub fn focus_name(&self, update: &accesskit::TreeUpdate) -> Option<String> {
+    let focus_id = update.focus?;
+    let node = update
+      .nodes
+      .iter()
+      .find_map(|(id, node)| (*id == focus_id).then_some(node))
+      .or_else(|| self.nodes.get(&focus_id))?;
+    let name = node.name().unwrap_or("").trim();
+    (!name.is_empty()).then_some(name.to_string())
+  }
+
+  pub fn focus_name_from_platform_output(&self, output: &egui::PlatformOutput) -> Option<String> {
+    let update = accesskit_update_from_platform_output(output);
+    self.focus_name(update)
+  }
+
+  pub fn focus_name_from_full_output(&self, output: &egui::FullOutput) -> Option<String> {
+    self.focus_name_from_platform_output(&output.platform_output)
+  }
+
   #[track_caller]
   pub fn assert_update_has_no_orphans(&self, update: &accesskit::TreeUpdate) {
     assert_accesskit_update_has_no_orphans(update, self.root_id, self.nodes_iter());
@@ -977,11 +1080,21 @@ mod tests {
     let incremental = accesskit::TreeUpdate {
       nodes: vec![(orphan_id, orphan)],
       tree: None,
-      focus: None,
+      focus: Some(child_id),
     };
 
     assert_eq!(store.reachable_node_ids(&incremental), vec![root_id, child_id]);
     assert_eq!(store.orphan_node_ids(&incremental), vec![orphan_id]);
+    assert_eq!(
+      store.node_by_name(&incremental, "child").map(|(id, _node)| id),
+      Some(child_id),
+      "expected AccessKitTestTree to find nodes that were only present in prior updates"
+    );
+    assert_eq!(
+      store.focus_name(&incremental),
+      Some("child".to_string()),
+      "expected focus name to be resolved via stored nodes for incremental updates"
+    );
 
     let snapshot = store.connectivity_snapshot(&incremental);
     assert_eq!(snapshot.root_id, root_id.0.get().to_string());
@@ -1006,6 +1119,21 @@ mod tests {
         name: "orphan".to_string(),
       }]
     );
+
+    // If the incremental update re-sends an existing node id, it should take precedence over the
+    // stored version (and should not be treated as a duplicate match).
+    let mut child_updated = accesskit::NodeBuilder::new(accesskit::Role::Button);
+    child_updated.set_name("child");
+    child_updated.set_disabled(true);
+    let incremental2 = accesskit::TreeUpdate {
+      nodes: vec![(child_id, child_updated.build(&mut classes))],
+      tree: None,
+      focus: Some(child_id),
+    };
+    let (_id, node) = store
+      .node_by_name(&incremental2, "child")
+      .expect("expected node by name from incremental update");
+    assert!(node.is_disabled());
   }
 
   #[test]
