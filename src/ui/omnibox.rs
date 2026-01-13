@@ -77,7 +77,7 @@ static DEFAULT_PROVIDERS: [&(dyn OmniboxProvider + Sync); 7] = [
 /// The action a suggestion represents (what happens when the user selects it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OmniboxAction {
-  NavigateToUrl(String),
+  NavigateToUrl,
   ActivateTab(TabId),
   Search(String),
 }
@@ -143,7 +143,7 @@ impl OmniboxProvider for PrimaryActionProvider {
     } else {
       match resolve_omnibox_input(input) {
         Ok(OmniboxInputResolution::Url { url }) => OmniboxSuggestion {
-          action: OmniboxAction::NavigateToUrl(url.clone()),
+          action: OmniboxAction::NavigateToUrl,
           title: None,
           url: Some(url),
           source: OmniboxSuggestionSource::Primary,
@@ -202,7 +202,7 @@ impl OmniboxProvider for AboutPagesProvider {
       }
 
       out.push(OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl((*url).to_string()),
+        action: OmniboxAction::NavigateToUrl,
         title: Some((*title).to_string()),
         url: Some((*url).to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::About),
@@ -268,7 +268,7 @@ impl OmniboxProvider for ClosedTabsProvider {
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string());
       out.push(OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl(closed.url.clone()),
+        action: OmniboxAction::NavigateToUrl,
         title,
         url: Some(closed.url.clone()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab),
@@ -301,7 +301,7 @@ impl OmniboxProvider for VisitedProvider {
         .filter(|t| !t.is_empty())
         .map(|t| t.to_string());
       out.push(OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl(record.url.clone()),
+        action: OmniboxAction::NavigateToUrl,
         title,
         url: Some(record.url.clone()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
@@ -360,7 +360,7 @@ impl OmniboxProvider for BookmarksProvider {
 
       let url_owned = url.to_string();
       out.push(OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl(url_owned.clone()),
+        action: OmniboxAction::NavigateToUrl,
         title: title
           .map(|t| t.to_string())
           .or_else(|| Some(url_owned.clone())),
@@ -960,8 +960,7 @@ fn suggestion_source_rank(source: OmniboxSuggestionSource) -> i64 {
 
 fn suggestion_primary_key_raw(s: &OmniboxSuggestion) -> &str {
   match &s.action {
-    OmniboxAction::ActivateTab(_) => s.url.as_deref().unwrap_or_default(),
-    OmniboxAction::NavigateToUrl(url) => url.as_str(),
+    OmniboxAction::ActivateTab(_) | OmniboxAction::NavigateToUrl => s.url.as_deref().unwrap_or_default(),
     OmniboxAction::Search(query) => query.as_str(),
   }
 }
@@ -988,7 +987,11 @@ fn suggestion_sort_key_parts(s: &OmniboxSuggestion) -> (&str, &str, u64) {
       s.title.as_deref().unwrap_or_default(),
       tab_id.0,
     ),
-    OmniboxAction::NavigateToUrl(url) => (url.as_str(), s.title.as_deref().unwrap_or_default(), 0),
+    OmniboxAction::NavigateToUrl => (
+      s.url.as_deref().unwrap_or_default(),
+      s.title.as_deref().unwrap_or_default(),
+      0,
+    ),
     OmniboxAction::Search(query) => (query.as_str(), "", 0),
   };
 
@@ -1119,13 +1122,13 @@ mod tests {
           source: OmniboxSuggestionSource::Url(OmniboxUrlSource::OpenTab),
         },
         OmniboxSuggestion {
-          action: OmniboxAction::NavigateToUrl("https://example.org/".to_string()),
+          action: OmniboxAction::NavigateToUrl,
           title: Some("Example Org".to_string()),
           url: Some("https://example.org/".to_string()),
           source: OmniboxSuggestionSource::Url(OmniboxUrlSource::ClosedTab),
         },
         OmniboxSuggestion {
-          action: OmniboxAction::NavigateToUrl("https://example.net/".to_string()),
+          action: OmniboxAction::NavigateToUrl,
           title: Some("Example Net".to_string()),
           url: Some("https://example.net/".to_string()),
           source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
@@ -1233,7 +1236,7 @@ mod tests {
     impl OmniboxProvider for ProviderVisited {
       fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
         vec![OmniboxSuggestion {
-          action: OmniboxAction::NavigateToUrl("https://example.com/".to_string()),
+          action: OmniboxAction::NavigateToUrl,
           title: Some("Example (history)".to_string()),
           url: Some("https://example.com/".to_string()),
           source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
@@ -1342,7 +1345,8 @@ mod tests {
 
     let example = build_omnibox_suggestions(&ctx, "example.com", 10);
     assert!(
-      matches!(example[0].action, OmniboxAction::NavigateToUrl(ref url) if url == "https://example.com/"),
+      matches!(example[0].action, OmniboxAction::NavigateToUrl)
+        && example[0].url.as_deref() == Some("https://example.com/"),
       "expected primary action for `example.com` to be a navigation"
     );
   }
@@ -1373,16 +1377,17 @@ mod tests {
       assert!(
         suggestions
           .iter()
-          .any(|s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == url)),
+          .any(|s| matches!(s.action, OmniboxAction::NavigateToUrl) && s.url.as_deref() == Some(url)),
         "expected suggestions for {url}"
       );
     }
 
     let suggestions = build_omnibox_suggestions(&ctx, "help", 10);
     assert!(
-      suggestions.iter().any(
-        |s| matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == about_pages::ABOUT_HELP)
-      ),
+      suggestions
+        .iter()
+        .any(|s| matches!(s.action, OmniboxAction::NavigateToUrl)
+          && s.url.as_deref() == Some(about_pages::ABOUT_HELP)),
       "expected about:help suggestion for input `help`"
     );
   }
@@ -1413,7 +1418,8 @@ mod tests {
     let suggestions = build_omnibox_suggestions(&ctx, "about:n", 10);
     assert!(
       suggestions.iter().any(|s| {
-        matches!(&s.action, OmniboxAction::NavigateToUrl(u) if u == about_pages::ABOUT_NEWTAB)
+        matches!(s.action, OmniboxAction::NavigateToUrl)
+          && s.url.as_deref() == Some(about_pages::ABOUT_NEWTAB)
           && s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::About)
       }),
       "expected about:newtab suggestion, got {suggestions:?}"
@@ -1428,25 +1434,25 @@ mod tests {
         vec![
           // Duplicate URL should be deduped *before* limiting.
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://a.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: Some("A2".to_string()),
             url: Some("https://a.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
           },
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://a.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: Some("A1".to_string()),
             url: Some("https://a.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
           },
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://b.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: None,
             url: Some("https://b.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
           },
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://c.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: None,
             url: Some("https://c.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
@@ -1460,19 +1466,19 @@ mod tests {
       fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
         vec![
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://c.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: None,
             url: Some("https://c.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
           },
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://b.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: None,
             url: Some("https://b.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
           },
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://a.com/".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: Some("A1".to_string()),
             url: Some("https://a.com/".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
@@ -1588,13 +1594,13 @@ mod tests {
       fn suggestions(&self, _ctx: &OmniboxContext<'_>, _input: &str) -> Vec<OmniboxSuggestion> {
         vec![
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://example.com/path/git/one".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: None,
             url: Some("https://example.com/path/git/one".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
           },
           OmniboxSuggestion {
-            action: OmniboxAction::NavigateToUrl("https://github.com/rust-lang/rust".to_string()),
+            action: OmniboxAction::NavigateToUrl,
             title: None,
             url: Some("https://github.com/rust-lang/rust".to_string()),
             source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
@@ -1777,7 +1783,7 @@ mod tests {
       suggestions.iter().any(|s| {
         s.source == OmniboxSuggestionSource::Url(OmniboxUrlSource::Bookmark)
           && s.url.as_deref() == Some("https://example.com/bookmark")
-          && matches!(s.action, OmniboxAction::NavigateToUrl(ref u) if u == "https://example.com/bookmark")
+          && matches!(s.action, OmniboxAction::NavigateToUrl)
       }),
       "expected bookmark suggestion, got {suggestions:?}"
     );

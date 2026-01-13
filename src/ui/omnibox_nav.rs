@@ -26,7 +26,7 @@ pub struct OmniboxNavOutcome {
 
 pub fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&str> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => Some(url),
+    OmniboxAction::NavigateToUrl => suggestion.url.as_deref(),
     OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
     OmniboxAction::Search(query) => Some(query),
   }
@@ -34,7 +34,9 @@ pub fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&s
 
 pub fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAction {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => ChromeAction::NavigateTo(url.clone()),
+    OmniboxAction::NavigateToUrl => {
+      ChromeAction::NavigateTo(suggestion.url.clone().unwrap_or_default())
+    }
     OmniboxAction::ActivateTab(tab_id) => ChromeAction::ActivateTab(*tab_id),
     OmniboxAction::Search(query) => ChromeAction::NavigateTo(
       search_url_for_query(query, DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or_else(|_| query.clone()),
@@ -145,7 +147,7 @@ mod tests {
 
   fn suggestion_navigate(url: &str) -> OmniboxSuggestion {
     OmniboxSuggestion {
-      action: OmniboxAction::NavigateToUrl(url.to_string()),
+      action: OmniboxAction::NavigateToUrl,
       title: None,
       url: Some(url.to_string()),
       source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),

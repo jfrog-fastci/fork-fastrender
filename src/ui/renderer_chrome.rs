@@ -198,7 +198,7 @@ impl ChromeFrameDocument {
 
 fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&str> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => Some(url),
+    OmniboxAction::NavigateToUrl => suggestion.url.as_deref(),
     OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
     OmniboxAction::Search(query) => Some(query),
   }
@@ -206,7 +206,9 @@ fn omnibox_suggestion_fill_text(suggestion: &OmniboxSuggestion) -> Option<&str> 
 
 fn omnibox_suggestion_accept_action(suggestion: &OmniboxSuggestion) -> ChromeAction {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => ChromeAction::NavigateTo(url.clone()),
+    OmniboxAction::NavigateToUrl => {
+      ChromeAction::NavigateTo(suggestion.url.clone().unwrap_or_default())
+    }
     OmniboxAction::ActivateTab(tab_id) => ChromeAction::ActivateTab(*tab_id),
     OmniboxAction::Search(query) => ChromeAction::NavigateTo(
       search_url_for_query(query, DEFAULT_SEARCH_ENGINE_TEMPLATE).unwrap_or_else(|_| query.clone()),
@@ -279,7 +281,7 @@ fn suggestion_label(suggestion: &OmniboxSuggestion) -> String {
     return url.trim().to_string();
   }
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => url.clone(),
+    OmniboxAction::NavigateToUrl => suggestion.url.clone().unwrap_or_default(),
     OmniboxAction::ActivateTab(tab_id) => format!("Activate tab {tab_id:?}"),
     OmniboxAction::Search(query) => query.clone(),
   }

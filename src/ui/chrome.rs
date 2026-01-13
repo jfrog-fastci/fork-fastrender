@@ -245,7 +245,7 @@ enum OmniboxSuggestionIcon {
 fn omnibox_suggestion_icon(suggestion: &OmniboxSuggestion) -> OmniboxSuggestionIcon {
   match suggestion.source {
     OmniboxSuggestionSource::Primary => match &suggestion.action {
-      OmniboxAction::NavigateToUrl(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Forward),
+      OmniboxAction::NavigateToUrl => OmniboxSuggestionIcon::Icon(BrowserIcon::Forward),
       OmniboxAction::Search(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Search),
       OmniboxAction::ActivateTab(_) => OmniboxSuggestionIcon::Icon(BrowserIcon::Tab),
     },
@@ -304,8 +304,7 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
         "Switch to tab".to_string()
       }
     }
-    OmniboxAction::NavigateToUrl(url_action) => {
-      let url_action = url_action.trim();
+    OmniboxAction::NavigateToUrl => {
       if let Some(title) = title {
         if let Some(url) = url {
           format!("Go to: {title} ({url})")
@@ -314,10 +313,8 @@ fn omnibox_suggestion_a11y_label(suggestion: &OmniboxSuggestion) -> String {
         }
       } else if let Some(url) = url {
         format!("Go to: {url}")
-      } else if url_action.is_empty() {
-        "Go to URL".to_string()
       } else {
-        format!("Go to: {url_action}")
+        "Go to URL".to_string()
       }
     }
   }

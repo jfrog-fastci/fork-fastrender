@@ -11,7 +11,7 @@ use super::theme::chrome_theme_css;
 
 fn omnibox_suggestion_type_class(suggestion: &OmniboxSuggestion) -> &'static str {
   match suggestion.action {
-    OmniboxAction::NavigateToUrl(_) => "omnibox-type-url",
+    OmniboxAction::NavigateToUrl => "omnibox-type-url",
     OmniboxAction::Search(_) => "omnibox-type-search",
     OmniboxAction::ActivateTab(_) => "omnibox-type-tab",
   }
@@ -36,12 +36,9 @@ fn omnibox_suggestion_source_class(suggestion: &OmniboxSuggestion) -> &'static s
 
 fn omnibox_suggestion_href(suggestion: &OmniboxSuggestion) -> Option<String> {
   match &suggestion.action {
-    OmniboxAction::NavigateToUrl(url) => Some(
-      ChromeActionUrl::Navigate {
-        url: url.clone(),
-      }
-      .to_url_string(),
-    ),
+    OmniboxAction::NavigateToUrl => suggestion.url.as_ref().map(|url| {
+      ChromeActionUrl::Navigate { url: url.clone() }.to_url_string()
+    }),
     // `chrome-action:navigate` is treated as a typed navigation; passing the raw query preserves
     // the same behaviour as pressing Enter in the address bar.
     OmniboxAction::Search(query) => Some(
@@ -94,7 +91,7 @@ fn omnibox_popup_html(app: &BrowserAppState) -> String {
       .map(str::trim)
       .filter(|t| !t.is_empty())
       .or_else(|| match &suggestion.action {
-        OmniboxAction::NavigateToUrl(url) => Some(url.as_str()),
+        OmniboxAction::NavigateToUrl => suggestion.url.as_deref(),
         OmniboxAction::Search(query) => Some(query.as_str()),
         OmniboxAction::ActivateTab(_) => suggestion.url.as_deref(),
       })
@@ -273,7 +270,7 @@ mod tests {
     app.chrome.omnibox.selected = Some(1);
     app.chrome.omnibox.suggestions = vec![
       OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl("https://example.com/".to_string()),
+        action: OmniboxAction::NavigateToUrl,
         title: Some("Example".to_string()),
         url: Some("https://example.com/".to_string()),
         source: OmniboxSuggestionSource::Url(OmniboxUrlSource::Visited),
