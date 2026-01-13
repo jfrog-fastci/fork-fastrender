@@ -1,3 +1,4 @@
+use crate::debug::runtime::runtime_toggles;
 use tiny_skia::Pixmap;
 
 /// A wgpu-backed texture that can be used in egui, with fast uploads from a `tiny_skia::Pixmap`.
@@ -34,7 +35,26 @@ const PAGE_TEXTURE_FILTER_MODE: wgpu::FilterMode = wgpu::FilterMode::Nearest;
 /// Resizing a browser window can produce many intermediate pixmap sizes. We avoid per-frame GPU
 /// texture reallocations by rounding allocation up to a coarse grid and reusing the texture until
 /// the content exceeds its capacity.
-const PAGE_TEXTURE_BUCKET_PX: u32 = 64;
+const ENV_BROWSER_PAGE_TEXTURE_BUCKET_PX: &str = "FASTR_BROWSER_PAGE_TEXTURE_BUCKET_PX";
+const DEFAULT_PAGE_TEXTURE_BUCKET_PX: u32 = 64;
+const MIN_PAGE_TEXTURE_BUCKET_PX: u32 = 1;
+const MAX_PAGE_TEXTURE_BUCKET_PX: u32 = 512;
+
+fn page_texture_bucket_px() -> u32 {
+  let Some(raw) = runtime_toggles().get(ENV_BROWSER_PAGE_TEXTURE_BUCKET_PX) else {
+    return DEFAULT_PAGE_TEXTURE_BUCKET_PX;
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return DEFAULT_PAGE_TEXTURE_BUCKET_PX;
+  }
+
+  let raw = raw.replace('_', "");
+  raw
+    .parse::<u32>()
+    .map(|value| value.clamp(MIN_PAGE_TEXTURE_BUCKET_PX, MAX_PAGE_TEXTURE_BUCKET_PX))
+    .unwrap_or(DEFAULT_PAGE_TEXTURE_BUCKET_PX)
+}
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum WgpuPixmapTextureAllocation {
@@ -136,9 +156,10 @@ fn round_up_to_bucket(value: u32, bucket: u32) -> u32 {
 }
 
 fn page_alloc_size_for_content(content_size_px: (u32, u32)) -> (u32, u32) {
+  let bucket = page_texture_bucket_px();
   (
-    round_up_to_bucket(content_size_px.0, PAGE_TEXTURE_BUCKET_PX),
-    round_up_to_bucket(content_size_px.1, PAGE_TEXTURE_BUCKET_PX),
+    round_up_to_bucket(content_size_px.0, bucket),
+    round_up_to_bucket(content_size_px.1, bucket),
   )
 }
 
@@ -522,6 +543,17 @@ fn copy_pixmap_to_padded_staging(pixmap: &Pixmap, padded_bytes_per_row: u32, dst
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  fn with_test_thread_toggles<T>(raw: HashMap<String, String>, f: impl FnOnce() -> T) -> T {
+    with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(raw)), f)
+  }
+
+  fn with_default_page_texture_bucket<T>(f: impl FnOnce() -> T) -> T {
+    with_test_thread_toggles(HashMap::new(), f)
+  }
 
   #[test]
   fn align_to_works() {
@@ -714,110 +746,125 @@ mod tests {
 
   #[test]
   fn recreate_on_capacity_exceeded_is_noop_when_new_content_fits_existing_alloc() {
-    #[derive(Default)]
-    struct MockRegistry {
-      freed: Vec<egui::TextureId>,
-    }
-
-    impl EguiWgpuTextureRegistry for MockRegistry {
-      fn register_native_texture(
-        &mut self,
-        _device: &wgpu::Device,
-        _view: &wgpu::TextureView,
-        _filter: wgpu::FilterMode,
-      ) -> egui::TextureId {
-        unreachable!("not used by this test")
+    with_default_page_texture_bucket(|| {
+      #[derive(Default)]
+      struct MockRegistry {
+        freed: Vec<egui::TextureId>,
       }
 
-      fn free_texture(&mut self, id: &egui::TextureId) {
-        self.freed.push(*id);
+      impl EguiWgpuTextureRegistry for MockRegistry {
+        fn register_native_texture(
+          &mut self,
+          _device: &wgpu::Device,
+          _view: &wgpu::TextureView,
+          _filter: wgpu::FilterMode,
+        ) -> egui::TextureId {
+          unreachable!("not used by this test")
+        }
+
+        fn free_texture(&mut self, id: &egui::TextureId) {
+          self.freed.push(*id);
+        }
       }
-    }
 
-    let mut registry = MockRegistry::default();
-    let mut content_size_px = (100, 100);
-    let mut alloc_size_px = page_alloc_size_for_content(content_size_px);
-    assert_eq!(alloc_size_px, (128, 128));
-    let mut id = egui::TextureId::User(1);
+      let mut registry = MockRegistry::default();
+      let mut content_size_px = (100, 100);
+      let mut alloc_size_px = page_alloc_size_for_content(content_size_px);
+      assert_eq!(alloc_size_px, (128, 128));
+      let mut id = egui::TextureId::User(1);
 
-    let recreated: Option<()> = recreate_on_capacity_exceeded(
-      &mut registry,
-      &mut content_size_px,
-      &mut alloc_size_px,
-      &mut id,
-      (120, 127),
-      |_registry, _new_alloc| unreachable!("should not recreate when content fits in alloc"),
-    );
+      let recreated: Option<()> = recreate_on_capacity_exceeded(
+        &mut registry,
+        &mut content_size_px,
+        &mut alloc_size_px,
+        &mut id,
+        (120, 127),
+        |_registry, _new_alloc| unreachable!("should not recreate when content fits in alloc"),
+      );
 
-    assert!(recreated.is_none());
-    assert!(registry.freed.is_empty());
-    assert_eq!(id, egui::TextureId::User(1));
-    assert_eq!(content_size_px, (120, 127));
-    assert_eq!(alloc_size_px, (128, 128));
+      assert!(recreated.is_none());
+      assert!(registry.freed.is_empty());
+      assert_eq!(id, egui::TextureId::User(1));
+      assert_eq!(content_size_px, (120, 127));
+      assert_eq!(alloc_size_px, (128, 128));
+    });
   }
 
   #[test]
   fn recreate_on_capacity_exceeded_frees_old_texture_id_once_when_bucket_is_exceeded() {
-    #[derive(Default)]
-    struct MockRegistry {
-      freed: Vec<egui::TextureId>,
-    }
-
-    impl EguiWgpuTextureRegistry for MockRegistry {
-      fn register_native_texture(
-        &mut self,
-        _device: &wgpu::Device,
-        _view: &wgpu::TextureView,
-        _filter: wgpu::FilterMode,
-      ) -> egui::TextureId {
-        unreachable!("not used by this test")
+    with_default_page_texture_bucket(|| {
+      #[derive(Default)]
+      struct MockRegistry {
+        freed: Vec<egui::TextureId>,
       }
 
-      fn free_texture(&mut self, id: &egui::TextureId) {
-        self.freed.push(*id);
+      impl EguiWgpuTextureRegistry for MockRegistry {
+        fn register_native_texture(
+          &mut self,
+          _device: &wgpu::Device,
+          _view: &wgpu::TextureView,
+          _filter: wgpu::FilterMode,
+        ) -> egui::TextureId {
+          unreachable!("not used by this test")
+        }
+
+        fn free_texture(&mut self, id: &egui::TextureId) {
+          self.freed.push(*id);
+        }
       }
-    }
 
-    let mut registry = MockRegistry::default();
-    let mut content_size_px = (100, 100);
-    let mut alloc_size_px = page_alloc_size_for_content(content_size_px);
-    let mut id = egui::TextureId::User(1);
-    let old_id = id;
+      let mut registry = MockRegistry::default();
+      let mut content_size_px = (100, 100);
+      let mut alloc_size_px = page_alloc_size_for_content(content_size_px);
+      let mut id = egui::TextureId::User(1);
+      let old_id = id;
 
-    let recreated = recreate_on_capacity_exceeded(
-      &mut registry,
-      &mut content_size_px,
-      &mut alloc_size_px,
-      &mut id,
-      (129, 127),
-      |registry, new_alloc_size_px| {
-        // Ensure we freed the old id before trying to "register" a new one.
-        assert_eq!(registry.freed, vec![old_id]);
-        assert_eq!(new_alloc_size_px, (192, 128));
-        ((), egui::TextureId::User(2))
-      },
-    );
+      let recreated = recreate_on_capacity_exceeded(
+        &mut registry,
+        &mut content_size_px,
+        &mut alloc_size_px,
+        &mut id,
+        (129, 127),
+        |registry, new_alloc_size_px| {
+          // Ensure we freed the old id before trying to "register" a new one.
+          assert_eq!(registry.freed, vec![old_id]);
+          assert_eq!(new_alloc_size_px, (192, 128));
+          ((), egui::TextureId::User(2))
+        },
+      );
 
-    assert!(recreated.is_some());
-    assert_eq!(registry.freed, vec![old_id]);
-    assert_eq!(id, egui::TextureId::User(2));
-    assert_eq!(content_size_px, (129, 127));
-    assert_eq!(alloc_size_px, (192, 128));
+      assert!(recreated.is_some());
+      assert_eq!(registry.freed, vec![old_id]);
+      assert_eq!(id, egui::TextureId::User(2));
+      assert_eq!(content_size_px, (129, 127));
+      assert_eq!(alloc_size_px, (192, 128));
 
-    // Updating again within the same bucket should not free/recreate again.
-    let recreated: Option<()> = recreate_on_capacity_exceeded(
-      &mut registry,
-      &mut content_size_px,
-      &mut alloc_size_px,
-      &mut id,
-      (191, 128),
-      |_registry, _new_alloc| unreachable!("should not recreate when content fits in alloc"),
-    );
+      // Updating again within the same bucket should not free/recreate again.
+      let recreated: Option<()> = recreate_on_capacity_exceeded(
+        &mut registry,
+        &mut content_size_px,
+        &mut alloc_size_px,
+        &mut id,
+        (191, 128),
+        |_registry, _new_alloc| unreachable!("should not recreate when content fits in alloc"),
+      );
 
-    assert!(recreated.is_none());
-    assert_eq!(registry.freed, vec![old_id]);
-    assert_eq!(id, egui::TextureId::User(2));
-    assert_eq!(content_size_px, (191, 128));
-    assert_eq!(alloc_size_px, (192, 128));
+      assert!(recreated.is_none());
+      assert_eq!(registry.freed, vec![old_id]);
+      assert_eq!(id, egui::TextureId::User(2));
+      assert_eq!(content_size_px, (191, 128));
+      assert_eq!(alloc_size_px, (192, 128));
+    });
+  }
+
+  #[test]
+  fn page_alloc_size_respects_bucket_override_in_thread_toggles() {
+    let raw = HashMap::from([(
+      ENV_BROWSER_PAGE_TEXTURE_BUCKET_PX.to_string(),
+      "12_8".to_string(),
+    )]);
+    with_test_thread_toggles(raw, || {
+      assert_eq!(page_alloc_size_for_content((129, 127)), (256, 128));
+    });
   }
 }
