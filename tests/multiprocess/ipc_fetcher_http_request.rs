@@ -1,7 +1,11 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{
+  validate_ipc_request, BrowserToNetwork, IpcRequest, IpcResponse, NetworkService,
+};
 use fastrender::resource::web_fetch::RequestRedirect;
-use fastrender::resource::{origin_from_url, FetchDestination, FetchRequest, HttpFetcher, HttpRequest, ReferrerPolicy};
+use fastrender::resource::{
+  origin_from_url, FetchDestination, FetchRequest, HttpFetcher, HttpRequest, ReferrerPolicy,
+};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -132,7 +136,10 @@ fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
   Ok(buf)
 }
 
-fn spawn_ipc_server(listener: TcpListener, request_tx: mpsc::Sender<IpcRequest>) -> thread::JoinHandle<()> {
+fn spawn_ipc_server(
+  listener: TcpListener,
+  request_tx: mpsc::Sender<IpcRequest>,
+) -> thread::JoinHandle<()> {
   thread::spawn(move || {
     listener.set_nonblocking(true).unwrap();
     let mut stream = accept_with_timeout(&listener);
@@ -150,19 +157,13 @@ fn spawn_ipc_server(listener: TcpListener, request_tx: mpsc::Sender<IpcRequest>)
     write_frame(&mut stream, &hello_ack).unwrap();
 
     let req_bytes = read_frame(&mut stream).unwrap();
-    let req: IpcRequest = serde_json::from_slice(&req_bytes).unwrap();
-    validate_ipc_request(&req).unwrap();
-    request_tx.send(req.clone()).unwrap();
+    let env: BrowserToNetwork = serde_json::from_slice(&req_bytes).unwrap();
+    validate_ipc_request(&env.request).unwrap();
+    request_tx.send(env.request.clone()).unwrap();
 
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
-    let response = match req {
-      IpcRequest::FetchWithRequest { req } => {
-        let fetch_req = req.as_fetch_request();
-        match fetcher.fetch_with_request(fetch_req) {
-          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-        }
-      }
+    let mut service = NetworkService::new(&mut stream);
+    match env.request {
       IpcRequest::FetchHttpRequest { req } => {
         let body = req.decode_body().unwrap();
         let fetch = req.fetch.as_fetch_request();
@@ -173,16 +174,18 @@ fn spawn_ipc_server(listener: TcpListener, request_tx: mpsc::Sender<IpcRequest>)
           headers: &req.headers,
           body: body.as_deref(),
         };
-        match fetcher.fetch_http_request(http_req) {
-          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-        }
+        service
+          .send_fetch_result(env.id, fetcher.fetch_http_request(http_req))
+          .unwrap();
+      }
+      IpcRequest::FetchWithRequest { req } => {
+        let fetch_req = req.as_fetch_request();
+        service
+          .send_fetch_result(env.id, fetcher.fetch_with_request(fetch_req))
+          .unwrap();
       }
       other => panic!("unexpected ipc request: {other:?}"),
-    };
-
-    let out = serde_json::to_vec(&response).unwrap();
-    write_frame(&mut stream, &out).unwrap();
+    }
   })
 }
 
@@ -279,7 +282,8 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
       assert_eq!(req.fetch.referrer_policy, ReferrerPolicy::UnsafeUrl);
       assert_eq!(req.method, "POST");
       assert_eq!(
-        req.headers
+        req
+          .headers
           .iter()
           .find(|(k, _)| k.eq_ignore_ascii_case("x-test"))
           .map(|(_, v)| v.as_str()),
@@ -298,7 +302,8 @@ fn ipc_fetcher_http_request_post_sends_method_headers_and_body() {
 #[test]
 fn ipc_fetcher_http_request_redirect_updates_final_url() {
   let _net_guard = net_test_lock();
-  let Some(listener) = try_bind_localhost("ipc_fetcher_http_request_redirect_updates_final_url") else {
+  let Some(listener) = try_bind_localhost("ipc_fetcher_http_request_redirect_updates_final_url")
+  else {
     return;
   };
   let addr = listener.local_addr().unwrap();

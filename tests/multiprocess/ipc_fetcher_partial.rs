@@ -1,5 +1,7 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{
+  validate_ipc_request, BrowserToNetwork, IpcRequest, IpcResponse, NetworkService,
+};
 use fastrender::resource::{FetchDestination, FetchRequest, HttpFetcher};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::io::{self, Read, Write};
@@ -30,7 +32,8 @@ fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 #[test]
 fn ipc_fetcher_fetch_partial_with_request_truncates() {
   let _net_guard = net_test_lock();
-  let Some(listener) = try_bind_localhost("ipc_fetcher_fetch_partial_with_request_truncates") else {
+  let Some(listener) = try_bind_localhost("ipc_fetcher_fetch_partial_with_request_truncates")
+  else {
     return;
   };
   let addr = listener.local_addr().unwrap();
@@ -68,25 +71,25 @@ fn ipc_fetcher_fetch_partial_with_request_truncates() {
     write_frame(&mut stream, &hello_ack).unwrap();
 
     let req_bytes = read_frame(&mut stream).unwrap();
-    let req: IpcRequest = serde_json::from_slice(&req_bytes).unwrap();
-    validate_ipc_request(&req).unwrap();
-    ipc_tx.send(req.clone()).unwrap();
+    let env: BrowserToNetwork = serde_json::from_slice(&req_bytes).unwrap();
+    validate_ipc_request(&env.request).unwrap();
+    ipc_tx.send(env.request.clone()).unwrap();
 
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
-    let response = match req {
+    match env.request {
       IpcRequest::FetchPartialWithRequest { req, max_bytes } => {
         let fetch_req = req.as_fetch_request();
         let max_bytes = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-        match fetcher.fetch_partial_with_request(fetch_req, max_bytes) {
-          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-        }
+        let mut service = NetworkService::new(&mut stream);
+        service
+          .send_fetch_result(
+            env.id,
+            fetcher.fetch_partial_with_request(fetch_req, max_bytes),
+          )
+          .unwrap();
       }
       other => panic!("unexpected ipc request: {other:?}"),
-    };
-
-    let out = serde_json::to_vec(&response).unwrap();
-    write_frame(&mut stream, &out).unwrap();
+    }
   });
 
   let fetcher =

@@ -1,6 +1,8 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
 use base64::Engine as _;
-use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{
+  validate_ipc_request, BrowserToNetwork, IpcRequest, IpcResponse, IpcResult, NetworkService,
+};
 use fastrender::resource::{CacheArtifactKind, FetchDestination, FetchRequest, FetchedResource};
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::collections::HashMap;
@@ -62,6 +64,7 @@ fn spawn_ipc_server(listener: TcpListener) -> thread::JoinHandle<()> {
     // Auth handshake must precede any other IPC request.
     let hello_bytes = read_frame(&mut stream).expect("read ipc hello frame");
     let hello: IpcRequest = serde_json::from_slice(&hello_bytes).expect("decode ipc hello request");
+    validate_ipc_request(&hello).expect("validate ipc hello request");
     match hello {
       IpcRequest::Hello { token } => {
         assert_eq!(token, TEST_AUTH_TOKEN, "unexpected IPC auth token");
@@ -80,10 +83,11 @@ fn spawn_ipc_server(listener: TcpListener) -> thread::JoinHandle<()> {
         Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
         Err(err) => panic!("read ipc frame: {err}"),
       };
-      let req: IpcRequest = serde_json::from_slice(&req_bytes).expect("decode ipc request");
-      validate_ipc_request(&req).expect("validate ipc request");
+      let env: BrowserToNetwork =
+        serde_json::from_slice(&req_bytes).expect("decode ipc request envelope");
+      validate_ipc_request(&env.request).expect("validate ipc request");
 
-      let response = match req {
+      let response = match env.request {
         IpcRequest::WriteCacheArtifactWithRequest {
           req,
           artifact,
@@ -180,8 +184,10 @@ fn spawn_ipc_server(listener: TcpListener) -> thread::JoinHandle<()> {
         other => panic!("unexpected IPC request: {other:?}"),
       };
 
-      let out = serde_json::to_vec(&response).expect("encode ipc response");
-      write_frame(&mut stream, &out).expect("write ipc response");
+      let mut service = NetworkService::new(&mut stream);
+      service
+        .send_response(env.id, response)
+        .expect("write ipc response");
     }
   })
 }

@@ -8,6 +8,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
@@ -49,7 +50,29 @@ pub const IPC_MAX_HEADER_VALUE_BYTES: usize = 16 * 1024;
 /// Maximum byte length for the auth token string.
 pub const IPC_MAX_AUTH_TOKEN_BYTES: usize = 1024;
 
-fn write_ipc_frame(stream: &mut TcpStream, payload: &[u8], max_frame_bytes: usize) -> io::Result<()> {
+/// Maximum response body size accepted by the IPC client when reassembling chunked payloads.
+///
+/// Keep this aligned with `ResourcePolicy::max_response_bytes` (50 MiB by default) so the network
+/// process cannot force unbounded allocations even if it misbehaves.
+const IPC_MAX_BODY_BYTES: usize = 50 * 1024 * 1024;
+
+/// Inline response body limit for a single IPC response.
+///
+/// When the response body exceeds this size, the network process must send it using chunked
+/// transfer messages so that no single IPC response frame needs to contain the entire body.
+const IPC_INLINE_LIMIT_BYTES: usize = 1 * 1024 * 1024;
+
+/// Maximum raw bytes per body chunk message.
+///
+/// This is intentionally small so that even JSON + base64 encoding stays well under the global IPC
+/// frame caps.
+const IPC_CHUNK_MAX_BYTES: usize = 64 * 1024;
+
+fn write_ipc_frame<W: Write>(
+  writer: &mut W,
+  payload: &[u8],
+  max_frame_bytes: usize,
+) -> io::Result<()> {
   if payload.is_empty() {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
@@ -72,15 +95,15 @@ fn write_ipc_frame(stream: &mut TcpStream, payload: &[u8], max_frame_bytes: usiz
     ));
   }
   let len = (payload.len() as u32).to_le_bytes();
-  stream.write_all(&len)?;
-  stream.write_all(payload)?;
-  stream.flush()?;
+  writer.write_all(&len)?;
+  writer.write_all(payload)?;
+  writer.flush()?;
   Ok(())
 }
 
-fn read_ipc_frame(stream: &mut TcpStream, max_frame_bytes: usize) -> io::Result<Vec<u8>> {
+fn read_ipc_frame<R: Read>(reader: &mut R, max_frame_bytes: usize) -> io::Result<Vec<u8>> {
   let mut len_buf = [0u8; IPC_FRAME_LEN_BYTES];
-  stream.read_exact(&mut len_buf)?;
+  reader.read_exact(&mut len_buf)?;
   let len = u32::from_le_bytes(len_buf) as usize;
   if len == 0 {
     return Err(io::Error::new(
@@ -95,8 +118,193 @@ fn read_ipc_frame(stream: &mut TcpStream, max_frame_bytes: usize) -> io::Result<
     ));
   }
   let mut buf = vec![0u8; len];
-  stream.read_exact(&mut buf)?;
+  reader.read_exact(&mut buf)?;
   Ok(buf)
+}
+
+/// Envelope used to correlate multi-frame responses with a request.
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserToNetwork {
+  pub id: u64,
+  pub request: IpcRequest,
+}
+
+/// Fetch metadata transferred ahead of a chunked body stream.
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpcFetchedResourceMeta {
+  pub content_type: Option<String>,
+  pub nosniff: bool,
+  pub content_encoding: Option<String>,
+  pub status: Option<u16>,
+  pub etag: Option<String>,
+  pub last_modified: Option<String>,
+  pub access_control_allow_origin: Option<String>,
+  pub timing_allow_origin: Option<String>,
+  pub vary: Option<String>,
+  pub response_referrer_policy: Option<ReferrerPolicy>,
+  pub access_control_allow_credentials: bool,
+  pub final_url: Option<String>,
+  pub cache_policy: Option<IpcHttpCachePolicy>,
+  pub response_headers: Option<Vec<(String, String)>>,
+}
+
+impl IpcFetchedResourceMeta {
+  fn from_fetched_resource(res: &FetchedResource) -> Self {
+    Self {
+      content_type: res.content_type.clone(),
+      nosniff: res.nosniff,
+      content_encoding: res.content_encoding.clone(),
+      status: res.status,
+      etag: res.etag.clone(),
+      last_modified: res.last_modified.clone(),
+      access_control_allow_origin: res.access_control_allow_origin.clone(),
+      timing_allow_origin: res.timing_allow_origin.clone(),
+      vary: res.vary.clone(),
+      response_referrer_policy: res.response_referrer_policy,
+      access_control_allow_credentials: res.access_control_allow_credentials,
+      final_url: res.final_url.clone(),
+      cache_policy: res.cache_policy.as_ref().map(IpcHttpCachePolicy::from),
+      response_headers: res.response_headers.clone(),
+    }
+  }
+
+  fn into_fetched_resource(self, bytes: Vec<u8>) -> FetchedResource {
+    FetchedResource {
+      bytes,
+      content_type: self.content_type,
+      nosniff: self.nosniff,
+      content_encoding: self.content_encoding,
+      status: self.status,
+      etag: self.etag,
+      last_modified: self.last_modified,
+      access_control_allow_origin: self.access_control_allow_origin,
+      timing_allow_origin: self.timing_allow_origin,
+      vary: self.vary,
+      response_referrer_policy: self.response_referrer_policy,
+      access_control_allow_credentials: self.access_control_allow_credentials,
+      final_url: self.final_url,
+      cache_policy: self.cache_policy.map(Into::into),
+      response_headers: self.response_headers,
+    }
+  }
+}
+
+/// Messages sent from the network process back to the browser/renderer over the IPC channel.
+#[doc(hidden)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum NetworkToBrowser {
+  /// Single-frame RPC response (used for non-fetch RPCs and small bodies).
+  Response { id: u64, response: IpcResponse },
+
+  /// Start of a chunked fetch response body stream.
+  FetchStart {
+    id: u64,
+    meta: IpcFetchedResourceMeta,
+    total_len: usize,
+  },
+
+  /// A chunk of base64-encoded response body bytes.
+  ///
+  /// `bytes_b64` decodes to at most `IPC_CHUNK_MAX_BYTES` bytes.
+  FetchBodyChunk { id: u64, bytes_b64: String },
+
+  /// End of a chunked fetch response body stream.
+  FetchEnd { id: u64 },
+
+  /// Chunked fetch error response.
+  FetchErr { id: u64, err: IpcError },
+}
+
+#[derive(Debug)]
+enum RpcReply {
+  Response(IpcResponse),
+  ChunkedFetch(IpcResult<(IpcFetchedResourceMeta, Vec<u8>)>),
+}
+
+fn base64_decoded_len_upper_bound(encoded: &str) -> Option<usize> {
+  // We use the standard padded base64 alphabet. The output length is:
+  //
+  //   decoded = (len / 4) * 3 - padding
+  //
+  // where padding is 0, 1, or 2 depending on the number of trailing '='.
+  let encoded_len = encoded.len();
+  if encoded_len % 4 != 0 {
+    return None;
+  }
+  let groups = encoded_len.checked_div(4)?;
+  let mut decoded = groups.checked_mul(3)?;
+
+  if encoded.ends_with("==") {
+    decoded = decoded.checked_sub(2)?;
+  } else if encoded.ends_with('=') {
+    decoded = decoded.checked_sub(1)?;
+  }
+
+  Some(decoded)
+}
+
+/// Server-side helper for writing responses on the browser↔network IPC channel.
+///
+/// This implements chunked body transfer for large responses so that no individual IPC frame has to
+/// contain an entire response body.
+#[doc(hidden)]
+pub struct NetworkService<'a, W: Write> {
+  writer: &'a mut W,
+}
+
+impl<'a, W: Write> NetworkService<'a, W> {
+  pub fn new(writer: &'a mut W) -> Self {
+    Self { writer }
+  }
+
+  pub fn send_message(&mut self, msg: &NetworkToBrowser) -> io::Result<()> {
+    let payload = serde_json::to_vec(msg).map_err(|err| {
+      io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("failed to serialize IPC message: {err}"),
+      )
+    })?;
+    write_ipc_frame(self.writer, &payload, IPC_MAX_OUTBOUND_FRAME_BYTES)
+  }
+
+  pub fn send_response(&mut self, id: u64, response: IpcResponse) -> io::Result<()> {
+    self.send_message(&NetworkToBrowser::Response { id, response })
+  }
+
+  pub fn send_fetch_result(&mut self, id: u64, result: Result<FetchedResource>) -> io::Result<()> {
+    match result {
+      Ok(res) => self.send_fetch_ok(id, res),
+      Err(err) => {
+        let err = IpcError::from(err);
+        self.send_message(&NetworkToBrowser::FetchErr { id, err })
+      }
+    }
+  }
+
+  pub fn send_fetch_ok(&mut self, id: u64, res: FetchedResource) -> io::Result<()> {
+    if res.bytes.len() <= IPC_INLINE_LIMIT_BYTES {
+      // Legacy single-frame response.
+      let response = IpcResponse::Fetched(IpcResult::Ok(res.into()));
+      return self.send_response(id, response);
+    }
+
+    let total_len = res.bytes.len();
+    let meta = IpcFetchedResourceMeta::from_fetched_resource(&res);
+    self.send_message(&NetworkToBrowser::FetchStart {
+      id,
+      meta,
+      total_len,
+    })?;
+
+    for chunk in res.bytes.chunks(IPC_CHUNK_MAX_BYTES) {
+      let bytes_b64 = base64::engine::general_purpose::STANDARD.encode(chunk);
+      self.send_message(&NetworkToBrowser::FetchBodyChunk { id, bytes_b64 })?;
+    }
+
+    self.send_message(&NetworkToBrowser::FetchEnd { id })
+  }
 }
 
 fn validate_ipc_url(url: &str) -> std::result::Result<(), String> {
@@ -584,6 +792,8 @@ pub enum IpcResponse {
 struct IpcResourceFetcherInner {
   endpoint: String,
   stream: Mutex<TcpStream>,
+  next_request_id: AtomicU64,
+  last_response_chunked: AtomicBool,
 }
 
 /// Renderer-side [`ResourceFetcher`] proxy that forwards all fetch operations to a trusted network
@@ -686,18 +896,31 @@ impl IpcResourceFetcher {
       inner: Arc::new(IpcResourceFetcherInner {
         endpoint,
         stream: Mutex::new(stream),
+        next_request_id: AtomicU64::new(1),
+        last_response_chunked: AtomicBool::new(false),
       }),
     })
   }
 
-  fn rpc(&self, url: &str, request: &IpcRequest) -> Result<IpcResponse> {
+  /// Test hook: returns `true` when the last fetch-like RPC used the chunked response path.
+  pub fn last_response_was_chunked(&self) -> bool {
+    self.inner.last_response_chunked.load(Ordering::Relaxed)
+  }
+
+  fn rpc(&self, url: &str, request: &IpcRequest) -> Result<RpcReply> {
     if let Err(err) = validate_ipc_request(request) {
       return Err(Error::Resource(ResourceError::new(
         url,
         format!("IPC request rejected by local validation: {err}"),
       )));
     }
-    let payload = serde_json::to_vec(request).map_err(|err| {
+
+    let request_id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+    let envelope = BrowserToNetwork {
+      id: request_id,
+      request: request.clone(),
+    };
+    let payload = serde_json::to_vec(&envelope).map_err(|err| {
       Error::Resource(ResourceError::new(
         url,
         format!("failed to serialize IPC request: {err}"),
@@ -709,7 +932,7 @@ impl IpcResourceFetcher {
       Err(poisoned) => poisoned.into_inner(),
     };
 
-    if let Err(err) = write_ipc_frame(&mut guard, &payload, IPC_MAX_INBOUND_FRAME_BYTES) {
+    if let Err(err) = write_ipc_frame(&mut *guard, &payload, IPC_MAX_INBOUND_FRAME_BYTES) {
       let _ = guard.shutdown(std::net::Shutdown::Both);
       return Err(Error::Resource(ResourceError::new(
         url,
@@ -720,7 +943,7 @@ impl IpcResourceFetcher {
       )));
     }
 
-    let response_bytes = match read_ipc_frame(&mut guard, IPC_MAX_OUTBOUND_FRAME_BYTES) {
+    let first_frame = match read_ipc_frame(&mut *guard, IPC_MAX_OUTBOUND_FRAME_BYTES) {
       Ok(bytes) => bytes,
       Err(err) => {
         let _ = guard.shutdown(std::net::Shutdown::Both);
@@ -734,13 +957,211 @@ impl IpcResourceFetcher {
       }
     };
 
-    match serde_json::from_slice(&response_bytes) {
-      Ok(res) => Ok(res),
+    let first_msg: NetworkToBrowser = match serde_json::from_slice(&first_frame) {
+      Ok(msg) => msg,
       Err(err) => {
+        let _ = guard.shutdown(std::net::Shutdown::Both);
+        return Err(Error::Resource(ResourceError::new(
+          url,
+          format!("failed to deserialize IPC response: {err}"),
+        )));
+      }
+    };
+
+    match first_msg {
+      NetworkToBrowser::Response { id, response } => {
+        if id != request_id {
+          let _ = guard.shutdown(std::net::Shutdown::Both);
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!("IPC protocol error: response id {id} did not match request id {request_id}"),
+          )));
+        }
+        self
+          .inner
+          .last_response_chunked
+          .store(false, Ordering::Relaxed);
+        Ok(RpcReply::Response(response))
+      }
+      NetworkToBrowser::FetchErr { id, err } => {
+        if id != request_id {
+          let _ = guard.shutdown(std::net::Shutdown::Both);
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "IPC protocol error: fetch error id {id} did not match request id {request_id}"
+            ),
+          )));
+        }
+        self
+          .inner
+          .last_response_chunked
+          .store(true, Ordering::Relaxed);
+        Ok(RpcReply::ChunkedFetch(IpcResult::Err(err)))
+      }
+      NetworkToBrowser::FetchStart {
+        id,
+        meta,
+        total_len,
+      } => {
+        if id != request_id {
+          let _ = guard.shutdown(std::net::Shutdown::Both);
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "IPC protocol error: fetch start id {id} did not match request id {request_id}"
+            ),
+          )));
+        }
+        if total_len > IPC_MAX_BODY_BYTES {
+          let _ = guard.shutdown(std::net::Shutdown::Both);
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "IPC protocol error: chunked body total_len {total_len} exceeds hard limit {IPC_MAX_BODY_BYTES}"
+            ),
+          )));
+        }
+
+        self
+          .inner
+          .last_response_chunked
+          .store(true, Ordering::Relaxed);
+
+        let mut body = Vec::with_capacity(total_len);
+        loop {
+          let frame = match read_ipc_frame(&mut *guard, IPC_MAX_OUTBOUND_FRAME_BYTES) {
+            Ok(frame) => frame,
+            Err(err) => {
+              let _ = guard.shutdown(std::net::Shutdown::Both);
+              return Err(Error::Resource(ResourceError::new(
+                url,
+                format!(
+                  "IPC read from network process at {} failed: {err}",
+                  self.inner.endpoint
+                ),
+              )));
+            }
+          };
+          let msg: NetworkToBrowser = match serde_json::from_slice(&frame) {
+            Ok(msg) => msg,
+            Err(err) => {
+              let _ = guard.shutdown(std::net::Shutdown::Both);
+              return Err(Error::Resource(ResourceError::new(
+                url,
+                format!("failed to deserialize IPC chunked response: {err}"),
+              )));
+            }
+          };
+          match msg {
+            NetworkToBrowser::FetchBodyChunk { id, bytes_b64 } => {
+              if id != request_id {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "IPC protocol error: fetch chunk id {id} did not match request id {request_id}"
+                  ),
+                )));
+              }
+              let upper = base64_decoded_len_upper_bound(&bytes_b64).ok_or_else(|| {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                Error::Resource(ResourceError::new(
+                  url,
+                  "IPC protocol error: invalid base64 chunk length".to_string(),
+                ))
+              })?;
+              if upper > IPC_CHUNK_MAX_BYTES {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "IPC protocol error: decoded chunk length upper bound {upper} exceeds chunk max {IPC_CHUNK_MAX_BYTES}"
+                  ),
+                )));
+              }
+
+              let decoded = base64::engine::general_purpose::STANDARD
+                .decode(bytes_b64.as_bytes())
+                .map_err(|err| {
+                  let _ = guard.shutdown(std::net::Shutdown::Both);
+                  Error::Resource(ResourceError::new(
+                    url,
+                    format!("IPC protocol error: invalid base64 body chunk: {err}"),
+                  ))
+                })?;
+              if decoded.len() > IPC_CHUNK_MAX_BYTES {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "IPC protocol error: decoded chunk length {} exceeds chunk max {IPC_CHUNK_MAX_BYTES}",
+                    decoded.len()
+                  ),
+                )));
+              }
+              if body.len() + decoded.len() > total_len {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  "IPC protocol error: received more chunk bytes than advertised total_len"
+                    .to_string(),
+                )));
+              }
+              body.extend_from_slice(&decoded);
+            }
+            NetworkToBrowser::FetchEnd { id } => {
+              if id != request_id {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "IPC protocol error: fetch end id {id} did not match request id {request_id}"
+                  ),
+                )));
+              }
+              break;
+            }
+            NetworkToBrowser::FetchErr { id, err } => {
+              if id != request_id {
+                let _ = guard.shutdown(std::net::Shutdown::Both);
+                return Err(Error::Resource(ResourceError::new(
+                  url,
+                  format!(
+                    "IPC protocol error: fetch error id {id} did not match request id {request_id}"
+                  ),
+                )));
+              }
+              return Ok(RpcReply::ChunkedFetch(IpcResult::Err(err)));
+            }
+            other => {
+              let _ = guard.shutdown(std::net::Shutdown::Both);
+              return Err(Error::Resource(ResourceError::new(
+                url,
+                format!("IPC protocol error: unexpected message during chunked fetch: {other:?}"),
+              )));
+            }
+          }
+        }
+
+        let actual_len = body.len();
+        if actual_len != total_len {
+          let _ = guard.shutdown(std::net::Shutdown::Both);
+          return Err(Error::Resource(ResourceError::new(
+            url,
+            format!(
+              "IPC protocol error: chunked body length {actual_len} did not match total_len {total_len}"
+            ),
+          )));
+        }
+
+        Ok(RpcReply::ChunkedFetch(IpcResult::Ok((meta, body))))
+      }
+      other => {
         let _ = guard.shutdown(std::net::Shutdown::Both);
         Err(Error::Resource(ResourceError::new(
           url,
-          format!("failed to deserialize IPC response: {err}"),
+          format!("IPC protocol error: unexpected response message: {other:?}"),
         )))
       }
     }
@@ -748,16 +1169,22 @@ impl IpcResourceFetcher {
 
   fn rpc_fetched(&self, url: &str, request: &IpcRequest) -> Result<FetchedResource> {
     match self.rpc(url, request)? {
-      IpcResponse::Fetched(IpcResult::Ok(res)) => FetchedResource::try_from(res).map_err(|err| {
-        Error::Resource(ResourceError::new(
-          url,
-          format!("failed to decode IPC fetched resource: {err}"),
-        ))
-      }),
-      IpcResponse::Fetched(IpcResult::Err(err)) => {
+      RpcReply::Response(IpcResponse::Fetched(IpcResult::Ok(res))) => {
+        FetchedResource::try_from(res).map_err(|err| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("failed to decode IPC fetched resource: {err}"),
+          ))
+        })
+      }
+      RpcReply::Response(IpcResponse::Fetched(IpcResult::Err(err))) => {
         Err(Error::Resource(err.into_resource_error(url)))
       }
-      other => Err(Error::Resource(ResourceError::new(
+      RpcReply::ChunkedFetch(IpcResult::Ok((meta, bytes))) => Ok(meta.into_fetched_resource(bytes)),
+      RpcReply::ChunkedFetch(IpcResult::Err(err)) => {
+        Err(Error::Resource(err.into_resource_error(url)))
+      }
+      RpcReply::Response(other) => Err(Error::Resource(ResourceError::new(
         url,
         format!("unexpected IPC response for fetch: {other:?}"),
       ))),
@@ -766,7 +1193,7 @@ impl IpcResourceFetcher {
 
   fn rpc_maybe_fetched(&self, url: &str, request: &IpcRequest) -> Result<Option<FetchedResource>> {
     match self.rpc(url, request)? {
-      IpcResponse::MaybeFetched(IpcResult::Ok(Some(res))) => {
+      RpcReply::Response(IpcResponse::MaybeFetched(IpcResult::Ok(Some(res)))) => {
         let res = FetchedResource::try_from(res).map_err(|err| {
           Error::Resource(ResourceError::new(
             url,
@@ -775,9 +1202,13 @@ impl IpcResourceFetcher {
         })?;
         Ok(Some(res))
       }
-      IpcResponse::MaybeFetched(IpcResult::Ok(None)) => Ok(None),
-      IpcResponse::MaybeFetched(IpcResult::Err(_)) => Ok(None),
-      other => Err(Error::Resource(ResourceError::new(
+      RpcReply::Response(IpcResponse::MaybeFetched(IpcResult::Ok(None))) => Ok(None),
+      RpcReply::Response(IpcResponse::MaybeFetched(IpcResult::Err(_))) => Ok(None),
+      RpcReply::ChunkedFetch(IpcResult::Ok((meta, bytes))) => {
+        Ok(Some(meta.into_fetched_resource(bytes)))
+      }
+      RpcReply::ChunkedFetch(IpcResult::Err(_)) => Ok(None),
+      RpcReply::Response(other) => Err(Error::Resource(ResourceError::new(
         url,
         format!("unexpected IPC response: {other:?}"),
       ))),
@@ -786,24 +1217,34 @@ impl IpcResourceFetcher {
 
   fn rpc_maybe_string(&self, url: &str, request: &IpcRequest) -> Result<Option<String>> {
     match self.rpc(url, request)? {
-      IpcResponse::MaybeString(IpcResult::Ok(value)) => Ok(value),
-      IpcResponse::MaybeString(IpcResult::Err(err)) => {
+      RpcReply::Response(IpcResponse::MaybeString(IpcResult::Ok(value))) => Ok(value),
+      RpcReply::Response(IpcResponse::MaybeString(IpcResult::Err(err))) => {
         Err(Error::Resource(err.into_resource_error(url)))
       }
-      other => Err(Error::Resource(ResourceError::new(
+      RpcReply::Response(other) => Err(Error::Resource(ResourceError::new(
         url,
         format!("unexpected IPC response: {other:?}"),
+      ))),
+      RpcReply::ChunkedFetch(_) => Err(Error::Resource(ResourceError::new(
+        url,
+        "unexpected chunked fetch response for string RPC".to_string(),
       ))),
     }
   }
 
   fn rpc_unit(&self, url: &str, request: &IpcRequest) -> Result<()> {
     match self.rpc(url, request)? {
-      IpcResponse::Unit(IpcResult::Ok(())) => Ok(()),
-      IpcResponse::Unit(IpcResult::Err(err)) => Err(Error::Resource(err.into_resource_error(url))),
-      other => Err(Error::Resource(ResourceError::new(
+      RpcReply::Response(IpcResponse::Unit(IpcResult::Ok(()))) => Ok(()),
+      RpcReply::Response(IpcResponse::Unit(IpcResult::Err(err))) => {
+        Err(Error::Resource(err.into_resource_error(url)))
+      }
+      RpcReply::Response(other) => Err(Error::Resource(ResourceError::new(
         url,
         format!("unexpected IPC response: {other:?}"),
+      ))),
+      RpcReply::ChunkedFetch(_) => Err(Error::Resource(ResourceError::new(
+        url,
+        "unexpected chunked fetch response for unit RPC".to_string(),
       ))),
     }
   }

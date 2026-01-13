@@ -1,5 +1,7 @@
 use crate::common::net::{net_test_lock, try_bind_localhost};
-use fastrender::resource::ipc_fetcher::{validate_ipc_request, IpcRequest, IpcResponse, IpcResult};
+use fastrender::resource::ipc_fetcher::{
+  validate_ipc_request, BrowserToNetwork, IpcRequest, IpcResponse, IpcResult, NetworkService,
+};
 use fastrender::resource::HttpFetcher;
 use fastrender::{IpcResourceFetcher, ResourceFetcher};
 use std::collections::HashMap;
@@ -128,26 +130,32 @@ fn spawn_network_process(listener: TcpListener, expected_requests: usize) -> thr
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
     for _ in 0..expected_requests {
       let req_bytes = read_frame(&mut stream).expect("read ipc frame");
-      let req: IpcRequest = serde_json::from_slice(&req_bytes).expect("decode ipc request");
-      validate_ipc_request(&req).expect("validate ipc request");
-      let response = match req {
-        IpcRequest::Fetch { url } => match fetcher.fetch(&url) {
-          Ok(res) => IpcResponse::Fetched(IpcResult::Ok(res.into())),
-          Err(err) => IpcResponse::Fetched(IpcResult::Err(err.into())),
-        },
+      let env: BrowserToNetwork = serde_json::from_slice(&req_bytes).expect("decode ipc request");
+      validate_ipc_request(&env.request).expect("validate ipc request");
+
+      let mut service = NetworkService::new(&mut stream);
+      match env.request {
+        IpcRequest::Fetch { url } => {
+          service
+            .send_fetch_result(env.id, fetcher.fetch(&url))
+            .expect("write ipc response");
+        }
         IpcRequest::CookieHeaderValue { url } => {
           let value = fetcher.cookie_header_value(&url);
-          IpcResponse::MaybeString(IpcResult::Ok(value))
+          let response = IpcResponse::MaybeString(IpcResult::Ok(value));
+          service
+            .send_response(env.id, response)
+            .expect("write ipc response");
         }
         IpcRequest::StoreCookieFromDocument { url, cookie_string } => {
           fetcher.store_cookie_from_document(&url, &cookie_string);
-          IpcResponse::Unit(IpcResult::Ok(()))
+          let response = IpcResponse::Unit(IpcResult::Ok(()));
+          service
+            .send_response(env.id, response)
+            .expect("write ipc response");
         }
         other => panic!("unexpected IPC request: {other:?}"),
-      };
-
-      let out = serde_json::to_vec(&response).expect("encode ipc response");
-      write_frame(&mut stream, &out).expect("write ipc response");
+      }
     }
   })
 }

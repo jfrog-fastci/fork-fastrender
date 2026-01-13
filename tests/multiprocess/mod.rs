@@ -1,6 +1,7 @@
 //! Multiprocess / IPC integration tests.
 
 mod ipc_fetcher_cache_artifacts;
+mod ipc_fetcher_chunked_response;
 mod ipc_fetcher_http_request;
 mod ipc_fetcher_auth;
 mod ipc_fetcher_frame_limits;
