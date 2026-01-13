@@ -164,6 +164,13 @@ fn string_replace_get_substitution_two_digit_fallback() {
 }
 
 #[test]
+fn regexp_prototype_to_string_formats_source_and_flags() {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"String(/./g)"#).unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "/./g");
+}
+
+#[test]
 fn match_all_iterator_is_iterable() {
   let mut rt = new_runtime();
   let value = rt

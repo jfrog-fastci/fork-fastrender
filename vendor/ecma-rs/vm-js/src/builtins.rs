@@ -13443,6 +13443,60 @@ pub fn regexp_prototype_to_string(
   Ok(Value::String(out_s))
 }
 
+/// `RegExp.prototype.toString()` (ECMA-262) (minimal).
+pub fn regexp_prototype_to_string(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-regexp.prototype.tostring
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError(
+      "RegExp.prototype.toString called on non-object",
+    ));
+  };
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(obj))?;
+
+  let source_key = string_key(&mut scope, "source")?;
+  let source = scope.get_with_host_and_hooks(vm, host, hooks, obj, source_key, this)?;
+  scope.push_root(source)?;
+  let source = scope.to_string(vm, host, hooks, source)?;
+  scope.push_root(Value::String(source))?;
+
+  let flags_key = string_key(&mut scope, "flags")?;
+  let flags = scope.get_with_host_and_hooks(vm, host, hooks, obj, flags_key, this)?;
+  scope.push_root(flags)?;
+  let flags = scope.to_string(vm, host, hooks, flags)?;
+  scope.push_root(Value::String(flags))?;
+
+  // Build `"/" + source + "/" + flags` without holding heap borrows across allocation.
+  let mut out: Vec<u16> = Vec::new();
+  {
+    let source_units = scope.heap().get_string(source)?.as_code_units();
+    let flags_units = scope.heap().get_string(flags)?.as_code_units();
+    let total_len = 2usize
+      .saturating_add(source_units.len())
+      .saturating_add(flags_units.len());
+    out
+      .try_reserve_exact(total_len)
+      .map_err(|_| VmError::OutOfMemory)?;
+
+    vec_try_push(&mut out, b'/' as u16)?;
+    vec_try_extend_from_slice(&mut out, source_units, || vm.tick())?;
+    vec_try_push(&mut out, b'/' as u16)?;
+    vec_try_extend_from_slice(&mut out, flags_units, || vm.tick())?;
+  }
+
+  let out_s = scope.alloc_string_from_u16_vec(out)?;
+  Ok(Value::String(out_s))
+}
+
 /// `%RegExp.prototype%[@@match]` (ECMA-262) (partial).
 pub fn regexp_prototype_symbol_match(
   vm: &mut Vm,

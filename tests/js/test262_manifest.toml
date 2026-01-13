@@ -1232,18 +1232,15 @@ reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024-0x003C.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution replacement pattern support for replaceAll is still incomplete."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024N.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution replacement pattern support for replaceAll is still incomplete."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/getSubstitution-0x0024NN.js"
-status = "xfail"
-reason = "vm-js: GetSubstitution replacement pattern support for replaceAll is still incomplete."
+status = "pass"
 
 [[expectations]]
 id = "built-ins/String/prototype/replaceAll/searchValue-flags-no-g-throws.js"
