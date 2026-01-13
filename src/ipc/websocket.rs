@@ -5,6 +5,7 @@
 //! to be called *after* deserialization.
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// Maximum allowed UTF-8 byte length of a WebSocket URL sent over IPC.
 pub const MAX_WEBSOCKET_URL_BYTES: u32 = 8 * 1024;
@@ -64,6 +65,14 @@ pub enum WebSocketEvent {
 pub enum WebSocketValidationError {
   #[error("websocket url too long (len {len} bytes; max {max} bytes)")]
   UrlTooLong { len: u32, max: u32 },
+  #[error("websocket url is invalid")]
+  InvalidUrl,
+  #[error("websocket url must use ws: or wss: scheme")]
+  InvalidScheme,
+  #[error("websocket url must not include a fragment")]
+  HasFragment,
+  #[error("websocket url must include a host")]
+  MissingHost,
   #[error("too many websocket protocols (len {len}; max {max})")]
   TooManyProtocols { len: u32, max: u32 },
   #[error("websocket protocol too long (len {len} bytes; max {max} bytes)")]
@@ -75,15 +84,17 @@ pub enum WebSocketValidationError {
 }
 
 impl WebSocketConnectParams {
+  /// Parse and validate the renderer-supplied WebSocket URL for use in the network process.
+  ///
+  /// Security note: the renderer is untrusted. The network process must reject malformed URLs even
+  /// if renderer-side bindings performed validation.
+  pub fn validated_url(&self) -> Result<Url, WebSocketValidationError> {
+    validate_and_normalize_url(&self.url)
+  }
+
   /// Validate parameters supplied by the renderer.
   pub fn validate(&self) -> Result<(), WebSocketValidationError> {
-    let url_len = u32::try_from(self.url.as_bytes().len()).unwrap_or(u32::MAX);
-    if url_len > MAX_WEBSOCKET_URL_BYTES {
-      return Err(WebSocketValidationError::UrlTooLong {
-        len: url_len,
-        max: MAX_WEBSOCKET_URL_BYTES,
-      });
-    }
+    let _ = self.validated_url()?;
 
     let proto_count = u32::try_from(self.protocols.len()).unwrap_or(u32::MAX);
     if proto_count > MAX_WEBSOCKET_PROTOCOLS {
@@ -105,6 +116,61 @@ impl WebSocketConnectParams {
 
     Ok(())
   }
+}
+
+/// Validate and canonicalize a WebSocket URL string received over IPC.
+///
+/// This helper normalizes `http:` → `ws:` and `https:` → `wss:` deterministically so cookie lookup
+/// and connection keying are stable. The normalized URL is also checked against the IPC string
+/// length limit.
+pub fn validate_and_normalize_url(raw: &str) -> Result<Url, WebSocketValidationError> {
+  let raw_len = u32::try_from(raw.as_bytes().len()).unwrap_or(u32::MAX);
+  if raw_len > MAX_WEBSOCKET_URL_BYTES {
+    return Err(WebSocketValidationError::UrlTooLong {
+      len: raw_len,
+      max: MAX_WEBSOCKET_URL_BYTES,
+    });
+  }
+
+  let mut url = Url::parse(raw).map_err(|_| WebSocketValidationError::InvalidUrl)?;
+
+  if url.fragment().is_some() {
+    return Err(WebSocketValidationError::HasFragment);
+  }
+
+  match url.scheme() {
+    "ws" | "wss" => {}
+    "http" => url
+      .set_scheme("ws")
+      .map_err(|_| WebSocketValidationError::InvalidUrl)?,
+    "https" => url
+      .set_scheme("wss")
+      .map_err(|_| WebSocketValidationError::InvalidUrl)?,
+    _ => return Err(WebSocketValidationError::InvalidScheme),
+  }
+
+  if url
+    .host_str()
+    .filter(|host| !host.is_empty())
+    .is_none()
+  {
+    return Err(WebSocketValidationError::MissingHost);
+  }
+
+  // Canonicalize `ws://example.com` to `ws://example.com/` so downstream keying stays stable.
+  if url.path().is_empty() {
+    url.set_path("/");
+  }
+
+  let normalized_len = u32::try_from(url.as_str().as_bytes().len()).unwrap_or(u32::MAX);
+  if normalized_len > MAX_WEBSOCKET_URL_BYTES {
+    return Err(WebSocketValidationError::UrlTooLong {
+      len: normalized_len,
+      max: MAX_WEBSOCKET_URL_BYTES,
+    });
+  }
+
+  Ok(url)
 }
 
 impl WebSocketCommand {
@@ -217,16 +283,29 @@ mod tests {
 
   #[test]
   fn validate_connect_params_url_len_boundary() {
+    let base = "ws://example.com/";
+    let base_len = u32::try_from(base.as_bytes().len()).unwrap_or(u32::MAX);
+    assert!(base_len < MAX_WEBSOCKET_URL_BYTES);
+    let fill_len = MAX_WEBSOCKET_URL_BYTES - base_len;
+    let ok_url = base.to_string() + &"a".repeat(fill_len as _);
+    assert_eq!(
+      u32::try_from(ok_url.as_bytes().len()).unwrap_or(u32::MAX),
+      MAX_WEBSOCKET_URL_BYTES
+    );
     let ok = WebSocketConnectParams {
-      url: "a".repeat(MAX_WEBSOCKET_URL_BYTES as _),
+      url: ok_url,
       protocols: Vec::new(),
       origin: None,
       document_url: None,
     };
     assert!(ok.validate().is_ok());
 
+    let bad_url = base.to_string() + &"a".repeat((fill_len + 1) as _);
+    assert!(
+      u32::try_from(bad_url.as_bytes().len()).unwrap_or(u32::MAX) > MAX_WEBSOCKET_URL_BYTES
+    );
     let bad = WebSocketConnectParams {
-      url: "a".repeat((MAX_WEBSOCKET_URL_BYTES + 1) as _),
+      url: bad_url,
       protocols: Vec::new(),
       origin: None,
       document_url: None,
@@ -271,6 +350,37 @@ mod tests {
       document_url: None,
     };
     assert!(bad.validate().is_err());
+  }
+
+  #[test]
+  fn validate_connect_params_rejects_invalid_urls() {
+    let cases = [
+      "file:///etc/passwd",
+      "data:text/plain,hi",
+      "ws://#frag",
+      "ws:/relative",
+      "ws:///path",
+    ];
+    for url in cases {
+      let params = WebSocketConnectParams {
+        url: url.to_string(),
+        protocols: Vec::new(),
+        origin: None,
+        document_url: None,
+      };
+      assert!(params.validate().is_err(), "expected rejection for {url:?}");
+    }
+  }
+
+  #[test]
+  fn validate_and_normalize_url_http_https() {
+    let url = validate_and_normalize_url("http://example.com").expect("normalize http");
+    assert_eq!(url.scheme(), "ws");
+    assert_eq!(url.as_str(), "ws://example.com/");
+
+    let url = validate_and_normalize_url("https://example.com").expect("normalize https");
+    assert_eq!(url.scheme(), "wss");
+    assert_eq!(url.as_str(), "wss://example.com/");
   }
 
   #[test]

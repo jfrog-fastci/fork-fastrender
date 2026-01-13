@@ -1864,7 +1864,8 @@ mod tests {
   use super::*;
   use crate::dom2;
   use crate::error::Result;
-  use crate::js::{RunLimits, WindowHost};
+  use crate::js::{EventLoop, RunLimits, WindowHost, WindowHostState};
+  use crate::resource::HttpFetcher;
   use crate::testing::{net_test_lock, try_bind_localhost};
   use selectors::context::QuirksMode;
   use std::time::Instant;
@@ -2559,5 +2560,73 @@ mod tests {
   #[test]
   fn websocket_close_code_out_of_range_throws() -> Result<()> {
     websocket_close_code_test("70000", true)
+  }
+
+  #[test]
+  fn websocket_ipc_connect_rejects_invalid_url_without_panic() {
+    // Create a minimal env/socket entry so the "network process" connect handler can queue events
+    // on failure. This simulates a compromised renderer sending an invalid URL over IPC.
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(HttpFetcher::new());
+    let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
+    {
+      let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      lock.insert(env_id, EnvState::new(WindowWebSocketEnv::for_document(fetcher.clone(), None)));
+    }
+
+    let (cmd_tx, cmd_rx) = mpsc::sync_channel::<WsCommand>(1);
+
+    // Use a standalone heap allocation for the weak handle. The queued tasks won't actually run in
+    // this test; we only assert that the handler queued Error+Close events without panicking.
+    let mut heap = vm_js::Heap::new(vm_js::HeapLimits::new(1024 * 1024, 512 * 1024));
+    let mut scope = heap.scope();
+    let ws_obj = scope.alloc_object().expect("alloc websocket object");
+    let weak = WeakGcObject::from(ws_obj);
+
+    let ws_id = with_env_state_mut(env_id, |state| {
+      let id = state.alloc_id();
+      state.sockets.insert(
+        id,
+        WebSocketState {
+          weak_obj: weak,
+          url: String::new(),
+          protocol: String::new(),
+          ready_state: WS_CONNECTING,
+          buffered_amount: 0,
+          pending_events: 0,
+          cmd_tx: Some(cmd_tx),
+          thread: None,
+        },
+      );
+      Ok(id)
+    })
+    .expect("register websocket state");
+
+    let event_loop = EventLoop::<WindowHostState>::new();
+    let task_queue = event_loop.external_task_queue_handle();
+
+    // Missing-host URL that a compromised renderer might send.
+    websocket_thread_main::<WindowHostState>(
+      env_id,
+      ws_id,
+      fetcher,
+      "ws:/relative".to_string(),
+      None,
+      cmd_rx,
+      task_queue,
+    );
+
+    with_env_state(env_id, |state| {
+      let ws = state
+        .sockets
+        .get(&ws_id)
+        .ok_or(VmError::InvariantViolation("missing websocket state"))?;
+      assert_eq!(ws.ready_state, WS_CLOSED);
+      // Should have queued `error` + `close` events.
+      assert_eq!(ws.pending_events, 2);
+      Ok(())
+    })
+    .expect("inspect websocket state");
+
+    unregister_window_websocket_env(env_id);
   }
 }
