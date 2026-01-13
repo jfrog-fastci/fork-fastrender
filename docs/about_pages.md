@@ -7,8 +7,9 @@ These pages are implemented in [`src/ui/about_pages.rs`](../src/ui/about_pages.r
 through the normal UI worker pipeline (they are **not** `chrome://` renderer-chrome pages).
 
 Implementation note: the HTML for these pages loads a shared stylesheet from
-[`chrome://styles/about.css`](../src/ui/about_pages.rs). This is a **small allowlisted** `chrome://`
-asset that is only permitted when the initiating document is an `about:` page (see
+`chrome://styles/about.css` (source: [`assets/chrome/about.css`](../assets/chrome/about.css)). This is
+a **small allowlisted** `chrome://` asset that is only permitted when the initiating document is an
+`about:` page (see
 [`src/ui/about_pages_fetcher.rs`](../src/ui/about_pages_fetcher.rs)). Untrusted web pages must not be
 able to fetch arbitrary `chrome://...` resources.
 
