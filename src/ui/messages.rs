@@ -1141,6 +1141,20 @@ pub enum DownloadOutcome {
   Failed { error: String },
 }
 
+// -----------------------------------------------------------------------------
+// Compile-time trait assertions
+// -----------------------------------------------------------------------------
+
+// The windowed browser UI uses std::sync::mpsc for worker↔UI messaging. If we ever ship AccessKit
+// data across that boundary (e.g. for page accessibility), the payload types must remain `Send`.
+#[cfg(feature = "browser_ui")]
+#[allow(dead_code)]
+fn _assert_accesskit_types_are_send() {
+  fn assert_send<T: Send>() {}
+  assert_send::<accesskit::Node>();
+  assert_send::<accesskit::TreeUpdate>();
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1178,6 +1192,16 @@ mod tests {
   fn rendered_frame_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<RenderedFrame>();
+  }
+
+  #[cfg(feature = "browser_ui")]
+  #[test]
+  fn accesskit_types_are_send() {
+    // These types may be used in worker→UI payloads when the windowed browser UI is enabled.
+    // They must remain `Send` so `WorkerToUi` messages can cross the std::sync::mpsc boundary.
+    fn assert_send<T: Send>() {}
+    assert_send::<accesskit::Node>();
+    assert_send::<accesskit::TreeUpdate>();
   }
 
   #[test]
