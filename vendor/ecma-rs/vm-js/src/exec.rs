@@ -32514,16 +32514,33 @@ fn gen_member_after_base(
   expr: &MemberExpr,
   base: Value,
 ) -> Result<Value, VmError> {
+  // Optional-chain propagation compatibility: if the base is the internal optional-chain sentinel,
+  // propagate it without attempting any further member lookup (including private-name access).
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(base);
+  }
   if expr.optional_chaining && is_nullish(base) {
     return Ok(Value::Undefined);
   }
 
   let mut key_scope = scope.reborrow();
   key_scope.push_root(base)?;
-  let key_s = key_scope.alloc_string(&expr.right)?;
-  let reference = Reference::Property {
-    base,
-    key: PropertyKey::from_string(key_s),
+  let reference = if expr.right.starts_with('#') {
+    let sym = key_scope
+      .heap()
+      .resolve_private_name_symbol(evaluator.env.lexical_env, &expr.right)?
+      .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+    Reference::Private {
+      base,
+      sym,
+      name: &expr.right,
+    }
+  } else {
+    let key_s = key_scope.alloc_string(&expr.right)?;
+    Reference::Property {
+      base,
+      key: PropertyKey::from_string(key_s),
+    }
   };
   evaluator.get_value_from_reference(&mut key_scope, &reference)
 }
@@ -32721,6 +32738,11 @@ fn gen_call_member_after_base(
   member: &MemberExpr,
   base: Value,
 ) -> Result<GenEval<Completion>, VmError> {
+  // Optional-chain propagation compatibility: if the base is the internal optional-chain sentinel,
+  // propagate it without attempting any further member lookup (including private-name access).
+  if is_optional_chain_sentinel(evaluator.vm, base) {
+    return Ok(GenEval::Complete(Completion::normal(base)));
+  }
   if member.optional_chaining && is_nullish(base) {
     return Ok(GenEval::Complete(Completion::normal(Value::Undefined)));
   }
@@ -32736,10 +32758,22 @@ fn gen_call_member_after_base(
   let callee_value = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    let reference = Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
+    let reference = if member.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&member.right)?;
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      }
     };
     evaluator.get_value_from_reference(&mut key_scope, &reference)
   };
