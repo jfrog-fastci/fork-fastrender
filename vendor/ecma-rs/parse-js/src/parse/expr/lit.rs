@@ -694,6 +694,14 @@ struct RegexError {
 fn validate_regex_flags(raw: &str, start: usize) -> Result<(), RegexError> {
   let mut seen_flags: u16 = 0;
   for (offset, ch) in raw[start..].char_indices() {
+    // `u` (Unicode) and `v` (Unicode sets) are mutually exclusive.
+    if (ch == 'u' && (seen_flags & (1 << 6)) != 0) || (ch == 'v' && (seen_flags & (1 << 5)) != 0) {
+      return Err(RegexError {
+        kind: RegexErrorKind::InvalidFlag,
+        offset: start + offset,
+        len: ch.len_utf8(),
+      });
+    }
     let bit = match ch {
       'd' => 1 << 0,
       'g' => 1 << 1,

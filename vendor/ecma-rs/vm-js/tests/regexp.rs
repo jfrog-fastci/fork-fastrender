@@ -433,7 +433,7 @@ fn regexp_character_class_whitespace_escape_matches_ecma_whitespace_and_line_ter
           0xFEFF
         );
 
-        (/^\s+$/).test(ws) && (/^\s+$/u).test(ws)
+        (/^\s+$/).test(ws) && (/^\s+$/u).test(ws) && (/^\s+$/v).test(ws)
       "#,
     )
     .unwrap();
@@ -445,6 +445,11 @@ fn regexp_unicode_mode_rejects_character_class_escape_ranges() {
   let mut rt = new_runtime();
   let value = rt
     .exec_script(r#"try { new RegExp("[\\s-a]", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+
+  let value = rt
+    .exec_script(r#"try { new RegExp("[\\s-a]", "v"); "no"; } catch (e) { e.name }"#)
     .unwrap();
   assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
 }
