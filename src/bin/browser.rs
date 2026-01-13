@@ -7189,6 +7189,9 @@ impl App {
       msg => msg,
     };
 
+    let (msg, clipboard_update) =
+      fastrender::ui::protocol_limits::sanitize_worker_to_ui_clipboard_message(msg);
+
     // The render worker can send large/hostile payloads for picker/dropdown overlays. Sanitize them
     // before any UI code (including our own pre-reducer side effects) clones/uses the data.
     let Some(msg) = sanitize_worker_to_ui_for_windowed_browser(msg) else {
@@ -7276,6 +7279,41 @@ impl App {
           request_redraw = true;
         }
       }
+    }
+
+    if let Some(clipboard_update) = clipboard_update {
+      let limit = fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES;
+      if clipboard_update.truncated {
+        use fastrender::ui::{ToastKind, TOAST_DEFAULT_TTL};
+
+        // Only show a toast when the originating tab is active to avoid surprising the user when a
+        // background tab triggers copy/cut.
+        if self.browser_state.active_tab_id() == Some(clipboard_update.tab_id) {
+          let toast_text = format!(
+            "Clipboard text too large; truncated to {} KiB",
+            (limit / 1024).max(1)
+          );
+          self
+            .chrome_toast
+            .show(ToastKind::Warning, toast_text, std::time::Instant::now(), TOAST_DEFAULT_TTL);
+        }
+
+        let debug_line = format!(
+          "[clipboard] truncated oversized clipboard payload from tab {} ({} bytes > {} bytes)",
+          clipboard_update.tab_id.0, clipboard_update.original_bytes, limit
+        );
+        eprintln!("{debug_line}");
+        if self.debug_log_ui_enabled {
+          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+            self.debug_log.pop_front();
+          }
+          self.debug_log.push_back(debug_line);
+        }
+      }
+
+      // Best-effort write to the OS clipboard, bounded to `MAX_CLIPBOARD_TEXT_BYTES`.
+      os_clipboard::write_text(&clipboard_update.text);
+      request_redraw = true;
     }
 
     if let fastrender::ui::WorkerToUi::ContextMenu {
@@ -7398,18 +7436,6 @@ impl App {
         self.launch_native_file_picker_dialog(*tab_id, *input_node_id, *multiple, accept);
         request_redraw = true;
       }
-    }
-
-    if let fastrender::ui::WorkerToUi::SetClipboardText { text, .. } = &msg {
-      // Clamp worker-provided clipboard text to a reasonable size, then write to the OS clipboard
-      // immediately (best-effort). Writing directly keeps clipboard support working for non-egui
-      // frontends (e.g. compositor backends) that do not have egui-winit's `PlatformOutput`
-      // plumbing.
-      let text = fastrender::ui::untrusted::clamp_untrusted_utf8(
-        text,
-        fastrender::ui::protocol_limits::MAX_CLIPBOARD_TEXT_BYTES,
-      );
-      os_clipboard::write_text(&text);
     }
 
     let update = self.browser_state.apply_worker_msg(msg);
