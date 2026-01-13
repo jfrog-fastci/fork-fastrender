@@ -832,6 +832,78 @@ fn compiled_with_honors_symbol_unscopables() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_with_falls_back_to_outer_binding_when_property_missing() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 0;
+      let o = {};
+      with (o) { x = 2; }
+      x
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // If the `with` binding object does not have an `x` property, the identifier should resolve to
+  // the outer lexical `x` binding.
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_with_to_object_throws_for_null() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let ok = 0;
+      try { with (null) { } } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_with_restores_outer_env_on_throw() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      let x = 1;
+      let o = {x: 2};
+      try {
+        with (o) { throw 0; }
+      } catch (e) {
+        x = 3;
+      }
+      x
+    "#,
+  )?;
+
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // The `catch` block must run in the outer lexical environment, not the `with` environment.
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(3.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_try_catch_binds_exception_value() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
