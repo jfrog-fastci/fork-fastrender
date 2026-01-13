@@ -644,12 +644,33 @@ fn traversal_filter_node<Host: WindowRealmHost + DomHost + 'static>(
     return Ok(NODE_FILTER_ACCEPT);
   }
 
-  // Step 5+: call filter.acceptNode(node) with active flag protection.
+  // Step 5+: call the user-provided filter callback with active flag protection.
   scope.define_property(
     traverser_obj,
     active_key,
     data_property(Value::Bool(true), true, false, false),
   )?;
+  struct TraversalActiveGuard<'a> {
+    scope: *mut Scope<'a>,
+    traverser_obj: GcObject,
+    key: PropertyKey,
+  }
+  impl Drop for TraversalActiveGuard<'_> {
+    fn drop(&mut self) {
+      // SAFETY: `scope` originates from the active native call; this guard never escapes.
+      let scope = unsafe { &mut *self.scope };
+      let _ = scope.define_property(
+        self.traverser_obj,
+        self.key,
+        data_property(Value::Bool(false), true, false, false),
+      );
+    }
+  }
+  let _active_guard = TraversalActiveGuard {
+    scope,
+    traverser_obj,
+    key: active_key,
+  };
 
   // Resolve the node wrapper to pass to the callback.
   let primary = dispatch.with_dom_host(vm, |host| {
@@ -673,8 +694,8 @@ fn traversal_filter_node<Host: WindowRealmHost + DomHost + 'static>(
         vm,
         scope,
         filter,
-        // For callback interfaces, use the callback object as `this`.
-        filter,
+        // WebIDL callback interfaces: callable callbacks are invoked with `this = undefined`.
+        Value::Undefined,
         &[Value::Object(wrapper)],
       );
     }
@@ -683,38 +704,28 @@ fn traversal_filter_node<Host: WindowRealmHost + DomHost + 'static>(
       return Err(VmError::TypeError("NodeFilter is not an object"));
     };
 
-    // `call a user object's operation` for callback interfaces:
-    // - attempt `callback.acceptNode(node)` first
-    // - fall back to `callback.handleEvent(node)` for compatibility with our generic callback-interface
-    //   conversion, which validates `handleEvent`.
+    // WebIDL callback interfaces: call `filter.acceptNode(node)` with `this = filter`.
     let accept_node_key = key_from_str(scope, "acceptNode")?;
-    let mut method = get_with_active_vm_host_and_hooks(vm, scope, filter_obj, accept_node_key)?;
-    if matches!(method, Value::Undefined | Value::Null) {
-      let handle_event_key = key_from_str(scope, "handleEvent")?;
-      method = get_with_active_vm_host_and_hooks(vm, scope, filter_obj, handle_event_key)?;
-    }
-    if matches!(method, Value::Undefined | Value::Null) {
-      return Err(VmError::TypeError(
-        "Callback interface object is missing a callable acceptNode method",
-      ));
-    }
+    let method = get_with_active_vm_host_and_hooks(vm, scope, filter_obj, accept_node_key)?;
     if !is_callable(scope, method) {
-      return Err(VmError::TypeError("GetMethod: target is not callable"));
+      return Err(VmError::TypeError(
+        "NodeFilter callback has no callable acceptNode",
+      ));
     }
     scope.push_root(method)?;
     call_with_active_vm_host_and_hooks(vm, scope, method, filter, &[Value::Object(wrapper)])
   })();
 
-  // Always clear the active flag before returning, even if the callback threw.
-  scope.define_property(
-    traverser_obj,
-    active_key,
-    data_property(Value::Bool(false), true, false, false),
-  )?;
-
   let callback_value = callback_result?;
+  // Root the callback return value: numeric conversion can trigger user code + GC.
+  scope.push_root(callback_value)?;
   let n = scope.heap_mut().to_number(callback_value)?;
-  Ok(to_uint16_f64(n))
+  let result = to_uint16_f64(n);
+  // DOM Standard: values other than 1/2/3 are treated as FILTER_SKIP.
+  Ok(match result {
+    NODE_FILTER_ACCEPT | NODE_FILTER_REJECT | NODE_FILTER_SKIP => result,
+    _ => NODE_FILTER_SKIP,
+  })
 }
 
 fn mutate_dom_detached<R>(

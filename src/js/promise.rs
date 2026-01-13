@@ -140,32 +140,32 @@ impl<Host: 'static, T: Clone + 'static> JsPromise<Host, T> {
       event_loop,
       box_try_new(
         move |host: &mut Host, event_loop: &mut EventLoop<Host>, result: PromiseResult<T>| {
-        match result {
-          Ok(value) => match on_fulfilled(host, &mut *event_loop, value)? {
-            JsPromiseValue::Value(v) => next_resolver.resolve(&mut *event_loop, v)?,
-            JsPromiseValue::Promise(p) => {
-              // Promise flattening: if the handler returns a promise, the chained promise settles
-              // to its eventual value.
-              let next_resolver = next_resolver.clone();
-              p.add_reaction(
-                &mut *event_loop,
-                box_try_new(
-                  move |_host: &mut Host,
-                        event_loop: &mut EventLoop<Host>,
-                        result: PromiseResult<U>| {
-                    match result {
-                      Ok(v) => next_resolver.resolve(&mut *event_loop, v)?,
-                      Err(err) => next_resolver.reject(&mut *event_loop, err)?,
-                    }
-                    Ok(())
-                  },
-                )?,
-              )?;
-            }
-          },
-          Err(err) => next_resolver.reject(&mut *event_loop, err)?,
-        }
-        Ok(())
+          match result {
+            Ok(value) => match on_fulfilled(host, &mut *event_loop, value)? {
+              JsPromiseValue::Value(v) => next_resolver.resolve(&mut *event_loop, v)?,
+              JsPromiseValue::Promise(p) => {
+                // Promise flattening: if the handler returns a promise, the chained promise settles
+                // to its eventual value.
+                let next_resolver = next_resolver.clone();
+                p.add_reaction(
+                  &mut *event_loop,
+                  box_try_new(
+                    move |_host: &mut Host,
+                          event_loop: &mut EventLoop<Host>,
+                          result: PromiseResult<U>| {
+                      match result {
+                        Ok(v) => next_resolver.resolve(&mut *event_loop, v)?,
+                        Err(err) => next_resolver.reject(&mut *event_loop, err)?,
+                      }
+                      Ok(())
+                    },
+                  )?,
+                )?;
+              }
+            },
+            Err(err) => next_resolver.reject(&mut *event_loop, err)?,
+          }
+          Ok(())
         },
       )?,
     )?;
