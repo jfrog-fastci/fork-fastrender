@@ -16,7 +16,7 @@
     "layout": 65.10097548672566,
     "paint": 106.16466771681417
   },
-  "notes": "Visually good overall (JS off). Fixture page-loop (`tests/pages/fixtures/fandom.com`) shows correct global nav + feed layout; remaining ~33% pixel diffs vs Chrome (perceptual ≈0.035) appear dominated by text rasterization/hinting and small subpixel layout/rounding shifts (first mismatch is a top-nav Register button glyph coverage delta), plus minor gradient/mask/box-shadow blur differences. Note: the fixture references many SVG sprite `<use>` ids (e.g. `#wds-brand-fandom-logo`, `#wds-icons-*`) but does not include the sprite sheet, so those icons render empty.",
+  "notes": "Visually good overall (JS off). Fixture page-loop (`tests/pages/fixtures/fandom.com`) shows correct global nav + feed layout; remaining ~33% pixel diffs vs Chrome (perceptual ≈0.035) appear dominated by text rasterization/hinting and small subpixel layout/rounding shifts (first mismatch is a top-nav Register button glyph coverage delta), plus minor gradient/mask/box-shadow blur differences. With tolerance=0, most diffs are very small: ~71% of differing pixels are within 2 RGB levels (AA/rounding noise). Note: the fixture references many SVG sprite `<use>` ids (e.g. `#wds-brand-fandom-logo`, `#wds-icons-*`) but does not include the sprite sheet, so those icons render empty.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 321491,
