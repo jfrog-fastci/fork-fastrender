@@ -1875,13 +1875,13 @@ dependencies = [
  "usvg",
  "vm-js",
  "walkdir",
- "webidl",
- "webidl-js-runtime",
- "webidl-vm-js",
- "wgpu",
- "windows-sys 0.52.0",
- "winit",
- "wuff",
+  "webidl",
+  "webidl-js-runtime",
+  "webidl-vm-js",
+  "wgpu",
+  "windows-sys 0.52.0",
+  "winit",
+  "wuff",
 ]
 
 [[package]]

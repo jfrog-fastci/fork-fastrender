@@ -203,6 +203,16 @@ syn = { version = "2", features = ["full", "visit"] }
 directories = "5"
 fs2 = "0.4"
 
+[target.'cfg(windows)'.dev-dependencies]
+# Used by Windows-only sandbox security tests.
+windows-sys = { version = "0.52", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Console",
+  "Win32_System_Threading",
+] }
+
 [profile.dev]
 # `xtask page-loop --debug` intentionally uses the dev profile to keep iteration quick, but pages
 # like `tests/pages/fixtures/go.dev` are layout/text hotspots and can time out when critical

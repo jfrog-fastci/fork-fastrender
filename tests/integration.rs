@@ -24,6 +24,7 @@ mod progress;
 mod render;
 mod resource;
 mod multiprocess;
+mod sandbox;
 mod scroll;
 mod ui;
 mod wpt;
