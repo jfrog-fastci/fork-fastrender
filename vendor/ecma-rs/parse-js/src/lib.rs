@@ -247,4 +247,23 @@ mod tests {
     )
     .unwrap();
   }
+
+  #[test]
+  fn unicode_mode_disallows_unescaped_right_bracket_outside_charset() {
+    let opts = ecma_script_opts();
+
+    // In Unicode mode (`u`/`v`), `]` is a SyntaxCharacter and cannot appear as an unescaped
+    // PatternCharacter outside of a character class.
+    let err = parse_with_options("let re = /]/u;", opts).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression")
+    );
+
+    // In non-Unicode mode, Annex B permits treating `]` as a literal.
+    parse_with_options("let re = /]/;", opts).unwrap();
+
+    // Escaped `]` remains valid in Unicode mode.
+    parse_with_options(r"let re = /\]/u;", opts).unwrap();
+  }
 }

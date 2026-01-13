@@ -2648,7 +2648,16 @@ fn validate_regex_pattern(
         continue;
       }
       ']' => {
-        // Literal `]` outside charsets.
+        // In Unicode mode (`u`/`v`), Annex B extensions are disabled and `]` is a SyntaxCharacter,
+        // so it cannot appear as an unescaped PatternCharacter outside of a character class.
+        if unicode_mode {
+          return Err(RegexError {
+            kind: RegexErrorKind::InvalidPattern,
+            offset: base_offset + i,
+            len: 1,
+          });
+        }
+        // In non-unicode mode, Annex B allows treating `]` as a literal outside charsets.
         prev_can_be_quantified = true;
         quantifier_allows_lazy = false;
         i += ch_len;
