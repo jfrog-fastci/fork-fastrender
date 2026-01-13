@@ -88,6 +88,12 @@ Audio output backends are opt-in so CI/minimal hosts don't need system audio dev
 - Default: `NullAudioBackend` (silence), no system deps.
 - Real-time audio output: enable `audio_cpal` (may require ALSA dev packages on Linux).
 
+On Ubuntu/Debian, you may need:
+
+```bash
+sudo apt-get install libasound2-dev
+```
+
 ```bash
 timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui,audio_cpal --bin browser

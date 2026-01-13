@@ -37,6 +37,7 @@ ${SUDO} apt-get update -y
 echo "Installing Linux GUI build dependencies..."
 ${SUDO} apt-get install -y \
   pkg-config \
+  libasound2-dev \
   libwayland-dev \
   libxkbcommon-dev \
   libvulkan-dev \
