@@ -103,6 +103,20 @@ fn build_renderer_filter() -> Vec<libc::sock_filter> {
     libc::SYS_listen,
     libc::SYS_accept,
     libc::SYS_accept4,
+    // High-risk kernel attack surface that should never be needed in a renderer process.
+    libc::SYS_bpf,
+    libc::SYS_perf_event_open,
+    libc::SYS_ptrace,
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+    libc::SYS_kcmp,
+    libc::SYS_userfaultfd,
+    libc::SYS_keyctl,
+    libc::SYS_add_key,
+    libc::SYS_request_key,
+    // Privilege/namespace syscalls (even if they'd fail, make it explicit).
+    libc::SYS_unshare,
+    libc::SYS_setns,
   ];
   for nr in deny {
     filter.push(bpf_jump(BPF_JMP_JEQ_K, nr as u32, 0, 1));
