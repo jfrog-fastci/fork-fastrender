@@ -116,6 +116,17 @@ fn readonly_num_desc(value: f64) -> PropertyDescriptor {
   readonly_data_desc(Value::Number(value))
 }
 
+fn enumerable_num_desc(value: f64) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data {
+      value: Value::Number(value),
+      writable: true,
+    },
+  }
+}
+
 // HostSlots tags for platform objects installed by this module.
 //
 // These are only used for branding: structuredClone must reject them as platform objects.
@@ -571,6 +582,29 @@ pub fn install_time_bindings(
       scope.define_property(timing, key, readonly_num_desc(value))?;
     }
 
+    // `PerformanceTiming.toJSON()` exists in all major browsers and is used by analytics libraries
+    // to serialize legacy navigation timing data. Our stub timing object has non-enumerable
+    // properties, so without `toJSON` it would stringify as `{}`.
+    let timing_to_json_id = vm.register_native_call(performance_timing_to_json_native)?;
+    let timing_to_json_name = scope.alloc_string("toJSON")?;
+    scope.push_root(Value::String(timing_to_json_name))?;
+    let timing_to_json =
+      scope.alloc_native_function(timing_to_json_id, None, timing_to_json_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      timing_to_json,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(timing_to_json))?;
+
+    let timing_to_json_key_s = scope.alloc_string("toJSON")?;
+    scope.push_root(Value::String(timing_to_json_key_s))?;
+    let timing_to_json_key = PropertyKey::from_string(timing_to_json_key_s);
+    scope.define_property(
+      timing,
+      timing_to_json_key,
+      global_data_desc(Value::Object(timing_to_json)),
+    )?;
+
     let timing_key_s = scope.alloc_string("timing")?;
     scope.push_root(Value::String(timing_key_s))?;
     let timing_key = PropertyKey::from_string(timing_key_s);
@@ -602,6 +636,31 @@ pub fn install_time_bindings(
     scope.push_root(Value::String(redirect_count_key_s))?;
     let redirect_count_key = PropertyKey::from_string(redirect_count_key_s);
     scope.define_property(navigation, redirect_count_key, readonly_num_desc(0.0))?;
+
+    // Like `performance.timing`, `performance.navigation` is commonly serialized via `toJSON`.
+    let navigation_to_json_id = vm.register_native_call(performance_navigation_to_json_native)?;
+    let navigation_to_json_name = scope.alloc_string("toJSON")?;
+    scope.push_root(Value::String(navigation_to_json_name))?;
+    let navigation_to_json = scope.alloc_native_function(
+      navigation_to_json_id,
+      None,
+      navigation_to_json_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      navigation_to_json,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(navigation_to_json))?;
+
+    let navigation_to_json_key_s = scope.alloc_string("toJSON")?;
+    scope.push_root(Value::String(navigation_to_json_key_s))?;
+    let navigation_to_json_key = PropertyKey::from_string(navigation_to_json_key_s);
+    scope.define_property(
+      navigation,
+      navigation_to_json_key,
+      global_data_desc(Value::Object(navigation_to_json)),
+    )?;
 
     let navigation_key_s = scope.alloc_string("navigation")?;
     scope.push_root(Value::String(navigation_key_s))?;
@@ -782,6 +841,129 @@ fn performance_now_native(
 ) -> Result<Value, VmError> {
   let clock = with_time_context(scope, |ctx| ctx.clock.clone())?;
   Ok(Value::Number(duration_to_ms_f64(clock.now())))
+}
+
+fn performance_timing_to_json_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(timing_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = scope
+    .heap()
+    .object_host_slots(timing_obj)?
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  if slots.a != PERFORMANCE_TIMING_HOST_TAG {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intrinsics.object_prototype()))?;
+
+  // Keep this list in sync with the fields defined on `performance.timing` during installation.
+  let fields: [&str; 21] = [
+    "navigationStart",
+    "unloadEventStart",
+    "unloadEventEnd",
+    "redirectStart",
+    "redirectEnd",
+    "fetchStart",
+    "domainLookupStart",
+    "domainLookupEnd",
+    "connectStart",
+    "connectEnd",
+    "secureConnectionStart",
+    "requestStart",
+    "responseStart",
+    "responseEnd",
+    "domLoading",
+    "domInteractive",
+    "domContentLoadedEventStart",
+    "domContentLoadedEventEnd",
+    "domComplete",
+    "loadEventStart",
+    "loadEventEnd",
+  ];
+
+  for name in fields {
+    let key_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    // Avoid invoking user-defined code: read only own *data* properties.
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(timing_obj, &key)?;
+    let num = match value {
+      Some(Value::Number(n)) => n,
+      _ => 0.0,
+    };
+    scope.define_property(out, key, enumerable_num_desc(num))?;
+  }
+
+  Ok(Value::Object(out))
+}
+
+fn performance_navigation_to_json_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(nav_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let slots = scope
+    .heap()
+    .object_host_slots(nav_obj)?
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  if slots.a != PERFORMANCE_NAVIGATION_HOST_TAG {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  let intrinsics = vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  let out = scope.alloc_object()?;
+  scope.push_root(Value::Object(out))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(out, Some(intrinsics.object_prototype()))?;
+
+  let fields: [&str; 2] = ["type", "redirectCount"];
+  for name in fields {
+    let key_s = scope.alloc_string(name)?;
+    scope.push_root(Value::String(key_s))?;
+    let key = PropertyKey::from_string(key_s);
+
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(nav_obj, &key)?;
+    let num = match value {
+      Some(Value::Number(n)) => n,
+      _ => 0.0,
+    };
+    scope.define_property(out, key, enumerable_num_desc(num))?;
+  }
+
+  Ok(Value::Object(out))
 }
 
 fn performance_entry_type_from_units(units: &[u16]) -> Option<PerformanceEntryType> {
@@ -2712,6 +2894,127 @@ mod tests {
       let ms = date_now_ms(&scope).expect("date_now_ms should succeed");
       assert_eq!(ms, 3_345);
     }
+
+    realm.teardown(&mut heap);
+  }
+
+  #[test]
+  fn legacy_navigation_timing_objects_have_tojson() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      WebTime::new(1_000),
+    )
+    .expect("install time bindings");
+
+    let performance = get_global_property(&mut heap, &realm, "performance");
+    let performance_obj = match performance {
+      Value::Object(o) => o,
+      _ => panic!("performance should be an object"),
+    };
+
+    // --- performance.timing.toJSON ---
+    let timing = get_object_property(&mut heap, performance_obj, "timing");
+    let timing_obj = match timing {
+      Value::Object(o) => o,
+      _ => panic!("performance.timing should be an object"),
+    };
+
+    let timing_to_json = get_object_property(&mut heap, timing_obj, "toJSON");
+    assert!(
+      heap
+        .is_callable(timing_to_json)
+        .expect("is_callable should succeed"),
+      "expected typeof performance.timing.toJSON === 'function'"
+    );
+
+    let timing_nav_start = get_object_property(&mut heap, timing_obj, "navigationStart");
+    let timing_json = call0(
+      &mut vm,
+      &mut heap,
+      timing_to_json,
+      Value::Object(timing_obj),
+    );
+    let Value::Object(timing_json_obj) = timing_json else {
+      panic!("expected performance.timing.toJSON() to return an object");
+    };
+    let timing_json_nav_start = get_object_property(&mut heap, timing_json_obj, "navigationStart");
+    assert_eq!(
+      timing_json_nav_start, timing_nav_start,
+      "performance.timing.toJSON().navigationStart should match performance.timing.navigationStart"
+    );
+
+    // JSON.stringify(performance.timing) should include legacy timing fields via toJSON.
+    let json = get_global_property(&mut heap, &realm, "JSON");
+    let json_obj = match json {
+      Value::Object(o) => o,
+      _ => panic!("JSON should be an object"),
+    };
+    let stringify = get_object_property(&mut heap, json_obj, "stringify");
+    let s = call(
+      &mut vm,
+      &mut heap,
+      stringify,
+      Value::Object(json_obj),
+      &[Value::Object(timing_obj)],
+    );
+    let s_utf8 = string_value_to_utf8_lossy(&heap, s);
+    assert!(
+      s_utf8.contains("navigationStart"),
+      "expected JSON.stringify(performance.timing) to include navigationStart, got: {s_utf8}"
+    );
+
+    // --- performance.navigation.toJSON ---
+    let navigation = get_object_property(&mut heap, performance_obj, "navigation");
+    let navigation_obj = match navigation {
+      Value::Object(o) => o,
+      _ => panic!("performance.navigation should be an object"),
+    };
+    let navigation_to_json = get_object_property(&mut heap, navigation_obj, "toJSON");
+    assert!(
+      heap
+        .is_callable(navigation_to_json)
+        .expect("is_callable should succeed"),
+      "expected typeof performance.navigation.toJSON === 'function'"
+    );
+
+    let navigation_type = get_object_property(&mut heap, navigation_obj, "type");
+    let nav_json = call0(
+      &mut vm,
+      &mut heap,
+      navigation_to_json,
+      Value::Object(navigation_obj),
+    );
+    let Value::Object(nav_json_obj) = nav_json else {
+      panic!("expected performance.navigation.toJSON() to return an object");
+    };
+    let nav_json_type = get_object_property(&mut heap, nav_json_obj, "type");
+    assert_eq!(
+      nav_json_type, navigation_type,
+      "performance.navigation.toJSON().type should match performance.navigation.type"
+    );
+
+    let s = call(
+      &mut vm,
+      &mut heap,
+      stringify,
+      Value::Object(json_obj),
+      &[Value::Object(navigation_obj)],
+    );
+    let s_utf8 = string_value_to_utf8_lossy(&heap, s);
+    assert!(
+      s_utf8.contains("redirectCount"),
+      "expected JSON.stringify(performance.navigation) to include redirectCount, got: {s_utf8}"
+    );
 
     realm.teardown(&mut heap);
   }
