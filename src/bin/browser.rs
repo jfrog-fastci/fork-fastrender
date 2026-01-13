@@ -7402,6 +7402,9 @@ impl PerfWindowLog {
       }
     }
   }
+
+}
+
 #[cfg(feature = "browser_ui")]
 #[derive(Debug, Default)]
 struct PendingPageSubtreeAccessKitUpdate {

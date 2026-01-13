@@ -129,7 +129,7 @@ fn is_seccomp_unsupported_error(err: &fastrender::sandbox::SandboxError) -> bool
     fastrender::sandbox::SandboxError::SetParentDeathSignalFailed { source }
     | fastrender::sandbox::SandboxError::SetDumpableFailed { source }
     | fastrender::sandbox::SandboxError::DisableCoreDumpsFailed { source }
-    fastrender::sandbox::SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
+    | fastrender::sandbox::SandboxError::EnableNoNewPrivsFailed { source } => source.raw_os_error(),
     fastrender::sandbox::SandboxError::SeccompInstallRejected { errno, .. } => Some(*errno),
     fastrender::sandbox::SandboxError::SeccompInstallFailed { errno, .. } => Some(*errno),
     _ => None,
