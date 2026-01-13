@@ -955,6 +955,9 @@ fn best_effort_site_for_url(url: &str) -> String {
       .host_str()
       .map(str::to_string)
       .unwrap_or_else(|| "unknown".to_string()),
+    // Use the full `about:*` URL for best-effort display, matching the `SiteKey` behaviour for
+    // hostless schemes.
+    "about" => parsed.to_string(),
     "file" => "file".to_string(),
     other => other.to_string(),
   }
@@ -1980,6 +1983,12 @@ mod tests {
         url: "https://example.com/a".to_string(),
         site_key: None,
         renderer_process: None,
+        loading: false,
+        crashed: false,
+        unresponsive: false,
+        renderer_crashed: false,
+        crash_reason: None,
+        renderer_protocol_violation: None,
       },
       OpenTabSnapshot {
         window_id: None,
@@ -1987,6 +1996,12 @@ mod tests {
         url: "file:///tmp/a.html".to_string(),
         site_key: None,
         renderer_process: None,
+        loading: false,
+        crashed: false,
+        unresponsive: false,
+        renderer_crashed: false,
+        crash_reason: None,
+        renderer_protocol_violation: None,
       },
       OpenTabSnapshot {
         window_id: None,
@@ -1994,20 +2009,26 @@ mod tests {
         url: "about:newtab".to_string(),
         site_key: None,
         renderer_process: None,
+        loading: false,
+        crashed: false,
+        unresponsive: false,
+        renderer_crashed: false,
+        crash_reason: None,
+        renderer_protocol_violation: None,
       },
     ]);
 
     let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
     assert!(
-      html.contains("</a></td>\n           <td><code>example.com</code></td>"),
+      html.contains("<td><code>example.com</code></td>"),
       "expected about:processes to render site column for https URLs, got: {html}"
     );
     assert!(
-      html.contains("</a></td>\n           <td><code>file</code></td>"),
+      html.contains("<td><code>file</code></td>"),
       "expected about:processes to render site column for file URLs, got: {html}"
     );
     assert!(
-      html.contains("</a></td>\n           <td><code>about</code></td>"),
+      html.contains("<td><code>about:newtab</code></td>"),
       "expected about:processes to render site column for about URLs, got: {html}"
     );
   }
