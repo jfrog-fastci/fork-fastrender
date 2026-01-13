@@ -206,6 +206,8 @@ mod ui_text_control_pointer_selection;
 mod untrusted_worker_messages;
 #[cfg(feature = "browser_ui")]
 mod renderer_chrome_address_bar_sync;
+#[cfg(feature = "browser_ui")]
+mod renderer_chrome_omnibox_keyboard_nav;
 
 // -----------------------------------------------------------------------------
 // Global integration test environment

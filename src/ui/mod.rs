@@ -118,6 +118,10 @@ pub mod accesskit_snapshot;
 #[cfg(feature = "browser_ui")]
 pub mod chrome;
 
+// Experimental: render browser chrome using FastRender itself (HTML/CSS), rather than egui.
+#[cfg(feature = "browser_ui")]
+pub mod renderer_chrome;
+
 #[cfg(feature = "browser_ui")]
 pub mod bookmarks_manager;
 
@@ -267,6 +271,8 @@ pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
 pub use chrome_frame::chrome_frame_html_from_state;
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, chrome_ui_with_bookmarks};
+#[cfg(feature = "browser_ui")]
+pub use renderer_chrome::ChromeFrameDocument;
 #[cfg(feature = "browser_ui")]
 pub use menu_bar::{dispatch_menu_command, menu_bar_ui, MenuBarState, MenuCommand};
 #[cfg(feature = "browser_ui")]

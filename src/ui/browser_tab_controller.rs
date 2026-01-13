@@ -1,4 +1,5 @@
 use crate::geometry::{Point, Rect, Size};
+use crate::dom::DomNode;
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{
@@ -140,6 +141,37 @@ impl BrowserTabController {
 
   pub fn document(&self) -> &BrowserDocument {
     &self.document
+  }
+
+  /// Mutate the underlying DOM tree, invalidating layout/paint state only if `f` reports changes.
+  ///
+  /// This is primarily intended for headless integrations (such as renderer-chrome experiments)
+  /// that need to synchronize external UI state into an interactive `BrowserTabController`.
+  pub fn mutate_dom<F>(&mut self, f: F) -> bool
+  where
+    F: FnOnce(&mut DomNode) -> bool,
+  {
+    self.document.mutate_dom(f)
+  }
+
+  /// Programmatically update the focused DOM node id.
+  ///
+  /// This is a thin wrapper around [`InteractionEngine::focus_node_id`]. It borrows the DOM mutably
+  /// without marking it dirty (focus is tracked out-of-DOM via `InteractionState`).
+  pub fn focus_node_id(
+    &mut self,
+    node_id: Option<usize>,
+    focus_visible: bool,
+  ) -> (bool, InteractionAction) {
+    let mut changed = false;
+    let mut action = InteractionAction::None;
+    self.document.mutate_dom(|dom| {
+      let (did_change, next_action) = self.interaction.focus_node_id(dom, node_id, focus_visible);
+      changed = did_change;
+      action = next_action;
+      false
+    });
+    (changed, action)
   }
 
   pub fn interaction_state(&self) -> &InteractionState {
