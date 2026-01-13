@@ -20,6 +20,20 @@ typeof chrome === "undefined"
 
 ---
 
+## Purpose
+
+Provide a **minimal, privileged** JS API for “chrome pages” so the browser UI can be written as
+HTML/CSS/JS while still being able to:
+
+- drive navigation (back/forward/reload/navigate),
+- create/activate/close tabs,
+- read a snapshot of browser UI state.
+
+This is intentionally separated from the untrusted web platform surface: `chrome` is not a web
+standard API and must not be exposed to arbitrary content.
+
+---
+
 ## Trust boundary / security model
 
 FastRender distinguishes between:
