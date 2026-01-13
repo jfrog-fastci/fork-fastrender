@@ -753,6 +753,9 @@ fn about_open_tabs_snapshot_from_browser_state(
   // Clamp/normalize using the same untrusted helpers used for worker-provided chrome strings so
   // extremely large URLs cannot bloat the snapshot.
   const MAX_URL_BYTES: usize = fastrender::ui::protocol_limits::MAX_URL_BYTES;
+  const MAX_TITLE_BYTES: usize = fastrender::ui::protocol_limits::MAX_TITLE_BYTES;
+
+  let active_tab_id = browser_state.active_tab_id().map(|id| id.0);
 
   browser_state
     .tabs
@@ -764,9 +767,36 @@ fn about_open_tabs_snapshot_from_browser_state(
         .or(tab.current_url.as_deref())
         .unwrap_or("");
       let url = fastrender::ui::untrusted::sanitize_untrusted_text(url, MAX_URL_BYTES);
+      let title = tab
+        .committed_title
+        .as_deref()
+        .or(tab.title.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|title| fastrender::ui::untrusted::sanitize_untrusted_text(title, MAX_TITLE_BYTES))
+        .filter(|t| !t.is_empty());
+      let site_key = fastrender::ui::SiteKey::from_url(&url)
+        .ok()
+        .map(|key| key.to_string());
+      let renderer_process = tab.renderer_process.map(|id| id.raw());
+      let is_active = active_tab_id == Some(tab.id.0);
       OpenTabSnapshot {
+        window_id: None,
         tab_id: tab.id.0,
         url,
+        title,
+        site_key,
+        renderer_process,
+        is_active,
+        loading: tab.loading,
+        crashed: tab.crashed,
+        unresponsive: tab.unresponsive,
+        renderer_crashed: tab.renderer_crashed,
+        crash_reason: tab.crash_reason.clone(),
+        renderer_protocol_violation: tab
+          .renderer_protocol_violation
+          .as_ref()
+          .map(|v| v.to_string()),
       }
     })
     .collect()

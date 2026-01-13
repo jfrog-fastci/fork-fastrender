@@ -83,7 +83,8 @@ pub struct OpenTabSnapshot {
   pub window_id: Option<String>,
   pub tab_id: u64,
   pub url: String,
-  /// Best-effort tab title (sanitized by the UI).
+  /// Best-effort tab title (sanitized by the UI), preferring the last committed title when
+  /// available.
   pub title: Option<String>,
   /// Derived site key for the current URL (best-effort).
   pub site_key: Option<String>,
@@ -2424,6 +2425,51 @@ mod tests {
         "expected about:processes to render site {expected_site:?} for URL {url:?}, got: {html}"
       );
     }
+  }
+
+  #[test]
+  fn about_processes_escapes_open_tab_titles() {
+    let _lock = SNAPSHOT_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    struct RestoreOpenTabs(Vec<OpenTabSnapshot>);
+    impl Drop for RestoreOpenTabs {
+      fn drop(&mut self) {
+        sync_about_page_snapshot_open_tabs(std::mem::take(&mut self.0));
+      }
+    }
+
+    let before_open_tabs = about_page_snapshot().open_tabs;
+    let _restore = RestoreOpenTabs(before_open_tabs);
+
+    let raw_title = "My <Tab> & \"quotes\" 'single'";
+    sync_about_page_snapshot_open_tabs(vec![OpenTabSnapshot {
+      window_id: None,
+      tab_id: 1,
+      url: "https://example.com/".to_string(),
+      title: Some(raw_title.to_string()),
+      site_key: None,
+      renderer_process: None,
+      is_active: false,
+      loading: false,
+      crashed: false,
+      unresponsive: false,
+      renderer_crashed: false,
+      crash_reason: None,
+      renderer_protocol_violation: None,
+    }]);
+
+    let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
+    let escaped = "My &lt;Tab&gt; &amp; &quot;quotes&quot; &#39;single&#39;";
+    assert!(
+      html.contains(escaped),
+      "expected about:processes to include escaped title {escaped:?}, got: {html}"
+    );
+    assert!(
+      !html.contains(raw_title),
+      "raw title should not appear unescaped in about:processes HTML"
+    );
   }
 
   #[test]
