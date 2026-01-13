@@ -41,6 +41,13 @@ scripts are **not** executed unless you opt in with `--js`.
       --headless-smoke --js
     ```
 
+  - Example (windowed UI; JS enabled):
+
+    ```bash
+    bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+      --js https://example.com/
+    ```
+
 When `--js` is enabled in the render CLIs above, they use the `vm-js`-backed
 [`api::BrowserTab`](../src/api/browser_tab.rs) and drive it via `BrowserTab::run_until_stable`
 (typically bounded by `--js-max-frames`; `bundle_page render --js` currently uses a fixed 50-frame
@@ -757,6 +764,9 @@ bash scripts/cargo_agent.sh xtask import-page-fixture target/bundles/example.com
 - Purpose: emit the computed accessibility tree for a document as JSON (without painting).
 - Entry: `src/bin/dump_a11y.rs`
 - Run: `bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin dump_a11y -- --help`
+- Note: `dump_a11y` does not execute JavaScript (`--js` is not supported). It reflects the
+  accessibility semantics of the input HTML/CSS as loaded; for JS-driven DOM changes, embed
+  `api::BrowserTab` in a custom harness (see [`docs/runtime_stacks.md`](runtime_stacks.md)).
 - Workflow details (a11y tree inspection + bounds mapping + screen reader testing): [page_accessibility.md](page_accessibility.md)
 
 ## `dump_accesskit`

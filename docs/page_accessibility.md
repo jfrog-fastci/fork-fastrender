@@ -163,6 +163,9 @@ semantics.
 then prints the tree as JSON.
 
 - Entry: [`src/bin/dump_a11y.rs`](../src/bin/dump_a11y.rs)
+  - Note: `dump_a11y` does **not** execute JavaScript (`--js` is not supported). It reflects the
+    accessibility semantics of the input HTML/CSS as loaded; for JS-driven DOM changes, use a
+    JS-capable container like `api::BrowserTab` (see [`docs/runtime_stacks.md`](runtime_stacks.md)).
 
 Examples:
 
