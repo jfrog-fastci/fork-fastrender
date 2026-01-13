@@ -283,6 +283,37 @@ fn p0_external_classic_script_parse_errors_do_not_break_parsing() -> Result<()> 
 }
 
 #[test]
+fn p0_external_classic_script_empty_src_fires_error_and_ignores_inline_fallback() -> Result<()> {
+  let js_options = JsExecutionOptions::default();
+  let mut h = Harness::new("https://example.invalid/p0_empty_src.html", js_options)?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script src="" onerror="console.log('error')">console.log('inline-fallback');</script>
+      <script>console.log('after');</script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  let logs = console_logs(&h.tab);
+  assert!(
+    logs.contains(&"error".to_string()),
+    "expected empty-src <script> to fire an error event, got: {logs:?}"
+  );
+  assert!(
+    logs.contains(&"after".to_string()),
+    "expected parsing to continue past empty-src <script>, got: {logs:?}"
+  );
+  assert!(
+    !logs.contains(&"inline-fallback".to_string()),
+    "expected inline script text to be ignored when src attribute is present, got: {logs:?}"
+  );
+  Ok(())
+}
+
+#[test]
 fn p0_event_loop_microtasks_and_timers_run_in_expected_order() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p0_event_loop.html", js_options)?;
