@@ -25,6 +25,9 @@ not load a chrome HTML/JS document and therefore does not install this bridge ye
 For the privileged internal URL schemes used by renderer-chrome (`chrome://` assets and
 `chrome-action:` actions), see [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md).
 
+If you want a bootstrap interaction model **without JavaScript** (trusted HTML/CSS + `chrome-action:`
+links/forms), see [`docs/renderer_chrome_non_js.md`](renderer_chrome_non_js.md).
+
 ---
 
 ## Purpose

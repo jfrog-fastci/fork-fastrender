@@ -196,6 +196,9 @@ Note: `chrome://` (assets) and `chrome-action:` (browser actions) are privileged
 reserved for the trusted browser-process chrome renderer. See
 [`docs/renderer_chrome_schemes.md`](../docs/renderer_chrome_schemes.md).
 
+For a JS-free bootstrap approach (trusted HTML/CSS + `chrome-action:` navigations/forms), see
+[`docs/renderer_chrome_non_js.md`](../docs/renderer_chrome_non_js.md).
+
 ### Chrome JS
 
 For the canonical JS API surface and trust boundary, see
