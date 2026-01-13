@@ -16,12 +16,13 @@
     "layout": 65.10097548672566,
     "paint": 106.16466771681417
   },
-  "notes": "Visually good overall (JS off). Fixture page-loop (`tests/pages/fixtures/fandom.com`) shows correct global nav + feed layout; remaining ~39% pixel diffs vs Chrome (perceptual ≈0.12) appear dominated by text rasterization/hinting and small subpixel layout/rounding shifts (first mismatch is a top-nav Register button glyph coverage delta), plus minor gradient/mask/box-shadow blur differences. Note: the fixture references many SVG sprite `<use>` ids (e.g. `#wds-brand-fandom-logo`, `#wds-icons-*`) but does not include the sprite sheet, so those icons render empty.",
+  "notes": "Visually good overall (JS off). Fixture page-loop (`tests/pages/fixtures/fandom.com`) shows correct global nav + feed layout; remaining ~33% pixel diffs vs Chrome (perceptual ≈0.035) appear dominated by text rasterization/hinting and small subpixel layout/rounding shifts (first mismatch is a top-nav Register button glyph coverage delta), plus minor gradient/mask/box-shadow blur differences. Note: the fixture references many SVG sprite `<use>` ids (e.g. `#wds-brand-fandom-logo`, `#wds-icons-*`) but does not include the sprite sheet, so those icons render empty.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 376841,
-    "diff_percent": 39.2543,
-    "perceptual": 0.1235,
+    "diff_pixels": 321491,
+    "diff_percent": 33.4886,
+    "perceptual": 0.0347,
+    "perceptual_metric": "ssim_windowed_v2",
     "first_mismatch": {
       "x": 989,
       "y": 6,
@@ -40,7 +41,7 @@
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "59f1f9050cfd986dc05b3a15a94d544dcf56994e"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
