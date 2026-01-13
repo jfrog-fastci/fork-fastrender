@@ -466,9 +466,19 @@ fn spawn_appcontainer(
   let inherit = if handles.is_empty() { FALSE } else { TRUE };
   let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
 
-  let mut create_process = |image: &Path| -> io::Result<PROCESS_INFORMATION> {
+  let mut create_process =
+    |image: &Path, current_dir: Option<&Path>| -> io::Result<PROCESS_INFORMATION> {
     let application_name = wide_from_os(image.as_os_str());
     let mut cmdline = build_command_line(image, args);
+
+    // When `lpCurrentDirectory` is null, Windows inherits the parent's current directory. For
+    // AppContainer tokens this can fail with `ERROR_ACCESS_DENIED` if the parent CWD is a dev repo
+    // directory without an `ALL APPLICATION PACKAGES` / AppContainer SID ACE. When we take the
+    // relocation/ACL remediation path we explicitly set the CWD to the temp directory we control.
+    let current_dir_w = current_dir.map(|dir| wide_from_os(dir.as_os_str()));
+    let current_dir_ptr = current_dir_w
+      .as_ref()
+      .map_or(std::ptr::null(), |wide| wide.as_ptr());
 
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
@@ -484,7 +494,7 @@ fn spawn_appcontainer(
         inherit,
         flags,
         std::ptr::null(),
-        std::ptr::null(),
+        current_dir_ptr,
         std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
         &mut pi,
       )
@@ -495,7 +505,7 @@ fn spawn_appcontainer(
     Ok(pi)
   };
 
-  match create_process(exe) {
+  match create_process(exe, None) {
     Ok(pi) => return finish_spawn(job, pi, WindowsSandboxLevel::AppContainer, None),
     Err(err) => {
       if err.raw_os_error() != Some(ERROR_ACCESS_DENIED as i32) {
@@ -514,7 +524,7 @@ fn spawn_appcontainer(
     relocated.display()
   ));
 
-  match create_process(&relocated) {
+  match create_process(&relocated, Some(temp_dir.path())) {
     Ok(pi) => finish_spawn(
       job,
       pi,
