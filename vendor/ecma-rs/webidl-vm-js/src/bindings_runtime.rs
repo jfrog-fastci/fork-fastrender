@@ -13,10 +13,12 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 
 use vm_js::{
   GcObject, GcString, Heap, NativeConstruct, NativeConstructId, NativeFunctionId,
   PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks,
 };
 
 use webidl::WebIdlLimits;
@@ -202,6 +204,78 @@ pub trait WebHostBindingsVm {
   ) -> Result<BindingValue, VmError>;
 }
 
+/// A [`Scope`] wrapper for generated WebIDL bindings that enforces [`WebIdlLimits`].
+///
+/// The generator frequently calls `rt.scope.to_string(...)` directly. By providing an inherent
+/// `to_string` method with the same signature as [`Scope::to_string`], we can enforce resource
+/// limits without regenerating bindings.
+pub struct WebIdlBindingsScope<'a> {
+  inner: Scope<'a>,
+  limits: WebIdlLimits,
+}
+
+impl<'a> WebIdlBindingsScope<'a> {
+  #[inline]
+  pub fn new(scope: Scope<'a>, limits: WebIdlLimits) -> Self {
+    Self {
+      inner: scope,
+      limits,
+    }
+  }
+
+  #[inline]
+  pub fn set_limits(&mut self, limits: WebIdlLimits) {
+    self.limits = limits;
+  }
+
+  /// Like [`Scope::to_string`], but enforces [`WebIdlLimits::max_string_code_units`].
+  pub fn to_string(
+    &mut self,
+    vm: &mut Vm,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    value: Value,
+  ) -> Result<GcString, VmError> {
+    let s = self.inner.to_string(vm, host, hooks, value)?;
+
+    let len = self.inner.heap().get_string(s)?.as_code_units().len();
+    if len > self.limits.max_string_code_units {
+      let Some(intr) = vm.intrinsics() else {
+        return Err(VmError::Unimplemented(
+          "throw_range_error requires initialized realm intrinsics",
+        ));
+      };
+      return match vm_js::new_error(
+        &mut self.inner,
+        intr.range_error_prototype(),
+        "RangeError",
+        "string exceeds maximum length",
+      ) {
+        Ok(value) => Err(VmError::Throw(value)),
+        Err(err) => Err(err),
+      };
+    }
+
+    Ok(s)
+  }
+}
+
+impl<'a> Deref for WebIdlBindingsScope<'a> {
+  type Target = Scope<'a>;
+
+  #[inline]
+  fn deref(&self) -> &Self::Target {
+    &self.inner
+  }
+}
+
+impl<'a> DerefMut for WebIdlBindingsScope<'a> {
+  #[inline]
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.inner
+  }
+}
+
 /// A `vm-js` host-context wrapper that exposes a `dyn WebHostBindingsVm` implementation.
 ///
 /// `vm-js` native call handlers receive `&mut dyn VmHost`. Downcasting `VmHost` directly to a
@@ -291,7 +365,7 @@ impl WebIdlBindingsHost for BindingsHost {
 /// allowing generated code to keep `Gc*` handles in locals across allocations without manual rooting.
 pub struct BindingsRuntime<'a> {
   pub vm: &'a mut Vm,
-  pub scope: Scope<'a>,
+  pub scope: WebIdlBindingsScope<'a>,
   limits: WebIdlLimits,
   interned: HashMap<&'static str, GcString>,
 }
@@ -304,10 +378,11 @@ impl<'a> BindingsRuntime<'a> {
 
   /// Create a bindings runtime context from an existing [`Scope`], e.g. `scope.reborrow()`.
   pub fn from_scope(vm: &'a mut Vm, scope: Scope<'a>) -> Self {
+    let limits = WebIdlLimits::default();
     Self {
       vm,
-      scope,
-      limits: WebIdlLimits::default(),
+      scope: WebIdlBindingsScope::new(scope, limits),
+      limits,
       interned: HashMap::new(),
     }
   }
@@ -325,6 +400,7 @@ impl<'a> BindingsRuntime<'a> {
   #[inline]
   pub fn set_limits(&mut self, limits: WebIdlLimits) {
     self.limits = limits;
+    self.scope.set_limits(limits);
   }
 
   #[inline]
