@@ -1522,10 +1522,18 @@ impl TextItem {
                   .saturating_sub(1)
                   .min(run.glyphs.len().saturating_sub(1));
                 let glyph = &mut run.glyphs[last_glyph_idx];
-                let before = glyph_inline_advance(glyph, axis);
-                add_inline_advance(glyph, axis, extra);
-                let after = glyph_inline_advance(glyph, axis);
-                run.advance += after - before;
+                match axis {
+                  InlineAxis::Horizontal => {
+                    glyph.x_advance += extra;
+                    run.advance += extra;
+                  }
+                  InlineAxis::Vertical => {
+                    let before = glyph_inline_advance(glyph, axis);
+                    add_inline_advance(glyph, axis, extra);
+                    let after = glyph_inline_advance(glyph, axis);
+                    run.advance += after - before;
+                  }
+                }
               }
             }
           }
@@ -1560,10 +1568,18 @@ impl TextItem {
                 .saturating_sub(1)
                 .min(run.glyphs.len().saturating_sub(1));
               let glyph = &mut run.glyphs[last_glyph_idx];
-              let before = glyph_inline_advance(glyph, axis);
-              add_inline_advance(glyph, axis, extra);
-              let after = glyph_inline_advance(glyph, axis);
-              run.advance += after - before;
+              match axis {
+                InlineAxis::Horizontal => {
+                  glyph.x_advance += extra;
+                  run.advance += extra;
+                }
+                InlineAxis::Vertical => {
+                  let before = glyph_inline_advance(glyph, axis);
+                  add_inline_advance(glyph, axis, extra);
+                  let after = glyph_inline_advance(glyph, axis);
+                  run.advance += after - before;
+                }
+              }
             }
           }
 
@@ -1676,10 +1692,18 @@ impl TextItem {
         continue;
       };
 
-      let before = glyph_inline_advance(glyph, axis);
-      add_inline_advance(glyph, axis, extra);
-      let after = glyph_inline_advance(glyph, axis);
-      run.advance += after - before;
+      match axis {
+        InlineAxis::Horizontal => {
+          glyph.x_advance += extra;
+          run.advance += extra;
+        }
+        InlineAxis::Vertical => {
+          let before = glyph_inline_advance(glyph, axis);
+          add_inline_advance(glyph, axis, extra);
+          let after = glyph_inline_advance(glyph, axis);
+          run.advance += after - before;
+        }
+      }
     }
   }
 
