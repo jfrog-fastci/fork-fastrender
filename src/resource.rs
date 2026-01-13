@@ -63,6 +63,7 @@ pub mod bundle;
 mod cors;
 #[cfg(feature = "direct_network")]
 mod curl_backend;
+mod file_backend;
 pub(crate) mod data_url;
 pub mod ipc_fetcher;
 #[cfg(feature = "disk_cache")]
@@ -71,6 +72,7 @@ pub mod web_fetch;
 pub mod web_url;
 pub(crate) mod websocket;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
+pub use file_backend::{FileBackend, NoFileBackend, StdFsFileBackend};
 pub use ipc_fetcher::IpcResourceFetcher;
 #[cfg(feature = "disk_cache")]
 pub use disk_cache::{DiskCacheConfig, DiskCachingFetcher};
@@ -3896,12 +3898,25 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
 // keeps the API surface stable while forcing embedders to inject their own `ResourceFetcher`
 // (typically one that forwards requests over IPC to a dedicated network process).
 #[cfg(not(feature = "direct_network"))]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HttpFetcher {
   user_agent: String,
   accept_language: String,
   policy: ResourcePolicy,
+  file_backend: Arc<dyn FileBackend>,
   retry_policy: HttpRetryPolicy,
+}
+
+#[cfg(not(feature = "direct_network"))]
+impl std::fmt::Debug for HttpFetcher {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("HttpFetcher")
+      .field("user_agent", &self.user_agent)
+      .field("accept_language", &self.accept_language)
+      .field("policy", &self.policy)
+      .field("retry_policy", &self.retry_policy)
+      .finish()
+  }
 }
 
 #[cfg(not(feature = "direct_network"))]
@@ -3949,6 +3964,12 @@ impl HttpFetcher {
     self
   }
 
+  /// Override the backend used for `file://` resource fetching.
+  pub fn with_file_backend(mut self, backend: Arc<dyn FileBackend>) -> Self {
+    self.file_backend = backend;
+    self
+  }
+
   /// Override the retry/backoff policy used for HTTP(S) fetches.
   pub fn with_retry_policy(mut self, policy: HttpRetryPolicy) -> Self {
     self.retry_policy = policy;
@@ -3970,6 +3991,7 @@ impl Default for HttpFetcher {
       user_agent: DEFAULT_USER_AGENT.to_string(),
       accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
       policy,
+      file_backend: Arc::new(StdFsFileBackend::default()),
       retry_policy: HttpRetryPolicy::default(),
     }
   }
@@ -4014,8 +4036,8 @@ impl HttpFetcher {
     let mut last_err = None;
 
     'candidates: for candidate in &path_candidates {
-      if let Ok(meta) = std::fs::metadata(candidate) {
-        if let Ok(len) = usize::try_from(meta.len()) {
+      if let Ok(Some(meta_len)) = self.file_backend.metadata_len(candidate) {
+        if let Ok(len) = usize::try_from(meta_len) {
           if len > limit {
             if let Some(remaining) = self.policy.remaining_budget() {
               if len > remaining {
@@ -4035,7 +4057,7 @@ impl HttpFetcher {
         }
       }
 
-      match std::fs::File::open(candidate) {
+      match self.file_backend.open(candidate) {
         Ok(mut file) => match read_response_prefix(&mut file, limit) {
           Ok(read) => {
             let mut candidate_too_large = false;
@@ -4158,6 +4180,7 @@ pub struct HttpFetcher {
   user_agent: String,
   accept_language: String,
   policy: ResourcePolicy,
+  file_backend: Arc<dyn FileBackend>,
   agent: Arc<ureq::Agent>,
   reqwest_client: Arc<reqwest_blocking::Client>,
   cookie_jar: Arc<ReqwestCookieJar>,
@@ -5050,6 +5073,12 @@ impl HttpFetcher {
   pub fn with_policy(mut self, policy: ResourcePolicy) -> Self {
     self.policy = policy;
     self.rebuild_agent();
+    self
+  }
+
+  /// Override the backend used for `file://` resource fetching.
+  pub fn with_file_backend(mut self, backend: Arc<dyn FileBackend>) -> Self {
+    self.file_backend = backend;
     self
   }
 
@@ -8695,8 +8724,8 @@ impl HttpFetcher {
     let mut last_err = None;
 
     'candidates: for candidate in &path_candidates {
-      if let Ok(meta) = std::fs::metadata(candidate) {
-        if let Ok(len) = usize::try_from(meta.len()) {
+      if let Ok(Some(meta_len)) = self.file_backend.metadata_len(candidate) {
+        if let Ok(len) = usize::try_from(meta_len) {
           if len > limit {
             if let Some(remaining) = self.policy.remaining_budget() {
               if len > remaining {
@@ -8716,7 +8745,7 @@ impl HttpFetcher {
         }
       }
 
-      match std::fs::File::open(candidate) {
+      match self.file_backend.open(candidate) {
         Ok(mut file) => match read_response_prefix(&mut file, limit) {
           Ok(read) => {
             let mut candidate_too_large = false;
@@ -8806,7 +8835,7 @@ impl HttpFetcher {
     let mut last_err = None;
 
     for candidate in &path_candidates {
-      match std::fs::File::open(candidate) {
+      match self.file_backend.open(candidate) {
         Ok(handle) => {
           file = Some(handle);
           chosen_path = Some(candidate.clone());
@@ -8915,6 +8944,7 @@ impl Default for HttpFetcher {
       reqwest_client,
       cookie_jar,
       policy,
+      file_backend: Arc::new(StdFsFileBackend::default()),
       retry_policy: HttpRetryPolicy::default(),
       cors_preflight_cache: Arc::new(Mutex::new(CorsPreflightCache::default())),
     }
@@ -13492,6 +13522,27 @@ mod tests {
       "file response capacity {} exceeds limit {}",
       res.bytes.capacity(),
       body.len()
+    );
+  }
+
+  #[test]
+  fn fetch_file_denied_backend_returns_deterministic_error() {
+    let file = NamedTempFile::new().expect("temp file");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let fetcher = HttpFetcher::new().with_file_backend(Arc::new(NoFileBackend::default()));
+    let err = fetcher
+      .fetch_with_context(FetchContextKind::Other, &url)
+      .expect_err("expected file backend to deny access");
+
+    let Error::Resource(resource) = err else {
+      panic!("expected Resource error, got: {err:?}");
+    };
+    assert_eq!(
+      resource.message, "file backend disabled",
+      "unexpected error: {resource:?}"
     );
   }
 
