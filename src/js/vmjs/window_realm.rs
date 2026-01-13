@@ -2938,6 +2938,7 @@ const HISTORY_SCROLL_RESTORATION_MANUAL: u64 = 1;
 const DOM_RECT_FROM_RECT_CTOR_SLOT: usize = 0;
 const DOM_RECT_FROM_RECT_READ_ONLY_SLOT: usize = 1;
 const ILLEGAL_INVOCATION_ERROR: &str = "Illegal invocation";
+const STORAGE_ILLEGAL_INVOCATION_ERROR: &str = ILLEGAL_INVOCATION_ERROR;
 const STORAGE_BRAND_KEY: &str = "__fastrender_storage_brand";
 const STORAGE_KIND_KEY: &str = "__fastrender_storage_kind";
 const EVENT_TARGET_DEFAULT_THIS_SLOT: usize = 0;
