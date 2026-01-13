@@ -4951,12 +4951,27 @@ impl BrowserRuntime {
         ) -> Vec<crate::dom2::NodeId> {
           let mut chain = Vec::new();
           let mut current = Some(start);
-          while let Some(id) = current {
+          // Defensive bound against accidental cycles.
+          for _ in 0..=dom.nodes_len() {
+            let Some(id) = current else {
+              break;
+            };
             let node = dom.node(id);
-            if matches!(node.kind, crate::dom2::NodeKind::Element { .. }) {
+            if matches!(
+              node.kind,
+              crate::dom2::NodeKind::Element { .. } | crate::dom2::NodeKind::Slot { .. }
+            ) {
               chain.push(id);
             }
-            current = node.parent;
+            // Shadow DOM slotting: treat a slottable's assigned slot as its parent when building
+            // hover transition boundaries (`mouseenter`/`mouseleave`) to match DOM Events `get the
+            // parent` semantics.
+            current = dom
+              .find_slot_for_slottable(id, /* open */ false)
+              .or(node.parent);
+            if current == Some(id) {
+              break;
+            }
           }
           chain
         }

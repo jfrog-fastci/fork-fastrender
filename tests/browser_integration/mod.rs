@@ -179,6 +179,7 @@ mod ui_worker_hover_text_cursor_user_select_none;
 mod ui_worker_js_viewport_sync;
 mod ui_worker_js_scroll_sync;
 mod ui_worker_pointer_move_hit_test_dedup;
+mod ui_worker_slot_mouseenter_on_slotted_content;
 mod ui_worker_interaction;
 mod ui_worker_js_form_control_state;
 mod ui_details_toggle;
