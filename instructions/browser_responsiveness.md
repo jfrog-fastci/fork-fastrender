@@ -54,11 +54,11 @@ A change counts if it lands at least one of:
 
 | Metric | Target | Current | How to measure |
 |--------|--------|---------|----------------|
-| Resize frame time | <16ms | ? | `ui_perf_smoke` (resize path) or windowed perf log capture |
-| Scroll frame time | <16ms | ? | `ui_perf_smoke` (scroll path) or windowed perf log capture |
-| Input latency | <50ms | ? | `ui_perf_smoke` (input→response latency) |
-| Time to first paint (TTFP) | <100ms | ? | `ui_perf_smoke` / perf log summary |
-| Idle CPU | ~0% | ? | OS profiler while idle (no interactions) |
+| Resize frame time | <16ms | ? | `capture_browser_perf_log.sh` + `browser_perf_log_summary` (`resize_to_present_ms`) |
+| Scroll frame time | <16ms | ? | `capture_browser_perf_log.sh` + `browser_perf_log_summary` (`ui_frame_ms`/fps while scrolling) |
+| Input latency | <50ms | ? | `capture_browser_perf_log.sh` + `browser_perf_log_summary` (`input_to_present_ms`) |
+| Time to first paint (TTFP) | <100ms | ? | `ui_perf_smoke` (navigate→first frame) or perf log summary (`ttfp_ms`) |
+| Idle CPU | ~0% | ? | perf log summary (`idle_summary`) + OS profiler while idle |
 
 ### Profiling tools
 
@@ -71,10 +71,8 @@ timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
   env FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 
-# Headless benchmark harness (`ui_perf_smoke`; JSON summary) for the required UI metrics:
-# - TTFP (time to first paint)
-# - scroll/resize frame time
-# - input latency
+# Headless smoke harness (`ui_perf_smoke`; JSON summary).
+# Measures navigation→first frame (TTFP proxy) for a few built-in about: scenarios.
 timeout -k 10 600 bash scripts/cargo_agent.sh xtask ui-perf-smoke --output target/ui_perf_smoke.json
 
 # Windowed perf-log capture (stdout JSONL) + summary (preferred over recording huge logs)
