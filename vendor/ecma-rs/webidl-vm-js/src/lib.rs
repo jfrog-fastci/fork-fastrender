@@ -118,8 +118,38 @@ pub trait WebIdlBindingsHost: 'static {
     interface: &'static str,
     kind: IterableKind,
   ) -> Result<Vec<bindings_runtime::BindingValue>, VmError> {
-    let _ = (vm, scope, receiver, interface, kind);
-    Err(VmError::TypeError("unimplemented host iterable snapshot"))
+    let _ = receiver;
+
+    let Some(intr) = vm.intrinsics() else {
+      // If the VM has not been initialized with a realm yet, we cannot allocate a realm-aware
+      // `TypeError` object. Fall back to a static internal error.
+      return Err(VmError::TypeError("unimplemented host iterable snapshot"));
+    };
+
+    let kind_str = match kind {
+      IterableKind::Entries => "Entries",
+      IterableKind::Keys => "Keys",
+      IterableKind::Values => "Values",
+    };
+
+    let mut message = String::new();
+    message
+      .try_reserve(
+        "unimplemented host iterable snapshot: ".len()
+          + interface.len()
+          + " (".len()
+          + kind_str.len()
+          + ")".len(),
+      )
+      .map_err(|_| VmError::OutOfMemory)?;
+    message.push_str("unimplemented host iterable snapshot: ");
+    message.push_str(interface);
+    message.push_str(" (");
+    message.push_str(kind_str);
+    message.push(')');
+
+    let value = vm_js::new_error(scope, intr.type_error_prototype(), "TypeError", &message)?;
+    Err(VmError::Throw(value))
   }
 
   /// Optional extension point for WebIDL-backed exotic `[[Get]]` behavior.
