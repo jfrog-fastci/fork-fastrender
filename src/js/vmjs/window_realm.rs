@@ -47799,6 +47799,38 @@ fn init_window_globals(
       },
     )?;
 
+    // Document.createCDATASection(data)
+    //
+    // MVP: create a Text node (nodeType 3) so WPT Range harness helpers that only require
+    // `isText()` truthiness can proceed.
+    let create_cdata_section_key = alloc_key(&mut scope, "createCDATASection")?;
+    if scope
+      .heap()
+      .object_get_own_property(document_proto, &create_cdata_section_key)?
+      .is_none()
+    {
+      let create_cdata_section_call_id =
+        vm.register_native_call(document_create_cdata_section_native)?;
+      let create_cdata_section_name = scope.alloc_string("createCDATASection")?;
+      scope.push_root(Value::String(create_cdata_section_name))?;
+      let create_cdata_section_func = scope.alloc_native_function(
+        create_cdata_section_call_id,
+        None,
+        create_cdata_section_name,
+        1,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        create_cdata_section_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(create_cdata_section_func))?;
+      scope.define_property(
+        document_proto,
+        create_cdata_section_key,
+        data_desc(Value::Object(create_cdata_section_func)),
+      )?;
+    }
+
     let comment_ctor = make_illegal_ctor(&mut scope, "Comment")?;
     scope.push_root(Value::Object(comment_ctor))?;
     scope.define_property(
@@ -55738,6 +55770,28 @@ mod tests {
         el.dispatchEvent(new Event('click'));
         if (fired !== 11) throw new Error(`expected fired 11, got ${fired}`);
         if (el.onclick !== b) throw new Error('expected el.onclick getter to survive adoption');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn document_constructor_and_create_cdata_section_work() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const d = new Document();
+        const c = d.createCDATASection('123');
+        if (c.data !== '123') throw new Error(`expected c.data === '123', got ${c.data}`);
+        if (c.ownerDocument !== d) throw new Error('expected c.ownerDocument === d before insertion');
+        document.body.appendChild(c);
+        if (document.body.lastChild !== c) throw new Error('expected appendChild to preserve JS identity');
+        if (c.ownerDocument !== document) throw new Error('expected ownerDocument to update on adoption');
         return true;
       })()"#,
     )?;
