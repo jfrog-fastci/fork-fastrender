@@ -242,7 +242,11 @@ Alternatively, link against a system-provided libvpx.",
 
         let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".to_string());
         let mut make_cmd = Command::new("make");
-        make_cmd.current_dir(&build_dir).arg(format!("-j{jobs}"));
+        make_cmd
+            .current_dir(&build_dir)
+            .arg(format!("-j{jobs}"))
+            // Only build the primary static library we link against.
+            .arg("libvpx.a");
         run(make_cmd, "libvpx make");
 
         if !lib_path.exists() {
