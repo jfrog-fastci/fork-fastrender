@@ -5448,25 +5448,31 @@ impl BrowserRuntime {
         );
 
         let mouseup_target = up_hit.as_ref().map(|hit| hit.dom_node_id);
-        let mouseup_target_element_id = mouseup_target.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
+        let mouseup_target_element_id = up_hit.as_ref().and_then(|hit| hit.dom_element_id.clone());
 
         let click_target = engine.take_last_click_target();
-        let click_target_element_id = click_target.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
+        let click_target_element_id = if click_target.is_some() && click_target == mouseup_target {
+          mouseup_target_element_id.clone()
+        } else {
+          click_target.and_then(|target_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, target_id)
+              .and_then(|node| node.get_attribute_ref("id"))
+              .map(|id| id.to_string())
+          })
+        };
 
         let form_submitter = engine.take_last_form_submitter();
-        let form_submitter_element_id = form_submitter.and_then(|submitter_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
+        let form_submitter_element_id = if form_submitter.is_some() && form_submitter == mouseup_target {
+          mouseup_target_element_id.clone()
+        } else if form_submitter.is_some() && form_submitter == click_target {
+          click_target_element_id.clone()
+        } else {
+          form_submitter.and_then(|submitter_id| {
+            crate::dom::find_node_mut_by_preorder_id(dom, submitter_id)
+              .and_then(|node| node.get_attribute_ref("id"))
+              .map(|id| id.to_string())
+          })
+        };
 
         let anchor_css = match &action {
           InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
@@ -6223,11 +6229,7 @@ impl BrowserRuntime {
         let page_point = viewport_point.translate(scroll.viewport);
         let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
         let target_id = hit.as_ref().map(|hit| hit.dom_node_id);
-        let target_element_id = target_id.and_then(|target_id| {
-          crate::dom::find_node_mut_by_preorder_id(dom, target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .map(|id| id.to_string())
-        });
+        let target_element_id = hit.as_ref().and_then(|hit| hit.dom_element_id.clone());
 
         (false, (target_id, target_element_id))
       }) {
