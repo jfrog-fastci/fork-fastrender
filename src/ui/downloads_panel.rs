@@ -15,6 +15,47 @@ use super::{
   BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
 
+fn format_bytes(bytes: u64) -> String {
+  const KB: f64 = 1024.0;
+  const MB: f64 = KB * 1024.0;
+  const GB: f64 = MB * 1024.0;
+
+  let b = bytes as f64;
+  if b >= GB {
+    format!("{:.1} GiB", b / GB)
+  } else if b >= MB {
+    format!("{:.1} MiB", b / MB)
+  } else if b >= KB {
+    format!("{:.1} KiB", b / KB)
+  } else {
+    format!("{bytes} B")
+  }
+}
+
+fn download_progress_a11y_label(
+  file_name: &str,
+  received_bytes: u64,
+  total_bytes: Option<u64>,
+) -> String {
+  let file_name = file_name.trim();
+  let prefix = if file_name.is_empty() {
+    "Downloading".to_string()
+  } else {
+    format!("Downloading {file_name}")
+  };
+
+  match total_bytes.filter(|t| *t > 0) {
+    Some(total) => format!("{prefix}: {} of {}", format_bytes(received_bytes), format_bytes(total)),
+    None => {
+      if received_bytes > 0 {
+        format!("{prefix}: {}", format_bytes(received_bytes))
+      } else {
+        prefix
+      }
+    }
+  }
+}
+
 #[derive(Debug, Default)]
 pub struct DownloadsPanelOutput {
   pub close_requested: bool,
@@ -31,23 +72,6 @@ pub fn downloads_panel_ui(
   request_initial_focus: bool,
 ) -> DownloadsPanelOutput {
   let mut out = DownloadsPanelOutput::default();
-
-  fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= GB {
-      format!("{:.1} GiB", b / GB)
-    } else if b >= MB {
-      format!("{:.1} MiB", b / MB)
-    } else if b >= KB {
-      format!("{:.1} KiB", b / KB)
-    } else {
-      format!("{bytes} B")
-    }
-  }
 
   fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t)
@@ -335,20 +359,47 @@ pub fn downloads_panel_ui(
                   total_bytes,
                 } = &entry.status
                 {
+                  let a11y_label = download_progress_a11y_label(
+                    &entry.file_name,
+                    *received_bytes,
+                    total_bytes.filter(|t| *t > 0),
+                  );
                   if let Some(total) = total_bytes.filter(|t| *t > 0) {
                     let frac = (*received_bytes as f32 / total as f32).clamp(0.0, 1.0);
-                    ui.add(
+                    let resp = ui.add(
                       egui::ProgressBar::new(frac)
                         .desired_width(f32::INFINITY)
                         .text(""),
                     );
+                    resp.widget_info({
+                      let label = a11y_label.clone();
+                      move || {
+                        egui::WidgetInfo::labeled(
+                          // `egui` 0.23 does not expose a dedicated progress widget type. Provide
+                          // an explicit label so screen readers announce meaningful context.
+                          egui::WidgetType::Label,
+                          label.clone(),
+                        )
+                      }
+                    });
                   } else {
-                    ui.add(
+                    let resp = ui.add(
                       egui::ProgressBar::new(0.0)
                         .desired_width(f32::INFINITY)
                         .animate(motion.enabled)
                         .text(""),
                     );
+                    resp.widget_info({
+                      let label = a11y_label.clone();
+                      move || {
+                        egui::WidgetInfo::labeled(
+                          // `egui` 0.23 does not expose a dedicated progress widget type. Provide
+                          // an explicit label so screen readers announce meaningful context.
+                          egui::WidgetType::Label,
+                          label.clone(),
+                        )
+                      }
+                    });
                   }
                 }
               }
@@ -358,4 +409,19 @@ pub fn downloads_panel_ui(
     });
 
   out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::download_progress_a11y_label;
+
+  #[test]
+  fn download_progress_a11y_label_contains_file_name() {
+    let label = download_progress_a11y_label("example.zip", 1_024, Some(2_048));
+    assert!(!label.trim().is_empty(), "label should not be empty");
+    assert!(
+      label.contains("example.zip"),
+      "expected label to mention file name; got {label:?}"
+    );
+  }
 }

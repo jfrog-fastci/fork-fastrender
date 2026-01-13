@@ -1720,17 +1720,38 @@ pub fn chrome_ui_with_bookmarks(
           ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             // Downloads progress indicator (optional; shown to the left of the icon).
             if downloads.active_count > 0 {
-              if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
-                let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
-                ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""));
-              } else {
-                ui.add(
-                  egui::ProgressBar::new(0.0)
-                    .desired_width(50.0)
-                    .animate(motion.enabled)
-                    .text(""),
-                );
-              }
+              let (resp, a11y_label) =
+                if let Some(total) = downloads.total_bytes.filter(|t| *t > 0) {
+                  let frac = (downloads.received_bytes as f32 / total as f32).clamp(0.0, 1.0);
+                  let label = format!(
+                    "Downloads progress: {} of {}",
+                    format_bytes(downloads.received_bytes),
+                    format_bytes(total)
+                  );
+                  let resp = ui.add(egui::ProgressBar::new(frac).desired_width(50.0).text(""));
+                  (resp, label)
+                } else {
+                  let label = if downloads.received_bytes > 0 {
+                    format!("Downloads progress: {}", format_bytes(downloads.received_bytes))
+                  } else {
+                    "Downloads progress".to_string()
+                  };
+                  let resp = ui.add(
+                    egui::ProgressBar::new(0.0)
+                      .desired_width(50.0)
+                      .animate(motion.enabled)
+                      .text(""),
+                  );
+                  (resp, label)
+                };
+              resp.widget_info({
+                let label = a11y_label.clone();
+                move || {
+                  // `egui` 0.23 does not have a dedicated progress widget type, so label the widget
+                  // with a descriptive `Label` for screen readers.
+                  egui::WidgetInfo::labeled(egui::WidgetType::Label, label.clone())
+                }
+              });
             }
 
             // Downloads button.
