@@ -576,6 +576,17 @@ mod profile_autosave_flush_tracker_tests {
 
 #[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, Copy)]
+enum ProfileUpdateKind<'a> {
+  Bookmarks {
+    new_bookmarks: &'a fastrender::ui::BookmarkStore,
+  },
+  History {
+    new_history: &'a fastrender::ui::GlobalHistoryStore,
+  },
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy)]
 struct DrainBudget {
   max_messages: usize,
   max_duration: std::time::Duration,
@@ -982,6 +993,68 @@ fn page_host_a11y_label_for_tab(tab: Option<&fastrender::ui::BrowserTabState>) -
     label
   };
   elide_accessible_name(&label, MAX_NAME_CHARS)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+#[derive(Debug, Clone, Copy)]
+struct ProfileUpdateRedrawState<'a> {
+  bookmarks_panel_open: bool,
+  history_panel_open: bool,
+  bookmarks_bar_visible: bool,
+  omnibox_open: bool,
+  active_tab_url: Option<&'a str>,
+  bookmarks: &'a fastrender::ui::BookmarkStore,
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn about_page_id(url: &str) -> &str {
+  let trimmed = url.trim();
+  trimmed
+    .split(|c| matches!(c, '?' | '#'))
+    .next()
+    .unwrap_or(trimmed)
+}
+
+#[cfg(any(test, feature = "browser_ui"))]
+fn needs_redraw_for_profile_update_state(
+  update: ProfileUpdateKind<'_>,
+  state: ProfileUpdateRedrawState<'_>,
+) -> bool {
+  use fastrender::ui::about_pages;
+
+  let active_url = state.active_tab_url.map(str::trim).unwrap_or("");
+  let active_url_is_bookmarkable = !active_url.is_empty();
+  let active_about = (active_url_is_bookmarkable && about_pages::is_about_url(active_url))
+    .then(|| about_page_id(active_url));
+  let active_about_is =
+    |target: &str| active_about.is_some_and(|url| url.eq_ignore_ascii_case(target));
+
+  match update {
+    ProfileUpdateKind::Bookmarks { new_bookmarks } => {
+      if state.bookmarks_panel_open
+        || state.bookmarks_bar_visible
+        || state.omnibox_open
+        || active_about_is(about_pages::ABOUT_NEWTAB)
+        || active_about_is(about_pages::ABOUT_BOOKMARKS)
+      {
+        return true;
+      }
+
+      // The address-bar bookmark star is always visible. Only request a redraw when the bookmarked
+      // status of the active tab's URL actually changes.
+      if active_url_is_bookmarkable {
+        let was_bookmarked = state.bookmarks.contains_url(active_url);
+        let is_bookmarked = new_bookmarks.contains_url(active_url);
+        return was_bookmarked != is_bookmarked;
+      }
+
+      false
+    }
+    ProfileUpdateKind::History { .. } => state.history_panel_open
+      || state.omnibox_open
+      || active_about_is(about_pages::ABOUT_NEWTAB)
+      || active_about_is(about_pages::ABOUT_HISTORY),
+  }
 }
 // Keep URL resolution helpers available to both the windowed browser (feature = `browser_ui`) and
 // unit tests (which often run without the full winit/wgpu/egui stack).
@@ -4170,7 +4243,9 @@ mod clipboard_write_gate_integration_tests {
           called = true;
         }));
       }
-      ClipboardWriteGateDecision::Rejected { .. } => panic!("expected clipboard write to be allowed"),
+      ClipboardWriteGateDecision::Rejected { .. } => {
+        panic!("expected clipboard write to be allowed")
+      }
     }
     assert!(called);
 
@@ -4198,6 +4273,149 @@ mod wheel_delta_shift_mapping_tests {
     assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (10.0, 0.0));
     // If the delta is primarily horizontal already, leave it unchanged.
     assert_eq!(remap_wheel_delta_for_shift((7.0, 3.0), true), (7.0, 3.0));
+  }
+}
+
+#[cfg(test)]
+mod profile_update_redraw_tests {
+  use super::*;
+
+  fn state<'a>(
+    bookmarks: &'a fastrender::ui::BookmarkStore,
+    active_tab_url: Option<&'a str>,
+  ) -> ProfileUpdateRedrawState<'a> {
+    ProfileUpdateRedrawState {
+      bookmarks_panel_open: false,
+      history_panel_open: false,
+      bookmarks_bar_visible: false,
+      omnibox_open: false,
+      active_tab_url,
+      bookmarks,
+    }
+  }
+
+  #[test]
+  fn bookmarks_update_redraws_for_visible_bookmarks_ui() {
+    let old_store = fastrender::ui::BookmarkStore::default();
+    let new_store = fastrender::ui::BookmarkStore::default();
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::Bookmarks {
+        new_bookmarks: &new_store,
+      },
+      ProfileUpdateRedrawState {
+        bookmarks_panel_open: true,
+        ..state(&old_store, None)
+      }
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::Bookmarks {
+        new_bookmarks: &new_store,
+      },
+      ProfileUpdateRedrawState {
+        bookmarks_bar_visible: true,
+        ..state(&old_store, None)
+      }
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::Bookmarks {
+        new_bookmarks: &new_store,
+      },
+      ProfileUpdateRedrawState {
+        omnibox_open: true,
+        ..state(&old_store, None)
+      }
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::Bookmarks {
+        new_bookmarks: &new_store,
+      },
+      state(&old_store, Some("about:newtab"))
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::Bookmarks {
+        new_bookmarks: &new_store,
+      },
+      state(&old_store, Some("about:bookmarks"))
+    ));
+  }
+
+  #[test]
+  fn bookmarks_update_redraws_when_active_tab_bookmark_star_changes() {
+    let old_store = fastrender::ui::BookmarkStore::default();
+    let mut new_store = fastrender::ui::BookmarkStore::default();
+    new_store.toggle("https://example.com/", None);
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::Bookmarks {
+        new_bookmarks: &new_store,
+      },
+      state(&old_store, Some("https://example.com/"))
+    ));
+
+    assert!(
+      !needs_redraw_for_profile_update_state(
+        ProfileUpdateKind::Bookmarks {
+          new_bookmarks: &new_store,
+        },
+        state(&old_store, Some("https://other.example/"))
+      ),
+      "unrelated URL should not trigger bookmark-star redraw"
+    );
+  }
+
+  #[test]
+  fn history_update_redraws_only_when_history_ui_is_visible() {
+    let bookmarks = fastrender::ui::BookmarkStore::default();
+    let history = fastrender::ui::GlobalHistoryStore::default();
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::History {
+        new_history: &history,
+      },
+      ProfileUpdateRedrawState {
+        history_panel_open: true,
+        ..state(&bookmarks, None)
+      }
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::History {
+        new_history: &history,
+      },
+      ProfileUpdateRedrawState {
+        omnibox_open: true,
+        ..state(&bookmarks, None)
+      }
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::History {
+        new_history: &history,
+      },
+      state(&bookmarks, Some("about:newtab"))
+    ));
+
+    assert!(needs_redraw_for_profile_update_state(
+      ProfileUpdateKind::History {
+        new_history: &history,
+      },
+      state(&bookmarks, Some("about:history?q=rust"))
+    ));
+
+    assert!(
+      !needs_redraw_for_profile_update_state(
+        ProfileUpdateKind::History {
+          new_history: &history,
+        },
+        state(&bookmarks, Some("about:bookmarks"))
+      ),
+      "about:bookmarks should not require redraw for history updates"
+    );
   }
 }
 
@@ -8035,6 +8253,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             history_autosave_send_scheduler.mark_dirty();
             for (id, win) in windows.iter_mut() {
+              // Evaluate redraw predicate before mutating state that may affect visibility flags
+              // (e.g. omnibox open/closed).
+              let needs_redraw_for_update =
+                win.app.needs_redraw_for_profile_update(ProfileUpdateKind::History {
+                  new_history: &global_history,
+                });
+
               if *id != window_id {
                 win
                   .app
@@ -8122,7 +8347,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or(url);
                   base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
                     || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_HISTORY)
-                    || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
                 });
               if about_history_visible {
                 if let Some(active_tab) = win.app.browser_state.active_tab_id() {
@@ -8131,11 +8355,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
               }
 
-              let needs_redraw_due_to_history = *id == window_id
-                || Some(*id) == active_window_id
-                || win.app.history_panel_open
-                || omnibox_changed_due_to_history
-                || about_history_visible;
+              // Only redraw when the history deltas could affect visible chrome/about UI.
+              let needs_redraw_due_to_history = needs_redraw_for_update
+                && (win.app.history_panel_open
+                  || omnibox_changed_due_to_history
+                  || about_history_visible);
               if needs_redraw_due_to_history
                 && !(win.app.window_occluded || win.app.window_minimized)
               {
@@ -8942,7 +9166,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
       for (id, win) in windows.iter_mut() {
         let is_source_window = *id == source_window_id;
-        let is_active_window = Some(*id) == active_window_id;
+        // Evaluate redraw predicate before mutating per-window state that may affect visibility
+        // flags (e.g. omnibox open/closed) or bookmark-star comparisons.
+        let needs_redraw_for_update =
+          win
+            .app
+            .needs_redraw_for_profile_update(ProfileUpdateKind::Bookmarks {
+              new_bookmarks: &global_bookmarks,
+            });
         let omnibox_open_before = win.app.browser_state.chrome.omnibox.open;
 
         let star_state_before = win
@@ -9026,11 +9257,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           win.app.browser_state.chrome.omnibox.reset();
         }
 
-        let needs_redraw_due_to_bookmarks = is_source_window
-          || is_active_window
-          || win.app.bookmarks_panel_open
-          || star_state_changed
-          || omnibox_changed_due_to_bookmarks;
+        // Only redraw when a bookmark update could affect visible UI in this window. (About pages
+        // are handled separately via the throttled snapshot rebuild below.)
+        let needs_redraw_due_to_bookmarks = needs_redraw_for_update
+          && (win.app.bookmarks_panel_open
+            || win.app.browser_state.chrome.bookmarks_bar_visible
+            || star_state_changed
+            || omnibox_changed_due_to_bookmarks);
         if needs_redraw_due_to_bookmarks && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
@@ -9054,7 +9287,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // History UI mutations (clear/delete) are currently synchronized via full-store snapshot.
     // Visit recording (`NavigationCommitted`) uses incremental deltas in the WorkerWake path above
     // to avoid cloning/reseeding the full history store on every navigation.
-    if let Some((history_source_id, new_history, flush)) = history_update {
+    if let Some((_history_source_id, new_history, flush)) = history_update {
       global_history = new_history;
       history_autosave_send_scheduler.mark_dirty();
       fastrender::ui::about_pages::sync_about_page_snapshot_history_from_global_history_store(
@@ -9071,7 +9304,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
       }
-      for (id, win) in windows.iter_mut() {
+      for win in windows.values_mut() {
+        // Evaluate redraw predicate before mutating state that may affect visibility flags (e.g.
+        // omnibox open/closed).
+        let needs_redraw_for_update =
+          win.app.needs_redraw_for_profile_update(ProfileUpdateKind::History {
+            new_history: &global_history,
+          });
+
         win.app.browser_state.history = global_history.clone();
         win.app.browser_state.visited.clear();
         win.app.browser_state.seed_visited_from_history();
@@ -9129,6 +9369,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             != omnibox_open_before
             || win.app.browser_state.chrome.omnibox.selected != selected_before;
         } else {
+          // Invalidate cached suggestions built from the old history store so the next time the user
+          // opens the omnibox dropdown it rebuilds against the updated global history/visited state.
           win.app.browser_state.chrome.omnibox.reset();
         }
 
@@ -9145,7 +9387,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               .unwrap_or(url);
             base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_NEWTAB)
               || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_HISTORY)
-              || base.eq_ignore_ascii_case(fastrender::ui::about_pages::ABOUT_BOOKMARKS)
           });
         if about_history_visible {
           if let Some(active_tab) = win.app.browser_state.active_tab_id() {
@@ -9154,11 +9395,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
         }
 
-        let needs_redraw_due_to_history = *id == history_source_id
-          || Some(*id) == active_window_id
-          || win.app.history_panel_open
-          || omnibox_changed_due_to_history
-          || about_history_visible;
+        // Only redraw when the history update could affect visible chrome/about UI.
+        let needs_redraw_due_to_history = needs_redraw_for_update
+          && (win.app.history_panel_open || about_history_visible || omnibox_changed_due_to_history);
         if needs_redraw_due_to_history && !(win.app.window_occluded || win.app.window_minimized) {
           win.app.window.request_redraw();
         }
@@ -22073,6 +22312,25 @@ impl App {
     fastrender::ui::about_pages::sync_about_page_snapshot_open_tabs(
       about_open_tabs_snapshot_from_browser_state(&self.browser_state),
     );
+  }
+
+  fn needs_redraw_for_profile_update(&self, update: ProfileUpdateKind<'_>) -> bool {
+    let active_tab_url = self
+      .browser_state
+      .active_tab()
+      .and_then(|tab| tab.committed_url.as_deref().or(tab.current_url.as_deref()));
+
+    needs_redraw_for_profile_update_state(
+      update,
+      ProfileUpdateRedrawState {
+        bookmarks_panel_open: self.bookmarks_panel_open,
+        history_panel_open: self.history_panel_open,
+        bookmarks_bar_visible: self.browser_state.chrome.bookmarks_bar_visible,
+        omnibox_open: self.browser_state.chrome.omnibox.open,
+        active_tab_url,
+        bookmarks: &self.bookmarks,
+      },
+    )
   }
 
   fn toggle_bookmark_for_active_tab(&mut self) {
