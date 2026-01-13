@@ -11,10 +11,10 @@ use crate::iterator;
 use crate::promise_ops::promise_resolve_for_await_with_host_and_hooks;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
-  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,
-  GcSymbol, HostDefined, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
+  EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, GcSymbol, Heap, HostDefined,
+  ModuleGraph, ModuleId, NativeCall, PropertyDescriptor, PropertyDescriptorPatch, PropertyKey,
   PropertyKind, Realm, RealmId, RootId, Scope, ScriptOrModule, SourceText, SourceTextModuleRecord,
-  StackFrame, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext, ToPrimitiveHint,
+  StackFrame, ToPrimitiveHint, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 use core::cmp::Ordering;
 use diagnostics::{Diagnostic, FileId};
@@ -2319,7 +2319,6 @@ impl JsRuntime {
               &mut tick,
             )?;
           }
-
           let mut scope = self.heap.scope();
           let res: Result<Value, VmError> = (|| {
             // In classic scripts, top-level `this` is the global object (even in strict mode).
@@ -14777,12 +14776,12 @@ fn async_handle_body_result(
       // `promise.then`, which creates a derived promise using `promise.constructor[Symbol.species]`.
       //
       // We still need to perform `Get(promise, \"constructor\")` for side effects/throws (per
-      // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
-      // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
-      // undefined)` is sufficient and avoids Promise species side effects.
-      let resolve_res =
-        promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
-      let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
+       // `PromiseResolve`), but we intentionally do **not** wrap the Promise: for await, attaching
+       // reactions directly to the original Promise using `PerformPromiseThen(..., resultCapability =
+       // undefined)` is sufficient and avoids Promise species side effects.
+       let resolve_res =
+         promise_resolve_for_await_with_host_and_hooks(vm, &mut await_scope, host, hooks, await_value);
+       let resolve_res = resolve_res.map_err(|err| coerce_error_to_throw_for_async(vm, &mut await_scope, err));
 
       let awaited_promise = match resolve_res {
         Ok(p) => p,
@@ -17562,10 +17561,7 @@ fn async_eval_class_after_super(
     };
 
     if ctor_method.is_some() {
-      return Err(syntax_error(
-        member.loc,
-        "A class may only have one constructor",
-      ));
+      return Err(syntax_error(member.loc, "A class may only have one constructor"));
     }
     ctor_method = Some((&method.stx.func, member.loc.start_u32(), member.loc));
   }
@@ -17634,7 +17630,7 @@ fn async_eval_class_after_super(
       let token = evaluator.vm.intern_script_or_module(script_or_module)?;
       ctor_scope
         .heap_mut()
-        .set_function_script_or_module_token(func_obj, Some(token))?;
+      .set_function_script_or_module_token(func_obj, Some(token))?;
     }
     Some(func_obj)
   } else {
