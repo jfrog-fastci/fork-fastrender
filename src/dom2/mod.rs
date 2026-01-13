@@ -1436,33 +1436,37 @@ impl Document {
         return attrs;
       };
 
-      let input_type = attr_value_ci(&attrs, "type")
-        .map(trim_ascii_whitespace_html)
-        .unwrap_or("text");
-      let is_file_input = input_type.eq_ignore_ascii_case("file");
-      let is_checkable = is_input_checkable(Some(input_type));
-
+      let (is_file_input, is_checkable_input) = {
+        let type_attr = attr_value_ci(&attrs, "type");
+        let is_file_input =
+          type_attr.is_some_and(|t| trim_ascii_whitespace_html(t).eq_ignore_ascii_case("file"));
+        let is_checkable_input = is_input_checkable(type_attr);
+        (is_file_input, is_checkable_input)
+      };
       if is_file_input {
         // File inputs never expose pre-filled value strings from markup.
         remove_attr_ci(&mut attrs, "value");
       } else {
+        let has_value_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("value"));
         // HTML: checkbox/radio inputs default to `.value == "on"` even when the `value` content
         // attribute is missing. Do *not* synthesize `value="on"` into markup attributes in that
         // case: it breaks selector semantics like `input[value]` (attribute presence) and diverges
         // from browsers, where the default value is an IDL property detail, not an authored
         // attribute.
-        let has_value_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("value"));
         let is_default_checkable_value_without_attr =
-          is_checkable && !has_value_attr && !state.dirty_value && state.value == "on";
+          is_checkable_input && !has_value_attr && !state.dirty_value && state.value == "on";
         if is_default_checkable_value_without_attr {
           remove_attr_ci(&mut attrs, "value");
-        } else {
-          // Mirror the input's *current value* into the snapshot attribute.
+        } else if has_value_attr || !state.value.is_empty() || state.dirty_value {
+          // Mirror the *current value* for rendering/selector semantics. Avoid injecting `value=""`
+          // when the input has no value attribute and the current value is the empty string: the
+          // renderer treats missing `value` as `""` anyway, and preserving authored presence avoids
+          // breaking selectors like `[value]`.
           upsert_attr_ci(&mut attrs, "value", state.value.clone());
         }
       }
 
-      if is_checkable {
+      if is_checkable_input {
         ensure_bool_attr_ci(&mut attrs, "checked", state.checkedness);
       } else {
         // Ensure any stale authored `checked` doesn't leak into snapshots for non-checkable inputs.

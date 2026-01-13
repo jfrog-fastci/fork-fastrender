@@ -460,9 +460,11 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
 
   let mut snapshot = doc.to_renderer_dom_with_mapping();
 
-  // Helper: round-trip a dom2 NodeId to a renderer preorder id and back, then find the snapshot
-  // node and assert we got the expected element.
-  let mut get_snapshot_node = |node_id: NodeId, expected_id: &str| {
+  fn get_snapshot_node<'a>(
+    snapshot: &'a mut super::RendererDomSnapshot,
+    node_id: NodeId,
+    expected_id: &str,
+  ) -> &'a mut DomNode {
     let preorder = snapshot
       .mapping
       .preorder_for_node_id(node_id)
@@ -477,11 +479,16 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
       .expect("missing renderer node for preorder id");
     assert_eq!(node.get_attribute_ref("id"), Some(expected_id));
     node
-  };
+  }
+
+  // Helper: round-trip a dom2 NodeId to a renderer preorder id and back, then find the snapshot
+  // node and assert we got the expected element.
+  // (Helper now implemented as a nested function so it can return a reference with an explicit
+  // lifetime; closures cannot return references to captured variables.)
 
   // <input>: current value must be reflected into the snapshot.
   {
-    let input_node = get_snapshot_node(input, "i");
+    let input_node = get_snapshot_node(&mut snapshot, input, "i");
     assert_eq!(input_node.get_attribute_ref("value"), Some("bar"));
     assert_eq!(
       input_node.get_attribute_ref("checked"),
@@ -492,7 +499,7 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
 
   // <input type=checkbox>: checkedness must be reflected into the snapshot.
   {
-    let checkbox_node = get_snapshot_node(checkbox, "c");
+    let checkbox_node = get_snapshot_node(&mut snapshot, checkbox, "c");
     assert!(
       checkbox_node.get_attribute_ref("checked").is_some(),
       "expected checked attribute on snapshot checkbox"
@@ -501,7 +508,7 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
 
   // <textarea>: current value must be reflected via `data-fastr-value`.
   {
-    let textarea_node = get_snapshot_node(textarea, "t");
+    let textarea_node = get_snapshot_node(&mut snapshot, textarea, "t");
     assert_eq!(
       textarea_node.get_attribute_ref("data-fastr-value"),
       Some("dirty")
@@ -510,7 +517,7 @@ fn renderer_snapshot_reflects_form_control_internal_state_and_mapping_remains_al
 
   // <option>: selectedness must be reflected into the snapshot.
   {
-    let option_node = get_snapshot_node(option, "o");
+    let option_node = get_snapshot_node(&mut snapshot, option, "o");
     assert!(
       option_node.get_attribute_ref("selected").is_none(),
       "expected no `selected` attribute on snapshot option when selectedness=false"

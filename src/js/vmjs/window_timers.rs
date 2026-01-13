@@ -3207,7 +3207,10 @@ mod tests {
     };
     assert!(
       matches!(err, VmError::OutOfMemory)
-        || matches!(err, VmError::Termination(term) if term.reason == TerminationReason::OutOfMemory),
+        || matches!(
+          err,
+          VmError::Termination(ref term) if term.reason == TerminationReason::OutOfMemory
+        ),
       "expected out-of-memory error, got {err:?}"
     );
  
@@ -3243,6 +3246,7 @@ mod tests {
       let (vm_host, window_realm) = host_state.vm_host_and_window_realm()?;
       window_realm.reset_interrupt();
 
+      let module_loader = window_realm.module_loader_handle();
       let (vm, heap) = window_realm.vm_and_heap_mut();
       let Some(modules_ptr) = vm.module_graph_ptr() else {
         return Err(crate::error::Error::Other(
@@ -3255,7 +3259,6 @@ mod tests {
 
       // Register an inline entry module through the host module loader so it has a URL/depth
       // recorded (needed for resolving its dependencies).
-      let module_loader = window_realm.module_loader_handle();
       let entry_key = crate::js::realm_module_loader::ModuleKey {
         url: "https://example.com/root.js".to_string(),
         attributes: Vec::new(),
@@ -3265,17 +3268,19 @@ mod tests {
         .get_or_parse_inline_module(heap, modules, entry_key, "import './dep.js'; export const x = 1;")
         .map_err(|err| crate::error::Error::Other(err.to_string()))?;
 
-      let mut scope = heap.scope();
-      let _promise = vm_js::load_requested_modules_with_host_and_hooks(
-        vm,
-        &mut scope,
-        modules,
-        vm_host,
-        &mut hooks,
-        entry_id,
-        HostDefined::default(),
-      )
-      .map_err(|err| crate::error::Error::Other(err.to_string()))?;
+      {
+        let mut scope = heap.scope();
+        let _promise = vm_js::load_requested_modules_with_host_and_hooks(
+          vm,
+          &mut scope,
+          modules,
+          vm_host,
+          &mut hooks,
+          entry_id,
+          HostDefined::default(),
+        )
+        .map_err(|err| crate::error::Error::Other(err.to_string()))?;
+      }
 
       if let Some(err) = hooks.finish(heap) {
         return Err(err);

@@ -339,7 +339,6 @@ impl DriftResampler {
 mod tests {
   use super::*;
   use crate::media::audio::pcm_f32_queue;
-  use std::time::Duration;
 
   fn run_simulation(producer_rate_hz: f64) {
     let stream_rate_hz = 48_000.0_f64;

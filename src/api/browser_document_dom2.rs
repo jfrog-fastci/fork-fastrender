@@ -2651,7 +2651,6 @@ impl BrowserDocumentDom2 {
         self.dirty_style_nodes.insert(node);
       }
     }
-
     for node in mutations.text_changed {
       if !self.dom.is_connected_for_scripting(node) {
         continue;
@@ -2703,7 +2702,7 @@ impl BrowserDocumentDom2 {
     //
     // Note: `dom2::MutationLog` models these separately so hosts can add future incremental paths
     // (e.g. repainting replaced form controls) without forcing a full restyle.
-    for node in mutations.form_state_changed {
+    for &node in &mutations.form_state_changed {
       if !self.dom.is_connected_for_scripting(node) {
         continue;
       }
