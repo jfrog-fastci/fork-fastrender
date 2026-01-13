@@ -127,12 +127,17 @@ pub struct BrowserDocumentDom2 {
   /// preorder ids can shift). The selection is projected through the most recent
   /// [`crate::dom2::RendererDomMapping`] at paint time.
   document_selection_dom2: Option<DocumentSelectionStateDom2>,
-  /// Hash of the most recently prepared/painted interaction state.
+  /// Hash of the most recently prepared interaction state's CSS-affecting subset.
   ///
-  /// Interaction state influences pseudo-class matching (`:hover`, `:focus`, etc) and form control
-  /// painting (caret/selection/IME). When it changes we must treat cached style/layout results as
-  /// invalid, even if the DOM itself is unchanged.
-  interaction_state_hash: u64,
+  /// This captures pseudo-class matching (`:hover`, `:focus`, etc.) and other inputs that influence
+  /// selector matching / the CSS cascade. When this changes, cached style/layout results must be
+  /// treated as invalid even if the DOM itself is unchanged.
+  interaction_css_hash: u64,
+  /// Hash of the most recently painted interaction state's paint-only subset.
+  ///
+  /// This captures state that affects painting but must not force a cascade/layout rerun (caret /
+  /// selection / IME preedit / document selection / file-input labels).
+  interaction_paint_hash: u64,
   dirty_style_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_text_nodes: FxHashSet<crate::dom2::NodeId>,
   dirty_structure_nodes: FxHashSet<crate::dom2::NodeId>,
@@ -157,7 +162,7 @@ pub struct BrowserDocumentDom2 {
   last_painted_animation_clock: Option<Duration>,
 }
 
-fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
+fn interaction_state_css_fingerprint(state: Option<&InteractionState>) -> u64 {
   let mut hasher = DefaultHasher::new();
   match state {
     None => {
@@ -165,8 +170,22 @@ fn interaction_state_fingerprint(state: Option<&InteractionState>) -> u64 {
     }
     Some(state) => {
       1u8.hash(&mut hasher);
-      // Avoid per-frame hashing/sorting of large sets/maps by using the cached interaction digests.
+      // Avoid per-frame hashing/sorting of large sets by using the cached interaction digest.
       state.interaction_css_hash().hash(&mut hasher);
+    }
+  }
+  hasher.finish()
+}
+
+fn interaction_state_paint_fingerprint(state: Option<&InteractionState>) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  match state {
+    None => {
+      0u8.hash(&mut hasher);
+    }
+    Some(state) => {
+      1u8.hash(&mut hasher);
+      // Avoid per-frame hashing/sorting of large sets/maps by using the cached interaction digest.
       state.interaction_paint_hash().hash(&mut hasher);
     }
   }
@@ -214,7 +233,8 @@ impl BrowserDocumentDom2 {
       paint_dirty: true,
       interaction_state: None,
       document_selection_dom2: None,
-      interaction_state_hash: interaction_state_fingerprint(None),
+      interaction_css_hash: interaction_state_css_fingerprint(None),
+      interaction_paint_hash: interaction_state_paint_fingerprint(None),
       dirty_style_nodes: FxHashSet::default(),
       dirty_text_nodes: FxHashSet::default(),
       dirty_structure_nodes: FxHashSet::default(),
@@ -386,7 +406,8 @@ impl BrowserDocumentDom2 {
     self.last_dom_mapping = None;
     self.interaction_state = None;
     self.document_selection_dom2 = None;
-    self.interaction_state_hash = interaction_state_fingerprint(None);
+    self.interaction_css_hash = interaction_state_css_fingerprint(None);
+    self.interaction_paint_hash = interaction_state_paint_fingerprint(None);
     self.author_stylesheet_has_has_selectors = false;
     // Reset per-document CSP state. `reset_with_dom` replaces the entire document, so any previously
     // captured CSP headers/meta should not leak into the new DOM.
@@ -417,7 +438,8 @@ impl BrowserDocumentDom2 {
     self.paint_dirty = true;
     self.interaction_state = None;
     self.document_selection_dom2 = None;
-    self.interaction_state_hash = interaction_state_fingerprint(None);
+    self.interaction_css_hash = interaction_state_css_fingerprint(None);
+    self.interaction_paint_hash = interaction_state_paint_fingerprint(None);
     self.dirty_style_nodes.clear();
     self.dirty_text_nodes.clear();
     self.dirty_structure_nodes.clear();
@@ -645,14 +667,20 @@ impl BrowserDocumentDom2 {
   /// Updates the interaction state used for pseudo-class matching and form-control paint hints.
   ///
   /// Interaction state is keyed by renderer DOM pre-order IDs (see
-  /// `crate::dom::enumerate_dom_ids`). When it changes we conservatively invalidate style/layout so
-  /// the next render reflects updated `:hover`/`:active`/`:focus` pseudo-classes and input caret/
-  /// selection/IME paint hints.
+  /// `crate::dom::enumerate_dom_ids`).
+  ///
+  /// Changes that can affect selector matching / cascade (`:hover`, `:active`, `:focus`, etc.)
+  /// invalidate style/layout. Paint-only changes (document selection highlights, caret/IME preedit,
+  /// file-input labels) only invalidate paint and are applied during cached paint via
+  /// `interaction::paint_overlays`.
   pub fn set_interaction_state(&mut self, state: Option<InteractionState>) {
-    let fingerprint = interaction_state_fingerprint(state.as_ref());
+    let css_fingerprint = interaction_state_css_fingerprint(state.as_ref());
+    let paint_fingerprint = interaction_state_paint_fingerprint(state.as_ref());
     self.interaction_state = state;
-    if fingerprint != self.interaction_state_hash {
+    if css_fingerprint != self.interaction_css_hash {
       self.invalidate_all();
+    } else if paint_fingerprint != self.interaction_paint_hash {
+      self.paint_dirty = true;
     }
   }
 
@@ -731,7 +759,7 @@ impl BrowserDocumentDom2 {
     self.prepared.is_none()
       || self.style_dirty
       || self.layout_dirty
-      || interaction_state_fingerprint(self.interaction_state.as_ref()) != self.interaction_state_hash
+      || interaction_state_css_fingerprint(self.interaction_state.as_ref()) != self.interaction_css_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
   }
 
@@ -761,10 +789,11 @@ impl BrowserDocumentDom2 {
     &mut self,
     request: BrowserDocumentDom2LayoutFlushRequest,
   ) -> Result<BrowserDocumentDom2LayoutFlushKind> {
-    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
-    if interaction_hash != self.interaction_state_hash {
-      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
-      // re-run style/layout when it changes.
+    let interaction_css_hash =
+      interaction_state_css_fingerprint(self.interaction_state.as_ref());
+    if interaction_css_hash != self.interaction_css_hash {
+      // CSS-affecting interaction state affects pseudo-class matching / selector matching, so we
+      // must re-run cascade/layout when it changes.
       self.invalidate_all();
     }
 
@@ -805,7 +834,7 @@ impl BrowserDocumentDom2 {
 
     let needs_layout = self.style_dirty
       || self.layout_dirty
-      || interaction_hash != self.interaction_state_hash
+      || interaction_css_hash != self.interaction_css_hash
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
       || self.prepared.is_none()
       || (request.require_dom_mapping && self.last_dom_mapping.is_none());
@@ -969,7 +998,7 @@ impl BrowserDocumentDom2 {
     // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
     // can be retried.
     self.paint_dirty = true;
-    self.interaction_state_hash = interaction_hash;
+    self.interaction_css_hash = interaction_css_hash;
     self.dom.clear_mutations();
     Ok(flush_kind)
   }
@@ -2071,10 +2100,14 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<Option<super::PaintedFrame>> {
-    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
+    let interaction_css_hash =
+      interaction_state_css_fingerprint(self.interaction_state.as_ref());
+    let interaction_paint_hash =
+      interaction_state_paint_fingerprint(self.interaction_state.as_ref());
     if !self.is_dirty()
       && self.prepared.is_some()
-      && interaction_hash == self.interaction_state_hash
+      && interaction_css_hash == self.interaction_css_hash
+      && interaction_paint_hash == self.interaction_paint_hash
       && !self.needs_animation_frame()
     {
       return Ok(None);
@@ -2099,11 +2132,17 @@ impl BrowserDocumentDom2 {
     &mut self,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
-    let interaction_hash = interaction_state_fingerprint(self.interaction_state.as_ref());
-    if interaction_hash != self.interaction_state_hash {
-      // Interaction state affects pseudo-class matching and form-control paint hints, so we must
-      // re-run style/layout when it changes.
+    let interaction_css_hash =
+      interaction_state_css_fingerprint(self.interaction_state.as_ref());
+    let interaction_paint_hash =
+      interaction_state_paint_fingerprint(self.interaction_state.as_ref());
+    if interaction_css_hash != self.interaction_css_hash {
+      // CSS-affecting interaction state affects selector matching / cascade, so we must re-run
+      // style/layout when it changes.
       self.invalidate_all();
+    } else if interaction_paint_hash != self.interaction_paint_hash {
+      // Paint-only interaction state can be applied during cached paint.
+      self.paint_dirty = true;
     }
 
     // Rendering requires up-to-date layout caches. Reuse the same host-side layout flush used by
@@ -2117,7 +2156,6 @@ impl BrowserDocumentDom2 {
     if self.is_dirty() {
       self.clear_dirty();
     }
-    self.interaction_state_hash = interaction_hash;
 
     Ok(frame)
   }
@@ -2252,16 +2290,42 @@ impl BrowserDocumentDom2 {
       self.options.scroll_delta,
       self.options.element_scroll_deltas.clone(),
     );
-    let frame = prepared.paint_with_options_frame_with_animation_state_store(
-      PreparedPaintOptions {
-        scroll: Some(scroll_state),
-        viewport: None,
-        background: None,
-        animation_time,
-        media_provider: self.media_provider.clone(),
-      },
-      &mut self.animation_state_store,
-    )?;
+
+    // Clone and patch the fragment tree so paint-only interaction overlays do not mutate the cached
+    // `PreparedDocument` layout artifacts.
+    let mut fragment_tree = prepared.fragment_tree.clone();
+    crate::interaction::paint_overlays::apply_interaction_state_paint_overlays_to_fragment_tree(
+      prepared.box_tree(),
+      &mut fragment_tree,
+      self.interaction_state.as_ref(),
+    );
+    // `paint_overlays` applies document selection using the renderer-preorder selection stored in
+    // `InteractionState`. When a stable `dom2` selection is active, reapply it here so the cached
+    // paint path respects `document_selection_dom2` even when `InteractionState.document_selection`
+    // is unset.
+    if let (Some(selection_dom2), Some(mapping)) =
+      (self.document_selection_dom2.as_ref(), self.last_dom_mapping.as_ref())
+    {
+      crate::interaction::document_selection::apply_document_selection_to_fragment_tree_dom2(
+        prepared.box_tree(),
+        &mut fragment_tree,
+        mapping,
+        Some(selection_dom2),
+      );
+    }
+
+    let frame =
+      prepared.paint_with_options_frame_with_animation_state_store_and_fragment_tree(
+        fragment_tree,
+        PreparedPaintOptions {
+          scroll: Some(scroll_state),
+          viewport: None,
+          background: None,
+          animation_time,
+          media_provider: self.media_provider.clone(),
+        },
+        &mut self.animation_state_store,
+      )?;
 
     // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
     // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
@@ -2275,6 +2339,10 @@ impl BrowserDocumentDom2 {
     // A successful paint always satisfies any outstanding paint invalidation, but must not clear
     // pending style/layout dirtiness.
     self.paint_dirty = false;
+    // Commit the interaction paint hash after a successful paint so callers can update interaction
+    // state and use cached paints without forcing repeated renders.
+    self.interaction_paint_hash =
+      interaction_state_paint_fingerprint(self.interaction_state.as_ref());
     if self.realtime_animations_enabled && self.options.animation_time.is_none() {
       self.last_painted_animation_clock = Some(self.animation_clock.now());
     } else {
@@ -3728,6 +3796,39 @@ mod tests {
       .expect("renderer")
   }
 
+  fn count_document_selection_pixels(pixmap: &tiny_skia::Pixmap) -> usize {
+    let mut count = 0usize;
+    for y in 0..pixmap.height() {
+      for x in 0..pixmap.width() {
+        let p = pixmap.pixel(x, y).expect("pixel in bounds");
+        // Selection highlight is drawn as a light blue tint (e.g. rgba(0,120,215,0.35) over white
+        // -> ~rgb(166,208,241)). Use a loose heuristic to avoid coupling tightly to exact color
+        // constants.
+        if p.blue() > 220 && p.green() > 180 && p.red() < 220 {
+          count += 1;
+        }
+      }
+    }
+    count
+  }
+
+  fn caret_red_x_range(pixmap: &tiny_skia::Pixmap) -> Option<(u32, u32)> {
+    let mut min_x: Option<u32> = None;
+    let mut max_x: Option<u32> = None;
+    for y in 0..pixmap.height() {
+      for x in 0..pixmap.width() {
+        let p = pixmap.pixel(x, y).expect("pixel in bounds");
+        // Caret pixels are rendered with `caret-color` (we set it to red). Allow some tolerance for
+        // antialiasing.
+        if p.red() > 200 && p.green() < 80 && p.blue() < 80 {
+          min_x = Some(min_x.map_or(x, |m| m.min(x)));
+          max_x = Some(max_x.map_or(x, |m| m.max(x)));
+        }
+      }
+    }
+    min_x.zip(max_x)
+  }
+
   fn assert_channel_close(actual: u8, expected: u8, tolerance: u8) {
     let diff = actual.abs_diff(expected);
     assert!(
@@ -4377,6 +4478,131 @@ mod tests {
       "expected no-op render when interaction state unchanged"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn document_selection_repaints_from_cache_without_layout() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        p { margin: 0; font: 20px sans-serif; color: black; }
+      </style>
+      <p>Hello world</p>
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(200, 40))?;
+
+    let base_state = InteractionState::default();
+    doc.set_interaction_state(Some(base_state.clone()));
+    let pixmap0 = doc.render_frame()?;
+    assert_eq!(
+      count_document_selection_pixels(&pixmap0),
+      0,
+      "expected no selection pixels before selection is applied"
+    );
+    let counters_before = doc.invalidation_counters();
+
+    let mut selected_state = base_state.clone();
+    selected_state.document_selection =
+      Some(crate::interaction::state::DocumentSelectionState::All);
+    selected_state.mark_paint_hash_dirty();
+    doc.set_interaction_state(Some(selected_state));
+
+    let pixmap1 = doc
+      .render_if_needed()?
+      .expect("expected document selection to invalidate and repaint");
+    assert_eq!(
+      doc.invalidation_counters(),
+      counters_before,
+      "expected no style/layout work for document selection repaint"
+    );
+    assert!(
+      count_document_selection_pixels(&pixmap1) > 0,
+      "expected selection highlight pixels after selection is applied"
+    );
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected no-op render when selection is unchanged"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn form_control_caret_repaints_from_cache_without_layout() -> Result<()> {
+    use crate::text::caret::CaretAffinity;
+
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        input {
+          font: 24px monospace;
+          caret-color: rgb(255, 0, 0);
+          border: 0;
+          padding: 0;
+          margin: 0;
+          background: white;
+          color: black;
+        }
+      </style>
+      <input id="a" value="aaaaaaaaaa">
+    "#;
+    let mut doc =
+      BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(320, 40))?;
+
+    // Prime a dom2↔renderer mapping so we can address the input via preorder IDs.
+    doc.render_frame()?;
+    let input = doc.dom().get_element_by_id("a").expect("#a input");
+    let input_preorder = doc
+      .last_dom_mapping()
+      .expect("dom mapping")
+      .preorder_for_node_id(input)
+      .expect("preorder id");
+
+    let mut state_end = InteractionState::default();
+    state_end.focused = Some(input_preorder);
+    state_end.set_focus_chain(vec![input_preorder]);
+    state_end.text_edit = Some(crate::interaction::state::TextEditPaintState {
+      node_id: input_preorder,
+      caret: 10,
+      caret_affinity: CaretAffinity::Downstream,
+      selection: None,
+    });
+    doc.set_interaction_state(Some(state_end.clone()));
+
+    let pixmap_end = doc
+      .render_if_needed()?
+      .expect("expected focus/caret state to invalidate and repaint");
+    let caret_end = caret_red_x_range(&pixmap_end).expect("expected caret pixels");
+    let counters_before = doc.invalidation_counters();
+
+    let mut state_start = state_end.clone();
+    if let Some(edit) = state_start.text_edit.as_mut() {
+      edit.caret = 0;
+    }
+    state_start.mark_paint_hash_dirty();
+    doc.set_interaction_state(Some(state_start));
+
+    let pixmap_start = doc
+      .render_if_needed()?
+      .expect("expected caret move to invalidate and repaint");
+    assert_eq!(
+      doc.invalidation_counters(),
+      counters_before,
+      "expected no style/layout work for caret repaint"
+    );
+
+    let caret_start = caret_red_x_range(&pixmap_start).expect("expected caret pixels");
+    assert!(
+      caret_start.0 + 5 < caret_end.0,
+      "expected caret x to move left; start={caret_start:?}, end={caret_end:?}"
+    );
+    assert!(
+      doc.render_if_needed()?.is_none(),
+      "expected no-op render when caret is unchanged"
+    );
     Ok(())
   }
 
