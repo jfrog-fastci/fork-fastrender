@@ -20,6 +20,7 @@ fn sanitize_non_negative_f32(value: f32) -> f32 {
 /// This is intentionally separate from the engine's [`crate::geometry::Point`] type so IPC message
 /// formats remain small and stable.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PointF32 {
   pub x: f32,
   pub y: f32,
@@ -55,6 +56,7 @@ impl From<PointF32> for Point {
 ///
 /// Uses the `x/y/w/h` representation (origin + size) to match many existing call sites.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RectF32 {
   pub x: f32,
   pub y: f32,
@@ -97,6 +99,7 @@ impl From<RectF32> for Rect {
 /// This intentionally only includes the viewport scroll offset; element scroll offsets are stored
 /// in maps keyed by internal ids which are not stable across processes.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollStateIpc {
   pub viewport: PointF32,
 }
@@ -132,6 +135,7 @@ impl From<ScrollStateIpc> for ScrollState {
 
 /// IPC-safe scroll sizing information for the root scroll container (viewport).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ScrollMetricsIpc {
   pub viewport_css: (u32, u32),
   pub scroll_css: (f32, f32),
@@ -301,4 +305,3 @@ mod tests {
     );
   }
 }
-
