@@ -9,6 +9,11 @@ test(() => {
   }
   assert_true(exception !== null, "expected querySelector to throw");
   assert_true(exception instanceof DOMException, "expected a DOMException instance");
+  assert_equals(
+    Object.getPrototypeOf(exception),
+    DOMException.prototype,
+    "expected DOMException prototype"
+  );
   assert_equals(exception.name, "SyntaxError", "expected a SyntaxError DOMException");
 }, "Document.querySelector throws a DOMException SyntaxError for invalid selectors");
 
@@ -24,4 +29,3 @@ test(() => {
     el.querySelector("div[");
   });
 }, "assert_throws_dom works for Element.querySelector SyntaxError");
-

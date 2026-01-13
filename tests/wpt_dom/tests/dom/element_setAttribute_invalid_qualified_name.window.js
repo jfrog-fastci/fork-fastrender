@@ -19,6 +19,11 @@ test(() => {
   }
   assert_true(exception !== null, "expected setAttribute to throw");
   assert_true(exception instanceof DOMException, "expected a DOMException instance");
+  assert_equals(
+    Object.getPrototypeOf(exception),
+    DOMException.prototype,
+    "expected DOMException prototype"
+  );
   assert_equals(exception.name, "InvalidCharacterError", "expected an InvalidCharacterError");
 }, "Element.setAttribute throws a DOMException InvalidCharacterError for names containing ASCII whitespace");
 

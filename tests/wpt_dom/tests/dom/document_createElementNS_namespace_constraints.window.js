@@ -17,6 +17,11 @@ test(() => {
   }
   assert_true(exception !== null, "expected createElementNS to throw");
   assert_true(exception instanceof DOMException, "expected a DOMException instance");
+  assert_equals(
+    Object.getPrototypeOf(exception),
+    DOMException.prototype,
+    "expected DOMException prototype"
+  );
   assert_equals(exception.name, "NamespaceError", "expected a NamespaceError");
 }, "Document.createElementNS throws a DOMException NamespaceError for a prefixed qualifiedName with a null namespace");
 
