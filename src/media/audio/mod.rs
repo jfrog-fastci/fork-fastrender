@@ -81,6 +81,8 @@ impl TimedAudioQueue {
 /// Decoder-facing audio enqueue handle.
 ///
 /// This is currently an alias for the producer side of a bounded SPSC PCM queue.
+///
+/// For timestamp-aware buffering (gaps/overlaps), use [`TimedAudioQueue`] instead.
 pub type AudioStreamHandle = PcmF32QueueProducer;
 
 #[cfg(feature = "audio_wav")]
