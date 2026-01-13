@@ -37,8 +37,8 @@ fn generators_yield_in_binary_expressions() {
         function* exp_left() { return (yield 2) ** 3; }
         const it4 = exp_left();
         const d1 = it4.next();
-        const d2 = it4.next(2);
-        const ok4 = d1.value === 2 && d1.done === false && d2.value === 8 && d2.done === true;
+        const d2 = it4.next(4);
+        const ok4 = d1.value === 2 && d1.done === false && d2.value === 64 && d2.done === true;
 
         // (yield 1) === (yield 1)
         function* strict_eq_both() { return (yield 1) === (yield 1); }
