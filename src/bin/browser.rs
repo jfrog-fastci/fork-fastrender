@@ -19331,6 +19331,7 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         self.pending_pointer_move = None;
         self.cancel_select_dropdown();
         self.cancel_date_time_picker();
+        self.close_media_controls();
         self.cancel_file_picker();
         self.cancel_scrollbar_drag();
         self.cancel_pointer_capture();
