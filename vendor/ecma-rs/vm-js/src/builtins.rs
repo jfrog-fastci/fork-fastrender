@@ -16928,70 +16928,65 @@ pub fn string_prototype_match_all(
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
   // Spec: `RequireObjectCoercible(this value)`.
-  if matches!(this, Value::Undefined | Value::Null) {
-    return Err(VmError::TypeError(
-      "String.prototype.matchAll called on null or undefined",
-    ));
-  }
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
+  //
+  // Important: do *not* call `ToString(O)` yet. `IsRegExp(regexp)` + flags checks and `@@matchAll`
+  // dispatch are observable before `ToString(this)` (and must bypass it when a custom `@@matchAll`
+  // method is present).
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  scope.push_root(o)?;
 
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(regexp, Value::Undefined | Value::Null) {
-    // Spec: if `regexp` is a RegExp, validate `flags` is object-coercible and contains `"g"`.
+  scope.push_root(regexp)?;
+
+  // Spec: only attempt `@@matchAll` dispatch when `Type(regexp) is Object` (do not box primitives).
+  if let Value::Object(regexp_obj) = regexp {
+    scope.push_root(Value::Object(regexp_obj))?;
+
+    // Spec: if `IsRegExp(regexp)` is true, validate `flags` is object-coercible and contains `"g"`.
     //
-    // Important: only do this for actual objects; per spec, primitives skip this step and are
-    // handled by the `RegExpCreate(regexp, "g")` fallback without boxing.
-    if let Value::Object(regexp_obj) = regexp {
-      scope.push_root(Value::Object(regexp_obj))?;
-      if scope.heap().is_regexp_object(regexp_obj) {
-        let flags_key = string_key(&mut scope, "flags")?;
-        let flags_val = scope.get_with_host_and_hooks(
-          vm,
-          host,
-          hooks,
-          regexp_obj,
-          flags_key,
-          Value::Object(regexp_obj),
-        )?;
-        scope.push_root(flags_val)?;
+    // Ordering is observable: this must happen *before* `ToString(O)` and before `@@matchAll`
+    // dispatch.
+    if crate::spec_ops::is_regexp_with_host_and_hooks(vm, &mut scope, host, hooks, regexp)? {
+      let flags_key = string_key(&mut scope, "flags")?;
+      let flags_val =
+        scope.get_with_host_and_hooks(vm, host, hooks, regexp_obj, flags_key, Value::Object(regexp_obj))?;
+      scope.push_root(flags_val)?;
+      let _ = crate::spec_ops::require_object_coercible(flags_val)?;
 
-        // `RequireObjectCoercible(flags)`.
-        if matches!(flags_val, Value::Undefined | Value::Null) {
-          return Err(VmError::TypeError(
-            "String.prototype.matchAll called with a RegExp with a null/undefined flags value",
-          ));
-        }
+      let flags_s = scope.to_string(vm, host, hooks, flags_val)?;
+      scope.push_root(Value::String(flags_s))?;
 
-        let flags_s = scope.to_string(vm, host, hooks, flags_val)?;
-        scope.push_root(Value::String(flags_s))?;
-        let mut has_g = false;
-        for &u in scope.heap().get_string(flags_s)?.as_code_units() {
-          if u == b'g' as u16 {
-            has_g = true;
-            break;
-          }
-        }
-        if !has_g {
-          return Err(VmError::TypeError(
-            "String.prototype.matchAll called with a non-global RegExp argument",
-          ));
+      let mut has_g = false;
+      for &u in scope.heap().get_string(flags_s)?.as_code_units() {
+        if u == b'g' as u16 {
+          has_g = true;
+          break;
         }
       }
-
-      let method = crate::spec_ops::get_method_with_host_and_hooks(
-        vm,
-        &mut scope,
-        host,
-        hooks,
-        regexp,
-        PropertyKey::from_symbol(intr.well_known_symbols().match_all),
-      )?;
-      if let Some(method) = method {
-        return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+      if !has_g {
+        return Err(VmError::TypeError(
+          "String.prototype.matchAll called with a non-global RegExp argument",
+        ));
       }
     }
+
+    let method = crate::spec_ops::get_method_with_host_and_hooks(
+      vm,
+      &mut scope,
+      host,
+      hooks,
+      regexp,
+      PropertyKey::from_symbol(intr.well_known_symbols().match_all),
+    )?;
+    if let Some(method) = method {
+      // Spec: `Call(matcher, regexp, « O »)` where `O` is the RequireObjectCoercible receiver.
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[o]);
+    }
   }
+
+  // Step 3: `S = ? ToString(O)`.
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
 
   // Fallback: `RegExpCreate(regexp, "g")` then call `@@matchAll`.
   let ctor = Value::Object(intr.regexp_constructor());
