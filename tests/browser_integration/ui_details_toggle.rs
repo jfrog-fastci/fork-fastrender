@@ -52,6 +52,26 @@ fn details_fixture_html() -> &'static str {
           <div id="content">Hidden</div>
         </details>
      </body>
+     </html>"#
+}
+
+fn details_open_fixture_html() -> &'static str {
+  r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          summary { position: absolute; left: 0; top: 0; width: 200px; height: 40px; }
+          #content { position: absolute; left: 0; top: 50px; width: 200px; height: 40px; }
+        </style>
+      </head>
+      <body>
+        <details id="d" open>
+          <summary id="s">Title</summary>
+          <div id="content">Shown</div>
+        </details>
+     </body>
     </html>"#
 }
 
@@ -222,6 +242,47 @@ fn details_summary_is_tab_focusable_and_space_toggles_open() -> Result<()> {
       .get_attribute_ref("open")
       .is_some(),
     "Space on focused <summary> should toggle parent <details open>"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn details_content_click_does_not_toggle_open() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (240, 120);
+  let url = "https://example.com/index.html";
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    details_open_fixture_html(),
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_some(),
+    "fixture <details> should start open"
+  );
+
+  // Click the details content area (outside the <summary>) => should NOT toggle closed.
+  let click = (10.0, 60.0);
+  let _ =
+    controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  assert!(
+    find_element_by_id(controller.document().dom(), "d")
+      .get_attribute_ref("open")
+      .is_some(),
+    "clicking <details> content (outside <summary>) should not toggle the <details open> state"
   );
 
   Ok(())
