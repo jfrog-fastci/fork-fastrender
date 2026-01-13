@@ -1785,7 +1785,10 @@ impl TextRasterizer {
     let glyph_opacity = color.a.clamp(0.0, 1.0);
     let color_for_glyph = Rgba { a: 1.0, ..color };
     let translation_only_state_transform = is_translation_only_transform(state.transform);
-    let hinting = self.hinting_enabled && translation_only_state_transform;
+    // Font hinting is only safe when the post-positioning transform is translation-only.
+    // Rotations (including vertical writing mode rotations) and additional scale/skew would change
+    // the effective ppem/grid-fitting target; browsers typically disable hinting in those cases.
+    let hinting = self.hinting_enabled && translation_only_state_transform && rotation.is_none();
     let snap_glyph_positions = self.snap_glyph_positions
       && rotation.is_none()
       && synthetic_oblique.abs() <= 1e-6
@@ -4367,6 +4370,96 @@ mod tests {
       assert!(
         r_r > g_r && g_r > b_r,
         "expected right edge to ramp R>G>B, got ({r_r},{g_r},{b_r})"
+      );
+    });
+  }
+
+  #[test]
+  fn hinting_is_disabled_for_rotated_runs_to_keep_outline_cache_reusable() {
+    let font = match get_test_font() {
+      Some(f) => f,
+      None => return,
+    };
+
+    let face = font.as_ttf_face().unwrap();
+    let Some(glyph_id) = face.glyph_index('H').map(|g| g.0 as u32) else {
+      return;
+    };
+
+    let glyphs = [GlyphPosition {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_TEXT_HINTING".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_runtime_toggles(toggles, || {
+      let mut rasterizer = TextRasterizer::new();
+      assert!(rasterizer.hinting_enabled);
+      rasterizer.reset_cache_stats();
+
+      let rotation = Some(Transform::from_rotate(25.0));
+
+      let mut pixmap = new_pixmap(200, 120).unwrap();
+      pixmap.fill(tiny_skia::Color::WHITE);
+      rasterizer
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          16.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          rotation,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          TextRenderState::default(),
+          &mut pixmap,
+        )
+        .unwrap();
+
+      let mut pixmap2 = new_pixmap(200, 120).unwrap();
+      pixmap2.fill(tiny_skia::Color::WHITE);
+      rasterizer
+        .render_glyph_run_with_stroke(
+          &glyphs,
+          &font,
+          32.0,
+          0.0,
+          0.0,
+          0,
+          &[],
+          0,
+          &[],
+          rotation,
+          10.0,
+          64.0,
+          Rgba::BLACK,
+          None,
+          TextRenderState::default(),
+          &mut pixmap2,
+        )
+        .unwrap();
+
+      let outline_stats = rasterizer
+        .cache
+        .lock()
+        .map(|cache| cache.stats())
+        .unwrap_or_default();
+      assert_eq!(
+        outline_stats.misses, 1,
+        "expected hinting to be suppressed for rotated runs so outlines reuse across font sizes"
       );
     });
   }
