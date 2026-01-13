@@ -4294,7 +4294,7 @@ fn run_headless_crash_smoke_mode(
   use fastrender::text::font_db::FontConfig;
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-  use fastrender::ui::render_worker::{BROWSER_WORKER_CRASH_TEST_URL, ENV_BROWSER_WORKER_CRASH_TEST};
+  use fastrender::ui::render_worker::BROWSER_WORKER_CRASH_TEST_URL;
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
   use std::collections::HashMap;
@@ -4306,15 +4306,6 @@ fn run_headless_crash_smoke_mode(
       .num_threads(1)
       .build_global();
   }
-
-  // Opt in to the crash trigger in `render_worker` without mutating the process environment. Keep
-  // other `FASTR_*` flags intact so configuration behaves like a normal browser session.
-  let mut raw = std::env::vars()
-    .filter(|(k, _)| k.starts_with("FASTR_"))
-    .collect::<std::collections::HashMap<_, _>>();
-  raw.insert(ENV_BROWSER_WORKER_CRASH_TEST.to_string(), "1".to_string());
-  let toggles = std::sync::Arc::new(fastrender::debug::runtime::RuntimeToggles::from_map(raw));
-  fastrender::debug::runtime::update_runtime_toggles(toggles);
 
   // Bounded but generous: under debug builds / CI contention the worker may take a while to spin up
   // before hitting the crash URL.
