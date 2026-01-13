@@ -17,6 +17,7 @@ mod fixture_determinism;
 mod freeze_page_fixture_cmd;
 mod generate_emoji_tables;
 mod generate_regexp_unicode_property_strings;
+mod generate_regexp_unicode_tables;
 mod import_page_fixture;
 mod js;
 mod lint_no_openssl;
@@ -90,6 +91,9 @@ fn main() -> Result<()> {
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
     Commands::GenerateRegExpUnicodePropertyStrings(args) => {
       generate_regexp_unicode_property_strings::run_generate_regexp_unicode_property_strings(args)
+    }
+    Commands::GenerateRegExpUnicodeTables(args) => {
+      generate_regexp_unicode_tables::run_generate_regexp_unicode_tables(args)
     }
     Commands::WebIdlCodegen(args) => webidl_codegen::run_webidl_codegen(args),
     Commands::WebIdlBindingsCodegen(args) => {
@@ -179,6 +183,9 @@ enum Commands {
   GenerateRegExpUnicodePropertyStrings(
     generate_regexp_unicode_property_strings::GenerateRegExpUnicodePropertyStringsArgs,
   ),
+  /// Regenerate the Unicode binary property tables used by the JavaScript RegExp engine.
+  #[command(name = "generate-regexp-unicode-tables", alias = "gen-regexp-unicode-tables")]
+  GenerateRegExpUnicodeTables(generate_regexp_unicode_tables::GenerateRegExpUnicodeTablesArgs),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
   /// Fail CI if tests introduce new process-global state mutations (env vars, cwd changes, etc.).

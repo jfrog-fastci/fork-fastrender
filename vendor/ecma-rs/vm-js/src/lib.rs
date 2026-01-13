@@ -174,6 +174,7 @@ mod realm;
 mod regexp;
 mod regexp_case_folding;
 mod regexp_unicode_property_strings;
+mod regexp_unicode_property_tables;
 mod regexp_unicode_resolver;
 mod regexp_unicode_tables;
 mod regexp_unicode_icu;
