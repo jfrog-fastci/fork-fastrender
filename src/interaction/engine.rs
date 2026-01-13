@@ -198,6 +198,11 @@ pub struct InteractionEngine {
   /// This is maintained by pointer-move handlers so UI layers can display tooltips without
   /// repeatedly walking the DOM to resolve `title` attributes on each high-frequency pointer move.
   hover_tooltip: Option<String>,
+  /// Cached cursor hint derived from drag/selection state.
+  ///
+  /// This is updated by pointer-move handlers so UI layers can reuse the cursor decision without
+  /// recomputing selection hit tests (and rebuilding indexes) on every high-frequency pointer move.
+  drag_cursor_hint: Option<CursorKind>,
   focused_element_id: Option<String>,
   pointer_down_target: Option<usize>,
   link_drag: Option<LinkDragState>,
@@ -6828,6 +6833,7 @@ impl InteractionEngine {
     Self {
       state: InteractionState::default(),
       hover_tooltip: None,
+      drag_cursor_hint: None,
       focused_element_id: None,
       pointer_down_target: None,
       link_drag: None,
@@ -6857,6 +6863,11 @@ impl InteractionEngine {
 
   pub fn hover_tooltip(&self) -> Option<&str> {
     self.hover_tooltip.as_deref()
+  }
+
+  /// Returns the cursor hint computed during the most recent pointer-move hit-test (if any).
+  pub fn drag_cursor_hint_cached(&self) -> Option<CursorKind> {
+    self.drag_cursor_hint
   }
   /// Replace the set of visited link node ids for the current document.
   ///
@@ -6899,19 +6910,12 @@ impl InteractionEngine {
     self.document_drag.is_some()
   }
 
-  pub fn drag_cursor_hint(
+  fn drag_cursor_hint_for_document_selection(
     &self,
-    dom: &mut DomNode,
-    box_tree: &BoxTree,
+    box_lookup: &impl BoxNodeLookup,
     fragment_tree: &FragmentTree,
-    scroll: &ScrollState,
     page_point: Point,
-    hit: Option<&HitTestResult>,
   ) -> Option<CursorKind> {
-    if self.drag_drop_active_kind().is_some() {
-      return None;
-    }
-
     // Document selection highlight can be dragged.
     if page_point.x.is_finite()
       && page_point.y.is_finite()
@@ -6924,8 +6928,7 @@ impl InteractionEngine {
         .as_ref()
         .filter(|sel| sel.has_highlight())
       {
-        if let Some(point) =
-          document_selection_point_at_page_point(box_tree, fragment_tree, page_point)
+        if let Some(point) = document_selection_point_at_page_point(box_lookup, fragment_tree, page_point)
         {
           if document_selection_contains_point(selection, point) {
             return Some(CursorKind::Grab);
@@ -6934,6 +6937,18 @@ impl InteractionEngine {
       }
     }
 
+    None
+  }
+
+  fn drag_cursor_hint_for_focused_text_control_selection(
+    &self,
+    index: &DomIndexMut,
+    box_lookup: &impl BoxNodeLookup,
+    fragment_tree: &FragmentTree,
+    scroll: &ScrollState,
+    page_point: Point,
+    hit: Option<&HitTestResult>,
+  ) -> Option<CursorKind> {
     // Focused text-control selection highlight can be dragged.
     let Some(edit) = self.text_edit.as_ref() else {
       return None;
@@ -6947,10 +6962,9 @@ impl InteractionEngine {
       return None;
     };
 
-    let index = DomIndexMut::new(dom);
     let Some((caret, _)) = caret_index_for_text_control_point(
-      &index,
-      box_tree,
+      index,
+      box_lookup,
       fragment_tree,
       scroll,
       hit.dom_node_id,
@@ -8417,6 +8431,7 @@ impl InteractionEngine {
     self.state.clear_hover_chain();
     self.state.clear_active_chain();
     self.hover_tooltip = None;
+    self.drag_cursor_hint = None;
     self.pointer_down_target = None;
     self.link_drag = None;
     self.range_drag = None;
@@ -8433,6 +8448,7 @@ impl InteractionEngine {
     self.state.clear_hover_chain();
     self.state.clear_active_chain();
     self.hover_tooltip = None;
+    self.drag_cursor_hint = None;
     self.pointer_down_target = None;
     self.link_drag = None;
     self.range_drag = None;
@@ -8880,6 +8896,29 @@ impl InteractionEngine {
     if tooltip != self.hover_tooltip.as_deref() {
       self.hover_tooltip = tooltip.map(|title| title.to_string());
     }
+
+    self.drag_cursor_hint = if self.drag_drop_active_kind().is_some() {
+      None
+    } else if page_point.x.is_finite()
+      && page_point.y.is_finite()
+      && page_point.x >= 0.0
+      && page_point.y >= 0.0
+    {
+      self
+        .drag_cursor_hint_for_document_selection(&box_index, fragment_tree, page_point)
+        .or_else(|| {
+          self.drag_cursor_hint_for_focused_text_control_selection(
+            &index,
+            &box_index,
+            fragment_tree,
+            scroll,
+            page_point,
+            hit.as_ref(),
+          )
+        })
+    } else {
+      None
+    };
     (dom_changed | changed, hit, hover_is_drop_target)
   }
 

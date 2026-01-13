@@ -348,6 +348,74 @@ impl<'a> DomIdLookup for DomIndex<'a> {
   }
 }
 
+/// Reusable hit-test context that caches DOM/box indexes for fast repeated hit-tests.
+///
+/// This is intended for short-lived reuse within a single interaction pipeline (e.g. scoped to a
+/// `mutate_dom_with_layout_artifacts` invocation) to avoid rebuilding `DomIndex`/`BoxIndex` on every
+/// hit-test call.
+///
+/// The context stores raw pointers into the DOM/box trees (via the underlying indexes) and is
+/// therefore only valid for the lifetime of the borrowed `DomNode`/`BoxTree` and only while their
+/// *structure* is unchanged.
+pub struct HitTestContext<'a> {
+  dom_root: &'a DomNode,
+  dom_index: DomIndex<'a>,
+  box_index: BoxIndex<'a>,
+}
+
+impl<'a> HitTestContext<'a> {
+  pub fn new(dom: &'a DomNode, box_tree: &'a BoxTree) -> Self {
+    Self {
+      dom_root: dom,
+      dom_index: DomIndex::new(dom),
+      box_index: BoxIndex::new(box_tree),
+    }
+  }
+
+  pub fn hit_test_dom(&self, fragment_tree: &FragmentTree, point: Point) -> Option<HitTestResult> {
+    hit_test_dom_with_indices(
+      self.dom_root,
+      &self.dom_index,
+      &self.box_index,
+      fragment_tree,
+      point,
+    )
+  }
+
+  /// Like [`Self::hit_test_dom`], but returns *all* hit targets (topmost first).
+  pub fn hit_test_dom_all(&self, fragment_tree: &FragmentTree, point: Point) -> Vec<HitTestResult> {
+    hit_test_dom_all_with_indices(
+      self.dom_root,
+      &self.dom_index,
+      &self.box_index,
+      fragment_tree,
+      point,
+    )
+  }
+
+  pub(crate) fn dom_node(&self, node_id: usize) -> Option<&DomNode> {
+    self.dom_index.node(node_id)
+  }
+
+  pub(crate) fn dom_parent_id(&self, node_id: usize) -> usize {
+    self.dom_index.parent_id(node_id).unwrap_or(0)
+  }
+}
+
+impl super::effective_disabled::DomIdLookup for HitTestContext<'_> {
+  fn len(&self) -> usize {
+    self.dom_index.id_to_ptr.len().saturating_sub(1)
+  }
+
+  fn node(&self, node_id: usize) -> Option<&DomNode> {
+    self.dom_index.node(node_id)
+  }
+
+  fn parent_id(&self, node_id: usize) -> usize {
+    self.dom_index.parent_id(node_id).unwrap_or(0)
+  }
+}
+
 fn tree_root_boundary_id(dom_index: &DomIndex<'_>, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = dom_index.node(node_id)?;
@@ -1330,7 +1398,8 @@ mod dom_hit_testing_tests {
     );
     let fragment_tree = FragmentTree::new(root_fragment);
 
-    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0))
+    let point = Point::new(10.0, 10.0);
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, point)
       .expect("expected a hit result");
     assert_eq!(result.box_id, anonymous_box_id);
     assert_eq!(result.styled_node_id, 3);
@@ -1340,6 +1409,10 @@ mod dom_hit_testing_tests {
     assert_eq!(result.form_control_cursor, CursorKind::Default);
     assert_eq!(result.kind, HitTestKind::Link);
     assert_eq!(result.href.as_deref(), Some("/foo"));
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result.clone()));
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result));
   }
 
   fn image_map_fixture() -> (DomNode, BoxTree, FragmentTree, usize, usize, usize, usize) {
@@ -1432,8 +1505,8 @@ mod dom_hit_testing_tests {
   fn hit_test_dom_resolves_img_usemap_area_links() {
     let (dom, box_tree, fragment_tree, img_box_id, img_id, area1_id, _) = image_map_fixture();
 
-    let result =
-      hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(65.0, 65.0)).expect("hit");
+    let point = Point::new(65.0, 65.0);
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, point).expect("hit");
     assert_eq!(result.box_id, img_box_id);
     assert_eq!(result.styled_node_id, img_id);
     assert_eq!(result.dom_node_id, area1_id);
@@ -1442,18 +1515,26 @@ mod dom_hit_testing_tests {
     assert_eq!(result.form_control_cursor, CursorKind::Default);
     assert_eq!(result.kind, HitTestKind::Link);
     assert_eq!(result.href.as_deref(), Some("/first"));
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result.clone()));
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result));
   }
 
   #[test]
   fn hit_test_dom_resolves_img_usemap_area_without_href_as_other() {
     let (dom, box_tree, fragment_tree, _, _, _, dead_id) = image_map_fixture();
 
-    let result =
-      hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(85.0, 85.0)).expect("hit");
+    let point = Point::new(85.0, 85.0);
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, point).expect("hit");
     assert_eq!(result.dom_node_id, dead_id);
     assert_eq!(result.element_id.as_deref(), Some("dead"));
     assert_eq!(result.kind, HitTestKind::Other);
     assert_eq!(result.href, None);
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result.clone()));
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result));
   }
 
   #[test]
@@ -1481,7 +1562,8 @@ mod dom_hit_testing_tests {
     );
     let fragment_tree = FragmentTree::new(root_fragment);
 
-    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0))
+    let point = Point::new(10.0, 10.0);
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, point)
       .expect("expected a hit result");
     assert_eq!(result.box_id, input_box_id);
     assert_eq!(result.styled_node_id, 2);
@@ -1491,6 +1573,53 @@ mod dom_hit_testing_tests {
     assert_eq!(result.form_control_cursor, CursorKind::Text);
     assert_eq!(result.kind, HitTestKind::FormControl);
     assert_eq!(result.href, None);
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result.clone()));
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result));
+  }
+
+  #[test]
+  fn hit_test_dom_resolves_label() {
+    let dom = doc(vec![elem("label", vec![("id", "l")], vec![text("txt")])]);
+    // DOM ids (pre-order):
+    // 1 document
+    // 2 label
+    // 3 text
+    let style = default_style();
+    let mut label_text = BoxNode::new_text(style.clone(), "txt".to_string());
+    label_text.styled_node_id = Some(3);
+    let mut label_box = BoxNode::new_inline(style, vec![label_text]);
+    label_box.styled_node_id = Some(2);
+    let box_tree = BoxTree::new(label_box);
+    let text_box_id = box_tree.root.children[0].id;
+
+    let text_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      text_box_id,
+      vec![],
+    );
+    let root_fragment = FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      box_tree.root.id,
+      vec![text_fragment],
+    );
+    let fragment_tree = FragmentTree::new(root_fragment);
+
+    let point = Point::new(10.0, 10.0);
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, point).expect("hit");
+    assert_eq!(result.box_id, text_box_id);
+    assert_eq!(result.styled_node_id, 3);
+    assert_eq!(result.dom_node_id, 2);
+    assert_eq!(result.element_id.as_deref(), Some("l"));
+    assert!(!result.is_editable_text_drop_target_candidate);
+    assert_eq!(result.form_control_cursor, CursorKind::Default);
+    assert_eq!(result.kind, HitTestKind::Label);
+    assert_eq!(result.href, None);
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result.clone()));
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result));
   }
 
   #[test]
@@ -1545,13 +1674,18 @@ mod dom_hit_testing_tests {
     );
     let fragment_tree = FragmentTree::new(root_fragment);
 
-    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0))
+    let point = Point::new(10.0, 10.0);
+    let result = hit_test_dom(&dom, &box_tree, &fragment_tree, point)
       .expect("expected a hit result");
 
     assert_eq!(result.box_id, link_box_id);
     assert_eq!(result.dom_node_id, 3);
     assert_eq!(result.kind, HitTestKind::Link);
     assert_eq!(result.href.as_deref(), Some("/ok"));
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result.clone()));
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), Some(result));
   }
 
   #[test]
@@ -1587,10 +1721,12 @@ mod dom_hit_testing_tests {
     );
     let fragment_tree = FragmentTree::new(root_fragment);
 
-    assert_eq!(
-      hit_test_dom(&dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0)),
-      None
-    );
+    let point = Point::new(10.0, 10.0);
+    assert_eq!(hit_test_dom(&dom, &box_tree, &fragment_tree, point), None);
+
+    let ctx = HitTestContext::new(&dom, &box_tree);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), None);
+    assert_eq!(ctx.hit_test_dom(&fragment_tree, point), None);
   }
 
   #[test]

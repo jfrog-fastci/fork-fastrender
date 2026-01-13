@@ -7098,24 +7098,12 @@ struct BrowserRuntime {
               })
             });
 
-          let drag_drop_active = engine.drag_drop_active_kind().is_some();
-          let page_point = viewport_point.translate(scroll_for_cursor.viewport);
-          let drag_cursor_hint = if pointer_in_page {
-            engine.drag_cursor_hint(
-              dom,
-              box_tree,
-              fragment_tree_for_cursor,
-              scroll_for_cursor,
-              page_point,
-              hit.as_ref(),
-            )
-          } else {
-            None
-          };
-          let (
-            hovered_url,
-            mut cursor,
-            hovered_dom_node_id,
+           let drag_drop_active = engine.drag_drop_active_kind().is_some();
+           let drag_cursor_hint = pointer_in_page.then(|| engine.drag_cursor_hint_cached()).flatten();
+           let (
+             hovered_url,
+             mut cursor,
+             hovered_dom_node_id,
             hovered_dom_element_id,
             hover_is_drop_target,
           ) = if !pointer_in_page {
@@ -9061,134 +9049,152 @@ struct BrowserRuntime {
     let (changed, hit_info) =
       match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
         let hit_tree = hit_tree.as_deref().unwrap_or(fragment_tree);
-        let dom_index = crate::interaction::dom_index::DomIndex::build(dom);
-        let box_index = crate::interaction::hit_test::BoxIndex::new(box_tree);
-        let hit = crate::interaction::hit_test::hit_test_dom_with_indices(
-          &*dom,
-          &dom_index,
-          &box_index,
-          hit_tree,
-          page_point,
-        );
-        // `hit_test_dom` resolves `dom_node_id` to a *semantic* target (e.g. link ancestor). For JS
-        // `contextmenu` dispatch, we want the deepest element under the cursor so listeners on nested
-        // elements (like an `<img>` inside a link) fire correctly.
-        let dispatch_target_id = hit.as_ref().map(|hit| {
-          let mut current = hit.styled_node_id;
-          // 1) Prefer the styled node if it is an element.
-          let mut found = dom_index
-            .node(current)
-            .is_some_and(|node| node.is_element())
-            .then_some(current);
-          // 2) Otherwise, climb ancestors until we find an element.
-          if found.is_none() {
-            while current != 0 {
-              current = dom_index.parent.get(current).copied().unwrap_or(0);
-              if current == 0 {
-                break;
-              }
-              if dom_index
-                .node(current)
-                .is_some_and(|node| node.is_element())
-              {
-                found = Some(current);
-                break;
+
+        let (
+          href,
+          dispatch_target_id,
+          dispatch_target_element_id,
+          image_url,
+          focus_text_control_target,
+          text_control_target,
+          text_control_disabled,
+          text_control_readonly,
+        ) = {
+          let ctx = crate::interaction::HitTestContext::new(&*dom, box_tree);
+          let hit = ctx.hit_test_dom(hit_tree, page_point);
+
+          // `hit_test_dom` resolves `dom_node_id` to a *semantic* target (e.g. link ancestor). For JS
+          // `contextmenu` dispatch, we want the deepest element under the cursor so listeners on
+          // nested elements (like an `<img>` inside a link) fire correctly.
+          let dispatch_target_id = hit.as_ref().map(|hit| {
+            let mut current = hit.styled_node_id;
+            // 1) Prefer the styled node if it is an element.
+            let mut found = ctx
+              .dom_node(current)
+              .is_some_and(|node| node.is_element())
+              .then_some(current);
+            // 2) Otherwise, climb ancestors until we find an element.
+            if found.is_none() {
+              while current != 0 {
+                current = ctx.dom_parent_id(current);
+                if current == 0 {
+                  break;
+                }
+                if ctx.dom_node(current).is_some_and(|node| node.is_element()) {
+                  found = Some(current);
+                  break;
+                }
               }
             }
-          }
-          // 3) Fallback to the semantic hit target (e.g. a link or form control).
-          found.unwrap_or(hit.dom_node_id)
-        });
-        let dispatch_target_element_id = dispatch_target_id.and_then(|target_id| {
-          dom_index
-            .node(target_id)
-            .and_then(|node| node.get_attribute_ref("id"))
-            .filter(|id| !id.is_empty())
-            .map(|id| id.to_string())
-        });
-        let href = hit
-          .as_ref()
-          .and_then(|hit| (hit.kind == HitTestKind::Link).then(|| hit.href.as_deref()))
-          .flatten()
-          .map(|href| href.to_string());
+            // 3) Fallback to the semantic hit target (e.g. a link or form control).
+            found.unwrap_or(hit.dom_node_id)
+          });
 
-        let image_url = hit.as_ref().and_then(|hit| {
-          let styled_id = hit.styled_node_id;
-          if let Some(img) = find_replaced_image_for_styled_node(&box_tree.root, styled_id) {
-            let selected = img.selected_image_source_for_context(ImageSelectionContext {
-              device_pixel_ratio: dpr,
-              slot_width: None,
-              viewport: Some(viewport),
-              media_context: None,
-              font_size: None,
-              root_font_size: None,
-              base_url: Some(base_url),
-            });
-            resolve_link_url(base_url, selected.url)
-          } else {
-            let node = dom_index.node(styled_id)?;
-            // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
-            if node
-              .tag_name()
-              .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
-            {
-              node
-                .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(base_url, src))
-            } else if node
-              .tag_name()
-              .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-              && dom_input_type(node).eq_ignore_ascii_case("image")
-            {
-              node
-                .get_attribute_ref("src")
-                .and_then(|src| resolve_link_url(base_url, src))
+          let dispatch_target_element_id = dispatch_target_id.and_then(|target_id| {
+            ctx
+              .dom_node(target_id)
+              .and_then(|node| node.get_attribute_ref("id"))
+              .filter(|id| !id.is_empty())
+              .map(|id| id.to_string())
+          });
+
+          let href = hit
+            .as_ref()
+            .and_then(|hit| (hit.kind == HitTestKind::Link).then(|| hit.href.as_deref()))
+            .flatten()
+            .map(|href| href.to_string());
+
+          let image_url = hit.as_ref().and_then(|hit| {
+            let styled_id = hit.styled_node_id;
+            if let Some(img) = find_replaced_image_for_styled_node(&box_tree.root, styled_id) {
+              let selected = img.selected_image_source_for_context(ImageSelectionContext {
+                device_pixel_ratio: dpr,
+                slot_width: None,
+                viewport: Some(viewport),
+                media_context: None,
+                font_size: None,
+                root_font_size: None,
+                base_url: Some(base_url),
+              });
+              resolve_link_url(base_url, selected.url)
             } else {
-              None
+              let node = ctx.dom_node(styled_id)?;
+              // Match browser-style image context menu behaviour for `<img>` and `input type=image`.
+              if node
+                .tag_name()
+                .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+              {
+                node
+                  .get_attribute_ref("src")
+                  .and_then(|src| resolve_link_url(base_url, src))
+              } else if node
+                .tag_name()
+                .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+                && dom_input_type(node).eq_ignore_ascii_case("image")
+              {
+                node
+                  .get_attribute_ref("src")
+                  .and_then(|src| resolve_link_url(base_url, src))
+              } else {
+                None
+              }
             }
-          }
-        });
+          });
 
-        // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
-        // When a text control is clicked, mirror native browser behavior by focusing it and placing
-        // the caret at the click position so subsequent Paste inserts at the expected offset.
-        let mut changed = false;
-        let mut text_control_target: Option<usize> = None;
-        let mut text_control_disabled = false;
-        let mut text_control_readonly = false;
-        if let Some(hit) = hit.as_ref() {
-          let node_id = hit.dom_node_id;
-          let box_id = hit.box_id;
-          if let Some(node) = dom_index.node(node_id) {
-            let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
-            if is_text_control {
-              text_control_target = Some(node_id);
-              text_control_readonly = node.get_attribute_ref("readonly").is_some();
+          // Windowed UIs send `ContextMenuRequest` on right-click without a preceding `PointerDown`.
+          // When a text control is clicked, mirror native browser behavior by focusing it and
+          // placing the caret at the click position so subsequent Paste inserts at the expected
+          // offset.
+          let mut focus_text_control_target: Option<(usize, usize)> = None;
+          let mut text_control_target: Option<usize> = None;
+          let mut text_control_disabled = false;
+          let mut text_control_readonly = false;
+          if let Some(hit) = hit.as_ref() {
+            let node_id = hit.dom_node_id;
+            let box_id = hit.box_id;
+            if let Some(node) = ctx.dom_node(node_id) {
+              let is_text_control = dom_is_text_input(node) || dom_is_textarea(node);
+              if is_text_control {
+                text_control_target = Some(node_id);
+                text_control_readonly = node.get_attribute_ref("readonly").is_some();
 
-              let disabled =
-                crate::interaction::effective_disabled::is_effectively_disabled(node_id, &dom_index);
-              let inert_or_hidden =
-                crate::interaction::effective_disabled::is_effectively_inert_or_hidden(
-                  node_id,
-                  &dom_index,
-                );
-              text_control_disabled = disabled || inert_or_hidden;
+                let disabled =
+                  crate::interaction::effective_disabled::is_effectively_disabled(node_id, &ctx);
+                let inert_or_hidden =
+                  crate::interaction::effective_disabled::is_effectively_inert_or_hidden(node_id, &ctx);
+                text_control_disabled = disabled || inert_or_hidden;
 
-              if !text_control_disabled {
-                let (focused_changed, _) = engine.focus_node_id(dom, Some(node_id), false);
-                changed |= focused_changed;
-                changed |= engine.set_text_caret_from_page_point(
-                  dom,
-                  box_tree,
-                  hit_tree,
-                  scroll,
-                  node_id,
-                  box_id,
-                  page_point,
-                );
+                if !text_control_disabled {
+                  focus_text_control_target = Some((node_id, box_id));
+                }
               }
             }
           }
+
+          (
+            href,
+            dispatch_target_id,
+            dispatch_target_element_id,
+            image_url,
+            focus_text_control_target,
+            text_control_target,
+            text_control_disabled,
+            text_control_readonly,
+          )
+        };
+        let mut changed = false;
+        if let Some((node_id, box_id)) = focus_text_control_target {
+          let (focused_changed, _) = engine.focus_node_id(dom, Some(node_id), false);
+          changed |= focused_changed;
+          changed |= engine.set_text_caret_from_page_point(
+            dom,
+            box_tree,
+            hit_tree,
+            scroll,
+            node_id,
+            box_id,
+            page_point,
+          );
         }
 
         (
