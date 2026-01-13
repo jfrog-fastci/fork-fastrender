@@ -127,6 +127,18 @@ Also note: `send(2)` / `recv(2)` are typically implemented via the `sendto(2)` /
 syscalls on Linux. If your sandbox denies `sendto/recvfrom` (FastRender’s renderer seccomp policy
 currently does), prefer using `read(2)` / `write(2)` on a connected socket for steady-state IPC.
 
+### Robustness footgun: avoid `SIGPIPE` killing the browser
+
+If the peer exits or closes the socket, writes can fail with `EPIPE` and may raise `SIGPIPE`
+depending on which syscall you use.
+
+Browser-side IPC code should be resilient to renderer crashes; avoid letting a dead renderer trigger
+process termination via `SIGPIPE`:
+
+- Prefer `sendmsg(..., MSG_NOSIGNAL)` / `send(..., MSG_NOSIGNAL)` when writing to sockets.
+- Alternatively, ignore `SIGPIPE` process-wide (common for network servers) and treat `EPIPE` as a
+  normal error.
+
 ### FD passing footgun: include at least 1 byte of non-ancillary data
 
 When sending `SCM_RIGHTS`, include at least **one byte** of real (non-ancillary) data in the same
