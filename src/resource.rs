@@ -2956,6 +2956,46 @@ fn response_resource_error(
   Error::Resource(err)
 }
 
+fn enforce_cors_on_network_response(
+  destination: FetchDestination,
+  requested_url: &str,
+  client_origin: Option<&DocumentOrigin>,
+  referrer_url: Option<&str>,
+  credentials_mode: FetchCredentialsMode,
+  resource: FetchedResource,
+) -> Result<FetchedResource> {
+  // Only enforce response-side CORS checks for CORS-mode requests. This mirrors browser behavior:
+  // no-cors subresources (e.g. `<img>` without `crossorigin`) must be allowed to load cross-origin
+  // without CORS headers.
+  if destination.sec_fetch_mode() != "cors" {
+    return Ok(resource);
+  }
+
+  let Some(client_origin) = client_origin else {
+    // Best-effort: when we cannot determine the initiating origin (e.g. navigation without a known
+    // origin), avoid over-blocking by skipping response-side CORS checks.
+    //
+    // Log behind a debug toggle so we can audit how often this happens in real-world browsing.
+    if runtime::runtime_toggles().truthy("FASTR_NETWORK_CORS_DEBUG") {
+      eprintln!(
+        "network cors: skipping response CORS enforcement (missing client_origin) url={requested_url} destination={destination:?} referrer_url={referrer_url:?} credentials_mode={credentials_mode:?}"
+      );
+    }
+    return Ok(resource);
+  };
+
+  if let Err(message) = validate_cors_allow_origin(
+    &resource,
+    requested_url,
+    Some(client_origin),
+    credentials_mode,
+  ) {
+    return Err(response_resource_error(&resource, requested_url, message));
+  }
+
+  Ok(resource)
+}
+
 fn content_type_mime(content_type: &str) -> &str {
   trim_http_whitespace(content_type.split(';').next().unwrap_or(content_type))
 }
@@ -5735,7 +5775,16 @@ impl HttpFetcher {
       };
 
       match result {
-        Ok(res) => return Ok(res),
+        Ok(res) => {
+          return enforce_cors_on_network_response(
+            destination,
+            effective_url.as_ref(),
+            client_origin,
+            referrer_url,
+            credentials_mode,
+            res,
+          );
+        }
         Err(err) => {
           if attempted_www_fallback {
             if let Some(mut original) = www_fallback_error.take() {
@@ -6229,7 +6278,16 @@ impl HttpFetcher {
       };
 
       match result {
-        Ok(res) => return Ok(res),
+        Ok(res) => {
+          return enforce_cors_on_network_response(
+            destination,
+            effective_url.as_ref(),
+            client_origin,
+            referrer_url,
+            credentials_mode,
+            res,
+          );
+        }
         Err(err) => {
           if attempted_www_fallback {
             if let Some(mut original) = www_fallback_error.take() {
@@ -6294,7 +6352,7 @@ impl HttpFetcher {
       .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
       .unwrap_or(false);
 
-    match http_backend_mode() {
+    let res = match http_backend_mode() {
       HttpBackendMode::Ureq => self.fetch_http_partial_inner_ureq(
         kind,
         destination,
@@ -6351,7 +6409,16 @@ impl HttpFetcher {
           )
         }
       }
-    }
+    }?;
+
+    enforce_cors_on_network_response(
+      destination,
+      effective_url,
+      client_origin,
+      referrer_url,
+      credentials_mode,
+      res,
+    )
   }
 
   fn fetch_http_partial_inner_ureq(

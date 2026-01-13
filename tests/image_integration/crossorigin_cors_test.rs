@@ -131,6 +131,13 @@ fn enforce_cors_blocks_cross_origin_img_without_acao() {
         "unexpected error message: {reason}"
       );
     }
+    Error::Resource(err) => {
+      assert!(
+        err.message.contains("Access-Control-Allow-Origin"),
+        "unexpected error message: {}",
+        err.message
+      );
+    }
     other => panic!("expected image load error, got {other:?}"),
   }
   handle.join().unwrap();
@@ -294,6 +301,13 @@ fn enforce_cors_blocks_use_credentials_without_allow_credentials() {
         "unexpected error message: {reason}"
       );
     }
+    Error::Resource(err) => {
+      assert!(
+        err.message.contains("Access-Control-Allow-Credentials"),
+        "unexpected error message: {}",
+        err.message
+      );
+    }
     other => panic!("expected image load error, got {other:?}"),
   }
   handle.join().unwrap();
@@ -417,6 +431,13 @@ fn enforce_cors_blocks_file_origin_use_credentials_without_allow_credentials() {
       assert!(
         reason.contains("Access-Control-Allow-Credentials"),
         "unexpected error message: {reason}"
+      );
+    }
+    Error::Resource(err) => {
+      assert!(
+        err.message.contains("Access-Control-Allow-Credentials"),
+        "unexpected error message: {}",
+        err.message
       );
     }
     other => panic!("expected image load error, got {other:?}"),
