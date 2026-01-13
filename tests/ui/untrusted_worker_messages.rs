@@ -144,7 +144,9 @@ fn frame_ready_with_absurd_pixmap_dimensions_is_rejected() {
   let tab_id = app.active_tab_id().unwrap();
 
   let pixmap = tiny_skia::Pixmap::new(DEFAULT_MAX_DIM_PX + 1, 1).expect("pixmap alloc");
-  let viewport_css = (800, 600);
+  // Keep viewport/dpr consistent with the pixmap dimensions so the rejection is due to the browser
+  // max-dimension limit, not a viewport↔pixmap mismatch.
+  let viewport_css = (DEFAULT_MAX_DIM_PX + 1, 1);
   let scroll_metrics = ScrollMetrics {
     viewport_css,
     scroll_css: (0.0, 0.0),
