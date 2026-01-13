@@ -17,6 +17,7 @@ mod iframe;
 mod image_integration;
 mod js;
 mod layout;
+mod media;
 mod misc;
 mod progress;
 mod render;
