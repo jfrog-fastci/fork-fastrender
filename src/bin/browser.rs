@@ -2732,6 +2732,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
     let worker_wake_pending = Arc::new(AtomicBool::new(false));
+    let worker_wake_counters = app
+      .hud
+      .as_ref()
+      .map(|hud| Arc::clone(&hud.worker_wake_counters));
 
     // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
     // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
@@ -2741,6 +2745,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       .spawn({
         let event_loop_proxy = event_loop_proxy.clone();
         let worker_wake_pending = Arc::clone(&worker_wake_pending);
+        let worker_wake_counters = worker_wake_counters.clone();
         move || {
           while let Ok(msg) = worker_to_ui_rx.recv() {
             if ui_tx.send(msg).is_err() {
@@ -2748,7 +2753,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Coalesce wakes: the UI thread drains messages in batches so we only need one pending
             // wake event per window.
-            if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+            let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
+            if let Some(counters) = worker_wake_counters.as_ref() {
+              if send_wake {
+                counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+              } else {
+                counters
+                  .wake_events_coalesced
+                  .fetch_add(1, Ordering::Relaxed);
+              }
+            }
+            if send_wake {
               // Ignore failures during shutdown (event loop already dropped).
               let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
             }
@@ -3144,17 +3159,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let window_id = app.window.id();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
         let worker_wake_pending = Arc::new(AtomicBool::new(false));
+        let worker_wake_counters = app
+          .hud
+          .as_ref()
+          .map(|hud| Arc::clone(&hud.worker_wake_counters));
         let bridge_join = match std::thread::Builder::new()
           .name(format!("browser_worker_bridge_{window_id:?}"))
           .spawn({
             let event_loop_proxy = event_loop_proxy.clone();
             let worker_wake_pending = Arc::clone(&worker_wake_pending);
+            let worker_wake_counters = worker_wake_counters.clone();
             move || {
               while let Ok(msg) = worker_to_ui_rx.recv() {
                 if ui_tx.send(msg).is_err() {
                   break;
                 }
-                if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+                let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
+                if let Some(counters) = worker_wake_counters.as_ref() {
+                  if send_wake {
+                    counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+                  } else {
+                    counters
+                      .wake_events_coalesced
+                      .fetch_add(1, Ordering::Relaxed);
+                  }
+                }
+                if send_wake {
                   let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
                 }
               }
@@ -3261,17 +3291,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let window_id = app.window.id();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
         let worker_wake_pending = Arc::new(AtomicBool::new(false));
+        let worker_wake_counters = app
+          .hud
+          .as_ref()
+          .map(|hud| Arc::clone(&hud.worker_wake_counters));
         let bridge_join = match std::thread::Builder::new()
           .name(format!("browser_worker_bridge_{window_id:?}"))
           .spawn({
             let event_loop_proxy = event_loop_proxy.clone();
             let worker_wake_pending = Arc::clone(&worker_wake_pending);
+            let worker_wake_counters = worker_wake_counters.clone();
             move || {
               while let Ok(msg) = worker_to_ui_rx.recv() {
                 if ui_tx.send(msg).is_err() {
                   break;
                 }
-                if !worker_wake_pending.swap(true, Ordering::AcqRel) {
+                let send_wake = !worker_wake_pending.swap(true, Ordering::AcqRel);
+                if let Some(counters) = worker_wake_counters.as_ref() {
+                  if send_wake {
+                    counters.wake_events_sent.fetch_add(1, Ordering::Relaxed);
+                  } else {
+                    counters
+                      .wake_events_coalesced
+                      .fetch_add(1, Ordering::Relaxed);
+                  }
+                }
+                if send_wake {
                   let _ = event_loop_proxy.send_event(UserEvent::WorkerWake(window_id));
                 }
               }
@@ -4248,24 +4293,40 @@ struct WgpuInitOptions {
 
 #[cfg(feature = "browser_ui")]
 #[derive(Debug)]
+struct WorkerWakeHudCounters {
+  wake_events_sent: std::sync::atomic::AtomicU64,
+  wake_events_coalesced: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "browser_ui")]
+impl Default for WorkerWakeHudCounters {
+  fn default() -> Self {
+    Self {
+      wake_events_sent: std::sync::atomic::AtomicU64::new(0),
+      wake_events_coalesced: std::sync::atomic::AtomicU64::new(0),
+    }
+  }
+}
+
+#[cfg(feature = "browser_ui")]
+#[derive(Debug)]
 struct BrowserHud {
   last_frame_start: Option<std::time::Instant>,
   last_frame_cpu_ms: Option<f32>,
   fps: Option<f32>,
+  worker_wake_counters: std::sync::Arc<WorkerWakeHudCounters>,
+  worker_wake_coalesced_prev: u64,
   worker_stats_sample_start: std::time::Instant,
   worker_msgs_since_sample: u64,
   worker_wakes_since_sample: u64,
   worker_empty_wakes_since_sample: u64,
   worker_max_drain_since_sample: u64,
+  worker_drained_total: u64,
   worker_msgs_per_sec: Option<f32>,
   worker_wakes_per_sec: Option<f32>,
   worker_empty_wakes_per_sec: Option<f32>,
-  /// Estimated number of wake events suppressed/coalesced (per second).
-  ///
-  /// With "wake coalescing" enabled, multiple worker messages can be serviced by a single wake
-  /// event. In that case, `worker_msgs_since_sample` may exceed `worker_wakes_since_sample`, and
-  /// the difference is reported here.
-  worker_suppressed_wakes_per_sec: Option<f32>,
+  worker_coalesced_wakes_per_sec: Option<f32>,
+  worker_pending_msgs_estimate: Option<u64>,
   worker_msgs_per_nonempty_wake: Option<f32>,
   worker_last_drain: u64,
   worker_max_drain_recent: u64,
@@ -4279,15 +4340,19 @@ impl BrowserHud {
       last_frame_start: None,
       last_frame_cpu_ms: None,
       fps: None,
+      worker_wake_counters: std::sync::Arc::new(WorkerWakeHudCounters::default()),
+      worker_wake_coalesced_prev: 0,
       worker_stats_sample_start: std::time::Instant::now(),
       worker_msgs_since_sample: 0,
       worker_wakes_since_sample: 0,
       worker_empty_wakes_since_sample: 0,
       worker_max_drain_since_sample: 0,
+      worker_drained_total: 0,
       worker_msgs_per_sec: None,
       worker_wakes_per_sec: None,
       worker_empty_wakes_per_sec: None,
-      worker_suppressed_wakes_per_sec: None,
+      worker_coalesced_wakes_per_sec: None,
+      worker_pending_msgs_estimate: None,
       worker_msgs_per_nonempty_wake: None,
       worker_last_drain: 0,
       worker_max_drain_recent: 0,
@@ -4298,6 +4363,7 @@ impl BrowserHud {
   fn record_worker_wake(&mut self, drained_msgs: u64) {
     self.worker_wakes_since_sample = self.worker_wakes_since_sample.saturating_add(1);
     self.worker_msgs_since_sample = self.worker_msgs_since_sample.saturating_add(drained_msgs);
+    self.worker_drained_total = self.worker_drained_total.saturating_add(drained_msgs);
     self.worker_last_drain = drained_msgs;
     self.worker_max_drain_since_sample = self.worker_max_drain_since_sample.max(drained_msgs);
     if drained_msgs == 0 {
@@ -4306,6 +4372,18 @@ impl BrowserHud {
   }
 
   fn maybe_sample_worker_rates(&mut self, now: std::time::Instant) {
+    let coalesced_total = self
+      .worker_wake_counters
+      .wake_events_coalesced
+      .load(std::sync::atomic::Ordering::Relaxed);
+    let sent_total = self
+      .worker_wake_counters
+      .wake_events_sent
+      .load(std::sync::atomic::Ordering::Relaxed);
+    let forwarded_total = coalesced_total.saturating_add(sent_total);
+    self.worker_pending_msgs_estimate =
+      Some(forwarded_total.saturating_sub(self.worker_drained_total));
+
     const MIN_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
     let dt = now.saturating_duration_since(self.worker_stats_sample_start);
     if dt < MIN_SAMPLE_INTERVAL {
@@ -4319,19 +4397,20 @@ impl BrowserHud {
     let msgs = self.worker_msgs_since_sample;
     let wakes = self.worker_wakes_since_sample;
     let empty = self.worker_empty_wakes_since_sample;
-    let suppressed = msgs.saturating_sub(wakes);
     let nonempty_wakes = wakes.saturating_sub(empty);
+    let coalesced_delta = coalesced_total.saturating_sub(self.worker_wake_coalesced_prev);
 
     self.worker_msgs_per_sec = Some((msgs as f32 / secs).min(10_000_000.0));
     self.worker_wakes_per_sec = Some((wakes as f32 / secs).min(10_000_000.0));
     self.worker_empty_wakes_per_sec = Some((empty as f32 / secs).min(10_000_000.0));
-    self.worker_suppressed_wakes_per_sec = Some((suppressed as f32 / secs).min(10_000_000.0));
+    self.worker_coalesced_wakes_per_sec = Some((coalesced_delta as f32 / secs).min(10_000_000.0));
     self.worker_msgs_per_nonempty_wake = if nonempty_wakes > 0 {
       Some((msgs as f32 / nonempty_wakes as f32).min(10_000_000.0))
     } else {
       None
     };
     self.worker_max_drain_recent = self.worker_max_drain_since_sample;
+    self.worker_wake_coalesced_prev = coalesced_total;
 
     self.worker_stats_sample_start = now;
     self.worker_msgs_since_sample = 0;
@@ -7726,20 +7805,21 @@ impl App {
       hud.worker_msgs_per_sec,
       hud.worker_wakes_per_sec,
       hud.worker_empty_wakes_per_sec,
-      hud.worker_suppressed_wakes_per_sec,
+      hud.worker_coalesced_wakes_per_sec,
+      hud.worker_pending_msgs_estimate,
     ) {
-      (Some(msgs), Some(wakes), Some(empty), Some(suppressed))
-        if msgs.is_finite() && wakes.is_finite() && empty.is_finite() && suppressed.is_finite() =>
+      (Some(msgs), Some(wakes), Some(empty), Some(coalesced), Some(pending))
+        if msgs.is_finite() && wakes.is_finite() && empty.is_finite() && coalesced.is_finite() =>
       {
         let _ = writeln!(
           &mut hud.text_buf,
-          "worker: {msgs:.0} msg/s  {wakes:.0} wake/s  {empty:.0} empty/s  {suppressed:.0} sup/s"
+          "worker: {msgs:.0} msg/s  {wakes:.0} wake/s  {empty:.0} empty/s  {coalesced:.0} coal/s  pend {pending}"
         );
       }
       _ => {
         let _ = writeln!(
           &mut hud.text_buf,
-          "worker: - msg/s  - wake/s  - empty/s  - sup/s"
+          "worker: - msg/s  - wake/s  - empty/s  - coal/s  pend -"
         );
       }
     }
