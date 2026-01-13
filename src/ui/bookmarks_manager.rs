@@ -1661,8 +1661,12 @@ fn list_row(
 
 #[cfg(test)]
 mod tests {
-  use super::{bookmarks_manager_side_panel, BookmarksManagerRequest, BookmarksManagerState};
-  use crate::ui::{a11y_test_util, BookmarkStore};
+  use super::{
+    bookmarks_manager_side_panel, BookmarksManagerOutput, BookmarksManagerRequest,
+    BookmarksManagerState, CreateFolderState, EditBookmarkState,
+  };
+  use crate::ui::{a11y_test_util, BookmarkDelta, BookmarkId, BookmarkStore};
+  use std::time::{Duration, Instant};
 
   fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
@@ -1675,6 +1679,38 @@ mod tests {
     raw.focused = true;
     raw.events = events;
     ctx.begin_frame(raw);
+  }
+
+  fn poll_io_job_and_end_frame(
+    ctx: &egui::Context,
+    state: &mut BookmarksManagerState,
+    store: &mut BookmarkStore,
+    out: &mut BookmarksManagerOutput,
+  ) -> egui::FullOutput {
+    begin_frame(ctx, Vec::new());
+    state.poll_io_job(ctx, store, out);
+    ctx.end_frame()
+  }
+
+  fn wait_for_io_job(
+    ctx: &egui::Context,
+    state: &mut BookmarksManagerState,
+    store: &mut BookmarkStore,
+    out: &mut BookmarksManagerOutput,
+    predicate: impl Fn(&BookmarksManagerState, &BookmarkStore, &BookmarksManagerOutput) -> bool,
+  ) -> egui::FullOutput {
+    let start = Instant::now();
+    loop {
+      let output = poll_io_job_and_end_frame(ctx, state, store, out);
+      if predicate(state, store, out) {
+        return output;
+      }
+      assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "timed out waiting for IO job completion"
+      );
+      std::thread::sleep(Duration::from_millis(5));
+    }
   }
 
   fn render_bookmarks_manager(
@@ -2135,5 +2171,126 @@ mod tests {
       out.close_requested,
       "Escape with an empty query should request closing the panel"
     );
+  }
+  #[test]
+  fn export_json_job_completion_updates_state_and_copies_text() {
+    let ctx = egui::Context::default();
+    let mut store = BookmarkStore::default();
+    assert!(store.toggle("https://a.example/", Some("A")));
+    assert!(store.toggle("https://b.example/", Some("B")));
+
+    let mut state = BookmarksManagerState::default();
+    let mut out = BookmarksManagerOutput::default();
+
+    state.io_job.start_export_json(store.clone()).unwrap();
+
+    let output = wait_for_io_job(
+      &ctx,
+      &mut state,
+      &mut store,
+      &mut out,
+      |state, _store, _out| state.export_json.is_some() || state.error.is_some(),
+    );
+
+    let json = state.export_json.clone().expect("export_json should be set");
+
+    assert_eq!(output.platform_output.copied_text, json);
+    assert_eq!(
+      state.message.as_deref(),
+      Some("Exported bookmarks JSON copied to clipboard.")
+    );
+    assert!(state.error.is_none());
+    assert!(!out.changed);
+    assert!(!out.request_flush);
+    assert!(out.bookmark_deltas.is_empty());
+  }
+
+  #[test]
+  fn import_json_job_completion_replaces_store_and_clears_transient_state() {
+    let ctx = egui::Context::default();
+    let mut store = BookmarkStore::default();
+    assert!(store.toggle("https://initial.example/", Some("Initial")));
+
+    let mut imported = BookmarkStore::default();
+    assert!(imported.toggle("https://imported.example/", Some("Imported")));
+    let expected_store = imported.clone();
+    let json = serde_json::to_string_pretty(&imported).unwrap();
+
+    let mut state = BookmarksManagerState::default();
+    state.import_json = json.clone();
+    state.creating_folder = Some(CreateFolderState {
+      title: "Folder".to_string(),
+      parent: None,
+      error: None,
+      request_focus_title: false,
+    });
+    state.editing_bookmark = Some(EditBookmarkState {
+      id: BookmarkId(123),
+      title: "Title".to_string(),
+      url: "https://example.com/".to_string(),
+      parent: None,
+      error: None,
+      request_focus_title: false,
+    });
+
+    let mut out = BookmarksManagerOutput::default();
+    state.io_job.start_import_json(json).unwrap();
+
+    let _output = wait_for_io_job(
+      &ctx,
+      &mut state,
+      &mut store,
+      &mut out,
+      |state, _store, out| out.changed || state.error.is_some(),
+    );
+
+    assert_eq!(store, expected_store);
+    assert!(out.changed);
+    assert!(out.request_flush);
+    assert_eq!(state.import_json, "");
+    assert!(state.creating_folder.is_none());
+    assert!(state.editing_bookmark.is_none());
+    assert_eq!(
+      state.message.as_deref(),
+      Some("Imported bookmarks from JSON (None).")
+    );
+    assert!(state.error.is_none());
+    assert!(
+      matches!(out.bookmark_deltas.as_slice(), [BookmarkDelta::ReplaceAll(s)] if *s == expected_store),
+      "expected ReplaceAll delta, got {:?}",
+      out.bookmark_deltas
+    );
+  }
+
+  #[test]
+  fn import_json_job_failure_sets_error_and_preserves_store() {
+    let ctx = egui::Context::default();
+    let mut store = BookmarkStore::default();
+    assert!(store.toggle("https://initial.example/", Some("Initial")));
+    let before = store.clone();
+
+    let mut state = BookmarksManagerState::default();
+    state.import_json = "not valid json".to_string();
+
+    let mut out = BookmarksManagerOutput::default();
+    state
+      .io_job
+      .start_import_json(state.import_json.clone())
+      .unwrap();
+
+    let _output = wait_for_io_job(
+      &ctx,
+      &mut state,
+      &mut store,
+      &mut out,
+      |state, _store, _out| state.error.is_some(),
+    );
+
+    assert_eq!(store, before);
+    assert!(!out.changed);
+    assert!(!out.request_flush);
+    assert!(out.bookmark_deltas.is_empty());
+    assert!(state.error.as_ref().unwrap().contains("Failed to import bookmarks"));
+    assert_eq!(state.import_json, "not valid json");
   }
 }

@@ -473,4 +473,59 @@ mod tests {
     }
     assert!(matches!(job, BookmarksIoJob::Error { .. }));
   }
+
+  #[test]
+  fn export_json_job_reports_disconnected_failure() {
+    let (tx, rx) = mpsc::channel::<BookmarksIoJobUpdate>();
+    drop(tx);
+
+    let mut job = BookmarksIoJob::ExportingJson { rx };
+    match job.poll() {
+      Some(BookmarksIoJobUpdate::ExportJsonFinished { result: Err(err) }) => {
+        assert!(err.contains("disconnected"));
+      }
+      other => panic!("expected disconnected JSON export error, got {other:?}"),
+    }
+    assert!(matches!(job, BookmarksIoJob::Error { .. }));
+  }
+
+  #[test]
+  fn export_json_start_is_non_blocking_for_large_store() {
+    use crate::ui::bookmarks::BookmarkEntry;
+    use crate::ui::{BookmarkId, BookmarkNode};
+
+    let mut store = BookmarkStore::default();
+    let count: u64 = 20_000;
+    let long_title = "Synthetic Bookmark Title ".repeat(4);
+
+    for i in 1..=count {
+      let id = BookmarkId(i);
+      let entry = BookmarkEntry {
+        id,
+        url: format!("https://example.com/{i}"),
+        title: Some(long_title.clone()),
+        added_at_ms: 0,
+        parent: None,
+      };
+      store.roots.push(id);
+      store.nodes.insert(id, BookmarkNode::Bookmark(entry));
+    }
+    store.next_id = BookmarkId(count + 1);
+
+    let mut job = BookmarksIoJob::default();
+    let start = Instant::now();
+    job.start_export_json(store).unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+      elapsed < Duration::from_millis(200),
+      "start_export_json should be fast; took {elapsed:?}"
+    );
+    assert!(job.is_exporting_json());
+
+    // Polling immediately after starting should not synchronously yield a JSON payload.
+    assert!(
+      job.poll().is_none(),
+      "JSON export finished synchronously; expected background serialization"
+    );
+  }
 }
