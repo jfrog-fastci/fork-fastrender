@@ -1269,6 +1269,7 @@ impl Document {
       self
         .live_mutation
         .pre_insert(parent, insertion_idx, moved_children.len());
+      self.live_range_pre_insert_steps(parent, insertion_idx, moved_children.len());
 
       let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
       while let Some(child) = self.nodes[new_child.index()].children.first().copied() {
@@ -1349,6 +1350,7 @@ impl Document {
     }
 
     self.live_mutation.pre_insert(parent, insertion_idx, 1);
+    self.live_range_pre_insert_steps(parent, insertion_idx, 1);
 
     self.nodes[parent.index()]
       .children
@@ -1480,6 +1482,7 @@ impl Document {
         self
           .live_mutation
           .pre_insert(parent, old_child_idx, moved_children.len());
+        self.live_range_pre_insert_steps(parent, old_child_idx, moved_children.len());
       }
 
       let mut children_to_move: Vec<NodeId> = Vec::with_capacity(moved_children.len());
@@ -1550,6 +1553,7 @@ impl Document {
     self.nodes[old_child.index()].parent = None;
 
     self.live_mutation.pre_insert(parent, old_child_idx, 1);
+    self.live_range_pre_insert_steps(parent, old_child_idx, 1);
     self.nodes[parent.index()]
       .children
       .insert(old_child_idx, new_child);

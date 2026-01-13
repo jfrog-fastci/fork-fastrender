@@ -188,4 +188,110 @@ fn range_common_ancestor_container_matches_dom_algorithm() {
   doc.range_set_start(range, host, 0).unwrap();
   doc.range_set_end(range, a, 0).unwrap();
   assert_eq!(doc.range_common_ancestor_container(range).unwrap(), host);
+
+}
+
+#[test]
+fn live_range_pre_insert_shifts_boundary_points_in_parent_for_single_node_insertion() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=parent>",
+    "<span id=a></span><span id=b></span><span id=c></span>",
+    "</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let parent = doc.get_element_by_id("parent").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  // Three live ranges anchored in the same parent at different offsets.
+  let r_all = doc.create_range();
+  doc.range_set_start(r_all, parent, 0).unwrap();
+  doc.range_set_end(r_all, parent, 3).unwrap();
+
+  let r_after_b = doc.create_range();
+  doc.range_set_start(r_after_b, parent, 2).unwrap();
+  doc.range_set_end(r_after_b, parent, 2).unwrap();
+
+  let r_at_insertion_point = doc.create_range();
+  doc
+    .range_set_start(r_at_insertion_point, parent, 1)
+    .unwrap();
+  doc
+    .range_set_end(r_at_insertion_point, parent, 1)
+    .unwrap();
+
+  // A range whose boundary point is inside a child should not be affected.
+  let r_inside_child = doc.create_range();
+  doc.range_set_start(r_inside_child, a, 0).unwrap();
+  doc.range_set_end(r_inside_child, a, 0).unwrap();
+
+  let new_node = doc.create_element("span", "");
+  assert!(doc.insert_before(parent, new_node, Some(b)).unwrap());
+
+  assert_eq!(doc.range_start_container(r_all).unwrap(), parent);
+  assert_eq!(doc.range_start_offset(r_all).unwrap(), 0);
+  assert_eq!(doc.range_end_container(r_all).unwrap(), parent);
+  assert_eq!(doc.range_end_offset(r_all).unwrap(), 4);
+
+  assert_eq!(doc.range_start_container(r_after_b).unwrap(), parent);
+  assert_eq!(doc.range_start_offset(r_after_b).unwrap(), 3);
+  assert_eq!(doc.range_end_container(r_after_b).unwrap(), parent);
+  assert_eq!(doc.range_end_offset(r_after_b).unwrap(), 3);
+
+  // Inserting at the boundary point should not move the boundary.
+  assert_eq!(
+    doc.range_start_offset(r_at_insertion_point).unwrap(),
+    1
+  );
+  assert_eq!(doc.range_end_offset(r_at_insertion_point).unwrap(), 1);
+
+  assert_eq!(doc.range_start_container(r_inside_child).unwrap(), a);
+  assert_eq!(doc.range_start_offset(r_inside_child).unwrap(), 0);
+  assert_eq!(doc.range_end_container(r_inside_child).unwrap(), a);
+  assert_eq!(doc.range_end_offset(r_inside_child).unwrap(), 0);
+}
+
+#[test]
+fn live_range_pre_insert_shifts_boundary_points_by_fragment_child_count() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=parent>",
+    "<span id=a></span><span id=b></span><span id=c></span>",
+    "</div>",
+    "</body></html>",
+  );
+  let mut doc: Document = parse_html(html).unwrap();
+
+  let parent = doc.get_element_by_id("parent").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  let r_end_after_all_children = doc.create_range();
+  doc
+    .range_set_start(r_end_after_all_children, parent, 0)
+    .unwrap();
+  doc
+    .range_set_end(r_end_after_all_children, parent, 3)
+    .unwrap();
+
+  let r_after_b = doc.create_range();
+  doc.range_set_start(r_after_b, parent, 2).unwrap();
+  doc.range_set_end(r_after_b, parent, 2).unwrap();
+
+  let frag = doc.create_document_fragment();
+  let x = doc.create_element("span", "");
+  let y = doc.create_element("span", "");
+  assert!(doc.append_child(frag, x).unwrap());
+  assert!(doc.append_child(frag, y).unwrap());
+
+  assert!(doc.insert_before(parent, frag, Some(b)).unwrap());
+
+  // Two nodes inserted before index 1 => offsets > 1 increase by 2.
+  assert_eq!(doc.range_end_offset(r_end_after_all_children).unwrap(), 5);
+  assert_eq!(doc.range_start_offset(r_after_b).unwrap(), 4);
+  assert_eq!(doc.range_end_offset(r_after_b).unwrap(), 4);
 }

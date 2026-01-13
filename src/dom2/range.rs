@@ -891,6 +891,23 @@ impl Document {
     Ok(fragment)
   }
 
+  /// Live range pre-insert steps.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-node-insert
+  pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
+    if count == 0 || self.ranges.is_empty() {
+      return;
+    }
+
+    for range in self.ranges.values_mut() {
+      if range.start.node == parent && range.start.offset > index {
+        range.start.offset = range.start.offset.saturating_add(count);
+      }
+      if range.end.node == parent && range.end.offset > index {
+        range.end.offset = range.end.offset.saturating_add(count);
+      }
+    }
+  }
   /// Live range pre-remove steps.
   ///
   /// Spec: https://dom.spec.whatwg.org/#concept-live-range-pre-remove
@@ -977,7 +994,7 @@ impl Document {
 
     // 8. For each live range whose start node is node and start offset is greater than offset but
     // less than or equal to offset + count: set its start offset to offset.
-    for range in self.ranges.iter_mut() {
+    for range in self.ranges.values_mut() {
       if range.start.node == node && range.start.offset > offset && range.start.offset <= end {
         range.start.offset = offset;
       }
@@ -985,7 +1002,7 @@ impl Document {
 
     // 9. For each live range whose end node is node and end offset is greater than offset but less
     // than or equal to offset + count: set its end offset to offset.
-    for range in self.ranges.iter_mut() {
+    for range in self.ranges.values_mut() {
       if range.end.node == node && range.end.offset > offset && range.end.offset <= end {
         range.end.offset = offset;
       }
@@ -996,12 +1013,12 @@ impl Document {
     if inserted_len >= removed_len {
       let delta = inserted_len - removed_len;
       if delta != 0 {
-        for range in self.ranges.iter_mut() {
+        for range in self.ranges.values_mut() {
           if range.start.node == node && range.start.offset > end {
             range.start.offset = range.start.offset.saturating_add(delta);
           }
         }
-        for range in self.ranges.iter_mut() {
+        for range in self.ranges.values_mut() {
           if range.end.node == node && range.end.offset > end {
             range.end.offset = range.end.offset.saturating_add(delta);
           }
@@ -1009,12 +1026,12 @@ impl Document {
       }
     } else {
       let delta = removed_len - inserted_len;
-      for range in self.ranges.iter_mut() {
+      for range in self.ranges.values_mut() {
         if range.start.node == node && range.start.offset > end {
           range.start.offset = range.start.offset.saturating_sub(delta);
         }
       }
-      for range in self.ranges.iter_mut() {
+      for range in self.ranges.values_mut() {
         if range.end.node == node && range.end.offset > end {
           range.end.offset = range.end.offset.saturating_sub(delta);
         }
