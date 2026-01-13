@@ -1373,12 +1373,10 @@ where
       // Note: we include `content_alignment_adjustment` exactly as `GridItem::available_space()` does.
       let mut row_prefix_sum: Vec<f32> = Vec::with_capacity(rows.len() + 1);
       row_prefix_sum.push(0.0);
+      let mut running_row_sum = 0.0;
       for track in rows.iter() {
-        row_prefix_sum.push(
-          row_prefix_sum.last().copied().unwrap()
-            + track.base_size
-            + track.content_alignment_adjustment,
-        );
+        running_row_sum += track.base_size + track.content_alignment_adjustment;
+        row_prefix_sum.push(running_row_sum);
       }
 
       let min_content_contribution_changed = items
@@ -1483,12 +1481,10 @@ where
       // Note: we include `content_alignment_adjustment` exactly as `GridItem::available_space()` does.
       let mut column_prefix_sum: Vec<f32> = Vec::with_capacity(columns.len() + 1);
       column_prefix_sum.push(0.0);
+      let mut running_column_sum = 0.0;
       for track in columns.iter() {
-        column_prefix_sum.push(
-          column_prefix_sum.last().copied().unwrap()
-            + track.base_size
-            + track.content_alignment_adjustment,
-        );
+        running_column_sum += track.base_size + track.content_alignment_adjustment;
+        column_prefix_sum.push(running_column_sum);
       }
 
       let min_content_contribution_changed = items
