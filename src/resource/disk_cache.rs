@@ -4540,6 +4540,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
 
     let (capped_end, target_len) =
       super::enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
+    let range = start..=capped_end;
     let origin_key = super::cors_cache_partition_key(&req);
     let key = CacheKey::new_with_origin(
       kind,
@@ -4548,52 +4549,201 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       super::CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(result) = self
-      .memory
-      .cached_entry_resource_range(&key, Some(req), range.clone(), max_bytes)
-    {
-      if let Ok(res) = result {
-        super::record_cache_fresh_hit();
-        super::record_resource_cache_bytes(res.bytes.len());
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RangeCacheSource {
+      Memory,
+      Disk,
+    }
+
+    let mut cache_source = None::<RangeCacheSource>;
+    let mut mem_error = None::<CachedSnapshot>;
+    let mut cached_for_plan = None::<CachedSnapshot>;
+
+    if let Some(mem_cached) = self.memory.cached_entry(&key, Some(req)) {
+      if matches!(mem_cached.value, super::CacheValue::Error(_)) {
+        mem_error = Some(mem_cached);
+      } else {
+        cache_source = Some(RangeCacheSource::Memory);
+        cached_for_plan = Some(mem_cached);
+      }
+    }
+
+    if cached_for_plan.is_none() {
+      if let Some((canonical, disk_range)) = self.read_disk_entry_range(
+        kind,
+        url,
+        req,
+        range.clone(),
+        target_len,
+        key.origin_key.as_deref(),
+        key.credentials_partition,
+      )? {
+        let canonical_request = FetchRequest {
+          url: &canonical,
+          destination: req.destination,
+          referrer_url: req.referrer_url,
+          client_origin: req.client_origin,
+          referrer_policy: req.referrer_policy,
+          credentials_mode: req.credentials_mode,
+        };
+        let canonical_credentials_partition = if canonical == url {
+          key.credentials_partition
+        } else {
+          super::CacheCredentialsPartition::for_request(&canonical_request)
+        };
+        let mut canonical_origin_key_owned = None::<String>;
+        let canonical_origin_key = if key.origin_key.is_some() && canonical != url {
+          canonical_origin_key_owned = super::cors_cache_partition_key(&canonical_request);
+          canonical_origin_key_owned.as_deref()
+        } else {
+          key.origin_key.as_deref()
+        };
+
+        let stored_at = self
+          .stored_at_for_cached_entry(
+            kind,
+            &canonical,
+            canonical_request,
+            canonical_origin_key,
+            canonical_credentials_partition,
+          )
+          .and_then(secs_to_system_time)
+          .unwrap_or(SystemTime::now());
+        let http_cache = disk_range
+          .cache_policy
+          .as_ref()
+          .and_then(|policy| CachedHttpMetadata::from_policy(policy, stored_at));
+        let etag = disk_range.etag.clone();
+        let last_modified = disk_range.last_modified.clone();
+        let snapshot = CachedSnapshot {
+          value: super::CacheValue::Resource(disk_range),
+          etag,
+          last_modified,
+          http_cache,
+        };
+        cache_source = Some(RangeCacheSource::Disk);
+        cached_for_plan = Some(snapshot);
+      } else if let Some(mem) = mem_error {
+        cache_source = Some(RangeCacheSource::Memory);
+        cached_for_plan = Some(mem);
+      }
+    }
+
+    let plan =
+      self
+        .memory
+        .plan_cache_use(url, cached_for_plan, self.disk_config.max_age);
+    let super::CachePlan {
+      cached,
+      action,
+      is_stale,
+    } = plan;
+
+    let slice_cached = |cached: &FetchedResource| -> Result<FetchedResource> {
+      ensure_http_success(cached, url)?;
+      let total_len = u64::try_from(cached.bytes.len()).unwrap_or(u64::MAX);
+      let bytes =
+        super::slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), target_len)?;
+      let mut out = super::clone_fetched_resource_with_bytes(cached, bytes);
+      if !out.bytes.is_empty() {
+        let end = start
+          .saturating_add(out.bytes.len() as u64)
+          .saturating_sub(1);
+        super::apply_range_metadata(url, &mut out, start, end, total_len);
+      }
+      Ok(out)
+    };
+
+    if let CacheAction::UseCached = action {
+      if let Some(snapshot) = cached {
+        if is_stale {
+          super::record_cache_stale_hit();
+        } else {
+          super::record_cache_fresh_hit();
+        }
+
+        let result = match snapshot.value {
+          super::CacheValue::Resource(res) => match cache_source {
+            Some(RangeCacheSource::Disk) => {
+              // Disk range reads already return a properly sliced range response.
+              let mut res = res;
+              if target_len == 0 {
+                res.bytes.clear();
+              } else if res.bytes.len() > target_len {
+                res.bytes.truncate(target_len);
+              }
+              ensure_http_success(&res, url)?;
+              Ok(res)
+            }
+            _ => slice_cached(&res),
+          },
+          super::CacheValue::Error(err) => Err(err),
+        };
+
+        if let Ok(ref res) = result {
+          super::record_resource_cache_bytes(res.bytes.len());
+          super::reserve_policy_bytes(&self.policy, res)?;
+        }
+        return result;
+      }
+    }
+
+    // Range responses must never be stored back into caches.
+    let fetch_result = self.memory.inner.fetch_range_with_request(req, range, target_len);
+    match fetch_result {
+      Ok(mut res) => {
+        // Do not trust downstream implementations to always respect `max_bytes` or the requested
+        // range length.
+        if target_len == 0 {
+          res.bytes.clear();
+        } else if res.bytes.len() > target_len {
+          res.bytes.truncate(target_len);
+        }
+        super::record_cache_miss();
         super::reserve_policy_bytes(&self.policy, &res)?;
-        return Ok(res);
+        Ok(res)
       }
-      return result;
-    }
+      Err(err) => {
+        if let Some(snapshot) = cached.as_ref() {
+          let allow_fallback = if super::error_is_networkish(&err) {
+            snapshot
+              .http_cache
+              .as_ref()
+              .map(|meta| meta.allows_stale_on_error(SystemTime::now(), self.disk_config.max_age))
+              .unwrap_or(true)
+          } else {
+            true
+          };
 
-    if let Some((_canonical, mut res)) = self.read_disk_entry_range(
-      kind,
-      url,
-      req,
-      range.clone(),
-      target_len,
-      key.origin_key.as_deref(),
-      key.credentials_partition,
-    )? {
-      if target_len == 0 {
-        res.bytes.clear();
-      } else if res.bytes.len() > target_len {
-        res.bytes.truncate(target_len);
+          if allow_fallback {
+            super::record_cache_stale_hit();
+            let fallback = match &snapshot.value {
+              super::CacheValue::Resource(res) => match cache_source {
+                Some(RangeCacheSource::Disk) => {
+                  let mut res = res.clone();
+                  if target_len == 0 {
+                    res.bytes.clear();
+                  } else if res.bytes.len() > target_len {
+                    res.bytes.truncate(target_len);
+                  }
+                  ensure_http_success(&res, url)?;
+                  Ok(res)
+                }
+                _ => slice_cached(res),
+              },
+              super::CacheValue::Error(err) => Err(err.clone()),
+            };
+            if let Ok(ref ok) = fallback {
+              super::record_resource_cache_bytes(ok.bytes.len());
+              super::reserve_policy_bytes(&self.policy, ok)?;
+            }
+            return fallback;
+          }
+        }
+        super::record_cache_miss();
+        Err(err)
       }
-      super::record_cache_fresh_hit();
-      super::record_resource_cache_bytes(res.bytes.len());
-      super::reserve_policy_bytes(&self.policy, &res)?;
-      return Ok(res);
     }
-
-    let mut res = self
-      .memory
-      .inner
-      .fetch_range_with_request(req, range, target_len)?;
-    // Do not trust downstream implementations to always respect `max_bytes` or the requested
-    // range length.
-    if target_len == 0 {
-      res.bytes.clear();
-    } else if res.bytes.len() > target_len {
-      res.bytes.truncate(target_len);
-    }
-    super::reserve_policy_bytes(&self.policy, &res)?;
-    Ok(res)
   }
 
   fn read_cache_artifact(
@@ -9830,6 +9980,112 @@ mod tests {
     assert_eq!(
       fetched.header_get_joined("content-length").as_deref(),
       Some("4")
+    );
+  }
+
+  #[test]
+  fn disk_caching_fetcher_fetch_range_does_not_serve_stale_without_revalidation() {
+    #[derive(Clone)]
+    struct RangeFetcher {
+      full_calls: Arc<AtomicUsize>,
+      range_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for RangeFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Fetch))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(
+          b"cached-body".to_vec(),
+          Some("application/octet-stream".to_string()),
+        );
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        res.etag = Some("\"v1\"".to_string());
+        // Fresh per origin headers, but DiskCacheConfig max_age will cap this to 0 seconds.
+        res.cache_policy = Some(HttpCachePolicy {
+          max_age: Some(60),
+          ..Default::default()
+        });
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self.range_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res = FetchedResource::new(
+          b"network-range".to_vec(),
+          Some("application/octet-stream".to_string()),
+        );
+        res.status = Some(206);
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let full_calls = Arc::new(AtomicUsize::new(0));
+    let range_calls = Arc::new(AtomicUsize::new(0));
+    let inner = RangeFetcher {
+      full_calls: Arc::clone(&full_calls),
+      range_calls: Arc::clone(&range_calls),
+    };
+
+    let disk = DiskCachingFetcher::with_configs(
+      inner.clone(),
+      tmp.path(),
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+      DiskCacheConfig {
+        max_bytes: 0,
+        max_age: Some(Duration::from_secs(0)),
+        ..DiskCacheConfig::default()
+      },
+    );
+    let url = "https://example.com/range";
+    let req = FetchRequest::new(url, FetchDestination::Fetch);
+
+    disk.fetch_with_request(req).expect("seed cached entry");
+    assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+
+    // Restart so the only available bytes are on disk.
+    let disk_again = DiskCachingFetcher::with_configs(
+      inner,
+      tmp.path(),
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+      DiskCacheConfig {
+        max_bytes: 0,
+        max_age: Some(Duration::from_secs(0)),
+        ..DiskCacheConfig::default()
+      },
+    );
+
+    let res = disk_again
+      .fetch_range_with_request(req, 0..=4, 8)
+      .expect("range fetch should hit network when disk entry is stale");
+    assert_eq!(res.bytes, b"network-range");
+
+    assert_eq!(
+      full_calls.load(Ordering::SeqCst),
+      1,
+      "expected range fetch to avoid full revalidation fetch"
+    );
+    assert_eq!(
+      range_calls.load(Ordering::SeqCst),
+      1,
+      "expected stale disk range fetch to delegate to inner range API"
     );
   }
 

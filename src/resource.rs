@@ -14568,14 +14568,13 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
         .with_status(416),
       ));
     }
-
     let kind: FetchContextKind = req.destination.into();
     let url = req.url;
     if let Some(policy) = &self.policy {
       policy.ensure_url_allowed(url)?;
     }
 
-    let (capped_end, max_bytes) =
+    let (capped_end, target_len) =
       enforce_range_request_size_limit(self.policy.as_ref(), start, end, max_bytes)?;
     let range = start..=capped_end;
 
@@ -14588,41 +14587,96 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       CacheCredentialsPartition::for_request(&req),
     );
 
-    if let Some(result) =
-      self.with_cached_resource(&key, Some(req), |cached| -> Result<FetchedResource> {
-      let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), max_bytes)?;
+    let cached = self.cached_entry(&key, Some(req));
+    let plan = self.plan_cache_use(url, cached, None);
+    let CachePlan {
+      cached,
+      action,
+      is_stale,
+    } = plan;
+
+    let slice_cached = |cached: &FetchedResource| -> Result<FetchedResource> {
+      ensure_http_success(cached, url)?;
+      let total_len = u64::try_from(cached.bytes.len()).unwrap_or(u64::MAX);
+      let bytes = slice_bytes_for_fetch_range(url, &cached.bytes, range.clone(), target_len)?;
       let mut out = clone_fetched_resource_with_bytes(cached, bytes);
       if !out.bytes.is_empty() {
-        let total_len = u64::try_from(cached.bytes.len()).unwrap_or(u64::MAX);
         let end = start
           .saturating_add(out.bytes.len() as u64)
           .saturating_sub(1);
         apply_range_metadata(url, &mut out, start, end, total_len);
       }
       Ok(out)
-    })
-    {
-      let res = result?;
-      record_cache_fresh_hit();
-      record_resource_cache_bytes(res.bytes.len());
-      reserve_policy_bytes(&self.policy, &res)?;
-      return Ok(res);
+    };
+
+    if let CacheAction::UseCached = action {
+      if let Some(snapshot) = cached.as_ref() {
+        if is_stale {
+          record_cache_stale_hit();
+        } else {
+          record_cache_fresh_hit();
+        }
+        let result = match &snapshot.value {
+          CacheValue::Resource(res) => slice_cached(res),
+          CacheValue::Error(err) => Err(err.clone()),
+        };
+        if let Ok(ref res) = result {
+          record_resource_cache_bytes(res.bytes.len());
+          reserve_policy_bytes(&self.policy, res)?;
+        }
+        return result;
+      }
     }
 
     // Critical safety: never store range responses into the normal cache. Range responses are not
     // complete representations and could poison future full-body reads if cached.
+    //
     // Range fetches intentionally bypass the single-flight map: `InFlightKey` does not encode the
     // requested byte range, so de-duplicating could return the wrong bytes or collide with full
     // fetches.
-    let mut res = self.inner.fetch_range_with_request(req, range, max_bytes)?;
-    // Do not trust downstream implementations to always respect `max_bytes`.
-    if max_bytes == 0 {
-      res.bytes.clear();
-    } else if res.bytes.len() > max_bytes {
-      res.bytes.truncate(max_bytes);
+    let fetch_result = self.inner.fetch_range_with_request(req, range, target_len);
+    match fetch_result {
+      Ok(mut res) => {
+        // Do not trust downstream implementations to always respect `max_bytes` or the requested
+        // range length.
+        if target_len == 0 {
+          res.bytes.clear();
+        } else if res.bytes.len() > target_len {
+          res.bytes.truncate(target_len);
+        }
+        record_cache_miss();
+        reserve_policy_bytes(&self.policy, &res)?;
+        Ok(res)
+      }
+      Err(err) => {
+        if let Some(snapshot) = cached.as_ref() {
+          let allow_fallback = if error_is_networkish(&err) {
+            snapshot
+              .http_cache
+              .as_ref()
+              .map(|meta| meta.allows_stale_on_error(SystemTime::now(), None))
+              .unwrap_or(true)
+          } else {
+            true
+          };
+
+          if allow_fallback {
+            record_cache_stale_hit();
+            let fallback = match &snapshot.value {
+              CacheValue::Resource(res) => slice_cached(res),
+              CacheValue::Error(err) => Err(err.clone()),
+            };
+            if let Ok(ref ok) = fallback {
+              record_resource_cache_bytes(ok.bytes.len());
+              reserve_policy_bytes(&self.policy, ok)?;
+            }
+            return fallback;
+          }
+        }
+        record_cache_miss();
+        Err(err)
+      }
     }
-    reserve_policy_bytes(&self.policy, &res)?;
-    Ok(res)
   }
 }
 
@@ -20818,6 +20872,86 @@ mod tests {
       calls.load(Ordering::SeqCst),
       2,
       "expected 206 responses to be treated as uncacheable"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_range_does_not_serve_stale_without_revalidation() {
+    #[derive(Clone)]
+    struct RangeFetcher {
+      full_calls: Arc<AtomicUsize>,
+      range_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for RangeFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Fetch))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res =
+          FetchedResource::new(b"cached-body".to_vec(), Some("text/plain".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(req.url.to_string());
+        res.etag = Some("\"v1\"".to_string());
+        // Immediately stale.
+        res.cache_policy = Some(HttpCachePolicy {
+          max_age: Some(0),
+          ..Default::default()
+        });
+        Ok(res)
+      }
+
+      fn fetch_range_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        _range: std::ops::RangeInclusive<u64>,
+        _max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self.range_calls.fetch_add(1, Ordering::SeqCst);
+        let mut res =
+          FetchedResource::new(b"network-range".to_vec(), Some("text/plain".to_string()));
+        res.status = Some(206);
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let full_calls = Arc::new(AtomicUsize::new(0));
+    let range_calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::with_config(
+      RangeFetcher {
+        full_calls: Arc::clone(&full_calls),
+        range_calls: Arc::clone(&range_calls),
+      },
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        honor_http_cache_headers: true,
+        ..CachingFetcherConfig::default()
+      },
+    );
+
+    let url = "https://example.com/video.bin";
+    let req = FetchRequest::new(url, FetchDestination::Fetch);
+
+    fetcher.fetch_with_request(req).expect("seed cached entry");
+    assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+
+    let res = fetcher
+      .fetch_range_with_request(req, 0..=4, 8)
+      .expect("range fetch should hit network when cached entry is stale");
+    assert_eq!(res.bytes, b"network-range");
+
+    assert_eq!(
+      full_calls.load(Ordering::SeqCst),
+      1,
+      "expected range fetch to avoid full revalidation fetch"
+    );
+    assert_eq!(
+      range_calls.load(Ordering::SeqCst),
+      1,
+      "expected stale range fetch to delegate to inner range API"
     );
   }
 
