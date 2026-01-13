@@ -11,8 +11,17 @@
 //! - [`FinishLoadingImportedModule`](https://tc39.es/ecma262/#sec-finishloadingimportedmodule)
 //! - [`ModuleRequestsEqual`](https://tc39.es/ecma262/#sec-modulerequestsequal)
 //!
-//! The goal of this module is to provide the *host hook surface* and spec-shaped record types,
-//! **not** to implement full module parsing/linking/evaluation.
+//! This layer is responsible for the *host-driven* parts of module loading:
+//!
+//! - Starting static graph loading (`LoadRequestedModules`),
+//! - Completing host loads (`FinishLoadingImportedModule`),
+//! - And the dynamic `import()` state machine (`EvaluateImportCall` / `ContinueDynamicImport`).
+//!
+//! Module record algorithms (linking, evaluation, top-level await execution) live in
+//! [`crate::ModuleGraph`]. The host is still responsible for fetching/parsing source text modules in
+//! [`crate::VmHostHooks::host_load_imported_module`].
+//!
+//! For an end-to-end embedder guide, see [`crate::docs::modules`].
 //!
 //! See also:
 //! - [`crate::VmHostHooks::host_load_imported_module`]

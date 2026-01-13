@@ -31,8 +31,11 @@ use std::sync::Arc;
 
 /// Module linking/loading status.
 ///
-/// This is a minimal subset of ECMA-262's `ModuleStatus` enum; additional states will be added as
-/// module linking/evaluation are implemented.
+/// This is a subset of ECMA-262's `ModuleStatus` enum.
+///
+/// `vm-js` models the states needed for linking/evaluation (including async evaluation for
+/// top-level `await`). Additional states may be added as more of the module specification is
+/// implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ModuleStatus {
   #[default]
@@ -274,8 +277,12 @@ pub struct SourceTextModuleRecord {
 
   // === Cyclic Module Record evaluation state (ECMA-262) ===
   //
-  // These fields are not yet fully wired into module evaluation; they exist so we can model the
-  // full set of spec-visible states needed for top-level await across the module graph.
+  // These fields mirror the spec's internal slots for cyclic modules.
+  //
+  // Note: `vm-js` stores some async-evaluation bookkeeping out-of-line in [`ModuleGraph`] (SCC
+  // caches, async dependency counters, etc), so not every slot below is used directly by the
+  // evaluator yet. We keep them for spec alignment and for slots that must be cached on the module
+  // record itself (promise capability roots, cached errors, etc).
 
   /// `[[CycleRoot]]` – SCC root module record (or empty).
   #[allow(dead_code)]
