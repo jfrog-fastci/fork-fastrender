@@ -871,6 +871,44 @@ function generate_tests(func, cases) {
 // ---------------------------------------------------------------------------
 // Test entry points.
 //
+function setup(a0, a1) {
+  // Minimal subset of upstream `setup(...)`.
+  //
+  // WPT tests use `setup(fn)` to run initialization code before registering tests. The upstream
+  // harness also accepts an options object, but FastRender's offline runner currently ignores those
+  // configuration flags.
+  //
+  // Supported call patterns:
+  //   setup(fn)
+  //   setup(options, fn)
+  var fn = null;
+  if (typeof a0 === "function") {
+    fn = a0;
+  } else if (typeof a1 === "function") {
+    fn = a1;
+  }
+  if (typeof fn === "function") {
+    try {
+      fn();
+    } catch (e) {
+      try {
+        if (typeof console !== "undefined" && console && typeof console.error === "function") {
+          console.error("testharness setup() callback threw: " + e);
+        }
+      } catch (_e2) {}
+      throw e;
+    }
+  }
+}
+//
+// Some embeddings do not mirror global bindings onto `window` (global object != window). Ensure
+// `(\"setup\" in window)` behaves like browsers for upstream harness helpers (e.g. `dom/common.js`).
+try {
+  if (typeof window !== "undefined" && window && window.setup !== setup) {
+    window.setup = setup;
+  }
+} catch (_e_setup_window) {}
+//
 function test(fn, name) {
   var t = __make_test_record(name);
   __push_test_record(t);
@@ -1095,6 +1133,82 @@ function __promise_test_fulfilled(_value) {
   __pending--;
   __report_test_result(t);
   __check_complete();
+}
+//
+// ---------------------------------------------------------------------------
+// Upstream helper: generate_tests(fn, tests)
+//
+// Many WPT DOM Range HTML tests use `generate_tests()` to expand a list of cases into individual
+// `test(...)` entries. Keep this helper lightweight and deterministic.
+//
+// The curated corpus only uses the 2-argument signature:
+//   generate_tests(fn, [[name, ...args], ...])
+//
+// Note: Keep this compatible with FastRender's in-tree vm-js backend. Avoid closures by stashing
+// the current `(fn, args)` pair in global slots; `test()` executes synchronously so this is safe.
+var __generate_tests_func = null;
+var __generate_tests_args = null;
+//
+function __generate_tests_invalid_case() {
+  throw Error("generate_tests: invalid test case");
+}
+//
+function __generate_tests_wrapper() {
+  var fn = __generate_tests_func;
+  var args = __generate_tests_args;
+  if (typeof fn !== "function") {
+    throw Error("generate_tests: callback is not callable");
+  }
+  if (!args || typeof args.length !== "number") {
+    fn();
+    return;
+  }
+  // Fast path common arities to avoid `Function.prototype.apply` overhead in small JS engines.
+  if (args.length === 0) {
+    fn();
+    return;
+  }
+  if (args.length === 1) {
+    fn(args[0]);
+    return;
+  }
+  if (args.length === 2) {
+    fn(args[0], args[1]);
+    return;
+  }
+  if (args.length === 3) {
+    fn(args[0], args[1], args[2]);
+    return;
+  }
+  if (args.length === 4) {
+    fn(args[0], args[1], args[2], args[3]);
+    return;
+  }
+  fn.apply(null, args);
+}
+//
+function generate_tests(fn, tests) {
+  if (!tests || typeof tests.length !== "number") {
+    throw Error("generate_tests: tests must be array-like");
+  }
+  for (var i = 0; i !== tests.length; i++) {
+    var tc = tests[i];
+    if (!tc || typeof tc.length !== "number") {
+      // Invalid test case: surface as a harness failure.
+      __generate_tests_func = __generate_tests_invalid_case;
+      __generate_tests_args = [];
+      test(__generate_tests_wrapper, "generate_tests: invalid test case");
+      continue;
+    }
+    var name = tc[0];
+    var args = [];
+    for (var j = 1; j !== tc.length; j++) {
+      args.push(tc[j]);
+    }
+    __generate_tests_func = fn;
+    __generate_tests_args = args;
+    test(__generate_tests_wrapper, name);
+  }
 }
 //
 function __promise_test_rejected(reason) {

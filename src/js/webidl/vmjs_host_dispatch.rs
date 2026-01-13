@@ -11474,8 +11474,6 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
       }
 
-      ("Range", "detach", 0) => Ok(Value::Undefined),
-
       (
         "AbstractRange",
         op @ ("startContainer" | "startOffset" | "endContainer" | "endOffset" | "collapsed"),

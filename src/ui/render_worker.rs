@@ -10389,8 +10389,7 @@ impl BrowserRuntime {
           let mut focused_media_kind: Option<MediaElementKind> = None;
           let engine = &mut tab.interaction;
           let changed = doc.mutate_dom(|dom| {
-            let (dom_changed, next_action) =
-              engine.key_activate(dom, key, document_url, base_url);
+            let (dom_changed, next_action) = engine.key_activate(dom, key, document_url, base_url);
             action = next_action;
             visited_candidate = engine.take_last_visited_candidate();
             (submitter, submitter_element_id) = engine.take_last_form_submitter_with_element_id();

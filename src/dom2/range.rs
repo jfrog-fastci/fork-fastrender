@@ -574,14 +574,56 @@ impl Document {
     self.range_set_start_or_end(range, node, offset, /* is_start */ false)
   }
 
-  /// `Range.prototype.selectNodeContents(node)`.
-  ///
-  /// Sets the range's start to `(node, 0)` and its end to `(node, nodeLength)`.
-  pub fn range_select_node_contents(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
-    let len = self.node_length(node)?;
-    self.range_set_start(range, node, 0)?;
-    self.range_set_end(range, node, len)?;
-    Ok(())
+  pub fn range_set_start_before(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    if matches!(&self.node_checked(node)?.kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+    let parent = self
+      .range_parent(node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    let index = self
+      .tree_child_index_for_range(parent, node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    self.range_set_start(range, parent, index)
+  }
+
+  pub fn range_set_start_after(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    if matches!(&self.node_checked(node)?.kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+    let parent = self
+      .range_parent(node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    let index = self
+      .tree_child_index_for_range(parent, node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    self.range_set_start(range, parent, index.saturating_add(1))
+  }
+
+  pub fn range_set_end_before(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    if matches!(&self.node_checked(node)?.kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+    let parent = self
+      .range_parent(node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    let index = self
+      .tree_child_index_for_range(parent, node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    self.range_set_end(range, parent, index)
+  }
+
+  pub fn range_set_end_after(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    if matches!(&self.node_checked(node)?.kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+    let parent = self
+      .range_parent(node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    let index = self
+      .tree_child_index_for_range(parent, node)
+      .ok_or(DomError::InvalidNodeTypeError)?;
+    self.range_set_end(range, parent, index.saturating_add(1))
   }
 
   /// Collapse a live range to one of its boundary points.
@@ -605,6 +647,23 @@ impl Document {
   pub fn range_detach(&self, range: RangeId) -> DomResult<()> {
     let _ = self.range(range)?;
     Ok(())
+  }
+
+  pub fn range_select_node_contents(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    if matches!(&self.node_checked(node)?.kind, NodeKind::Doctype { .. }) {
+      return Err(DomError::InvalidNodeTypeError);
+    }
+    let len = self.node_length(node)?;
+    self.range_set_start(range, node, 0)?;
+    self.range_set_end(range, node, len)
+  }
+
+  /// Set the start/end of the live range to exactly contain `node`.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-selectnode
+  pub fn range_select_node(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
+    self.range_set_start_before(range, node)?;
+    self.range_set_end_after(range, node)
   }
 
   /// Clone a live range, returning a new independent range object with the same boundary points.
@@ -894,7 +953,6 @@ impl Document {
       return Ordering::Greater;
     }
 
-    let common = path_a[i - 1];
     let child_a = path_a[i];
     let child_b = path_b[i];
 
@@ -1727,18 +1785,6 @@ impl Document {
       };
     }
 
-    Ok(())
-  }
-
-  fn range_select_node(&mut self, range: RangeId, node: NodeId) -> DomResult<()> {
-    let parent = self.range_parent(node).ok_or(DomError::InvalidNodeTypeError)?;
-    let index = self.node_index(node).ok_or(DomError::InvalidNodeTypeError)?;
-    let r = self.range_mut(range)?;
-    r.start = BoundaryPoint { node: parent, offset: index };
-    r.end = BoundaryPoint {
-      node: parent,
-      offset: index + 1,
-    };
     Ok(())
   }
 

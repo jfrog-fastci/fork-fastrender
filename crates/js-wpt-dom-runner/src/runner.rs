@@ -710,10 +710,18 @@ impl Runner {
     let diagnostics = tab.diagnostics_snapshot();
     let other = last_outcome.unwrap_or(RunUntilIdleOutcome::Idle);
     let msg = match diagnostics {
-      Some(diag) if !diag.js_exceptions.is_empty() || !diag.console_messages.is_empty() => {
+      Some(diag)
+        if !diag.js_exceptions.is_empty()
+          || !diag.console_messages.is_empty()
+          || !diag.fetch_errors.is_empty()
+          || !diag.blocked_fetch_errors.is_empty() =>
+      {
         format!(
-          "HTML test produced no WPT report payload (event loop outcome={other:?}); js_exceptions={:?} console_messages={:?}",
-          diag.js_exceptions, diag.console_messages
+          "HTML test produced no WPT report payload (event loop outcome={other:?}); js_exceptions={:?} console_messages={:?} fetch_errors={:?} blocked_fetch_errors={:?}",
+          diag.js_exceptions,
+          diag.console_messages,
+          diag.fetch_errors,
+          diag.blocked_fetch_errors
         )
       }
       _ => format!("HTML test produced no WPT report payload (event loop outcome={other:?})"),

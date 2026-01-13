@@ -408,8 +408,8 @@ reason = "QuickJS backend still does not fully pass the upstream `dom/ranges/*.h
 [[expectations]]
 id = "dom/ranges/Range-adopt-test.html"
 backend = ["vmjs", "vmjs-rendered"]
-status = "xfail"
-reason = "Range APIs are still incomplete; tracked by the dom/ranges bring-up workstream."
+status = "pass"
+reason = "Range boundary-manipulation APIs (selectNode + live range updates in simple cases) implemented."
 
 [[expectations]]
 id = "dom/ranges/Range-cloneContents.html"

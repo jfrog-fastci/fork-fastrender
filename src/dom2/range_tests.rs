@@ -149,6 +149,113 @@ fn range_clone_range_produces_independent_range() {
 }
 
 #[test]
+fn range_set_start_before_and_after_set_expected_boundary_point() {
+  let html = "<!doctype html><div id=p><span id=a></span><span id=b></span></div>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  // setStartBefore(b) => (p, 1)
+  let range = doc.create_range();
+  doc.range_set_end(range, p, 2).unwrap();
+  doc.range_set_start_before(range, b).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), p);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), p);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+
+  // setStartAfter(a) => (p, 1)
+  let range = doc.create_range();
+  doc.range_set_end(range, p, 2).unwrap();
+  doc.range_set_start_after(range, a).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), p);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), p);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_set_end_before_and_after_set_expected_boundary_point() {
+  let html = "<!doctype html><div id=p><span id=a></span><span id=b></span></div>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+  let a = doc.get_element_by_id("a").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  // setEndBefore(b) => (p, 1)
+  let range = doc.create_range();
+  doc.range_set_start(range, p, 0).unwrap();
+  doc.range_set_end(range, p, 2).unwrap();
+  doc.range_set_end_before(range, b).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), p);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_container(range).unwrap(), p);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+
+  // setEndAfter(a) => (p, 1)
+  let range = doc.create_range();
+  doc.range_set_start(range, p, 0).unwrap();
+  doc.range_set_end_after(range, a).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), p);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_container(range).unwrap(), p);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 1);
+}
+
+#[test]
+fn range_select_node_sets_expected_boundary_points() {
+  let html = "<!doctype html><div id=p><span id=a></span><span id=b></span></div>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+  let b = doc.get_element_by_id("b").unwrap();
+
+  let range = doc.create_range();
+  doc.range_select_node(range, b).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), p);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 1);
+  assert_eq!(doc.range_end_container(range).unwrap(), p);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_select_node_contents_sets_expected_boundary_points() {
+  let html = "<!doctype html><div id=p><span></span><span></span></div>";
+  let mut doc: Document = parse_html(html).unwrap();
+  let p = doc.get_element_by_id("p").unwrap();
+
+  let range = doc.create_range();
+  doc.range_select_node_contents(range, p).unwrap();
+  assert_eq!(doc.range_start_container(range).unwrap(), p);
+  assert_eq!(doc.range_start_offset(range).unwrap(), 0);
+  assert_eq!(doc.range_end_container(range).unwrap(), p);
+  assert_eq!(doc.range_end_offset(range).unwrap(), 2);
+}
+
+#[test]
+fn range_boundary_methods_reject_doctype() {
+  let mut doc: Document = Document::new(QuirksMode::NoQuirks);
+  let range = doc.create_range();
+  let doctype = doc.create_doctype("html", "", "");
+  assert_eq!(
+    doc.range_set_start_before(range, doctype),
+    Err(DomError::InvalidNodeTypeError)
+  );
+  assert_eq!(
+    doc.range_set_end_after(range, doctype),
+    Err(DomError::InvalidNodeTypeError)
+  );
+  assert_eq!(
+    doc.range_select_node(range, doctype),
+    Err(DomError::InvalidNodeTypeError)
+  );
+  assert_eq!(
+    doc.range_select_node_contents(range, doctype),
+    Err(DomError::InvalidNodeTypeError)
+  );
+}
+
+#[test]
 fn range_endpoints_update_after_replace_data_deletion_text() {
   // This matches the early-return CharacterData-only path in Range.deleteContents() /
   // Range.extractContents(): it performs a CharacterData replaceData/deleteData operation and

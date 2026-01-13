@@ -85,11 +85,23 @@ impl WptResourceFetcher {
 impl ResourceFetcher for WptResourceFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
     let path = self.map_url_to_path(url)?;
+    let trace = std::env::var("FASTERENDER_WPT_DOM_TRACE_FETCH")
+      .ok()
+      .is_some_and(|v| !v.trim().is_empty() && v.trim() != "0");
+    if trace {
+      eprintln!("[wpt_dom fetch] {url} -> {}", path.display());
+    }
 
     match std::fs::read(&path) {
       Ok(bytes) => {
         let mut res = FetchedResource::new(bytes, sniff_content_type(&path));
         res.status = Some(200);
+        if trace {
+          eprintln!(
+            "[wpt_dom fetch] {url} status=200 bytes={}",
+            res.bytes.len()
+          );
+        }
         Ok(res)
       }
       Err(err)
@@ -100,6 +112,9 @@ impl ResourceFetcher for WptResourceFetcher {
       {
         let mut res = FetchedResource::new(Vec::new(), None);
         res.status = Some(404);
+        if trace {
+          eprintln!("[wpt_dom fetch] {url} status=404");
+        }
         Ok(res)
       }
       Err(err) => Err(Error::Resource(
@@ -138,16 +153,27 @@ fn sniff_content_type(path: &Path) -> Option<String> {
 }
 
 fn join_under_corpus(base: &Path, rel: &str) -> std::result::Result<PathBuf, &'static str> {
-  let rel_path = Path::new(rel);
-  for component in rel_path.components() {
+  // Normalize dot segments in `rel` to match browser URL resolution semantics.
+  //
+  // The browser tab backend can request URLs whose raw path still contains `..` segments
+  // (e.g. `https://web-platform.test/dom/ranges/../common.js`). These are not path traversal
+  // attempts once resolved against the document URL, so accept them as long as the normalized path
+  // stays within `base`.
+  let mut normalized = PathBuf::new();
+  for component in Path::new(rel).components() {
     match component {
-      Component::Normal(_) | Component::CurDir => {}
-      Component::ParentDir => return Err("path contains '..'"),
+      Component::Normal(part) => normalized.push(part),
+      Component::CurDir => {}
+      Component::ParentDir => {
+        if !normalized.pop() {
+          return Err("path contains '..' that would escape corpus root");
+        }
+      }
       Component::RootDir | Component::Prefix(_) => return Err("path is absolute"),
     }
   }
 
-  let joined = base.join(rel_path);
+  let joined = base.join(&normalized);
 
   // Best-effort symlink escape check when the file exists. This intentionally does not canonicalize
   // missing paths so the caller can surface a 404 response (canonicalize requires existence).
