@@ -4,8 +4,7 @@
 
 #![cfg(target_os = "macos")]
 
-use fastrender::sandbox::macos_spawn::{sandbox_exec_command, SandboxExecError};
-use std::ffi::OsString;
+use fastrender::sandbox_exec::{SandboxExecCommand, SandboxExecProfile};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Stdio;
@@ -16,12 +15,16 @@ const ENV_STDOUT_SENTINEL: &str = "FASTR_TEST_SANDBOX_EXEC_STDIO_IPC_STDOUT_SENT
 #[test]
 fn sandbox_exec_spawn_preserves_stdio_pipes_for_ipc() {
   let child_exe = env!("CARGO_BIN_EXE_sandbox_exec_stdio_ipc_child");
-  let args: Vec<OsString> = Vec::new();
+  let profile = "(version 1)\n(allow default)\n".to_string();
 
-  let mut cmd = match sandbox_exec_command(Path::new(child_exe), &args) {
+  let mut cmd = match SandboxExecCommand::new(
+    SandboxExecProfile::Custom(profile),
+    Path::new(child_exe),
+    std::iter::empty::<&str>(),
+  ) {
     Ok(cmd) => cmd,
-    Err(SandboxExecError::MissingSandboxExec { path }) => {
-      eprintln!("skipping: sandbox-exec missing at {}", path.display());
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+      eprintln!("skipping: sandbox-exec missing at /usr/bin/sandbox-exec");
       return;
     }
     Err(err) => panic!("failed to build sandbox-exec command: {err}"),
@@ -30,11 +33,13 @@ fn sandbox_exec_spawn_preserves_stdio_pipes_for_ipc() {
   let stdin_sentinel = "fastrender-stdio-ipc-in";
   let stdout_sentinel = "fastrender-stdio-ipc-out";
 
-  cmd.env(ENV_STDIN_SENTINEL, stdin_sentinel);
-  cmd.env(ENV_STDOUT_SENTINEL, stdout_sentinel);
-  cmd.stdin(Stdio::piped());
-  cmd.stdout(Stdio::piped());
-  cmd.stderr(Stdio::inherit());
+  cmd
+    .command_mut()
+    .env(ENV_STDIN_SENTINEL, stdin_sentinel)
+    .env(ENV_STDOUT_SENTINEL, stdout_sentinel)
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::inherit());
 
   let mut child = cmd.spawn().expect("spawn sandbox-exec child");
 
@@ -65,4 +70,3 @@ fn sandbox_exec_spawn_preserves_stdio_pipes_for_ipc() {
     "expected stdout to contain sentinel {stdout_sentinel:?}, got {output:?}"
   );
 }
-
