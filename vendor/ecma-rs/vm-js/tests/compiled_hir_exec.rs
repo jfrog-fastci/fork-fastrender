@@ -3631,6 +3631,82 @@ fn compiled_function_default_initializer_can_read_arguments() -> Result<(), VmEr
 }
 
 #[test]
+fn compiled_rest_parameters_collect_remaining_args() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(a, ...rest) { return rest.length; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut scope = heap.scope();
+
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    1,
+  )?;
+
+  // f() => rest.length == 0
+  let result = vm.call_without_host(&mut scope, Value::Object(f), Value::Undefined, &[])?;
+  assert_eq!(result, Value::Number(0.0));
+
+  // f(1, 2, 3) => rest == [2, 3] => rest.length == 2
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+
+  Ok(())
+}
+
+#[test]
+fn compiled_rest_parameters_support_indexing() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(...rest) { return rest[1]; }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+  let mut vm = Vm::new(VmOptions::default());
+  let mut scope = heap.scope();
+
+  let name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script: script.clone(),
+      body: f_body,
+    },
+    name,
+    0,
+  )?;
+
+  // f(1, 2, 3) => rest[1] == 2
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+
+  Ok(())
+}
+
+#[test]
 fn compiled_arrow_function_inherits_arguments_from_outer_function() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());

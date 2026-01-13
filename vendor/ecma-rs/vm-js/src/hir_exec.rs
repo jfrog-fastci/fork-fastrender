@@ -509,10 +509,12 @@ impl<'vm> HirEvaluator<'vm> {
     // patterns (including destructuring). Binding initialization happens during the later binding
     // pass.
     let env_rec = self.env.lexical_env();
-    for param in &func_meta.params {
+    for (idx, param) in func_meta.params.iter().enumerate() {
       self.vm.tick()?;
-      if param.rest {
-        return Err(VmError::Unimplemented("rest parameters (hir-js compiled path)"));
+      if param.rest && idx + 1 != func_meta.params.len() {
+        return Err(VmError::Unimplemented(
+          "non-final rest parameter (hir-js compiled path)",
+        ));
       }
       let mut names: Vec<hir_js::NameId> = Vec::new();
       self.collect_pat_idents(body, param.pat, &mut names)?;
@@ -616,23 +618,41 @@ impl<'vm> HirEvaluator<'vm> {
     // Bind parameters.
     for (idx, param) in func_meta.params.iter().enumerate() {
       self.vm.tick()?;
-      if param.rest {
-        return Err(VmError::Unimplemented("rest parameters (hir-js compiled path)"));
-      }
-      let arg_value = args.get(idx).copied().unwrap_or(Value::Undefined);
-
-      // Default parameters.
-      let value = if matches!(arg_value, Value::Undefined) {
-        if let Some(default_expr) = param.default {
-          self.eval_expr(scope, body, default_expr)?
-        } else {
-          Value::Undefined
+      let value = if param.rest {
+        if idx + 1 != func_meta.params.len() {
+          return Err(VmError::Unimplemented(
+            "non-final rest parameter (hir-js compiled path)",
+          ));
         }
+
+        // `...rest` collects all remaining arguments starting at this parameter index.
+        //
+        // Materialize an actual Array (with `%Array.prototype%` when intrinsics are initialized)
+        // so `rest.length` / indexing behave correctly.
+        let rest_args = args.get(idx..).unwrap_or(&[]);
+        let rest_array = crate::spec_ops::create_array_from_list(self.vm, scope, rest_args)?;
+        Value::Object(rest_array)
       } else {
-        arg_value
+        let arg_value = args.get(idx).copied().unwrap_or(Value::Undefined);
+
+        // Default parameters.
+        if matches!(arg_value, Value::Undefined) {
+          if let Some(default_expr) = param.default {
+            self.eval_expr(scope, body, default_expr)?
+          } else {
+            Value::Undefined
+          }
+        } else {
+          arg_value
+        }
       };
 
       self.bind_pattern(scope, body, param.pat, value, PatBindingKind::Param)?;
+
+      // Rest parameters are always final.
+      if param.rest {
+        break;
+      }
     }
 
     // Hoist function declarations (best-effort).

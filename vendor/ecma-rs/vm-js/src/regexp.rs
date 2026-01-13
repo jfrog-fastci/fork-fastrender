@@ -2853,7 +2853,7 @@ impl<'a> Parser<'a> {
 
             if self.peek().is_some_and(is_octal_digit) {
               let v = self.parse_legacy_octal_escape_after_first(x)?;
-              return Ok(CharClassItem::Char(v));
+              return Ok(CharClassItem::Char(v as u32));
             }
             Ok(CharClassItem::Char(0x0000))
           }
@@ -2866,7 +2866,7 @@ impl<'a> Parser<'a> {
               .into());
             }
             let v = self.parse_legacy_octal_escape_after_first(x)?;
-            Ok(CharClassItem::Char(v))
+            Ok(CharClassItem::Char(v as u32))
           }
           x if x == (b'8' as u16) || x == (b'9' as u16) => {
             // `\8` / `\9` are identity escapes in non-unicode mode.
@@ -3014,7 +3014,7 @@ impl<'a> Parser<'a> {
 
         if self.peek().is_some_and(is_octal_digit) {
           let v = self.parse_legacy_octal_escape_after_first(x)?;
-          return Ok(Atom::Literal(v));
+          return Ok(Atom::Literal(v as u32));
         }
         Ok(Atom::Literal(0x0000))
       }
@@ -3077,7 +3077,7 @@ impl<'a> Parser<'a> {
         // digit length.
         self.idx = digit_start.saturating_add(1);
         let v = self.parse_legacy_octal_escape_after_first(x)?;
-        Ok(Atom::Literal(v))
+        Ok(Atom::Literal(v as u32))
       }
       x if x == (b'x' as u16) => Ok(Atom::Literal(self.parse_hex_escape_2(ctx)?)),
       x if x == (b'u' as u16) => Ok(Atom::Literal(self.parse_unicode_escape(ctx)?)),
