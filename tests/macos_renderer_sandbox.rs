@@ -50,7 +50,8 @@ fn renderer_sandbox_profiles_enforce_policy() {
 
 fn run_child() {
   let mode = std::env::var(MODE_ENV).expect("child mode env var");
-  let home_file_path = std::env::var_os(HOME_FILE_ENV).map(PathBuf::from);
+  let home_file_path =
+    PathBuf::from(std::env::var_os(HOME_FILE_ENV).expect("child home file env var"));
   let mode = match mode.as_str() {
     "pure" => MacosSandboxMode::PureComputation,
     "relaxed" => MacosSandboxMode::RendererSystemFonts,
@@ -61,6 +62,16 @@ fn run_child() {
   let font_path = find_system_font_file();
 
   apply_renderer_sandbox(mode).expect("apply renderer sandbox");
+
+  // HOME should never be readable/writable, even in the relaxed profile (system fonts only).
+  assert_permission_denied(
+    std::fs::read(&home_file_path),
+    format!("read home file {}", home_file_path.display()),
+  );
+  assert_permission_denied(
+    std::fs::write(&home_file_path, b"sandbox-write-probe"),
+    format!("write home file {}", home_file_path.display()),
+  );
 
   // Sensitive system files should not be readable.
   assert_permission_denied(std::fs::read("/etc/passwd"), "read /etc/passwd");
@@ -76,9 +87,6 @@ fn run_child() {
   // Relaxed mode should still deny user/home filesystem metadata access, but allow system font
   // directory listing so font discovery can run.
   if mode == MacosSandboxMode::RendererSystemFonts {
-    let Some(home_file_path) = home_file_path else {
-      panic!("missing {HOME_FILE_ENV} env var in relaxed-mode sandbox child");
-    };
     assert_permission_denied(
       std::fs::metadata(&home_file_path),
       format!("metadata {}", home_file_path.display()),
