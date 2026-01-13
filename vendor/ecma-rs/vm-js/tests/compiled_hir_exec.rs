@@ -858,6 +858,27 @@ fn compiled_stmt_list_update_empty_roots_last_value_across_gc() -> Result<(), Vm
 }
 
 #[test]
+fn compiled_binary_operator_roots_lhs_across_gc() -> Result<(), VmError> {
+  // Force a GC on every allocation. The RHS string literal allocation should not be allowed to
+  // collect the LHS temporary object value before the `*` operation performs `ToNumber`.
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 0));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      ({ valueOf() { return 2; } }) * '3'
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(6.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_object_literal_inherits_from_object_prototype() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
