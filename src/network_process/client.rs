@@ -17,6 +17,46 @@ use tungstenite::Error as TungsteniteError;
 
 use super::ipc;
 
+const ENV_NETWORK_AUTH_TOKEN: &str = "FASTR_NETWORK_AUTH_TOKEN";
+const ENV_NETWORK_AUTH_TOKEN_DEBUG: &str = "FASTR_NETWORK_AUTH_TOKEN_DEBUG";
+
+fn env_flag_truthy(key: &str) -> bool {
+  let Ok(raw) = std::env::var(key) else {
+    return false;
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return false;
+  }
+  !matches!(raw.to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off")
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct NetworkAuthToken(Arc<str>);
+
+impl NetworkAuthToken {
+  fn generate() -> Result<Self> {
+    let mut bytes = [0u8; AUTH_TOKEN_BYTES];
+    getrandom(&mut bytes)
+      .map_err(|err| Error::Other(format!("failed to generate auth token: {err}")))?;
+    Ok(Self(Arc::from(hex_encode(&bytes))))
+  }
+
+  fn as_str(&self) -> &str {
+    self.0.as_ref()
+  }
+}
+
+impl std::fmt::Debug for NetworkAuthToken {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    if env_flag_truthy(ENV_NETWORK_AUTH_TOKEN_DEBUG) {
+      f.write_str(self.as_str())
+    } else {
+      f.write_str("<redacted>")
+    }
+  }
+}
+
 /// Configuration for spawning the `network` subprocess.
 #[derive(Debug, Clone)]
 pub struct NetworkProcessConfig {
@@ -101,12 +141,6 @@ fn hex_encode(bytes: &[u8]) -> String {
   out
 }
 
-fn generate_auth_token() -> Result<Arc<str>> {
-  let mut bytes = [0u8; AUTH_TOKEN_BYTES];
-  getrandom(&mut bytes).map_err(|err| Error::Other(format!("failed to generate auth token: {err}")))?;
-  Ok(Arc::from(hex_encode(&bytes)))
-}
-
 /// Spawn the `network` subprocess and return a handle to manage it.
 ///
 /// This is a convenience wrapper that panics on failure (suitable for tests).
@@ -119,11 +153,12 @@ pub fn spawn_network_process(config: NetworkProcessConfig) -> NetworkProcessHand
 pub fn try_spawn_network_process(config: NetworkProcessConfig) -> Result<NetworkProcessHandle> {
   let binary_path = resolve_network_binary_path(&config)?;
 
-  let auth_token = generate_auth_token()?;
+  let auth_token = NetworkAuthToken::generate()?;
 
   let mut cmd = Command::new(binary_path);
   cmd.arg("--bind").arg("127.0.0.1:0");
-  cmd.arg("--auth-token").arg(auth_token.as_ref());
+  // Avoid exposing the token via `ps` argv output; the child process also accepts the env var.
+  cmd.env(ENV_NETWORK_AUTH_TOKEN, auth_token.as_str());
   cmd.stdin(Stdio::null());
   cmd.stdout(Stdio::piped());
   if config.inherit_stderr {
@@ -174,7 +209,7 @@ pub struct NetworkProcessHandle {
   addr: SocketAddr,
   connect_timeout: Duration,
   pid: u32,
-  auth_token: Arc<str>,
+  auth_token: NetworkAuthToken,
   child: Mutex<Option<Child>>,
 }
 
@@ -200,7 +235,7 @@ impl NetworkProcessHandle {
 
   /// Authentication token required to connect to this network process instance.
   pub fn auth_token(&self) -> &str {
-    self.auth_token.as_ref()
+    self.auth_token.as_str()
   }
 }
 
@@ -224,7 +259,7 @@ impl Drop for NetworkProcessHandle {
       let _ = ipc::write_request_frame(
         &mut stream,
         &ipc::NetworkRequest::Hello {
-          token: self.auth_token.to_string(),
+          token: self.auth_token.as_str().to_string(),
         },
       );
       let _ = ipc::write_request_frame(&mut stream, &ipc::NetworkRequest::Shutdown);
@@ -242,7 +277,7 @@ impl Drop for NetworkProcessHandle {
 pub struct NetworkClient {
   addr: SocketAddr,
   connect_timeout: Duration,
-  auth_token: Arc<str>,
+  auth_token: NetworkAuthToken,
 }
 
 impl NetworkClient {
@@ -284,7 +319,7 @@ impl NetworkClient {
 pub struct IpcResourceFetcher {
   addr: SocketAddr,
   connect_timeout: Duration,
-  auth_token: Arc<str>,
+  auth_token: NetworkAuthToken,
 }
 
 impl IpcResourceFetcher {
@@ -296,7 +331,7 @@ impl IpcResourceFetcher {
     ipc::write_request_frame(
       &mut stream,
       &ipc::NetworkRequest::Hello {
-        token: self.auth_token.to_string(),
+        token: self.auth_token.as_str().to_string(),
       },
     )
     .map_err(Error::Io)?;
