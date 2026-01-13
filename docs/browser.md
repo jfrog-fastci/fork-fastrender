@@ -123,8 +123,10 @@ Startup note:
 
 - When run **without** a URL, the windowed `browser` app tries to restore the previous session
   (windows + tabs + per-tab zoom + best-effort scroll restoration).
-- If the previous run ended unexpectedly (unclean exit), the UI shows a crash-recovery infobar/toast
-  on startup (including a **Start new session** option).
+- If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the UI shows
+  a crash-recovery infobar/toast on startup (including a **Start new session** option).
+  - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
+    start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is provided.
   - Even when tabs are not restored (CLI URL or `--no-restore`), the browser may still reuse persisted
     **configuration** from the previous session (appearance/UI scale, menu bar visibility, and window

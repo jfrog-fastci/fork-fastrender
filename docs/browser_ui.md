@@ -241,6 +241,10 @@ Note: startup/session restore:
 
 - When run **without** a URL, the windowed `browser` app tries to restore the previous session
   (windows + tabs + per-tab zoom + best-effort scroll restoration).
+  - If the previous run ended unexpectedly (unclean exit) **and the session is restored**, the
+    active window shows a crash-recovery infobar/toast (including a **Start new session** option).
+  - If repeated unclean exits are detected (crash loop), the browser may skip auto-restoring tabs and
+    start with a “safe” `about:newtab` instead. Use `--restore` to force restoring anyway.
 - When run **with** a URL, it opens that URL and does not restore tabs unless `--restore` is
   provided.
 - `--no-restore` disables tab/session restore even when no URL is provided.
@@ -391,18 +395,22 @@ The session file format is versioned (currently v2) and includes:
     size so “unmaximize” returns to the expected size.
   - When a window is minimized, the browser avoids writing meaningless `0×0` window sizes (it keeps
     the last known non-zero geometry).
-- A crash marker (`did_exit_cleanly`) for detecting unclean exits
+- A crash marker (`did_exit_cleanly`) + crash-loop streak (`unclean_exit_streak`) for detecting
+  unclean exits and breaking restore crash loops
 - Appearance settings (theme mode, accent color, high contrast, reduced motion, UI scale)
 
 The windowed `browser` app uses a background autosave helper (`SessionAutosave` in
 [`src/ui/session_autosave.rs`](../src/ui/session_autosave.rs), wired up by the entrypoint in
 [`src/bin/browser.rs`](../src/bin/browser.rs)) so session writes do not block the UI thread:
 
-- **Crash marker:** on startup, the browser immediately persists `did_exit_cleanly=false`. If the
-  process is terminated unexpectedly, this marker remains false on disk and the next launch can
-  detect the unclean exit.
-  - UX: the next launch shows a crash-recovery infobar/toast (including a **Start new session**
-    option).
+- **Crash marker / crash-loop breaker:** on startup, the browser immediately persists
+  `did_exit_cleanly=false` and increments `unclean_exit_streak`. If the process is terminated
+  unexpectedly, these values remain on disk so the next launch can detect the unclean exit.
+  - UX (when restoring an unclean session): the active window shows a crash-recovery infobar/toast
+    (including a **Start new session** option).
+  - Crash-loop breaker: after a threshold number of consecutive unclean exits, the browser may skip
+    auto-restoring tabs and start with a safe new tab instead (use `--restore` to force restoring
+    anyway).
 - **Background autosave:** while the browser is running, it snapshots the current session and
   schedules a debounced background save on “significant” state changes (for example tab navigations,
   tab/window creation/closure, zoom/appearance changes, and window geometry changes).

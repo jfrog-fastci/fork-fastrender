@@ -251,6 +251,21 @@ Use `about:test-scroll` → `about:test-form` to build deterministic back/forwar
       `about:newtab` session (per window).
   - [ ] A warning is also printed to stderr indicating the previous session ended unexpectedly.
 
+### Crash-loop breaker (safe-start) (optional)
+
+If the browser repeatedly crashes during restore, it may stop auto-restoring tabs after a threshold
+and start with a safe `about:newtab` instead (unless `--restore` is used).
+
+- [ ] With an isolated session (`--session-path ...`), create a non-trivial session (multiple tabs).
+- [ ] Force *multiple* consecutive unclean exits (repeat the previous steps until the crash-loop
+  threshold is exceeded).
+- [ ] Relaunch the browser without a URL.
+- [ ] Expected results:
+  - [ ] The browser **does not** restore the full prior session; it starts with a safe `about:newtab`
+    instead.
+  - [ ] A warning is printed to stderr indicating restore was skipped due to repeated crashes.
+  - [ ] Running again with `--restore` forces restoring the previous session anyway.
+
 ### Renderer crash isolation (optional, dev/testing hook)
 
 This is separate from the session crash marker: it intentionally crashes the **render worker** while
