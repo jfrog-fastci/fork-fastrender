@@ -476,6 +476,11 @@ impl DebugConfig {
       "FASTR_LAYOUT_PROFILE",
       truthy(raw.get("FASTR_LAYOUT_PROFILE"), false),
     );
+    // FloatContext instrumentation/debug output (opt-in).
+    config.insert_bool(
+      "FASTR_LOG_FLOAT_CONTEXT",
+      truthy(raw.get("FASTR_LOG_FLOAT_CONTEXT"), false),
+    );
     config.insert_bool(
       "FASTR_FLEX_PROFILE",
       truthy(raw.get("FASTR_FLEX_PROFILE"), false),
