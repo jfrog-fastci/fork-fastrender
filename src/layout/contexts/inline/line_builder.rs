@@ -1607,10 +1607,6 @@ impl TextItem {
       return;
     }
 
-    // Cache each run's inline axis so we don't rescan glyphs per cluster in the slower fallback
-    // path.
-    let mut axes: Vec<Option<InlineAxis>> = vec![None; runs.len()];
-
     // Fallback: collect all clusters and sort if we observe any non-monotonic offsets. This handles
     // RTL runs, mixed-direction segments, and any unexpected shaping output ordering.
     //
@@ -1691,11 +1687,7 @@ impl TextItem {
         continue;
       }
 
-      let axis = axes[run_idx].unwrap_or_else(|| {
-        let axis = run_inline_axis(run);
-        axes[run_idx] = Some(axis);
-        axis
-      });
+      let axis = run_inline_axis(run);
 
       // `cluster.glyph_end` is derived from shaping output; clamp defensively so out-of-range
       // cluster indices (e.g. after glyph compaction) still apply spacing to the last glyph.
