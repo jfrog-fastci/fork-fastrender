@@ -10858,6 +10858,28 @@ impl DisplayListRenderer {
     scroll_delta_css: Point,
   ) -> Result<ScrollBlitReport> {
     let original_list = list;
+    if list.has_scroll_linked_animations() {
+      let mut full_renderer = DisplayListRenderer::new_with_text_state(
+        self.canvas.width(),
+        self.canvas.height(),
+        self.background,
+        self.font_ctx.clone(),
+        self.scale,
+        self.color_renderer.clone(),
+        self.color_cache.clone(),
+        self.glyph_cache.clone(),
+      )?;
+      full_renderer.paint_parallelism = self.paint_parallelism;
+      let pixmap = full_renderer.render_with_report(original_list)?.pixmap;
+      return Ok(ScrollBlitReport {
+        pixmap,
+        scroll_blit_used: false,
+        partial_repaint_used: false,
+        fallback_reason: Some(
+          "scroll-linked animation timeline present; full repaint".to_string(),
+        ),
+      });
+    }
     let composed = self
       .preserve_3d_disabled
       .then(|| crate::paint::preserve_3d::composite_preserve_3d(list));

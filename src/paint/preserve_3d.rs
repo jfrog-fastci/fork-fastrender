@@ -129,7 +129,7 @@ pub fn composite_preserve_3d_with_options(
     }
   }
 
-  DisplayList::from_items(items)
+  list.with_items(items)
 }
 
 #[derive(Debug, Clone)]

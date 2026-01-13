@@ -314,7 +314,7 @@ impl DisplayListOptimizer {
     out.extend(tail);
 
     stats.final_count = out.len();
-    Ok((DisplayList::from_items(out), stats))
+    Ok((list.with_items(out), stats))
   }
 
   /// Extract only the items that intersect the viewport while preserving stack
@@ -336,7 +336,7 @@ impl DisplayListOptimizer {
     let mut out = Vec::with_capacity(indices.len() + tail.len());
     out.extend(indices.into_iter().map(|idx| items[idx].clone()));
     out.extend(tail);
-    Ok(DisplayList::from_items(out))
+    Ok(list.with_items(out))
   }
 
   /// Extract indices of items that intersect the viewport while preserving stack operations.

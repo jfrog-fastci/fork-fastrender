@@ -117,6 +117,7 @@ pub mod preserve3d;
 pub mod preserve_3d;
 pub mod projective_warp;
 pub mod rasterize;
+pub(crate) mod scroll_blit;
 pub mod scene_tree;
 #[doc(hidden)]
 pub mod scratch;

@@ -2201,6 +2201,16 @@ impl DisplayListBuilder {
           }
 
           let style_opt = frame.fragment.style.as_deref();
+          if !self.list.has_scroll_linked_animations()
+            && (style_opt.is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines)
+              || frame
+                .fragment
+                .starting_style
+                .as_deref()
+                .is_some_and(crate::paint::scroll_blit::style_uses_scroll_linked_timelines))
+          {
+            self.list.mark_has_scroll_linked_animations();
+          }
           let paint_self = style_opt.map_or(true, |style| {
             matches!(
               style.visibility,

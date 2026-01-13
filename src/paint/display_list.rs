@@ -2864,6 +2864,13 @@ pub struct DisplayList {
 
   /// Cached bounding rectangle of all items
   bounds: Option<Rect>,
+
+  /// Whether this list contains elements participating in scroll-linked animations (CSS scroll/view
+  /// timelines, or named timelines conservatively).
+  ///
+  /// When set, scroll-blit optimizations must fall back to a full repaint because scroll affects
+  /// visual output beyond pure translation.
+  has_scroll_linked_animations: bool,
 }
 
 impl DisplayList {
@@ -2872,6 +2879,7 @@ impl DisplayList {
     Self {
       items: Vec::new(),
       bounds: None,
+      has_scroll_linked_animations: false,
     }
   }
 
@@ -2880,13 +2888,35 @@ impl DisplayList {
     Self {
       items: Vec::with_capacity(capacity),
       bounds: None,
+      has_scroll_linked_animations: false,
     }
   }
 
   /// Create a display list from a vector of items
   pub fn from_items(items: Vec<DisplayItem>) -> Self {
     let bounds = Self::compute_bounds(&items);
-    Self { items, bounds }
+    Self {
+      items,
+      bounds,
+      has_scroll_linked_animations: false,
+    }
+  }
+
+  pub(crate) fn with_items(&self, items: Vec<DisplayItem>) -> Self {
+    let bounds = Self::compute_bounds(&items);
+    Self {
+      items,
+      bounds,
+      has_scroll_linked_animations: self.has_scroll_linked_animations,
+    }
+  }
+
+  pub(crate) fn mark_has_scroll_linked_animations(&mut self) {
+    self.has_scroll_linked_animations = true;
+  }
+
+  pub fn has_scroll_linked_animations(&self) -> bool {
+    self.has_scroll_linked_animations
   }
 
   /// Add a display item to the list
@@ -2974,6 +3004,7 @@ impl DisplayList {
   /// Appends another display list onto this one, preserving order and invalidating bounds.
   pub fn append(&mut self, mut other: DisplayList) {
     self.bounds = None;
+    self.has_scroll_linked_animations |= other.has_scroll_linked_animations;
     self.items.append(&mut other.items);
   }
 
@@ -3002,6 +3033,7 @@ impl DisplayList {
   pub fn clear(&mut self) {
     self.items.clear();
     self.bounds = None;
+    self.has_scroll_linked_animations = false;
   }
 
   /// Get the bounding rectangle of all items
@@ -3056,7 +3088,7 @@ impl DisplayList {
       }
     }
 
-    DisplayList::from_items(culled_items)
+    self.with_items(culled_items)
   }
 
   /// Create a display list containing only items that intersect the viewport.

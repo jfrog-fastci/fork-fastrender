@@ -25892,7 +25892,7 @@ fn async_resume_from_frames(
                 Err(err) => return Err(err),
               };
 
-              match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
+                  match async_eval_class_after_super(evaluator, scope, binding, func_name, members, super_value) {
                 Ok(AsyncEval::Complete(v)) => state = AsyncState::Expr(Ok(v)),
                 Ok(AsyncEval::Suspend(mut suspend)) => {
                   suspend.frames.append(&mut frames);
