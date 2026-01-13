@@ -2811,6 +2811,28 @@ fn compiled_delete_optional_chain_short_circuits_to_true() -> Result<(), VmError
 }
 
 #[test]
+fn compiled_delete_non_configurable_property_throws_in_strict_mode() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      "use strict";
+      let o = {};
+      Object.defineProperty(o, "x", { value: 1, configurable: false });
+      let ok = 0;
+      try { delete o.x; } catch (e) { ok = 1; }
+      ok
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_instanceof_true_object_create_prototype() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
