@@ -243,6 +243,7 @@ pub use chrome_action_url::ChromeActionUrl;
 
 pub use crate::select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};
+pub use chrome_frame::chrome_frame_html_from_state;
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, chrome_ui_with_bookmarks};
 #[cfg(feature = "browser_ui")]
