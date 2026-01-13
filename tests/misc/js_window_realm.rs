@@ -2,10 +2,11 @@ use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
 use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::window_timers::VmJsEventLoopHooks;
 use fastrender::js::{
-  EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor,
-  ScriptOrchestrator, ScriptType, TaskSource, VirtualClock, WindowFetchEnv, WindowHost,
-  WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
+  DocumentHostState, DomHost, EventLoop, JsExecutionOptions, RunLimits, RunUntilIdleOutcome,
+  ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource, VirtualClock, WindowFetchEnv,
+  WindowHost, WindowHostState, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
+use fastrender::js::webidl::VmJsWebIdlBindingsHostDispatch;
 use fastrender::js::window_realm::DomBindingsBackend;
 use fastrender::render_control;
 use fastrender::resource::web_fetch::WebFetchLimits;
@@ -92,6 +93,88 @@ fn exec_script_in_window_host(
     panic!("exec_script_in_window_host: VmHostHooks finish returned error: {err}");
   }
   result
+}
+
+struct WebIdlWindowHostStateForTest {
+  document: DocumentHostState,
+  window: WindowRealm,
+  webidl_bindings_host: VmJsWebIdlBindingsHostDispatch<WebIdlWindowHostStateForTest>,
+}
+
+impl WebIdlWindowHostStateForTest {
+  fn from_renderer_dom(
+    renderer_dom: &fastrender::dom::DomNode,
+    document_url: impl Into<String>,
+  ) -> Result<Self> {
+    let document_url = document_url.into();
+    let document = DocumentHostState::new(Dom2Document::from_renderer_dom(renderer_dom));
+    let window = WindowRealm::new_with_js_execution_options(
+      WindowRealmConfig::new(document_url)
+        .with_dom_bindings_backend(DomBindingsBackend::WebIdl)
+        .with_current_script_state(document.current_script_handle().clone()),
+      js_opts_for_test(),
+    )
+    .map_err(|err| Error::Other(err.to_string()))?;
+    let webidl_bindings_host = VmJsWebIdlBindingsHostDispatch::new(window.global_object());
+    Ok(Self {
+      document,
+      window,
+      webidl_bindings_host,
+    })
+  }
+}
+
+impl DomHost for WebIdlWindowHostStateForTest {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&Dom2Document) -> R,
+  {
+    self.document.with_dom(f)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut Dom2Document) -> (R, bool),
+  {
+    self.document.mutate_dom(f)
+  }
+}
+
+impl WindowRealmHost for WebIdlWindowHostStateForTest {
+  fn vm_host_and_window_realm(
+    &mut self,
+  ) -> Result<(&mut dyn VmHost, &mut WindowRealm)> {
+    Ok((&mut self.document, &mut self.window))
+  }
+
+  fn webidl_bindings_host(
+    &mut self,
+  ) -> Option<&mut dyn webidl_vm_js::WebIdlBindingsHost> {
+    Some(&mut self.webidl_bindings_host)
+  }
+}
+
+fn exec_script_in_webidl_window_host(
+  host: &mut WebIdlWindowHostStateForTest,
+  source: &str,
+) -> Result<Value> {
+  // Provide a temporary `EventLoop` so Promise jobs can be queued/discarded safely even though this
+  // helper doesn't drive the event loop.
+  let mut event_loop = EventLoop::<WebIdlWindowHostStateForTest>::new();
+  let mut hooks = VmJsEventLoopHooks::<WebIdlWindowHostStateForTest>::new_with_host(host)?;
+  hooks.set_event_loop(&mut event_loop);
+
+  let (vm_host, realm) = host.vm_host_and_window_realm()?;
+  let result = realm.exec_script_with_host_and_hooks(vm_host, &mut hooks, source);
+
+  if let Some(err) = hooks.finish(realm.heap_mut()) {
+    return Err(err);
+  }
+
+  match result {
+    Ok(value) => Ok(value),
+    Err(err) => Err(Error::Other(format_vm_error(realm.heap_mut(), err))),
+  }
 }
 
 fn get_string(heap: &Heap, value: Value) -> String {
@@ -3863,6 +3946,120 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
     Some("1")
   );
 
+  Ok(())
+}
+
+#[test]
+fn webidl_shadow_root_is_fragment_like_and_not_detachable_open() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WebIdlWindowHostStateForTest::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  exec_script_in_webidl_window_host(
+    &mut host,
+    r#"
+  const hostEl = document.createElement("div");
+  document.body.appendChild(hostEl);
+
+  const sr = hostEl.attachShadow({ mode: "open" });
+  const child = document.createElement("b");
+  sr.appendChild(child);
+
+  globalThis.__remove_err = "no error";
+  try { hostEl.removeChild(sr); } catch (e) { globalThis.__remove_err = e && e.name; }
+
+  globalThis.__insert_before_err = "no error";
+  try { hostEl.insertBefore(document.createElement("i"), sr); } catch (e) { globalThis.__insert_before_err = e && e.name; }
+
+  const ret = document.body.appendChild(sr);
+  globalThis.__append_ret_same = (ret === sr);
+  globalThis.__sr_len = sr.childNodes.length;
+  globalThis.__child_parent_is_body = (child.parentNode === document.body);
+  globalThis.__shadow_root_still_attached = (hostEl.shadowRoot === sr);
+  "#,
+  )?;
+
+  let (
+    remove_err,
+    insert_before_err,
+    append_ret_same,
+    sr_len,
+    child_parent_is_body,
+    shadow_root_still_attached,
+  ) = {
+    let global = host.window.global_object();
+    let (_vm, heap) = host.window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let remove_err_v = get_data_prop(&mut scope, global, "__remove_err");
+    let insert_before_err_v = get_data_prop(&mut scope, global, "__insert_before_err");
+    (
+      get_string(scope.heap(), remove_err_v),
+      get_string(scope.heap(), insert_before_err_v),
+      get_data_prop(&mut scope, global, "__append_ret_same"),
+      get_data_prop(&mut scope, global, "__sr_len"),
+      get_data_prop(&mut scope, global, "__child_parent_is_body"),
+      get_data_prop(&mut scope, global, "__shadow_root_still_attached"),
+    )
+  };
+
+  assert_eq!(remove_err, "NotFoundError");
+  assert_eq!(insert_before_err, "NotFoundError");
+  assert_eq!(append_ret_same, Value::Bool(true));
+  assert_eq!(sr_len, Value::Number(0.0));
+  assert_eq!(child_parent_is_body, Value::Bool(true));
+  assert_eq!(shadow_root_still_attached, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn webidl_shadow_root_is_fragment_like_and_not_detachable_closed() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WebIdlWindowHostStateForTest::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  exec_script_in_webidl_window_host(
+    &mut host,
+    r#"
+  const hostEl = document.createElement("div");
+  document.body.appendChild(hostEl);
+
+  const sr = hostEl.attachShadow({ mode: "closed" });
+  const child = document.createElement("b");
+  sr.appendChild(child);
+
+  globalThis.__remove_err = "no error";
+  try { hostEl.removeChild(sr); } catch (e) { globalThis.__remove_err = e && e.name; }
+
+  globalThis.__insert_before_err = "no error";
+  try { hostEl.insertBefore(document.createElement("i"), sr); } catch (e) { globalThis.__insert_before_err = e && e.name; }
+
+  const ret = document.body.appendChild(sr);
+  globalThis.__append_ret_same = (ret === sr);
+  globalThis.__sr_len = sr.childNodes.length;
+  globalThis.__child_parent_is_body = (child.parentNode === document.body);
+  "#,
+  )?;
+
+  let (remove_err, insert_before_err, append_ret_same, sr_len, child_parent_is_body) = {
+    let global = host.window.global_object();
+    let (_vm, heap) = host.window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let remove_err_v = get_data_prop(&mut scope, global, "__remove_err");
+    let insert_before_err_v = get_data_prop(&mut scope, global, "__insert_before_err");
+    (
+      get_string(scope.heap(), remove_err_v),
+      get_string(scope.heap(), insert_before_err_v),
+      get_data_prop(&mut scope, global, "__append_ret_same"),
+      get_data_prop(&mut scope, global, "__sr_len"),
+      get_data_prop(&mut scope, global, "__child_parent_is_body"),
+    )
+  };
+
+  assert_eq!(remove_err, "NotFoundError");
+  assert_eq!(insert_before_err, "NotFoundError");
+  assert_eq!(append_ret_same, Value::Bool(true));
+  assert_eq!(sr_len, Value::Number(0.0));
+  assert_eq!(child_parent_is_body, Value::Bool(true));
   Ok(())
 }
 
