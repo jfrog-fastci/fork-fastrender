@@ -20532,6 +20532,14 @@ fn to_uint32(n: f64) -> u32 {
   int as u32
 }
 
+fn is_integral_number(n: f64) -> bool {
+  n.is_finite() && n.fract() == 0.0
+}
+
+fn is_odd_integral_number(n: f64) -> bool {
+  is_integral_number(n) && (n % 2.0).abs() == 1.0
+}
+
 const MATH_VARIADIC_TICK_EVERY: usize = 32;
 const MATH_SUM_PRECISE_TICK_EVERY: u64 = 32;
 const MATH_SUM_PRECISE_MAX_COUNT: u64 = (1u64 << 53) - 1;
@@ -21064,35 +21072,62 @@ pub fn math_hypot(
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  // Spec: https://tc39.es/ecma262/#sec-math.hypot
+  //
+  // Must coerce all arguments (in order) before inspecting them so side effects occur even if an
+  // earlier argument becomes ±Infinity/NaN.
   if args.is_empty() {
     return Ok(Value::Number(0.0));
   }
 
-  let mut seen_nan = false;
-  let mut acc = 0.0f64;
+  let mut coerced: Vec<f64> = Vec::new();
+  coerced
+    .try_reserve_exact(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
   for (i, v) in args.iter().copied().enumerate() {
     if i % MATH_VARIADIC_TICK_EVERY == 0 {
       vm.tick()?;
     }
     let n = scope.to_number(vm, host, hooks, v)?;
+    coerced.push(n);
+  }
+
+  // Spec: ±Infinity overrides NaN.
+  for (i, n) in coerced.iter().copied().enumerate() {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
     if n.is_infinite() {
-      // Spec: ±Infinity overrides NaN.
       return Ok(Value::Number(f64::INFINITY));
-    }
-    if n.is_nan() {
-      seen_nan = true;
-      continue;
-    }
-    if !seen_nan {
-      acc = acc.hypot(n);
     }
   }
 
-  if seen_nan {
-    Ok(Value::Number(f64::NAN))
-  } else {
-    Ok(Value::Number(acc))
+  let mut only_zero = true;
+  for (i, n) in coerced.iter().copied().enumerate() {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    if n.is_nan() {
+      return Ok(Value::Number(f64::NAN));
+    }
+    if n != 0.0 {
+      only_zero = false;
+    }
   }
+  if only_zero {
+    return Ok(Value::Number(0.0));
+  }
+
+  // Numeric stability: fold pairwise `hypot` across the coerced values.
+  let mut acc = 0.0f64;
+  for (i, n) in coerced.into_iter().enumerate() {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
+    acc = acc.hypot(n);
+  }
+  Ok(Value::Number(acc))
 }
 
 /// `Math.imul(a, b)` (ECMA-262).
@@ -21318,12 +21353,24 @@ pub fn math_max(
     return Ok(Value::Number(f64::NEG_INFINITY));
   }
 
-  let mut best = f64::NEG_INFINITY;
+  // Spec: https://tc39.es/ecma262/#sec-math.max
+  // Coerce all arguments before inspecting them.
+  let mut coerced: Vec<f64> = Vec::new();
+  coerced
+    .try_reserve_exact(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
   for (i, v) in args.iter().copied().enumerate() {
     if i % MATH_VARIADIC_TICK_EVERY == 0 {
       vm.tick()?;
     }
-    let n = scope.to_number(vm, host, hooks, v)?;
+    coerced.push(scope.to_number(vm, host, hooks, v)?);
+  }
+
+  let mut best = f64::NEG_INFINITY;
+  for (i, n) in coerced.into_iter().enumerate() {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
     if n.is_nan() {
       return Ok(Value::Number(f64::NAN));
     }
@@ -21354,12 +21401,24 @@ pub fn math_min(
     return Ok(Value::Number(f64::INFINITY));
   }
 
-  let mut best = f64::INFINITY;
+  // Spec: https://tc39.es/ecma262/#sec-math.min
+  // Coerce all arguments before inspecting them.
+  let mut coerced: Vec<f64> = Vec::new();
+  coerced
+    .try_reserve_exact(args.len())
+    .map_err(|_| VmError::OutOfMemory)?;
   for (i, v) in args.iter().copied().enumerate() {
     if i % MATH_VARIADIC_TICK_EVERY == 0 {
       vm.tick()?;
     }
-    let n = scope.to_number(vm, host, hooks, v)?;
+    coerced.push(scope.to_number(vm, host, hooks, v)?);
+  }
+
+  let mut best = f64::INFINITY;
+  for (i, n) in coerced.into_iter().enumerate() {
+    if i % MATH_VARIADIC_TICK_EVERY == 0 {
+      vm.tick()?;
+    }
     if n.is_nan() {
       return Ok(Value::Number(f64::NAN));
     }
@@ -21390,7 +21449,65 @@ pub fn math_pow(
   let exp = args.get(1).copied().unwrap_or(Value::Undefined);
   let x = scope.to_number(vm, host, hooks, base)?;
   let y = scope.to_number(vm, host, hooks, exp)?;
-  Ok(Value::Number(x.powf(y)))
+  // Spec: https://tc39.es/ecma262/#sec-numeric-types-number-exponentiate
+  let out = if y.is_nan() {
+    f64::NAN
+  } else if y == 0.0 {
+    1.0
+  } else if x.is_nan() {
+    f64::NAN
+  } else if x == f64::INFINITY {
+    if y > 0.0 { f64::INFINITY } else { 0.0 }
+  } else if x == f64::NEG_INFINITY {
+    if y > 0.0 {
+      if is_odd_integral_number(y) {
+        f64::NEG_INFINITY
+      } else {
+        f64::INFINITY
+      }
+    } else if is_odd_integral_number(y) {
+      -0.0
+    } else {
+      0.0
+    }
+  } else if x == 0.0 && !x.is_sign_negative() {
+    if y > 0.0 { 0.0 } else { f64::INFINITY }
+  } else if x == 0.0 && x.is_sign_negative() {
+    if y > 0.0 {
+      if is_odd_integral_number(y) {
+        -0.0
+      } else {
+        0.0
+      }
+    } else if is_odd_integral_number(y) {
+      f64::NEG_INFINITY
+    } else {
+      f64::INFINITY
+    }
+  } else if y == f64::INFINITY {
+    let abs = x.abs();
+    if abs > 1.0 {
+      f64::INFINITY
+    } else if abs == 1.0 {
+      f64::NAN
+    } else {
+      0.0
+    }
+  } else if y == f64::NEG_INFINITY {
+    let abs = x.abs();
+    if abs > 1.0 {
+      0.0
+    } else if abs == 1.0 {
+      f64::NAN
+    } else {
+      f64::INFINITY
+    }
+  } else if x < 0.0 && !is_integral_number(y) {
+    f64::NAN
+  } else {
+    x.powf(y)
+  };
+  Ok(Value::Number(out))
 }
 
 /// `Math.sqrt(x)` (ECMA-262).
