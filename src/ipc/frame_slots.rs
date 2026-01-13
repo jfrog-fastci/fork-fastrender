@@ -84,9 +84,12 @@ impl UnixSeqpacket {
   }
 
   pub fn send_with_fds(&self, data: &[u8], fds: &[RawFd]) -> Result<(), Error> {
-    if data.is_empty() && !fds.is_empty() {
+    // Disallow empty payload messages. This ensures:
+    // - `recvmsg` returning 0 bytes is unambiguous EOF, and
+    // - `SCM_RIGHTS` is never sent without a byte payload (see `unix(7)`).
+    if data.is_empty() {
       return Err(Error::Other(
-        "fd passing requires at least one byte of payload data".to_string(),
+        "seqpacket messages must contain at least one byte of payload data".to_string(),
       ));
     }
 
@@ -132,21 +135,31 @@ impl UnixSeqpacket {
       msg_flags: 0,
     };
 
-    // SAFETY: `hdr` points to valid data and control buffers for the duration of the call.
-    let rc = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &hdr, libc::MSG_NOSIGNAL) };
-    if rc < 0 {
-      return Err(Error::Io(io::Error::last_os_error()));
+    loop {
+      // SAFETY: `hdr` points to valid data and control buffers for the duration of the call.
+      let rc = unsafe { libc::sendmsg(self.fd.as_raw_fd(), &hdr, libc::MSG_NOSIGNAL) };
+      if rc < 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(Error::Io(err));
+      }
+      if rc as usize != data.len() {
+        return Err(Error::Io(io::Error::new(
+          io::ErrorKind::WriteZero,
+          "short sendmsg on seqpacket socket",
+        )));
+      }
+      return Ok(());
     }
-    if rc as usize != data.len() {
-      return Err(Error::Io(io::Error::new(
-        io::ErrorKind::WriteZero,
-        "short sendmsg on seqpacket socket",
-      )));
-    }
-    Ok(())
   }
 
   pub fn recv_with_fds(&self, buf: &mut [u8], max_fds: usize) -> Result<(usize, Vec<OwnedFd>), Error> {
+    if buf.is_empty() {
+      return Err(Error::Other("recv buffer must be non-empty".to_string()));
+    }
+
     let mut iov = libc::iovec {
       iov_base: buf.as_mut_ptr() as *mut libc::c_void,
       iov_len: buf.len(),
@@ -176,33 +189,45 @@ impl UnixSeqpacket {
       msg_flags: 0,
     };
 
-    // SAFETY: `hdr` points to valid buffers.
     let mut need_manual_cloexec = false;
-    let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, libc::MSG_CMSG_CLOEXEC) };
-    let rc = if rc >= 0 {
-      rc
-    } else {
+    let rc = loop {
+      // `recvmsg` mutates `msg_controllen` on success; reset it for retries.
+      hdr.msg_controllen = control_len;
+      hdr.msg_flags = 0;
+
+      // SAFETY: `hdr` points to valid buffers.
+      let rc = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, libc::MSG_CMSG_CLOEXEC) };
+      if rc >= 0 {
+        break rc;
+      }
+
       let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+
       // Some environments reject MSG_CMSG_CLOEXEC with EINVAL; retry without and set FD_CLOEXEC
       // manually on any received fds.
       if err.raw_os_error() == Some(libc::EINVAL) {
         need_manual_cloexec = true;
-        let rc2 = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, 0) };
-        if rc2 < 0 {
-          return Err(Error::Io(io::Error::last_os_error()));
-        }
-        rc2
-      } else {
-        return Err(Error::Io(err));
+        let rc2 = loop {
+          hdr.msg_controllen = control_len;
+          hdr.msg_flags = 0;
+          let rc2 = unsafe { libc::recvmsg(self.fd.as_raw_fd(), &mut hdr, 0) };
+          if rc2 >= 0 {
+            break rc2;
+          }
+          let err2 = io::Error::last_os_error();
+          if err2.kind() == io::ErrorKind::Interrupted {
+            continue;
+          }
+          return Err(Error::Io(err2));
+        };
+        break rc2;
       }
-    };
 
-    if (hdr.msg_flags & libc::MSG_TRUNC) != 0 {
-      return Err(Error::Other("truncated seqpacket message".to_string()));
-    }
-    if (hdr.msg_flags & libc::MSG_CTRUNC) != 0 {
-      return Err(Error::Other("truncated control message".to_string()));
-    }
+      return Err(Error::Io(err));
+    };
 
     let mut fds_out: Vec<OwnedFd> = Vec::new();
 
@@ -256,6 +281,23 @@ impl UnixSeqpacket {
         }
         cmsg_ptr = next as *const libc::cmsghdr;
       }
+    }
+
+    // After parsing (so any received fds are wrapped/closed on error), validate the recvmsg flags.
+    if (hdr.msg_flags & libc::MSG_TRUNC) != 0 {
+      drop(fds_out);
+      return Err(Error::Other("truncated seqpacket message".to_string()));
+    }
+    if (hdr.msg_flags & libc::MSG_CTRUNC) != 0 {
+      drop(fds_out);
+      return Err(Error::Other("truncated control message".to_string()));
+    }
+    if rc == 0 {
+      drop(fds_out);
+      return Err(Error::Io(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "peer closed seqpacket socket",
+      )));
     }
 
     if need_manual_cloexec {
