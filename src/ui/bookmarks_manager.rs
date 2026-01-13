@@ -421,23 +421,10 @@ pub fn bookmarks_manager_side_panel(
               .color(ui.visuals().weak_text_color()),
           );
 
-          let resp = ui.add(
-            egui::TextEdit::singleline(&mut state.export_path)
-              .hint_text(profile_path.display().to_string())
-              .desired_width(f32::INFINITY),
-          );
-          resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Export path"));
-          if resp.has_focus() || resp.clicked() {
-            out.unfocus_page = true;
-          }
-
-          ui.horizontal_wrapped(|ui| {
-            let choose_resp = ui.button("Choose save location…");
+          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let choose_resp = ui.small_button("Choose file…");
             choose_resp.widget_info(|| {
-              egui::WidgetInfo::labeled(
-                egui::WidgetType::Button,
-                "Choose export save location",
-              )
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose export file")
             });
             if choose_resp.clicked() {
               out
@@ -445,6 +432,21 @@ pub fn bookmarks_manager_side_panel(
                 .push(BookmarksManagerRequest::RequestOpenExportDialog);
             }
 
+            ui.add_space(6.0);
+
+            let resp = ui.add(
+              egui::TextEdit::singleline(&mut state.export_path)
+                .hint_text(profile_path.display().to_string())
+                .desired_width(f32::INFINITY),
+            );
+            resp
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Export path"));
+            if resp.has_focus() || resp.clicked() {
+              out.unfocus_page = true;
+            }
+          });
+
+          ui.horizontal_wrapped(|ui| {
             if ui.button("Use profile path").clicked() {
               state.export_path = profile_path.display().to_string();
             }
@@ -507,18 +509,8 @@ pub fn bookmarks_manager_side_panel(
               .color(ui.visuals().weak_text_color()),
           );
 
-          let resp = ui.add(
-            egui::TextEdit::singleline(&mut state.import_path)
-              .hint_text(profile_path.display().to_string())
-              .desired_width(f32::INFINITY),
-          );
-          resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import path"));
-          if resp.has_focus() || resp.clicked() {
-            out.unfocus_page = true;
-          }
-
-          ui.horizontal_wrapped(|ui| {
-            let choose_resp = ui.button("Choose file…");
+          ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let choose_resp = ui.small_button("Choose file…");
             choose_resp.widget_info(|| {
               egui::WidgetInfo::labeled(egui::WidgetType::Button, "Choose import file")
             });
@@ -528,6 +520,21 @@ pub fn bookmarks_manager_side_panel(
                 .push(BookmarksManagerRequest::RequestOpenImportDialog);
             }
 
+            ui.add_space(6.0);
+
+            let resp = ui.add(
+              egui::TextEdit::singleline(&mut state.import_path)
+                .hint_text(profile_path.display().to_string())
+                .desired_width(f32::INFINITY),
+            );
+            resp
+              .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Import path"));
+            if resp.has_focus() || resp.clicked() {
+              out.unfocus_page = true;
+            }
+          });
+
+          ui.horizontal_wrapped(|ui| {
             if ui.button("Use profile path").clicked() {
               state.import_path = profile_path.display().to_string();
             }
@@ -1837,22 +1844,32 @@ mod tests {
     (out, output)
   }
 
-  fn find_text_center(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Pos2> {
-    fn in_shape(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
+  fn find_text_centers(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Vec<egui::Pos2> {
+    fn in_shape(shape: &egui::epaint::Shape, needle: &str, out: &mut Vec<egui::Pos2>) {
       match shape {
         egui::epaint::Shape::Text(text) => {
           if text.galley.text().contains(needle) {
-            Some(text.pos + text.galley.size() / 2.0)
-          } else {
-            None
+            out.push(text.pos + text.galley.size() / 2.0);
           }
         }
-        egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|s| in_shape(s, needle)),
-        _ => None,
+        egui::epaint::Shape::Vec(shapes) => {
+          for shape in shapes {
+            in_shape(shape, needle, out);
+          }
+        }
+        _ => {}
       }
     }
 
-    shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
+    let mut out = Vec::new();
+    for clipped in shapes {
+      in_shape(&clipped.shape, needle, &mut out);
+    }
+    out
+  }
+
+  fn find_text_center(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Pos2> {
+    find_text_centers(shapes, needle).into_iter().next()
   }
 
   fn ensure_import_export_open(
@@ -1885,8 +1902,11 @@ mod tests {
     ensure_import_export_open(&ctx, &mut state, &mut store);
 
     let (_out, output) = bm_frame(&ctx, &mut state, &mut store, Vec::new());
-    let choose_pos = find_text_center(&output.shapes, "Choose file…")
-      .expect("failed to find Choose file… button");
+    let mut choose_positions = find_text_centers(&output.shapes, "Choose file…");
+    choose_positions.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let choose_pos = *choose_positions
+      .last()
+      .expect("failed to find Choose file… button for import");
 
     let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
     assert!(
@@ -1900,15 +1920,18 @@ mod tests {
   }
 
   #[test]
-  fn choose_save_location_button_emits_export_dialog_request() {
+  fn choose_file_button_emits_export_dialog_request() {
     let ctx = egui::Context::default();
     let mut state = BookmarksManagerState::default();
     let mut store = BookmarkStore::default();
     ensure_import_export_open(&ctx, &mut state, &mut store);
 
     let (_out, output) = bm_frame(&ctx, &mut state, &mut store, Vec::new());
-    let choose_pos = find_text_center(&output.shapes, "Choose save location…")
-      .expect("failed to find Choose save location… button");
+    let mut choose_positions = find_text_centers(&output.shapes, "Choose file…");
+    choose_positions.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let choose_pos = *choose_positions
+      .first()
+      .expect("failed to find Choose file… button for export");
 
     let (out, _output) = bm_frame(&ctx, &mut state, &mut store, left_click_at(choose_pos));
     assert!(
@@ -1916,7 +1939,7 @@ mod tests {
         .requests
         .iter()
         .any(|r| *r == BookmarksManagerRequest::RequestOpenExportDialog),
-      "expected clicking Choose save location… to emit RequestOpenExportDialog, got {:?}",
+      "expected clicking Choose file… to emit RequestOpenExportDialog, got {:?}",
       out.requests
     );
   }
