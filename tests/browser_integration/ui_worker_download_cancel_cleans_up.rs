@@ -161,6 +161,16 @@ fn ui_worker_download_cancel_cleans_up() {
     panic!("timed out waiting for DownloadProgress after DownloadStarted for download {download_id:?}")
   });
 
+  // At this point the worker should have created a temp `*.part` file in the configured download
+  // directory (it writes to the `.part` file and renames on success).
+  let part_path = fastrender::ui::downloads::part_path_for_final(&path);
+  assert!(
+    part_path.is_file(),
+    "expected in-progress download to have created temp file {}, but it does not exist",
+    part_path.display()
+  );
+  assert_path_in_download_dir(&part_path, download_dir.path());
+
   ui_tx
     .send(UiToWorker::CancelDownload { tab_id, download_id })
     .unwrap();
