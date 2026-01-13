@@ -6627,6 +6627,70 @@ mod tests {
     );
   }
 
+  #[test]
+  fn omnibox_alt_enter_with_switch_to_tab_selection_emits_activate_tab_action() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "about:newtab".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://example.com/".to_string()),
+      false,
+    );
+    app.chrome.address_bar_text.clear();
+
+    let ctx = egui::Context::default();
+
+    app.chrome.request_focus_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    // Type something that matches tab_b's URL so OpenTabsProvider yields an ActivateTab suggestion.
+    begin_frame(&ctx, vec![egui::Event::Text("example".into())]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    // ArrowDown selects the primary suggestion first; ArrowDown again should select the open-tab
+    // ("switch to tab") suggestion.
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers {
+          alt: true,
+          ..Default::default()
+        },
+      }],
+    );
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, &ChromeAction::ActivateTab(id) if id == tab_b)),
+      "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
+    );
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::OpenUrlInNewTab(_))),
+      "did not expect ChromeAction::OpenUrlInNewTab, got {actions:?}"
+    );
+  }
+
   fn expect_temp_rect(ctx: &egui::Context, key: &'static str) -> egui::Rect {
     ctx
       .data(|d| d.get_temp::<egui::Rect>(egui::Id::new(key)))
