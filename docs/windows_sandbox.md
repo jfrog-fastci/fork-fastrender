@@ -229,11 +229,11 @@ We configure the renderer Job object with `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`
   - This is important even if the token is restricted: child processes complicate containment and
     can become an escape vector if they end up outside the intended security config.
 
-- **UI restrictions (best-effort):** `JOBOBJECT_BASIC_UI_RESTRICTIONS`
+- **UI restrictions:** `JOBOBJECT_BASIC_UI_RESTRICTIONS`
   - Disables a set of UI capabilities (clipboard, global atoms, display settings, etc.) appropriate
     for a headless renderer.
   - In `src/sandbox/windows.rs` this is “best-effort” (failure is ignored); in `crates/win-sandbox`,
-    `Job::set_ui_restrictions_headless()` treats failure as an error.
+    `Job::set_ui_restrictions_headless()` returns an error on failure.
 
 - **Optional memory cap:** `JOB_OBJECT_LIMIT_JOB_MEMORY` / `JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit`
   - Supported by `crates/win-sandbox` (`Job::set_job_memory_limit_bytes`), but **not currently set**
