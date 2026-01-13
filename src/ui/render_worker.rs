@@ -14,8 +14,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::html::{find_document_favicon_url, find_document_title};
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{
-  hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind, InteractionAction,
-  InteractionEngine,
+  cursor_kind_for_hit, hit_test_dom, FormSubmission, FormSubmissionMethod, HitTestKind,
+  InteractionAction, InteractionEngine,
 };
 use crate::js::RunLimits;
 use crate::paint::rasterize::fill_rect;
@@ -1437,7 +1437,6 @@ fn js_find_form_owner_for_submitter(
   }
   None
 }
-
 fn compute_scroll_metrics(
   doc: Option<&BrowserDocument>,
   viewport_css: (u32, u32),
@@ -4761,22 +4760,16 @@ impl BrowserRuntime {
         } else {
           match hit {
             Some(hit) => {
-              let tooltip = tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain());
+              let tooltip =
+                tooltip_from_hover_chain(dom, engine.interaction_state().hover_chain());
+              let cursor = cursor_kind_for_hit(Some(&hit));
               let crate::interaction::HitTestResult {
-                css_cursor,
-                is_selectable_text,
                 dom_element_id,
-                form_control_cursor,
                 dom_node_id,
                 kind,
                 href,
                 ..
               } = hit;
-
-              // Prefer the computed `cursor` property (including UA stylesheet defaults) so hover
-              // behaviour matches the platform. Only fall back to legacy heuristics when the computed
-              // cursor is `auto`.
-              let css_cursor_kind = CursorKind::from_css_cursor_keyword(css_cursor);
 
               // `hovered_url` remains a semantic link property even when CSS overrides the cursor.
               let hovered_url = match kind {
@@ -4784,25 +4777,6 @@ impl BrowserRuntime {
                   .as_deref()
                   .and_then(|href| resolve_link_url(base_url, href)),
                 _ => None,
-              };
-
-              let cursor = match css_cursor_kind {
-                Some(cursor) => cursor,
-                None => match kind {
-                  HitTestKind::Link => {
-                    // Keep showing the hand cursor over links even when we reject the URL scheme
-                    // (e.g. `javascript:`).
-                    CursorKind::Pointer
-                  }
-                  HitTestKind::FormControl => form_control_cursor,
-                  _ => {
-                    if is_selectable_text {
-                      CursorKind::Text
-                    } else {
-                      CursorKind::Default
-                    }
-                  }
-                },
               };
 
               (
