@@ -10780,6 +10780,21 @@ fn maybe_adopt_node_into_document(
     )?;
   }
 
+  // Remap any live ranges whose boundary points were inside the adopted subtree.
+  //
+  // `dom2::Document::adopt_node_from` approximates DOM adoption by cloning nodes and returning an
+  // old→new `NodeId` mapping so the JS binding layer can preserve wrapper identity. Range boundary
+  // points store `NodeId`s as well, so they must be updated alongside wrapper remapping to keep
+  // `Range.startContainer` / `Range.endContainer` stable.
+  //
+  // NOTE: When the node had a parent, `adopt_node_from` detaches it using `remove_child`, which
+  // already performs the DOM "live range pre-remove steps" on the source document. This remap
+  // therefore primarily affects ranges anchored in *detached* subtrees (which are not subject to
+  // pre-remove rewriting per spec).
+  //
+  // SAFETY: `src_dom_ptr` is valid for the duration of this native call.
+  unsafe { src_dom_ptr.as_mut() }.range_remap_node_ids(&mapping);
+
   let Some(platform) = dom_platform_mut(vm) else {
     return Ok(DomNodeKey::new(dest_document_id, new_root));
   };

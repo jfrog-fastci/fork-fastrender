@@ -2,6 +2,8 @@
 
 use super::{parse_html, Document, DomError, NodeKind};
 use crate::dom::HTML_NAMESPACE;
+use selectors::context::QuirksMode;
+use std::collections::HashMap;
 
 #[test]
 fn range_tree_root_stops_at_shadow_root_and_pre_remove_does_not_cross_shadow_boundary() {
@@ -580,4 +582,39 @@ fn range_compare_boundary_points_orders_boundary_points() {
   assert_eq!(doc.range_compare_boundary_points(a, 0, b).unwrap(), -1);
   assert_eq!(doc.range_compare_boundary_points(b, 0, a).unwrap(), 1);
   assert_eq!(doc.range_compare_boundary_points(a, 0, a).unwrap(), 0);
+}
+
+#[test]
+fn range_remap_node_ids_updates_boundary_points_for_cross_document_adopted_detached_subtree() {
+  let mut src = Document::new(QuirksMode::NoQuirks);
+
+  // Create a detached subtree and a Range anchored inside it.
+  let detached_root = src.create_element("div", "");
+  let text = src.create_text("hello");
+  src.append_child(detached_root, text).unwrap();
+
+  let range = src.create_range();
+  src.range_set_start(range, text, 1).unwrap();
+  src.range_set_end(range, text, 4).unwrap();
+
+  // Adopt the subtree into a new document. `dom2` approximates adoption via clone+mapping, which
+  // changes `NodeId` values.
+  let mut dest = Document::new(QuirksMode::NoQuirks);
+  let adopted = dest.adopt_node_from(&mut src, detached_root).unwrap();
+  let mapping: HashMap<_, _> = adopted.mapping.into_iter().collect();
+  let new_text = *mapping.get(&text).expect("expected text node to be remapped");
+
+  // Remap Range endpoints using the same old→new mapping used by wrapper identity remapping.
+  src.range_remap_node_ids(&mapping);
+
+  assert_eq!(src.range_start_container(range).unwrap(), new_text);
+  assert_eq!(src.range_start_offset(range).unwrap(), 1);
+  assert_eq!(src.range_end_container(range).unwrap(), new_text);
+  assert_eq!(src.range_end_offset(range).unwrap(), 4);
+
+  assert!(new_text.index() < dest.nodes_len());
+  assert!(
+    matches!(dest.node(new_text).kind, NodeKind::Text { .. }),
+    "remapped endpoint should refer to the cloned text node in the destination document"
+  );
 }

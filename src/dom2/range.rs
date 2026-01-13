@@ -1,5 +1,6 @@
 use super::{Document, DomError, DomResult, LiveRangeId, NodeId, NodeKind};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// A DOM boundary point (node, offset) used by Range algorithms.
 ///
@@ -230,23 +231,23 @@ impl Document {
     self.ranges.remove(&id);
   }
 
-  /// Live range pre-insert steps.
+  /// Remap `NodeId` references stored in all live ranges.
   ///
-  /// Spec: https://dom.spec.whatwg.org/#concept-node-insert
-  pub(super) fn live_range_pre_insert_steps(&mut self, parent: NodeId, index: usize, count: usize) {
-    if count == 0 || self.ranges.is_empty() {
+  /// This is intended for clone+mapping operations that preserve JS wrapper identity by updating
+  /// wrapper objects to point at new `NodeId` values (e.g. cross-document adoption approximations).
+  ///
+  /// Any range endpoints whose container node is present in `mapping` are updated in-place. Offsets
+  /// are preserved.
+  pub(crate) fn range_remap_node_ids(&mut self, mapping: &HashMap<NodeId, NodeId>) {
+    if mapping.is_empty() || self.ranges.is_empty() {
       return;
     }
-
-    // Per DOM's insertion algorithm:
-    // - For each live range whose start/end node is `parent` and whose offset is greater than the
-    //   insertion index, increase its offset by the number of inserted nodes.
     for range in self.ranges.values_mut() {
-      if range.start.node == parent && range.start.offset > index {
-        range.start.offset = range.start.offset.saturating_add(count);
+      if let Some(&new_start) = mapping.get(&range.start.node) {
+        range.start.node = new_start;
       }
-      if range.end.node == parent && range.end.offset > index {
-        range.end.offset = range.end.offset.saturating_add(count);
+      if let Some(&new_end) = mapping.get(&range.end.node) {
+        range.end.node = new_end;
       }
     }
   }
