@@ -422,6 +422,14 @@ fn appcontainer_denies_filesystem_and_network() {
     return;
   }
 
+  let support = win_sandbox::SandboxSupport::detect();
+  if support != win_sandbox::SandboxSupport::Full {
+    eprintln!(
+      "skipping AppContainer filesystem/network denial test: Windows sandbox is unavailable ({support})"
+    );
+    return;
+  }
+
   // Serialize network-heavy tests to keep CI deterministic. Take this lock first to avoid lock-order
   // inversions with helpers that also take the global env lock.
   let _net_guard = crate::common::net_test_lock();
@@ -506,9 +514,7 @@ fn job_object_kill_on_close_terminates_child() {
 
   let support = win_sandbox::SandboxSupport::detect();
   if support != win_sandbox::SandboxSupport::Full {
-    eprintln!(
-      "skipping JobObject kill-on-close test: Windows sandbox is unavailable ({support})"
-    );
+    eprintln!("skipping JobObject kill-on-close test: Windows sandbox is unavailable ({support})");
     return;
   }
 
