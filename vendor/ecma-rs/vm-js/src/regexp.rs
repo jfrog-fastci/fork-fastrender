@@ -1641,6 +1641,30 @@ fn is_line_terminator_unit(u: u16) -> bool {
   matches!(u, 0x000A | 0x000D | 0x2028 | 0x2029)
 }
 
+fn is_ascii_letter(u: u16) -> bool {
+  (b'a' as u16..=b'z' as u16).contains(&u) || (b'A' as u16..=b'Z' as u16).contains(&u)
+}
+
+fn is_syntax_character(u: u16) -> bool {
+  matches!(
+    u,
+    x if x == (b'^' as u16)
+      || x == (b'$' as u16)
+      || x == (b'\\' as u16)
+      || x == (b'.' as u16)
+      || x == (b'*' as u16)
+      || x == (b'+' as u16)
+      || x == (b'?' as u16)
+      || x == (b'(' as u16)
+      || x == (b')' as u16)
+      || x == (b'[' as u16)
+      || x == (b']' as u16)
+      || x == (b'{' as u16)
+      || x == (b'}' as u16)
+      || x == (b'|' as u16)
+  )
+}
+
 #[inline]
 fn is_basic_word_unit(u: u16) -> bool {
   matches!(u, 0x0030..=0x0039)
@@ -2279,14 +2303,72 @@ impl<'a> Parser<'a> {
           x if x == (b's' as u16) => Ok(CharClassItem::Space { negated: false }),
           x if x == (b'S' as u16) => Ok(CharClassItem::Space { negated: true }),
           x if x == (b'b' as u16) => Ok(CharClassItem::Char(0x0008)), // backspace
+          x if x == (b'c' as u16) => {
+            let Some(next) = self.peek() else {
+              if self.flags.has_either_unicode_flag() {
+                return Err(RegExpSyntaxError {
+                  message: "Invalid regular expression",
+                }
+                .into());
+              }
+              // Legacy: treat as identity escape of `c`.
+              return Ok(CharClassItem::Char(e));
+            };
+            if !is_ascii_letter(next) {
+              if self.flags.has_either_unicode_flag() {
+                return Err(RegExpSyntaxError {
+                  message: "Invalid regular expression",
+                }
+                .into());
+              }
+              // Legacy: treat as identity escape of `c` and keep the next character.
+              return Ok(CharClassItem::Char(e));
+            }
+            self.next();
+            Ok(CharClassItem::Char(((next as u8) & 0x1F) as u16))
+          }
           x if x == (b'n' as u16) => Ok(CharClassItem::Char(0x000A)),
           x if x == (b'r' as u16) => Ok(CharClassItem::Char(0x000D)),
           x if x == (b't' as u16) => Ok(CharClassItem::Char(0x0009)),
           x if x == (b'v' as u16) => Ok(CharClassItem::Char(0x000B)),
           x if x == (b'f' as u16) => Ok(CharClassItem::Char(0x000C)),
+          x if x == (b'0' as u16) => {
+            if self.flags.has_either_unicode_flag() {
+              if let Some(peek) = self.peek() {
+                if (b'0' as u16..=b'9' as u16).contains(&peek) {
+                  return Err(RegExpSyntaxError {
+                    message: "Invalid regular expression",
+                  }
+                  .into());
+                }
+              }
+            }
+            Ok(CharClassItem::Char(0x0000))
+          }
+          x if x == (b'-' as u16) => {
+            if self.flags.has_either_unicode_flag() {
+              // `ClassEscape[+UnicodeMode]` allows escaping `-` inside a character class.
+              Ok(CharClassItem::Char(x))
+            } else {
+              Ok(CharClassItem::Char(x))
+            }
+          }
           x if x == (b'x' as u16) => Ok(CharClassItem::Char(self.parse_hex_escape_2(ctx)?)),
           x if x == (b'u' as u16) => Ok(CharClassItem::Char(self.parse_unicode_escape(ctx)?)),
-          other => Ok(CharClassItem::Char(other)),
+          other => {
+            if self.flags.has_either_unicode_flag() {
+              if is_syntax_character(other) || other == (b'/' as u16) {
+                Ok(CharClassItem::Char(other))
+              } else {
+                Err(RegExpSyntaxError {
+                  message: "Invalid regular expression",
+                }
+                .into())
+              }
+            } else {
+              Ok(CharClassItem::Char(other))
+            }
+          }
         }
       }
       other => Ok(CharClassItem::Char(other)),
@@ -2333,11 +2415,52 @@ impl<'a> Parser<'a> {
       x if x == (b't' as u16) => Ok(Atom::Literal(0x0009)),
       x if x == (b'v' as u16) => Ok(Atom::Literal(0x000B)),
       x if x == (b'f' as u16) => Ok(Atom::Literal(0x000C)),
-      x if x == (b'0' as u16) => Ok(Atom::Literal(0x0000)),
+      x if x == (b'c' as u16) => {
+        let Some(next) = self.peek() else {
+          if self.flags.has_either_unicode_flag() {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
+          // Legacy: treat as identity escape of `c`.
+          return Ok(Atom::Literal(e));
+        };
+        if !is_ascii_letter(next) {
+          if self.flags.has_either_unicode_flag() {
+            return Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into());
+          }
+          // Legacy: treat as identity escape of `c` and keep the next character.
+          return Ok(Atom::Literal(e));
+        }
+        self.next();
+        Ok(Atom::Literal(((next as u8) & 0x1F) as u16))
+      }
+      x if x == (b'0' as u16) => {
+        if self.flags.has_either_unicode_flag() {
+          if let Some(peek) = self.peek() {
+            if (b'0' as u16..=b'9' as u16).contains(&peek) {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+          }
+        }
+        Ok(Atom::Literal(0x0000))
+      }
       x if x == (b'k' as u16) => {
         if self.eat(b'<' as u16) {
           let name = self.parse_group_name(ctx)?;
           Ok(Atom::NamedBackRef(name))
+        } else if self.flags.has_either_unicode_flag() {
+          Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into())
         } else {
           Ok(Atom::Literal(x))
         }
@@ -2363,7 +2486,20 @@ impl<'a> Parser<'a> {
       }
       x if x == (b'x' as u16) => Ok(Atom::Literal(self.parse_hex_escape_2(ctx)?)),
       x if x == (b'u' as u16) => Ok(Atom::Literal(self.parse_unicode_escape(ctx)?)),
-      other => Ok(Atom::Literal(other)),
+      other => {
+        if self.flags.has_either_unicode_flag() {
+          if is_syntax_character(other) || other == (b'/' as u16) {
+            Ok(Atom::Literal(other))
+          } else {
+            Err(RegExpSyntaxError {
+              message: "Invalid regular expression",
+            }
+            .into())
+          }
+        } else {
+          Ok(Atom::Literal(other))
+        }
+      }
     }
   }
 

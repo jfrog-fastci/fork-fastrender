@@ -341,6 +341,30 @@ fn regexp_compilation_respects_heap_limits() {
 }
 
 #[test]
+fn regexp_unicode_mode_escape_validation() {
+  let mut rt = new_runtime();
+
+  // UnicodeMode rejects invalid identity escapes (IdentityEscape[+UnicodeMode] is limited to
+  // SyntaxCharacter or '/').
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\M", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+
+  // UnicodeMode rejects invalid control escapes (`\c` must be followed by an ASCII letter).
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\c0", "u"); "no"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "SyntaxError");
+
+  // Escaping a SyntaxCharacter is valid under UnicodeMode.
+  let value = rt
+    .exec_script(r#"try { new RegExp("\\{", "u"); "ok"; } catch (e) { e.name }"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), "ok");
+}
+
+#[test]
 fn regexp_execution_backtracking_state_respects_heap_limits() {
   let mut vm = Vm::new(VmOptions::default());
   vm.set_budget(Budget {
