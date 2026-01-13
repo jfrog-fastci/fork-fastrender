@@ -133,7 +133,13 @@ fn vm_js_infinite_loop_in_promise_job_is_bounded() {
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host =
-    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
+    WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(MockFetcher::default()),
+      js_opts,
+    )
+    .expect("create WindowHost");
 
   host
     .exec_script("Promise.resolve().then(function () { while (true) {} });")
@@ -170,7 +176,13 @@ fn vm_js_infinite_loop_in_unhandledrejection_listener_is_bounded() {
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host =
-    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
+    WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(MockFetcher::default()),
+      js_opts,
+    )
+    .expect("create WindowHost");
 
   host
     .exec_script(
@@ -225,7 +237,13 @@ fn vm_js_infinite_loop_in_set_timeout_callback_is_bounded() {
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host =
-    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
+    WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(MockFetcher::default()),
+      js_opts,
+    )
+    .expect("create WindowHost");
 
   host
     .exec_script(
@@ -276,7 +294,13 @@ fn vm_js_infinite_loop_in_request_animation_frame_callback_is_bounded() {
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
   let mut host =
-    WindowHost::new_with_options(dom, "https://example.com/", js_opts).expect("create WindowHost");
+    WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(MockFetcher::default()),
+      js_opts,
+    )
+    .expect("create WindowHost");
 
   host
     .exec_script(

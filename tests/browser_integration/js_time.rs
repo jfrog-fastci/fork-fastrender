@@ -2,11 +2,22 @@ use fastrender::dom2::Document as Dom2Document;
 use fastrender::js::{
   Clock, EventLoop, RunLimits, RunUntilIdleOutcome, VirtualClock, WindowHost, WindowHostState,
 };
-use fastrender::Result;
+use fastrender::{Error, FetchedResource, ResourceFetcher, Result};
 use selectors::context::QuirksMode;
 use std::sync::Arc;
 use std::time::Duration;
 use vm_js::Value;
+
+#[derive(Debug, Default)]
+struct NoFetchResourceFetcher;
+
+impl ResourceFetcher for NoFetchResourceFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    Err(Error::Other(format!(
+      "NoFetchResourceFetcher does not support fetch: {url}"
+    )))
+  }
+}
 
 #[test]
 fn window_host_time_apis_are_deterministic_and_match_event_loop_clock() -> Result<()> {
@@ -16,7 +27,12 @@ fn window_host_time_apis_are_deterministic_and_match_event_loop_clock() -> Resul
   let event_loop = EventLoop::<WindowHostState>::with_clock(clock_for_loop);
 
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_event_loop(dom, "https://example.invalid/", event_loop)?;
+  let mut host = WindowHost::new_with_fetcher_and_event_loop(
+    dom,
+    "https://example.invalid/",
+    Arc::new(NoFetchResourceFetcher),
+    event_loop,
+  )?;
 
   clock.set_now(Duration::from_millis(0));
   assert_eq!(

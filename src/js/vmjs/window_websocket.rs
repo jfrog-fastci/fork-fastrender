@@ -4197,7 +4197,7 @@ mod tests {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     // Use an insecure document URL so `ws://` is allowed (mixed content is blocked for secure
     // contexts).
-    let mut host = WindowHost::new(dom, "http://example.invalid/__ws_cleanup_test")?;
+    let mut host = make_host(dom, "http://example.invalid/__ws_cleanup_test")?;
 
     let mut env_id: u64 = 0;
     let resolved_url = format!("ws://127.0.0.1:{port}/");
@@ -4475,7 +4475,7 @@ mod tests {
   fn websocket_constructor_enforces_env_cap() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let document_url = "https://example.invalid/__ws_cap_test";
-    let mut host = WindowHost::new(dom, document_url)?;
+    let mut host = make_host(dom, document_url)?;
 
     let env_id = {
       let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());

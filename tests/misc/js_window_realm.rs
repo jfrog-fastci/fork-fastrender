@@ -53,6 +53,26 @@ fn js_opts_for_test() -> JsExecutionOptions {
   opts
 }
 
+#[derive(Debug, Default)]
+struct NoFetchResourceFetcher;
+
+impl ResourceFetcher for NoFetchResourceFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    Err(Error::Other(format!(
+      "NoFetchResourceFetcher does not support fetch: {url}"
+    )))
+  }
+}
+
+fn make_host(dom: Dom2Document, document_url: impl Into<String>) -> Result<WindowHost> {
+  WindowHost::new_with_fetcher_and_options(
+    dom,
+    document_url,
+    Arc::new(NoFetchResourceFetcher),
+    js_opts_for_test(),
+  )
+}
+
 fn host_state_from_renderer_dom(
   renderer_dom: &fastrender::dom::DomNode,
   document_url: impl Into<String>,
@@ -989,7 +1009,7 @@ fn window_and_document_location_assignment_requests_navigation() -> Result<()> {
 fn document_location_fragment_assignment_updates_url_without_navigation_request_and_fires_hashchange(
 ) -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
 
   let value = host.exec_script(
     r#"
@@ -1788,7 +1808,7 @@ fn html_element_instanceof_uses_dom_platform_prototypes() -> Result<()> {
       <svg id=\"s\"></svg>\n\
     </body></html>",
   )?;
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   let ok = host.exec_script(
     "(() => {\n\
       const input = document.getElementById('i');\n\
@@ -1824,7 +1844,7 @@ fn shadow_root_is_distinct_interface_with_core_attributes() -> Result<()> {
       <div id=\"closed\"></div>\n\
     </body></html>",
   )?;
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   let ok = host.exec_script(
     "(() => {\n\
       if (typeof ShadowRoot !== 'function') return false;\n\
@@ -1963,7 +1983,7 @@ fn shadow_root_works_in_webidl_dom_backend() -> Result<()> {
 #[test]
 fn strict_script_top_level_this_is_window() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 "use strict";
@@ -1985,7 +2005,7 @@ globalThis.__strict_this_ok = (this === window) && (this === globalThis);
 #[test]
 fn promise_jobs_and_queue_microtask_preserve_fifo_order() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__log = "";
@@ -2134,7 +2154,7 @@ fn mutation_observer_callbacks_can_mutate_dom_and_receive_real_vm_host() -> Resu
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><head></head><body><div id=target></div></body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -2172,7 +2192,7 @@ fn mutation_observer_records_are_webidl_shaped() -> Result<()> {
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><head></head><body><div id=target></div></body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -2250,7 +2270,7 @@ setTimeout(() => {
 fn clear_timeout_prevents_callback_execution() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -2289,7 +2309,7 @@ clearTimeout(id);
 fn clear_interval_prevents_callback_execution() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -2371,7 +2391,7 @@ setTimeout(() => {
 fn set_interval_callbacks_can_mutate_dom_and_be_cleared() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -2958,7 +2978,7 @@ globalThis.__pre_promise_after_write_is_promise = pr.promise instanceof Promise;
 fn promise_rejection_event_tasks_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -3014,7 +3034,7 @@ globalThis.__ur = Promise.reject('boom');
 fn unhandledrejection_surfaces_host_error_by_default() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   // Trigger an unhandled rejection with no listeners to cancel default reporting.
@@ -3065,7 +3085,7 @@ globalThis.__ur_default = Promise.reject('boom');
 fn rejectionhandled_event_tasks_can_mutate_dom_and_receive_real_vm_host() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -3114,7 +3134,7 @@ fn promise_rejection_event_task_roots_are_cleaned_up_when_queue_limits_reject_en
 {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
 
   // Allow promise rejection tracking, but ensure the event loop cannot enqueue an additional task
   // when the unhandledrejection notification is requested.
@@ -3159,7 +3179,7 @@ fn promise_rejection_event_task_roots_are_cleaned_up_when_queue_limits_reject_en
 fn readable_stream_pipe_through_internal_promises_do_not_trigger_unhandledrejection() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -3217,7 +3237,7 @@ ctrl.enqueue("x");
 fn readable_stream_pipe_through_marks_internal_pipe_to_promise_handled() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -3278,7 +3298,7 @@ globalThis.__same_return = (out === transform.readable);
 fn abort_signal_abort_event_handlers_can_mutate_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   assert!(host.dom().get_element_by_id("abl").is_none());
@@ -3416,7 +3436,7 @@ requestAnimationFrame(() => {
 fn abort_signal_abort_event_handlers_receive_real_vm_host() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
   install_assert_non_dummy_vm_host(&mut host)?;
 
@@ -3450,7 +3470,7 @@ c.abort();
 fn add_event_listener_signal_option_removes_listener_after_abort() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   host.exec_script_in_event_loop(
@@ -3740,7 +3760,7 @@ try {
 #[test]
 fn promise_jobs_abort_when_render_deadline_is_expired() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__ran = false;
@@ -3773,7 +3793,7 @@ Promise.resolve().then(() => { globalThis.__ran = true; });
 #[test]
 fn promise_any_resolves_first_fulfilled_value() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__result = "";
@@ -3811,7 +3831,7 @@ Promise.any(["a", "b"]).then(
 #[test]
 fn promise_any_rejects_with_aggregate_error_when_all_reject() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__err_name = "";
@@ -3849,7 +3869,7 @@ Promise.any([Promise.reject("x"), Promise.reject("y")]).then(
 #[test]
 fn promise_all_settled_reports_fulfilled_and_rejected_entries() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__status0 = "";
@@ -3894,7 +3914,7 @@ Promise.allSettled([Promise.resolve("a"), Promise.reject("b")]).then(function (r
 #[test]
 fn promise_all_resolves_values_in_input_order() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -3932,7 +3952,7 @@ Promise.all([Promise.resolve("a"), "b"]).then(
 #[test]
 fn promise_all_rejects_with_first_rejection_reason() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -3960,7 +3980,7 @@ Promise.all([Promise.reject("x"), Promise.resolve("y")]).then(
 #[test]
 fn promise_race_resolves_first_settled_value() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -3988,7 +4008,7 @@ Promise.race([Promise.resolve("a"), Promise.resolve("b")]).then(
 #[test]
 fn promise_race_rejects_first_rejection_reason() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -4016,7 +4036,7 @@ Promise.race([Promise.reject("x"), Promise.resolve("y")]).then(
 #[test]
 fn promise_all_resolves_empty_iterable() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__ok = false;
@@ -4040,7 +4060,7 @@ Promise.all([]).then(function (res) { globalThis.__ok = res.length === 0; });
 #[test]
 fn promise_all_rejects_non_iterable_argument() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__out = "";
@@ -4068,7 +4088,7 @@ Promise.all(1).then(
 #[test]
 fn promise_all_settled_resolves_empty_iterable() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__ok = false;
@@ -4092,7 +4112,7 @@ Promise.allSettled([]).then(function (res) { globalThis.__ok = res.length === 0;
 #[test]
 fn promise_any_rejects_empty_iterable_with_aggregate_error() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__name = "";
@@ -4129,7 +4149,7 @@ Promise.any([]).then(
 #[test]
 fn promise_race_empty_iterable_remains_pending() -> Result<()> {
   let dom = Dom2Document::new(QuirksMode::NoQuirks);
-  let mut host = WindowHost::new_with_options(dom, "https://example.com/", js_opts_for_test())?;
+  let mut host = make_host(dom, "https://example.com/")?;
   host.exec_script(
     r#"
 globalThis.__out = "init";
@@ -6428,7 +6448,7 @@ fn element_get_bounding_client_rect_returns_zero_dom_rect_in_window_host_state()
   let renderer_dom = fastrender::dom::parse_html(
     "<!doctype html><html><body><div id=x></div></body></html>",
   )?;
-  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let mut host = host_state_from_renderer_dom(&renderer_dom, "https://example.com/")?;
   let mut event_loop = EventLoop::<WindowHostState>::new();
 
   let ok = host.exec_script_in_event_loop(

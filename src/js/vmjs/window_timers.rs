@@ -3010,7 +3010,7 @@ mod tests {
   use crate::js::event_loop::{EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::window_realm::{WindowRealm, WindowRealmConfig};
   use crate::js::JsExecutionOptions;
-  use crate::resource::{FetchedResource, ResourceFetcher};
+  use crate::resource::{FetchedResource, HttpFetcher, ResourceFetcher};
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex, OnceLock};
@@ -3084,7 +3084,12 @@ mod tests {
     let mut opts = JsExecutionOptions::default();
     // Keep this small so we can deterministically exhaust the heap in this unit test.
     opts.max_vm_heap_bytes = Some(4 * 1024 * 1024);
-    let mut host = crate::js::WindowHost::new_with_options(dom, "https://example.com/", opts)?;
+    let mut host = crate::js::WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(NoFetchResourceFetcher),
+      opts,
+    )?;
     let mut hooks =
       VmJsEventLoopHooks::<crate::js::WindowHostState>::new_with_host(host.host_mut())?;
  
@@ -3219,7 +3224,12 @@ mod tests {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let mut opts = JsExecutionOptions::default();
     opts.supports_module_scripts = true;
-    let mut host = crate::js::WindowHost::new_with_options(dom, "https://example.com/", opts)?;
+    let mut host = crate::js::WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(NoFetchResourceFetcher),
+      opts,
+    )?;
 
     // Start a module graph load from inside an event loop task so `host_load_imported_module` uses
     // the async (networking-task) fetch path instead of the synchronous fast path.
@@ -3316,7 +3326,12 @@ mod tests {
     // This forces `finish_loading_imported_module*` to return an error for the *first* waiter,
     // exercising the "finish all waiters even if one finish errors" invariant.
     opts.max_instruction_count = Some(2);
-    let mut host = crate::js::WindowHost::new_with_options(dom, "https://example.com/", opts)?;
+    let mut host = crate::js::WindowHost::new_with_fetcher_and_options(
+      dom,
+      "https://example.com/",
+      Arc::new(HttpFetcher::new()),
+      opts,
+    )?;
 
     // `data:` URL so we can fetch/parse without requiring a network fetcher.
     const MODULE_URL: &str = "data:,";
@@ -3580,7 +3595,12 @@ mod tests {
     let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
     let clock = Arc::new(VirtualClock::new());
     let event_loop = EventLoop::with_clock(clock.clone());
-    let mut host = crate::js::WindowHost::new_with_event_loop(dom, "https://example.com/", event_loop)?;
+    let mut host = crate::js::WindowHost::new_with_fetcher_and_event_loop(
+      dom,
+      "https://example.com/",
+      Arc::new(NoFetchResourceFetcher),
+      event_loop,
+    )?;
 
     host.exec_script(
       r#"
@@ -5940,7 +5960,12 @@ mod tests {
     let clock = Arc::new(VirtualClock::new());
     let event_loop = EventLoop::<crate::js::WindowHostState>::with_clock(Arc::clone(&clock));
     let mut host =
-      crate::js::WindowHost::new_with_event_loop(dom, "https://example.com/", event_loop)?;
+      crate::js::WindowHost::new_with_fetcher_and_event_loop(
+        dom,
+        "https://example.com/",
+        Arc::new(NoFetchResourceFetcher),
+        event_loop,
+      )?;
 
     host.exec_script(
       r#"

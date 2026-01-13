@@ -1437,7 +1437,7 @@ mod tests {
   #[test]
   fn window_realm_respects_max_stack_depth() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new_with_options(
+    let mut host = make_host_with_options(
       dom,
       "https://example.invalid/",
       JsExecutionOptions {
@@ -1463,7 +1463,7 @@ mod tests {
   fn window_realm_respects_max_vm_heap_bytes() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let limit = 7 * 1024 * 1024;
-    let host = WindowHost::new_with_options(
+    let host = make_host_with_options(
       dom,
       "https://example.invalid/",
       JsExecutionOptions {
@@ -1621,7 +1621,7 @@ mod tests {
   #[test]
   fn object_prototype_to_string_tags_html_media_elements() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
-    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+    let mut host = make_host(dom, "https://example.invalid/")?;
 
     let out = host.exec_script("Object.prototype.toString.call(document.createElement('video'))")?;
     assert_eq!(value_to_string(&host, out), "[object HTMLVideoElement]");
@@ -3457,7 +3457,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><script id=\"s\"></script></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     let no_current = host.exec_script("document.currentScript === null")?;
     assert_eq!(no_current, Value::Bool(true));
@@ -4512,7 +4516,7 @@ mod tests {
     // WebIDL-installed `EventTarget.prototype` methods. It can be a bit slow in debug builds.
     let mut opts = JsExecutionOptions::default();
     opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(2));
-    let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
+    let mut host = make_host_with_options(dom, "https://example.invalid/", opts)?;
 
     // Force the generated WebIDL EventTarget bindings to install (WindowRealm ships with a
     // handcrafted EventTarget implementation by default).
@@ -4890,7 +4894,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
     install_record_host(&mut host);
 
     host.exec_script(
@@ -4923,7 +4931,11 @@ mod tests {
   fn mutation_observer_delivers_for_dataset_classlist_style_via_domhostvmjs_fast_path() -> Result<()> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
       .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
  
     host.exec_script(
       "var g = this;\n\
@@ -5053,7 +5065,12 @@ mod tests {
     let clock = Arc::new(crate::js::VirtualClock::new());
     let clock_for_loop: Arc<dyn Clock> = clock.clone();
     let event_loop = EventLoop::<WindowHostState>::with_clock(clock_for_loop);
-    let mut host = WindowHost::new_with_event_loop(dom, "https://example.invalid/", event_loop)?;
+    let mut host = WindowHost::new_with_fetcher_and_event_loop(
+      dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+      event_loop,
+    )?;
 
     host.exec_script(
       r#"
@@ -5350,7 +5367,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     host.exec_script(
       "var g = this;\n\
@@ -5416,7 +5437,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     // Per the DOM Standard, specifying `attributeOldValue` without an explicit `attributes` member
     // implies `attributes: true`.
@@ -5463,7 +5488,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     host.exec_script(
       "var g = this;\n\
@@ -5505,7 +5534,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     host.exec_script(
       "var g = this;\n\
@@ -5550,7 +5583,11 @@ mod tests {
       "<!doctype html><html><body><div id=root><div id=target></div></div></body></html>",
     )
     .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     host.exec_script(
       "var g = this;\n\
@@ -5577,7 +5614,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     host.exec_script(
       "var g = this;\n\
@@ -5607,7 +5648,11 @@ mod tests {
     let renderer_dom =
       crate::dom::parse_html("<!doctype html><html><body><div id=target></div></body></html>")
         .expect("parse_html");
-    let mut host = WindowHost::from_renderer_dom(&renderer_dom, "https://example.invalid/")?;
+    let mut host = WindowHost::from_renderer_dom_with_fetcher(
+      &renderer_dom,
+      "https://example.invalid/",
+      default_test_fetcher(),
+    )?;
 
     host.exec_script(
       "var g = this;\n\
@@ -6703,7 +6748,7 @@ mod tests {
     // tuned for hostile input and can be a bit too tight in debug builds.
     let mut opts = JsExecutionOptions::default();
     opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(2));
-    let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
+    let mut host = make_host_with_options(dom, "https://example.invalid/", opts)?;
 
     let log = host.exec_script(
       "(() => {\n\

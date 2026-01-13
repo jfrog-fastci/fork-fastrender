@@ -3,9 +3,22 @@ use fastrender::dom2;
 use fastrender::js::window_realm::{WindowRealm, WindowRealmConfig};
 use fastrender::js::RunLimits;
 use fastrender::js::{JsExecutionOptions, WindowHost};
+use fastrender::{Error, FetchedResource, ResourceFetcher};
 use selectors::context::QuirksMode;
+use std::sync::Arc;
 use std::time::Duration;
 use vm_js::{Job, RealmId, VmError, VmHostHooks};
+
+#[derive(Debug, Default)]
+struct NoFetchResourceFetcher;
+
+impl ResourceFetcher for NoFetchResourceFetcher {
+  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+    Err(Error::Other(format!(
+      "NoFetchResourceFetcher does not support fetch: {url}"
+    )))
+  }
+}
 
 #[derive(Default)]
 struct NoopHostHooks;
@@ -31,7 +44,12 @@ fn exec_script_infinite_loop_is_terminated_by_instruction_budget() -> fastrender
   // Keep wall-time generous so we reliably hit fuel termination first.
   opts.event_loop_run_limits.max_wall_time = Some(Duration::from_secs(5));
 
-  let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    "https://example.invalid/",
+    Arc::new(NoFetchResourceFetcher),
+    opts,
+  )?;
   let err = host
     .exec_script("for(;;){}")
     .expect_err("expected script to terminate");
@@ -50,7 +68,12 @@ fn exec_script_deadline_budget_can_terminate_immediately() -> fastrender::Result
   // Force an already-expired wall-time deadline so the first `tick()` fails.
   opts.event_loop_run_limits.max_wall_time = Some(Duration::from_millis(0));
 
-  let mut host = WindowHost::new_with_options(dom, "https://example.invalid/", opts)?;
+  let mut host = WindowHost::new_with_fetcher_and_options(
+    dom,
+    "https://example.invalid/",
+    Arc::new(NoFetchResourceFetcher),
+    opts,
+  )?;
   let err = host
     .exec_script("for(;;){}")
     .expect_err("expected deadline termination");
