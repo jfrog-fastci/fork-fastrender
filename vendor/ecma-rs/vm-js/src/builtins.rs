@@ -15133,23 +15133,27 @@ pub fn string_prototype_match(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
 
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(regexp, Value::Undefined | Value::Null) {
+  // Spec: only attempt `@@match` dispatch when `Type(regexp) is Object` (do not box primitives).
+  if let Value::Object(regexp_obj) = regexp {
     let method = crate::spec_ops::get_method_with_host_and_hooks(
       vm,
       &mut scope,
       host,
       hooks,
-      regexp,
+      Value::Object(regexp_obj),
       PropertyKey::from_symbol(intr.well_known_symbols().match_),
     )?;
     if let Some(method) = method {
-      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+      // Spec: `Call(matcher, regexp, « O »)` where `O` is the RequireObjectCoercible receiver.
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[o]);
     }
   }
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
 
   // Fallback: `RegExpCreate(regexp, undefined)` then call `@@match`.
   let ctor = Value::Object(intr.regexp_constructor());
@@ -15292,23 +15296,27 @@ pub fn string_prototype_search(
 ) -> Result<Value, VmError> {
   let intr = require_intrinsics(vm)?;
   let mut scope = scope.reborrow();
-  let s = scope.to_string(vm, host, hooks, this)?;
-  scope.push_root(Value::String(s))?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
 
   let regexp = args.get(0).copied().unwrap_or(Value::Undefined);
-  if !matches!(regexp, Value::Undefined | Value::Null) {
+  // Spec: only attempt `@@search` dispatch when `Type(regexp) is Object` (do not box primitives).
+  if let Value::Object(regexp_obj) = regexp {
     let method = crate::spec_ops::get_method_with_host_and_hooks(
       vm,
       &mut scope,
       host,
       hooks,
-      regexp,
+      Value::Object(regexp_obj),
       PropertyKey::from_symbol(intr.well_known_symbols().search),
     )?;
     if let Some(method) = method {
-      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[Value::String(s)]);
+      // Spec: `Call(searcher, regexp, « O »)` where `O` is the RequireObjectCoercible receiver.
+      return vm.call_with_host_and_hooks(host, &mut scope, hooks, method, regexp, &[o]);
     }
   }
+
+  let s = scope.to_string(vm, host, hooks, o)?;
+  scope.push_root(Value::String(s))?;
 
   // Fallback: `RegExpCreate(regexp, undefined)` then call `@@search`.
   let ctor = Value::Object(intr.regexp_constructor());

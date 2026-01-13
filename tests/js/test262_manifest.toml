@@ -1079,26 +1079,6 @@ status = "xfail"
 reason = "vm-js: String.prototype.match / RegExp @@match semantics are still incomplete (legacy Sputnik tests)."
 
 [[expectations]]
-id = "built-ins/String/prototype/match/cstm-matcher-on-bigint-primitive.js"
-status = "xfail"
-reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
-
-[[expectations]]
-id = "built-ins/String/prototype/match/cstm-matcher-on-boolean-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match incorrectly calls @@match on primitive values (should not consult Symbol.match)."
-
-[[expectations]]
-id = "built-ins/String/prototype/match/cstm-matcher-on-number-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match incorrectly calls @@match on primitive values (should not consult Symbol.match)."
-
-[[expectations]]
-id = "built-ins/String/prototype/match/cstm-matcher-on-string-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match incorrectly calls @@match on primitive values (should not consult Symbol.match)."
-
-[[expectations]]
 id = "built-ins/String/prototype/match/duplicate-named-groups-properties.js"
 status = "xfail"
 reason = "vm-js: RegExp named capture groups / match result `.groups` semantics are still incomplete."
@@ -1112,11 +1092,6 @@ reason = "vm-js does not yet implement RegExp match indices (`/d` flag)."
 id = "built-ins/String/prototype/match/regexp-prototype-match-v-u-flag.js"
 status = "xfail"
 reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
-
-[[expectations]]
-id = "built-ins/String/prototype/match/this-value-not-obj-coercible.js"
-status = "xfail"
-reason = "vm-js: String.prototype.match does not yet implement RequireObjectCoercible(this value)."
 
 [[expectations]]
 id = "built-ins/String/prototype/matchAll/cstm-matchall-on-bigint-primitive.js"
@@ -1154,26 +1129,6 @@ status = "xfail"
 reason = "vm-js: String.prototype.matchAll does not yet implement RequireObjectCoercible(this value)."
 
 [[expectations]]
-id = "built-ins/String/prototype/search/cstm-search-on-bigint-primitive.js"
-status = "xfail"
-reason = "vm-js does not yet expose the BigInt constructor (BigInt global)."
-
-[[expectations]]
-id = "built-ins/String/prototype/search/cstm-search-on-boolean-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.search incorrectly calls @@search on primitive values (should not consult Symbol.search)."
-
-[[expectations]]
-id = "built-ins/String/prototype/search/cstm-search-on-number-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.search incorrectly calls @@search on primitive values (should not consult Symbol.search)."
-
-[[expectations]]
-id = "built-ins/String/prototype/search/cstm-search-on-string-primitive.js"
-status = "xfail"
-reason = "vm-js: String.prototype.search incorrectly calls @@search on primitive values (should not consult Symbol.search)."
-
-[[expectations]]
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-flag.js"
 status = "xfail"
 reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
@@ -1182,11 +1137,6 @@ reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
 id = "built-ins/String/prototype/search/regexp-prototype-search-v-u-flag.js"
 status = "xfail"
 reason = "parse-js/vm-js does not yet support RegExp `v` flag (Unicode sets)."
-
-[[expectations]]
-id = "built-ins/String/prototype/search/this-value-not-obj-coercible.js"
-status = "xfail"
-reason = "vm-js: String.prototype.search does not yet implement RequireObjectCoercible(this value)."
 
 [[expectations]]
 id = "built-ins/String/prototype/replace/S15.5.4.11_A3_T1.js"
