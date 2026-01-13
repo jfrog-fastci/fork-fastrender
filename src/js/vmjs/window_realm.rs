@@ -70,6 +70,7 @@ use vm_js::{
   RootId, Scope, SourceText, SourceTextInput, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
   WeakGcObject,
 };
+use webidl_vm_js::bindings_runtime::to_uint32_f64;
 use webidl_vm_js::VmJsHostHooksPayload;
 use webidl_vm_js::WebIdlBindingsHost;
 
@@ -36277,7 +36278,6 @@ fn character_data_substring_data_native(
   let out = scope.alloc_string_from_u16_vec(units[offset..end].to_vec())?;
   Ok(Value::String(out))
 }
-
 fn character_data_delete_data_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -37523,7 +37523,6 @@ fn range_collapsed_get_native(
     .map_err(|_| VmError::TypeError("Illegal invocation"))?;
   Ok(Value::Bool(collapsed))
 }
-
 fn range_set_start_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -52985,6 +52984,7 @@ fn init_window_globals(
       vm.register_native_construct(document_constructor_construct_native)?;
 
     let node_proto = platform.prototype_for(DomInterface::Node);
+    let character_data_proto = platform.prototype_for(DomInterface::CharacterData);
     let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
     let element_proto = platform.prototype_for(DomInterface::Element);
     let html_element_proto = platform.prototype_for(DomInterface::HTMLElement);
@@ -53135,39 +53135,8 @@ fn init_window_globals(
     // CharacterData constructor + prototype.
     //
     // `CharacterData` sits between `Node` and the character-data node types (`Text`, `Comment`,
-    // `ProcessingInstruction`). Curated WPT tests assert that `CharacterData` is exposed on the
-    // global object and that comment/text nodes are `instanceof CharacterData`.
-    //
-    // When using WebIDL bindings, the generated interface object may already exist; avoid
-    // clobbering it and instead reuse its `.prototype` object.
-    let character_data_key = alloc_key(&mut scope, "CharacterData")?;
-    let (character_data_ctor, character_data_proto) = if let Some(character_data_val) = scope
-      .heap()
-      .object_get_own_data_property_value(global, &character_data_key)?
-    {
-      let Value::Object(character_data_ctor) = character_data_val else {
-        return Err(VmError::InvariantViolation(
-          "WindowRealm expected globalThis.CharacterData to be an object",
-        ));
-      };
-      scope.push_root(Value::Object(character_data_ctor))?;
-      let Some(Value::Object(character_data_proto)) = scope
-        .heap()
-        .object_get_own_data_property_value(character_data_ctor, &prototype_key)?
-      else {
-        return Err(VmError::InvariantViolation(
-          "WindowRealm expected globalThis.CharacterData.prototype to be an object",
-        ));
-      };
-      scope.push_root(Value::Object(character_data_proto))?;
-      (character_data_ctor, character_data_proto)
-    } else {
-      let character_data_proto = scope.alloc_object()?;
-      scope.push_root(Value::Object(character_data_proto))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(character_data_proto, Some(node_proto))?;
-
+    // `ProcessingInstruction`).
+    let _character_data_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let character_data_ctor = make_illegal_ctor(&mut scope, "CharacterData")?;
       scope.push_root(Value::Object(character_data_ctor))?;
       scope.define_property(
@@ -53180,17 +53149,29 @@ fn init_window_globals(
         constructor_key,
         ctor_link_desc(Value::Object(character_data_ctor)),
       )?;
-      scope.define_property(
-        global,
-        character_data_key,
-        data_desc(Value::Object(character_data_ctor)),
-      )?;
-      (character_data_ctor, character_data_proto)
+      let character_data_key = alloc_key(&mut scope, "CharacterData")?;
+      scope.define_property(global, character_data_key, data_desc(Value::Object(character_data_ctor)))?;
+      character_data_ctor
+    } else {
+      let character_data_key = alloc_key(&mut scope, "CharacterData")?;
+      let Some(character_data_val) = scope
+        .heap()
+        .object_get_own_data_property_value(global, &character_data_key)?
+      else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.CharacterData to be installed by WebIDL bindings",
+        ));
+      };
+      let Value::Object(character_data_ctor) = character_data_val else {
+        return Err(VmError::InvariantViolation(
+          "WindowRealm expected globalThis.CharacterData to be an object",
+        ));
+      };
+      scope.push_root(Value::Object(character_data_ctor))?;
+      character_data_ctor
     };
 
-    // Ensure the prototype chain matches the DOM Standard even when some interfaces are supplied by
-    // WebIDL bindings.
-    //
+    // Ensure the prototype chain matches the DOM Standard:
     // `Text`, `Comment`, and `ProcessingInstruction` should inherit from `CharacterData.prototype`
     // rather than directly from `Node.prototype`.
     scope
@@ -53205,6 +53186,7 @@ fn init_window_globals(
     scope
       .heap_mut()
       .object_set_prototype(processing_instruction_proto, Some(character_data_proto))?;
+
     // Element/Document/DocumentFragment/Text constructors.
     //
     // Most core DOM interface objects are not constructible in practice; we install "illegal"
@@ -57704,7 +57686,6 @@ fn init_window_globals(
         },
       },
     )?;
-
     // --- CharacterData: length / substringData / appendData / insertData / deleteData / replaceData -------------
 
     let character_data_length_get_call_id = vm.register_native_call(character_data_length_get_native)?;
@@ -57722,7 +57703,7 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(character_data_length_get_func))?;
     let character_data_length_key = alloc_key(&mut scope, "length")?;
-    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+    for proto in [character_data_proto, text_proto, comment_proto, processing_instruction_proto] {
       scope.define_property(
         proto,
         character_data_length_key,
@@ -57745,7 +57726,7 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(character_data_append_data_func))?;
     let character_data_append_data_key = alloc_key(&mut scope, "appendData")?;
-    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+    for proto in [character_data_proto, text_proto, comment_proto, processing_instruction_proto] {
       scope.define_property(
         proto,
         character_data_append_data_key,
@@ -57768,7 +57749,7 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(character_data_insert_data_func))?;
     let character_data_insert_data_key = alloc_key(&mut scope, "insertData")?;
-    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+    for proto in [character_data_proto, text_proto, comment_proto, processing_instruction_proto] {
       scope.define_property(
         proto,
         character_data_insert_data_key,
@@ -57792,7 +57773,7 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(character_data_substring_data_func))?;
     let character_data_substring_data_key = alloc_key(&mut scope, "substringData")?;
-    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+    for proto in [character_data_proto, text_proto, comment_proto, processing_instruction_proto] {
       scope.define_property(
         proto,
         character_data_substring_data_key,
@@ -57815,7 +57796,7 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(character_data_delete_data_func))?;
     let character_data_delete_data_key = alloc_key(&mut scope, "deleteData")?;
-    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+    for proto in [character_data_proto, text_proto, comment_proto, processing_instruction_proto] {
       scope.define_property(
         proto,
         character_data_delete_data_key,
@@ -57838,7 +57819,7 @@ fn init_window_globals(
     )?;
     scope.push_root(Value::Object(character_data_replace_data_func))?;
     let character_data_replace_data_key = alloc_key(&mut scope, "replaceData")?;
-    for proto in [text_proto, comment_proto, processing_instruction_proto] {
+    for proto in [character_data_proto, text_proto, comment_proto, processing_instruction_proto] {
       scope.define_property(
         proto,
         character_data_replace_data_key,

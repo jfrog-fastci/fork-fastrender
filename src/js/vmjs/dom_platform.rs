@@ -61,6 +61,7 @@ impl DomNodeKey {
 pub enum DomInterface {
   EventTarget,
   Node,
+  CharacterData,
   DocumentType,
   Text,
   Comment,
@@ -177,13 +178,11 @@ impl DomInterface {
     match self {
       Self::EventTarget => None,
       Self::Node => Some(Self::EventTarget),
-      Self::Text
-      | Self::Comment
-      | Self::ProcessingInstruction
-      | Self::Element
+      Self::CharacterData | Self::Element
       | Self::Document
       | Self::DocumentFragment
       | Self::DocumentType => Some(Self::Node),
+      Self::Text | Self::Comment | Self::ProcessingInstruction => Some(Self::CharacterData),
       Self::ShadowRoot => Some(Self::DocumentFragment),
       Self::HTMLElement => Some(Self::Element),
       Self::HTMLMediaElement => Some(Self::HTMLElement),
@@ -228,6 +227,7 @@ pub struct DomWrapperMeta {
 pub struct DomPlatformPrototypes {
   pub event_target: GcObject,
   pub node: GcObject,
+  pub character_data: GcObject,
   pub document_type: GcObject,
   pub text: GcObject,
   pub comment: GcObject,
@@ -339,6 +339,7 @@ impl DomPlatform {
     for proto in [
       prototypes.event_target,
       prototypes.node,
+      prototypes.character_data,
       prototypes.document_type,
       prototypes.text,
       prototypes.comment,
@@ -426,6 +427,7 @@ impl DomPlatform {
 
     let proto_event_target = lookup_proto!("EventTarget");
     let proto_node = lookup_proto!("Node");
+    let proto_character_data = lookup_proto!("CharacterData");
     let proto_document_type = lookup_proto!("DocumentType");
     let proto_text = lookup_proto!("Text");
     let proto_comment = lookup_proto!("Comment");
@@ -469,6 +471,7 @@ impl DomPlatform {
       prototypes: DomPlatformPrototypes {
         event_target: proto_event_target,
         node: proto_node,
+        character_data: proto_character_data,
         document_type: proto_document_type,
         text: proto_text,
         comment: proto_comment,
@@ -521,6 +524,8 @@ impl DomPlatform {
     );
     let proto_node = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_node))?);
+    let proto_character_data = scope.alloc_object()?;
+    prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_character_data))?);
     let proto_document_type = scope.alloc_object()?;
     prototype_roots.push(scope.heap_mut().add_root(Value::Object(proto_document_type))?);
     let proto_text = scope.alloc_object()?;
@@ -579,10 +584,11 @@ impl DomPlatform {
     // WebIDL / WHATWG DOM inheritance chain:
     //   EventTarget -> Object
     //   Node -> EventTarget
+    //   CharacterData -> Node
     //   DocumentType -> Node
-    //   Text -> Node
-    //   Comment -> Node
-    //   ProcessingInstruction -> Node
+    //   Text -> CharacterData
+    //   Comment -> CharacterData
+    //   ProcessingInstruction -> CharacterData
     //   Element -> Node
     //   HTMLElement -> Element
     //   HTMLMediaElement -> HTMLElement
@@ -601,16 +607,19 @@ impl DomPlatform {
       .object_set_prototype(proto_node, Some(proto_event_target))?;
     scope
       .heap_mut()
+      .object_set_prototype(proto_character_data, Some(proto_node))?;
+    scope
+      .heap_mut()
       .object_set_prototype(proto_document_type, Some(proto_node))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto_text, Some(proto_node))?;
+      .object_set_prototype(proto_text, Some(proto_character_data))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto_comment, Some(proto_node))?;
+      .object_set_prototype(proto_comment, Some(proto_character_data))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto_processing_instruction, Some(proto_node))?;
+      .object_set_prototype(proto_processing_instruction, Some(proto_character_data))?;
     scope
       .heap_mut()
       .object_set_prototype(proto_element, Some(proto_node))?;
@@ -659,6 +668,7 @@ impl DomPlatform {
       prototypes: DomPlatformPrototypes {
         event_target: proto_event_target,
         node: proto_node,
+        character_data: proto_character_data,
         document_type: proto_document_type,
         text: proto_text,
         comment: proto_comment,
@@ -716,6 +726,12 @@ impl DomPlatform {
       "Node",
       "DomPlatform::new_from_global_prototypes expected globalThis.Node.prototype",
     )?;
+    let proto_character_data = Self::lookup_global_interface_prototype(
+      scope,
+      global,
+      "CharacterData",
+      "DomPlatform::new_from_global_prototypes expected globalThis.CharacterData.prototype",
+    )?;
     let proto_text = Self::lookup_global_interface_prototype(
       scope,
       global,
@@ -752,6 +768,7 @@ impl DomPlatform {
     for proto in [
       proto_event_target,
       proto_node,
+      proto_character_data,
       proto_text,
       proto_element,
       proto_document,
@@ -772,13 +789,13 @@ impl DomPlatform {
     scope.push_root(Value::Object(proto_comment))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto_comment, Some(proto_node))?;
+      .object_set_prototype(proto_comment, Some(proto_character_data))?;
 
     let proto_processing_instruction = scope.alloc_object()?;
     scope.push_root(Value::Object(proto_processing_instruction))?;
     scope
       .heap_mut()
-      .object_set_prototype(proto_processing_instruction, Some(proto_node))?;
+      .object_set_prototype(proto_processing_instruction, Some(proto_character_data))?;
 
     let proto_html_element = scope.alloc_object()?;
     scope.push_root(Value::Object(proto_html_element))?;
@@ -859,6 +876,12 @@ impl DomPlatform {
       .object_set_prototype(proto_node, Some(proto_event_target))?;
     scope
       .heap_mut()
+      .object_set_prototype(proto_character_data, Some(proto_node))?;
+    scope
+      .heap_mut()
+      .object_set_prototype(proto_text, Some(proto_character_data))?;
+    scope
+      .heap_mut()
       .object_set_prototype(proto_element, Some(proto_node))?;
     scope
       .heap_mut()
@@ -876,6 +899,7 @@ impl DomPlatform {
       DomPlatformPrototypes {
         event_target: proto_event_target,
         node: proto_node,
+        character_data: proto_character_data,
         document_type: proto_document_type,
         text: proto_text,
         comment: proto_comment,
@@ -920,6 +944,7 @@ impl DomPlatform {
     match interface {
       DomInterface::EventTarget => self.prototypes.event_target,
       DomInterface::Node => self.prototypes.node,
+      DomInterface::CharacterData => self.prototypes.character_data,
       DomInterface::DocumentType => self.prototypes.document_type,
       DomInterface::Text => self.prototypes.text,
       DomInterface::Comment => self.prototypes.comment,
@@ -2045,16 +2070,17 @@ mod tests {
     global: GcObject,
     node_proto: GcObject,
   ) -> Result<(GcObject, GcObject), VmError> {
+    // CharacterData sits between Node and Text/Comment/ProcessingInstruction.
+    let character_data_proto = install_stub_interface(scope, global, "CharacterData", node_proto)?;
+
     // Interfaces inheriting from Node.
-    for name in [
-      "DocumentType",
-      "Text",
-      "Comment",
-      "ProcessingInstruction",
-      "Document",
-      "DocumentFragment",
-    ] {
+    for name in ["DocumentType", "Document", "DocumentFragment"] {
       let _ = install_stub_interface(scope, global, name, node_proto)?;
+    }
+
+    // Interfaces inheriting from CharacterData.
+    for name in ["Text", "Comment", "ProcessingInstruction"] {
+      let _ = install_stub_interface(scope, global, name, character_data_proto)?;
     }
 
     // ShadowRoot inherits from DocumentFragment.

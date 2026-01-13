@@ -293,6 +293,12 @@ status = "skip"
 reason = "QuickJS backend relies on a minimal DOM/EventTarget shim (embedded in js-wpt-dom-runner); strict Event/EventTarget semantics are validated on vm-js."
 
 [[expectations]]
+id = "dom/characterdata_delete_data.window.js"
+backend = "quickjs"
+status = "skip"
+reason = "QuickJS backend uses a minimal JS DOM shim and does not implement CharacterData.deleteData."
+
+[[expectations]]
 # QuickJS runs the curated corpus using lightweight JS shims rather than the full WebIDL-backed DOM
 # implementation. Keep the backend runnable by skipping strict Event/EventTarget spec tests that
 # intentionally assert WebIDL constructor / brand / InvalidStateError semantics.
