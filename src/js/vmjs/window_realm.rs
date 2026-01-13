@@ -8,6 +8,15 @@ use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::document_write::{
   current_document_write_state_mut, DOCUMENT_WRITE_IGNORED_NO_PARSER_WARNING,
 };
+use crate::js::dom_internal_keys::{
+  CSS_STYLE_DECL_PROTOTYPE_KEY, EVENT_BRAND_KEY, EVENT_ID_KEY, EVENT_IMMEDIATE_STOP_KEY,
+  EVENT_INITIALIZED_KEY, EVENT_KIND_KEY, HTML_COLLECTION_PROTOTYPE_KEY, HTML_COLLECTION_ROOT_KEY,
+  NODE_CHILD_NODES_KEY, NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY,
+  STYLE_CSS_TEXT_GET_KEY, STYLE_CSS_TEXT_SET_KEY, STYLE_CURSOR_GET_KEY, STYLE_CURSOR_SET_KEY,
+  STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY, STYLE_GET_PROPERTY_VALUE_KEY,
+  STYLE_HEIGHT_GET_KEY, STYLE_HEIGHT_SET_KEY, STYLE_REMOVE_PROPERTY_KEY, STYLE_SET_PROPERTY_KEY,
+  STYLE_WIDTH_GET_KEY, STYLE_WIDTH_SET_KEY, WRAPPER_DOCUMENT_KEY,
+};
 use crate::js::dom_platform::{DocumentId, DomInterface, DomNodeKey, DomPlatform, DOM_WRAPPER_HOST_TAG};
 use crate::js::host_document::ActiveEventGuard;
 use crate::js::realm_module_loader::{ModuleKey, ModuleLoader, ModuleLoaderHandle};
@@ -2919,7 +2928,6 @@ const DATA_TRANSFER_BRAND_KEY: &str = "__fastrender_data_transfer";
 const DATA_TRANSFER_STORE_KEY: &str = "__fastrender_data_transfer_store";
 const DATA_TRANSFER_DROP_EFFECT_VALUE_KEY: &str = "__fastrender_data_transfer_drop_effect";
 const DATA_TRANSFER_EFFECT_ALLOWED_VALUE_KEY: &str = "__fastrender_data_transfer_effect_allowed";
-const NODE_ID_KEY: &str = "__fastrender_node_id";
 
 const WINDOW_REALM_GLOBAL_OBJECT_HOST_TAG: u64 = u64::from_be_bytes(*b"WINDOW__");
 const WINDOW_REALM_DOCUMENT_HOST_TAG: u64 = u64::from_be_bytes(*b"DOCUMENT");
@@ -2941,7 +2949,6 @@ const HOST_EXOTIC_COMPUTED_STYLE: u64 = u64::from_be_bytes(*b"FRCOMPUT");
 const HOST_EXOTIC_NAMED_NODE_MAP: u64 = u64::from_be_bytes(*b"FRDOMNNM");
 const HOST_OBJECT_ATTR: u64 = u64::from_be_bytes(*b"FRDOMATR");
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
-const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 /// Internal-only indirection used when a JS `Document` wrapper is backed by a different "platform"
 /// document for DOM wrapper identity / `dom2::Document` selection.
 ///
@@ -2955,9 +2962,6 @@ const DOCUMENT_CONTENT_TYPE_KEY: &str = "__fastrender_document_content_type";
 const DOCUMENT_SELECTION_KEY: &str = "__fastrender_document_selection";
 const SELECTION_RANGE_KEY: &str = "__fastrender_selection_range";
 const DOM_IMPLEMENTATION_BRAND_KEY: &str = "__fastrender_dom_implementation";
-const EVENT_BRAND_KEY: &str = "__fastrender_event";
-const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
-const EVENT_INITIALIZED_KEY: &str = "__fastrender_event_initialized";
 const EVENT_IS_TRUSTED_VALUE_KEY: &str = "__fastrender_event_is_trusted";
 const EVENT_IS_TRUSTED_GETTER_KEY: &str = "__fastrender_event_is_trusted_getter";
 const EVENT_PROTOTYPE_KEY: &str = "__fastrender_event_prototype";
@@ -2971,9 +2975,7 @@ const INPUT_EVENT_PROTOTYPE_KEY: &str = "__fastrender_input_event_prototype";
 const POP_STATE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_pop_state_event_prototype";
 const HASH_CHANGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_hash_change_event_prototype";
 const STORAGE_EVENT_PROTOTYPE_KEY: &str = "__fastrender_storage_event_prototype";
-const EVENT_ID_KEY: &str = "__fastrender_event_id";
 const EVENT_DISPATCHING_KEY: &str = "__fastrender_event_dispatching";
-const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const EVENT_COMPOSED_PATH_KEY: &str = "__fastrender_event_composed_path";
 const EVENT_LISTENER_ROOTS_KEY: &str = "__fastrender_event_listener_roots";
 const EVENT_HANDLER_WRAPPERS_KEY: &str = "__fastrender_event_handler_wrappers";
@@ -3038,20 +3040,6 @@ const HTML_SELECT_VALUE_SET_KEY: &str = "__fastrender_html_select_value_set";
 const HTML_SELECT_CLEARED_ATTR: &str = "__fastrender_select_cleared";
 const HTML_FORM_ELEMENTS_GET_KEY: &str = "__fastrender_html_form_elements_get";
 const HTML_FORM_SUBMIT_KEY: &str = "__fastrender_html_form_submit";
-const STYLE_GET_PROPERTY_VALUE_KEY: &str = "__fastrender_style_get_property_value";
-const STYLE_SET_PROPERTY_KEY: &str = "__fastrender_style_set_property";
-const STYLE_REMOVE_PROPERTY_KEY: &str = "__fastrender_style_remove_property";
-const STYLE_CSS_TEXT_GET_KEY: &str = "__fastrender_style_css_text_get";
-const STYLE_CSS_TEXT_SET_KEY: &str = "__fastrender_style_css_text_set";
-const STYLE_DISPLAY_GET_KEY: &str = "__fastrender_style_display_get";
-const STYLE_DISPLAY_SET_KEY: &str = "__fastrender_style_display_set";
-const STYLE_CURSOR_GET_KEY: &str = "__fastrender_style_cursor_get";
-const STYLE_CURSOR_SET_KEY: &str = "__fastrender_style_cursor_set";
-const STYLE_HEIGHT_GET_KEY: &str = "__fastrender_style_height_get";
-const STYLE_HEIGHT_SET_KEY: &str = "__fastrender_style_height_set";
-const STYLE_WIDTH_GET_KEY: &str = "__fastrender_style_width_get";
-const STYLE_WIDTH_SET_KEY: &str = "__fastrender_style_width_set";
-const CSS_STYLE_DECL_PROTOTYPE_KEY: &str = "__fastrender_css_style_declaration_prototype";
 const COMPUTED_STYLE_BRAND_KEY: &str = "__fastrender_computed_style";
 const GET_COMPUTED_STYLE_GET_PROPERTY_VALUE_SLOT: usize = 0;
 const GET_COMPUTED_STYLE_CSS_STYLE_DECL_PROTO_SLOT: usize = 1;
@@ -3073,11 +3061,7 @@ const CHILD_NODE_AFTER_KEY: &str = "__fastrender_child_node_after";
 const CHILD_NODE_REPLACE_WITH_KEY: &str = "__fastrender_child_node_replace_with";
 const NODE_TEXT_CONTENT_GET_KEY: &str = "__fastrender_node_text_content_get";
 const NODE_TEXT_CONTENT_SET_KEY: &str = "__fastrender_node_text_content_set";
-const NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
-const NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
-const HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
 const HTML_OPTIONS_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_options_collection_prototype";
-const HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
 const HTML_COLLECTION_QUERY_KIND_KEY: &str = "__fastrender_html_collection_query_kind";
 const HTML_COLLECTION_QUERY_NAMESPACE_KEY: &str = "__fastrender_html_collection_query_namespace";
 const HTML_COLLECTION_QUERY_LOCAL_NAME_KEY: &str = "__fastrender_html_collection_query_local_name";
@@ -3303,7 +3287,6 @@ const MUTATION_OBSERVER_REGISTRY_KEY: &str = "__fastrender_mutation_observer_reg
 const MUTATION_OBSERVER_NOTIFY_KEY: &str = "__fastrender_mutation_observer_notify";
 const MUTATION_OBSERVER_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMOB"); // MutationObserver
 const MUTATION_RECORD_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMMRC"); // MutationRecord
-const NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 const MUTATION_RECORD_PROTOTYPE_KEY: &str = "__fastrender_mutation_record_prototype";
 const RANGE_PROTOTYPE_KEY: &str = "__fastrender_range_prototype";
 const ATTR_PROTOTYPE_KEY: &str = "__fastrender_attr_prototype";

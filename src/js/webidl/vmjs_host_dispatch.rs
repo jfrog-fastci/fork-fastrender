@@ -3,6 +3,16 @@ use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, NodeId, NodeKind, RangeId};
 use crate::geometry::{Point, Rect};
 use crate::js::bindings::DomExceptionClassVmJs;
+use crate::js::dom_internal_keys::{
+  CSS_STYLE_DECL_PROTOTYPE_KEY, EVENT_BRAND_KEY, EVENT_IMMEDIATE_STOP_KEY, EVENT_INITIALIZED_KEY,
+  EVENT_KIND_KEY, HTML_COLLECTION_PROTOTYPE_KEY, HTML_COLLECTION_ROOT_KEY, NODE_CHILD_NODES_KEY,
+  NODE_CHILDREN_KEY, NODE_ID_KEY, NODE_LIST_PROTOTYPE_KEY, STYLE_CSS_TEXT_GET_KEY,
+  STYLE_CSS_TEXT_SET_KEY,
+  STYLE_CURSOR_GET_KEY,
+  STYLE_CURSOR_SET_KEY, STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY, STYLE_GET_PROPERTY_VALUE_KEY,
+  STYLE_HEIGHT_GET_KEY, STYLE_HEIGHT_SET_KEY, STYLE_REMOVE_PROPERTY_KEY, STYLE_SET_PROPERTY_KEY,
+  STYLE_WIDTH_GET_KEY, STYLE_WIDTH_SET_KEY, WRAPPER_DOCUMENT_KEY,
+};
 use crate::js::dom2_bindings;
 use crate::js::dom_host::DomHostVmJs;
 use crate::js::dom_platform::{DocumentId, DomInterface, DomPlatform};
@@ -42,28 +52,8 @@ const URL_SEARCH_PARAMS_SLOT: &str = "__fastrender_url_searchParams";
 const ELEMENT_CLASS_LIST_PLACEHOLDER_SLOT: &str = "__fastrender_element_class_list_placeholder";
 const DOM_TOKEN_LIST_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMDTL");
 const RANGE_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMRNG");
-const EVENT_BRAND_KEY: &str = "__fastrender_event";
-const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
-const EVENT_INITIALIZED_KEY: &str = "__fastrender_event_initialized";
-const EVENT_IMMEDIATE_STOP_KEY: &str = "__fastrender_event_stop_immediate";
 const DOM_HOST_NOT_AVAILABLE_ERROR: &str = "DOM host not available";
 const CSS_STYLE_DECL_HOST_TAG: u64 = u64::from_be_bytes(*b"FRDOMCSS");
-// Must match `window_realm::NODE_ID_KEY`.
-const INTERNAL_NODE_ID_KEY: &str = "__fastrender_node_id";
-// Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
-const INTERNAL_WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
-// Must match `window_realm::NODE_CHILDREN_KEY`.
-const INTERNAL_NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
-// Must match `window_realm::NODE_CHILD_NODES_KEY`.
-const INTERNAL_NODE_CHILD_NODES_KEY: &str = "__fastrender_node_child_nodes";
-// Must match `window_realm::HTML_COLLECTION_PROTOTYPE_KEY`.
-const INTERNAL_HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
-// Must match `window_realm::NODE_LIST_PROTOTYPE_KEY`.
-const INTERNAL_NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
-// Must match `window_realm::HTML_COLLECTION_ROOT_KEY`.
-const INTERNAL_HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
-// Must match `window_realm::NODE_LIST_PROTOTYPE_KEY`.
-const INTERNAL_NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -309,7 +299,7 @@ fn require_range_receiver(
 
   // Range wrappers store a back-reference to their owning Document wrapper so we can resolve the
   // correct `dom2::Document` arena and wrap returned Nodes.
-  let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+  let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
   let document_obj = match scope
     .heap()
     .object_get_own_data_property_value(obj, &wrapper_document_key)?
@@ -1532,7 +1522,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
   where
     Host: DomHost,
   {
-    let child_nodes_key = key_from_str(scope, INTERNAL_NODE_CHILD_NODES_KEY)?;
+    let child_nodes_key = key_from_str(scope, NODE_CHILD_NODES_KEY)?;
     let Some(Value::Object(list_obj)) = scope
       .heap()
       .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
@@ -1819,7 +1809,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         let selectors =
           js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
 
-        let node_list_proto_key = key_from_str(scope, INTERNAL_NODE_LIST_PROTOTYPE_KEY)?;
+        let node_list_proto_key = key_from_str(scope, NODE_LIST_PROTOTYPE_KEY)?;
         let node_list_proto = match scope
           .heap()
           .object_get_own_data_property_value(document_obj, &node_list_proto_key)?
@@ -2906,7 +2896,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // WebIDL wrapper objects store a back-reference to their owning `Document` wrapper via an
         // internal `__fastrender_*` property; use the same scheme as the handwritten `childNodes`
         // shim so we can adopt the realm's NodeList prototype (`instanceof NodeList`).
-        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
         let document_obj = match scope
           .heap()
           .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
@@ -2916,7 +2906,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
         scope.push_root(Value::Object(document_obj))?;
 
-        let child_nodes_key = key_from_str(scope, INTERNAL_NODE_CHILD_NODES_KEY)?;
+        let child_nodes_key = key_from_str(scope, NODE_CHILD_NODES_KEY)?;
         let list_obj = match scope
           .heap()
           .object_get_own_data_property_value(wrapper_obj, &child_nodes_key)?
@@ -2926,7 +2916,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             let list_obj = scope.alloc_object()?;
             scope.push_root(Value::Object(list_obj))?;
 
-            let proto_key = key_from_str(scope, INTERNAL_NODE_LIST_PROTOTYPE_KEY)?;
+            let proto_key = key_from_str(scope, NODE_LIST_PROTOTYPE_KEY)?;
             let proto = match scope
               .heap()
               .object_get_own_data_property_value(document_obj, &proto_key)?
@@ -4304,7 +4294,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         // WebIDL wrapper objects store a back-reference to their owning `Document` wrapper; use the
         // realm's per-document NodeList prototype so `instanceof NodeList` works.
-        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
         let document_obj = match scope
           .heap()
           .object_get_own_data_property_value(element_obj, &wrapper_document_key)?
@@ -4314,7 +4304,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
         scope.push_root(Value::Object(document_obj))?;
 
-        let node_list_proto_key = key_from_str(scope, INTERNAL_NODE_LIST_PROTOTYPE_KEY)?;
+        let node_list_proto_key = key_from_str(scope, NODE_LIST_PROTOTYPE_KEY)?;
         let node_list_proto = match scope
           .heap()
           .object_get_own_data_property_value(document_obj, &node_list_proto_key)?
@@ -4771,7 +4761,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         // internal `__fastrender_*` property; reuse the same storage scheme as the handwritten
         // `ParentNode.children` shim so `instanceof HTMLCollection` works with the realm's
         // per-document prototype.
-        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
         let document_obj = match scope
           .heap()
           .object_get_own_data_property_value(wrapper_obj, &wrapper_document_key)?
@@ -4781,7 +4771,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         };
         scope.push_root(Value::Object(document_obj))?;
 
-        let children_key = key_from_str(scope, INTERNAL_NODE_CHILDREN_KEY)?;
+        let children_key = key_from_str(scope, NODE_CHILDREN_KEY)?;
         let collection_obj = match scope
           .heap()
           .object_get_own_data_property_value(wrapper_obj, &children_key)?
@@ -4791,7 +4781,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
             let collection = scope.alloc_object()?;
             scope.push_root(Value::Object(collection))?;
 
-            let proto_key = key_from_str(scope, INTERNAL_HTML_COLLECTION_PROTOTYPE_KEY)?;
+            let proto_key = key_from_str(scope, HTML_COLLECTION_PROTOTYPE_KEY)?;
             let proto = match scope
               .heap()
               .object_get_own_data_property_value(document_obj, &proto_key)?
@@ -4808,7 +4798,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
               .object_set_prototype(collection, Some(proto))?;
 
             // Keep the root wrapper alive even if the caller only holds the collection object.
-            let root_key = key_from_str(scope, INTERNAL_HTML_COLLECTION_ROOT_KEY)?;
+            let root_key = key_from_str(scope, HTML_COLLECTION_ROOT_KEY)?;
             scope.define_property(
               collection,
               root_key,
@@ -5325,7 +5315,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         )?;
 
         // Optionally set prototype so `el.style instanceof CSSStyleDeclaration` works.
-        let proto_key = key_from_str(scope, "__fastrender_css_style_declaration_prototype")?;
+        let proto_key = key_from_str(scope, CSS_STYLE_DECL_PROTOTYPE_KEY)?;
         if let Some(Value::Object(proto)) =
           scope
             .heap()
@@ -5338,14 +5328,14 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         }
 
         // Hidden bookkeeping properties expected by the shared style native functions.
-        let node_id_key = key_from_str(scope, INTERNAL_NODE_ID_KEY)?;
+        let node_id_key = key_from_str(scope, NODE_ID_KEY)?;
         scope.define_property(
           style_obj,
           node_id_key,
           data_property(Value::Number(element_id.index() as f64), true, false, true),
         )?;
 
-        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let wrapper_document_key = key_from_str(scope, WRAPPER_DOCUMENT_KEY)?;
         scope.define_property(
           style_obj,
           wrapper_document_key,
@@ -5361,7 +5351,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
 
         // Reuse shared method/accessor functions stored on the document wrapper.
         let get_property_value = {
-          let key = key_from_str(scope, "__fastrender_style_get_property_value")?;
+          let key = key_from_str(scope, STYLE_GET_PROPERTY_VALUE_KEY)?;
           match scope
             .heap()
             .object_get_own_data_property_value(document_obj, &key)?
@@ -5375,7 +5365,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
         };
         let set_property = {
-          let key = key_from_str(scope, "__fastrender_style_set_property")?;
+          let key = key_from_str(scope, STYLE_SET_PROPERTY_KEY)?;
           match scope
             .heap()
             .object_get_own_data_property_value(document_obj, &key)?
@@ -5389,7 +5379,7 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
         };
         let remove_property = {
-          let key = key_from_str(scope, "__fastrender_style_remove_property")?;
+          let key = key_from_str(scope, STYLE_REMOVE_PROPERTY_KEY)?;
           match scope
             .heap()
             .object_get_own_data_property_value(document_obj, &key)?
@@ -5425,11 +5415,11 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         )?;
 
         for (prop, hidden_get, hidden_set) in [
-          ("cssText", "__fastrender_style_css_text_get", "__fastrender_style_css_text_set"),
-          ("display", "__fastrender_style_display_get", "__fastrender_style_display_set"),
-          ("cursor", "__fastrender_style_cursor_get", "__fastrender_style_cursor_set"),
-          ("height", "__fastrender_style_height_get", "__fastrender_style_height_set"),
-          ("width", "__fastrender_style_width_get", "__fastrender_style_width_set"),
+          ("cssText", STYLE_CSS_TEXT_GET_KEY, STYLE_CSS_TEXT_SET_KEY),
+          ("display", STYLE_DISPLAY_GET_KEY, STYLE_DISPLAY_SET_KEY),
+          ("cursor", STYLE_CURSOR_GET_KEY, STYLE_CURSOR_SET_KEY),
+          ("height", STYLE_HEIGHT_GET_KEY, STYLE_HEIGHT_SET_KEY),
+          ("width", STYLE_WIDTH_GET_KEY, STYLE_WIDTH_SET_KEY),
         ] {
           let get_key = key_from_str(scope, hidden_get)?;
           let get = match scope
@@ -8568,9 +8558,6 @@ mod dom_dispatch_tests {
   use std::any::Any;
   use std::sync::Arc;
   use vm_js::{Job, RealmId, VmHostHooks};
-
-  // Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
-  const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 
   #[derive(Debug, Default)]
   struct NoFetchResourceFetcher;

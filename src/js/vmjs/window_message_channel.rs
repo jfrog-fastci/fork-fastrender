@@ -15,6 +15,7 @@
 //! evolve as structured clone / multi-context support is added.
 
 use crate::js::event_loop::{EventLoop, TaskSource};
+use crate::js::dom_internal_keys::{EVENT_BRAND_KEY, EVENT_KIND_KEY};
 use crate::js::window_realm::{WindowRealmHost, WindowRealmUserData, EVENT_TARGET_HOST_TAG};
 use crate::js::window_timers::{vm_error_to_event_loop_error, VmJsEventLoopHooks};
 use std::collections::{HashMap, HashSet};
@@ -27,8 +28,6 @@ use vm_js::{
 };
 use webidl_vm_js::VmJsHostHooksPayload;
 
-const EVENT_BRAND_KEY: &str = "__fastrender_event";
-const EVENT_KIND_KEY: &str = "__fastrender_event_kind";
 const EVENT_KIND_EVENT: u8 = 0;
 
 const DETACHED_MESSAGE_PORT_ID: u64 = 0;

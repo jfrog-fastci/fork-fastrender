@@ -9,14 +9,13 @@
 //! `e instanceof DOMException`.
 
 use crate::js::bindings::DomExceptionClassVmJs;
+use crate::js::dom_internal_keys::{NODE_ID_KEY, WRAPPER_DOCUMENT_KEY};
 use vm_js::{
   GcObject, Heap, NativeConstructId, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind,
   Realm, Scope, Value, Vm, VmError, VmHost, VmHostHooks,
 };
 
 const XML_SERIALIZER_BRAND_KEY: &str = "__fastrender_xml_serializer";
-const NODE_ID_KEY: &str = "__fastrender_node_id";
-const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 
 // Native slot indices for `XMLSerializer.prototype.serializeToString`.
 const SERIALIZE_SLOT_DOM_EXCEPTION_PROTO: usize = 0;

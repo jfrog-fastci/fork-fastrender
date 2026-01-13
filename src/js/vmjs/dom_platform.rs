@@ -1,16 +1,12 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{NodeId, NodeKind};
+use crate::js::dom_internal_keys::{NODE_ID_KEY, WRAPPER_DOCUMENT_KEY};
 use crate::web::events::EventTargetId;
 use std::collections::HashMap;
 use vm_js::{
   GcObject, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm, RealmId, RootId,
   Scope, Value, VmError, WeakGcObject,
 };
-
-// Must match `window_realm::NODE_ID_KEY`.
-const INTERNAL_NODE_ID_KEY: &str = "__fastrender_node_id";
-// Must match `window_realm::WRAPPER_DOCUMENT_KEY`.
-const INTERNAL_WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 
 /// Uniquely identifies a `dom2::Document` within a JS realm.
 ///
@@ -1074,7 +1070,7 @@ impl DomPlatform {
         scope.push_root(Value::Object(document_wrapper_obj))?;
       }
 
-      let node_id_key = PropertyKey::from_string(scope.alloc_string(INTERNAL_NODE_ID_KEY)?);
+      let node_id_key = PropertyKey::from_string(scope.alloc_string(NODE_ID_KEY)?);
       scope.define_property(
         wrapper,
         node_id_key,
@@ -1092,7 +1088,7 @@ impl DomPlatform {
       // the owning `Document` wrapper. Ensure WebIDL-created wrappers provide it too.
       if let Some(document_wrapper_obj) = document_wrapper_obj {
         let wrapper_document_key =
-          PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+          PropertyKey::from_string(scope.alloc_string(WRAPPER_DOCUMENT_KEY)?);
         scope.define_property(
           wrapper,
           wrapper_document_key,
@@ -1133,7 +1129,7 @@ impl DomPlatform {
       scope.push_root(Value::Object(document_obj))?;
 
       let wrapper_document_key =
-        PropertyKey::from_string(scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+        PropertyKey::from_string(scope.alloc_string(WRAPPER_DOCUMENT_KEY)?);
       scope.define_property(
         wrapper,
         wrapper_document_key,
@@ -1411,10 +1407,10 @@ impl DomPlatform {
     // Root the strings for the duration of the operation so GC during subsequent allocations can't
     // collect them (these keys are not stored on any object graph).
     let mut scope = heap.scope();
-    let node_id_s = scope.alloc_string(INTERNAL_NODE_ID_KEY)?;
+    let node_id_s = scope.alloc_string(NODE_ID_KEY)?;
     scope.push_root(Value::String(node_id_s))?;
     let node_id_key = PropertyKey::from_string(node_id_s);
-    let wrapper_document_s = scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+    let wrapper_document_s = scope.alloc_string(WRAPPER_DOCUMENT_KEY)?;
     scope.push_root(Value::String(wrapper_document_s))?;
     let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
     let style_s = scope.alloc_string("style")?;
@@ -1465,10 +1461,10 @@ impl DomPlatform {
 
     // Root strings for the duration of the remap: they are not stored on the object graph.
     let mut scope = heap.scope();
-    let node_id_s = scope.alloc_string(INTERNAL_NODE_ID_KEY)?;
+    let node_id_s = scope.alloc_string(NODE_ID_KEY)?;
     scope.push_root(Value::String(node_id_s))?;
     let node_id_key = PropertyKey::from_string(node_id_s);
-    let wrapper_document_s = scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+    let wrapper_document_s = scope.alloc_string(WRAPPER_DOCUMENT_KEY)?;
     scope.push_root(Value::String(wrapper_document_s))?;
     let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
     let style_s = scope.alloc_string("style")?;
@@ -1503,10 +1499,10 @@ impl DomPlatform {
 
     // Root strings for the duration of the remap: they are not stored on the object graph.
     let mut scope = heap.scope();
-    let node_id_s = scope.alloc_string(INTERNAL_NODE_ID_KEY)?;
+    let node_id_s = scope.alloc_string(NODE_ID_KEY)?;
     scope.push_root(Value::String(node_id_s))?;
     let node_id_key = PropertyKey::from_string(node_id_s);
-    let wrapper_document_s = scope.alloc_string(INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+    let wrapper_document_s = scope.alloc_string(WRAPPER_DOCUMENT_KEY)?;
     scope.push_root(Value::String(wrapper_document_s))?;
     let wrapper_document_key = PropertyKey::from_string(wrapper_document_s);
     let style_s = scope.alloc_string("style")?;
@@ -2202,7 +2198,7 @@ mod tests {
       platform.get_or_create_wrapper(&mut scope, document_key, new_id, DomInterface::Element)?;
     assert_eq!(wrapper, wrapper2);
 
-    let key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
+    let key = PropertyKey::from_string(scope.alloc_string(super::NODE_ID_KEY)?);
     let value = scope
       .heap()
       .object_get_own_data_property_value(wrapper, &key)?
@@ -2252,7 +2248,7 @@ mod tests {
     let root = scope.heap_mut().add_root(Value::Object(wrapper))?;
 
     let wrapper_doc_key =
-      PropertyKey::from_string(scope.alloc_string(super::INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+      PropertyKey::from_string(scope.alloc_string(super::WRAPPER_DOCUMENT_KEY)?);
     let wrapper_doc_value = scope
       .heap()
       .object_get_own_data_property_value(wrapper, &wrapper_doc_key)?
@@ -2268,7 +2264,7 @@ mod tests {
       platform.get_or_create_wrapper(&mut scope, document_key_b, new_id, DomInterface::Element)?;
     assert_eq!(wrapper, wrapper2);
 
-    let key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
+    let key = PropertyKey::from_string(scope.alloc_string(super::NODE_ID_KEY)?);
     let value = scope
       .heap()
       .object_get_own_data_property_value(wrapper, &key)?
@@ -2276,7 +2272,7 @@ mod tests {
     assert_eq!(value, Value::Number(new_id.index() as f64));
 
     let wrapper_doc_key =
-      PropertyKey::from_string(scope.alloc_string(super::INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+      PropertyKey::from_string(scope.alloc_string(super::WRAPPER_DOCUMENT_KEY)?);
     let wrapper_doc_value = scope
       .heap()
       .object_get_own_data_property_value(wrapper, &wrapper_doc_key)?
@@ -2329,7 +2325,7 @@ mod tests {
     {
       let mut scope = scope.reborrow();
       scope.push_root(Value::Object(wrapper))?;
-      let key = alloc_key(&mut scope, super::INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+      let key = alloc_key(&mut scope, super::WRAPPER_DOCUMENT_KEY)?;
       scope.define_property(
         wrapper,
         key,
@@ -2359,7 +2355,7 @@ mod tests {
         },
       )?;
 
-      let node_id_key = alloc_key(&mut scope, super::INTERNAL_NODE_ID_KEY)?;
+      let node_id_key = alloc_key(&mut scope, super::NODE_ID_KEY)?;
       scope.define_property(
         style_obj,
         node_id_key,
@@ -2373,7 +2369,7 @@ mod tests {
         },
       )?;
 
-      let wrapper_document_key = alloc_key(&mut scope, super::INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+      let wrapper_document_key = alloc_key(&mut scope, super::WRAPPER_DOCUMENT_KEY)?;
       scope.define_property(
         style_obj,
         wrapper_document_key,
@@ -2434,7 +2430,7 @@ mod tests {
     assert_eq!(slots.b, super::CSS_STYLE_DECL_HOST_TAG);
     assert_eq!(slots.a, new_id.index() as u64);
 
-    let node_id_key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
+    let node_id_key = PropertyKey::from_string(scope.alloc_string(super::NODE_ID_KEY)?);
     let node_id_val = scope
       .heap()
       .object_get_own_data_property_value(style_obj2, &node_id_key)?
@@ -2442,7 +2438,7 @@ mod tests {
     assert_eq!(node_id_val, Value::Number(new_id.index() as f64));
 
     let wrapper_document_key =
-      PropertyKey::from_string(scope.alloc_string(super::INTERNAL_WRAPPER_DOCUMENT_KEY)?);
+      PropertyKey::from_string(scope.alloc_string(super::WRAPPER_DOCUMENT_KEY)?);
     let wrapper_document_val = scope
       .heap()
       .object_get_own_data_property_value(style_obj2, &wrapper_document_key)?
@@ -2588,7 +2584,7 @@ mod tests {
       DomNodeKey::new(document_id_b, new_id)
     );
 
-    let key = PropertyKey::from_string(scope.alloc_string(super::INTERNAL_NODE_ID_KEY)?);
+    let key = PropertyKey::from_string(scope.alloc_string(super::NODE_ID_KEY)?);
     let value = scope
       .heap()
       .object_get_own_data_property_value(wrapper, &key)?

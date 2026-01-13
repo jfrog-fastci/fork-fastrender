@@ -35,6 +35,7 @@
 pub mod cookie_jar;
 pub mod chrome_api;
 pub mod web_storage;
+pub(crate) mod dom_internal_keys;
 pub mod dom2_bindings;
 pub mod dom_host;
 pub mod dom_scripts;

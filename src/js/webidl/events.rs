@@ -7,6 +7,7 @@ use vm_js::{PropertyKey, RootId, Value, VmError};
 
 use crate::dom2;
 use crate::error::{Error, Result};
+use crate::js::dom_internal_keys::EVENT_ID_KEY;
 use crate::js::vm_error_format;
 use crate::web::events::{
   dispatch_event, AddEventListenerOptions, DomError as EventsDomError, Event, EventListenerInvoker,
@@ -70,7 +71,7 @@ impl EventWrapper {
     let keys = EventKeys {
       // Intentionally internal-ish; not a web-exposed slot. Used to find the Rust `Event` during
       // dispatch.
-      event_id: Self::intern_key(rt, "__fastrender_event_id")?,
+      event_id: Self::intern_key(rt, EVENT_ID_KEY)?,
       type_: Self::intern_key(rt, "type")?,
       bubbles: Self::intern_key(rt, "bubbles")?,
       cancelable: Self::intern_key(rt, "cancelable")?,
