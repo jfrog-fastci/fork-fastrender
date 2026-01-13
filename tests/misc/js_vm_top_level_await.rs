@@ -73,7 +73,7 @@ fn vmjs_module_loader_top_level_await_microtask_resolves() -> Result<()> {
 }
 
 #[test]
-fn vmjs_module_loader_top_level_await_timer_is_unsupported() -> Result<()> {
+fn vmjs_module_loader_top_level_await_timer_resolves() -> Result<()> {
   #[derive(Debug)]
   struct MapFetcher {
     map: HashMap<String, FetchedResource>,
@@ -131,13 +131,7 @@ fn vmjs_module_loader_top_level_await_timer_is_unsupported() -> Result<()> {
   host.window_mut().vm_mut().set_budget(Budget::unlimited(100));
 
   let mut loader = VmJsModuleLoader::new(fetcher, document_url);
-  let err = loader
-    .evaluate_module_url(&mut host, &mut event_loop, entry_url)
-    .expect_err("expected async top-level await to be unsupported");
-  assert!(
-    err.to_string().contains("asynchronous module loading/evaluation is not supported"),
-    "unexpected error: {err}"
-  );
-  assert_eq!(get_global_prop(&mut host, "done"), Value::Undefined);
+  loader.evaluate_module_url(&mut host, &mut event_loop, entry_url)?;
+  assert_eq!(get_global_prop(&mut host, "done"), Value::Bool(true));
   Ok(())
 }

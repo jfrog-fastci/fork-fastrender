@@ -10383,8 +10383,7 @@ impl BrowserRuntime {
       return;
     };
 
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
     let document_url = tab
       .last_committed_url
       .as_deref()

@@ -322,6 +322,7 @@ impl MediaClock for AudioStreamClock {
 ///
 /// Note: `playbackRate` of 0 is treated as a valid value (the timeline simply does not advance while
 /// `playing` remains `true`).
+
 pub struct PlaybackClock {
   master_clock: Arc<dyn MediaClock>,
 
