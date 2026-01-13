@@ -96,6 +96,8 @@ where
     await_allowed: opts.allow_top_level_await,
     is_module: opts.is_module,
     yield_allowed: false,
+    await_is_reserved: opts.allow_top_level_await,
+    yield_is_reserved: false,
     super_call_allowed: false,
     arguments_allowed: true,
     return_allowed: false,
@@ -127,6 +129,25 @@ struct ControlContext {
   ///
   /// This is true only inside generator function bodies.
   yield_allowed: bool,
+  /// Whether `await` is reserved as an identifier in the current syntactic context.
+  ///
+  /// This is true:
+  /// - at module top-level,
+  /// - inside async function bodies and parameter lists, and
+  /// - inside class static initialization blocks.
+  ///
+  /// Note: This is **not** equivalent to [`ControlContext::await_allowed`]. For example, class static
+  /// blocks disallow `await` expressions, but still treat `await` as a reserved identifier.
+  await_is_reserved: bool,
+  /// Whether `yield` is reserved as an identifier due to being inside a generator function.
+  ///
+  /// In addition to this flag, strict mode also reserves `yield` as an identifier.
+  ///
+  /// Note: This is **not** equivalent to [`ControlContext::yield_allowed`]. For example, generator
+  /// function parameter lists temporarily set `yield_allowed = false` to enforce
+  /// `ContainsYieldExpression` early errors, but `yield` remains a reserved identifier throughout
+  /// the parameter list.
+  yield_is_reserved: bool,
   /// Whether `super()` calls are permitted in the current context.
   ///
   /// `super()` is only valid in derived class constructors (and arrow functions lexically nested
@@ -157,6 +178,8 @@ struct SavedFunctionContext {
   strict: bool,
   await_allowed: bool,
   yield_allowed: bool,
+  await_is_reserved: bool,
+  yield_is_reserved: bool,
   super_call_allowed: bool,
   arguments_allowed: bool,
   return_allowed: bool,
@@ -231,6 +254,26 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     Ok(())
   }
 
+  fn validate_reserved_identifier(
+    &mut self,
+    ctx: &ControlContext,
+    loc: Loc,
+    name: &str,
+  ) -> Result<(), VmError> {
+    let reserved = match name {
+      // `yield` is reserved in strict mode code and within generator bodies.
+      "yield" => ctx.strict || ctx.yield_is_reserved,
+      // `await` is reserved in async contexts, module top-level, and class static blocks.
+      "await" => ctx.await_is_reserved,
+      _ => false,
+    };
+    if reserved {
+      let message = try_format_error_message("invalid use of reserved word '", name, "'")?;
+      self.push_error(loc, message)?;
+    }
+    Ok(())
+  }
+
   fn validate_declared_private_name(
     &mut self,
     ctx: &ControlContext,
@@ -283,6 +326,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     strict: bool,
     await_allowed: bool,
     yield_allowed: bool,
+    await_is_reserved: bool,
+    yield_is_reserved: bool,
     super_call_allowed: bool,
     arguments_allowed: bool,
   ) -> SavedFunctionContext {
@@ -290,6 +335,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       strict: ctx.strict,
       await_allowed: ctx.await_allowed,
       yield_allowed: ctx.yield_allowed,
+      await_is_reserved: ctx.await_is_reserved,
+      yield_is_reserved: ctx.yield_is_reserved,
       super_call_allowed: ctx.super_call_allowed,
       arguments_allowed: ctx.arguments_allowed,
       return_allowed: ctx.return_allowed,
@@ -300,6 +347,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.strict = strict;
     ctx.await_allowed = await_allowed;
     ctx.yield_allowed = yield_allowed;
+    ctx.await_is_reserved = await_is_reserved;
+    ctx.yield_is_reserved = yield_is_reserved;
     ctx.super_call_allowed = super_call_allowed;
     ctx.arguments_allowed = arguments_allowed;
     ctx.return_allowed = true;
@@ -313,6 +362,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     ctx.strict = saved.strict;
     ctx.await_allowed = saved.await_allowed;
     ctx.yield_allowed = saved.yield_allowed;
+    ctx.await_is_reserved = saved.await_is_reserved;
+    ctx.yield_is_reserved = saved.yield_is_reserved;
     ctx.super_call_allowed = saved.super_call_allowed;
     ctx.arguments_allowed = saved.arguments_allowed;
     ctx.return_allowed = saved.return_allowed;
@@ -1363,6 +1414,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     loc: Loc,
     stmt: &LabelStmt,
   ) -> Result<(), VmError> {
+    self.validate_reserved_identifier(ctx, loc, stmt.name.as_str())?;
     let is_iteration = Self::is_iteration_statement(&stmt.statement);
     if ctx.labels.iter().any(|l| l.name == stmt.name) {
       let message = try_format_error_message("duplicate label '", &stmt.name, "'")?;
@@ -1721,6 +1773,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       /* strict */ true,
       /* await_allowed */ await_allowed,
       /* yield_allowed */ false,
+      /* await_is_reserved */ true,
+      /* yield_is_reserved */ ctx.yield_is_reserved,
       /* super_call_allowed */ false,
       /* arguments_allowed */ false,
     );
@@ -2196,6 +2250,8 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       func_strict,
       func.stx.async_,
       func.stx.generator,
+      func.stx.async_,
+      func.stx.generator,
       super_call_allowed,
       arguments_allowed,
     );
@@ -2243,6 +2299,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Expr::Cond(cond) => self.visit_cond(ctx, &cond.stx),
       Expr::Func(func) => self.visit_func_expr(ctx, &func.stx),
       Expr::Id(id) => {
+        self.validate_reserved_identifier(ctx, expr.loc, id.stx.name.as_str())?;
         if id.stx.name == "arguments" && !ctx.arguments_allowed {
           self.push_error(
             expr.loc,
@@ -2278,6 +2335,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
       Expr::ArrPat(arr) => self.visit_arr_pat(ctx, &arr.stx, PatRole::Assignment),
 
       Expr::IdPat(id) => {
+        self.validate_reserved_identifier(ctx, expr.loc, id.stx.name.as_str())?;
         if id.stx.name.starts_with('#') {
           self.push_error(expr.loc, "invalid private identifier")?;
         }
@@ -2710,7 +2768,19 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
             _ => {}
           }
         }
-        ObjMemberType::Shorthand { .. } => {}
+        ObjMemberType::Shorthand { id } => {
+          self.step()?;
+          self.validate_reserved_identifier(ctx, id.loc, id.stx.name.as_str())?;
+          if id.stx.name == "arguments" && !ctx.arguments_allowed {
+            self.push_error(
+              id.loc,
+              "arguments is not allowed in class static initialization blocks",
+            )?;
+          }
+          if id.stx.name.starts_with('#') {
+            self.push_error(id.loc, "invalid private identifier")?;
+          }
+        }
         ObjMemberType::Rest { val } => self.visit_expr(ctx, val)?,
       }
     }
@@ -2793,6 +2863,7 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
     match &*pat.stx {
       Pat::Arr(arr) => self.visit_arr_pat(ctx, &arr.stx, role),
       Pat::Id(id) => {
+        self.validate_reserved_identifier(ctx, pat.loc, id.stx.name.as_str())?;
         if ctx.strict && is_restricted_identifier(&id.stx.name) {
           let message = try_format_error_message(
             "restricted identifier '",
