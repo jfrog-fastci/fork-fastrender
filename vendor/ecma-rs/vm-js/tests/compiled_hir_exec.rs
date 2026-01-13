@@ -396,6 +396,29 @@ fn compiled_new_target_is_undefined_in_normal_call() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_new_target_is_undefined_in_inner_non_construct_call() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // `new.target` is per-function, not dynamically scoped. A nested non-arrow function called
+  // normally must observe `new.target === undefined` even if created inside a constructor call.
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function C() {
+        return function() { return new.target; };
+      }
+      new C()() === undefined
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_new_target_is_constructor_function_in_new_call() -> Result<(), VmError> {
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let vm = Vm::new(VmOptions::default());
