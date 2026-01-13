@@ -129,18 +129,15 @@ impl Vp9Decoder {
   /// content as 16-bit planes with `bit_depth` set to 10 or 12, and `fmt` tagged with
   /// `VPX_IMG_FMT_HIGHBITDEPTH`.
   ///
-  /// We currently **reject** non-8-bit output explicitly to avoid silent corruption from treating
-  /// 16-bit planes as 8-bit.
+  /// For high bit depth output, we downshift the 16-bit YUV planes to 8-bit and then convert to
+  /// RGBA8. This is lossy but avoids silently treating 16-bit planes as 8-bit.
   pub fn rgba_from_image(img: &crate::vpx_image_t) -> Result<Vp9Frame, MediaError> {
     let fmt = img.fmt as u32;
+    let high_bit_depth = (fmt & Self::VPX_IMG_FMT_HIGHBITDEPTH) != 0;
+    let fmt_base = fmt & !Self::VPX_IMG_FMT_HIGHBITDEPTH;
     let bit_depth = img.bit_depth;
-    if bit_depth != 8 || (fmt & Self::VPX_IMG_FMT_HIGHBITDEPTH) != 0 {
-      return Err(MediaError::Unsupported(format!(
-        "vp9 bit_depth unsupported: bit_depth={bit_depth} fmt=0x{fmt:x}"
-      )));
-    }
 
-    match fmt {
+    match fmt_base {
       crate::VPX_IMG_FMT_I420
       | crate::VPX_IMG_FMT_I422
       | crate::VPX_IMG_FMT_I444
@@ -151,6 +148,14 @@ impl Vp9Decoder {
           "vp9 pixel format unsupported: fmt=0x{fmt:x}"
         )));
       }
+    }
+
+    // Reject inconsistent metadata early: if the frame claims a non-8-bit bit depth but does not
+    // set the high-bit-depth format flag, we cannot safely interpret the plane data.
+    if !high_bit_depth && bit_depth != 8 {
+      return Err(MediaError::Unsupported(format!(
+        "vp9 bit_depth unsupported: bit_depth={bit_depth} fmt=0x{fmt:x}"
+      )));
     }
 
     let width: usize = img
@@ -202,47 +207,85 @@ impl Vp9Decoder {
 
     let full_range = img.range == crate::VPX_CR_FULL_RANGE;
 
-    let mut rgba8 = vec![0u8; width * height * 4];
-    for row in 0..height {
-      let y_row = unsafe { y_plane.add(row * y_stride) };
-      let u_row = unsafe { u_plane.add((row >> y_shift) * u_stride) };
-      let v_row = unsafe { v_plane.add((row >> y_shift) * v_stride) };
+    let rgba_len = width
+      .checked_mul(height)
+      .and_then(|v| v.checked_mul(4))
+      .ok_or_else(|| MediaError::Decode("vp9 frame buffer size overflow".to_string()))?;
+    let mut rgba8 = vec![0u8; rgba_len];
 
-      for col in 0..width {
-        let y = unsafe { *y_row.add(col) } as i32;
-        let u = unsafe { *u_row.add(col >> x_shift) } as i32;
-        let v = unsafe { *v_row.add(col >> x_shift) } as i32;
+    let chroma_width = (width + (1usize << x_shift) - 1) >> x_shift;
+    let y_bytes_per_sample = if high_bit_depth { 2 } else { 1 };
+    let chroma_bytes_per_sample = y_bytes_per_sample;
+    let min_y_stride = width
+      .checked_mul(y_bytes_per_sample)
+      .ok_or_else(|| MediaError::Decode("vp9 Y stride overflow".to_string()))?;
+    let min_uv_stride = chroma_width
+      .checked_mul(chroma_bytes_per_sample)
+      .ok_or_else(|| MediaError::Decode("vp9 UV stride overflow".to_string()))?;
+    if y_stride < min_y_stride {
+      return Err(MediaError::Decode(format!(
+        "vp9 Y stride too small: stride={y_stride} min={min_y_stride}"
+      )));
+    }
+    if u_stride < min_uv_stride || v_stride < min_uv_stride {
+      return Err(MediaError::Decode(format!(
+        "vp9 UV stride too small: u_stride={u_stride} v_stride={v_stride} min={min_uv_stride}"
+      )));
+    }
+    if high_bit_depth && (y_stride % 2 != 0 || u_stride % 2 != 0 || v_stride % 2 != 0) {
+      return Err(MediaError::Decode(format!(
+        "vp9 high bit depth frame has odd stride: y_stride={y_stride} u_stride={u_stride} v_stride={v_stride}"
+      )));
+    }
+    if high_bit_depth {
+      // High bit depth frames use 16-bit samples packed into a byte buffer (little-endian on all
+      // supported targets). Strides are in bytes.
+      if bit_depth < 8 || bit_depth > 16 {
+        return Err(MediaError::Unsupported(format!(
+          "vp9 bit_depth unsupported: bit_depth={bit_depth} fmt=0x{fmt:x}"
+        )));
+      }
+      let shift = bit_depth - 8;
+      for row in 0..height {
+        let y_row = unsafe { y_plane.add(row * y_stride) };
+        let u_row = unsafe { u_plane.add((row >> y_shift) * u_stride) };
+        let v_row = unsafe { v_plane.add((row >> y_shift) * v_stride) };
 
-        let (r, g, b) = if full_range {
-          // Full-range BT.601.
-          //
-          // r = y + 1.402 * (v - 128)
-          // g = y - 0.344136 * (u - 128) - 0.714136 * (v - 128)
-          // b = y + 1.772 * (u - 128)
-          //
-          // Use fixed-point math for determinism/perf.
-          let d = u - 128;
-          let e = v - 128;
-          let r = y + ((91881 * e + 32768) >> 16);
-          let g = y - ((22554 * d + 46802 * e + 32768) >> 16);
-          let b = y + ((116130 * d + 32768) >> 16);
-          (r, g, b)
-        } else {
-          // Studio-range BT.601 (16..235, 16..240).
-          let c = y - 16;
-          let d = u - 128;
-          let e = v - 128;
-          let r = (298 * c + 409 * e + 128) >> 8;
-          let g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-          let b = (298 * c + 516 * d + 128) >> 8;
-          (r, g, b)
-        };
+        for col in 0..width {
+          let y16 = unsafe { ptr::read_unaligned(y_row.add(col * 2).cast::<u16>()) };
+          let u16 = unsafe { ptr::read_unaligned(u_row.add((col >> x_shift) * 2).cast::<u16>()) };
+          let v16 = unsafe { ptr::read_unaligned(v_row.add((col >> x_shift) * 2).cast::<u16>()) };
 
-        let dst = (row * width + col) * 4;
-        rgba8[dst] = clamp_u8(r);
-        rgba8[dst + 1] = clamp_u8(g);
-        rgba8[dst + 2] = clamp_u8(b);
-        rgba8[dst + 3] = 0xFF;
+          let y = downshift_to_u8(y16, shift) as i32;
+          let u = downshift_to_u8(u16, shift) as i32;
+          let v = downshift_to_u8(v16, shift) as i32;
+
+          let (r, g, b) = yuv_to_rgb_bt601(y, u, v, full_range);
+          let dst = (row * width + col) * 4;
+          rgba8[dst] = clamp_u8(r);
+          rgba8[dst + 1] = clamp_u8(g);
+          rgba8[dst + 2] = clamp_u8(b);
+          rgba8[dst + 3] = 0xFF;
+        }
+      }
+    } else {
+      for row in 0..height {
+        let y_row = unsafe { y_plane.add(row * y_stride) };
+        let u_row = unsafe { u_plane.add((row >> y_shift) * u_stride) };
+        let v_row = unsafe { v_plane.add((row >> y_shift) * v_stride) };
+
+        for col in 0..width {
+          let y = unsafe { *y_row.add(col) } as i32;
+          let u = unsafe { *u_row.add(col >> x_shift) } as i32;
+          let v = unsafe { *v_row.add(col >> x_shift) } as i32;
+
+          let (r, g, b) = yuv_to_rgb_bt601(y, u, v, full_range);
+          let dst = (row * width + col) * 4;
+          rgba8[dst] = clamp_u8(r);
+          rgba8[dst + 1] = clamp_u8(g);
+          rgba8[dst + 2] = clamp_u8(b);
+          rgba8[dst + 3] = 0xFF;
+        }
       }
     }
 
@@ -271,6 +314,43 @@ fn clamp_u8(v: i32) -> u8 {
     255
   } else {
     v as u8
+  }
+}
+
+fn downshift_to_u8(sample: u16, shift: u32) -> u8 {
+  if shift == 0 {
+    return sample.min(255) as u8;
+  }
+  // Rounding downshift: add half-LSB before shifting.
+  let add = 1u32 << (shift - 1);
+  let v = ((sample as u32 + add) >> shift).min(255);
+  v as u8
+}
+
+fn yuv_to_rgb_bt601(y: i32, u: i32, v: i32, full_range: bool) -> (i32, i32, i32) {
+  if full_range {
+    // Full-range BT.601.
+    //
+    // r = y + 1.402 * (v - 128)
+    // g = y - 0.344136 * (u - 128) - 0.714136 * (v - 128)
+    // b = y + 1.772 * (u - 128)
+    //
+    // Use fixed-point math for determinism/perf.
+    let d = u - 128;
+    let e = v - 128;
+    let r = y + ((91881 * e + 32768) >> 16);
+    let g = y - ((22554 * d + 46802 * e + 32768) >> 16);
+    let b = y + ((116130 * d + 32768) >> 16);
+    (r, g, b)
+  } else {
+    // Studio-range BT.601 (16..235, 16..240).
+    let c = y - 16;
+    let d = u - 128;
+    let e = v - 128;
+    let r = (298 * c + 409 * e + 128) >> 8;
+    let g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+    let b = (298 * c + 516 * d + 128) >> 8;
+    (r, g, b)
   }
 }
 
