@@ -2559,24 +2559,6 @@ fn utf16_decode_surrogate_pair(high: u16, low: u16) -> u32 {
   0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)
 }
 
-/// Returns the Unicode code point and UTF-16 code unit length at `index`.
-///
-/// When `input[index]` is a leading surrogate and it is followed by a trailing surrogate, this
-/// decodes the surrogate pair as a single supplementary-plane code point.
-#[inline]
-fn utf16_code_point_at(input: &[u16], index: usize) -> Option<(u32, usize)> {
-  let &u = input.get(index)?;
-  if (0xD800..=0xDBFF).contains(&u) {
-    let Some(&u2) = input.get(index + 1) else {
-      return Some((u as u32, 1));
-    };
-    if (0xDC00..=0xDFFF).contains(&u2) {
-      return Some((utf16_decode_surrogate_pair(u, u2), 2));
-    }
-  }
-  Some((u as u32, 1))
-}
-
 fn is_ascii_letter(u: u16) -> bool {
   (b'a' as u16..=b'z' as u16).contains(&u) || (b'A' as u16..=b'Z' as u16).contains(&u)
 }
@@ -2642,9 +2624,7 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
   if !unicode {
     return index.saturating_add(1);
   }
-  let Some((_, len)) = utf16_code_point_at(input, index) else {
-    return index.saturating_add(1);
-  };
+  let (_, len) = utf16_code_point_at(input, index, input.len());
   index.saturating_add(len)
 }
 
