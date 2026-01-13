@@ -140,8 +140,9 @@ are blocked by the renderer sandbox, either:
 - extend the allowlist (see [`docs/seccomp_allowlist.md`](seccomp_allowlist.md)).
 
 Also note: `send(2)` / `recv(2)` are typically implemented via the `sendto(2)` / `recvfrom(2)`
-syscalls on Linux. If your sandbox denies `sendto/recvfrom` (FastRender’s renderer seccomp policy
-currently does), prefer using `read(2)` / `write(2)` on a connected socket for steady-state IPC.
+syscalls on Linux. If your sandbox denies `sendto/recvfrom` (e.g. FastRender’s renderer seccomp
+policy when `NetworkPolicy::DenyAllSockets` is in effect), prefer using `read(2)` / `write(2)` on a
+connected socket for steady-state IPC.
 
 ### Robustness footgun: avoid `SIGPIPE` killing the browser
 
