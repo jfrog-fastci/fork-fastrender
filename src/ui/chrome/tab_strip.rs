@@ -3654,10 +3654,9 @@ pub(super) fn tab_strip_ui(
         motion.durations.tab_drag_indicator,
       );
 
-      let stroke = Stroke::new(
-        2.0,
-        with_alpha(ui.visuals().widgets.active.bg_stroke.color, alpha),
-      );
+      let indicator_color =
+        dragged_group_color.unwrap_or(ui.visuals().widgets.active.bg_stroke.color);
+      let stroke = Stroke::new(2.0, with_alpha(indicator_color, alpha));
       let y1 = tab_strip_rect.top() + 1.0;
       let y2 = tab_strip_rect.bottom() - 1.0;
       ui.painter()
