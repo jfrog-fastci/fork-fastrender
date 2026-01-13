@@ -178,3 +178,75 @@ fn tick_emits_new_frames_for_css_animation() {
 
   handle.join().expect("worker join");
 }
+
+#[test]
+fn tick_runs_js_request_animation_frame_and_repaints() {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; }
+            html, body { background: rgb(0, 0, 0); }
+          </style>
+          <script>
+            requestAnimationFrame(() => {
+              // Use `setProperty` because our CSSStyleDeclaration shim only exposes a limited set of
+              // named property accessors (but supports `setProperty` for arbitrary declarations).
+              document.documentElement.style.setProperty('background-color', 'rgb(0,255,0)');
+            });
+          </script>
+        </head>
+        <body>raf</body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-tick-js-raf",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId::new();
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("create tab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
+    .expect("viewport");
+
+  let initial = next_frame(&handle.ui_rx, tab_id);
+  assert!(
+    initial.wants_ticks,
+    "expected JS pages to request ticks (JS timers/rAF)"
+  );
+  assert_eq!(
+    support::rgba_at(&initial.pixmap, 0, 0),
+    [0, 0, 0, 255],
+    "expected initial frame to be black before rAF callback runs"
+  );
+  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
+  while handle.ui_rx.try_recv().is_ok() {}
+
+  handle
+    .ui_tx
+    .send(UiToWorker::Tick { tab_id })
+    .expect("tick");
+  let frame = next_frame(&handle.ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 0, 0),
+    [0, 255, 0, 255],
+    "expected tick to run rAF and repaint the updated background"
+  );
+
+  handle.join().expect("worker join");
+}

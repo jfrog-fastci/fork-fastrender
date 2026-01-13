@@ -379,6 +379,12 @@ struct TabState {
   js_dom_mapping: Option<crate::dom2::RendererDomMapping>,
   /// Debug-log rate limiter for missing JS DOM mappings.
   js_dom_mapping_miss_logged: bool,
+  /// True when the JS tab's DOM has changed and needs to be synced into `document` before the next
+  /// paint.
+  js_dom_dirty: bool,
+  /// Mutation generation of the JS tab's DOM last observed by the worker (used to detect changes
+  /// between ticks and event dispatch).
+  js_dom_mutation_generation: u64,
   interaction: InteractionEngine,
   cancel: CancelGens,
   last_committed_url: Option<String>,
@@ -417,6 +423,8 @@ impl TabState {
       js_dom_mapping_generation: 0,
       js_dom_mapping: None,
       js_dom_mapping_miss_logged: false,
+      js_dom_dirty: false,
+      js_dom_mutation_generation: 0,
       interaction: InteractionEngine::new(),
       cancel,
       last_committed_url: None,
@@ -2884,27 +2892,43 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
-    let Some(doc) = tab.document.as_mut() else {
-      return;
-    };
 
     // Only schedule animation sampling when the document contains time-dependent primitives.
     //
     // `BrowserDocument` resolves time-based CSS animations/transitions to a deterministic settled
     // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
     // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
-    if !document_wants_ticks(doc) {
-      return;
+    if let Some(doc) = tab.document.as_mut() {
+      if document_wants_ticks(doc) {
+        let next_time = tab.tick_animation_time_ms + TICK_ANIMATION_STEP_MS;
+        tab.tick_animation_time_ms = if next_time.is_finite() {
+          next_time
+        } else {
+          f32::MAX
+        };
+        doc.set_animation_time_ms(tab.tick_animation_time_ms);
+        tab.needs_repaint = true;
+      }
     }
 
-    let next_time = tab.tick_animation_time_ms + TICK_ANIMATION_STEP_MS;
-    tab.tick_animation_time_ms = if next_time.is_finite() {
-      next_time
-    } else {
-      f32::MAX
-    };
-    doc.set_animation_time_ms(tab.tick_animation_time_ms);
-    tab.needs_repaint = true;
+    // Drive JS timers + requestAnimationFrame callbacks when the tab has a JS runtime.
+    if let Some(js_tab) = tab.js_tab.as_mut() {
+      let generation_before = js_tab.dom().mutation_generation();
+      let prev_generation = tab.js_dom_mutation_generation;
+      if let Err(err) = js_tab.run_until_stable(/* max_frames */ 1) {
+        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("js tick failed: {err}"),
+        });
+      }
+      let generation_after = js_tab.dom().mutation_generation();
+      if generation_before != prev_generation || generation_after != generation_before {
+        tab.js_dom_dirty = true;
+        tab.cancel.bump_paint();
+        tab.needs_repaint = true;
+      }
+      tab.js_dom_mutation_generation = generation_after;
+    }
   }
 
   fn handle_find_query(&mut self, tab_id: TabId, query: &str, case_sensitive: bool) {
@@ -5745,6 +5769,8 @@ impl BrowserRuntime {
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
       tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_dirty = false;
+      tab.js_dom_mutation_generation = 0;
       return;
     }
     let Some(doc) = tab.document.as_ref() else {
@@ -5752,6 +5778,8 @@ impl BrowserRuntime {
       tab.js_dom_mapping_generation = 0;
       tab.js_dom_mapping = None;
       tab.js_dom_mapping_miss_logged = false;
+      tab.js_dom_dirty = false;
+      tab.js_dom_mutation_generation = 0;
       return;
     };
 
@@ -5769,10 +5797,15 @@ impl BrowserRuntime {
         tab.js_dom_mapping_generation = 0;
         tab.js_dom_mapping = None;
         tab.js_dom_mapping_miss_logged = false;
+        tab.js_dom_dirty = false;
+        tab.js_dom_mutation_generation = 0;
         msgs.push(WorkerToUi::DebugLog {
           tab_id,
           line: format!("js tab navigation failed: {err}"),
         });
+      } else {
+        tab.js_dom_dirty = false;
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
       }
       // Navigation replaces the JS document, invalidating any preorder→NodeId mapping cache.
       tab.js_dom_mapping_generation = 0;
@@ -5805,10 +5838,13 @@ impl BrowserRuntime {
       });
       return;
     }
+    let generation = js_tab.dom().mutation_generation();
     tab.js_tab = Some(js_tab);
     tab.js_dom_mapping_generation = 0;
     tab.js_dom_mapping = None;
     tab.js_dom_mapping_miss_logged = false;
+    tab.js_dom_dirty = false;
+    tab.js_dom_mutation_generation = generation;
   }
 
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
@@ -6387,7 +6423,7 @@ impl BrowserRuntime {
               viewport_css,
               &tab.scroll_state,
             ),
-            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
+            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
           },
         });
         msgs.push(WorkerToUi::ScrollStateUpdated {
@@ -6610,6 +6646,8 @@ impl BrowserRuntime {
     tab.js_dom_mapping_generation = 0;
     tab.js_dom_mapping = None;
     tab.js_dom_mapping_miss_logged = false;
+    tab.js_dom_dirty = false;
+    tab.js_dom_mutation_generation = 0;
     tab.tick_animation_time_ms = 0.0;
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
@@ -6648,7 +6686,7 @@ impl BrowserRuntime {
               tab.viewport_css,
               &tab.scroll_state,
             ),
-            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
+            wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
           },
         },
         WorkerToUi::ScrollStateUpdated {
@@ -6678,6 +6716,21 @@ impl BrowserRuntime {
       preempt_cancel_callback.clone(),
     );
     doc.set_cancel_callback(Some(cancel_callback.clone()));
+
+    if tab.js_dom_dirty {
+      if let Some(js_tab) = tab.js_tab.as_ref() {
+        let snapshot = js_tab.dom().to_renderer_dom();
+        let _ = doc.mutate_dom(|dom| {
+          *dom = snapshot;
+          true
+        });
+        tab.js_dom_dirty = false;
+        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
+      } else {
+        tab.js_dom_dirty = false;
+        tab.js_dom_mutation_generation = 0;
+      }
+    }
 
     // Forward render pipeline stage heartbeats during paint jobs (including scroll/hover repaints)
     // so UI callers and integration tests can observe progress and deterministically cancel
@@ -6761,7 +6814,7 @@ impl BrowserRuntime {
             tab.viewport_css,
             &tab.scroll_state,
           ),
-          wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks),
+          wants_ticks: tab.document.as_ref().is_some_and(document_wants_ticks) || tab.js_tab.is_some(),
         },
       });
       msgs.push(WorkerToUi::ScrollStateUpdated {
