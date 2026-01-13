@@ -5,7 +5,9 @@
 
 #![cfg(target_os = "macos")]
 
-use fastrender::sandbox::macos::MacosSandboxMode;
+use fastrender::sandbox::macos::{
+  MacosSandboxMode, ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -81,6 +83,9 @@ fn relaxed_sandbox_profile_denies_home_file_read() {
   let test_name = format!("{module_path}::relaxed_sandbox_profile_denies_home_file_read");
 
   let output = Command::new(exe)
+    // Force the sandbox configuration for this guard, independent of any developer/CI override.
+    .env_remove(ENV_DISABLE_RENDERER_SANDBOX)
+    .env_remove(ENV_MACOS_RENDERER_SANDBOX)
     .env(ENV_HOME_FILE, &path)
     .env("RUST_TEST_THREADS", "1")
     .arg("--exact")
