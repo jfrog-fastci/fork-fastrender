@@ -1600,30 +1600,10 @@ fn validate_regex_pattern(
           in_negated_class,
         )?;
         Ok((end, false))
-      } else if ch == '(' {
-        let group_start = i;
-        i += 1;
-        let (inner_end, saw_operand) = validate_unicode_sets_expression(
-          pattern,
-          base_offset,
-          i,
-          unicode_mode,
-          unicode_sets_mode,
-          in_negated_class,
-          ')',
-        )?;
-        if !saw_operand {
-          return Err(RegexError {
-            kind: RegexErrorKind::InvalidPattern,
-            offset: base_offset + group_start,
-            len: 1,
-          });
-        }
-        Ok((inner_end, false))
       } else {
         // Disallowed syntax characters in UnicodeSets mode when unescaped.
         match ch {
-          '{' | '}' | '/' | '|' | ')' => {
+          '(' | '{' | '}' | '/' | '|' | ')' => {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + i,
@@ -1671,6 +1651,15 @@ fn validate_regex_pattern(
 
         if rest.starts_with("&&") {
           if !matches!(prev, PrevToken::Operand { .. }) {
+            return Err(RegexError {
+              kind: RegexErrorKind::InvalidPattern,
+              offset: base_offset + i,
+              len: 2,
+            });
+          }
+          // `&&` is the intersection operator and must not be followed by another `&`
+          // (see the grammar lookahead restriction).
+          if rest.as_bytes().get(2) == Some(&b'&') {
             return Err(RegexError {
               kind: RegexErrorKind::InvalidPattern,
               offset: base_offset + i,
@@ -1749,7 +1738,7 @@ fn validate_regex_pattern(
       })
     }
 
-    let (end, saw_operand) = validate_unicode_sets_expression(
+    let (end, _saw_operand) = validate_unicode_sets_expression(
       pattern,
       base_offset,
       i,
@@ -1758,14 +1747,6 @@ fn validate_regex_pattern(
       in_negated_class,
       ']',
     )?;
-
-    if !saw_operand && !this_negated {
-      return Err(RegexError {
-        kind: RegexErrorKind::InvalidPattern,
-        offset: base_offset + start,
-        len: 1,
-      });
-    }
 
     Ok(end)
   }
