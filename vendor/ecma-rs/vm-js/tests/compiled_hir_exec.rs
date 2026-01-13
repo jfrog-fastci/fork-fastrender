@@ -6028,6 +6028,25 @@ fn compiled_indirect_eval_does_not_see_local_let() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_parenthesized_eval_is_indirect() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){ let x = 1; (eval)('x = 2'); return x; }
+      f()
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Number(1.0));
+  Ok(())
+}
+
+#[test]
 fn compiled_direct_eval_is_not_triggered_when_shadowed() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

@@ -345,6 +345,80 @@ struct HirEvaluator<'vm> {
 }
 
 impl<'vm> HirEvaluator<'vm> {
+  fn next_non_trivia_byte_from_source(&mut self, offset: u32) -> Result<Option<u8>, VmError> {
+    let src = self.script.source.text.as_ref();
+    let bytes = src.as_bytes();
+    let mut i = usize::try_from(offset).unwrap_or(usize::MAX);
+    if i > bytes.len() {
+      return Ok(None);
+    }
+    // Clamp to a valid UTF-8 boundary (spans should already be boundaries, but be robust).
+    while i > 0 && !src.is_char_boundary(i) {
+      i = i.saturating_sub(1);
+    }
+
+    const TICK_EVERY: usize = 1024;
+    let mut steps: usize = 0;
+
+    while i < bytes.len() {
+      steps = steps.wrapping_add(1);
+      if steps % TICK_EVERY == 0 {
+        self.vm.tick()?;
+      }
+
+      let b = bytes[i];
+      match b {
+        // ASCII whitespace.
+        b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C => {
+          i += 1;
+          continue;
+        }
+        // Line comment.
+        b'/' if bytes.get(i + 1) == Some(&b'/') => {
+          i += 2;
+          while i < bytes.len() && bytes[i] != b'\n' {
+            i += 1;
+            steps = steps.wrapping_add(1);
+            if steps % TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+          }
+          continue;
+        }
+        // Block comment.
+        b'/' if bytes.get(i + 1) == Some(&b'*') => {
+          i += 2;
+          while i + 1 < bytes.len() {
+            if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+              i += 2;
+              break;
+            }
+            i += 1;
+            steps = steps.wrapping_add(1);
+            if steps % TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+          }
+          continue;
+        }
+        // Fast path: ASCII non-whitespace/non-comment.
+        b if b < 0x80 => return Ok(Some(b)),
+        // Non-ASCII: treat Unicode whitespace as trivia.
+        _ => {
+          // `i` should always be at a char boundary here.
+          let ch = src[i..].chars().next().unwrap();
+          if ch.is_whitespace() {
+            i = i.saturating_add(ch.len_utf8());
+            continue;
+          }
+          return Ok(Some(b));
+        }
+      }
+    }
+
+    Ok(None)
+  }
+
   fn hir(&self) -> &hir_js::LowerResult {
     self.script.hir.as_ref()
   }
@@ -5652,15 +5726,18 @@ impl<'vm> HirEvaluator<'vm> {
     // A call is only a direct eval if:
     // - it is syntactically `eval(...)`, and
     // - `eval` resolves to the original `%eval%` intrinsic function object.
-    //
-    // HIR does not preserve parenthesization metadata, so this is best-effort.
     let callee_expr = self.get_expr(body, call.callee)?;
     let direct_eval_syntax = !call.optional
       && matches!(
         &callee_expr.kind,
         hir_js::ExprKind::Ident(name_id)
           if self.hir().names.resolve(*name_id) == Some("eval")
-      );
+      )
+      // HIR does not preserve parse-js's `ParenthesizedExpr` metadata. Detect a parenthesized callee
+      // (e.g. `(eval)(...)`) by scanning the original source for a `)` immediately after the callee
+      // expression span. Comments and whitespace are skipped.
+      && self.next_non_trivia_byte_from_source(callee_expr.span.start)? != Some(b'(')
+      && self.next_non_trivia_byte_from_source(callee_expr.span.end)? != Some(b')');
 
     let mut scope = scope.reborrow();
 
