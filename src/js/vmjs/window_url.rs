@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use vm_js::iterator;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind,
-  Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
+  GcObject, GcString, Heap, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
+  RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 const ILLEGAL_CONSTRUCTOR_ERROR: &str = "Illegal constructor";
@@ -32,12 +32,6 @@ const URLSP_ARG_TOO_LONG_ERROR: &str = "URLSearchParams argument exceeded max by
 // constructor handle through these bindings.
 const OBJECT_URL_BLOB_REQUIRED_ERROR: &str = "URL.createObjectURL requires a Blob";
 const OBJECT_URL_QUOTA_EXCEEDED_ERROR: &str = "URL.createObjectURL exceeded object URL limits";
-
-/// Symbol description for the hidden `URL` → cached `URLSearchParams` object slot.
-///
-/// The actual symbol is allocated with this description but is not exposed anywhere, so it remains
-/// effectively private to the realm.
-const SEARCH_PARAMS_SLOT_DESC: &str = "__fastrender_url_search_params_slot";
 
 // Brand `URL`/`URLSearchParams` wrappers as platform objects via HostSlots so structuredClone rejects
 // them with DataCloneError.
@@ -123,6 +117,11 @@ struct UrlSearchParamsIteratorState {
   kind: u8,
 }
 
+struct CachedParamsEntry {
+  params_obj: GcObject,
+  params_root: RootId,
+}
+
 #[derive(Default)]
 struct UrlRegistry {
   realms: HashMap<RealmId, UrlRealmState>,
@@ -132,12 +131,12 @@ struct UrlRealmState {
   limits: UrlLimits,
   url_proto: GcObject,
   params_proto: GcObject,
-  search_params_slot_sym: GcSymbol,
-  search_params_slot_root: RootId,
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
   params_iterators: HashMap<WeakGcObject, UrlSearchParamsIteratorState>,
+  cached_search_params: HashMap<WeakGcObject, CachedParamsEntry>,
   last_gc_runs: u64,
+  last_gc_runs_cached_search_params: u64,
 }
 
 static REGISTRY: OnceLock<Mutex<UrlRegistry>> = OnceLock::new();
@@ -201,12 +200,34 @@ fn with_realm_state_mut<R>(
   let gc_runs = scope.heap().gc_runs();
   if gc_runs != state.last_gc_runs {
     state.last_gc_runs = gc_runs;
-    let heap = scope.heap();
-    state.urls.retain(|k, _| k.upgrade(heap).is_some());
-    state.params.retain(|k, _| k.upgrade(heap).is_some());
-    state
-      .params_iterators
-      .retain(|k, _| k.upgrade(heap).is_some());
+    {
+      let heap = scope.heap();
+      state.urls.retain(|k, _| k.upgrade(heap).is_some());
+      state.params.retain(|k, _| k.upgrade(heap).is_some());
+      state
+        .params_iterators
+        .retain(|k, _| k.upgrade(heap).is_some());
+    }
+  }
+
+  if gc_runs != state.last_gc_runs_cached_search_params {
+    state.last_gc_runs_cached_search_params = gc_runs;
+
+    // Drop cached `URL.searchParams` objects once their `URL` wrapper is dead.
+    //
+    // Each cached `URLSearchParams` wrapper is held live by a heap root so it behaves like a spec
+    // internal slot rather than an observable property. When the corresponding `URL` wrapper is GC'd
+    // we must remove the root to allow the params wrapper to be collected if not otherwise
+    // referenced.
+    let heap = scope.heap_mut();
+    state.cached_search_params.retain(|k, entry| {
+      if k.upgrade(&*heap).is_some() {
+        true
+      } else {
+        heap.remove_root(entry.params_root);
+        false
+      }
+    });
   }
 
   f(vm, state, scope)
@@ -1300,7 +1321,25 @@ fn url_search_params_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
+  // We need to cache the `URLSearchParams` wrapper but it should not be observable via reflection
+  // (e.g. `Object.getOwnPropertySymbols(url)`), so we store it in host state rather than as a
+  // hidden property on the `URL` object.
+  //
+  // Each cached wrapper is kept alive via a heap root until the `URL` wrapper is collected demonstrating
+  // browser-like internal-slot semantics.
+
+  struct CreateInfo {
+    url_key: WeakGcObject,
+    params_proto: GcObject,
+    params: UrlSearchParams,
+  }
+
+  enum Lookup {
+    Hit(GcObject),
+    Miss(CreateInfo),
+  }
+
+  let lookup = with_realm_state_mut(vm, scope, callee, |_vm, state, scope| {
     let Value::Object(url_obj) = this else {
       return Err(VmError::TypeError("Illegal invocation"));
     };
@@ -1313,53 +1352,86 @@ fn url_search_params_get_native(
     if slots.a != URL_HOST_TAG {
       return Err(VmError::TypeError("Illegal invocation"));
     }
+
+    let url_key = WeakGcObject::from(url_obj);
+    if let Some(entry) = state.cached_search_params.get(&url_key) {
+      return Ok(Lookup::Hit(entry.params_obj));
+    }
+
     let url = state
       .urls
       .get(&WeakGcObject::from(url_obj))
       .cloned()
       .ok_or(VmError::TypeError("Illegal invocation"))?;
 
-    let slot_key = PropertyKey::from_symbol(state.search_params_slot_sym);
-    if let Some(existing) = scope
-      .heap()
-      .object_get_own_data_property_value(url_obj, &slot_key)?
-    {
-      if !matches!(existing, Value::Undefined) {
-        return Ok(existing);
+    Ok(Lookup::Miss(CreateInfo {
+      url_key,
+      params_proto: state.params_proto,
+      params: url.search_params(),
+    }))
+  })?;
+
+  match lookup {
+    Lookup::Hit(obj) => Ok(Value::Object(obj)),
+    Lookup::Miss(CreateInfo {
+      url_key,
+      params_proto,
+      params,
+    }) => {
+      let params_obj = scope.alloc_object()?;
+      scope
+        .heap_mut()
+        .object_set_prototype(params_obj, Some(params_proto))?;
+      scope.heap_mut().object_set_host_slots(
+        params_obj,
+        HostSlots {
+          a: URL_SEARCH_PARAMS_HOST_TAG,
+          b: 0,
+        },
+      )?;
+
+      // Create a per-object persistent root to keep the cached params wrapper alive as long as the
+      // URL wrapper is alive.
+      //
+      // Important: do this outside of the URL registry mutex to avoid deadlocks if adding a root
+      // triggers GC.
+      let params_root = scope
+        .heap_mut()
+        .add_root(Value::Object(params_obj))?;
+
+      // Insert into host cache if another access did not win the race while we allocated.
+      let inserted = with_realm_state_mut(vm, scope, callee, |_vm, state, _scope| {
+        if let Some(entry) = state.cached_search_params.get(&url_key) {
+          return Ok(Ok(entry.params_obj));
+        }
+
+        state.params.insert(WeakGcObject::from(params_obj), params);
+        state.cached_search_params.insert(
+          url_key,
+          CachedParamsEntry {
+            params_obj,
+            params_root,
+          },
+        );
+        Ok(Err(params_obj))
+      });
+
+      match inserted {
+        Ok(Ok(existing)) => {
+          // Someone else installed the cache entry while we were allocating. Drop our root so this
+          // unreferenced wrapper can be collected.
+          scope.heap_mut().remove_root(params_root);
+          Ok(Value::Object(existing))
+        }
+        Ok(Err(created)) => Ok(Value::Object(created)),
+        Err(err) => {
+          // Ensure we do not leak the root on error.
+          scope.heap_mut().remove_root(params_root);
+          Err(err)
+        }
       }
     }
-
-    let params_obj = scope.alloc_object()?;
-    scope
-      .heap_mut()
-      .object_set_prototype(params_obj, Some(state.params_proto))?;
-    scope.heap_mut().object_set_host_slots(
-      params_obj,
-      HostSlots {
-        a: URL_SEARCH_PARAMS_HOST_TAG,
-        b: 0,
-      },
-    )?;
-    let params = url.search_params();
-    state.params.insert(WeakGcObject::from(params_obj), params);
-
-    // Cache on the URL object so repeated `url.searchParams` returns the same object and so the
-    // params object stays GC-reachable while the URL object is alive.
-    scope.define_property(
-      url_obj,
-      slot_key,
-      PropertyDescriptor {
-        enumerable: false,
-        configurable: false,
-        kind: PropertyKind::Data {
-          value: Value::Object(params_obj),
-          writable: false,
-        },
-      },
-    )?;
-
-    Ok(Value::Object(params_obj))
-  })
+  }
 }
 
 fn url_to_string_native(
@@ -2172,12 +2244,6 @@ pub fn install_window_url_bindings(
     },
   )?;
 
-  // Hidden slot symbol for caching the `searchParams` object on URL instances.
-  let search_params_slot_sym = scope.alloc_symbol(Some(SEARCH_PARAMS_SLOT_DESC))?;
-  let search_params_slot_root = scope
-    .heap_mut()
-    .add_root(Value::Symbol(search_params_slot_sym))?;
-
   // --- Constructors ---
   let url_call_id = vm.register_native_call(url_call_without_new_native)?;
   let url_construct_id = vm.register_native_construct(url_construct_native)?;
@@ -2674,12 +2740,12 @@ pub fn install_window_url_bindings(
       limits: UrlLimits::default(),
       url_proto,
       params_proto,
-      search_params_slot_sym,
-      search_params_slot_root,
       urls: HashMap::new(),
       params: HashMap::new(),
       params_iterators: HashMap::new(),
+      cached_search_params: HashMap::new(),
       last_gc_runs: scope.heap().gc_runs(),
+      last_gc_runs_cached_search_params: scope.heap().gc_runs(),
     },
   );
 
@@ -2691,7 +2757,9 @@ pub fn teardown_window_url_bindings_for_realm(realm_id: RealmId, heap: &mut Heap
   let Some(state) = registry.realms.remove(&realm_id) else {
     return;
   };
-  heap.remove_root(state.search_params_slot_root);
+  for entry in state.cached_search_params.values() {
+    heap.remove_root(entry.params_root);
+  }
 }
 
 /// Serialize a `URLSearchParams` wrapper for use by other vm-js bindings (notably `fetch()` body
@@ -2911,6 +2979,30 @@ mod tests {
     // Teardown should remove per-realm persistent roots without panicking.
     realm1.teardown();
     realm2.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn url_search_params_cache_is_not_reflectable() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Accessing `searchParams` must not define an observable hidden property (e.g. a private
+    // `Symbol(__fastrender_...)`) on the URL instance.
+    let ok = realm.exec_script(
+      "(function(){\
+         const u = new URL('https://example.com/?a=1');\
+         u.searchParams;\
+         const syms = Object.getOwnPropertySymbols(u);\
+         if (syms.length === 0) return true;\
+         return !syms.some((s) => {\
+           const d = s.description || '';\
+           return d.includes('fastrender') || d.includes('search_params');\
+         });\
+       })()",
+    )?;
+    assert_eq!(ok, Value::Bool(true));
+
+    realm.teardown();
     Ok(())
   }
 
