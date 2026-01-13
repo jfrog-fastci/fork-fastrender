@@ -385,3 +385,24 @@ fn accepts_unicode_sets_escaped_reserved_punctuators() {
     assert!(parse_with_options(&src, opts).is_ok(), "expected {src} to parse");
   }
 }
+
+#[test]
+fn parses_other_test262_regexp_v_flag_files() {
+  // Remaining `regexp-v-flag` tests that live outside the `unicodeSets` and `property-escapes`
+  // directories should also parse (they exercise basic `/v` usage like dot and property escapes).
+  let opts = ecma_script_opts();
+  let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test262-semantic/data/test");
+  if !root.is_dir() {
+    return;
+  }
+  for rel in [
+    "built-ins/RegExp/prototype/flags/this-val-regexp.js",
+    "built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag.js",
+  ] {
+    let path = root.join(rel);
+    let src = std::fs::read_to_string(&path).expect("read test262 file");
+    if let Err(err) = parse_with_options(&src, opts) {
+      panic!("failed to parse {}: {err}", path.display());
+    }
+  }
+}
