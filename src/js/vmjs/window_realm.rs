@@ -32954,8 +32954,7 @@ fn node_compare_document_position_native(
   }
 
   let make_disconnected = |a: DomNodeKey, b: DomNodeKey| -> u16 {
-    let mut out =
-      DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
+    let mut out = DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
 
     // Spec requires a consistent ordering between disconnected nodes. Use a deterministic
     // per-wrapper key so results are stable within a realm.
@@ -33089,16 +33088,8 @@ fn node_compare_document_position_native(
     let child_a = path_a[i];
     let child_b = path_b[i];
 
-    let idx_a = dom
-      .node(common)
-      .children
-      .iter()
-      .position(|&c| c == child_a);
-    let idx_b = dom
-      .node(common)
-      .children
-      .iter()
-      .position(|&c| c == child_b);
+    let idx_a = dom.node(common).children.iter().position(|&c| c == child_a);
+    let idx_b = dom.node(common).children.iter().position(|&c| c == child_b);
 
     match (idx_a, idx_b) {
       (Some(a), Some(b)) => a.cmp(&b),
