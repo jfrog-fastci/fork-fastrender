@@ -79,7 +79,13 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
       <script>
         const host = document.getElementById("host");
         const light = document.getElementById("light");
+        // If a live range exists before `attachShadow`, inserting the ShadowRoot pseudo-child must
+        // not change the range offsets (ShadowRoot is not part of the light DOM child list).
+        const rAttach = document.createRange();
+        rAttach.setStart(host, 1);
+        rAttach.setEnd(host, 1);
         host.attachShadow({ mode: "open" });
+        console.log("afterAttach:" + rAttach.startOffset + "," + rAttach.endOffset);
 
         // Boundary point (host, 1) must be *after* the first light DOM child, even though dom2
         // stores ShadowRoot at raw children[0].
@@ -90,6 +96,10 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
         const rLight = document.createRange();
         rLight.setStart(light, 0);
         rLight.setEnd(light, 0);
+        const rHost0 = document.createRange();
+        rHost0.setStart(host, 0);
+        rHost0.setEnd(host, 0);
+        console.log("cmp0:" + rHost0.compareBoundaryPoints(Range.START_TO_START, rLight));
         console.log("cmp:" + rHost.compareBoundaryPoints(Range.START_TO_START, rLight));
 
         // Offsets are validated against the light DOM child count, not the raw children list.
@@ -132,6 +142,8 @@ fn range_offsets_ignore_shadow_root_pseudo_child_in_js() -> Result<()> {
   assert_eq!(
     console_logs(&h.tab),
     vec![
+      "afterAttach:1,1".to_string(),
+      "cmp0:-1".to_string(),
       "cmp:1".to_string(),
       "idxerr:IndexSizeError".to_string(),
       "afterInsert:2,2".to_string(),
