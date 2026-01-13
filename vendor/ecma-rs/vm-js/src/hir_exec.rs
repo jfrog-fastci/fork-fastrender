@@ -1481,6 +1481,38 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
           let name = self.resolve_name(def.name)?;
+          if name.as_str() == "<anonymous>" {
+            // `export default function() {}` is represented by `hir-js` as a default-exported
+            // function declaration with name `"<anonymous>"`.
+            //
+            // Module linking pre-creates an immutable `*default*` binding; module instantiation is
+            // responsible for creating the function object and initializing that binding.
+            if !def.is_default_export {
+              return Err(VmError::Unimplemented("anonymous function declaration (hir-js compiled path)"));
+            }
+            let func_obj = self.alloc_user_function_object(
+              scope,
+              body_id,
+              // Match typical JS behavior: the default export function has name "default".
+              "default",
+              /* is_arrow */ false,
+              /* is_constructable */ true,
+              /* name_binding */ None,
+              EcmaFunctionKind::Decl,
+            )?;
+
+            // Root the function object while initializing the module's `*default*` binding.
+            let mut init_scope = scope.reborrow();
+            init_scope.push_root(Value::Object(func_obj))?;
+            let binding_env = self.env.lexical_env();
+            if !init_scope.heap().env_has_binding(binding_env, "*default*")? {
+              return Err(VmError::InvariantViolation(
+                "export default function declaration missing *default* binding",
+              ));
+            }
+            init_scope.heap_mut().env_initialize_binding(binding_env, "*default*", Value::Object(func_obj))?;
+            continue;
+          }
           if annex_b {
             // Sloppy-mode Annex B block-level function declarations are *hoisted* (so the outer
             // function has a var binding), but the binding is not initialized until the containing
@@ -1610,6 +1642,14 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
           let name = self.resolve_name(def.name)?;
+          if name.as_str() == "<anonymous>" {
+            // `export default class {}` uses the engine-internal `*default*` binding created during
+            // module linking. Do not create a binding named `"<anonymous>"`.
+            if !def.is_default_export {
+              return Err(VmError::Unimplemented("anonymous class declaration (hir-js compiled path)"));
+            }
+            continue;
+          }
           // Keep the engine robust against malformed HIR (e.g. a binding already exists).
           if scope.heap().env_has_binding(env, name.as_str())? {
             continue;
@@ -2710,6 +2750,15 @@ impl<'vm> HirEvaluator<'vm> {
           Ok(Flow::empty())
         } else if decl_body.kind == hir_js::BodyKind::Class {
           let name = self.resolve_name(def.name)?;
+          let (binding_name, func_name, inner_binding_name) = if name.as_str() == "<anonymous>" {
+            if !def.is_default_export {
+              return Err(VmError::Unimplemented("anonymous class declaration (hir-js compiled path)"));
+            }
+            ("*default*", "default", None)
+          } else {
+            let s = name.as_str();
+            (s, s, Some(s))
+          };
 
           // Per ECMAScript, class declarations are evaluated within a fresh lexical environment whose
           // outer is the surrounding lexical environment. That environment contains an immutable
@@ -2719,8 +2768,12 @@ impl<'vm> HirEvaluator<'vm> {
           let class_env = scope.env_create(Some(outer))?;
           self.env.set_lexical_env(scope.heap_mut(), class_env);
 
-          // Evaluate the class definition with an inner immutable name binding.
-          let result = self.eval_class(scope, decl_body, Some(name.as_str()), name.as_str(), None);
+          // Evaluate the class definition with an inner immutable name binding when the declaration
+          // has an explicit name.
+          let result = match inner_binding_name {
+            Some(inner) => self.eval_class(scope, decl_body, Some(inner), func_name, None),
+            None => self.eval_class(scope, decl_body, None, func_name, None),
+          };
           // Restore the outer environment regardless of how class evaluation completes.
           self.env.set_lexical_env(scope.heap_mut(), outer);
           let func_obj = result?;
@@ -2732,13 +2785,13 @@ impl<'vm> HirEvaluator<'vm> {
           let mut init_scope = scope.reborrow();
           init_scope.push_root(Value::Object(func_obj))?;
 
-          if !init_scope.heap().env_has_binding(outer, name.as_str())? {
+          if !init_scope.heap().env_has_binding(outer, binding_name)? {
             // Non-block statement contexts may not have performed lexical hoisting yet.
-            init_scope.env_create_mutable_binding(outer, name.as_str())?;
+            init_scope.env_create_mutable_binding(outer, binding_name)?;
           }
           init_scope
             .heap_mut()
-            .env_initialize_binding(outer, name.as_str(), Value::Object(func_obj))?;
+            .env_initialize_binding(outer, binding_name, Value::Object(func_obj))?;
 
           Ok(Flow::empty())
         } else {
@@ -9216,6 +9269,94 @@ pub(crate) fn run_compiled_module(
   debug_assert_eq!(popped, Some(exec_ctx));
   debug_assert!(popped.is_some(), "module execution popped no execution context");
 
+  result
+}
+
+pub(crate) fn instantiate_compiled_module_decls(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  global_object: GcObject,
+  module_id: ModuleId,
+  module_env: GcEnv,
+  script: Arc<CompiledScript>,
+) -> Result<(), VmError> {
+  // Module instantiation creates bindings and (for function declarations) pre-creates function
+  // objects. Those function objects must capture the instantiating module as `[[ScriptOrModule]]`
+  // so nested operations like dynamic `import()` can correctly determine their referrer.
+  //
+  // `HirEvaluator::alloc_user_function_object` consults `Vm::get_active_script_or_module` at
+  // creation time, so establish a temporary module execution context while instantiating.
+  if let Some(realm_id) = vm.current_realm().or_else(|| vm.intrinsics_realm()) {
+    let exec_ctx = ExecutionContext {
+      realm: realm_id,
+      script_or_module: Some(ScriptOrModule::Module(module_id)),
+    };
+    let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
+    let vm = &mut *vm_ctx;
+    return instantiate_compiled_module_decls_inner(vm, scope, global_object, module_env, script);
+  }
+
+  // Best-effort fallback: allow module instantiation to proceed even when no realm has been
+  // initialized. In this mode, function objects will not capture `[[JobRealm]]`/`[[ScriptOrModule]]`
+  // metadata, so host features like dynamic `import()` may observe a missing referrer.
+  instantiate_compiled_module_decls_inner(vm, scope, global_object, module_env, script)
+}
+
+fn instantiate_compiled_module_decls_inner(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  global_object: GcObject,
+  module_env: GcEnv,
+  script: Arc<CompiledScript>,
+) -> Result<(), VmError> {
+  let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+  env.set_source_info(script.source.clone(), 0, 0);
+
+  // Module instantiation does not execute code, but reuses the evaluator's hoisting/instantiation
+  // logic to create bindings and pre-create function objects.
+  let mut dummy_host = ();
+  let mut dummy_hooks = crate::MicrotaskQueue::new();
+  let result = {
+    let mut evaluator = HirEvaluator {
+      vm,
+      host: &mut dummy_host,
+      hooks: &mut dummy_hooks,
+      env: &mut env,
+      // Modules are always strict mode.
+      strict: true,
+      this: Value::Undefined,
+      this_initialized: true,
+      class_constructor: None,
+      derived_constructor: false,
+      this_root_idx: None,
+      new_target: Value::Undefined,
+      home_object: None,
+      script: script.clone(),
+    };
+
+    let hir = script.hir.as_ref();
+    let body = hir
+      .body(hir.root_body())
+      .ok_or(VmError::InvariantViolation("compiled module root body not found"))?;
+
+    // Some early errors are still checked at runtime during instantiation so invalid declarations do
+    // not partially pollute the module environment.
+    evaluator.early_error_missing_initializers_in_stmt_list(body, body.root_stmts.as_slice())?;
+
+    // Hoist `var` declarations so lookups before declaration see `undefined` instead of throwing
+    // ReferenceError.
+    evaluator.instantiate_var_decls(scope, body, body.root_stmts.as_slice())?;
+
+    // Hoist function declarations so they can be called before their declaration statement.
+    evaluator.instantiate_function_decls(scope, body, body.root_stmts.as_slice(), /* annex_b */ false)?;
+
+    // Create `let` / `const` / `class` bindings up-front in the module environment so TDZ +
+    // shadowing semantics are correct.
+    evaluator.instantiate_lexical_decls(scope, body, body.root_stmts.as_slice(), module_env)?;
+    Ok(())
+  };
+
+  env.teardown(scope.heap_mut());
   result
 }
 

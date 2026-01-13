@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use vm_js::{
-  Heap, HeapLimits, HostDefined, Job, JsString, MicrotaskQueue, ModuleGraph, ModuleId,
-  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope,
-  SourceTextModuleRecord, Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
+  CompiledScript, Heap, HeapLimits, HostDefined, Job, JsString, MicrotaskQueue, ModuleGraph, ModuleId,
+  ModuleLoadPayload, ModuleReferrer, ModuleRequest, PromiseState, PropertyKey, Realm, Scope, SourceTextModuleRecord,
+  Value, Vm, VmError, VmHostHooks, VmJobContext, VmOptions,
 };
 
 /// Host hooks that:
@@ -287,6 +287,131 @@ fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer() -> R
       scope.heap().promise_state(promise_obj)?,
       PromiseState::Fulfilled
     );
+    let ns_value = scope
+      .heap()
+      .promise_result(promise_obj)?
+      .expect("fulfilled promise should have a result");
+    let Value::Object(ns_obj) = ns_value else {
+      return Err(VmError::InvariantViolation(
+        "dynamic import promise should fulfill to a namespace object",
+      ));
+    };
+
+    let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+    let x_value = scope.get_with_host_and_hooks(
+      &mut vm,
+      &mut dummy_host,
+      &mut host_hooks,
+      ns_obj,
+      x_key,
+      Value::Object(ns_obj),
+    )?;
+    assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+    scope.heap_mut().remove_root(p_root);
+    Ok(())
+  })();
+
+  modules.teardown(&mut vm, &mut heap);
+  host_hooks.teardown_jobs(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  result
+}
+
+#[test]
+fn dynamic_import_inside_imported_function_uses_callee_module_as_referrer_for_compiled_instantiation(
+) -> Result<(), VmError> {
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let mut modules = ModuleGraph::new();
+
+  // Module A: store its AST for evaluation, but force linking/instantiation to use compiled HIR.
+  let src_a = "export function doImport() { return import('dep.js'); }";
+  let mut rec_a = SourceTextModuleRecord::parse(&mut heap, src_a)?;
+  let ast_a = rec_a.ast.clone().expect("parse should store module AST");
+  rec_a.compiled = Some(CompiledScript::compile_module(&mut heap, "a.js", src_a)?);
+  rec_a.ast = None;
+  let a = modules.add_module_with_specifier("a.js", rec_a)?;
+
+  let b = modules.add_module_with_specifier(
+    "b.js",
+    SourceTextModuleRecord::parse(
+      &mut heap,
+      "import { doImport } from 'a.js'; export const p = doImport();",
+    )?,
+  )?;
+  let dep = modules.add_module_with_specifier(
+    "dep.js",
+    SourceTextModuleRecord::parse(&mut heap, "export const x = 1;")?,
+  )?;
+  modules.link_all_by_specifier();
+
+  let mut host_hooks = ReferrerRecordingHostHooks::new();
+  host_hooks.register_module("dep.js", dep);
+
+  let mut dummy_host = ();
+
+  // Link first (compiled HIR instantiation runs here), then restore the AST for evaluation.
+  modules.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+  modules.module_mut(a).ast = Some(ast_a);
+
+  let result: Result<(), VmError> = (|| {
+    let _eval_promise = modules.evaluate(
+      &mut vm,
+      &mut heap,
+      realm.global_object(),
+      realm.id(),
+      b,
+      &mut dummy_host,
+      &mut host_hooks,
+    )?;
+
+    // Read `p` from the module namespace (should be the Promise returned by dynamic `import()`).
+    let p_root = {
+      let mut scope = heap.scope();
+      let ns_b = modules.get_module_namespace(b, &mut vm, &mut scope)?;
+      let p_key = PropertyKey::from_string(scope.alloc_string("p")?);
+      let p_value = scope.get_with_host_and_hooks(
+        &mut vm,
+        &mut dummy_host,
+        &mut host_hooks,
+        ns_b,
+        p_key,
+        Value::Object(ns_b),
+      )?;
+
+      let Value::Object(promise_obj) = p_value else {
+        return Err(VmError::InvariantViolation(
+          "module export p should be a promise object",
+        ));
+      };
+      let root = scope.heap_mut().add_root(p_value)?;
+      assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
+      root
+    };
+
+    // Regression assertion:
+    // `import('dep.js')` is evaluated *inside* a function whose `[[ScriptOrModule]]` is module A, so
+    // `HostLoadImportedModule` must observe `referrer == Module(a)`, not the caller module B.
+    assert_eq!(host_hooks.dep_referrer, Some(ModuleReferrer::Module(a)));
+
+    // Drain microtasks so the dynamic import promise settles and so queued jobs release their roots.
+    host_hooks.perform_microtask_checkpoint(&mut vm, &mut heap)?;
+
+    // Optional: verify the import promise fulfills to a namespace where `x === 1`.
+    let mut scope = heap.scope();
+    let p_value = scope
+      .heap()
+      .get_root(p_root)
+      .ok_or_else(|| VmError::invalid_handle())?;
+    let Value::Object(promise_obj) = p_value else {
+      return Err(VmError::InvariantViolation(
+        "promise root should reference an object",
+      ));
+    };
+    assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
     let ns_value = scope
       .heap()
       .promise_result(promise_obj)?

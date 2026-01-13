@@ -4,6 +4,7 @@ use crate::exec::{
 };
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::heap::{ModuleNamespaceExport, ModuleNamespaceExportValue};
+use crate::hir_exec::instantiate_compiled_module_decls;
 use crate::import_meta::{create_import_meta_object, VmImportMetaHostHooks};
 use crate::module_loading::DynamicImportState;
 use crate::module_record::ModuleNamespaceCache;
@@ -1664,14 +1665,13 @@ impl ModuleGraph {
         .local_export_entries
         .iter()
         .any(|e| e.local_name == "*default*");
+      let compiled = self.modules[idx].compiled.clone();
       let source = self.modules[idx]
         .source
         .clone()
+        .or_else(|| compiled.as_ref().map(|s| s.source.clone()))
         .ok_or(VmError::Unimplemented("module source missing"))?;
-      let ast = self.modules[idx]
-        .ast
-        .clone()
-        .ok_or(VmError::Unimplemented("module AST missing"))?;
+      let ast = self.modules[idx].ast.clone();
 
       // Link dependencies first.
       const LINK_TICK_EVERY: usize = 32;
@@ -1873,15 +1873,13 @@ impl ModuleGraph {
       }
 
       // Instantiate local declarations (creates bindings + hoists function objects).
-      instantiate_module_decls(
-        vm,
-        scope,
-        global_object,
-        module,
-        module_env,
-        source,
-        &ast.stx.body,
-      )?;
+      if let Some(ast) = ast {
+        instantiate_module_decls(vm, scope, global_object, module, module_env, source, &ast.stx.body)?;
+      } else if let Some(compiled) = compiled {
+        instantiate_compiled_module_decls(vm, scope, global_object, module, module_env, compiled)?;
+      } else {
+        return Err(VmError::Unimplemented("module AST missing"));
+      }
       Ok(())
     })();
 

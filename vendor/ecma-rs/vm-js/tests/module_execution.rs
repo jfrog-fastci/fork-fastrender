@@ -1,6 +1,6 @@
 use vm_js::{
-  Heap, HeapLimits, ImportMetaProperty, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey, Realm,
-  Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
+  CompiledScript, Heap, HeapLimits, ImportMetaProperty, MicrotaskQueue, ModuleGraph, PromiseState, PropertyKey,
+  Realm, Scope, SourceTextModuleRecord, Value, Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 use std::any::Any;
 
@@ -101,6 +101,69 @@ fn module_evaluate_supports_named_default_imports_and_live_bindings() -> Result<
     ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_a, "x")?,
     Value::Number(2.0)
   );
+
+  drop(scope);
+  graph.teardown(&mut vm, &mut heap);
+  realm.teardown(&mut heap);
+  Ok(())
+}
+
+#[test]
+fn compiled_module_instantiation_supports_anonymous_default_export_function() -> Result<(), VmError> {
+  let (mut vm, mut heap, mut realm) = new_vm_heap_realm()?;
+  let mut hooks = MicrotaskQueue::new();
+  let mut host = ();
+
+  // `export default function() {}` is lowered by `hir-js` with a synthetic `"<anonymous>"` name.
+  // Module instantiation must initialize the engine-internal `*default*` binding (created by module
+  // linking) rather than creating a binding for `"<anonymous>"`.
+  let src_a = "export default function() { return 123; }";
+  let src_b = "import f from 'a.js'; export const v = f(); export const n = f.name;";
+
+  let mut graph = ModuleGraph::new();
+
+  // Module A: keep its AST aside for evaluation, but force linking/instantiation to use compiled HIR.
+  let mut rec_a = SourceTextModuleRecord::parse(&mut heap, src_a)?;
+  let ast_a = rec_a.ast.clone().expect("parse should store module AST");
+  rec_a.compiled = Some(CompiledScript::compile_module(&mut heap, "a.js", src_a)?);
+  rec_a.ast = None;
+  let a = graph.add_module_with_specifier("a.js", rec_a)?;
+
+  // Module B can remain AST-backed; it exercises the default import binding.
+  let b = graph.add_module_with_specifier("b.js", SourceTextModuleRecord::parse(&mut heap, src_b)?)?;
+
+  graph.link_all_by_specifier();
+
+  // Link first (compiled HIR instantiation runs here), then restore the AST for evaluation.
+  graph.link(&mut vm, &mut heap, realm.global_object(), realm.id(), b)?;
+  graph.module_mut(a).ast = Some(ast_a);
+
+  let promise = graph.evaluate(
+    &mut vm,
+    &mut heap,
+    realm.global_object(),
+    realm.id(),
+    b,
+    &mut host,
+    &mut hooks,
+  )?;
+
+  let mut scope = heap.scope();
+  scope.push_root(promise)?;
+  let Value::Object(promise_obj) = promise else {
+    panic!("ModuleGraph::evaluate should return a Promise object");
+  };
+  assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Fulfilled);
+
+  let ns_b = graph.get_module_namespace(b, &mut vm, &mut scope)?;
+  assert_eq!(
+    ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "v")?,
+    Value::Number(123.0)
+  );
+  let Value::String(n) = ns_get(&mut vm, &mut host, &mut hooks, &mut scope, ns_b, "n")? else {
+    panic!("expected b.n to be a string");
+  };
+  assert_eq!(scope.heap().get_string(n)?.to_utf8_lossy(), "default");
 
   drop(scope);
   graph.teardown(&mut vm, &mut heap);
