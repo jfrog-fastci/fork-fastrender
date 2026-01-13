@@ -6021,6 +6021,10 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         self.clear_timer_impl(vm, scope, id, true)
       }
 
+      // WHATWG DOM: Range.prototype.detach() is legacy and specified as a no-op.
+      // WPT uses it for "detached" range setup.
+      ("Range", "detach", 0) => Ok(Value::Undefined),
+
       _ => {
         if let Some(value) = self.try_delegate_dom_call_operation(
           vm, scope, receiver, interface, operation, overload, args,

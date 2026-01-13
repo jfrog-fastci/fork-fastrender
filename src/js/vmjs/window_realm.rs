@@ -39911,6 +39911,59 @@ fn ensure_webidl_node_list_for_each(
   Ok(())
 }
 
+fn range_detach_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Ok(Value::Undefined)
+}
+
+fn ensure_range_detach_noop(vm: &mut Vm, heap: &mut Heap, realm: &Realm) -> Result<(), VmError> {
+  let mut scope = heap.scope();
+  let global = realm.global_object();
+  scope.push_root(Value::Object(global))?;
+
+  let range_key = alloc_key(&mut scope, "Range")?;
+  let range_ctor = vm.get(&mut scope, global, range_key)?;
+  let Value::Object(range_ctor) = range_ctor else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(range_ctor))?;
+
+  let prototype_key = alloc_key(&mut scope, "prototype")?;
+  let range_proto = vm.get(&mut scope, range_ctor, prototype_key)?;
+  let Value::Object(range_proto) = range_proto else {
+    return Ok(());
+  };
+  scope.push_root(Value::Object(range_proto))?;
+
+  let detach_key = alloc_key(&mut scope, "detach")?;
+  if scope
+    .heap()
+    .object_get_own_property(range_proto, &detach_key)?
+    .is_some()
+  {
+    return Ok(());
+  }
+
+  let call_id = vm.register_native_call(range_detach_native)?;
+  let name = scope.alloc_string("detach")?;
+  scope.push_root(Value::String(name))?;
+  let func = scope.alloc_native_function(call_id, None, name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(func))?;
+
+  scope.define_property(range_proto, detach_key, data_desc(Value::Object(func)))?;
+  Ok(())
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -50197,6 +50250,10 @@ fn init_window_globals(
   crate::js::window_message_channel::install_window_message_channel_bindings(vm, realm, heap)?;
   crate::js::window_broadcast_channel::install_window_broadcast_channel_bindings(vm, realm, heap)?;
   crate::js::window_worker::install_window_worker_bindings(vm, realm, heap)?;
+
+  // Legacy DOM API: Range.prototype.detach() is specified as a no-op.
+  // Some WPT Range tests use it for "detached" range setup.
+  ensure_range_detach_noop(vm, heap, realm)?;
 
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
