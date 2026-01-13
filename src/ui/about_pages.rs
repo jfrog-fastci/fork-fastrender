@@ -926,6 +926,40 @@ fn gpu_html() -> String {
 fn processes_html() -> String {
   let snapshot = about_page_snapshot();
 
+  let process_model = crate::ui::process_assignment_config::process_model_from_env();
+  let process_model_label = match process_model {
+    crate::ui::process_assignment::ProcessModel::PerTab => "tab",
+    crate::ui::process_assignment::ProcessModel::PerSiteKey => "site",
+  };
+  let process_model_env_html = {
+    let raw = std::env::var(crate::ui::process_assignment_config::ENV_PROCESS_MODEL)
+      .ok()
+      .unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+      format!(
+        "<span class=\"muted\">({}=default)</span>",
+        crate::ui::process_assignment_config::ENV_PROCESS_MODEL
+      )
+    } else {
+      format!(
+        "<span class=\"muted\">({}={})</span>",
+        crate::ui::process_assignment_config::ENV_PROCESS_MODEL,
+        escape_html(raw)
+      )
+    }
+  };
+  #[cfg(any(test, feature = "browser_ui"))]
+  let registry_stats_html = {
+    let live = crate::multiprocess::renderer_process_count_for_test();
+    let spawned = crate::multiprocess::renderer_process_spawn_count_for_test();
+    format!(
+      " · Registry live: <code>{live}</code> · Registry spawned: <code>{spawned}</code>"
+    )
+  };
+  #[cfg(not(any(test, feature = "browser_ui")))]
+  let registry_stats_html = String::new();
+
   #[derive(Default)]
   struct RendererProcessGroup {
     tabs: Vec<(Option<String>, u64)>,
@@ -1049,11 +1083,13 @@ fn processes_html() -> String {
       </p>
 
       <p class=\"summary\">
+        Process model: <code>{process_model_label}</code> {process_model_env_html}<br>
         Tabs: <code>{total_tabs}</code>
         · Windows: <code>{window_count}</code>
         · Renderer processes: <code>{renderer_process_count}</code>
         · Unassigned tabs: <code>{unassigned_tabs}</code>
         · Tabs missing window id: <code>{unknown_windows}</code>
+        {registry_stats_html}
       </p>
 
       <h2>Renderer processes</h2>

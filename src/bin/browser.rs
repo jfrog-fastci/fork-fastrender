@@ -4304,9 +4304,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if url.is_empty() {
               continue;
             }
-            let site_key = fastrender::ui::SiteKey::from_url(url)
-              .ok()
-              .map(|key| key.to_string());
+            let site_key = tab
+              .renderer_site_key
+              .as_ref()
+              .map(|key| key.to_string())
+              .or_else(|| {
+                fastrender::ui::SiteKey::from_url(url)
+                  .ok()
+                  .map(|key| key.to_string())
+              });
             let renderer_process = tab.renderer_process.map(|id| id.raw());
             open_tabs.push(fastrender::ui::about_pages::OpenTabSnapshot {
               window_id: Some(window_debug.clone()),
