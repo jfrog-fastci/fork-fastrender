@@ -51,6 +51,8 @@ const MAX_CONVOLVE_MATRIX_TAPS: usize = 4096;
 const MAX_COMPONENT_TRANSFER_TABLE_VALUES: usize = 1024;
 // Allow some slack for invalid tokens while still bounding CPU spent splitting/parsing.
 const MAX_COMPONENT_TRANSFER_TABLE_TOKENS: usize = MAX_COMPONENT_TRANSFER_TABLE_VALUES * 4;
+// Reject absurdly long numeric tokens to avoid spending excessive CPU in float parsing.
+const MAX_SVG_NUMBER_TOKEN_BYTES: usize = 128;
 const FILTER_DEADLINE_STRIDE: usize = 256;
 const MAX_SVG_FILTER_DEPTH: usize = 128;
 
@@ -2507,7 +2509,7 @@ fn parse_number_iter<'a>(value: Option<&'a str>) -> impl Iterator<Item = f32> + 
     })
     .filter_map(|v| {
       let trimmed = trim_ascii_whitespace(v);
-      if trimmed.is_empty() {
+      if trimmed.is_empty() || trimmed.len() > MAX_SVG_NUMBER_TOKEN_BYTES {
         None
       } else {
         trimmed.parse::<f32>().ok()
@@ -2840,8 +2842,9 @@ fn parse_transfer_fn(node: &roxmltree::Node) -> Option<TransferFn> {
       .attribute("tableValues")
       .unwrap_or("")
       .split(|c: char| c.is_ascii_whitespace() || c == ',')
-      .filter(|s| !s.is_empty())
       .take(MAX_COMPONENT_TRANSFER_TABLE_TOKENS)
+      .map(trim_ascii_whitespace)
+      .filter(|v| !v.is_empty() && v.len() <= MAX_SVG_NUMBER_TOKEN_BYTES)
       .filter_map(|v| v.parse::<f32>().ok())
       .take(MAX_COMPONENT_TRANSFER_TABLE_VALUES)
       .collect::<Vec<f32>>()
@@ -3060,20 +3063,7 @@ fn parse_fe_displacement_map(node: &roxmltree::Node) -> Option<FilterPrimitive> 
 
 fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(node.attribute("in"));
-  let mut order_iter = node
-    .attribute("order")
-    .unwrap_or("")
-    .split(|c: char| {
-      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
-    })
-    .filter_map(|v| {
-      let trimmed = trim_ascii_whitespace(v);
-      if trimmed.is_empty() {
-        None
-      } else {
-        trimmed.parse::<f32>().ok()
-      }
-    });
+  let mut order_iter = parse_number_iter(node.attribute("order"));
   let order_x_raw = order_iter.next().unwrap_or(3.0);
   let order_y_raw = order_iter.next().unwrap_or(order_x_raw);
   let order_x = order_x_raw.floor().max(1.0) as usize;
@@ -3097,9 +3087,10 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     .split(|c: char| {
       matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ') || c == ','
     })
-    .filter(|v| !trim_ascii_whitespace(v).is_empty())
     .take(max_kernel_tokens)
-    .filter_map(|v| trim_ascii_whitespace(v).parse::<f32>().ok())
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty() && v.len() <= MAX_SVG_NUMBER_TOKEN_BYTES)
+    .filter_map(|v| v.parse::<f32>().ok())
     .take(total_taps + 1)
     .collect::<Vec<f32>>();
   if kernel.len() != total_taps {
