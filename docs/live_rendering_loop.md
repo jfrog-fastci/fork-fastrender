@@ -64,6 +64,8 @@ at most one “turn” of work and returns pixels if that turn invalidated rende
 
 - if microtasks are pending: run a **microtask checkpoint** only,
 - otherwise: run exactly **one task turn** (one task + its post-task microtask checkpoint),
+- after the task turn (HTML “step 10”), if any `requestAnimationFrame` callbacks are queued, run at
+  most **one rAF turn** and then the **microtask checkpoint after rAF**,
 - commit any pending navigation,
 - render *if needed* and return `Some(Pixmap)` when a new frame is produced.
 
@@ -85,9 +87,10 @@ FastRender models this separation too:
 - rAF callbacks are queued separately from tasks/microtasks,
 - driving tasks to idle does not run rAF.
 
-**Current behavior:** `tick_frame()` does **not** run `requestAnimationFrame` callbacks. Use
-`run_until_stable(...)` (below) to include rAF, or drive `EventLoop::run_animation_frame(...)` in a
-lower-level embedding.
+**Current behavior:** `tick_frame()` runs at most one rAF “turn” when callbacks are pending, and it
+drains microtasks queued by rAF before rendering. It does **not** enforce a wall-clock frame cadence
+by itself; the embedder is expected to call `tick_frame()` on its chosen frame schedule (see
+`next_wake_time()` / `animation_frame_interval`).
 
 ### 3) `BrowserTab::run_until_stable(...)` (drains tasks + rAF + renders until convergence)
 
@@ -173,8 +176,8 @@ Key rule:
 - `requestAnimationFrame` callbacks run on the **frame schedule**, not as normal tasks.
 - Therefore they **do not run** during `run_event_loop_until_idle(...)`.
 
-In FastRender, rAF callbacks are executed by `EventLoop::run_animation_frame(...)` (and by
-`BrowserTab::run_until_stable(...)`, which calls into it).
+In FastRender, rAF callbacks are executed by `EventLoop::run_animation_frame(...)` and are driven by
+higher-level helpers like `BrowserTab::tick_frame(...)` and `BrowserTab::run_until_stable(...)`.
 
 To drive a live tab, your outer loop needs a frame cadence (often ~16.67ms). The HTML processing
 model defines this cadence as the **animation frame interval** (often referred to as “step 21” of
@@ -185,21 +188,22 @@ the rendering update algorithm): it controls when the next rendering opportunity
 CSS animations are sampled when painting. FastRender supports two approaches:
 
 - **Deterministic sampling**: set an explicit `animation_time` (ms since document load).
-  - For `BrowserDocumentDom2` there are helpers like
-    `set_animation_time_ms(...)` / `set_animation_time(None)`.
+  - For `BrowserTab`, use `set_animation_time_ms(...)` / `set_animation_time(None)`.
   - When the value changes, the document marks paint dirty.
-- **Real-time sampling**: call `BrowserDocumentDom2::set_realtime_animations_enabled(true)` so that,
-  when no explicit
+- **Real-time sampling**: call `BrowserTab::set_realtime_animations_enabled(true)` so that, when no explicit
   `RenderOptions.animation_time` override is present, each paint samples animations at the time
   elapsed since the first rendered frame after enabling.
 
-Real-time sampling does not schedule frames by itself; the embedder still needs a frame cadence
-(for example, by driving `tick_frame()` on a fixed cadence or in response to external wakeups),
-otherwise the document will paint once and then stay visually frozen.
+Real-time sampling does not schedule frames by itself; the embedder still needs a frame cadence (for
+example, by driving `tick_frame()` on a fixed cadence or in response to external wakeups), otherwise
+the document will paint once and then stay visually frozen.
 
-> Note: `set_realtime_animations_enabled` currently exists on `BrowserDocumentDom2` (and the older
-> `BrowserDocument*` containers), but `BrowserTab` does not currently expose these animation controls
-> through its public API.
+`BrowserTab` also forwards the document-level animation controls from `BrowserDocumentDom2`,
+including:
+
+- `BrowserTab::set_animation_clock(...)` (choose which clock backs the CSS timeline),
+- `BrowserTab::set_realtime_animations_enabled(true)` (use the timeline during paint),
+- `BrowserTab::set_animation_time{,_ms}(...)` (deterministic sampling).
 
 For deterministic tests, you generally want **both** clocks (event loop timers + CSS animation
 timeline) to be driven by the same injected clock.
@@ -237,9 +241,14 @@ fn main() -> Result<()> {
         event_loop,
     )?;
 
-    // Note: `BrowserTab` does not currently expose a public API to enable real-time CSS animation
-    // sampling or to override the document animation clock. Internally, `BrowserTab` sets the
-    // document animation clock to the event loop clock at construction time.
+    // If you want CSS animation sampling to use the same clock as timers/rAF too, set it
+    // explicitly:
+    //
+    // tab.set_animation_clock(clock_for_loop.clone());
+    //
+    // And if you want paint-time CSS animations/transitions to advance with that clock:
+    //
+    // tab.set_realtime_animations_enabled(true);
 
     // In a real deterministic harness you'd:
     // - run some steps,

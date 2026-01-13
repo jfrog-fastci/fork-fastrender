@@ -5732,8 +5732,12 @@ impl BrowserTab {
   /// occurred.
   ///
   /// Note: `requestAnimationFrame` callbacks are queued separately from tasks/microtasks.
-  /// `run_event_loop_until_idle` will never run rAF callbacks; `run_until_stable` will. `tick_frame`
-  /// is expected to integrate rAF on a frame schedule as the live-rendering loop API evolves; see
+  /// `run_event_loop_until_idle` will never run rAF callbacks; `tick_frame` will run at most one rAF
+  /// turn when callbacks are pending (and drains the microtask checkpoint after rAF before
+  /// rendering).
+  ///
+  /// `tick_frame` does not enforce a wall-clock frame cadence by itself; interactive embedders are
+  /// expected to call it on their chosen frame schedule. See
   /// [`docs/live_rendering_loop.md`](../../docs/live_rendering_loop.md).
   pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
     {
