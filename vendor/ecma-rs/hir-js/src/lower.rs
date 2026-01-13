@@ -2213,7 +2213,8 @@ fn lower_expr(
     }
     AstExpr::TaggedTemplate(tag) => {
       let function = lower_expr(&tag.stx.function, builder, ctx);
-      let tmpl = lower_template_literal(&tag.stx.parts, builder, ctx);
+      let template_parts = parse_js::ast::node::template_string_parts(&tag.assoc);
+      let tmpl = lower_template_literal(&tag.stx.parts, template_parts, builder, ctx);
       ExprKind::TaggedTemplate {
         tag: function,
         template: tmpl,
@@ -2236,7 +2237,8 @@ fn lower_expr(
     }
     AstExpr::LitObj(obj) => ExprKind::Object(lower_object_literal(obj, builder, ctx)),
     AstExpr::LitTemplate(tmpl) => {
-      ExprKind::Template(lower_template_literal(&tmpl.stx.parts, builder, ctx))
+      let template_parts = parse_js::ast::node::template_string_parts(&tmpl.assoc);
+      ExprKind::Template(lower_template_literal(&tmpl.stx.parts, template_parts, builder, ctx))
     }
     AstExpr::Instantiation(inst) => {
       let inner = lower_expr(&inst.stx.expression, builder, ctx);
@@ -2884,6 +2886,7 @@ fn lower_object_literal(
 
 fn lower_template_literal(
   parts: &[parse_js::ast::expr::lit::LitTemplatePart],
+  template_parts: Option<&parse_js::ast::node::TemplateStringParts>,
   builder: &mut BodyBuilder<'_>,
   ctx: &mut LoweringContext,
 ) -> TemplateLiteral {
@@ -2909,7 +2912,34 @@ fn lower_template_literal(
       }
     }
   }
-  TemplateLiteral { head, spans }
+
+  // Preserve spec-correct UTF-16 code units for each segment via `TemplateStringParts` association
+  // when available.
+  //
+  // If the association is missing (e.g. due to error recovery), fall back to encoding the best
+  // effort `String` segments as both raw/cooked.
+  let (raw, cooked) = match template_parts {
+    Some(parts) => (parts.raw.clone(), parts.cooked.clone()),
+    None => {
+      let mut segs: Vec<Box<[u16]>> = Vec::new();
+      for part in parts.iter() {
+        if let parse_js::ast::expr::lit::LitTemplatePart::String(text) = part {
+          segs.push(text.encode_utf16().collect::<Vec<_>>().into_boxed_slice());
+        }
+      }
+
+      let raw = segs.clone().into_boxed_slice();
+      let cooked = segs.into_iter().map(Some).collect::<Vec<_>>().into_boxed_slice();
+      (raw, cooked)
+    }
+  };
+
+  TemplateLiteral {
+    head,
+    spans,
+    raw,
+    cooked,
+  }
 }
 
 fn lower_jsx_elem(

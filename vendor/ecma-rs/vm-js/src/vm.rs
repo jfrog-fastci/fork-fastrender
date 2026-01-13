@@ -34,7 +34,7 @@ use parse_js::ast::class_or_object::{
 };
 use parse_js::ast::expr::Expr as AstExpr;
 use parse_js::ast::func::Func;
-use parse_js::ast::node::{Node, TemplateStringParts};
+use parse_js::ast::node::Node;
 use parse_js::ast::stmt::Stmt;
 use parse_js::error::SyntaxErrorType;
 use parse_js::{parse_with_options_cancellable_by_with_init, Dialect, ParseOptions, SourceType};
@@ -2244,10 +2244,17 @@ impl Vm {
     source: Arc<SourceText>,
     span_start: u32,
     span_end: u32,
-    parts: &TemplateStringParts,
+    raw_parts: &[Box<[u16]>],
+    cooked_parts: &[Option<Box<[u16]>>],
   ) -> Result<GcObject, VmError> {
+    // `GetTemplateObject` is realm-scoped. When running code through the higher-level runtime
+    // (`JsRuntime`/`Evaluator`), the realm is tracked via an execution context.
+    //
+    // Some internal tests call into the VM without an explicit execution context; in that case,
+    // fall back to the single-realm `intrinsics_realm` state that `vm-js` currently maintains.
     let realm = self
       .current_realm()
+      .or(self.intrinsics_realm)
       .ok_or(VmError::Unimplemented("template literal requires active realm"))?;
 
     let key = TemplateRegistryKey {
@@ -2268,9 +2275,9 @@ impl Vm {
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
 
-    if parts.raw.len() != parts.cooked.len() {
+    if raw_parts.len() != cooked_parts.len() {
       return Err(VmError::InvariantViolation(
-        "TemplateStringParts raw/cooked length mismatch",
+        "template literal raw/cooked length mismatch",
       ));
     }
 
@@ -2289,10 +2296,9 @@ impl Vm {
       .heap_mut()
       .object_set_prototype(raw, Some(intr.array_prototype()))?;
 
-    let segments = parts
-      .raw
+    let segments = raw_parts
       .iter()
-      .zip(parts.cooked.iter())
+      .zip(cooked_parts.iter())
       .enumerate();
 
     for (idx, (raw_units, cooked_units)) in segments {

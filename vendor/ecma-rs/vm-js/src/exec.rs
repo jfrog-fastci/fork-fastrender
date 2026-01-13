@@ -1906,7 +1906,7 @@ impl JsRuntime {
     host: &mut dyn VmHost,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(script.source.clone());
+    let source = script.source.clone();
 
     let (line, col) = source.line_col(0);
     let frame = StackFrame {
@@ -1987,7 +1987,7 @@ impl JsRuntime {
     hooks: &mut dyn VmHostHooks,
     script: Arc<crate::CompiledScript>,
   ) -> Result<Value, VmError> {
-    let source = Arc::new(script.source.clone());
+    let source = script.source.clone();
     let (line, col) = source.line_col(0);
     let frame = StackFrame {
       function: None,
@@ -9473,7 +9473,8 @@ impl<'a> Evaluator<'a> {
       self.env.source(),
       span_start,
       span_end,
-      template_parts,
+      template_parts.raw.as_ref(),
+      template_parts.cooked.as_ref(),
     )?;
     call_scope.push_root(Value::Object(template_obj))?;
 
@@ -21394,7 +21395,8 @@ fn async_eval_tagged_template_with_callee(
     evaluator.env.source(),
     span_start,
     span_end,
-    template_parts,
+    template_parts.raw.as_ref(),
+    template_parts.cooked.as_ref(),
   )?;
   call_scope.push_root(Value::Object(template_obj))?;
 

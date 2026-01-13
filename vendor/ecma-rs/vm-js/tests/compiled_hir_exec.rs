@@ -1057,6 +1057,107 @@ fn compiled_template_literal_coerces_null_and_undefined() -> Result<(), VmError>
 }
 
 #[test]
+fn compiled_template_literal_preserves_surrogate_code_units() -> Result<(), VmError> {
+  // `\uD800` is a lone surrogate code unit which cannot be represented in Rust `String`.
+  // The compiled path must preserve it via UTF-16 code units.
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        return (`\uD800`).charCodeAt(0);
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(0xD800 as f64));
+  Ok(())
+}
+
+#[test]
+fn compiled_tagged_template_provides_raw_and_cooked_strings() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        function tag(strings) {
+          return strings.raw[0].length * 10 + strings[0].length;
+        }
+        return tag`\n`;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(21.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_tagged_template_invalid_escape_sets_cooked_to_undefined() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        function tag(strings) {
+          return strings[0] === undefined && strings.raw[0] === "\\1";
+        }
+        return tag`\1`;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_tagged_template_uses_base_as_this_for_member_call() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let obj = {
+          x: 41,
+          tag(strings) { return this.x + strings[0].length; }
+        };
+        return obj.tag`a`;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Number(42.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_tagged_template_optional_chaining_short_circuits() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        let x = 0;
+        let obj = null;
+        let r = obj?.tag`a${x++}b`;
+        return r === undefined && x === 0;
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn compiled_tagged_template_caches_template_object_per_site() -> Result<(), VmError> {
+  let result = compile_and_call0(
+    r#"
+      function f() {
+        function tag(strings) { return strings; }
+        function get() { return tag`x`; }
+        return get() === get();
+      }
+    "#,
+    "f",
+  )?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_hir_exec_unary_minus_bigint() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
   let script = CompiledScript::compile_script(

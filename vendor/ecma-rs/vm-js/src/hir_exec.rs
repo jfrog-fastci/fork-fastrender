@@ -3237,8 +3237,10 @@ impl<'vm> HirEvaluator<'vm> {
         self.eval_class_expr(scope, *class_body, name.as_ref().map(|_| name_str.as_str()))
       }
       hir_js::ExprKind::Template(tpl) => self.eval_template_literal(scope, body, tpl),
+      hir_js::ExprKind::TaggedTemplate { tag, template } => {
+        self.eval_tagged_template(scope, body, expr.span, *tag, template)
+      }
       other => Err(match other {
-        hir_js::ExprKind::TaggedTemplate { .. } => VmError::Unimplemented("template literal (hir-js compiled path)"),
         hir_js::ExprKind::Await { .. } => VmError::Unimplemented("await (hir-js compiled path)"),
         hir_js::ExprKind::Yield { .. } => VmError::Unimplemented("yield (hir-js compiled path)"),
         hir_js::ExprKind::Super => VmError::Unimplemented("super (hir-js compiled path)"),
@@ -3442,9 +3444,12 @@ impl<'vm> HirEvaluator<'vm> {
     // ToString, and string concatenation).
     let mut scope = scope.reborrow();
 
-    let mut out = scope.alloc_string(tpl.head.as_str())?;
+    let mut out = match tpl.cooked.first().and_then(|c| c.as_deref()) {
+      Some(units) => scope.alloc_string_from_code_units(units)?,
+      None => scope.alloc_string_from_utf8(&tpl.head)?,
+    };
 
-    for span in &tpl.spans {
+    for (idx, span) in tpl.spans.iter().enumerate() {
       // Root the accumulator across evaluation/coercion/allocations in this span.
       let mut span_scope = scope.reborrow();
       span_scope.push_root(Value::String(out))?;
@@ -3458,11 +3463,106 @@ impl<'vm> HirEvaluator<'vm> {
       span_scope.push_root(Value::String(out_with_expr))?;
 
       // out += literal
-      let lit_s = span_scope.alloc_string(span.literal.as_str())?;
+      let lit_s = match tpl.cooked.get(idx + 1).and_then(|c| c.as_deref()) {
+        Some(units) => span_scope.alloc_string_from_code_units(units)?,
+        None => span_scope.alloc_string_from_utf8(&span.literal)?,
+      };
       out = concat_strings(&mut span_scope, out_with_expr, lit_s, || self.vm.tick())?;
     }
 
     Ok(Value::String(out))
+  }
+
+  fn eval_tagged_template(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    expr_span: diagnostics::TextRange,
+    tag: hir_js::ExprId,
+    tpl: &hir_js::TemplateLiteral,
+  ) -> Result<Value, VmError> {
+    // Tagged template evaluation:
+    //   1) Evaluate tag expression to get (callee, this) like CallExpression evaluation.
+    //   2) GetTemplateObject (cached by realm+source+span).
+    //   3) Evaluate substitutions left-to-right.
+    //   4) Call callee(templateObject, ...substitutions).
+    //
+    // Important: optional chaining on the tag expression (`obj?.f\`...\``) short-circuits the entire
+    // tagged template expression, skipping template object creation and substitution evaluation.
+
+    let tag_expr = self.get_expr(body, tag)?;
+    let mut scope = scope.reborrow();
+
+    // Method call detection: `obj.prop\`...\`` uses `this = obj` (or primitive base).
+    let (callee_value, this_value) = match &tag_expr.kind {
+      hir_js::ExprKind::Member(member) => {
+        let base = self.eval_expr(&mut scope, body, member.object)?;
+        if member.optional && matches!(base, Value::Null | Value::Undefined) {
+          return Ok(Value::Undefined);
+        }
+
+        // Root base across key evaluation / boxing / property access.
+        scope.push_root(base)?;
+
+        let key = self.eval_object_key(&mut scope, body, &member.property)?;
+        root_property_key(&mut scope, key)?;
+
+        let obj = match scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base) {
+          Ok(obj) => obj,
+          Err(VmError::TypeError(msg)) => return Err(throw_type_error(self.vm, &mut scope, msg)?),
+          Err(err) => return Err(err),
+        };
+        scope.push_root(Value::Object(obj))?;
+
+        let func =
+          scope.get_with_host_and_hooks(self.vm, &mut *self.host, &mut *self.hooks, obj, key, base)?;
+        (func, base)
+      }
+      _ => {
+        let callee_value = self.eval_expr(&mut scope, body, tag)?;
+        (callee_value, Value::Undefined)
+      }
+    };
+
+    // Root callee/this for the remainder of the tagged template evaluation.
+    scope.push_roots(&[callee_value, this_value])?;
+
+    // Compute a stable span key matching interpreter semantics (env prefix/base offsets).
+    let rel_start = expr_span.start.saturating_sub(self.env.prefix_len());
+    let rel_end = expr_span.end.saturating_sub(self.env.prefix_len());
+    let span_start = self.env.base_offset().saturating_add(rel_start);
+    let span_end = self.env.base_offset().saturating_add(rel_end);
+
+    let template_obj = self.vm.get_or_create_template_object(
+      &mut scope,
+      self.env.source(),
+      span_start,
+      span_end,
+      tpl.raw.as_ref(),
+      tpl.cooked.as_ref(),
+    )?;
+    scope.push_root(Value::Object(template_obj))?;
+
+    let mut args: Vec<Value> = Vec::new();
+    args
+      .try_reserve_exact(tpl.spans.len().saturating_add(1))
+      .map_err(|_| VmError::OutOfMemory)?;
+    args.push(Value::Object(template_obj));
+
+    for span in &tpl.spans {
+      let value = self.eval_expr(&mut scope, body, span.expr)?;
+      scope.push_root(value)?;
+      args.push(value);
+    }
+
+    self.vm.call_with_host_and_hooks(
+      &mut *self.host,
+      &mut scope,
+      &mut *self.hooks,
+      callee_value,
+      this_value,
+      args.as_slice(),
+    )
   }
 
   fn eval_literal(&mut self, scope: &mut Scope<'_>, lit: &hir_js::Literal) -> Result<Value, VmError> {
@@ -7687,8 +7787,7 @@ pub(crate) fn run_compiled_function(
   new_target: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
-  let source = Arc::new(func.script.source.clone());
-  env.set_source_info(source, 0, 0);
+  env.set_source_info(func.script.source.clone(), 0, 0);
 
   let body = func
     .script
@@ -7744,8 +7843,7 @@ pub(crate) fn run_compiled_script(
   env: &mut RuntimeEnv,
   script: Arc<CompiledScript>,
 ) -> Result<Value, VmError> {
-  let source = Arc::new(script.source.clone());
-  env.set_source_info(source, 0, 0);
+  env.set_source_info(script.source.clone(), 0, 0);
 
   let global_object = env.global_object();
   let mut evaluator = HirEvaluator {

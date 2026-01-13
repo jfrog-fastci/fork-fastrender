@@ -1064,6 +1064,18 @@ pub enum ObjectProperty {
 pub struct TemplateLiteral {
   pub head: String,
   pub spans: Vec<TemplateLiteralSpan>,
+  /// Spec-correct raw UTF-16 code units for each template string segment.
+  ///
+  /// Length is `spans.len() + 1` (one head segment and one tail segment per substitution).
+  pub raw: Box<[Box<[u16]>]>,
+  /// Spec-correct cooked UTF-16 code units for each template string segment.
+  ///
+  /// For tagged templates, a segment's cooked value can be `None`, indicating `undefined` per
+  /// ECMAScript's `GetTemplateObject` semantics when the segment contains an invalid escape
+  /// sequence.
+  ///
+  /// Length is `spans.len() + 1` (aligned with [`TemplateLiteral::raw`]).
+  pub cooked: Box<[Option<Box<[u16]>>]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
