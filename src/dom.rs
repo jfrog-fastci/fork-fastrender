@@ -3039,7 +3039,6 @@ pub fn compute_slot_assignment_with_ids(
           .map_err(Error::Render)?;
           let slot_name = child
             .get_attribute_ref("slot")
-            .map(trim_ascii_whitespace_html)
             .filter(|v| !v.is_empty());
           light_children.push((slot_name, child as *const DomNode));
         }
@@ -11345,6 +11344,41 @@ mod tests {
       .expect("light assigned");
     assert_eq!(assigned.slot_node_id, real_id);
     assert_ne!(assigned.slot_node_id, template_id);
+  }
+
+  #[test]
+  fn ascii_whitespace_in_slot_attr_is_significant() {
+    let html = "<div id=host><template shadowroot=open><slot id=named name=foo></slot><slot id=default></slot></template><span id=light slot=' foo'>X</span></div>";
+    let dom = parse_html(html).expect("parse html");
+    let ids = enumerate_dom_ids(&dom);
+    let assignment = compute_slot_assignment_with_ids(&dom, &ids).expect("slot assignment");
+
+    let light = find_node_by_id(&dom, "light").expect("light node");
+    let default_slot = find_node_by_id(&dom, "default").expect("default slot");
+    let named_slot = find_node_by_id(&dom, "named").expect("named slot");
+
+    let light_id = ids
+      .get(&(light as *const DomNode))
+      .copied()
+      .expect("light node id");
+    let default_id = ids
+      .get(&(default_slot as *const DomNode))
+      .copied()
+      .expect("default slot id");
+    let named_id = ids
+      .get(&(named_slot as *const DomNode))
+      .copied()
+      .expect("named slot id");
+
+    let assigned = assignment
+      .node_to_slot
+      .get(&light_id)
+      .expect("light assigned");
+    assert_eq!(
+      assigned.slot_node_id, default_id,
+      "ASCII whitespace must be significant for slot name matching"
+    );
+    assert_ne!(assigned.slot_node_id, named_id);
   }
 
   #[test]
