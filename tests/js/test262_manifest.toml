@@ -1017,6 +1017,46 @@ glob = "built-ins/RegExp/prototype/test/**"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/RegExp/prototype/source/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/flags/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/global/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/ignoreCase/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/multiline/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/dotAll/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/unicode/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/unicodeSets/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/sticky/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/RegExp/prototype/toString/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/String/prototype/match/**"
 status = "pass"
 
