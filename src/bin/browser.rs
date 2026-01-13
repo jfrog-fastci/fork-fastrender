@@ -6205,7 +6205,8 @@ impl App {
                   response.widget_info({
                     let label = Self::select_dropdown_option_a11y_label(base, *selected, *disabled);
                     let widget_type = Self::select_dropdown_option_a11y_widget_type(*disabled);
-                    move || egui::WidgetInfo::labeled(widget_type, label.clone())
+                    let selected = *selected;
+                    move || egui::WidgetInfo::selected(widget_type, selected, label.clone())
                   });
 
                   if response.clicked() && !*disabled {
