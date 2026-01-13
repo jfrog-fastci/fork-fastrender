@@ -48,6 +48,8 @@ fn reduced_motion_from_runtime_toggles() -> bool {
 pub struct UiMotionDurations {
   /// Fade in/out duration for hover highlights (seconds).
   pub hover_fade: f32,
+  /// Transition duration for global tab width changes (seconds).
+  pub tab_width: f32,
   /// Transition duration for tab underline (seconds).
   pub tab_underline: f32,
   /// Transition duration for pin/unpin tab-strip animations (seconds).
@@ -72,6 +74,7 @@ impl Default for UiMotionDurations {
   fn default() -> Self {
     Self {
       hover_fade: 0.12,
+      tab_width: 0.16,
       tab_underline: 0.16,
       tab_pin: 0.18,
       tab_close: 0.16,

@@ -1027,6 +1027,14 @@ pub(super) fn compute_pinned_viewport_width(
   (pinned_viewport_width, unpinned_viewport_width)
 }
 
+fn sanitize_tab_width(width: f32) -> f32 {
+  if width.is_finite() {
+    width.max(0.0)
+  } else {
+    0.0
+  }
+}
+
 fn paint_spinner(painter: &egui::Painter, rect: Rect, time: f64, color: Color32) {
   let center = rect.center();
   let radius = rect.width().min(rect.height()) * 0.5 - 1.0;
@@ -2229,19 +2237,36 @@ pub(super) fn tab_strip_ui(
     group_chip_total_width,
     total_gap_width,
   );
-
-  // Animate the shared unpinned tab width so the strip doesn't "jump" when the unpinned count
-  // changes due to pinning/unpinning.
-  let sizing = if let Some(anim) = &pin_anim {
-    let tab_width = lerp(anim.from_unpinned_tab_width, sizing_target.tab_width, pin_t);
-    let total_content_width = tab_width * tab_units + group_chip_total_width + total_gap_width;
-    TabStripSizing {
-      tab_width,
-      overflow: sizing_target.overflow,
-      total_content_width,
-    }
+  // Target unpinned tab width for this frame. When a tab is being pinned/unpinned, we already have
+  // a dedicated width animation to avoid "jumping" due to the unpinned count changing.
+  let tab_width_target = if let Some(anim) = &pin_anim {
+    lerp(anim.from_unpinned_tab_width, sizing_target.tab_width, pin_t)
   } else {
-    sizing_target
+    sizing_target.tab_width
+  };
+  let tab_width_target = sanitize_tab_width(tab_width_target);
+
+  // Smoothly animate global tab width reflows (e.g. window resize or open/close tabs) so tabs don't
+  // snap-resize. Pin/unpin already animates width, so avoid double-easing in that case.
+  let tab_width = if tab_units <= 0.0 || pin_anim.is_some() {
+    tab_width_target
+  } else {
+    let id = egui::Id::new("tab_strip_tab_width");
+    let width = motion.animate_f32(&ctx, id, tab_width_target, motion.durations.tab_width);
+    let width = sanitize_tab_width(width);
+    if motion_enabled && motion.durations.tab_width > 0.0 && (width - tab_width_target).abs() > 0.01
+    {
+      ctx.request_repaint();
+    }
+    width
+  };
+
+  let total_content_width = tab_width * tab_units + group_chip_total_width + total_gap_width;
+  let overflow = total_content_width > unpinned_viewport_width + 0.01;
+  let sizing = TabStripSizing {
+    tab_width,
+    overflow,
+    total_content_width,
   };
 
   let mut ops: Vec<TabStripOp> = Vec::new();
@@ -4147,6 +4172,19 @@ mod tests {
     assert!(clamping2);
     assert!(clamped2 < user_offset_x - 0.01);
     assert!(clamped2 > max_scroll_x - 1e-6);
+  }
+
+  #[test]
+  fn sanitize_tab_width_rejects_non_finite() {
+    assert_eq!(sanitize_tab_width(f32::NAN), 0.0);
+    assert_eq!(sanitize_tab_width(f32::INFINITY), 0.0);
+    assert_eq!(sanitize_tab_width(f32::NEG_INFINITY), 0.0);
+  }
+
+  #[test]
+  fn sanitize_tab_width_clamps_negative_to_zero() {
+    assert_eq!(sanitize_tab_width(-1.0), 0.0);
+    assert_eq!(sanitize_tab_width(-0.0), 0.0);
   }
 
   #[test]
