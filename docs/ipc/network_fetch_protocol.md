@@ -66,8 +66,13 @@ Important for implementers in other languages:
 - Rust `enum`s use serde’s **externally tagged** default representation:
   - struct-like variants encode as `{"VariantName": {"field": ...}}`
   - unit variants encode as `"VariantName"`
-- `IpcRequest` and `IpcResponse` are `#[serde(deny_unknown_fields)]` (unknown fields must fail
-  closed).
+- Most schema structs/enums (including `IpcRequest`, `IpcResponse`, `IpcFetchRequest`, `IpcHttpRequest`,
+  `IpcFetchedResource`, `IpcError`, and `IpcResult<T>`) are `#[serde(deny_unknown_fields)]`: unknown
+  fields must fail closed.
+- Some envelope/streaming types intentionally **do not** deny unknown fields today
+  (`BrowserToNetwork`, `NetworkToBrowser`, `IpcFetchedResourceMeta`) so newer servers can add fields
+  without breaking older clients. Other-language implementations should be aware of this difference
+  if they aim for wire-compatibility with the in-tree Rust decoder.
 
 ### Example JSON payloads (no length prefix shown)
 
