@@ -410,9 +410,6 @@ impl WebSocketBackend for DisabledWebSocketBackend {
   }
 }
 
-#[cfg(not(feature = "direct_websocket"))]
-struct DirectWebSocketBackend;
-
 #[cfg(feature = "direct_websocket")]
 struct DirectWebSocketBackend;
 
@@ -533,15 +530,6 @@ impl WebSocketBackend for DirectWebSocketBackend {
   }
 }
 
-#[cfg(not(feature = "direct_websocket"))]
-impl WebSocketBackend for DirectWebSocketBackend {
-  fn connect(&self, _url: &str, _protocols: &[String]) -> Result<Box<dyn WebSocketStream>> {
-    Err(Error::Other(
-      "WebSocket support is disabled (fastrender built without the `direct_websocket` feature)"
-        .to_string(),
-    ))
-  }
-}
 #[cfg(feature = "direct_websocket")]
 impl WebSocketStream for DirectWebSocketStream {
   fn send(&mut self, message: WebSocketMessage) -> Result<()> {
@@ -627,6 +615,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(feature = "direct_websocket")]
   fn websocket_rejects_unrequested_protocol_selected_by_server() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost("network_process_websocket_rejects_unrequested_protocol_selected_by_server")
@@ -677,6 +666,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(feature = "direct_websocket")]
   fn websocket_protocol_is_set_from_server_handshake_response() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost("network_process_websocket_protocol_is_set_from_server_handshake_response")
@@ -727,6 +717,7 @@ mod tests {
   }
 
   #[test]
+  #[cfg(feature = "direct_websocket")]
   fn websocket_rejects_protocol_when_none_were_requested() -> Result<()> {
     let _lock = net_test_lock();
     let Some(listener) = try_bind_localhost("network_process_websocket_rejects_protocol_when_none_were_requested")
