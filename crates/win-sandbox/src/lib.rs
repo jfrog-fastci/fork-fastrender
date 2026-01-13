@@ -1,8 +1,14 @@
 //! Windows sandboxing primitives (Win32).
 //!
 //! This crate intentionally contains only small, Windows-focused utilities so
-//! higher-level crates can use sandboxing (job objects, AppContainer, restricted
-//! tokens, ...) without pulling in the full `fastrender` dependency graph.
+//! higher-level crates can reuse Windows sandbox building blocks (job objects,
+//! AppContainer identity helpers, process mitigation policies, etc.) without
+//! pulling in the full `fastrender` dependency graph.
+//!
+//! For the intended Windows renderer sandbox boundary (Job objects + AppContainer
+//! + handle allowlisting + mitigations + fallback mode), see
+//! `docs/windows_sandbox.md` and the main spawner implementation in
+//! `src/sandbox/windows.rs` (in the root `fastrender` crate).
 //!
 //! The public API is intentionally safe; internal Win32 calls are wrapped so
 //! callers never need to use `unsafe` directly.

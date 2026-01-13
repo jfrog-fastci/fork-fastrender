@@ -3,6 +3,13 @@
 //! This is best-effort and intended for a future multiprocess browser architecture where
 //! renderer processes run with substantially reduced OS capabilities.
 //!
+//! The intended sandbox boundary is documented in `docs/windows_sandbox.md`. Keep that doc accurate
+//! when changing any of:
+//! - AppContainer / restricted-token spawning
+//! - Job object limits
+//! - handle inheritance allowlisting
+//! - environment-variable escape hatches
+//!
 //! ## Environment sanitization
 //!
 //! `CreateProcessW` and `CreateProcessAsUserW` inherit the parent's environment when
