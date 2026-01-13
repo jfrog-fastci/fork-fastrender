@@ -32,6 +32,11 @@ const DEBUG_LOG_CAPACITY: usize = 256;
 const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 // Keep in sync with `src/ui/render_worker.rs`'s `FAVICON_MAX_EDGE_PX`.
 const FAVICON_MAX_EDGE_PX: u32 = 32;
+/// Maximum number of download entries stored in the browser UI state.
+///
+/// In a multi-process architecture the renderer is untrusted; without a hard cap a compromised
+/// renderer could spam download messages and grow memory unboundedly.
+const MAX_DOWNLOAD_ENTRIES: usize = 512;
 
 static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -265,11 +270,52 @@ impl DownloadsState {
       .find(|d| d.download_id == download_id)
   }
 
+  fn prune_overflow(&mut self, max_entries: usize) {
+    if max_entries == 0 {
+      self.downloads.clear();
+      return;
+    }
+    if self.downloads.len() <= max_entries {
+      return;
+    }
+
+    // Overflow count is deterministic because `DownloadStarted` appends entries and we always prune
+    // from the front (oldest-first).
+    let mut overflow = self.downloads.len().saturating_sub(max_entries);
+    if overflow == 0 {
+      return;
+    }
+
+    // Prefer pruning completed/failed/cancelled entries first so in-progress downloads are less
+    // likely to disappear from the downloads panel. If we still overflow after removing all
+    // completed entries, prune the oldest remaining entries (which will all be in-progress).
+    self.downloads.retain(|entry| {
+      if overflow == 0 {
+        return true;
+      }
+      let is_done = !matches!(entry.status, DownloadStatus::InProgress { .. });
+      if is_done {
+        overflow = overflow.saturating_sub(1);
+        false
+      } else {
+        true
+      }
+    });
+
+    if overflow == 0 {
+      return;
+    }
+
+    let drain = overflow.min(self.downloads.len());
+    self.downloads.drain(0..drain);
+  }
+
   fn insert_or_update(&mut self, entry: DownloadEntry) {
     if let Some(existing) = self.get_mut(entry.download_id) {
       *existing = entry;
     } else {
       self.downloads.push(entry);
+      self.prune_overflow(MAX_DOWNLOAD_ENTRIES);
     }
   }
 }
@@ -2439,27 +2485,33 @@ impl BrowserAppState {
         path,
         total_bytes,
       } => {
-        let safe_url = sanitize_untrusted_text(&url, MAX_URL_BYTES);
-        let safe_file_name = sanitize_untrusted_text(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
-        // `file_name` is used only for display in the downloads panel; sanitize it defensively so
-        // untrusted worker messages cannot inject path separators/control characters into the UI.
-        let safe_file_name = crate::ui::downloads::sanitize_download_filename(&safe_file_name);
-        // `sanitize_download_filename` may add a prefix (e.g. Windows reserved device names), so
-        // clamp again to our protocol limits.
-        let safe_file_name =
-          crate::ui::untrusted::clamp_untrusted_utf8(&safe_file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
-        self.downloads.insert_or_update(DownloadEntry {
-          download_id,
-          tab_id,
-          url: safe_url,
-          file_name: safe_file_name,
-          path,
-          status: DownloadStatus::InProgress {
-            received_bytes: 0,
-            total_bytes,
-          },
-        });
-        update.request_redraw = true;
+        // Renderer-driven downloads are untrusted in a multi-process world. Only accept new
+        // downloads for known tabs so compromised renderers can't grow memory by inventing tab ids.
+        if self.tab(tab_id).is_some() {
+          let safe_url = sanitize_untrusted_text(&url, MAX_URL_BYTES);
+          let safe_file_name = sanitize_untrusted_text(&file_name, MAX_DOWNLOAD_FILE_NAME_BYTES);
+          // `file_name` is used only for display in the downloads panel; sanitize it defensively so
+          // untrusted worker messages cannot inject path separators/control characters into the UI.
+          let safe_file_name = crate::ui::downloads::sanitize_download_filename(&safe_file_name);
+          // `sanitize_download_filename` may add a prefix (e.g. Windows reserved device names), so
+          // clamp again to our protocol limits.
+          let safe_file_name = crate::ui::untrusted::clamp_untrusted_utf8(
+            &safe_file_name,
+            MAX_DOWNLOAD_FILE_NAME_BYTES,
+          );
+          self.downloads.insert_or_update(DownloadEntry {
+            download_id,
+            tab_id,
+            url: safe_url,
+            file_name: safe_file_name,
+            path,
+            status: DownloadStatus::InProgress {
+              received_bytes: 0,
+              total_bytes,
+            },
+          });
+          update.request_redraw = true;
+        }
       }
       WorkerToUi::DownloadProgress {
         tab_id: _,
@@ -4175,5 +4227,149 @@ mod tab_group_tests {
     // Timeout elapsed since dismissal.
     app.update_unresponsive_tabs(t2 + Duration::from_secs(6), timeout);
     assert!(app.tab(tab_id).unwrap().unresponsive);
+  }
+
+  #[test]
+  fn download_started_spam_is_bounded() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+
+    for i in 0..(MAX_DOWNLOAD_ENTRIES + 10) {
+      app.apply_worker_msg(WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id: DownloadId((i + 1) as u64),
+        url: format!("https://example.test/{i}"),
+        file_name: format!("file{i}.bin"),
+        path: std::path::PathBuf::from(format!("file{i}.bin")),
+        total_bytes: None,
+      });
+    }
+
+    assert_eq!(app.downloads.downloads.len(), MAX_DOWNLOAD_ENTRIES);
+  }
+
+  #[test]
+  fn download_started_for_unknown_tab_is_ignored() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id: TabId(999),
+      download_id: DownloadId(1),
+      url: "https://example.test/file.bin".to_string(),
+      file_name: "file.bin".to_string(),
+      path: std::path::PathBuf::from("file.bin"),
+      total_bytes: None,
+    });
+
+    assert!(app.downloads.downloads.is_empty());
+  }
+
+  #[test]
+  fn download_progress_and_finished_for_unknown_id_are_ignored() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+
+    app.apply_worker_msg(WorkerToUi::DownloadProgress {
+      tab_id,
+      download_id: DownloadId(123),
+      received_bytes: 10,
+      total_bytes: Some(100),
+    });
+    app.apply_worker_msg(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id: DownloadId(123),
+      outcome: DownloadOutcome::Completed,
+    });
+
+    assert!(app.downloads.downloads.is_empty());
+  }
+
+  #[test]
+  fn download_pruning_prefers_completed_entries() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+
+    // Oldest entry: in-progress.
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id: DownloadId(1),
+      url: "https://example.test/oldest-in-progress".to_string(),
+      file_name: "oldest-in-progress.bin".to_string(),
+      path: std::path::PathBuf::from("oldest-in-progress.bin"),
+      total_bytes: None,
+    });
+
+    // Second entry: completed (should be pruned before the oldest in-progress entry when we
+    // overflow).
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id: DownloadId(2),
+      url: "https://example.test/completed".to_string(),
+      file_name: "completed.bin".to_string(),
+      path: std::path::PathBuf::from("completed.bin"),
+      total_bytes: None,
+    });
+    app.apply_worker_msg(WorkerToUi::DownloadFinished {
+      tab_id,
+      download_id: DownloadId(2),
+      outcome: DownloadOutcome::Completed,
+    });
+
+    for i in 3..=MAX_DOWNLOAD_ENTRIES {
+      app.apply_worker_msg(WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id: DownloadId(i as u64),
+        url: format!("https://example.test/{i}"),
+        file_name: format!("file{i}.bin"),
+        path: std::path::PathBuf::from(format!("file{i}.bin")),
+        total_bytes: None,
+      });
+    }
+    assert_eq!(app.downloads.downloads.len(), MAX_DOWNLOAD_ENTRIES);
+
+    // Trigger overflow by inserting a new download.
+    app.apply_worker_msg(WorkerToUi::DownloadStarted {
+      tab_id,
+      download_id: DownloadId((MAX_DOWNLOAD_ENTRIES + 1) as u64),
+      url: "https://example.test/overflow".to_string(),
+      file_name: "overflow.bin".to_string(),
+      path: std::path::PathBuf::from("overflow.bin"),
+      total_bytes: None,
+    });
+
+    assert_eq!(app.downloads.downloads.len(), MAX_DOWNLOAD_ENTRIES);
+    assert!(
+      app
+        .downloads
+        .downloads
+        .iter()
+        .any(|d| d.download_id == DownloadId(1)),
+      "expected oldest in-progress entry to be preserved"
+    );
+    assert!(
+      !app
+        .downloads
+        .downloads
+        .iter()
+        .any(|d| d.download_id == DownloadId(2)),
+      "expected completed entry to be pruned first"
+    );
   }
 }
