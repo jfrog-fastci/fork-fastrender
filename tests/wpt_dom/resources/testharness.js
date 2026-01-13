@@ -413,39 +413,6 @@ function assert_throws_js(constructor, func, message) {
   return thrown;
 }
 //
-// Legacy DOMException code string -> modern DOMException name.
-//
-// Upstream WPT tests still use the historical "FOO_ERR" names in many places (e.g. Range tests
-// expect `assert_throws_dom("INDEX_SIZE_ERR", ...)`). Modern DOMException instances use names like
-// "IndexSizeError", so we translate legacy constants to their modern equivalents.
-var __dom_exception_legacy_name_map = {
-  INDEX_SIZE_ERR: "IndexSizeError",
-  DOMSTRING_SIZE_ERR: "DOMStringSizeError",
-  HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
-  WRONG_DOCUMENT_ERR: "WrongDocumentError",
-  INVALID_CHARACTER_ERR: "InvalidCharacterError",
-  NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
-  NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
-  NOT_FOUND_ERR: "NotFoundError",
-  NOT_SUPPORTED_ERR: "NotSupportedError",
-  INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
-  INVALID_STATE_ERR: "InvalidStateError",
-  SYNTAX_ERR: "SyntaxError",
-  INVALID_MODIFICATION_ERR: "InvalidModificationError",
-  NAMESPACE_ERR: "NamespaceError",
-  INVALID_ACCESS_ERR: "InvalidAccessError",
-  VALIDATION_ERR: "ValidationError",
-  TYPE_MISMATCH_ERR: "TypeMismatchError",
-  SECURITY_ERR: "SecurityError",
-  NETWORK_ERR: "NetworkError",
-  ABORT_ERR: "AbortError",
-  URL_MISMATCH_ERR: "URLMismatchError",
-  QUOTA_EXCEEDED_ERR: "QuotaExceededError",
-  TIMEOUT_ERR: "TimeoutError",
-  INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
-  DATA_CLONE_ERR: "DataCloneError",
-};
-//
 function assert_throws_dom(name, target, func, message) {
   // Support both upstream call patterns:
   //   assert_throws_dom("InvalidStateError", () => { ... }, "optional message")
@@ -464,13 +431,49 @@ function assert_throws_dom(name, target, func, message) {
     throw Error(resolved_message || "assert_throws_dom: expected DOMException name must be a string");
   }
   //
+  // Legacy DOMException code string -> modern DOMException name.
+  //
+  // Upstream WPT tests still use the historical "FOO_ERR" names in many places (e.g. Range tests
+  // expect `assert_throws_dom("INDEX_SIZE_ERR", ...)`). Modern DOMException instances use names like
+  // "IndexSizeError", so we translate legacy constants to their modern equivalents.
+  var __dom_exception_legacy_name_map = {
+    INDEX_SIZE_ERR: "IndexSizeError",
+    DOMSTRING_SIZE_ERR: "DOMStringSizeError",
+    HIERARCHY_REQUEST_ERR: "HierarchyRequestError",
+    WRONG_DOCUMENT_ERR: "WrongDocumentError",
+    INVALID_CHARACTER_ERR: "InvalidCharacterError",
+    NO_DATA_ALLOWED_ERR: "NoDataAllowedError",
+    NO_MODIFICATION_ALLOWED_ERR: "NoModificationAllowedError",
+    NOT_FOUND_ERR: "NotFoundError",
+    NOT_SUPPORTED_ERR: "NotSupportedError",
+    INUSE_ATTRIBUTE_ERR: "InUseAttributeError",
+    INVALID_STATE_ERR: "InvalidStateError",
+    SYNTAX_ERR: "SyntaxError",
+    INVALID_MODIFICATION_ERR: "InvalidModificationError",
+    NAMESPACE_ERR: "NamespaceError",
+    INVALID_ACCESS_ERR: "InvalidAccessError",
+    VALIDATION_ERR: "ValidationError",
+    TYPE_MISMATCH_ERR: "TypeMismatchError",
+    SECURITY_ERR: "SecurityError",
+    NETWORK_ERR: "NetworkError",
+    ABORT_ERR: "AbortError",
+    URL_MISMATCH_ERR: "URLMismatchError",
+    QUOTA_EXCEEDED_ERR: "QuotaExceededError",
+    TIMEOUT_ERR: "TimeoutError",
+    INVALID_NODE_TYPE_ERR: "InvalidNodeTypeError",
+    DATA_CLONE_ERR: "DataCloneError",
+  };
+  //
   var expected_name = name;
   var expected_for_message = name;
   try {
-    var mapped_name = __dom_exception_legacy_name_map[name];
-    if (typeof mapped_name === "string") {
-      expected_name = mapped_name;
-      expected_for_message = [name, " (", mapped_name, ")"].join("");
+    var expected_len = name.length;
+    if (expected_len >= 4 && name.substring(expected_len - 4, expected_len) === "_ERR") {
+      var mapped_name = __dom_exception_legacy_name_map[name];
+      if (typeof mapped_name === "string") {
+        expected_name = mapped_name;
+        expected_for_message = [name, " (", mapped_name, ")"].join("");
+      }
     }
   } catch (_e0) {}
   //
@@ -514,16 +517,20 @@ function assert_throws_dom(name, target, func, message) {
   var canonical_thrown_name = thrown_name;
   try {
     if (typeof canonical_thrown_name === "string") {
-      var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
-      if (typeof mapped_thrown_name === "string") {
-        canonical_thrown_name = mapped_thrown_name;
+      var thrown_len = canonical_thrown_name.length;
+      if (
+        thrown_len >= 4 &&
+        canonical_thrown_name.substring(thrown_len - 4, thrown_len) === "_ERR"
+      ) {
+        var mapped_thrown_name = __dom_exception_legacy_name_map[canonical_thrown_name];
+        if (typeof mapped_thrown_name === "string") {
+          canonical_thrown_name = mapped_thrown_name;
+        }
       }
     }
   } catch (_e3) {}
   //
-  var ok = false;
-  if (canonical_thrown_name === expected_name) ok = true;
-  if (ok !== true) {
+  if (canonical_thrown_name !== expected_name) {
     var actual_name = thrown_name;
     if (actual_name === null) {
       actual_name = __exception_name(thrown);
