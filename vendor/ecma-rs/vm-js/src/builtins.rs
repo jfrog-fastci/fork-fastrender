@@ -23090,6 +23090,7 @@ pub fn json_stringify(
     number: PropertyKey,
     string: PropertyKey,
     boolean: PropertyKey,
+    bigint: PropertyKey,
   }
 
   struct JsonStringifyState {
@@ -23105,41 +23106,23 @@ pub fn json_stringify(
     raw_json_key: PropertyKey,
   }
 
-  fn unbox_primitive_wrapper(
+  fn get_internal_wrapper_slot(
     scope: &mut Scope<'_>,
     obj: GcObject,
-    markers: WrapperMarkerKeys,
+    marker: PropertyKey,
   ) -> Result<Option<Value>, VmError> {
     // Wrapper objects are ordinary objects with internal marker properties; Proxies are never
     // wrapper objects (even if their target is).
     if scope.heap().is_proxy_object(obj) {
       return Ok(None);
     }
-    if let Some(v) = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &markers.number)?
-    {
-      if matches!(v, Value::Number(_)) {
-        return Ok(Some(v));
-      }
+    match scope.heap().object_get_own_data_property_value(obj, &marker) {
+      Ok(v) => Ok(v),
+      // Treat accessor marker properties as missing. These markers are engine-private and should not
+      // be observable/mutable from JS, but be defensive against heap corruption.
+      Err(VmError::PropertyNotData) => Ok(None),
+      Err(e) => Err(e),
     }
-    if let Some(v) = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &markers.string)?
-    {
-      if matches!(v, Value::String(_)) {
-        return Ok(Some(v));
-      }
-    }
-    if let Some(v) = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &markers.boolean)?
-    {
-      if matches!(v, Value::Bool(_)) {
-        return Ok(Some(v));
-      }
-    }
-    Ok(None)
   }
 
   fn quote_json_string(
@@ -23217,21 +23200,21 @@ pub fn json_stringify(
     scope.push_root(value)?;
 
     // 1. If value is an Object, call `toJSON` if present.
-    if let Value::Object(obj) = value {
-      scope.push_root(Value::Object(obj))?;
-      let to_json = crate::spec_ops::internal_get_with_host_and_hooks(
-        vm,
-        &mut scope,
-        host,
-        hooks,
-        obj,
-        state.to_json_key,
-        Value::Object(obj),
-      )?;
+    // Spec: `Type(value) is Object or BigInt` then `toJSON = ? GetV(value, "toJSON")`.
+    if matches!(value, Value::Object(_) | Value::BigInt(_)) {
+      // `GetV(V, P)` is `ToObject(V)` then `Get(O, P)` with `receiver = V`. This matters for BigInt
+      // primitives: getters on `BigInt.prototype.toJSON` must observe `this` as the primitive BigInt.
+      let receiver = value;
+      let to_json_obj = match receiver {
+        Value::Object(o) => o,
+        other => scope.to_object(vm, host, hooks, other)?,
+      };
+      scope.push_root(Value::Object(to_json_obj))?;
+      let to_json = scope.get_with_host_and_hooks(vm, host, hooks, to_json_obj, state.to_json_key, receiver)?;
       scope.push_root(to_json)?;
       if !matches!(to_json, Value::Undefined | Value::Null) && scope.heap().is_callable(to_json)? {
         let args = [Value::String(key)];
-        value = vm.call_with_host_and_hooks(host, &mut scope, hooks, to_json, Value::Object(obj), &args)?;
+        value = vm.call_with_host_and_hooks(host, &mut scope, hooks, to_json, receiver, &args)?;
         scope.push_root(value)?;
       }
     }
@@ -23250,15 +23233,33 @@ pub fn json_stringify(
       scope.push_root(value)?;
     }
 
-    // 3. Unbox wrapper objects (String/Number/Boolean).
+    // 3. If Type(value) is Object, normalize wrapper objects.
     if let Value::Object(obj) = value {
-      if let Some(prim) = unbox_primitive_wrapper(&mut scope, obj, state.wrapper_markers)? {
-        value = prim;
+      // Wrapper object checks use internal-slot markers and must not invoke Proxy traps.
+      if let Some(Value::Number(_)) = get_internal_wrapper_slot(&mut scope, obj, state.wrapper_markers.number)? {
+        let n = scope.to_number(vm, host, hooks, Value::Object(obj))?;
+        value = Value::Number(n);
+        scope.push_root(value)?;
+      } else if let Some(Value::String(_)) =
+        get_internal_wrapper_slot(&mut scope, obj, state.wrapper_markers.string)?
+      {
+        let s = scope.to_string(vm, host, hooks, Value::Object(obj))?;
+        value = Value::String(s);
+        scope.push_root(value)?;
+      } else if let Some(Value::Bool(b)) =
+        get_internal_wrapper_slot(&mut scope, obj, state.wrapper_markers.boolean)?
+      {
+        value = Value::Bool(b);
+        scope.push_root(value)?;
+      } else if let Some(Value::BigInt(b)) =
+        get_internal_wrapper_slot(&mut scope, obj, state.wrapper_markers.bigint)?
+      {
+        value = Value::BigInt(b);
         scope.push_root(value)?;
       }
     }
 
-    // 4. BigInt values throw.
+    // 4. BigInt values throw (after toJSON + replacer + wrapper normalization).
     if matches!(value, Value::BigInt(_)) {
       return Err(VmError::TypeError("Do not know how to serialize a BigInt"));
     }
@@ -23563,6 +23564,7 @@ pub fn json_stringify(
       "vm-js.internal.NumberData" => scope.heap_mut().ensure_internal_number_data_symbol()?,
       "vm-js.internal.StringData" => scope.heap_mut().ensure_internal_string_data_symbol()?,
       "vm-js.internal.BooleanData" => scope.heap_mut().ensure_internal_boolean_data_symbol()?,
+      "vm-js.internal.BigIntData" => scope.heap_mut().ensure_internal_bigint_data_symbol()?,
       _ => return Err(VmError::InvariantViolation("unknown wrapper marker key")),
     };
     Ok(PropertyKey::from_symbol(sym))
@@ -23572,6 +23574,7 @@ pub fn json_stringify(
     number: marker_key(&mut scope, "vm-js.internal.NumberData")?,
     string: marker_key(&mut scope, "vm-js.internal.StringData")?,
     boolean: marker_key(&mut scope, "vm-js.internal.BooleanData")?,
+    bigint: marker_key(&mut scope, "vm-js.internal.BigIntData")?,
   };
 
   // --- Replacer function / property list ---
@@ -23630,17 +23633,29 @@ pub fn json_stringify(
         let item_string: Option<crate::GcString> = match v {
           Value::String(s) => Some(s),
           Value::Number(n) => {
+            // `ToString(number)` does not invoke user code, but the result string is not referenced
+            // by the JS heap.
             needs_root = true;
             Some(scope.heap_mut().to_string(Value::Number(n))?)
           }
-          Value::Object(o) => match unbox_primitive_wrapper(&mut scope, o, wrapper_markers)? {
-            Some(Value::String(s)) => Some(s),
-            Some(Value::Number(n)) => {
+          Value::Object(o) => {
+            // Spec: only String/Number wrapper objects contribute to the propertyList, and the
+            // conversion is `? ToString(v)` (invokes user code).
+            let is_string = matches!(
+              get_internal_wrapper_slot(&mut scope, o, wrapper_markers.string)?,
+              Some(Value::String(_))
+            );
+            let is_number = matches!(
+              get_internal_wrapper_slot(&mut scope, o, wrapper_markers.number)?,
+              Some(Value::Number(_))
+            );
+            if is_string || is_number {
               needs_root = true;
-              Some(scope.heap_mut().to_string(Value::Number(n))?)
+              Some(scope.to_string(vm, host, hooks, Value::Object(o))?)
+            } else {
+              None
             }
-            _ => None,
-          },
+          }
           _ => None,
         };
 
@@ -23675,8 +23690,20 @@ pub fn json_stringify(
   // --- Space / gap ---
   let mut space_value = space;
   if let Value::Object(o) = space_value {
-    if let Some(prim) = unbox_primitive_wrapper(&mut scope, o, wrapper_markers)? {
-      space_value = prim;
+    // Spec: wrapper objects with [[NumberData]] / [[StringData]] are coerced via `ToNumber` /
+    // `ToString` (which can invoke user code).
+    if matches!(
+      get_internal_wrapper_slot(&mut scope, o, wrapper_markers.number)?,
+      Some(Value::Number(_))
+    ) {
+      let n = scope.to_number(vm, host, hooks, Value::Object(o))?;
+      space_value = Value::Number(n);
+    } else if matches!(
+      get_internal_wrapper_slot(&mut scope, o, wrapper_markers.string)?,
+      Some(Value::String(_))
+    ) {
+      let s = scope.to_string(vm, host, hooks, Value::Object(o))?;
+      space_value = Value::String(s);
     }
   }
 
@@ -23693,6 +23720,8 @@ pub fn json_stringify(
       };
       let count = if int.is_finite() {
         int.clamp(0.0, 10.0) as usize
+      } else if int.is_sign_negative() {
+        0usize
       } else {
         10usize
       };

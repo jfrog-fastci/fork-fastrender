@@ -1023,7 +1023,7 @@ impl Intrinsics {
     let iterator_prototype_iterator = vm.register_native_call(builtins::iterator_prototype_iterator)?;
     let string_prototype_to_string = vm.register_native_call(builtins::string_prototype_to_string)?;
     let string_prototype_value_of = vm.register_native_call(builtins::string_prototype_value_of)?;
-    let string_prototype_to_primitive =
+    let _string_prototype_to_primitive =
       vm.register_native_call(builtins::string_prototype_to_primitive)?;
     let string_prototype_char_code_at =
       vm.register_native_call(builtins::string_prototype_char_code_at)?;
@@ -1104,11 +1104,11 @@ impl Intrinsics {
       vm.register_native_call(builtins::number_prototype_to_precision)?;
     let number_prototype_to_locale_string =
       vm.register_native_call(builtins::number_prototype_to_locale_string)?;
-    let number_prototype_to_primitive =
+    let _number_prototype_to_primitive =
       vm.register_native_call(builtins::number_prototype_to_primitive)?;
     let boolean_prototype_value_of = vm.register_native_call(builtins::boolean_prototype_value_of)?;
     let boolean_prototype_to_string = vm.register_native_call(builtins::boolean_prototype_to_string)?;
-    let boolean_prototype_to_primitive =
+    let _boolean_prototype_to_primitive =
       vm.register_native_call(builtins::boolean_prototype_to_primitive)?;
     let number_is_nan = vm.register_native_call(builtins::number_is_nan)?;
     let number_is_finite = vm.register_native_call(builtins::number_is_finite)?;
@@ -1118,7 +1118,7 @@ impl Intrinsics {
     let bigint_prototype_to_string = vm.register_native_call(builtins::bigint_prototype_to_string)?;
     let bigint_prototype_to_locale_string =
       vm.register_native_call(builtins::bigint_prototype_to_locale_string)?;
-    let bigint_prototype_to_primitive =
+    let _bigint_prototype_to_primitive =
       vm.register_native_call(builtins::bigint_prototype_to_primitive)?;
     let bigint_as_int_n = vm.register_native_call(builtins::bigint_as_int_n)?;
     let bigint_as_uint_n = vm.register_native_call(builtins::bigint_as_uint_n)?;
@@ -2750,24 +2750,6 @@ impl Intrinsics {
         )?;
       }
 
-      // String.prototype[Symbol.toPrimitive]
-      {
-        let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-        scope.push_root(Value::String(to_prim_s))?;
-        let to_prim_fn =
-          scope.alloc_native_function(string_prototype_to_primitive, None, to_prim_s, 1)?;
-        scope.push_root(Value::Object(to_prim_fn))?;
-        scope
-          .heap_mut()
-          .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-        scope.define_property(
-          string_prototype,
-          PropertyKey::Symbol(well_known_symbols.to_primitive),
-          // Per ECMA-262, `String.prototype[@@toPrimitive]` is non-writable.
-          data_desc(Value::Object(to_prim_fn), false, false, true),
-        )?;
-      }
-
       // String.prototype.concat
       {
         let concat_s = scope.alloc_string("concat")?;
@@ -3975,24 +3957,6 @@ impl Intrinsics {
       )?;
     }
 
-    // Number.prototype[Symbol.toPrimitive]
-    {
-      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-      scope.push_root(Value::String(to_prim_s))?;
-      let to_prim_fn =
-        scope.alloc_native_function(number_prototype_to_primitive, None, to_prim_s, 1)?;
-      scope.push_root(Value::Object(to_prim_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-      scope.define_property(
-        number_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_primitive),
-        // Per ECMA-262, `Number.prototype[@@toPrimitive]` is non-writable.
-        data_desc(Value::Object(to_prim_fn), false, false, true),
-      )?;
-    }
-
     // Number static properties.
     {
       let cases: [(&str, Value); 8] = [
@@ -4103,24 +4067,6 @@ impl Intrinsics {
       data_desc(Value::Object(func), true, false, true),
     )?;
   }
-
-    // Boolean.prototype[Symbol.toPrimitive]
-    {
-      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-      scope.push_root(Value::String(to_prim_s))?;
-      let to_prim_fn =
-        scope.alloc_native_function(boolean_prototype_to_primitive, None, to_prim_s, 1)?;
-      scope.push_root(Value::Object(to_prim_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-      scope.define_property(
-        boolean_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_primitive),
-        // Per ECMA-262, `Boolean.prototype[@@toPrimitive]` is non-writable.
-        data_desc(Value::Object(to_prim_fn), false, false, true),
-      )?;
-    }
 
     // `%BigInt%` (callable, not constructable).
     let bigint_name = scope.alloc_string("BigInt")?;
@@ -4247,24 +4193,6 @@ impl Intrinsics {
         bigint_prototype,
         key,
         data_desc(Value::Object(func), true, false, true),
-      )?;
-    }
-
-    // BigInt.prototype[Symbol.toPrimitive]
-    {
-      let to_prim_s = scope.alloc_string("[Symbol.toPrimitive]")?;
-      scope.push_root(Value::String(to_prim_s))?;
-      let to_prim_fn =
-        scope.alloc_native_function(bigint_prototype_to_primitive, None, to_prim_s, 1)?;
-      scope.push_root(Value::Object(to_prim_fn))?;
-      scope
-        .heap_mut()
-        .object_set_prototype(to_prim_fn, Some(function_prototype))?;
-      scope.define_property(
-        bigint_prototype,
-        PropertyKey::Symbol(well_known_symbols.to_primitive),
-        // Per ECMA-262, `BigInt.prototype[@@toPrimitive]` is non-writable.
-        data_desc(Value::Object(to_prim_fn), false, false, true),
       )?;
     }
 
