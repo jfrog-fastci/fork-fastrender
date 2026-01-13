@@ -15,6 +15,7 @@ Implementation map (keep these modules aligned with this doc):
 * `src/media/timebase.rs` — container timebase/tick ↔ `Duration` conversions (PTS normalization)
 * `src/media/clock.rs` — `MediaClock` abstraction + per-stream timeline mapping (`AudioStreamClock`)
 * `src/media/audio/mod.rs` — `AudioBackend` trait + `AudioClock` (audio device time exposure)
+* `src/media/audio/drift.rs` — audio drift correction (target-buffer controller + drift-aware resampling helper)
 * `src/media/audio/null_backend.rs` — `NullAudioBackend` (silence / CI fallback)
 * `src/media/audio/cpal_backend.rs` — CPAL output backend (feature = `audio_cpal`)
 * `src/media/av_sync.rs` — video scheduling + correction policy (drop/hold/delay) (**intended module
@@ -392,6 +393,25 @@ With these pieces, a test can:
 ---
 
 ## Known limitations (documented so drift bugs are diagnosable)
+
+### Sample-rate mismatch between decoded stream and audio device
+
+Even when all timestamps are “correct”, real-world playback often encounters a tiny long-term mismatch
+between:
+
+* the stream’s nominal sample clock (as implied by container PTS cadence / decoder output), and
+* the audio device’s actual consumption clock.
+
+This shows up as **latency creep** (buffer steadily grows) or **underruns** (buffer steadily shrinks)
+over long runs. The recommended mitigation is **adaptive resampling**: keep the buffered duration
+near a target (e.g. 100ms) by slightly adjusting the effective playback rate (typically within ±1%).
+
+FastRender includes building blocks for this in `src/media/audio/drift.rs`:
+
+* `DriftController` — bounded, slew-limited PI controller that outputs a `playback_rate` multiplier
+  based on observed buffered duration.
+* `DriftResampler` — a simple drift-aware linear resampler that consumes from `PcmF32QueueConsumer`
+  using `base_ratio * playback_rate`.
 
 ### Constant output latency model
 
