@@ -19,8 +19,8 @@ use super::ResourceFetcher;
 use super::ResourcePolicy;
 use super::MAX_ALIAS_HOPS;
 use super::{
-  ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane,
-  ensure_stylesheet_mime_sane,
+  ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_media_mime_sane,
+  ensure_script_mime_sane, ensure_stylesheet_mime_sane,
 };
 use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage, ResourceError};
@@ -4074,6 +4074,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             FetchContextKind::Other => match request.destination {
               super::FetchDestination::Script | super::FetchDestination::ScriptCors => {
                 ensure_http_success(&res, url).and_then(|_| ensure_script_mime_sane(&res, url))
+              }
+              super::FetchDestination::Video
+              | super::FetchDestination::VideoCors
+              | super::FetchDestination::Audio
+              | super::FetchDestination::AudioCors => {
+                ensure_http_success(&res, url).and_then(|_| ensure_media_mime_sane(&res, url))
               }
               _ => Ok(()),
             },

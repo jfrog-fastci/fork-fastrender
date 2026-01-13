@@ -3590,7 +3590,17 @@ pub fn ensure_media_mime_sane(resource: &FetchedResource, requested_url: &str) -
 
   if let Some(content_type) = resource.content_type.as_deref() {
     let mime = content_type_mime(content_type);
-    if mime_is_html(mime) || starts_with_ignore_ascii_case(mime, "text/plain") {
+    if mime_is_html(mime)
+      || starts_with_ignore_ascii_case(mime, "text/")
+      || starts_with_ignore_ascii_case(mime, "image/")
+      || starts_with_ignore_ascii_case(mime, "font/")
+      || mime_is_javascript(mime)
+      || mime.eq_ignore_ascii_case("application/json")
+      || ends_with_ignore_ascii_case(mime, "+json")
+      || mime.eq_ignore_ascii_case("application/xml")
+      || mime.eq_ignore_ascii_case("text/xml")
+      || ends_with_ignore_ascii_case(mime, "+xml")
+    {
       return Err(response_resource_error(
         resource,
         requested_url,
@@ -15542,22 +15552,27 @@ mod tests {
   }
 
   #[test]
-  fn media_mime_sanity_rejects_html_content_type() {
+  fn media_mime_sanity_rejects_html_and_json_content_types() {
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
       "FASTR_FETCH_STRICT_MIME".to_string(),
       "1".to_string(),
     )])));
     runtime::with_thread_runtime_toggles(toggles, || {
-      let mut resource =
-        FetchedResource::new(Vec::new(), Some("text/html; charset=utf-8".to_string()));
-      resource.status = Some(200);
       let url = "https://example.com/video.mp4";
-      let err = ensure_media_mime_sane(&resource, url)
-        .expect_err("expected media MIME sanity check to reject HTML content-type");
-      assert!(
-        err.to_string().contains("unexpected content-type"),
-        "unexpected error: {err}"
-      );
+      for content_type in [
+        "text/html; charset=utf-8",
+        "application/json",
+        "application/problem+json",
+      ] {
+        let mut resource = FetchedResource::new(Vec::new(), Some(content_type.to_string()));
+        resource.status = Some(200);
+        let err = ensure_media_mime_sane(&resource, url)
+          .expect_err("expected media MIME sanity check to reject non-media content-type");
+        assert!(
+          err.to_string().contains("unexpected content-type"),
+          "unexpected error: {err}"
+        );
+      }
     });
   }
 

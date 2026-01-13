@@ -26,7 +26,7 @@ use fastrender::resource::bundle::{
 };
 use fastrender::resource::{
   canonicalize_vary_header_value, compute_vary_key_for_request, ensure_font_mime_sane,
-  ensure_http_success, ensure_image_mime_sane, ensure_script_mime_sane,
+  ensure_http_success, ensure_image_mime_sane, ensure_media_mime_sane, ensure_script_mime_sane,
   ensure_stylesheet_mime_sane, offline_placeholder_png_bytes, offline_placeholder_png_content_type,
   offline_placeholder_woff2_bytes, origin_from_url, CorsMode, DocumentOrigin, FetchContextKind,
   FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy,
@@ -2772,7 +2772,9 @@ fn crawl_document(
       FetchDestination::Video
       | FetchDestination::VideoCors
       | FetchDestination::Audio
-      | FetchDestination::AudioCors => Ok(()),
+      | FetchDestination::AudioCors => {
+        ensure_http_success(&res, &url).and_then(|_| ensure_media_mime_sane(&res, &url))
+      }
       FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe => {
         ensure_http_success(&res, &url).and_then(|_| {
           if document_response_looks_like_html(&res, &url) {
@@ -2789,6 +2791,9 @@ fn crawl_document(
             )))
           }
         })
+      }
+      FetchDestination::Other if is_media_prefetch => {
+        ensure_http_success(&res, &url).and_then(|_| ensure_media_mime_sane(&res, &url))
       }
       FetchDestination::Other | FetchDestination::Fetch => Ok(()),
     };
