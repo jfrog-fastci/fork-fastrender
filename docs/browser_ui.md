@@ -165,8 +165,8 @@ modes that exercise startup and UI↔worker wiring **without** creating a window
     `UiToWorker`/`WorkerToUi` message protocol.
   - On success prints `HEADLESS_SMOKE_OK` to stdout.
   - JS variant: `browser --headless-smoke --js` runs a small vm-js `api::BrowserTab` smoke test and
-    on success prints `HEADLESS_VMJS_SMOKE_OK` (this is the only thing the `browser --js` flag
-    currently controls).
+    on success prints `HEADLESS_VMJS_SMOKE_OK` (in `--headless-smoke` mode, `--js` selects the vm-js
+    harness).
 - `browser --headless-crash-smoke` / `FASTR_TEST_BROWSER_HEADLESS_CRASH_SMOKE=1`
   - Runs a smoke test that intentionally crashes the renderer worker and validates that the crash is
     contained/observable (future: renderer *process* crash isolation).
@@ -1061,14 +1061,14 @@ details and metric mapping.
 
 ## Known limitations (as of now)
 
-- **JavaScript execution is experimental:** the windowed UI worker maintains a JS-capable
-  [`api::BrowserTab`](../src/api/browser_tab.rs) (vm-js executor) alongside the rendered
+- **JavaScript execution is experimental (`browser --js`):** the windowed UI worker maintains a
+  JS-capable [`api::BrowserTab`](../src/api/browser_tab.rs) (vm-js executor) alongside the rendered
   `BrowserDocument`, runs bounded JS pumps (post-navigation, after DOM event dispatch, and on
   `Tick`), and best-effort syncs the JS tab’s `dom2` snapshot into the renderer DOM before painting.
   This is still incomplete (many Web APIs missing, lots of web-compat gaps). See
   [runtime_stacks.md](runtime_stacks.md) and [live_rendering_loop.md](live_rendering_loop.md).
-  - CLI note: the `browser --js` flag currently only affects `--headless-smoke` (a vm-js `BrowserTab`
-    smoke test); the windowed UI has no stable CLI toggle to disable JS today.
+  - CLI note: `browser --js` enables JavaScript execution for the windowed UI; in `--headless-smoke`
+    mode, `browser --headless-smoke --js` selects a vm-js `BrowserTab` smoke test.
   - Repaints are currently “whole frame” rerenders (no incremental damaged-rect compositor yet).
 - **Interaction gaps:** the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still

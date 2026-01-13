@@ -31,9 +31,8 @@ Code lives in:
   web-compat behaviors are still missing. See [javascript.md](javascript.md),
   [html_script_processing.md](html_script_processing.md), and [runtime_stacks.md](runtime_stacks.md)
   for context on the JS stacks and containers.
-  - CLI note: `browser --js` currently only affects `--headless-smoke` (a vm-js `BrowserTab` smoke
-    test). The windowed UI worker maintains its own JS-capable tab runtime by default and has no
-    stable CLI toggle to disable JS today.
+  - CLI note: `browser --js` enables JavaScript execution in the windowed UI (experimental). In
+    `--headless-smoke` mode, `browser --headless-smoke --js` selects a vm-js `BrowserTab` smoke test.
 - A renderer-chrome browser UI (yet): the `browser` chrome is currently rendered via egui. The
   renderer-chrome workstream aims to render the chrome UI using FastRender; trusted chrome pages
   would then use the privileged JS bridge documented in [chrome_js_bridge.md](chrome_js_bridge.md).
@@ -109,9 +108,9 @@ end-to-end:
 - **Find in page**: Ctrl/Cmd+F opens a find bar and highlights matches in the current tab.
 - **Downloads**: “Download link/image” from the page context menu; view progress/cancel/retry/open from the downloads side panel.
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
-- **JavaScript (experimental)**: the windowed UI worker runs a JS-capable tab runtime by default, so
-  `<script>` runs during navigation and can trigger repaints via DOM mutations; time-based updates
-  use the same tick loop described in [browser_ui.md](browser_ui.md).
+- **JavaScript (experimental, `browser --js`)**: when enabled, the windowed UI worker runs a
+  JS-capable tab runtime, so `<script>` can run during navigation and trigger repaints via DOM
+  mutations; time-based updates use the same tick loop described in [browser_ui.md](browser_ui.md).
 - **Pointer/keyboard routing**:
   - link clicking (`<a href=...>`) navigates
   - click to focus and type into basic text inputs / textareas

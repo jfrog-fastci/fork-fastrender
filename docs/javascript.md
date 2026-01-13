@@ -155,8 +155,9 @@ FastRender’s windowed `browser` app (see [`docs/browser_ui.md`](browser_ui.md)
 [`src/bin/browser.rs`](../src/bin/browser.rs)) is the primary interactive surface for *live*
 rendering.
 
-JavaScript is currently enabled by default in the windowed UI worker (there is no stable CLI toggle
-to disable it yet; the `browser --js` flag is currently only meaningful for `--headless-smoke`).
+JavaScript execution in the windowed UI is experimental and is currently enabled via `browser --js`
+(in `--headless-smoke` mode, `browser --headless-smoke --js` selects a vm-js `BrowserTab` smoke
+test).
 
 - Author `<script>` elements execute during navigation/rendering (HTML script processing model),
   so JS-driven pages can build/modify the DOM before the first “visual” frame.
