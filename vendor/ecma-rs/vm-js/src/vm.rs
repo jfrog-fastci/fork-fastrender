@@ -1,7 +1,7 @@
 use crate::error::Termination;
 use crate::error::TerminationReason;
 use crate::error::VmError;
-use crate::exec::{AsyncContinuation, RuntimeEnv};
+use crate::exec::RuntimeEnv;
 use crate::hir_exec::HirAsyncContinuation;
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
@@ -57,6 +57,12 @@ const ARG_HANDLING_CHUNK_SIZE: usize = 256;
 // Stack traces are best-effort: never allow attacker-controlled function names to force unbounded
 // host allocations while capturing frames.
 const MAX_STACK_FRAME_FUNCTION_NAME_BYTES: usize = 256;
+
+#[derive(Debug)]
+pub(crate) enum VmAsyncContinuation {
+  Ast(crate::exec::AsyncContinuation),
+  Hir(crate::hir_exec::HirAsyncContinuation),
+}
 
 #[derive(Debug, Clone)]
 struct CallSite {
@@ -515,9 +521,7 @@ pub struct Vm {
   async_iterator_close_on_fulfilled_call: Option<NativeFunctionId>,
   async_iterator_close_on_rejected_call: Option<NativeFunctionId>,
   next_async_continuation_id: u32,
-  async_continuations: HashMap<u32, AsyncContinuation>,
-  next_hir_async_continuation_id: u32,
-  hir_async_continuations: HashMap<u32, HirAsyncContinuation>,
+  async_continuations: HashMap<u32, VmAsyncContinuation>,
   /// Optional pointer to an embedding-owned [`ModuleGraph`].
   ///
   /// This enables dynamic `import()` expressions evaluated from the AST interpreter (`exec.rs`) to
@@ -562,7 +566,12 @@ impl std::fmt::Debug for Vm {
     ds.field("ecma_function_cache", &self.ecma_function_cache.len());
     ds.field("template_registry", &self.template_registry.len());
     ds.field("async_continuations", &self.async_continuations.len());
-    ds.field("hir_async_continuations", &self.hir_async_continuations.len());
+    let hir_async_count = self
+      .async_continuations
+      .values()
+      .filter(|c| matches!(c, VmAsyncContinuation::Hir(_)))
+      .count();
+    ds.field("hir_async_continuations", &hir_async_count);
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("realm_states", &self.realm_states.len());
     ds.field("intrinsics", &self.intrinsics);
@@ -799,8 +808,6 @@ impl Vm {
       async_iterator_close_on_rejected_call: None,
       next_async_continuation_id: 0,
       async_continuations: HashMap::new(),
-      next_hir_async_continuation_id: 0,
-      hir_async_continuations: HashMap::new(),
       module_graph: None,
       realm_states: HashMap::new(),
       intrinsics: None,
@@ -1079,25 +1086,19 @@ impl Vm {
     }
 
     if self.async_continuations.is_empty() {
-      // Continue: compiled (HIR) top-level await uses a separate continuation store.
-    } else {
-      // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
-      // execution and will not resume the event loop. This does *not* settle the associated Promises;
-      // it only unregisters the continuation's persistent roots so the heap can be reused safely.
-      let continuations = mem::take(&mut self.async_continuations);
-      let mut scope = heap.scope();
-      for (_, cont) in continuations {
-        crate::exec::async_teardown_continuation(&mut scope, cont);
-      }
-    }
- 
-    if self.hir_async_continuations.is_empty() {
       return;
     }
-    let continuations = mem::take(&mut self.hir_async_continuations);
+
+    // Tearing down async continuations is a best-effort cleanup path for embeddings that abort
+    // execution and will not resume the event loop. This does *not* settle the associated Promises;
+    // it only unregisters the continuation's persistent roots so the heap can be reused safely.
+    let continuations = mem::take(&mut self.async_continuations);
     let mut scope = heap.scope();
     for (_, cont) in continuations {
-      crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont);
+      match cont {
+        VmAsyncContinuation::Ast(cont) => crate::exec::async_teardown_continuation(&mut scope, cont),
+        VmAsyncContinuation::Hir(cont) => crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont),
+      }
     }
   }
 
@@ -1310,7 +1311,7 @@ impl Vm {
 
   pub(crate) fn insert_async_continuation(
     &mut self,
-    cont: AsyncContinuation,
+    cont: VmAsyncContinuation,
   ) -> Result<u32, VmError> {
     self
       .async_continuations
@@ -1323,7 +1324,7 @@ impl Vm {
     Ok(id)
   }
 
-  pub(crate) fn insert_async_continuation_reserved(&mut self, cont: AsyncContinuation) -> u32 {
+  pub(crate) fn insert_async_continuation_reserved(&mut self, cont: VmAsyncContinuation) -> u32 {
     let id = self.next_async_continuation_id;
     self.next_async_continuation_id = self.next_async_continuation_id.wrapping_add(1);
     // Callers are expected to call `reserve_async_continuations` before inserting so this does not
@@ -1333,14 +1334,14 @@ impl Vm {
     id
   }
 
-  pub(crate) fn take_async_continuation(&mut self, id: u32) -> Option<AsyncContinuation> {
+  pub(crate) fn take_async_continuation(&mut self, id: u32) -> Option<VmAsyncContinuation> {
     self.async_continuations.remove(&id)
   }
 
   pub(crate) fn replace_async_continuation(
     &mut self,
     id: u32,
-    cont: AsyncContinuation,
+    cont: VmAsyncContinuation,
   ) -> Result<(), VmError> {
     self
       .async_continuations
@@ -1351,21 +1352,24 @@ impl Vm {
   }
 
   pub(crate) fn reserve_hir_async_continuations(&mut self, additional: usize) -> Result<(), VmError> {
-    self
-      .hir_async_continuations
-      .try_reserve(additional)
-      .map_err(|_| VmError::OutOfMemory)
+    // HIR and AST continuations share a single ID space and backing store.
+    self.reserve_async_continuations(additional)
   }
 
   pub(crate) fn insert_hir_async_continuation_reserved(&mut self, cont: HirAsyncContinuation) -> u32 {
-    let id = self.next_hir_async_continuation_id;
-    self.next_hir_async_continuation_id = self.next_hir_async_continuation_id.wrapping_add(1);
-    self.hir_async_continuations.insert(id, cont);
-    id
+    self.insert_async_continuation_reserved(VmAsyncContinuation::Hir(cont))
   }
 
   pub(crate) fn take_hir_async_continuation(&mut self, id: u32) -> Option<HirAsyncContinuation> {
-    self.hir_async_continuations.remove(&id)
+    match self.take_async_continuation(id) {
+      Some(VmAsyncContinuation::Hir(cont)) => Some(cont),
+      Some(other) => {
+        // Mismatched continuation kind (e.g. wrong resume callback): preserve the entry.
+        self.async_continuations.insert(id, other);
+        None
+      }
+      None => None,
+    }
   }
 
   pub(crate) fn replace_hir_async_continuation(
@@ -1373,12 +1377,7 @@ impl Vm {
     id: u32,
     cont: HirAsyncContinuation,
   ) -> Result<(), VmError> {
-    self
-      .hir_async_continuations
-      .try_reserve(1)
-      .map_err(|_| VmError::OutOfMemory)?;
-    self.hir_async_continuations.insert(id, cont);
-    Ok(())
+    self.replace_async_continuation(id, VmAsyncContinuation::Hir(cont))
   }
 
   /// Removes an async continuation from the VM and tears down all of its persistent roots.
@@ -1390,7 +1389,10 @@ impl Vm {
       return;
     };
     let mut scope = heap.scope();
-    crate::exec::async_teardown_continuation(&mut scope, cont);
+    match cont {
+      VmAsyncContinuation::Ast(cont) => crate::exec::async_teardown_continuation(&mut scope, cont),
+      VmAsyncContinuation::Hir(cont) => crate::hir_exec::hir_async_teardown_continuation(&mut scope, cont),
+    }
   }
 
   /// Temporarily override the host hook implementation used by [`Vm::call`] / [`Vm::construct`].

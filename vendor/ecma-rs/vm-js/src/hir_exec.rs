@@ -12,7 +12,7 @@ use crate::iterator;
 use crate::module_loading;
 use crate::property::{PropertyDescriptor, PropertyDescriptorPatch, PropertyKey, PropertyKind};
 use crate::tick::vec_try_extend_from_slice_with_ticks;
-use crate::vm::EcmaFunctionKind;
+use crate::vm::{EcmaFunctionKind, VmAsyncContinuation};
 use crate::{
   EnvBinding, ExecutionContext, GcBigInt, GcEnv, GcObject, ModuleId, RealmId, RootId, Scope,
   ScriptOrModule, StackFrame, Value, Vm, VmError, VmHost, VmHostHooks,
@@ -125,7 +125,8 @@ fn compiled_constructor_body_construct(
     scope.push_root(Value::Object(this_obj))?;
 
     let func_env = scope.env_create(outer)?;
-    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
     env.set_meta_property_context(meta_property_context);
 
     let result = run_compiled_function(
@@ -172,7 +173,8 @@ fn compiled_constructor_body_construct(
     scope.push_root(Value::Object(state_obj))?;
 
     let func_env = scope.env_create(outer)?;
-    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
+    let mut env =
+      RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, func_env, func_env)?;
     env.set_meta_property_context(meta_property_context);
 
     let result = run_compiled_function(
@@ -11857,7 +11859,7 @@ fn run_compiled_async_function(
         frames,
       };
 
-      let id = match vm.insert_async_continuation(cont) {
+      let id = match vm.insert_async_continuation(VmAsyncContinuation::Ast(cont)) {
         Ok(id) => id,
         Err(e) => {
           for id in roots.drain(..) {
@@ -11922,7 +11924,12 @@ fn run_compiled_async_function(
 
       if let Err(err) = schedule_res {
         if let Some(cont) = vm.take_async_continuation(id) {
-          crate::exec::async_teardown_continuation(&mut root_scope, cont);
+          match cont {
+            VmAsyncContinuation::Ast(cont) => {
+              crate::exec::async_teardown_continuation(&mut root_scope, cont)
+            }
+            VmAsyncContinuation::Hir(cont) => hir_async_teardown_continuation(&mut root_scope, cont),
+          }
         } else {
           for id in roots.drain(..) {
             root_scope.heap_mut().remove_root(id);
@@ -13935,45 +13942,20 @@ fn run_compiled_script_async(
   }
 }
 
-pub(crate) fn hir_async_resume_call(
+pub(crate) fn hir_async_resume_continuation(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
   host: &mut dyn VmHost,
   hooks: &mut dyn VmHostHooks,
-  callee: GcObject,
-  _this: Value,
-  args: &[Value],
+  id: u32,
+  mut cont: HirAsyncContinuation,
+  is_reject: bool,
+  arg0: Value,
 ) -> Result<Value, VmError> {
-  let slots = scope.heap().get_function_native_slots(callee)?;
-  let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
-    Value::Number(n) => n as u32,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "hir async resume callback missing continuation id",
-      ))
-    }
-  };
-  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
-    Value::Bool(b) => b,
-    _ => {
-      return Err(VmError::InvariantViolation(
-        "hir async resume callback missing reject flag",
-      ))
-    }
-  };
-
-  let Some(mut cont) = vm.take_hir_async_continuation(id) else {
-    // Embeddings can abort in-progress top-level await evaluation by tearing down async
-    // continuations. In that case, previously-registered resume callbacks must no-op.
-    return Ok(Value::Undefined);
-  };
-
   // The awaited promise has settled; it no longer needs to be rooted by the continuation.
   if let Some(root) = cont.awaited_promise_root.take() {
     scope.heap_mut().remove_root(root);
   }
-
-  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
 
   let resolve = scope
     .heap()
@@ -14595,6 +14577,43 @@ pub(crate) fn hir_async_resume_call(
   }
 
   resume_segment(vm, scope, host, hooks, cont)
+}
+
+pub(crate) fn hir_async_resume_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  let id = match slots.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Number(n) => n as u32,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "hir async resume callback missing continuation id",
+      ))
+    }
+  };
+  let is_reject = match slots.get(1).copied().unwrap_or(Value::Undefined) {
+    Value::Bool(b) => b,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "hir async resume callback missing reject flag",
+      ))
+    }
+  };
+
+  let Some(cont) = vm.take_hir_async_continuation(id) else {
+    // Embeddings can abort in-progress top-level await evaluation by tearing down async
+    // continuations. In that case, previously-registered resume callbacks must no-op.
+    return Ok(Value::Undefined);
+  };
+
+  let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  hir_async_resume_continuation(vm, scope, host, hooks, id, cont, is_reject, arg0)
 }
 
 #[cfg(test)]
