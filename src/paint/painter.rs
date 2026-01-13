@@ -1512,16 +1512,17 @@ impl Painter {
     self
   }
 
-  fn with_media_provider(
-    mut self,
-    media_provider: Option<Arc<dyn crate::media::MediaFrameProvider>>,
-  ) -> Self {
-    self.media_provider = media_provider;
+  fn with_max_iframe_depth(mut self, max_iframe_depth: usize) -> Self {
+    self.max_iframe_depth = max_iframe_depth;
     self
   }
 
-  fn with_max_iframe_depth(mut self, max_iframe_depth: usize) -> Self {
-    self.max_iframe_depth = max_iframe_depth;
+  /// Attach a decoded media frame provider used by replaced elements such as `<video>`.
+  pub fn with_media_provider(
+    mut self,
+    media_provider: Arc<dyn crate::media::MediaFrameProvider>,
+  ) -> Self {
+    self.media_provider = Some(media_provider);
     self
   }
 
@@ -20564,12 +20565,14 @@ fn legacy_paint_tree_with_resources_scaled_offset(
   max_iframe_depth: usize,
   trace: TraceHandle,
 ) -> Result<Pixmap> {
-  let painter =
+  let mut painter =
     Painter::with_resources_scaled(width, height, background, font_ctx, image_cache, scale)?
       .with_max_iframe_depth(max_iframe_depth)
       .with_scroll_state(scroll_state.clone())
-      .with_media_provider(media_provider)
       .with_trace(trace);
+  if let Some(provider) = media_provider {
+    painter = painter.with_media_provider(provider);
+  }
   record_stage(StageHeartbeat::PaintRasterize);
   painter.paint_with_offset(tree, offset)
 }
@@ -21868,7 +21871,9 @@ mod tests {
   use crate::css::types::TextShadow;
   use crate::geometry::Rect;
   use crate::image_loader::ImageCache;
+  use crate::media::MediaFrameProvider;
   use crate::paint::display_list::BorderRadii;
+  use crate::paint::display_list::ImageData;
   use crate::paint::pixmap::NewPixmapAllocRecorder;
   use crate::style::types::BackgroundAttachment;
   use crate::style::types::BackgroundBox;
@@ -24484,6 +24489,73 @@ mod tests {
   }
 
   #[test]
+  fn paints_video_current_frame_when_provider_has_frame() {
+    struct SolidVideoFrameProvider {
+      frame: Arc<ImageData>,
+    }
+
+    impl MediaFrameProvider for SolidVideoFrameProvider {
+      fn video_frame(
+        &self,
+        _box_id: Option<usize>,
+        _src: &str,
+        _size_hint: Option<crate::media::MediaFrameSizeHint>,
+      ) -> Option<Arc<ImageData>> {
+        Some(self.frame.clone())
+      }
+    }
+
+    let mut pixels = vec![0u8; 8 * 8 * 4];
+    for chunk in pixels.chunks_exact_mut(4) {
+      chunk[0] = 255;
+      chunk[1] = 0;
+      chunk[2] = 0;
+      chunk[3] = 255;
+    }
+    let provider = Arc::new(SolidVideoFrameProvider {
+      frame: Arc::new(ImageData::new_premultiplied(8, 8, 8.0, 8.0, pixels)),
+    });
+
+    let style = Arc::new(ComputedStyle::default());
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      FragmentContent::Replaced {
+        replaced_type: ReplacedType::Video {
+          src: "video.mp4".to_string(),
+          poster: None,
+          crossorigin: CrossOriginAttribute::None,
+          referrer_policy: None,
+          controls: false,
+        },
+        box_id: None,
+      },
+      vec![],
+      style,
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 12.0, 12.0), vec![fragment]);
+    let tree = FragmentTree::new(root);
+
+    let pixmap = Painter::with_resources_scaled(
+      12,
+      12,
+      Rgba::WHITE,
+      FontContext::new(),
+      ImageCache::new(),
+      1.0,
+    )
+    .expect("construct painter")
+    .with_media_provider(provider)
+    .paint_with_offset(&tree, Point::ZERO)
+    .expect("paint video frame");
+
+    assert_eq!(
+      color_at(&pixmap, 5, 5),
+      (255, 0, 0, 255),
+      "video frame pixels should override the no-poster transparent fallback"
+    );
+  }
+
+  #[test]
   fn paints_video_controls_placeholder_when_no_poster() {
     let style = Arc::new(ComputedStyle::default());
     let fragment = FragmentNode::new_with_style(
@@ -24539,7 +24611,20 @@ mod tests {
     );
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![fragment]);
     let tree = FragmentTree::new(root);
-    let pixmap = paint_tree(&tree, 200, 200, Rgba::WHITE).expect("paint video placeholder");
+    // Use the legacy painter directly: the display-list backend intentionally emits a simplified
+    // placeholder scrubber that lands closer to the bottom control bar, while the legacy painter's
+    // placeholder paints a larger, more browser-like UI.
+    let pixmap = Painter::with_resources_scaled(
+      200,
+      200,
+      Rgba::WHITE,
+      FontContext::new(),
+      ImageCache::new(),
+      1.0,
+    )
+    .expect("construct painter")
+    .paint_with_offset(&tree, Point::ZERO)
+    .expect("paint video placeholder");
 
     let progress = color_at(&pixmap, 100, 142);
     assert!(
