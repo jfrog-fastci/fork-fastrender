@@ -652,6 +652,61 @@ mod tests {
   }
 
   #[test]
+  fn document_word_selection_range_spans_across_adjacent_text_boxes() {
+    use crate::style::display::{Display, FormattingContextType};
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    let block_style = Arc::new(block_style);
+
+    let text_style = Arc::new(ComputedStyle::default());
+
+    let mut first = BoxNode::new_text(text_style.clone(), "he".to_string());
+    first.styled_node_id = Some(1);
+    let mut second = BoxNode::new_text(text_style, "llo".to_string());
+    second.styled_node_id = Some(2);
+
+    let root = BoxNode::new_block(block_style, FormattingContextType::Block, vec![first, second]);
+    let tree = BoxTree::new(root);
+
+    let first_box_id = tree.root.children[0].id;
+    let second_box_id = tree.root.children[1].id;
+
+    let expected = DocumentSelectionRange {
+      start: DocumentSelectionPoint {
+        node_id: 1,
+        char_offset: 0,
+      },
+      end: DocumentSelectionPoint {
+        node_id: 2,
+        char_offset: 3,
+      },
+    };
+
+    let from_second = document_word_selection_range(
+      &tree,
+      second_box_id,
+      DocumentSelectionPoint {
+        node_id: 2,
+        char_offset: 1,
+      },
+    )
+    .expect("range from second text box");
+    assert_eq!(from_second, expected);
+
+    let from_first = document_word_selection_range(
+      &tree,
+      first_box_id,
+      DocumentSelectionPoint {
+        node_id: 1,
+        char_offset: 1,
+      },
+    )
+    .expect("range from first text box");
+    assert_eq!(from_first, expected);
+  }
+
+  #[test]
   fn style_for_styled_node_id_falls_back_to_pseudo_style() {
     let styled_node_id = 42;
 
