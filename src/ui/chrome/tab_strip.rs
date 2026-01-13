@@ -28,6 +28,10 @@ const ICON_SIZE: f32 = 16.0;
 const ICON_GAP: f32 = 8.0;
 const CLOSE_BUTTON_SIZE: f32 = 28.0;
 const ACTIVE_UNDERLINE_HEIGHT: f32 = 2.0;
+const DRAG_PREVIEW_LIFT_Y: f32 = 6.0;
+const DRAG_PREVIEW_SCALE: f32 = 1.02;
+const DRAG_GAP_PULSE_EXTRA_ALPHA: f32 = 0.22;
+const DRAG_GAP_BASE_ALPHA: f32 = 0.10;
 
 // Tab-strip drag auto-scroll parameters (when the unpinned segment overflows).
 const DRAG_AUTOSCROLL_EDGE_ZONE_PX: f32 = 36.0;
@@ -235,6 +239,291 @@ fn group_color_egui(color: TabGroupColor) -> Color32 {
 fn group_color_fill(color: TabGroupColor) -> Color32 {
   let (r, g, b) = color.rgb();
   Color32::from_rgba_unmultiplied(r, g, b, 48)
+}
+
+#[cfg(feature = "browser_ui")]
+fn drag_offset_id() -> egui::Id {
+  egui::Id::new("tab_strip_drag_offset")
+}
+
+fn paint_popup_shadow(
+  painter: &egui::Painter,
+  rect: Rect,
+  rounding: egui::Rounding,
+  shadow: egui::epaint::Shadow,
+) {
+  if shadow.extrusion <= 0.0 || shadow.color.a() == 0 {
+    return;
+  }
+
+  // Egui's `Shadow` type doesn't currently have a simple paint helper exposed, so approximate a
+  // blurred drop shadow using a small stack of expanded translucent rects.
+  let steps: usize = 6;
+  let max_expand = shadow.extrusion.max(0.0);
+  // Slight downward bias so the tab reads as "lifted" above the strip.
+  let offset = Vec2::new(0.0, max_expand * 0.25);
+  for i in 0..steps {
+    let t = (i + 1) as f32 / (steps as f32);
+    let expand = max_expand * t;
+    // Stronger near the center, softer further out.
+    let alpha = (1.0 - t).powf(2.0);
+    let color = with_alpha(shadow.color, alpha);
+    painter.rect_filled(rect.expand(expand).translate(offset), rounding, color);
+  }
+}
+
+fn paint_drag_placeholder(
+  painter: &egui::Painter,
+  rect: Rect,
+  visuals: &egui::Visuals,
+  group_color: Option<Color32>,
+  pulse_t: f32,
+) {
+  let rounding = visuals.widgets.inactive.rounding;
+  let stroke_color = group_color.unwrap_or(visuals.widgets.active.bg_stroke.color);
+  let fill_alpha = (DRAG_GAP_BASE_ALPHA + DRAG_GAP_PULSE_EXTRA_ALPHA * pulse_t).clamp(0.0, 1.0);
+  let stroke_alpha = (0.25 + 0.35 * pulse_t).clamp(0.0, 1.0);
+
+  // Keep the physical gap stable, but animate the inner highlight width a bit so it feels like the
+  // insertion slot is "breathing" as it moves.
+  let base_w = rect.width() * 0.88;
+  let width = lerp(base_w, rect.width(), pulse_t.clamp(0.0, 1.0));
+  let inner = Rect::from_center_size(rect.center(), Vec2::new(width, rect.height()));
+
+  painter.rect_filled(
+    inner.shrink(1.0),
+    rounding,
+    with_alpha(
+      visuals.widgets.inactive.bg_fill.gamma_multiply(0.9),
+      fill_alpha,
+    ),
+  );
+  painter.rect_stroke(
+    inner.shrink(0.5),
+    rounding,
+    Stroke::new(1.0, with_alpha(stroke_color, stroke_alpha)),
+  );
+}
+
+fn unpinned_tab_preview_ui(
+  ui: &mut egui::Ui,
+  motion: UiMotion,
+  tab: &BrowserTabState,
+  is_active: bool,
+  can_close_tabs: bool,
+  tab_rect: Rect,
+  favicon_tex: Option<egui::TextureId>,
+  group_color: Option<Color32>,
+) {
+  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let title = tab.display_title();
+  let (err, warn) = tab_status_messages(tab);
+  let visuals = ui.style().visuals.clone();
+
+  // Draw the dragged tab slightly "hovered" so it reads as lifted.
+  let hover_t = if is_active { 0.0 } else { 1.0 };
+  let bg = if is_active {
+    visuals.widgets.active.bg_fill
+  } else {
+    lerp_color(
+      visuals.widgets.inactive.bg_fill,
+      visuals.widgets.hovered.bg_fill,
+      hover_t,
+    )
+  };
+  let rounding = visuals.widgets.inactive.rounding;
+
+  {
+    let painter = ui.painter();
+    painter.rect_filled(tab_rect, rounding, bg);
+    if let Some(color) = group_color {
+      painter.rect_stroke(tab_rect.shrink(0.5), rounding, Stroke::new(1.0, color));
+    }
+  }
+
+  // Favicon.
+  let icon_min = Pos2::new(
+    tab_rect.min.x + TAB_PADDING_X,
+    tab_rect.center().y - ICON_SIZE * 0.5,
+  );
+  let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
+  if let Some(tex_id) = favicon_tex {
+    let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+    ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
+  } else {
+    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    let glyph = title
+      .trim()
+      .chars()
+      .next()
+      .map(|ch| ch.to_ascii_uppercase().to_string())
+      .unwrap_or_else(|| "?".to_string());
+    ui.painter().text(
+      icon_rect.center(),
+      Align2::CENTER_CENTER,
+      glyph,
+      FontId::proportional(12.0),
+      with_alpha(visuals.text_color(), 0.75),
+    );
+  }
+
+  if tab.loading {
+    // Spinner overlay around the favicon.
+    let time = if motion.enabled {
+      ui.ctx().request_repaint();
+      ui.input(|i| i.time)
+    } else {
+      // Reduced-motion: keep the spinner static (and avoid continuous repaints).
+      0.0
+    };
+    paint_spinner(
+      ui.painter(),
+      icon_rect.expand(2.0),
+      time,
+      visuals.text_color(),
+    );
+  }
+
+  let err_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_error"),
+    err.is_some(),
+    motion.durations.progress_fade,
+  );
+  let warn_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_warning"),
+    warn.is_some(),
+    motion.durations.progress_fade,
+  );
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
+
+  // Close icon (non-interactive in the drag preview).
+  let close_rect = if can_close_tabs {
+    let close_min = Pos2::new(
+      tab_rect.max.x - TAB_PADDING_X - CLOSE_BUTTON_SIZE,
+      tab_rect.center().y - CLOSE_BUTTON_SIZE * 0.5,
+    );
+    Some(Rect::from_min_size(
+      close_min,
+      Vec2::splat(CLOSE_BUTTON_SIZE),
+    ))
+  } else {
+    None
+  };
+  if let Some(close_rect) = close_rect {
+    paint_icon_in_rect(
+      ui,
+      close_rect,
+      BrowserIcon::CloseTab,
+      ICON_SIZE,
+      with_alpha(visuals.text_color(), 0.85),
+    );
+  }
+
+  // Title.
+  let title_start_x = icon_rect.max.x + ICON_GAP;
+  let title_end_x = close_rect
+    .map(|r| r.min.x - ICON_GAP)
+    .unwrap_or(tab_rect.max.x - TAB_PADDING_X);
+  if title_end_x > title_start_x + 4.0 {
+    let title_rect = Rect::from_min_max(
+      Pos2::new(title_start_x, tab_rect.min.y),
+      Pos2::new(title_end_x, tab_rect.max.y),
+    );
+    let label = {
+      let mut text = egui::RichText::new(title);
+      if is_active {
+        text = text.strong();
+      }
+      egui::Label::new(text).truncate(true).wrap(false)
+    };
+    let _ = ui.put(title_rect, label);
+  }
+}
+
+fn pinned_tab_preview_ui(
+  ui: &mut egui::Ui,
+  motion: UiMotion,
+  tab: &BrowserTabState,
+  is_active: bool,
+  tab_rect: Rect,
+  favicon_tex: Option<egui::TextureId>,
+) {
+  let tab_id = ui.make_persistent_id(("tab_strip_tab", tab.id));
+  let title = tab.display_title();
+  let (err, warn) = tab_status_messages(tab);
+  let visuals = ui.style().visuals.clone();
+
+  // Pinned tabs are icon-only; keep the same visual styling, but treat as hovered so it feels
+  // lifted.
+  let hover_t = if is_active { 0.0 } else { 1.0 };
+  let bg = if is_active {
+    visuals.widgets.active.bg_fill
+  } else {
+    lerp_color(
+      visuals.widgets.inactive.bg_fill,
+      visuals.widgets.hovered.bg_fill,
+      hover_t,
+    )
+  };
+  let rounding = visuals.widgets.inactive.rounding;
+  ui.painter().rect_filled(tab_rect, rounding, bg);
+
+  // Favicon (centered).
+  let icon_min = Pos2::new(
+    tab_rect.center().x - ICON_SIZE * 0.5,
+    tab_rect.center().y - ICON_SIZE * 0.5,
+  );
+  let icon_rect = Rect::from_min_size(icon_min, Vec2::splat(ICON_SIZE));
+  if let Some(tex_id) = favicon_tex {
+    let uv = Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+    ui.painter().image(tex_id, icon_rect, uv, Color32::WHITE);
+  } else {
+    placeholder_favicon(ui.painter(), icon_rect, &visuals);
+    let glyph = title
+      .trim()
+      .chars()
+      .next()
+      .map(|ch| ch.to_ascii_uppercase().to_string())
+      .unwrap_or_else(|| "?".to_string());
+    ui.painter().text(
+      icon_rect.center(),
+      Align2::CENTER_CENTER,
+      glyph,
+      FontId::proportional(14.0),
+      visuals.text_color(),
+    );
+  }
+
+  if tab.loading {
+    let time = if motion.enabled {
+      ui.ctx().request_repaint();
+      ui.input(|i| i.time)
+    } else {
+      0.0
+    };
+    paint_spinner(
+      ui.painter(),
+      icon_rect.expand(2.0),
+      time,
+      visuals.text_color(),
+    );
+  }
+
+  let err_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_error"),
+    err.is_some(),
+    motion.durations.progress_fade,
+  );
+  let warn_t = motion.animate_bool(
+    ui.ctx(),
+    tab_id.with("status_warning"),
+    warn.is_some(),
+    motion.durations.progress_fade,
+  );
+  paint_tab_status_badges(ui.painter(), icon_rect, &visuals, err_t, warn_t);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1213,22 +1502,32 @@ pub(super) fn tab_strip_ui(
               let tab_id = tab.id;
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
-              let (tab_rect, tab_response, maybe_action) = pinned_tab_ui(
-                ui,
-                motion,
-                tab,
-                is_active,
-                can_close_tabs,
-                favicon_tex,
-                chrome,
-                focus_ring,
-              );
+              let is_dragged = chrome.dragging_tab_id == Some(tab_id);
+              let (tab_rect, tab_response, maybe_action) = if is_dragged {
+                // While dragging, keep layout stable but don't paint the tab in-flow.
+                let (_, rect) = ui.allocate_space(Vec2::new(PINNED_TAB_WIDTH, TAB_HEIGHT));
+                (rect, None, None)
+              } else {
+                let (rect, resp, action) = pinned_tab_ui(
+                  ui,
+                  motion,
+                  tab,
+                  is_active,
+                  can_close_tabs,
+                  favicon_tex,
+                  chrome,
+                  focus_ring,
+                );
+                (rect, Some(resp), action)
+              };
               if is_active {
                 active_tab_rect = Some(tab_rect);
                 active_tab_is_pinned = true;
               }
               if is_active && active_changed {
-                tab_response.scroll_to_me(Some(egui::Align::Center));
+                if let Some(tab_response) = &tab_response {
+                  tab_response.scroll_to_me(Some(egui::Align::Center));
+                }
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
@@ -1236,10 +1535,18 @@ pub(super) fn tab_strip_ui(
               let is_close_action = maybe_action
                 .as_ref()
                 .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
-              if !is_close_action && tab_response.drag_started() && chrome.dragging_tab_id.is_none()
-              {
-                chrome.dragging_tab_id = Some(tab_id);
-                chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+              if !is_close_action {
+                if let Some(tab_response) = &tab_response {
+                  if tab_response.drag_started() && chrome.dragging_tab_id.is_none() {
+                    chrome.dragging_tab_id = Some(tab_id);
+                    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                    chrome.drag_start_pointer_pos = pointer_pos;
+                    if let Some(pointer_pos) = pointer_pos {
+                      ui.ctx()
+                        .data_mut(|d| d.insert_temp(drag_offset_id(), tab_rect.min - pointer_pos));
+                    }
+                  }
+                }
               }
               if chrome.dragging_tab_id == Some(tab_id) {
                 dragged_tab_rect = Some(tab_rect);
@@ -1419,12 +1726,17 @@ pub(super) fn tab_strip_ui(
               prev_gap_scale = None;
               let is_active = active_id == Some(tab_id);
               let favicon_tex = favicon_for_tab(tab_id);
-              let (tab_rect, tab_response, maybe_action) = {
+              let is_dragged = app.chrome.dragging_tab_id == Some(tab_id);
+              let (tab_rect, tab_response, maybe_action) = if is_dragged {
+                // While dragging, keep layout stable but don't paint the tab in-flow.
+                let (_, rect) = ui.allocate_space(Vec2::new(sizing.tab_width, TAB_HEIGHT));
+                (rect, None, None)
+              } else {
                 let tab = &app.tabs[idx];
                 let group_border = tab
                   .group
                   .and_then(|gid| app.tab_groups.get(&gid).map(|g| group_color_egui(g.color)));
-                tab_ui(
+                let (rect, resp, action) = tab_ui(
                   ui,
                   motion,
                   tab,
@@ -1436,7 +1748,8 @@ pub(super) fn tab_strip_ui(
                   &mut app.chrome,
                   focus_ring,
                   group_border,
-                )
+                );
+                (rect, Some(resp), action)
               };
               if is_active {
                 active_tab_rect = Some(tab_rect);
@@ -1446,7 +1759,9 @@ pub(super) fn tab_strip_ui(
               // non-pointer interactions. Avoid fighting user scrolling: only scroll when the
               // active tab actually changed.
               if is_active && active_changed {
-                tab_response.scroll_to_me(Some(egui::Align::Center));
+                if let Some(tab_response) = &tab_response {
+                  tab_response.scroll_to_me(Some(egui::Align::Center));
+                }
               }
               #[cfg(test)]
               tab_rects_for_test.push(tab_rect);
@@ -1455,12 +1770,18 @@ pub(super) fn tab_strip_ui(
               let is_close_action = maybe_action
                 .as_ref()
                 .is_some_and(|action| matches!(action, ChromeAction::CloseTab(_)));
-              if !is_close_action
-                && tab_response.drag_started()
-                && app.chrome.dragging_tab_id.is_none()
-              {
-                app.chrome.dragging_tab_id = Some(tab_id);
-                app.chrome.drag_start_pointer_pos = ui.input(|i| i.pointer.interact_pos());
+              if !is_close_action {
+                if let Some(tab_response) = &tab_response {
+                  if tab_response.drag_started() && app.chrome.dragging_tab_id.is_none() {
+                    app.chrome.dragging_tab_id = Some(tab_id);
+                    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+                    app.chrome.drag_start_pointer_pos = pointer_pos;
+                    if let Some(pointer_pos) = pointer_pos {
+                      ui.ctx()
+                        .data_mut(|d| d.insert_temp(drag_offset_id(), tab_rect.min - pointer_pos));
+                    }
+                  }
+                }
               }
               if app.chrome.dragging_tab_id == Some(tab_id) {
                 dragged_tab_rect = Some(tab_rect);
@@ -1592,7 +1913,8 @@ pub(super) fn tab_strip_ui(
     );
   }
 
-  // Drag-to-reorder: apply the reorder while dragging, and draw an outline + drop indicator.
+  // Drag-to-reorder: apply the reorder while dragging, but render the dragged tab as a floating
+  // preview so it feels "picked up".
   if let (Some(dragging_tab_id), Some(pos)) = (
     app.chrome.dragging_tab_id,
     ui.input(|i| i.pointer.interact_pos()),
@@ -1600,15 +1922,6 @@ pub(super) fn tab_strip_ui(
     // While dragging, ensure we keep repainting so hover/indicator stays responsive even if the
     // host winit loop relies on egui repaint requests.
     ui.ctx().request_repaint();
-
-    // Outline the dragged tab.
-    if let Some(rect) = dragged_tab_rect {
-      let stroke = Stroke::new(1.0, ui.visuals().widgets.active.bg_stroke.color);
-      ui.painter()
-        .with_clip_rect(tabs_rect)
-        .rect_stroke(rect.expand(1.0), 8.0, stroke);
-    }
-
     let dragging_is_pinned = app.tab(dragging_tab_id).map(|t| t.pinned).unwrap_or(false);
 
     let (tab_rects_for_drag, group_start_index, group_clip_rect) = if dragging_is_pinned {
@@ -1621,10 +1934,21 @@ pub(super) fn tab_strip_ui(
       )
     };
 
+    // Used for placeholder + preview styling.
+    let dragged_group_color = app
+      .tab(dragging_tab_id)
+      .and_then(|t| t.group)
+      .and_then(|gid| app.tab_groups.get(&gid))
+      .map(|g| group_color_egui(g.color));
+
+    let mut insertion_index: Option<usize> = None;
+    let mut target_index: Option<usize> = None;
+    let mut insertion_changed = false;
+
     if tab_rects_for_drag.len() >= 2 {
       // Determine the insertion point by comparing the pointer x coordinate against the centers of
       // each *other* tab.
-      let mut insertion_index: usize = 0;
+      let mut idx: usize = 0;
       for (tab_id, rect) in tab_rects_for_drag {
         if *tab_id == dragging_tab_id {
           continue;
@@ -1632,8 +1956,9 @@ pub(super) fn tab_strip_ui(
         if pos.x < rect.center().x {
           break;
         }
-        insertion_index += 1;
+        idx += 1;
       }
+      insertion_index = Some(idx);
 
       // Map the insertion point (computed from visible tab rects) back to an index into
       // `BrowserAppState.tabs` so group invariants are preserved even with collapsed groups.
@@ -1645,7 +1970,7 @@ pub(super) fn tab_strip_ui(
           if *tab_id == dragging_tab_id {
             continue;
           }
-          if count == insertion_index {
+          if count == idx {
             out = Some(*tab_id);
             break;
           }
@@ -1653,7 +1978,7 @@ pub(super) fn tab_strip_ui(
         }
         out
       };
-      let mut target_index = if let Some(before_id) = before_id {
+      let mut dst = if let Some(before_id) = before_id {
         app
           .tabs
           .iter()
@@ -1669,16 +1994,36 @@ pub(super) fn tab_strip_ui(
           .unwrap_or(group_start_index)
       };
       if let Some(src_idx) = src_idx {
-        if src_idx < target_index {
-          target_index = target_index.saturating_sub(1);
+        if src_idx < dst {
+          dst = dst.saturating_sub(1);
         }
       }
-      app.chrome.drag_target_index = Some(target_index);
+      insertion_changed = app.chrome.drag_target_index != Some(dst);
+      target_index = Some(dst);
+    }
 
-      // Apply the reorder immediately while dragging (standard browser behaviour).
-      app.drag_reorder_tab(dragging_tab_id, target_index);
+    // Placeholder gap (drawn over the in-flow slot so the tab reads as detached even on the first
+    // drag frame).
+    if let Some(rect) = dragged_tab_rect {
+      let visuals = ui.visuals().clone();
+      let painter = ui.painter().with_clip_rect(group_clip_rect);
+      painter.rect_filled(rect, visuals.widgets.inactive.rounding, visuals.panel_fill);
+      let pulse_target = if motion.enabled && insertion_changed {
+        1.0
+      } else {
+        0.0
+      };
+      let pulse_t = motion.animate_f32(
+        ui.ctx(),
+        egui::Id::new("tab_strip_drag_gap_pulse"),
+        pulse_target,
+        motion.durations.hover_fade,
+      );
+      paint_drag_placeholder(&painter, rect, &visuals, dragged_group_color, pulse_t);
+    }
 
-      // Draw drop indicator.
+    // Drop indicator.
+    if let Some(insertion_index) = insertion_index {
       let tab_strip_rect = tab_rects_for_drag
         .iter()
         .map(|(_, rect)| *rect)
@@ -1711,12 +2056,107 @@ pub(super) fn tab_strip_ui(
         x
       };
 
-      let stroke = Stroke::new(2.0, ui.visuals().widgets.active.bg_stroke.color);
+      let drop_id = egui::Id::new("tab_strip_drop_indicator");
+      let drop_x = motion.animate_f32(
+        ui.ctx(),
+        drop_id.with("x"),
+        drop_x,
+        motion.durations.hover_fade,
+      );
+      let target_alpha = if motion.enabled && insertion_changed {
+        1.0
+      } else if motion.enabled {
+        0.7
+      } else {
+        1.0
+      };
+      let alpha = motion.animate_f32(
+        ui.ctx(),
+        drop_id.with("a"),
+        target_alpha,
+        motion.durations.hover_fade,
+      );
+
+      let stroke = Stroke::new(
+        2.0,
+        with_alpha(ui.visuals().widgets.active.bg_stroke.color, alpha),
+      );
       let y1 = tab_strip_rect.top() + 1.0;
       let y2 = tab_strip_rect.bottom() - 1.0;
       ui.painter()
         .with_clip_rect(group_clip_rect)
         .line_segment([Pos2::new(drop_x, y1), Pos2::new(drop_x, y2)], stroke);
+    }
+
+    // Floating preview.
+    let preview_size = dragged_tab_rect.map(|r| r.size()).unwrap_or_else(|| {
+      Vec2::new(
+        if dragging_is_pinned {
+          PINNED_TAB_WIDTH
+        } else {
+          sizing.tab_width
+        },
+        TAB_HEIGHT,
+      )
+    });
+    let drag_offset = ui
+      .ctx()
+      .data(|d| d.get_temp::<Vec2>(drag_offset_id()))
+      .or_else(|| dragged_tab_rect.map(|r| r.min - pos))
+      .unwrap_or(Vec2::new(-preview_size.x * 0.5, -preview_size.y * 0.5));
+    let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y);
+    let mut preview_rect = Rect::from_min_size(pos + drag_offset + lift, preview_size);
+    if motion.enabled {
+      preview_rect = Rect::from_center_size(
+        preview_rect.center(),
+        preview_rect.size() * DRAG_PREVIEW_SCALE,
+      );
+    }
+
+    let preview_favicon_tex = favicon_for_tab(dragging_tab_id);
+    let preview_is_active = active_id == Some(dragging_tab_id);
+
+    if let Some(tab) = app.tab(dragging_tab_id) {
+      let preview_id = egui::Id::new("tab_strip_drag_preview");
+      egui::Area::new(preview_id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(preview_rect.min)
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+          ui.set_clip_rect(ui.ctx().screen_rect());
+          ui.allocate_space(preview_rect.size());
+          let visuals = ui.style().visuals.clone();
+          let rounding = visuals.widgets.inactive.rounding;
+          paint_popup_shadow(ui.painter(), preview_rect, rounding, visuals.popup_shadow);
+
+          if dragging_is_pinned {
+            pinned_tab_preview_ui(
+              ui,
+              motion,
+              tab,
+              preview_is_active,
+              preview_rect,
+              preview_favicon_tex,
+            );
+          } else {
+            unpinned_tab_preview_ui(
+              ui,
+              motion,
+              tab,
+              preview_is_active,
+              can_close_tabs,
+              preview_rect,
+              preview_favicon_tex,
+              dragged_group_color,
+            );
+          }
+        });
+    }
+
+    if let Some(target_index) = target_index {
+      app.chrome.drag_target_index = Some(target_index);
+      // Apply the reorder immediately while dragging (standard browser behaviour).
+      app.drag_reorder_tab(dragging_tab_id, target_index);
     }
   }
 
