@@ -2891,8 +2891,8 @@ impl<'a> Parser<'a> {
             if self.flags.has_either_unicode_flag() {
               return Err(RegExpSyntaxError {
                 message: "Invalid regular expression",
-              }
-              .into());
+                }
+                .into());
             }
             Ok(CharClassItem::Char(x as u32))
           }

@@ -337,6 +337,10 @@ impl ActiveEdgeSet {
     }
   }
 
+  fn clear(&mut self) {
+    self.edges.clear();
+  }
+
   fn insert(&mut self, edge: f32, bottom: f32) {
     let key = FloatKey(edge);
     match self.edges.get_mut(&key) {
@@ -453,6 +457,7 @@ impl FloatSweepState {
   }
 
   fn reset(&mut self, float_count: usize, events: &[FloatEvent]) {
+    let _ = float_count;
     self.current_y = f32::NEG_INFINITY;
 
     self.pending_events.clear();
@@ -461,16 +466,7 @@ impl FloatSweepState {
     self.pending_start_events.clear();
     self
       .pending_start_events
-      .extend(
-        events
-          .iter()
-          .filter(|event| event.kind == FloatEventKind::Start)
-          .copied()
-          .map(Reverse),
-      );
-
-    self.active.clear();
-    self.active.resize(float_count, false);
+      .extend(events.iter().copied().map(Reverse));
 
     self.active_left.clear();
     self.active_right.clear();
