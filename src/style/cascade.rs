@@ -5303,6 +5303,132 @@ fn selector_list_needs_bloom_summaries_for_has_relative(
     .any(|selector| selector_needs_bloom_summaries_for_has_relative(selector, quirks_mode))
 }
 
+/// Returns true when the stylesheet contains selectors with `:has()`.
+///
+/// This is used to conservatively gate incremental restyle optimizations that rely on subtree reuse
+/// (`reuse_map`), since `:has()` can cause style dependencies on descendants and siblings that
+/// are not tracked by the current invalidation logic.
+pub(crate) fn stylesheet_contains_has_selectors(sheet: &crate::css::types::StyleSheet) -> bool {
+  fn selector_contains_has(selector: &Selector<FastRenderSelectorImpl>) -> bool {
+    use selectors::parser::Component;
+
+    for component in selector.iter_raw_match_order() {
+      match component {
+        Component::Has(..) => return true,
+        Component::NonTSPseudoClass(pseudo) => match pseudo {
+          PseudoClass::Has(..) => return true,
+          PseudoClass::Host(Some(list)) | PseudoClass::HostContext(list) => {
+            if selector_list_contains_has(list) {
+              return true;
+            }
+          }
+          PseudoClass::NthChild(_, _, Some(list)) | PseudoClass::NthLastChild(_, _, Some(list)) => {
+            if selector_list_contains_has(list) {
+              return true;
+            }
+          }
+          _ => {}
+        },
+        Component::Is(list) | Component::Where(list) | Component::Negation(list) => {
+          if selector_list_contains_has(list) {
+            return true;
+          }
+        }
+        Component::NthOf(nth_of) => {
+          if nth_of.selectors().iter().any(selector_contains_has) {
+            return true;
+          }
+        }
+        Component::Slotted(inner) => {
+          if selector_contains_has(inner) {
+            return true;
+          }
+        }
+        Component::Host(Some(inner)) => {
+          if selector_contains_has(inner) {
+            return true;
+          }
+        }
+        _ => {}
+      }
+    }
+
+    false
+  }
+
+  fn selector_list_contains_has(list: &SelectorList<FastRenderSelectorImpl>) -> bool {
+    list.slice().iter().any(selector_contains_has)
+  }
+
+  fn rules_contain_has(rules: &[crate::css::types::CssRule]) -> bool {
+    for rule in rules {
+      match rule {
+        crate::css::types::CssRule::Style(style_rule) => {
+          if selector_list_contains_has(&style_rule.selectors) {
+            return true;
+          }
+          if !style_rule.nested_rules.is_empty() && rules_contain_has(&style_rule.nested_rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::Media(media_rule) => {
+          if rules_contain_has(&media_rule.rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::Container(container_rule) => {
+          if rules_contain_has(&container_rule.rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::Supports(supports_rule) => {
+          if rules_contain_has(&supports_rule.rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::Layer(layer_rule) => {
+          if rules_contain_has(&layer_rule.rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::StartingStyle(starting_rule) => {
+          if rules_contain_has(&starting_rule.rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::Scope(scope_rule) => {
+          if scope_rule
+            .start
+            .as_ref()
+            .is_some_and(selector_list_contains_has)
+            || scope_rule
+              .end
+              .as_ref()
+              .is_some_and(selector_list_contains_has)
+          {
+            return true;
+          }
+          if rules_contain_has(&scope_rule.rules) {
+            return true;
+          }
+        }
+        crate::css::types::CssRule::Page(_)
+        | crate::css::types::CssRule::CounterStyle(_)
+        | crate::css::types::CssRule::FontFeatureValues(_)
+        | crate::css::types::CssRule::FontPaletteValues(_)
+        | crate::css::types::CssRule::Property(_)
+        | crate::css::types::CssRule::PositionTry(_)
+        | crate::css::types::CssRule::Import(_)
+        | crate::css::types::CssRule::FontFace(_)
+        | crate::css::types::CssRule::Keyframes(_) => {}
+      }
+    }
+    false
+  }
+
+  rules_contain_has(&sheet.rules)
+}
+
 fn rule_index_needs_bloom_summaries_for_has_relative<'a>(
   index: &RuleIndex<'a>,
   quirks_mode: QuirksMode,
@@ -19247,6 +19373,51 @@ mod tests {
   ) -> StyledNode {
     let media_ctx = MediaContext::screen(1200.0, 800.0);
     apply_styles_with_media_and_interaction_state(dom, stylesheet, &media_ctx, interaction_state)
+  }
+
+  #[test]
+  fn stylesheet_contains_has_selectors_detects_direct_has() {
+    let stylesheet = parse_stylesheet("div:has(.a) { color: red; }").expect("stylesheet parses");
+    assert!(stylesheet_contains_has_selectors(&stylesheet));
+  }
+
+  #[test]
+  fn stylesheet_contains_has_selectors_detects_nested_has_in_is_and_not() {
+    let stylesheet = parse_stylesheet(
+      r#"
+        div:is(:has(.a), .b) { color: red; }
+        div:not(:has(.c)) { color: blue; }
+      "#,
+    )
+    .expect("stylesheet parses");
+    assert!(stylesheet_contains_has_selectors(&stylesheet));
+  }
+
+  #[test]
+  fn stylesheet_contains_has_selectors_does_not_match_attribute_value_strings() {
+    // Ensure we don't false-positive on `:has`-like substrings in selector attribute values.
+    let stylesheet = parse_stylesheet(
+      r#"div[data-test=':has(.a)'] { color: red; }"#,
+    )
+    .expect("stylesheet parses");
+    assert!(!stylesheet_contains_has_selectors(&stylesheet));
+  }
+
+  #[test]
+  fn stylesheet_contains_has_selectors_detects_has_in_nested_at_rules() {
+    let stylesheet = parse_stylesheet(
+      r#"
+        @media screen {
+          @supports (display: block) {
+            @layer foo {
+              div:has(.a) { color: red; }
+            }
+          }
+        }
+      "#,
+    )
+    .expect("stylesheet parses");
+    assert!(stylesheet_contains_has_selectors(&stylesheet));
   }
 
   #[test]
