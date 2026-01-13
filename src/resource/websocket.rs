@@ -68,10 +68,22 @@ fn connect_with_timeout(
     match TcpStream::connect_timeout(&addr, remaining) {
       Ok(stream) => {
         let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+          // `TcpStream::set_{read,write}_timeout(Some(Duration::ZERO))` is invalid and would leave
+          // the socket in a potentially-blocking state, defeating the goal of bounded teardown.
+          return Err(tungstenite::Error::Io(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "WebSocket handshake timed out",
+          )));
+        }
         // Apply the same wall-clock budget to the tungstenite HTTP handshake and the rustls TLS
         // handshake (wss://) so renderer teardown cannot hang joining threads blocked on network I/O.
-        let _ = stream.set_read_timeout(Some(remaining));
-        let _ = stream.set_write_timeout(Some(remaining));
+        stream
+          .set_read_timeout(Some(remaining))
+          .map_err(tungstenite::Error::Io)?;
+        stream
+          .set_write_timeout(Some(remaining))
+          .map_err(tungstenite::Error::Io)?;
 
         let stream = if tls {
           // `ClientConnection` stores the server name for the lifetime of the connection, so we must
