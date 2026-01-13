@@ -331,6 +331,65 @@ fn browser_document_dom2_text_mutation_skips_full_restyle() -> Result<()> {
 }
 
 #[test]
+fn browser_document_dom2_unclassified_mutation_disables_incremental_relayout() -> Result<()> {
+  let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
+  let options = RenderOptions::new().with_viewport(64, 32);
+
+  let html_a = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: white; color: black; }
+          #box { font-size: 16px; font-family: "Noto Sans"; }
+        </style>
+      </head>
+      <body>
+        <div id="box">Hello</div>
+      </body>
+    </html>
+  "#;
+  let html_b = html_a.replace(">Hello<", ">Goodbye<");
+
+  let mut renderer = support::deterministic_renderer();
+  let baseline_a = renderer.render_html_with_options(html_a, options.clone())?;
+  let baseline_b = renderer.render_html_with_options(&html_b, options.clone())?;
+
+  let mut doc = BrowserDocumentDom2::new(support::deterministic_renderer(), html_a, options)?;
+  let frame0 = doc.render_frame()?;
+  assert_eq!(frame0.data(), baseline_a.data());
+
+  let before = doc.invalidation_counters();
+
+  let changed = doc.mutate_dom(|dom| {
+    let box_id = dom.get_element_by_id("box").expect("#box element");
+    let text_id = dom
+      .children(box_id)
+      .expect("#box children")
+      .first()
+      .copied()
+      .expect("#box text child");
+    let changed = dom
+      .set_text_data(text_id, "Goodbye")
+      .expect("set_text_data");
+    dom.node_mut(box_id).script_parser_document = true;
+    changed
+  });
+  assert!(changed);
+
+  let frame1 = doc.render_frame()?;
+  assert_eq!(frame1.data(), baseline_b.data());
+
+  let after = doc.invalidation_counters();
+  assert_eq!(after.incremental_relayouts, before.incremental_relayouts);
+  assert_eq!(after.full_restyles, before.full_restyles + 1);
+  assert_eq!(after.full_relayouts, before.full_relayouts + 1);
+
+  Ok(())
+}
+
+#[test]
 fn browser_document_dom2_attribute_mutation_triggers_restyle() -> Result<()> {
   let _browser_integration_lock = crate::browser_integration::stage_listener_test_lock();
   #[cfg(feature = "browser_ui")]

@@ -2189,6 +2189,11 @@ impl BrowserDocumentDom2 {
   }
 
   fn apply_mutation_log(&mut self, mutations: crate::dom2::MutationLog) {
+    if mutations.unclassified {
+      self.invalidate_all();
+      return;
+    }
+
     // Treat changes in disconnected/inert subtrees as non-render-affecting.
     for node in mutations.attribute_changed {
       if self.dom.is_connected_for_scripting(node) {

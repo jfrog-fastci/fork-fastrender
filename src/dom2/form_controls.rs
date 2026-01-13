@@ -236,7 +236,7 @@ impl Document {
     state.value.clear();
     state.value.push_str(value);
     self.record_form_state_mutation(input);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     Ok(())
   }
 
@@ -251,7 +251,7 @@ impl Document {
     state.dirty_checkedness = true;
     state.checkedness = checked;
     self.record_form_state_mutation(input);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     Ok(())
   }
 
@@ -271,7 +271,7 @@ impl Document {
     state.value.clear();
     state.value.push_str(value);
     self.record_form_state_mutation(textarea);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     Ok(())
   }
 
@@ -282,7 +282,6 @@ impl Document {
 
   pub fn set_option_selected(&mut self, option: NodeId, selected: bool) -> Result<(), DomError> {
     let _ = self.node_checked(option)?;
-
     let select_owner = self
       .ancestors(option)
       .skip(1)
@@ -305,7 +304,7 @@ impl Document {
       state.selectedness = selected;
     }
     self.record_form_state_mutation(repaint_target);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
 
     let Some(select) = select_owner else {
       return Ok(());
@@ -337,7 +336,7 @@ impl Document {
           state.selectedness = false;
           state.dirty_selectedness = true;
           self.record_form_state_mutation(repaint_target);
-          self.bump_mutation_generation();
+          self.bump_mutation_generation_classified();
         }
       }
       return Ok(());
@@ -365,7 +364,7 @@ impl Document {
     if !state.selectedness {
       state.selectedness = true;
       self.record_form_state_mutation(repaint_target);
-      self.bump_mutation_generation();
+      self.bump_mutation_generation_classified();
     }
     Ok(())
   }
@@ -382,7 +381,7 @@ impl Document {
     state.dirty_checkedness = false;
     state.checkedness = default_checkedness;
     self.record_form_state_mutation(input);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     Ok(())
   }
 
@@ -392,7 +391,7 @@ impl Document {
     state.dirty_value = false;
     state.value.clear();
     self.record_form_state_mutation(textarea);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     Ok(())
   }
 
@@ -403,7 +402,7 @@ impl Document {
     state.dirty_selectedness = false;
     state.selectedness = selectedness;
     self.record_form_state_mutation(option);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     Ok(())
   }
 
@@ -468,8 +467,8 @@ impl Document {
           state.value = default_value;
           state.dirty_checkedness = false;
           state.checkedness = default_checkedness;
-          any = true;
           self.record_form_state_mutation(node_id);
+          any = true;
         }
       }
 
@@ -487,8 +486,8 @@ impl Document {
         {
           state.dirty_value = false;
           state.value = default_value;
-          any = true;
           self.record_form_state_mutation(node_id);
+          any = true;
         }
       }
 
@@ -506,8 +505,8 @@ impl Document {
         {
           state.dirty_selectedness = false;
           state.selectedness = selectedness;
-          any = true;
           self.record_form_state_mutation(node_id);
+          any = true;
         }
       }
 
@@ -521,7 +520,7 @@ impl Document {
     }
 
     if any {
-      self.bump_mutation_generation();
+      self.bump_mutation_generation_classified();
     }
     Ok(())
   }

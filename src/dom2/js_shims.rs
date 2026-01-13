@@ -466,7 +466,7 @@ impl Document {
     }
     if changed {
       self.record_form_state_mutation(select);
-      self.bump_mutation_generation();
+      self.bump_mutation_generation_classified();
     }
     changed
   }

@@ -234,6 +234,11 @@ pub(crate) struct MutationLog {
   /// affecting content-attribute changes. Hosts can use this to trigger incremental repaint of
   /// form controls without falling back to full restyle/layout.
   pub(crate) form_state_changed: FxHashSet<NodeId>,
+  /// Some render-affecting mutation occurred without structured classification.
+  ///
+  /// Hosts should conservatively fall back to a full pipeline run / fresh renderer-DOM snapshot when
+  /// this is set, to avoid incremental fast-paths silently acknowledging out-of-band changes.
+  pub(crate) unclassified: bool,
 }
 
 impl MutationLog {
@@ -242,6 +247,7 @@ impl MutationLog {
       && self.text_changed.is_empty()
       && self.child_list_changed.is_empty()
       && self.form_state_changed.is_empty()
+      && !self.unclassified
   }
 
   pub(crate) fn clear(&mut self) {
@@ -249,6 +255,7 @@ impl MutationLog {
     self.text_changed.clear();
     self.child_list_changed.clear();
     self.form_state_changed.clear();
+    self.unclassified = false;
   }
 }
 
@@ -660,12 +667,22 @@ impl Document {
   }
 
   #[inline]
-  fn bump_mutation_generation(&mut self) {
+  fn bump_mutation_generation_classified(&mut self) {
     self.mutation_generation = self.mutation_generation.wrapping_add(1);
     // Selector/query APIs build a renderer-style snapshot for matching; invalidate it eagerly on any
     // render-affecting mutation so subsequent queries observe the updated tree and we don't retain
     // multiple generations of large snapshots.
     self.selector_snapshot_cache = None;
+  }
+
+  #[inline]
+  fn bump_mutation_generation_unclassified(&mut self) {
+    self.mutation_generation = self.mutation_generation.wrapping_add(1);
+    // Selector/query APIs build a renderer-style snapshot for matching; invalidate it eagerly on any
+    // render-affecting mutation so subsequent queries observe the updated tree and we don't retain
+    // multiple generations of large snapshots.
+    self.selector_snapshot_cache = None;
+    self.mutations.unclassified = true;
   }
 
   pub fn ready_state(&self) -> DocumentReadyState {
@@ -699,7 +716,7 @@ impl Document {
     // `node_mut` allows callers to mutate `Node` state directly, bypassing higher-level mutation APIs
     // that record structured invalidation data. Conservatively bump the mutation generation so hosts
     // can still detect out-of-band DOM changes (e.g. raw-pointer JS shims).
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_unclassified();
     &mut self.nodes[id.0]
   }
 

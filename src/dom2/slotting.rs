@@ -320,7 +320,7 @@ impl Document {
       .insert(slot, new_list);
 
     // Manual assignments affect slot distribution/composed tree; treat as a render-affecting mutation.
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_unclassified();
 
     // Run "assign slottables for a tree" for this slot's root (HTML).
     if let Some(shadow_root) = self.shadow_root_ancestor(slot) {

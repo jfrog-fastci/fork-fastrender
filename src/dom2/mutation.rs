@@ -972,7 +972,7 @@ impl Document {
     // ignored by renderer snapshots.
     if is_text_node {
       self.record_text_mutation(node_id);
-      self.bump_mutation_generation();
+      self.bump_mutation_generation_classified();
     }
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
@@ -1025,7 +1025,7 @@ impl Document {
     }
 
     self.record_text_mutation(node_id);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }
@@ -1273,7 +1273,7 @@ impl Document {
         .children
         .splice(insertion_idx..insertion_idx, children_to_move);
       self.record_child_list_mutation(parent);
-      self.bump_mutation_generation();
+      self.bump_mutation_generation_classified();
 
       let inserted_len = moved_children.len();
       let (previous_sibling, next_sibling) = {
@@ -1328,7 +1328,7 @@ impl Document {
       .insert(insertion_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
     self.record_child_list_mutation(parent);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_child_list(
       parent,
       vec![new_child],
@@ -1364,7 +1364,7 @@ impl Document {
     let _ = self.mutation_observer_add_transient_observers_on_remove(child, parent);
     self.nodes[child.index()].parent = None;
     self.record_child_list_mutation(parent);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_child_list(
       parent,
       Vec::new(),
@@ -1486,7 +1486,7 @@ impl Document {
         .children
         .splice(old_child_idx..old_child_idx, children_to_move);
       self.record_child_list_mutation(parent);
-      self.bump_mutation_generation();
+      self.bump_mutation_generation_classified();
       let _ = self.queue_mutation_record_child_list(
         parent,
         moved_children,
@@ -1528,7 +1528,7 @@ impl Document {
       .insert(old_child_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
     self.record_child_list_mutation(parent);
-    self.bump_mutation_generation();
+    self.bump_mutation_generation_classified();
     let _ = self.queue_mutation_record_child_list(
       parent,
       vec![new_child],
