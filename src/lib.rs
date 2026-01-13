@@ -213,6 +213,13 @@ mod textarea;
 pub mod tree;
 pub mod security;
 
+// AccessKit integration helpers (used by the windowed browser UI and renderer-chrome experiments).
+//
+// Kept behind the `browser_ui` feature because the `accesskit` crate is optional and currently
+// pulled in alongside the rest of the desktop UI stack.
+#[cfg(feature = "browser_ui")]
+pub mod accessibility_accesskit;
+
 // ============================================================================
 // Supporting Modules
 // ============================================================================
