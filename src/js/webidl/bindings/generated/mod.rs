@@ -372,6 +372,167 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn abstract_range_get_attribute_collapsed(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "AbstractRange",
+      "collapsed",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_end_container(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "AbstractRange",
+      "endContainer",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_end_offset(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "AbstractRange",
+      "endOffset",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_start_container(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "AbstractRange",
+      "startContainer",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_get_attribute_start_offset(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    let bindings_host = host_from_hooks(hooks)?;
+    bindings_host.call_operation(
+      &mut *rt.vm,
+      &mut rt.scope,
+      receiver,
+      "AbstractRange",
+      "startOffset",
+      0,
+      &[],
+    )
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn abstract_range_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let _ = (host, hooks, callee, args, new_target);
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
   fn character_data_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1227,6 +1388,35 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn document_create_range(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Document",
+        "createRange",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
   fn document_create_text_node(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -1731,7 +1921,7 @@ pub mod window {
   ) -> Result<Value, VmError> {
     let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
     let rt = &mut rt;
-    Err(rt.throw_type_error("Document constructor cannot be invoked without 'new'"))
+    Err(rt.throw_type_error("Document constructor cannot be invoked without \'new\'"))
   }
 
   #[allow(dead_code)]
@@ -5565,6 +5755,305 @@ pub mod window {
   }
 
   #[allow(dead_code)]
+  fn range_compare_point(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v1)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "comparePoint",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_detach(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "detach",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_intersects_node(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "intersectsNode",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_is_point_in_range(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v1)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "isPointInRange",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_set_end(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v1)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "setEnd",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_set_start(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    rt.scope.push_root(this)?;
+    let receiver = Some(this);
+    {
+      let mut converted_args: Vec<Value> = Vec::new();
+      let v0 = if args.len() > 0 {
+        args[0]
+      } else {
+        Value::Undefined
+      };
+      let converted = v0;
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let v1 = if args.len() > 1 {
+        args[1]
+      } else {
+        Value::Undefined
+      };
+      let converted =
+        Value::Number(to_uint32_f64(rt.scope.to_number(&mut *rt.vm, host, hooks, v1)?) as f64);
+      let converted = rt.scope.push_root(converted)?;
+      converted_args.push(converted);
+      let bindings_host = host_from_hooks(hooks)?;
+      bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        receiver,
+        "Range",
+        "setStart",
+        0,
+        &converted_args,
+      )
+    }
+  }
+
+  #[allow(dead_code)]
+  fn range_call_without_new(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
+    _callee: GcObject,
+    _this: Value,
+    _args: &[Value],
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    Err(rt.throw_type_error("Illegal constructor"))
+  }
+
+  #[allow(dead_code)]
+  fn range_construct(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    host: &mut dyn VmHost,
+    hooks: &mut dyn VmHostHooks,
+    callee: GcObject,
+    _args: &[Value],
+    new_target: Value,
+  ) -> Result<Value, VmError> {
+    let mut rt = BindingsRuntime::from_scope(vm, scope.reborrow());
+    let rt = &mut rt;
+    let default_proto =
+      rt.require_native_object_slot(callee, 0, "Range constructor missing prototype slot")?;
+    let wrapper_proto =
+      rt.derive_prototype_from_new_target(host, hooks, default_proto, new_target)?;
+    let obj = rt.alloc_object_with_prototype(Some(wrapper_proto))?;
+
+    {
+      let converted_args: Vec<Value> = Vec::new();
+      let bindings_host = host_from_hooks(hooks)?;
+      let _ = bindings_host.call_operation(
+        &mut *rt.vm,
+        &mut rt.scope,
+        Some(Value::Object(obj)),
+        "Range",
+        "constructor",
+        0,
+        &converted_args,
+      )?;
+      Ok(Value::Object(obj))
+    }
+  }
+
+  #[allow(dead_code)]
   fn text_call_without_new(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -7190,6 +7679,210 @@ pub mod window {
     )
   }
 
+  pub fn install_abstract_range_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (_ctor_abstract_range, proto_abstract_range) = {
+      let ctor_key = rt.property_key("AbstractRange")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          abstract_range_call_without_new,
+          Some(abstract_range_construct),
+          "AbstractRange",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(
+          global,
+          "AbstractRange",
+          Value::Object(ctor_obj),
+          global_var_attrs,
+        )?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    {
+      let key = rt.property_key("collapsed")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_abstract_range, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          abstract_range_get_attribute_collapsed,
+          None,
+          "get collapsed",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_abstract_range,
+          "collapsed",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("endContainer")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_abstract_range, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          abstract_range_get_attribute_end_container,
+          None,
+          "get endContainer",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_abstract_range,
+          "endContainer",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("endOffset")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_abstract_range, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          abstract_range_get_attribute_end_offset,
+          None,
+          "get endOffset",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_abstract_range,
+          "endOffset",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("startContainer")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_abstract_range, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          abstract_range_get_attribute_start_container,
+          None,
+          "get startContainer",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_abstract_range,
+          "startContainer",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("startOffset")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_abstract_range, &key)?
+        .is_none()
+      {
+        let get = rt.alloc_native_function(
+          abstract_range_get_attribute_start_offset,
+          None,
+          "get startOffset",
+          0,
+        )?;
+        let set = Value::Undefined;
+        rt.define_accessor_property_str(
+          proto_abstract_range,
+          "startOffset",
+          Value::Object(get),
+          set,
+          AccessorPropertyAttributes::ATTRIBUTE,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
   pub fn install_character_data_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -7902,6 +8595,23 @@ pub mod window {
         rt.define_data_property_str(
           proto_document,
           "createNodeIterator",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("createRange")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_document, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(document_create_range, None, "createRange", 0)?;
+        rt.define_data_property_str(
+          proto_document,
+          "createRange",
           Value::Object(func),
           DataPropertyAttributes::METHOD,
         )?;
@@ -12131,6 +12841,324 @@ pub mod window {
     Ok(())
   }
 
+  pub fn install_range_bindings_vm_js(
+    vm: &mut Vm,
+    heap: &mut Heap,
+    realm: &Realm,
+  ) -> Result<(), VmError> {
+    let mut rt = BindingsRuntime::new(vm, heap);
+    let global = realm.global_object();
+    rt.scope.push_root(Value::Object(global))?;
+
+    let global_var_attrs = DataPropertyAttributes::new(true, false, true);
+    let ctor_link_attrs = DataPropertyAttributes::new(false, false, false);
+
+    let (ctor_range, proto_range) = {
+      let ctor_key = rt.property_key("Range")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        let proto_value = rt.vm.get(&mut rt.scope, ctor_obj, proto_key)?;
+        let proto_obj = if let Value::Object(proto_obj) = proto_value {
+          proto_obj
+        } else {
+          let proto_obj = rt.alloc_object()?;
+          rt.define_data_property_str(
+            ctor_obj,
+            "prototype",
+            Value::Object(proto_obj),
+            ctor_link_attrs,
+          )?;
+          proto_obj
+        };
+        let constructor_key = rt.property_key("constructor")?;
+        if rt
+          .scope
+          .heap()
+          .object_get_own_property(proto_obj, &constructor_key)?
+          .is_none()
+        {
+          rt.define_data_property_str(
+            proto_obj,
+            "constructor",
+            Value::Object(ctor_obj),
+            ctor_link_attrs,
+          )?;
+        }
+        (ctor_obj, proto_obj)
+      } else {
+        let proto_obj = rt.alloc_object()?;
+        let slots = [Value::Object(proto_obj)];
+        let ctor_obj = rt.alloc_native_function_with_slots(
+          range_call_without_new,
+          Some(range_construct),
+          "Range",
+          0,
+          &slots,
+        )?;
+        rt.define_data_property_str(global, "Range", Value::Object(ctor_obj), global_var_attrs)?;
+        rt.define_data_property_str(
+          ctor_obj,
+          "prototype",
+          Value::Object(proto_obj),
+          ctor_link_attrs,
+        )?;
+        rt.define_data_property_str(
+          proto_obj,
+          "constructor",
+          Value::Object(ctor_obj),
+          ctor_link_attrs,
+        )?;
+        (ctor_obj, proto_obj)
+      }
+    };
+
+    let parent_proto = {
+      let ctor_key = rt.property_key("AbstractRange")?;
+      let ctor_value = rt
+        .scope
+        .heap()
+        .object_get_own_data_property_value(global, &ctor_key)?
+        .unwrap_or(Value::Undefined);
+      if let Value::Object(ctor_obj) = ctor_value {
+        let proto_key = rt.property_key("prototype")?;
+        match rt.vm.get(&mut rt.scope, ctor_obj, proto_key)? {
+          Value::Object(obj) => Some(obj),
+          _ => None,
+        }
+      } else {
+        None
+      }
+    };
+    if let Some(parent_proto) = parent_proto {
+      rt.set_prototype(proto_range, Some(parent_proto))?;
+    }
+
+    {
+      let key = rt.property_key("comparePoint")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_compare_point, None, "comparePoint", 2)?;
+        rt.define_data_property_str(
+          proto_range,
+          "comparePoint",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("detach")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_detach, None, "detach", 0)?;
+        rt.define_data_property_str(
+          proto_range,
+          "detach",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("intersectsNode")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_intersects_node, None, "intersectsNode", 1)?;
+        rt.define_data_property_str(
+          proto_range,
+          "intersectsNode",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("isPointInRange")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_is_point_in_range, None, "isPointInRange", 2)?;
+        rt.define_data_property_str(
+          proto_range,
+          "isPointInRange",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("setEnd")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_set_end, None, "setEnd", 2)?;
+        rt.define_data_property_str(
+          proto_range,
+          "setEnd",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("setStart")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        let func = rt.alloc_native_function(range_set_start, None, "setStart", 2)?;
+        rt.define_data_property_str(
+          proto_range,
+          "setStart",
+          Value::Object(func),
+          DataPropertyAttributes::METHOD,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("END_TO_END")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_range,
+          "END_TO_END",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_range,
+          "END_TO_END",
+          Value::Number(2.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("END_TO_START")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_range,
+          "END_TO_START",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_range,
+          "END_TO_START",
+          Value::Number(3.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("START_TO_END")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_range,
+          "START_TO_END",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_range,
+          "START_TO_END",
+          Value::Number(1.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    {
+      let key = rt.property_key("START_TO_START")?;
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(ctor_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          ctor_range,
+          "START_TO_START",
+          Value::Number(0.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+      if rt
+        .scope
+        .heap()
+        .object_get_own_property(proto_range, &key)?
+        .is_none()
+      {
+        rt.define_data_property_str(
+          proto_range,
+          "START_TO_START",
+          Value::Number(0.0),
+          DataPropertyAttributes::CONST,
+        )?;
+      }
+    }
+    Ok(())
+  }
+
   pub fn install_text_bindings_vm_js(
     vm: &mut Vm,
     heap: &mut Heap,
@@ -13151,6 +14179,7 @@ pub mod window {
     heap: &mut Heap,
     realm: &Realm,
   ) -> Result<(), VmError> {
+    install_abstract_range_bindings_vm_js(vm, heap, realm)?;
     install_event_target_bindings_vm_js(vm, heap, realm)?;
     install_node_bindings_vm_js(vm, heap, realm)?;
     install_character_data_bindings_vm_js(vm, heap, realm)?;
@@ -13167,6 +14196,7 @@ pub mod window {
     install_node_filter_bindings_vm_js(vm, heap, realm)?;
     install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     install_node_list_bindings_vm_js(vm, heap, realm)?;
+    install_range_bindings_vm_js(vm, heap, realm)?;
     install_text_bindings_vm_js(vm, heap, realm)?;
     install_tree_walker_bindings_vm_js(vm, heap, realm)?;
     install_url_bindings_vm_js(vm, heap, realm)?;
@@ -15694,6 +16724,7 @@ pub mod worker {
   }
 }
 
+pub use window::install_abstract_range_bindings_vm_js;
 pub use window::install_character_data_bindings_vm_js;
 pub use window::install_custom_event_bindings_vm_js;
 pub use window::install_document_bindings_vm_js;
@@ -15710,6 +16741,7 @@ pub use window::install_node_bindings_vm_js;
 pub use window::install_node_filter_bindings_vm_js;
 pub use window::install_node_iterator_bindings_vm_js;
 pub use window::install_node_list_bindings_vm_js;
+pub use window::install_range_bindings_vm_js;
 pub use window::install_text_bindings_vm_js;
 pub use window::install_tree_walker_bindings_vm_js;
 pub use window::install_url_bindings_vm_js;

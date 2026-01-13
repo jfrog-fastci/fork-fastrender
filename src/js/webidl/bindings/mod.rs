@@ -29,15 +29,28 @@ pub use dom_exception::DomExceptionClass;
 pub use dom_exception_vmjs::{dom_exception_from_rust, throw_dom_exception, DomExceptionClassVmJs};
 pub use shadow_root::install_shadow_root_bindings_vm_js;
 pub use generated::{
-  install_character_data_bindings_vm_js, install_document_bindings_vm_js,
-  install_document_fragment_bindings_vm_js, install_element_bindings_vm_js,
-  install_custom_event_bindings_vm_js, install_event_bindings_vm_js,
-  install_dom_token_list_bindings_vm_js, install_event_target_bindings_vm_js,
-  install_html_collection_bindings_vm_js, install_node_bindings_vm_js,
-  install_node_filter_bindings_vm_js, install_node_iterator_bindings_vm_js,
-  install_node_list_bindings_vm_js, install_text_bindings_vm_js,
-  install_tree_walker_bindings_vm_js, install_url_bindings_vm_js, install_url_search_params_bindings_vm_js,
-  install_window_bindings_vm_js, install_window_ops_bindings_vm_js, install_worker_bindings_vm_js,
+  install_abstract_range_bindings_vm_js,
+  install_character_data_bindings_vm_js,
+  install_custom_event_bindings_vm_js,
+  install_document_bindings_vm_js,
+  install_document_fragment_bindings_vm_js,
+  install_dom_token_list_bindings_vm_js,
+  install_element_bindings_vm_js,
+  install_event_bindings_vm_js,
+  install_event_target_bindings_vm_js,
+  install_html_collection_bindings_vm_js,
+  install_node_bindings_vm_js,
+  install_node_filter_bindings_vm_js,
+  install_node_iterator_bindings_vm_js,
+  install_node_list_bindings_vm_js,
+  install_range_bindings_vm_js,
+  install_text_bindings_vm_js,
+  install_tree_walker_bindings_vm_js,
+  install_url_bindings_vm_js,
+  install_url_search_params_bindings_vm_js,
+  install_window_bindings_vm_js,
+  install_window_ops_bindings_vm_js,
+  install_worker_bindings_vm_js,
 };
 pub use generated_legacy::{install_window_bindings, install_worker_bindings};
 pub use host::{binding_value_to_js, BindingValue, WebHostBindings};

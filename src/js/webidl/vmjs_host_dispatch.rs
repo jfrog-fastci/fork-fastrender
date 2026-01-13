@@ -167,6 +167,12 @@ struct LiveHtmlCollection {
   kind: LiveHtmlCollectionKind,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RangeState {
+  document_id: DocumentId,
+  range_id: RangeId,
+}
+
 enum DomHostAdapter<'a, Host: DomHost + 'static> {
   Embedder(&'a mut Host),
   DocumentHost(&'a mut DocumentHostState),
@@ -1079,6 +1085,7 @@ pub struct VmJsWebIdlBindingsHostDispatch<Host: WindowRealmHost + 'static> {
   limits: UrlLimits,
   urls: HashMap<WeakGcObject, Url>,
   params: HashMap<WeakGcObject, UrlSearchParams>,
+  ranges: HashMap<WeakGcObject, RangeState>,
   event_targets: HashMap<WeakGcObject, EventTargetState>,
   live_html_collections: Vec<LiveHtmlCollection>,
   abort_signal_listener_cleanup_call: Option<NativeFunctionId>,
@@ -1096,6 +1103,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       limits: UrlLimits::default(),
       urls: HashMap::new(),
       params: HashMap::new(),
+      ranges: HashMap::new(),
       event_targets: HashMap::new(),
       live_html_collections: Vec::new(),
       abort_signal_listener_cleanup_call: None,
@@ -1113,6 +1121,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       limits: UrlLimits::default(),
       urls: HashMap::new(),
       params: HashMap::new(),
+      ranges: HashMap::new(),
       event_targets: HashMap::new(),
       live_html_collections: Vec::new(),
       abort_signal_listener_cleanup_call: None,
@@ -1129,6 +1138,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     self.global = Some(global);
     self.urls.clear();
     self.params.clear();
+    self.ranges.clear();
     self.event_targets.clear();
     self.live_html_collections.clear();
     self.timer_registry.borrow_mut().clear();
@@ -1205,6 +1215,7 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
 
     self.urls.retain(|k, _| k.upgrade(heap).is_some());
     self.params.retain(|k, _| k.upgrade(heap).is_some());
+    self.ranges.retain(|k, _| k.upgrade(heap).is_some());
     self
       .live_html_collections
       .retain(|coll| coll.weak_obj.upgrade(heap).is_some());
@@ -1592,6 +1603,15 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
       .ok_or(VmError::TypeError("Illegal invocation"))
   }
 
+  fn require_range_state(&self, receiver: Option<Value>) -> Result<RangeState, VmError> {
+    let obj = Self::require_receiver_object(receiver)?;
+    self
+      .ranges
+      .get(&WeakGcObject::from(obj))
+      .copied()
+      .ok_or(VmError::TypeError("Illegal invocation"))
+  }
+
   fn dom_error_to_vm_error(
     &self,
     vm: &mut Vm,
@@ -1750,6 +1770,31 @@ impl<Host: WindowRealmHost + 'static> VmJsWebIdlBindingsHostDispatch<Host> {
     scope.push_root(proto)?;
     let Value::Object(proto_obj) = proto else {
       return Err(VmError::TypeError("TreeWalker.prototype is not an object"));
+    };
+    Ok(proto_obj)
+  }
+
+  fn range_proto_from_global(
+    &self,
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+  ) -> Result<GcObject, VmError> {
+    let global = self
+      .global
+      .ok_or(VmError::Unimplemented("WebIDL host missing global object"))?;
+
+    let ctor_key = key_from_str(scope, "Range")?;
+    let ctor = get_with_active_vm_host_and_hooks(vm, scope, global, ctor_key)?;
+    scope.push_root(ctor)?;
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(VmError::TypeError("globalThis.Range is not an object"));
+    };
+
+    let proto_key = key_from_str(scope, "prototype")?;
+    let proto = get_with_active_vm_host_and_hooks(vm, scope, ctor_obj, proto_key)?;
+    scope.push_root(proto)?;
+    let Value::Object(proto_obj) = proto else {
+      return Err(VmError::TypeError("Range.prototype is not an object"));
     };
     Ok(proto_obj)
   }
@@ -7134,6 +7179,42 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
         Ok(Value::Object(walker_obj))
       }
 
+      ("Document", "createRange", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        // Ranges are document-owned state and should not trigger renderer invalidation.
+        let owned_range_id: Option<RangeId> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| data.with_owned_dom2_document_mut(document_id, |dom| dom.create_range()));
+
+        let range_id = if let Some(range_id) = owned_range_id {
+          range_id
+        } else {
+          self.with_dom_host(vm, |host| Ok(host.mutate_dom(|dom| (dom.create_range(), false))))?
+        };
+
+        let proto = self.range_proto_from_global(vm, scope)?;
+        scope.push_root(Value::Object(proto))?;
+        let range_obj = scope.alloc_object_with_prototype(Some(proto))?;
+        scope.push_root(Value::Object(range_obj))?;
+
+        self.ranges.insert(
+          WeakGcObject::from(range_obj),
+          RangeState {
+            document_id,
+            range_id,
+          },
+        );
+        Ok(Value::Object(range_obj))
+      }
+
       ("Element", "matches", 0) => {
         let element_obj = Self::require_receiver_object(receiver)?;
         let element_id = {
@@ -9829,6 +9910,359 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           }
           Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
         }
+      }
+
+      ("Range", "constructor", 0) => {
+        let range_obj = Self::require_receiver_object(receiver)?;
+
+        let document_obj = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| data.document_obj())
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+        let document_id = gc_object_id(document_obj);
+
+        let range_id = self.with_dom_host(vm, |host| {
+          Ok(host.mutate_dom(|dom| (dom.create_range(), false)))
+        })?;
+
+        self.ranges.insert(
+          WeakGcObject::from(range_obj),
+          RangeState {
+            document_id,
+            range_id,
+          },
+        );
+        Ok(Value::Undefined)
+      }
+
+      ("Range", "setStart", 0) | ("Range", "setEnd", 0) => {
+        let range_obj = Self::require_receiver_object(receiver)?;
+        let weak = WeakGcObject::from(range_obj);
+        let state = self
+          .ranges
+          .get(&weak)
+          .copied()
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+        let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
+        let node_handle = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.require_node_handle(scope.heap(), node_val)?
+        };
+
+        let offset_val = args.get(1).copied().unwrap_or(Value::Number(0.0));
+        let offset = match offset_val {
+          Value::Number(n) if n.is_finite() && n >= 0.0 => (n as u32) as usize,
+          _ => 0,
+        };
+
+        let is_start = operation == "setStart";
+
+        let (next_state, result): (RangeState, Result<(), DomError>) = if node_handle.document_id == state.document_id {
+          // Same document: update in-place.
+          let owned_result: Option<Result<(), DomError>> = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .and_then(|data| {
+              data.with_owned_dom2_document_mut(state.document_id, |dom| {
+                if is_start {
+                  dom.range_set_start(state.range_id, node_handle.node_id, offset)
+                } else {
+                  dom.range_set_end(state.range_id, node_handle.node_id, offset)
+                }
+              })
+            });
+
+          let result = if let Some(result) = owned_result {
+            result
+          } else {
+            self.with_dom_host(vm, |host| {
+              Ok(host.mutate_dom(|dom| {
+                let result = if is_start {
+                  dom.range_set_start(state.range_id, node_handle.node_id, offset)
+                } else {
+                  dom.range_set_end(state.range_id, node_handle.node_id, offset)
+                };
+                (result, false)
+              }))
+            })?
+          };
+
+          (state, result)
+        } else {
+          // Cross-document: create a new range in the target document and only migrate state if the
+          // operation succeeds. (We may leak an unused range on error, but avoid mutating the
+          // existing range in that case.)
+          let owned_new_range_id: Option<RangeId> = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .and_then(|data| {
+              data.with_owned_dom2_document_mut(node_handle.document_id, |dom| dom.create_range())
+            });
+
+          let new_range_id = if let Some(id) = owned_new_range_id {
+            id
+          } else {
+            self.with_dom_host(vm, |host| {
+              Ok(host.mutate_dom(|dom| (dom.create_range(), false)))
+            })?
+          };
+
+          let owned_result: Option<Result<(), DomError>> = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .and_then(|data| {
+              data.with_owned_dom2_document_mut(node_handle.document_id, |dom| {
+                // Per spec, cross-root setStart/setEnd collapses the range to the boundary point.
+                dom.range_set_start(new_range_id, node_handle.node_id, offset)?;
+                dom.range_set_end(new_range_id, node_handle.node_id, offset)
+              })
+            });
+
+          let result = if let Some(result) = owned_result {
+            result
+          } else {
+            self.with_dom_host(vm, |host| {
+              Ok(host.mutate_dom(|dom| {
+                // Per spec, cross-root setStart/setEnd collapses the range to the boundary point.
+                let result = dom
+                  .range_set_start(new_range_id, node_handle.node_id, offset)
+                  .and_then(|_| dom.range_set_end(new_range_id, node_handle.node_id, offset));
+                (result, false)
+              }))
+            })?
+          };
+
+          (
+            RangeState {
+              document_id: node_handle.document_id,
+              range_id: new_range_id,
+            },
+            result,
+          )
+        };
+
+        match result {
+          Ok(()) => {
+            self.ranges.insert(weak, next_state);
+            Ok(Value::Undefined)
+          }
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "isPointInRange", 0) | ("Range", "comparePoint", 0) => {
+        let range_obj = Self::require_receiver_object(receiver)?;
+        let state = self
+          .ranges
+          .get(&WeakGcObject::from(range_obj))
+          .copied()
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+        let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
+        let node_handle = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.require_node_handle(scope.heap(), node_val)?
+        };
+
+        // Cross-document: comparePoint throws, isPointInRange returns false.
+        if node_handle.document_id != state.document_id {
+          if operation == "comparePoint" {
+            return Err(self.dom_error_to_vm_error(vm, scope, DomError::WrongDocumentError));
+          }
+          return Ok(Value::Bool(false));
+        }
+
+        let offset_val = args.get(1).copied().unwrap_or(Value::Number(0.0));
+        let offset = match offset_val {
+          Value::Number(n) if n.is_finite() && n >= 0.0 => (n as u32) as usize,
+          _ => 0,
+        };
+
+        let owned_result: Option<Result<i16, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              if operation == "comparePoint" {
+                dom.range_compare_point(state.range_id, node_handle.node_id, offset)
+              } else {
+                dom
+                  .range_is_point_in_range(state.range_id, node_handle.node_id, offset)
+                  .map(|b| if b { 1 } else { 0 })
+              }
+            })
+          });
+
+        if let Some(result) = owned_result {
+          match (operation, result) {
+            ("comparePoint", Ok(v)) => Ok(Value::Number(v as f64)),
+            ("isPointInRange", Ok(v)) => Ok(Value::Bool(v != 0)),
+            (_, Err(err)) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+            _ => Err(VmError::InvariantViolation("Range operation mismatch")),
+          }
+        } else {
+          let result = self.with_dom_host(vm, |host| {
+            Ok(host.mutate_dom(|dom| {
+              let out = if operation == "comparePoint" {
+                dom.range_compare_point(state.range_id, node_handle.node_id, offset)
+              } else {
+                dom
+                  .range_is_point_in_range(state.range_id, node_handle.node_id, offset)
+                  .map(|b| if b { 1 } else { 0 })
+              };
+              (out, false)
+            }))
+          })?;
+
+          match (operation, result) {
+            ("comparePoint", Ok(v)) => Ok(Value::Number(v as f64)),
+            ("isPointInRange", Ok(v)) => Ok(Value::Bool(v != 0)),
+            (_, Err(err)) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+            _ => Err(VmError::InvariantViolation("Range operation mismatch")),
+          }
+        }
+      }
+
+      ("Range", "intersectsNode", 0) => {
+        let range_obj = Self::require_receiver_object(receiver)?;
+        let state = self
+          .ranges
+          .get(&WeakGcObject::from(range_obj))
+          .copied()
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+        let node_val = args.get(0).copied().unwrap_or(Value::Undefined);
+        let node_handle = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform.require_node_handle(scope.heap(), node_val)?
+        };
+
+        if node_handle.document_id != state.document_id {
+          return Ok(Value::Bool(false));
+        }
+
+        let owned_result: Option<Result<bool, DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              dom.range_intersects_node(state.range_id, node_handle.node_id)
+            })
+          });
+
+        let result = if let Some(result) = owned_result {
+          result
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              dom.range_intersects_node(state.range_id, node_handle.node_id)
+            }))
+          })?
+        };
+
+        match result {
+          Ok(v) => Ok(Value::Bool(v)),
+          Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+        }
+      }
+
+      ("Range", "detach", 0) => Ok(Value::Undefined),
+
+      (
+        "AbstractRange",
+        op @ ("startContainer" | "startOffset" | "endContainer" | "endOffset" | "collapsed"),
+        0,
+      ) => {
+        let range_obj = Self::require_receiver_object(receiver)?;
+        let state = self
+          .ranges
+          .get(&WeakGcObject::from(range_obj))
+          .copied()
+          .ok_or(VmError::TypeError("Illegal invocation"))?;
+
+        // Fast path: return offsets/collapsed without allocating wrappers.
+        if op == "startOffset" || op == "endOffset" || op == "collapsed" {
+          let owned_result: Option<Result<Value, DomError>> = vm
+            .user_data_mut::<WindowRealmUserData>()
+            .and_then(|data| {
+              data.with_owned_dom2_document(state.document_id, |dom| match op {
+                "startOffset" => dom
+                  .range_start_offset(state.range_id)
+                  .map(|v| Value::Number(v as f64)),
+                "endOffset" => dom
+                  .range_end_offset(state.range_id)
+                  .map(|v| Value::Number(v as f64)),
+                "collapsed" => {
+                  let start = dom.range_start(state.range_id)?;
+                  let end = dom.range_end(state.range_id)?;
+                  Ok(Value::Bool(start == end))
+                }
+                _ => Err(DomError::NotFoundError),
+              })
+            });
+
+          let value = if let Some(result) = owned_result {
+            result
+          } else {
+            self.with_dom_host(vm, |host| {
+              Ok(host.with_dom(|dom| match op {
+                "startOffset" => dom.range_start_offset(state.range_id).map(|v| Value::Number(v as f64)),
+                "endOffset" => dom.range_end_offset(state.range_id).map(|v| Value::Number(v as f64)),
+                "collapsed" => {
+                  let start = dom.range_start(state.range_id)?;
+                  let end = dom.range_end(state.range_id)?;
+                  Ok(Value::Bool(start == end))
+                }
+                _ => Err(DomError::NotFoundError),
+              }))
+            })?
+          };
+
+          return match value {
+            Ok(v) => Ok(v),
+            Err(err) => Err(self.dom_error_to_vm_error(vm, scope, err)),
+          };
+        }
+
+        // Container getters: resolve node + primary interface, then allocate/create wrapper.
+        let owned_result: Option<Result<(NodeId, DomInterface), DomError>> = vm
+          .user_data_mut::<WindowRealmUserData>()
+          .and_then(|data| {
+            data.with_owned_dom2_document(state.document_id, |dom| {
+              let node_id = if op == "startContainer" {
+                dom.range_start_container(state.range_id)?
+              } else {
+                dom.range_end_container(state.range_id)?
+              };
+              let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+              Ok((node_id, primary))
+            })
+          });
+
+        let (node_id, primary_interface) = if let Some(result) = owned_result {
+          match result {
+            Ok(v) => v,
+            Err(err) => return Err(self.dom_error_to_vm_error(vm, scope, err)),
+          }
+        } else {
+          self.with_dom_host(vm, |host| {
+            Ok(host.with_dom(|dom| {
+              let node_id = if op == "startContainer" {
+                dom.range_start_container(state.range_id)?
+              } else {
+                dom.range_end_container(state.range_id)?
+              };
+              let primary = DomInterface::primary_for_node_kind(&dom.node(node_id).kind);
+              Ok((node_id, primary))
+            }))
+          })?
+          .map_err(|err: DomError| self.dom_error_to_vm_error(vm, scope, err))?
+        };
+
+        let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+          scope,
+          state.document_id,
+          node_id,
+          primary_interface,
+        )?;
+        scope.push_root(Value::Object(wrapper))?;
+        Ok(Value::Object(wrapper))
       }
 
       ("Window", "alert", _) => Ok(Value::Undefined),

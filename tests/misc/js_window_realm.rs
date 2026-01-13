@@ -4737,6 +4737,129 @@ fn webidl_shadow_root_is_fragment_like_and_not_detachable_closed() -> Result<()>
 }
 
 #[test]
+fn webidl_range_basic_and_query_apis() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(concat!(
+    "<!doctype html>",
+    "<html><head></head><body>",
+    "<div id=\"div\"><span id=\"s0\">s0</span><span id=\"s1\">s1</span><span id=\"s2\">s2</span></div>",
+    "</body></html>",
+  ))?;
+  let mut host =
+    WebIdlWindowHostStateForTest::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  exec_script_in_webidl_window_host(
+    &mut host,
+    r#"
+  // Range constructor + initial state.
+  const r1 = document.createRange();
+  globalThis.__doc_create_is_range = (r1 instanceof Range);
+  globalThis.__doc_create_start_is_doc = (r1.startContainer === document);
+  globalThis.__doc_create_end_is_doc = (r1.endContainer === document);
+  globalThis.__doc_create_collapsed = r1.collapsed;
+
+  const r2 = new Range();
+  globalThis.__ctor_is_range = (r2 instanceof Range);
+  globalThis.__ctor_start_is_doc = (r2.startContainer === document);
+  globalThis.__ctor_end_is_doc = (r2.endContainer === document);
+  globalThis.__ctor_collapsed = r2.collapsed;
+
+  // Query APIs (comparePoint/isPointInRange/intersectsNode).
+  const range = new Range();
+  const div = document.getElementById('div');
+  const s0 = document.getElementById('s0');
+  const s1 = document.getElementById('s1');
+  const s2 = document.getElementById('s2');
+
+  range.setStart(div, 1);
+  range.setEnd(div, 2);
+  globalThis.__compare_before = range.comparePoint(div, 0);
+  globalThis.__compare_inside = range.comparePoint(div, 1);
+  globalThis.__compare_after = range.comparePoint(div, 3);
+
+  globalThis.__point_before = range.isPointInRange(div, 0);
+  globalThis.__point_inside = range.isPointInRange(div, 1);
+  globalThis.__point_end = range.isPointInRange(div, 2);
+  globalThis.__point_after = range.isPointInRange(div, 3);
+
+  // Range encloses s0.
+  range.setStart(div, 0);
+  range.setEnd(div, 1);
+  globalThis.__intersects_s0 = range.intersectsNode(s0);
+  globalThis.__intersects_s1 = range.intersectsNode(s1);
+  globalThis.__intersects_s2 = range.intersectsNode(s2);
+  "#,
+  )?;
+
+  let (
+    doc_create_is_range,
+    doc_create_start_is_doc,
+    doc_create_end_is_doc,
+    doc_create_collapsed,
+    ctor_is_range,
+    ctor_start_is_doc,
+    ctor_end_is_doc,
+    ctor_collapsed,
+    compare_before,
+    compare_inside,
+    compare_after,
+    point_before,
+    point_inside,
+    point_end,
+    point_after,
+    intersects_s0,
+    intersects_s1,
+    intersects_s2,
+  ) = {
+    let global = host.window.global_object();
+    let (_vm, heap) = host.window.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__doc_create_is_range"),
+      get_data_prop(&mut scope, global, "__doc_create_start_is_doc"),
+      get_data_prop(&mut scope, global, "__doc_create_end_is_doc"),
+      get_data_prop(&mut scope, global, "__doc_create_collapsed"),
+      get_data_prop(&mut scope, global, "__ctor_is_range"),
+      get_data_prop(&mut scope, global, "__ctor_start_is_doc"),
+      get_data_prop(&mut scope, global, "__ctor_end_is_doc"),
+      get_data_prop(&mut scope, global, "__ctor_collapsed"),
+      get_data_prop(&mut scope, global, "__compare_before"),
+      get_data_prop(&mut scope, global, "__compare_inside"),
+      get_data_prop(&mut scope, global, "__compare_after"),
+      get_data_prop(&mut scope, global, "__point_before"),
+      get_data_prop(&mut scope, global, "__point_inside"),
+      get_data_prop(&mut scope, global, "__point_end"),
+      get_data_prop(&mut scope, global, "__point_after"),
+      get_data_prop(&mut scope, global, "__intersects_s0"),
+      get_data_prop(&mut scope, global, "__intersects_s1"),
+      get_data_prop(&mut scope, global, "__intersects_s2"),
+    )
+  };
+
+  assert_eq!(doc_create_is_range, Value::Bool(true));
+  assert_eq!(doc_create_start_is_doc, Value::Bool(true));
+  assert_eq!(doc_create_end_is_doc, Value::Bool(true));
+  assert_eq!(doc_create_collapsed, Value::Bool(true));
+  assert_eq!(ctor_is_range, Value::Bool(true));
+  assert_eq!(ctor_start_is_doc, Value::Bool(true));
+  assert_eq!(ctor_end_is_doc, Value::Bool(true));
+  assert_eq!(ctor_collapsed, Value::Bool(true));
+
+  assert_eq!(compare_before, Value::Number(-1.0));
+  assert_eq!(compare_inside, Value::Number(0.0));
+  assert_eq!(compare_after, Value::Number(1.0));
+
+  assert_eq!(point_before, Value::Bool(false));
+  assert_eq!(point_inside, Value::Bool(true));
+  assert_eq!(point_end, Value::Bool(true));
+  assert_eq!(point_after, Value::Bool(false));
+
+  assert_eq!(intersects_s0, Value::Bool(true));
+  assert_eq!(intersects_s1, Value::Bool(false));
+  assert_eq!(intersects_s2, Value::Bool(false));
+  Ok(())
+}
+
+#[test]
 fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   #[derive(Default)]
   struct NoopHostHooks;

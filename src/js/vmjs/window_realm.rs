@@ -626,6 +626,26 @@ impl WindowRealmUserData {
     self.dom_platform.as_mut()
   }
 
+  pub(crate) fn with_owned_dom2_document<R>(
+    &self,
+    document_id: DocumentId,
+    f: impl FnOnce(&dom2::Document) -> R,
+  ) -> Option<R> {
+    let owned_dom2_documents = self.owned_dom2_documents.borrow();
+    owned_dom2_documents.get(&document_id).map(|dom| f(dom.as_ref()))
+  }
+
+  pub(crate) fn with_owned_dom2_document_mut<R>(
+    &mut self,
+    document_id: DocumentId,
+    f: impl FnOnce(&mut dom2::Document) -> R,
+  ) -> Option<R> {
+    let mut owned_dom2_documents = self.owned_dom2_documents.borrow_mut();
+    owned_dom2_documents
+      .get_mut(&document_id)
+      .map(|dom| f(dom.as_mut()))
+  }
+
   #[cfg(test)]
   pub(crate) fn set_dom_platform(&mut self, platform: DomPlatform) {
     self.dom_platform = Some(platform);
@@ -37887,6 +37907,116 @@ fn range_clone_contents_native(
   get_or_create_node_wrapper(vm, scope, handle.document_obj, Some(dom), fragment_id)
 }
 
+fn range_is_point_in_range_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  if node_key.document_id != handle.document_id {
+    return Ok(Value::Bool(false));
+  }
+
+  let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  match dom.range_is_point_in_range(handle.range_id, node_key.node_id, offset) {
+    Ok(v) => Ok(Value::Bool(v)),
+    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  }
+}
+
+fn range_compare_point_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  if node_key.document_id != handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      dom2::DomError::WrongDocumentError.code(),
+      "",
+    )?));
+  }
+
+  let offset_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let offset = webidl_to_uint32(vm, scope, host, hooks, offset_value)? as usize;
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  match dom.range_compare_point(handle.range_id, node_key.node_id, offset) {
+    Ok(v) => Ok(Value::Number(v as f64)),
+    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  }
+}
+
+fn range_intersects_node_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+
+  if node_key.document_id != handle.document_id {
+    return Ok(Value::Bool(false));
+  }
+
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  match dom.range_intersects_node(handle.range_id, node_key.node_id) {
+    Ok(v) => Ok(Value::Bool(v)),
+    Err(dom2::DomError::NotFoundError) => Err(VmError::TypeError("Illegal invocation")),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  }
+}
+
 fn range_delete_contents_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -47312,6 +47442,8 @@ fn init_window_globals(
     crate::js::bindings::install_document_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_document_fragment_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_shadow_root_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_abstract_range_bindings_vm_js(vm, heap, realm)?;
+    crate::js::bindings::install_range_bindings_vm_js(vm, heap, realm)?;
     crate::js::bindings::install_node_iterator_bindings_vm_js(vm, heap, realm)?;
     // Collections/DOM wrappers returned by host dispatch (e.g. `querySelectorAll`, `classList`)
     // need their WebIDL-generated constructors/prototypes installed as globals so wrapper objects
@@ -53762,6 +53894,51 @@ fn init_window_globals(
         )?;
         scope.push_root(Value::Object(func))?;
         let key = alloc_key(&mut scope, "cloneContents")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.isPointInRange.
+      {
+        let call_id = vm.register_native_call(range_is_point_in_range_native)?;
+        let name_s = scope.alloc_string("isPointInRange")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 2)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "isPointInRange")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.comparePoint.
+      {
+        let call_id = vm.register_native_call(range_compare_point_native)?;
+        let name_s = scope.alloc_string("comparePoint")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 2)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "comparePoint")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.intersectsNode.
+      {
+        let call_id = vm.register_native_call(range_intersects_node_native)?;
+        let name_s = scope.alloc_string("intersectsNode")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 1)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "intersectsNode")?;
         scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
       }
 

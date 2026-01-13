@@ -101,7 +101,20 @@ operations = [
   "createDocumentFragment",
   "createNodeIterator",
   "createTreeWalker",
+  "createRange",
 ]
+
+[[interface]]
+name = "AbstractRange"
+constructors = false
+attributes = ["startContainer", "startOffset", "endContainer", "endOffset", "collapsed"]
+operations = []
+
+[[interface]]
+name = "Range"
+constructors = true
+attributes = []
+operations = ["setStart", "setEnd", "isPointInRange", "comparePoint", "intersectsNode", "detach"]
 
 [[interface]]
 name = "DocumentFragment"
