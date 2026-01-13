@@ -23,8 +23,7 @@ use crate::ui::theme_parsing::{
   RgbaColor, ENV_BROWSER_ACCENT,
 };
 use crate::ui::url::{
-  resolve_omnibox_input, search_url_for_query, OmniboxInputResolution,
-  DEFAULT_SEARCH_ENGINE_TEMPLATE,
+  resolve_omnibox_search_query, search_url_for_query, DEFAULT_SEARCH_ENGINE_TEMPLATE,
 };
 use crate::ui::url_display;
 use crate::ui::zoom;
@@ -2368,13 +2367,9 @@ pub fn chrome_ui_with_bookmarks(
         {
           let remote = &app.chrome.remote_search_cache;
           if remote.fetched_at != app.chrome.omnibox.last_built_remote_fetched_at {
-            let remote_is_for_current_query = resolve_omnibox_input(&app.chrome.address_bar_text)
-              .ok()
-              .and_then(|r| match r {
-                OmniboxInputResolution::Search { query, .. } => Some(query),
-                OmniboxInputResolution::Url { .. } => None,
-              })
-              .is_some_and(|q| q == remote.query);
+            let remote_is_for_current_query =
+              resolve_omnibox_search_query(&app.chrome.address_bar_text)
+                .is_some_and(|q| q == remote.query.as_str());
 
             if remote_is_for_current_query {
               let input = app.chrome.address_bar_text.clone();

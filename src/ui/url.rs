@@ -348,6 +348,32 @@ pub fn resolve_omnibox_input(input: &str) -> Result<OmniboxInputResolution, Stri
   resolve_omnibox_input_with_search_template(input, DEFAULT_SEARCH_ENGINE_TEMPLATE)
 }
 
+/// Fast path for omnibox/search-suggest code paths that only need to know whether the user input
+/// should be treated as a search query.
+///
+/// This avoids constructing a full search-engine URL (percent encoding, `Url::parse`, etc.) which
+/// is relatively expensive on hot per-keystroke UI paths (omnibox suggestion building, remote
+/// suggest request scheduling).
+///
+/// Returns the trimmed query as a borrowed `&str` when the input is a search, or `None` when the
+/// input should be treated as a URL.
+pub fn resolve_omnibox_search_query(input: &str) -> Option<&str> {
+  let input = trim_ascii_whitespace(input);
+  if input.is_empty() {
+    return None;
+  }
+
+  if has_explicit_scheme(input) {
+    return None;
+  }
+
+  if omnibox_input_looks_like_url(input) {
+    return None;
+  }
+
+  Some(input)
+}
+
 pub fn resolve_omnibox_input_with_search_template(
   input: &str,
   search_engine_template: &str,
@@ -465,7 +491,7 @@ fn has_explicit_scheme(input: &str) -> bool {
 mod tests {
   use super::{
     normalize_user_url, omnibox_input_looks_like_url, resolve_link_url, resolve_omnibox_input,
-    validate_user_navigation_url_scheme, OmniboxInputResolution,
+    resolve_omnibox_search_query, validate_user_navigation_url_scheme, OmniboxInputResolution,
   };
 
   #[test]
@@ -667,5 +693,18 @@ mod tests {
       }
       other => panic!("expected Search, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn omnibox_search_query_helper_classifies_search_without_building_url() {
+    assert_eq!(resolve_omnibox_search_query("cats"), Some("cats"));
+    assert_eq!(
+      resolve_omnibox_search_query("  cats dogs  "),
+      Some("cats dogs")
+    );
+    assert_eq!(resolve_omnibox_search_query("example.com"), None);
+    assert_eq!(resolve_omnibox_search_query("localhost"), None);
+    assert_eq!(resolve_omnibox_search_query("http://localhost"), None);
+    assert_eq!(resolve_omnibox_search_query("about:help"), None);
   }
 }

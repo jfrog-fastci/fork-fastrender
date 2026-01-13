@@ -1,7 +1,7 @@
 use crate::ui::about_pages;
 use crate::ui::browser_app::{BrowserTabState, ClosedTabState, RemoteSearchSuggestCache};
 use crate::ui::messages::TabId;
-use crate::ui::url::{resolve_omnibox_input, OmniboxInputResolution};
+use crate::ui::url::{resolve_omnibox_input, resolve_omnibox_search_query, OmniboxInputResolution};
 use crate::ui::visited::{VisitedUrlRecord, VisitedUrlStore};
 use crate::ui::{BookmarkNode, BookmarkStore};
 use super::string_match::find_ascii_case_insensitive;
@@ -109,27 +109,41 @@ impl OmniboxProvider for PrimaryActionProvider {
       return Vec::new();
     }
 
-    let suggestion = match resolve_omnibox_input(input) {
-      Ok(OmniboxInputResolution::Url { url }) => OmniboxSuggestion {
-        action: OmniboxAction::NavigateToUrl(url.clone()),
-        title: None,
-        url: Some(url),
-        source: OmniboxSuggestionSource::Primary,
-      },
-      Ok(OmniboxInputResolution::Search { query, .. }) => OmniboxSuggestion {
+    // Hot path: most omnibox input is a plain search query; avoid building a full search URL when
+    // we only need the query string.
+    let suggestion = if let Some(query) = resolve_omnibox_search_query(input) {
+      let query = query.to_string();
+      OmniboxSuggestion {
         // Store the raw query in the action; navigation code is responsible for resolving it into
         // a concrete search engine URL.
         action: OmniboxAction::Search(query.clone()),
         title: Some(query),
         url: None,
         source: OmniboxSuggestionSource::Primary,
-      },
-      Err(_) => OmniboxSuggestion {
-        action: OmniboxAction::Search(input.to_string()),
-        title: Some(input.to_string()),
-        url: None,
-        source: OmniboxSuggestionSource::Primary,
-      },
+      }
+    } else {
+      match resolve_omnibox_input(input) {
+        Ok(OmniboxInputResolution::Url { url }) => OmniboxSuggestion {
+          action: OmniboxAction::NavigateToUrl(url.clone()),
+          title: None,
+          url: Some(url),
+          source: OmniboxSuggestionSource::Primary,
+        },
+        Ok(OmniboxInputResolution::Search { query, .. }) => OmniboxSuggestion {
+          // Store the raw query in the action; navigation code is responsible for resolving it into
+          // a concrete search engine URL.
+          action: OmniboxAction::Search(query.clone()),
+          title: Some(query),
+          url: None,
+          source: OmniboxSuggestionSource::Primary,
+        },
+        Err(_) => OmniboxSuggestion {
+          action: OmniboxAction::Search(input.to_string()),
+          title: Some(input.to_string()),
+          url: None,
+          source: OmniboxSuggestionSource::Primary,
+        },
+      }
     };
 
     vec![suggestion]
@@ -324,10 +338,8 @@ pub struct RemoteSearchSuggestProvider;
 
 impl OmniboxProvider for RemoteSearchSuggestProvider {
   fn suggestions(&self, ctx: &OmniboxContext<'_>, input: &str) -> Vec<OmniboxSuggestion> {
-    let query = match resolve_omnibox_input(input) {
-      Ok(OmniboxInputResolution::Search { query, .. }) => query,
-      Ok(OmniboxInputResolution::Url { .. }) => return Vec::new(),
-      Err(_) => return Vec::new(),
+    let Some(query) = resolve_omnibox_search_query(input) else {
+      return Vec::new();
     };
 
     let Some(cache) = ctx.remote_search_suggest else {
@@ -343,7 +355,7 @@ impl OmniboxProvider for RemoteSearchSuggestProvider {
       if trimmed.is_empty() {
         continue;
       }
-      if trimmed.eq_ignore_ascii_case(&query) {
+      if trimmed.eq_ignore_ascii_case(query) {
         continue;
       }
 
