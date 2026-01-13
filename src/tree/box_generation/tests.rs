@@ -226,6 +226,27 @@ fn marker_leading_decimal(marker: &str) -> i32 {
 }
 
 #[test]
+fn closed_details_without_summary_renders_default_legend_only() {
+  let dom = crate::dom::parse_html("<!doctype html><details><div>Content</div></details>")
+    .expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  let mut text = Vec::new();
+  collect_text(&box_tree.root, &mut text);
+  let combined = text.join("");
+
+  assert!(
+    combined.contains("Details"),
+    "expected closed <details> to render default legend text, got {combined:?}"
+  );
+  assert!(
+    !combined.contains("Content"),
+    "expected closed <details> to hide non-summary contents, got {combined:?}"
+  );
+}
+
+#[test]
 fn inline_svg_serialization_preserves_svg_template_children() {
   let html =
     "<!doctype html><html><body><svg><template><g id=hit></g></template></svg></body></html>";

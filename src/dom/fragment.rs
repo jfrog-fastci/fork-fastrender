@@ -215,6 +215,8 @@ pub fn parse_html_fragment_with_context_attrs(
     }
   }
 
+  super::ensure_details_have_default_summary(&mut container, &mut deadline_counter)?;
+
   // File input selection state is internal-only and must never be prefilled by authored markup, even
   // when parsing fragments (e.g. `innerHTML`).
   super::strip_authored_file_input_state(&mut container, &mut deadline_counter)?;

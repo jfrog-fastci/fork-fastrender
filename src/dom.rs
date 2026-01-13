@@ -2467,6 +2467,7 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
   }
 
   enforce_details_name_group_exclusivity(&mut root, &mut deadline_counter)?;
+  ensure_details_have_default_summary(&mut root, &mut deadline_counter)?;
   strip_authored_file_input_state(&mut root, &mut deadline_counter)?;
 
   Ok(root)
@@ -2546,6 +2547,74 @@ fn enforce_details_name_group_exclusivity(
       for child in current.children.iter().rev() {
         stack.push(child as *const DomNode as *mut DomNode);
       }
+    }
+  }
+
+  Ok(())
+}
+
+fn ensure_details_have_default_summary(node: &mut DomNode, deadline_counter: &mut usize) -> Result<()> {
+  // HTML `<details>` elements have special rendering behavior: if no `<summary>` element child is
+  // present, the user agent must provide a default legend (often "Details") so the closed details
+  // remains visible and interactive.
+  //
+  // FastRender relies on UA CSS to hide/show `<details>` contents. That UA rule expects a
+  // `<summary>` child; without one, a closed `<details>` would render nothing. We insert a
+  // synthetic `<summary>` element when missing so rendering matches browser behavior.
+  //
+  // Skip traversing into inert HTML `<template>` contents to avoid mutating non-rendered DOM.
+  let mut stack: Vec<*mut DomNode> = vec![node as *mut DomNode];
+  while let Some(ptr) = stack.pop() {
+    check_active_periodic(
+      deadline_counter,
+      DOM_PARSE_NODE_DEADLINE_STRIDE,
+      RenderStage::DomParse,
+    )?;
+
+    // SAFETY: pointers are derived from a live `DomNode` tree; we never mutate a node's `children`
+    // vector while pointers into it are stored on the stack.
+    let node = unsafe { &mut *ptr };
+
+    if node.template_contents_are_inert() {
+      continue;
+    }
+
+    let is_html_details = node_is_html_element(node)
+      && node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("details"));
+    if is_html_details {
+      let has_summary = node.children.iter().any(|child| {
+        node_is_html_element(child)
+          && child
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("summary"))
+      });
+      if !has_summary {
+        let namespace = node.namespace().unwrap_or("").to_string();
+        let summary = DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "summary".to_string(),
+            namespace,
+            attributes: Vec::new(),
+          },
+          children: vec![DomNode {
+            node_type: DomNodeType::Text {
+              content: "Details".to_string(),
+            },
+            children: Vec::new(),
+          }],
+        };
+        node.children.insert(0, summary);
+      }
+    }
+
+    let len = node.children.len();
+    let children_ptr = node.children.as_mut_ptr();
+    for idx in (0..len).rev() {
+      // SAFETY: `children_ptr` came from `node.children` and the vector is not mutated until after
+      // this node is processed, so these pointers remain valid.
+      stack.push(unsafe { children_ptr.add(idx) });
     }
   }
 
@@ -11083,6 +11152,71 @@ mod tests {
     assert_eq!(input.get_attribute_ref("data-fastr-files"), None);
     assert_eq!(input.get_attribute_ref("data-fastr-file-value"), None);
     assert_eq!(input.get_attribute_ref("value"), None);
+  }
+
+  #[test]
+  fn details_without_summary_gets_default_summary_child() {
+    let dom = parse_html("<!doctype html><details id=d><div>Content</div></details>")
+      .expect("parse html");
+    let details = find_node_by_id(&dom, "d").expect("details element");
+
+    let summary = details.children.first().expect("summary child");
+    assert!(
+      node_is_html_element(summary)
+        && summary
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("summary")),
+      "expected first child of <details> to be an HTML <summary>, got {:?}",
+      summary.tag_name()
+    );
+    assert_eq!(
+      summary.children.len(),
+      1,
+      "expected synthetic <summary> to contain a single text child"
+    );
+    match &summary.children[0].node_type {
+      DomNodeType::Text { content } => assert_eq!(content, "Details"),
+      other => panic!("expected summary text child, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn details_with_existing_summary_is_not_modified() {
+    let dom =
+      parse_html("<details id=d><summary>Custom</summary><div>Content</div></details>").expect("parse html");
+    let details = find_node_by_id(&dom, "d").expect("details element");
+
+    let summary = details.children.first().expect("summary child");
+    assert!(
+      node_is_html_element(summary)
+        && summary
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("summary")),
+      "expected first child of <details> to be an HTML <summary>"
+    );
+
+    // Ensure we didn't insert an extra synthetic summary.
+    let summary_count = details
+      .children
+      .iter()
+      .filter(|child| {
+        node_is_html_element(child)
+          && child
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("summary"))
+      })
+      .count();
+    assert_eq!(summary_count, 1, "expected exactly one <summary> child");
+
+    assert_eq!(
+      summary.children.len(),
+      1,
+      "expected authored <summary> to contain a single text child"
+    );
+    match &summary.children[0].node_type {
+      DomNodeType::Text { content } => assert_eq!(content, "Custom"),
+      other => panic!("expected summary text child, got {other:?}"),
+    }
   }
 
   #[test]
