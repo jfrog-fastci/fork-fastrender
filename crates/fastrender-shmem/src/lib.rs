@@ -86,6 +86,7 @@
 //! IPC"), remember to whitelist this memfd as well, otherwise the renderer will inherit the fd
 //! number but find it closed by the time it tries to `mmap` it.
 
+use getrandom::getrandom;
 use memmap2::{MmapMut, MmapOptions};
 use std::ffi::CString;
 use std::fs::File;
@@ -93,6 +94,50 @@ use std::io;
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+
+const SHMEM_ID_PREFIX: &str = "fastrender-shm-";
+const SHMEM_ID_RANDOM_BYTES: usize = 16; // 128 bits
+
+/// Generates a fresh shared-memory identifier suitable for POSIX `shm_open`.
+///
+/// ## Security motivation
+/// In FastRender's multiprocess model, sandboxed renderers typically run under the same UID as the
+/// browser. A compromised renderer that can guess another tab's shared-memory identifier can open
+/// and read/write its contents (owner-only mode bits don't help against same-UID attackers).
+///
+/// Therefore, identifiers must be **unguessable**: we use 128 bits of OS randomness.
+///
+/// ## Invariants
+/// - Lowercase hex (ASCII-only), with a stable `fastrender-shm-` prefix.
+/// - Contains only `[a-z0-9-]`.
+/// - Does **not** include a leading `/`; POSIX requires one for `shm_open`, but we add it only at
+///   the OS call-site.
+/// - Total length is kept well under typical OS limits (<= 64 chars).
+///
+/// ## Panics
+/// Panics if OS randomness is unavailable. Falling back to predictable identifiers would defeat
+/// the security boundary between renderer processes.
+pub fn generate_shmem_id() -> String {
+  let mut rand_bytes = [0u8; SHMEM_ID_RANDOM_BYTES];
+  getrandom(&mut rand_bytes).expect("failed to obtain OS randomness for shared memory id");
+
+  let mut out = String::with_capacity(SHMEM_ID_PREFIX.len() + (SHMEM_ID_RANDOM_BYTES * 2));
+  out.push_str(SHMEM_ID_PREFIX);
+
+  const HEX: &[u8; 16] = b"0123456789abcdef";
+  for &b in &rand_bytes {
+    out.push(HEX[(b >> 4) as usize] as char);
+    out.push(HEX[(b & 0x0f) as usize] as char);
+  }
+
+  debug_assert!(!out.contains('/'));
+  debug_assert!(
+    out.len() <= 64,
+    "shared memory ids should remain well under OS limits: got {}",
+    out.len()
+  );
+  out
+}
 
 /// Selects which shared-memory backend to use when creating a new region.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,8 +186,8 @@ pub enum ShmemHandle {
   /// A named POSIX shared-memory object (created/opened via `shm_open`).
   #[cfg(unix)]
   PosixShm {
-    /// Name passed to `shm_open` (must start with `/`).
-    name: String,
+    /// Shared-memory identifier (stored **without** the leading `/` required by `shm_open`).
+    id: String,
     /// Region size in bytes.
     len: usize,
   },
@@ -223,7 +268,11 @@ pub struct ShmemRegion {
 #[allow(dead_code)]
 enum ShmemRegionBackend {
   #[cfg(unix)]
-  PosixShm { file: File, name: String },
+  PosixShm {
+    file: File,
+    id: String,
+    creator: bool,
+  },
   #[cfg(target_os = "linux")]
   LinuxMemfd { file: File },
 }
@@ -255,15 +304,16 @@ impl ShmemRegion {
     ensure_nonzero_len(len)?;
     match handle {
       #[cfg(unix)]
-      ShmemHandle::PosixShm { name, len } => {
-        let file = open_posix_shm(name, *len)?;
+      ShmemHandle::PosixShm { id, len } => {
+        let file = open_posix_shm(id, *len)?;
         let mmap = map_file_mut(&file, *len)?;
         Ok(Self {
           len: *len,
           mmap,
           backend: ShmemRegionBackend::PosixShm {
             file,
-            name: name.clone(),
+            id: id.clone(),
+            creator: false,
           },
         })
       }
@@ -297,23 +347,41 @@ impl ShmemRegion {
   #[cfg(unix)]
   fn create_posix_shm(len: usize) -> io::Result<(Self, ShmemHandle)> {
     ensure_nonzero_len(len)?;
-    let name = generate_posix_shm_name();
-    let file = create_posix_shm(&name, len)?;
-    let mmap = map_file_mut(&file, len)?;
-    let handle = ShmemHandle::PosixShm { name, len };
-    let region = Self {
-      len,
-      mmap,
-      backend: ShmemRegionBackend::PosixShm {
-        file,
-        name: match &handle {
-          ShmemHandle::PosixShm { name, .. } => name.clone(),
-          #[allow(unreachable_patterns)]
-          _ => unreachable!(),
+
+    // Even with 128 bits of randomness, handle the (extremely unlikely) EEXIST case gracefully.
+    for _ in 0..32 {
+      let id = generate_shmem_id();
+      let (file, name) = match create_posix_shm_file(&id, len) {
+        Ok(v) => v,
+        Err(err) if err.raw_os_error() == Some(libc::EEXIST) => continue,
+        Err(err) => return Err(err),
+      };
+
+      // If mapping fails, ensure the named object doesn't leak.
+      let mut unlink_guard = PosixUnlinkGuard::new(name);
+      let mmap = match map_file_mut(&file, len) {
+        Ok(m) => m,
+        Err(err) => return Err(err),
+      };
+      unlink_guard.disarm();
+
+      let handle = ShmemHandle::PosixShm { id: id.clone(), len };
+      let region = Self {
+        len,
+        mmap,
+        backend: ShmemRegionBackend::PosixShm {
+          file,
+          id,
+          creator: true,
         },
-      },
-    };
-    Ok((region, handle))
+      };
+      return Ok((region, handle));
+    }
+
+    Err(io::Error::new(
+      io::ErrorKind::AlreadyExists,
+      "failed to create a unique POSIX shared memory name after multiple attempts",
+    ))
   }
 
   #[cfg(target_os = "linux")]
@@ -331,6 +399,22 @@ impl ShmemRegion {
       backend: ShmemRegionBackend::LinuxMemfd { file },
     };
     Ok((region, handle))
+  }
+}
+
+impl Drop for ShmemRegion {
+  fn drop(&mut self) {
+    #[cfg(unix)]
+    {
+      if let ShmemRegionBackend::PosixShm { id, creator: true, .. } = &self.backend {
+        // Best-effort cleanup. If this fails there is nothing meaningful we can do from Drop.
+        if let Ok(name) = posix_shm_name(id) {
+          unsafe {
+            libc::shm_unlink(name.as_ptr());
+          }
+        }
+      }
+    }
   }
 }
 
@@ -362,27 +446,35 @@ fn dup_fd_cloexec(fd: RawFd) -> io::Result<RawFd> {
 }
 
 #[cfg(unix)]
-fn generate_posix_shm_name() -> String {
-  use std::sync::atomic::{AtomicU64, Ordering};
-  static COUNTER: AtomicU64 = AtomicU64::new(0);
-  let pid = std::process::id();
-  let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
-  format!("/fastrender-shm-{}-{}", pid, nonce)
+fn posix_shm_name(id: &str) -> io::Result<CString> {
+  if id.is_empty() {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "posix shm id must not be empty",
+    ));
+  }
+  if id.as_bytes().iter().any(|b| *b == b'/' || *b == 0) {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "posix shm id must not contain '/' or NUL",
+    ));
+  }
+  CString::new(format!("/{id}")).map_err(|_| {
+    io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "posix shm id contained an interior NUL byte",
+    )
+  })
 }
 
 #[cfg(unix)]
-fn create_posix_shm(name: &str, len: usize) -> io::Result<File> {
-  let c_name = CString::new(name).map_err(|_| {
-    io::Error::new(
-      io::ErrorKind::InvalidInput,
-      "posix shm name contains an interior NUL byte",
-    )
-  })?;
+fn create_posix_shm_file(id: &str, len: usize) -> io::Result<(File, CString)> {
+  let name = posix_shm_name(id)?;
 
   // SAFETY: `shm_open` is an FFI call; we pass a valid NUL-terminated name and standard flags.
   let fd = unsafe {
     libc::shm_open(
-      c_name.as_ptr(),
+      name.as_ptr(),
       libc::O_CREAT | libc::O_EXCL | libc::O_RDWR | libc::O_CLOEXEC,
       0o600,
     )
@@ -391,32 +483,66 @@ fn create_posix_shm(name: &str, len: usize) -> io::Result<File> {
     return Err(io::Error::last_os_error());
   }
 
-  truncate_fd(fd, len)?;
-
   // SAFETY: we just created `fd` and transfer ownership to `File`.
-  Ok(unsafe { File::from_raw_fd(fd) })
+  let file = unsafe { File::from_raw_fd(fd) };
+
+  // Ensure we don't leak the object if sizing fails.
+  if let Err(err) = truncate_fd(file.as_raw_fd(), len) {
+    unsafe {
+      libc::shm_unlink(name.as_ptr());
+    }
+    return Err(err);
+  }
+
+  Ok((file, name))
 }
 
 #[cfg(unix)]
-fn open_posix_shm(name: &str, len: usize) -> io::Result<File> {
-  let c_name = CString::new(name).map_err(|_| {
-    io::Error::new(
-      io::ErrorKind::InvalidInput,
-      "posix shm name contains an interior NUL byte",
-    )
-  })?;
+fn open_posix_shm(id: &str, len: usize) -> io::Result<File> {
+  let name = posix_shm_name(id)?;
 
   // SAFETY: `shm_open` is an FFI call; we pass a valid NUL-terminated name and standard flags.
-  let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC, 0) };
+  let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC, 0) };
   if fd < 0 {
     return Err(io::Error::last_os_error());
   }
 
-  // Ensure the backing region is large enough before mapping.
-  truncate_fd(fd, len)?;
-
   // SAFETY: we just opened `fd` and transfer ownership to `File`.
-  Ok(unsafe { File::from_raw_fd(fd) })
+  let file = unsafe { File::from_raw_fd(fd) };
+
+  // Ensure the backing region is large enough before mapping.
+  truncate_fd(file.as_raw_fd(), len)?;
+
+  Ok(file)
+}
+
+#[cfg(unix)]
+struct PosixUnlinkGuard {
+  name: CString,
+  armed: bool,
+}
+
+#[cfg(unix)]
+impl PosixUnlinkGuard {
+  fn new(name: CString) -> Self {
+    Self { name, armed: true }
+  }
+
+  fn disarm(&mut self) {
+    self.armed = false;
+  }
+}
+
+#[cfg(unix)]
+impl Drop for PosixUnlinkGuard {
+  fn drop(&mut self) {
+    if self.armed {
+      // Best-effort; nothing meaningful can be done on failure.
+      unsafe {
+        libc::shm_unlink(self.name.as_ptr());
+      }
+    }
+  }
 }
 
 #[cfg(unix)]
@@ -547,6 +673,7 @@ fn clear_fd_cloexec(fd: RawFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::collections::HashSet;
 
   #[cfg(target_os = "linux")]
   #[test]
@@ -637,6 +764,29 @@ mod tests {
     // Clean up our manually-duplicated fd.
     unsafe {
       libc::close(target_fd);
+    }
+  }
+
+  #[test]
+  fn generate_shmem_id_is_unique_over_many_iterations() {
+    let mut seen = HashSet::new();
+    for _ in 0..1024 {
+      let id = generate_shmem_id();
+      assert!(seen.insert(id), "duplicate shared memory id generated");
+    }
+  }
+
+  #[test]
+  fn generate_shmem_id_is_ascii_safe_and_non_empty() {
+    for _ in 0..256 {
+      let id = generate_shmem_id();
+      assert!(!id.is_empty());
+      assert!(id.starts_with(SHMEM_ID_PREFIX));
+      assert!(id.len() <= 64);
+      assert!(id
+        .as_bytes()
+        .iter()
+        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')));
     }
   }
 }

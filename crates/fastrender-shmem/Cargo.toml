@@ -6,6 +6,6 @@ rust-version = "1.70"
 publish = false
 
 [dependencies]
+getrandom = "0.2"
 libc = "0.2"
 memmap2 = "0.9"
-

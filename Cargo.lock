@@ -1920,6 +1920,7 @@ dependencies = [
 name = "fastrender-shmem"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.2.17",
  "libc",
  "memmap2 0.9.9",
 ]
