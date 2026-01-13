@@ -15,6 +15,8 @@ Browser UI development:
 Multiprocess architecture & security:
 
 - Renderer IPC trust boundary: [`docs/multiprocess_threat_model.md`](multiprocess_threat_model.md)
+- IPC transport invariants (framing + size caps + shared memory safety): [`docs/ipc.md`](ipc.md)
+- Linux IPC checklist (shared memory + FD passing): [`docs/ipc_linux_fd_passing.md`](ipc_linux_fd_passing.md)
 - Sandboxing overview (renderer process): [`docs/sandboxing.md`](sandboxing.md)
 - macOS Seatbelt sandboxing (overview + probe tool): [`docs/macos_sandbox.md`](macos_sandbox.md)
 - macOS `.app` App Sandbox entitlements (future packaging): [`docs/security/macos_renderer_sandbox.md`](security/macos_renderer_sandbox.md)
