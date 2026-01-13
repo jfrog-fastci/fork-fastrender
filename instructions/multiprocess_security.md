@@ -172,6 +172,16 @@ Linux quick reference (developer overrides; documented fully in [`docs/env-vars.
 - Disable individual layers:
   - `FASTR_RENDERER_SECCOMP=0`
   - `FASTR_RENDERER_LANDLOCK=0`
+  - `FASTR_RENDERER_CLOSE_FDS=0`
+
+Code-level API quick reference:
+
+- `fastrender::sandbox::apply_renderer_sandbox(RendererSandboxConfig)` returns a `SandboxStatus`:
+  - `Applied` / `AppliedWithoutTsync` when sandboxing was installed
+  - `DisabledByEnv` when disabled via `FASTR_DISABLE_RENDERER_SANDBOX=1`
+  - `DisabledByConfig` when all sandbox layers were disabled in the provided config
+  - `ReportOnly` when `RendererSandboxConfig.report_only=true`
+  - `Unsupported` when the current platform does not implement the requested sandbox layers
 
 macOS note: FastRender prefers the system-provided Seatbelt profile `pure-computation` when
 applying a strict sandbox. Some macOS versions do not ship that named profile (or treat it as
