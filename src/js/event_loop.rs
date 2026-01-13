@@ -881,23 +881,7 @@ impl<Host: 'static> EventLoop<Host> {
   /// - Callbacks scheduled while executing the frame are deferred to the next frame.
   /// - All callbacks in the same frame observe the same timestamp argument.
   pub fn run_animation_frame(&mut self, host: &mut Host) -> Result<RunAnimationFrameOutcome> {
-    let frame_result = self.run_animation_frame_inner(host);
-    // HTML event loop semantics: an animation frame "turn" ends with a microtask checkpoint.
-    // This checkpoint must run even when there were no rAF callbacks (e.g. microtasks queued by
-    // the embedder before driving `run_animation_frame`).
-    let microtask_result = self.perform_microtask_checkpoint(host);
-    // Prefer surfacing the callback error if both the frame and checkpoint failed: this mirrors
-    // `run_next_task` error precedence.
-    match frame_result {
-      Ok(outcome) => {
-        microtask_result?;
-        Ok(outcome)
-      }
-      Err(err) => {
-        let _ = microtask_result;
-        Err(err)
-      }
-    }
+    self.run_animation_frame_inner(host)
   }
 
   /// Run one animation frame "turn", treating callback errors as uncaught exceptions.
@@ -912,14 +896,7 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnMut(Error),
   {
-    let frame_result = self.run_animation_frame_inner_with_error_handler(host, Some(&mut on_error));
-    // Like the post-task microtask checkpoint, HTML performs a microtask checkpoint at the end of
-    // each animation frame turn. Any errors surfaced by the checkpoint are treated as uncaught
-    // exceptions for this stepping API.
-    if let Err(err) = self.perform_microtask_checkpoint(host) {
-      on_error(err);
-    }
-    frame_result
+    self.run_animation_frame_inner_with_error_handler(host, Some(&mut on_error))
   }
 
   /// Perform a microtask checkpoint (HTML Standard terminology).
@@ -1674,12 +1651,6 @@ impl<Host: 'static> EventLoop<Host> {
     host: &mut Host,
     mut on_error: Option<&mut dyn FnMut(Error)>,
   ) -> Result<RunAnimationFrameOutcome> {
-    // If all callbacks have been cancelled, clear out any stale IDs from the queue.
-    if self.animation_frame_callbacks.is_empty() {
-      self.animation_frame_queue.clear();
-      return Ok(RunAnimationFrameOutcome::Idle);
-    }
-
     let previous_stage = render_control::active_stage();
     let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
     if previous_stage.is_none() {
@@ -1689,6 +1660,11 @@ impl<Host: 'static> EventLoop<Host> {
     // Integrate renderer-level cancellation/deadlines.
     let stage = render_control::active_stage().unwrap_or(self.default_deadline_stage);
     render_control::check_active(stage)?;
+
+    // If all callbacks have been cancelled, clear out any stale IDs from the queue.
+    if self.animation_frame_callbacks.is_empty() {
+      self.animation_frame_queue.clear();
+    }
 
     // Snapshot semantics: callbacks queued during this frame are deferred to the next one.
     let queued_at_start = self.animation_frame_queue.len();
@@ -1704,7 +1680,7 @@ impl<Host: 'static> EventLoop<Host> {
       is_microtask: false,
     });
 
-    let result = (|| -> Result<usize> {
+    let callbacks_result = (|| -> Result<usize> {
       let mut executed = 0usize;
       while let Some(id) = queue.pop_front() {
         // Integrate renderer-level cancellation/deadlines.
@@ -1725,21 +1701,51 @@ impl<Host: 'static> EventLoop<Host> {
       Ok(executed)
     })();
 
+    // Always clear running-task state so errors don't leave the event loop in a "running" state.
+    self.currently_running_task = None;
+
+    // HTML event loop semantics: an animation frame "turn" ends with a microtask checkpoint.
+    // This checkpoint must run even when there were no rAF callbacks (e.g. microtasks queued by
+    // the embedder before driving `run_animation_frame`).
+    let microtask_err: Option<Error> = match self.perform_microtask_checkpoint(host) {
+      Ok(()) => None,
+      Err(err) => {
+        if let Some(handler) = on_error.as_mut() {
+          (*handler)(err);
+          None
+        } else {
+          Some(err)
+        }
+      }
+    };
+
     self.currently_running_task = previous_running_task;
 
-    let executed = result?;
-    trace_span.arg_u64("executed", executed as u64);
     if self.animation_frame_callbacks.is_empty() {
       // Avoid accumulating canceled IDs in the scheduling queue when all callbacks are gone.
       self.animation_frame_queue.clear();
     }
 
-    if executed == 0 {
-      Ok(RunAnimationFrameOutcome::Idle)
-    } else {
-      Ok(RunAnimationFrameOutcome::Ran {
-        callbacks: executed,
-      })
+    match callbacks_result {
+      Ok(executed) => {
+        trace_span.arg_u64("executed", executed as u64);
+        if let Some(err) = microtask_err {
+          return Err(err);
+        }
+        if executed == 0 {
+          Ok(RunAnimationFrameOutcome::Idle)
+        } else {
+          Ok(RunAnimationFrameOutcome::Ran {
+            callbacks: executed,
+          })
+        }
+      }
+      Err(err) => {
+        // Prefer surfacing the callback error if both the frame and checkpoint failed: this mirrors
+        // `run_next_task` error precedence.
+        let _ = microtask_err;
+        Err(err)
+      }
     }
   }
 
