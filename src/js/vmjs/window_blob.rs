@@ -68,9 +68,17 @@ fn data_desc(value: Value, writable: bool) -> PropertyDescriptor {
   }
 }
 
+fn proto_data_desc(value: Value, writable: bool) -> PropertyDescriptor {
+  PropertyDescriptor {
+    enumerable: true,
+    configurable: true,
+    kind: PropertyKind::Data { value, writable },
+  }
+}
+
 fn accessor_desc(get: Value, set: Value) -> PropertyDescriptor {
   PropertyDescriptor {
-    enumerable: false,
+    enumerable: true,
     configurable: true,
     kind: PropertyKind::Accessor { get, set },
   }
@@ -927,7 +935,7 @@ pub fn install_window_blob_bindings(
     .heap_mut()
     .object_set_prototype(slice_fn, Some(intr.function_prototype()))?;
   let slice_key = alloc_key(&mut scope, "slice")?;
-  scope.define_property(proto, slice_key, data_desc(Value::Object(slice_fn), true))?;
+  scope.define_property(proto, slice_key, proto_data_desc(Value::Object(slice_fn), true))?;
 
   let text_call_id: NativeFunctionId = vm.register_native_call(blob_text_native)?;
   let text_name = scope.alloc_string("text")?;
@@ -944,7 +952,7 @@ pub fn install_window_blob_bindings(
     .heap_mut()
     .object_set_prototype(text_fn, Some(intr.function_prototype()))?;
   let text_key = alloc_key(&mut scope, "text")?;
-  scope.define_property(proto, text_key, data_desc(Value::Object(text_fn), true))?;
+  scope.define_property(proto, text_key, proto_data_desc(Value::Object(text_fn), true))?;
 
   let ab_call_id: NativeFunctionId = vm.register_native_call(blob_array_buffer_native)?;
   let ab_name = scope.alloc_string("arrayBuffer")?;
@@ -961,7 +969,7 @@ pub fn install_window_blob_bindings(
     .heap_mut()
     .object_set_prototype(ab_fn, Some(intr.function_prototype()))?;
   let ab_key = alloc_key(&mut scope, "arrayBuffer")?;
-  scope.define_property(proto, ab_key, data_desc(Value::Object(ab_fn), true))?;
+  scope.define_property(proto, ab_key, proto_data_desc(Value::Object(ab_fn), true))?;
 
   let stream_call_id: NativeFunctionId = vm.register_native_call(blob_stream_native)?;
   let stream_name = scope.alloc_string("stream")?;
@@ -978,7 +986,7 @@ pub fn install_window_blob_bindings(
     .object_set_prototype(stream_fn, Some(intr.function_prototype()))?;
   scope.push_root(Value::Object(stream_fn))?;
   let stream_key = alloc_key(&mut scope, "stream")?;
-  scope.define_property(proto, stream_key, data_desc(Value::Object(stream_fn), true))?;
+  scope.define_property(proto, stream_key, proto_data_desc(Value::Object(stream_fn), true))?;
 
   let to_string_tag = intr.well_known_symbols().to_string_tag;
   let tag_key = PropertyKey::from_symbol(to_string_tag);
@@ -1447,6 +1455,51 @@ mod tests {
     )?;
     assert_eq!(get_string(realm.heap(), result), "ok");
 
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn blob_prototype_property_enumerability_matches_engines() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = realm.exec_script(
+      r#"
+(() => {
+  const textDesc = Object.getOwnPropertyDescriptor(Blob.prototype, 'text');
+  if (!textDesc) return 'missing Blob.prototype.text descriptor';
+  if (textDesc.enumerable !== true) return 'Blob.prototype.text should be enumerable';
+
+  const sliceDesc = Object.getOwnPropertyDescriptor(Blob.prototype, 'slice');
+  if (!sliceDesc) return 'missing Blob.prototype.slice descriptor';
+  if (sliceDesc.enumerable !== true) return 'Blob.prototype.slice should be enumerable';
+
+  const abDesc = Object.getOwnPropertyDescriptor(Blob.prototype, 'arrayBuffer');
+  if (!abDesc) return 'missing Blob.prototype.arrayBuffer descriptor';
+  if (abDesc.enumerable !== true) return 'Blob.prototype.arrayBuffer should be enumerable';
+
+  const streamDesc = Object.getOwnPropertyDescriptor(Blob.prototype, 'stream');
+  if (!streamDesc) return 'missing Blob.prototype.stream descriptor';
+  if (streamDesc.enumerable !== true) return 'Blob.prototype.stream should be enumerable';
+
+  const sizeDesc = Object.getOwnPropertyDescriptor(Blob.prototype, 'size');
+  if (!sizeDesc) return 'missing Blob.prototype.size descriptor';
+  if (sizeDesc.enumerable !== true) return 'Blob.prototype.size should be enumerable';
+
+  const typeDesc = Object.getOwnPropertyDescriptor(Blob.prototype, 'type');
+  if (!typeDesc) return 'missing Blob.prototype.type descriptor';
+  if (typeDesc.enumerable !== true) return 'Blob.prototype.type should be enumerable';
+
+  const tagDesc = Object.getOwnPropertyDescriptor(Blob.prototype, Symbol.toStringTag);
+  if (!tagDesc) return 'missing Blob.prototype[@@toStringTag] descriptor';
+  if (tagDesc.enumerable !== false) return 'Blob.prototype[@@toStringTag] should be non-enumerable';
+
+  return 'ok';
+})()
+"#,
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
     realm.teardown();
     Ok(())
   }
