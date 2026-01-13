@@ -64,6 +64,66 @@ pub fn configure_renderer_command(
   }
 }
 
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+  use super::*;
+  use crate::sandbox::macos::{ENV_DISABLE_RENDERER_SANDBOX, ENV_MACOS_RENDERER_SANDBOX};
+  use crate::sandbox::macos_spawn::ENV_MACOS_USE_SANDBOX_EXEC;
+  use std::ffi::OsStr;
+  use std::path::Path;
+  use std::process::Command;
+
+  #[test]
+  fn configure_renderer_command_wraps_with_sandbox_exec_when_env_gate_enabled() {
+    let _guard = crate::testing::global_test_lock();
+
+    let prev_gate = std::env::var_os(ENV_MACOS_USE_SANDBOX_EXEC);
+    let prev_disable = std::env::var_os(ENV_DISABLE_RENDERER_SANDBOX);
+    let prev_profile = std::env::var_os(ENV_MACOS_RENDERER_SANDBOX);
+
+    std::env::set_var(ENV_MACOS_USE_SANDBOX_EXEC, "1");
+    std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX);
+    std::env::remove_var(ENV_MACOS_RENDERER_SANDBOX);
+
+    if !Path::new("/usr/bin/sandbox-exec").is_file() {
+      eprintln!("skipping: /usr/bin/sandbox-exec is missing");
+      restore_env(prev_gate, prev_disable, prev_profile);
+      return;
+    }
+
+    let mut cmd = Command::new("/usr/bin/true");
+    configure_renderer_command(&mut cmd, RendererSandboxConfig::default())
+      .expect("configure_renderer_command should succeed");
+
+    assert_eq!(
+      cmd.get_program(),
+      OsStr::new("/usr/bin/sandbox-exec"),
+      "expected command to be wrapped under sandbox-exec"
+    );
+
+    restore_env(prev_gate, prev_disable, prev_profile);
+  }
+
+  fn restore_env(
+    prev_gate: Option<std::ffi::OsString>,
+    prev_disable: Option<std::ffi::OsString>,
+    prev_profile: Option<std::ffi::OsString>,
+  ) {
+    match prev_gate {
+      Some(value) => std::env::set_var(ENV_MACOS_USE_SANDBOX_EXEC, value),
+      None => std::env::remove_var(ENV_MACOS_USE_SANDBOX_EXEC),
+    }
+    match prev_disable {
+      Some(value) => std::env::set_var(ENV_DISABLE_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(ENV_DISABLE_RENDERER_SANDBOX),
+    }
+    match prev_profile {
+      Some(value) => std::env::set_var(ENV_MACOS_RENDERER_SANDBOX, value),
+      None => std::env::remove_var(ENV_MACOS_RENDERER_SANDBOX),
+    }
+  }
+}
+
 #[cfg(all(unix, target_os = "linux"))]
 #[derive(Debug, Clone, Copy)]
 struct LinuxPreExecConfig {
