@@ -2373,6 +2373,23 @@ impl<Host> webidl_js_runtime::WebIdlJsRuntime for VmJsWebIdlBindingsCx<'_, Host>
     self.state.hooks.as_ref()
   }
 
+  fn promise_resolve(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error> {
+    // Spec: https://tc39.es/ecma262/#sec-promise-resolve
+    //
+    // Delegate to `vm-js`'s spec-shaped helper so:
+    // - Promise objects are returned directly when already from the intrinsic %Promise% constructor,
+    // - thenables are assimilated via their `then` method, and
+    // - the returned value is always a Promise object.
+    let mut dummy_hooks = NoopVmHostHooks;
+    let promise = if let Some(hooks) = self.vm_host_hooks.as_deref_mut() {
+      vm_js::promise_resolve(&mut *self.cx.vm, &mut self.cx.scope, hooks, value)?
+    } else {
+      vm_js::promise_resolve(&mut *self.cx.vm, &mut self.cx.scope, &mut dummy_hooks, value)?
+    };
+    self.cx.scope.push_root(promise)?;
+    Ok(promise)
+  }
+
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error> {
     let sym =
       webidl::JsRuntime::well_known_symbol(&mut self.cx, webidl::WellKnownSymbol::Iterator)?;
