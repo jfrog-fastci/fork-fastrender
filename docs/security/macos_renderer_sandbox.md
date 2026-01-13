@@ -114,21 +114,21 @@ Some tests and tooling can opt into launching a renderer already sandboxed using
 Render smoke test under the strict Seatbelt sandbox (`pure-computation`):
 
 ```bash
-bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Force the relaxed "system fonts" profile (useful for bring-up):
 
 ```bash
 FASTR_MACOS_RENDERER_SANDBOX=system-fonts \
-  bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+  bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Disable the renderer sandbox entirely (debug escape hatch; insecure):
 
 ```bash
 FASTR_DISABLE_RENDERER_SANDBOX=1 \
-  bash scripts/cargo_agent.sh test -p fastrender --test macos_seatbelt_render_smoke -- --nocapture
+  bash scripts/cargo_agent.sh test -p fastrender --test integration sandbox::macos_seatbelt_render_smoke -- --nocapture
 ```
 
 Probe IPC allowances under a minimal SBPL-based renderer profile:
