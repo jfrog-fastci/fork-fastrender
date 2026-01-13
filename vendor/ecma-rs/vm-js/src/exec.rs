@@ -7484,6 +7484,9 @@ impl<'a> Evaluator<'a> {
     // For-body `{ ... }` is block-scoped, but `parse-js` does not represent it as a `Stmt::Block`.
     // Mirror `eval_block_stmt` so lexical declarations inside the body are instantiated in a fresh
     // lexical environment each time the body is evaluated (i.e. per loop iteration).
+    //
+    // If the body declares no lexical bindings, evaluating the statement list in the existing
+    // lexical environment is equivalent to creating a fresh empty environment.
     let needs_lexical_env = body.body.iter().any(|stmt| match &*stmt.stx {
       Stmt::VarDecl(var) if matches!(var.stx.mode, VarDeclMode::Let | VarDeclMode::Const) => true,
       Stmt::ClassDecl(_) => true,
@@ -31617,6 +31620,27 @@ mod tests {
       "expected IteratorClose return-result TypeError to override the yield* missing-throw TypeError"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn for_triple_body_let_decls_do_not_reinitialize_across_iterations() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      let sum = 0;
+      for (let i = 0; i < 2; i++) {
+        let x = i;
+        sum = sum + x;
+      }
+      sum;
+    "#,
+    )?;
+
+    assert_eq!(value, Value::Number(1.0));
     Ok(())
   }
 }
