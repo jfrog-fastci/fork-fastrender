@@ -310,7 +310,6 @@ impl TimedAudioQueue {
 
     self.cursor_frame = Some(end_frame);
     self.prune_before_frame(end_frame);
-    self.normalize();
 
     let frames_silence = frames.saturating_sub(frames_audio);
     ReadResult {
@@ -322,20 +321,29 @@ impl TimedAudioQueue {
 
   fn prune_before_frame(&mut self, frame: u64) {
     let channels = self.channels as usize;
-    let mut new = VecDeque::with_capacity(self.segments.len());
-    while let Some(mut seg) = self.segments.pop_front() {
-      if seg.end_frame(channels) <= frame {
+    loop {
+      let Some(front) = self.segments.front_mut() else {
+        break;
+      };
+
+      if front.end_frame(channels) <= frame {
+        self.segments.pop_front();
         continue;
       }
-      if seg.start_frame < frame {
-        let skip = frame - seg.start_frame;
-        seg.trim_prefix_frames(skip, channels);
+
+      if front.start_frame < frame {
+        let skip = frame - front.start_frame;
+        front.trim_prefix_frames(skip, channels);
+        if front.remaining_frames(channels) == 0 {
+          self.segments.pop_front();
+          continue;
+        }
       }
-      if seg.remaining_frames(channels) > 0 {
-        new.push_back(seg);
-      }
+
+      // Because segments are kept in timestamp order and normalized to be non-overlapping, at most
+      // one segment (the new front) can straddle `frame`.
+      break;
     }
-    self.segments = new;
   }
 
   fn normalize(&mut self) {
