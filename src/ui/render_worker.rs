@@ -38,7 +38,8 @@ use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   BrowserMediaPreferences, CursorKind, DatalistOption, DownloadId, DownloadOutcome, NavigationReason,
-  PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
+  MediaCommand, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WakeReason,
+  WorkerToUi,
 };
 use super::router_coalescer::UiToWorkerRouterCoalescer;
 use crate::ui::protocol_limits::{MAX_FAVICON_BYTES, MAX_FAVICON_EDGE_PX};
@@ -444,6 +445,130 @@ struct HitTestFragmentTreeCache {
   scroll_elements: HashMap<usize, Point>,
 }
 
+// -----------------------------------------------------------------------------
+// Media wakeup scheduling
+// -----------------------------------------------------------------------------
+//
+// Media playback (audio/video) needs precise, per-tab wakeups without forcing the global 16ms
+// animation tick to run continuously. The UI loop can sleep in `WaitUntil` by honoring
+// `WorkerToUi::RequestWakeAfter { reason: WakeReason::Media }`, and will deliver that wake as a
+// `UiToWorker::Tick` for the requested tab.
+//
+// NOTE: This is intentionally driven by a real clock (`Instant::now()`); `UiToWorker::Tick` is a
+// wake-up signal, not a time source. See `docs/media_clocking.md`.
+
+/// Default cadence used by the (currently stub) media scheduler when something is playing.
+///
+/// Real media playback will provide more precise deadlines (next video frame, audio buffer
+/// threshold, etc). Until then, this provides a bounded periodic wakeup when media is marked as
+/// playing.
+const MEDIA_WAKE_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Epsilon for suppressing redundant `RequestWakeAfter` messages when the effective requested
+/// deadline has not changed meaningfully.
+const MEDIA_WAKE_DEDUP_EPSILON: Duration = Duration::from_millis(2);
+
+#[derive(Debug, Clone, Copy)]
+struct TabMediaWakeState {
+  playing: bool,
+  next_deadline: Option<Instant>,
+  last_requested_deadline: Option<Instant>,
+}
+
+impl Default for TabMediaWakeState {
+  fn default() -> Self {
+    Self {
+      playing: false,
+      next_deadline: None,
+      last_requested_deadline: None,
+    }
+  }
+}
+
+impl TabMediaWakeState {
+  fn handle_command(&mut self, command: MediaCommand, now: Instant) {
+    match command {
+      MediaCommand::TogglePlayPause => {
+        if self.playing {
+          self.playing = false;
+          self.next_deadline = None;
+        } else {
+          self.playing = true;
+          // Prime an immediate wake so the playback pipeline can start without waiting a full
+          // frame interval.
+          self.next_deadline = Some(now);
+        }
+      }
+      MediaCommand::SeekToSeconds(_)
+      | MediaCommand::SeekBySeconds(_)
+      | MediaCommand::ToggleMute
+      | MediaCommand::SetVolume(_) => {
+        // For now, treat other commands as "needs an immediate wake" when already playing so any
+        // time-dependent state can respond promptly (e.g. seek → new frame).
+        if self.playing {
+          self.next_deadline = Some(now);
+        }
+      }
+    }
+  }
+
+  fn on_tick(&mut self, now: Instant) {
+    if !self.playing {
+      self.next_deadline = None;
+      return;
+    }
+
+    let Some(mut deadline) = self.next_deadline else {
+      self.next_deadline = now.checked_add(MEDIA_WAKE_INTERVAL);
+      return;
+    };
+
+    if now < deadline {
+      // Tick arrived early (e.g. due to CSS animation ticking); keep the existing schedule.
+      return;
+    }
+
+    // Advance by fixed intervals from the previous deadline to avoid drift/jitter. If we missed
+    // multiple intervals (e.g. tab was backgrounded), skip ahead in one step to keep this
+    // panic-free and avoid unbounded looping.
+    if MEDIA_WAKE_INTERVAL.is_zero() {
+      self.next_deadline = Some(now);
+      return;
+    }
+
+    let behind = now.duration_since(deadline);
+    let interval_ns = MEDIA_WAKE_INTERVAL.as_nanos();
+    let behind_ns = behind.as_nanos();
+    let steps = behind_ns
+      .checked_div(interval_ns)
+      .and_then(|q| q.checked_add(1))
+      .unwrap_or(1);
+    let advance_ns = steps.saturating_mul(interval_ns);
+    let advance = Duration::from_nanos(u64::try_from(advance_ns).unwrap_or(u64::MAX));
+    deadline = match deadline.checked_add(advance) {
+      Some(next) => next,
+      None => {
+        // Overflow is practically unreachable, but be defensive: disable wakeups rather than
+        // looping forever.
+        self.next_deadline = None;
+        return;
+      }
+    };
+    self.next_deadline = Some(deadline);
+  }
+
+  fn next_media_wake_deadline(&self) -> Option<Instant> {
+    if self.playing { self.next_deadline } else { None }
+  }
+
+  fn next_media_wake_after(&self, now: Instant) -> Duration {
+    match self.next_media_wake_deadline() {
+      Some(deadline) => deadline.saturating_duration_since(now),
+      None => Duration::MAX,
+    }
+  }
+}
+
 struct TabState {
   history: TabHistory,
   loading: bool,
@@ -517,6 +642,7 @@ struct TabState {
   force_repaint: bool,
 
   tick_time: Duration,
+  media: TabMediaWakeState,
 
   /// Site key (origin) of the last successfully committed navigation.
   ///
@@ -572,6 +698,7 @@ impl TabState {
       needs_repaint: false,
       force_repaint: false,
       tick_time: Duration::ZERO,
+      media: TabMediaWakeState::default(),
       site_key: None,
       site_mismatch_restarts: 0,
       find: FindInPageWorkerState::default(),
@@ -2994,6 +3121,7 @@ impl BrowserRuntime {
       }
       UiToWorker::Tick { tab_id, delta } => {
         self.handle_tick(tab_id, delta);
+        self.maybe_request_media_wakeup(tab_id);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -3601,12 +3729,24 @@ impl BrowserRuntime {
         node_id,
         command,
       } => {
+        let now = Instant::now();
+        {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
+          };
+          tab.media.handle_command(command, now);
+        }
+
         // Media playback is owned by the renderer/DOM subsystem; for now, treat this as an input
         // event and surface it via the debug log so front-ends can validate wiring.
-        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
-          tab_id,
-          line: format!("MediaCommand node_id={node_id} command={command:?}"),
-        });
+        if self.debug_log_enabled {
+          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("MediaCommand node_id={node_id} command={command:?}"),
+          });
+        }
+
+        self.maybe_request_media_wakeup(tab_id);
       }
       UiToWorker::A11ySetFocus { tab_id, node_id } => {
         self.handle_a11y_set_focus(tab_id, node_id);
@@ -4576,6 +4716,44 @@ impl BrowserRuntime {
       }
       tab.js_dom_mutation_generation = generation_after;
     }
+
+    // Advance media playback scheduling based on a real clock. `UiToWorker::Tick` is a wake-up
+    // signal; media state must not treat it as a fixed-time-step update.
+    tab.media.on_tick(Instant::now());
+  }
+
+  fn maybe_request_media_wakeup(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+
+    let now = Instant::now();
+    let desired_deadline = tab.media.next_media_wake_deadline();
+
+    let unchanged = match (tab.media.last_requested_deadline, desired_deadline) {
+      (None, None) => true,
+      (Some(prev), Some(next)) => {
+        let diff = if prev >= next {
+          prev.duration_since(next)
+        } else {
+          next.duration_since(prev)
+        };
+        diff <= MEDIA_WAKE_DEDUP_EPSILON
+      }
+      _ => false,
+    };
+
+    if unchanged {
+      return;
+    }
+
+    tab.media.last_requested_deadline = desired_deadline;
+    let after = tab.media.next_media_wake_after(now);
+    let _ = self.ui_tx.send(WorkerToUi::RequestWakeAfter {
+      tab_id,
+      after,
+      reason: WakeReason::Media,
+    });
   }
 
   fn handle_find_query(&mut self, tab_id: TabId, query: &str, case_sensitive: bool) {
@@ -11424,6 +11602,78 @@ mod base_url_tests {
       !re.is_match(src),
       "render_worker.rs should not call `.to_owned()` on base_url_for_links(...)"
     );
+  }
+}
+
+#[cfg(test)]
+mod media_wakeup_tests {
+  use super::*;
+  use std::sync::mpsc::Receiver;
+  use std::time::Duration;
+ 
+  fn recv_media_wake(rx: &Receiver<WorkerToUi>) -> (TabId, Duration, WakeReason) {
+    let msg = rx
+      .recv_timeout(Duration::from_secs(1))
+      .unwrap_or_else(|err| panic!("timed out waiting for RequestWakeAfter: {err:?}"));
+    match msg {
+      WorkerToUi::RequestWakeAfter { tab_id, after, reason } => (tab_id, after, reason),
+      other => panic!("unexpected WorkerToUi message while waiting for wakeup: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn media_wakeup_requests_are_emitted_and_cancelled() -> crate::Result<()> {
+    let (_ui_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+
+    let factory = default_ui_worker_factory()?;
+    let downloads: Arc<Mutex<HashMap<DownloadId, ActiveDownload>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let mut runtime = BrowserRuntime::new(ui_rx, worker_tx, factory, downloads);
+
+    let tab_id = TabId::new();
+    runtime.handle_message(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: CancelGens::new(),
+    });
+
+    // Start playback.
+    runtime.handle_message(UiToWorker::MediaCommand {
+      tab_id,
+      node_id: 1,
+      command: MediaCommand::TogglePlayPause,
+    });
+
+    let (wake_tab, after0, reason0) = recv_media_wake(&worker_rx);
+    assert_eq!(wake_tab, tab_id);
+    assert_eq!(reason0, WakeReason::Media);
+    assert_ne!(after0, Duration::MAX, "expected playing media to request a wakeup");
+
+    // Simulate the UI delivering the wakeup as a tick; the worker should request another wakeup.
+    runtime.handle_message(UiToWorker::Tick {
+      tab_id,
+      delta: Duration::from_millis(16),
+    });
+
+    let (wake_tab, after1, reason1) = recv_media_wake(&worker_rx);
+    assert_eq!(wake_tab, tab_id);
+    assert_eq!(reason1, WakeReason::Media);
+    assert_ne!(after1, Duration::MAX, "expected media playback to continue scheduling wakeups");
+
+    // Pause playback and ensure the wakeup is cancelled.
+    runtime.handle_message(UiToWorker::MediaCommand {
+      tab_id,
+      node_id: 1,
+      command: MediaCommand::TogglePlayPause,
+    });
+
+    let (wake_tab, after2, reason2) = recv_media_wake(&worker_rx);
+    assert_eq!(wake_tab, tab_id);
+    assert_eq!(reason2, WakeReason::Media);
+    assert_eq!(after2, Duration::MAX, "expected paused media to cancel wakeups");
+
+    Ok(())
   }
 }
 
