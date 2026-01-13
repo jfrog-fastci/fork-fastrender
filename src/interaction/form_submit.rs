@@ -680,13 +680,36 @@ fn serialize_urlencoded(entries: &[FormDataEntry]) -> Option<String> {
 }
 
 fn escape_multipart_value(value: &str) -> String {
-  let mut out = String::new();
+  // `name=` and `filename=` parameters are serialized inside a single `Content-Disposition` header
+  // line. Inputs may contain CR/LF/control characters (e.g. from markup or OS filenames), which
+  // would split headers and allow header injection.
+  //
+  // Sanitize by removing ASCII control characters before escaping and cap the output length to
+  // prevent unbounded allocations from malicious inputs.
+  const MAX_BYTES: usize = 1024;
+  let mut out = String::with_capacity(value.len().min(MAX_BYTES));
+  let mut out_len = 0usize;
+
   for ch in value.chars() {
-    if ch == '"' || ch == '\\' {
+    // Remove ASCII control characters (including CR/LF and NUL). Keep other Unicode characters.
+    if ch.is_ascii_control() {
+      continue;
+    }
+
+    let needs_escape = ch == '"' || ch == '\\';
+    let add_len = ch.len_utf8() + if needs_escape { 1 } else { 0 };
+    let next_len = out_len.checked_add(add_len).unwrap_or(usize::MAX);
+    if next_len > MAX_BYTES {
+      break;
+    }
+
+    if needs_escape {
       out.push('\\');
     }
     out.push(ch);
+    out_len = next_len;
   }
+
   out
 }
 
@@ -1811,6 +1834,48 @@ mod dom2_tests {
     assert_eq!(
       submission.url, "https://example.com/submit?s=a",
       "options inside inert template subtrees must not contribute to successful controls"
+    );
+  }
+}
+
+#[cfg(test)]
+mod multipart_tests {
+  use super::*;
+
+  #[test]
+  fn multipart_filename_crlf_injection_is_sanitized() {
+    let entries = vec![FormDataEntry::File {
+      name: "file".to_string(),
+      filename: "evil\"\r\nX: y".to_string(),
+      content_type: "text/plain".to_string(),
+      bytes: b"hello".to_vec(),
+    }];
+
+    let (body, _boundary) = serialize_multipart_form_data(&entries);
+    let body_str = String::from_utf8(body).expect("multipart body must be valid UTF-8 for test");
+
+    // The injected header line must not appear in the body.
+    assert!(
+      !body_str.contains("\r\nX: y"),
+      "multipart body contains injected header line: {body_str:?}"
+    );
+
+    // The quote should still be escaped in the serialized header parameter value.
+    assert!(
+      body_str.contains("filename=\"evil\\\"X: y\""),
+      "expected escaped filename not found: {body_str:?}"
+    );
+  }
+
+  #[test]
+  fn multipart_value_strips_controls_and_escapes_quotes() {
+    let input = "a\u{0000}\u{001f}b\"c\\d\r\ne";
+    let escaped = escape_multipart_value(input);
+    assert_eq!(escaped, "ab\\\"c\\\\de");
+
+    assert!(
+      !escaped.chars().any(|c| c.is_ascii_control()),
+      "escaped value must not contain ASCII control characters: {escaped:?}"
     );
   }
 }
