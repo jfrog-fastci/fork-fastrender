@@ -181,6 +181,17 @@ fn regexp_quantifier_iterations_reset_inner_captures() {
     .unwrap();
   assert_eq!(value, Value::Undefined);
 
+  // Backreference should observe the cleared capture from the last iteration.
+  let value = rt
+    .exec_script(
+      r#"(() => {
+        const m = "ab".match(/(?:(a)|b)+\1/);
+        return m !== null && m[0] === "ab" && m[1] === undefined;
+      })()"#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+
   // Nested quantifier: the inner optional `(b)?` capture must also be cleared between `{2}`
   // iterations.
   let value = rt
