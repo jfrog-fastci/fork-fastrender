@@ -6,7 +6,7 @@
 /// This logic is kept egui/winit-free so it can be unit tested without creating a real window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DownloadsPanelPolicyInput {
-  /// True when the window receiving the worker message is the active/focused window.
+  /// True when the window receiving the worker message is the active window in the browser.
   ///
   /// Only the active window should auto-open its downloads panel; background windows should not
   /// steal space/focus.
