@@ -40,24 +40,13 @@ fn is_unimplemented_async_generator_error(rt: &mut JsRuntime, err: &VmError) -> 
   Ok(message == "async generator functions")
 }
 
-fn feature_detect_async_generators(rt: &mut JsRuntime) -> Result<bool, VmError> {
-  match rt.exec_script("async function* __ag_support() {}") {
-    Ok(_) => Ok(true),
-    Err(err) if is_unimplemented_async_generator_error(rt, &err)? => Ok(false),
-    Err(err) => Err(err),
-  }
-}
-
 #[test]
 fn async_generator_return_triggers_finally_and_finally_can_yield() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
   // Ensure we don't leak queued microtasks even if this test fails.
   let result: Result<(), VmError> = (|| {
-    if !feature_detect_async_generators(&mut rt)? {
-      return Ok(());
-    }
-    rt.exec_script(
+    match rt.exec_script(
       r#"
         var ok = "pending";
 
@@ -85,7 +74,11 @@ fn async_generator_return_triggers_finally_and_finally_can_yield() -> Result<(),
 
         ok
       "#,
-    )?;
+    ) {
+      Ok(_) => {}
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    }
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
@@ -104,10 +97,7 @@ fn async_generator_throw_triggers_finally_and_finally_can_yield() -> Result<(), 
   let mut rt = new_runtime();
 
   let result: Result<(), VmError> = (|| {
-    if !feature_detect_async_generators(&mut rt)? {
-      return Ok(());
-    }
-    rt.exec_script(
+    match rt.exec_script(
       r#"
         var ok = "pending";
 
@@ -145,7 +135,11 @@ fn async_generator_throw_triggers_finally_and_finally_can_yield() -> Result<(), 
 
         ok
       "#,
-    )?;
+    ) {
+      Ok(_) => {}
+      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) => return Err(err),
+    }
 
     rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
 
