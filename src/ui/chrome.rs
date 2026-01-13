@@ -2944,6 +2944,7 @@ pub fn chrome_ui_with_bookmarks(
           };
           resp = resp.on_hover_text(tooltip.clone());
           show_tooltip_on_focus(ui, &resp, &tooltip);
+          paint_focus_ring(ui, &resp, focus_ring);
           if let Some(hex) = app.appearance.accent_color.as_deref() {
             ui.monospace(hex);
           } else {
