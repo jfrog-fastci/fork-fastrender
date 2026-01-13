@@ -755,6 +755,14 @@ fn group_chip_width(ui: &egui::Ui, label: &str) -> f32 {
     .clamp(GROUP_CHIP_MIN_WIDTH, GROUP_CHIP_MAX_WIDTH)
 }
 
+fn group_chip_a11y_label(title: &str, collapsed: bool) -> String {
+  if collapsed {
+    format!("Expand tab group: {title}")
+  } else {
+    format!("Collapse tab group: {title}")
+  }
+}
+
 fn group_chip_ui(
   ui: &mut egui::Ui,
   motion: UiMotion,
@@ -783,7 +791,7 @@ fn group_chip_ui(
     response = response.on_hover_text(title.as_str());
   }
   response.widget_info({
-    let label = format!("Tab group: {title}");
+    let label = group_chip_a11y_label(&title, collapsed);
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
   });
 
@@ -2549,6 +2557,18 @@ mod tests {
     assert!(
       (total - pinned - unpinned) >= -1e-3,
       "expected gap to be non-negative"
+    );
+  }
+
+  #[test]
+  fn group_chip_a11y_label_uses_expand_collapse_semantics() {
+    assert_eq!(
+      group_chip_a11y_label("Reading list", true),
+      "Expand tab group: Reading list"
+    );
+    assert_eq!(
+      group_chip_a11y_label("Reading list", false),
+      "Collapse tab group: Reading list"
     );
   }
 }
