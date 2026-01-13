@@ -26,6 +26,8 @@ pub enum TaskSource {
   Microtask,
   Networking,
   DOMManipulation,
+  /// Tasks originating from user interactions or host-driven UI events (e.g. chrome page updates).
+  UserInteraction,
   Timer,
   MediaQueryList,
   IdleCallback,
@@ -37,6 +39,7 @@ fn task_source_name(source: TaskSource) -> &'static str {
     TaskSource::Microtask => "Microtask",
     TaskSource::Networking => "Networking",
     TaskSource::DOMManipulation => "DOMManipulation",
+    TaskSource::UserInteraction => "UserInteraction",
     TaskSource::Timer => "Timer",
     TaskSource::MediaQueryList => "MediaQueryList",
     TaskSource::IdleCallback => "IdleCallback",

@@ -5,6 +5,12 @@ pub enum IpcError {
   #[error("IPC stream ended unexpectedly")]
   UnexpectedEof,
 
+  #[error("invalid parameters: {message}")]
+  InvalidParameters { message: String },
+
+  #[error("IPC protocol violation: {message}")]
+  ProtocolViolation { message: String },
+
   #[error("I/O error during IPC: {0}")]
   Io(#[source] std::io::Error),
 
