@@ -8405,6 +8405,18 @@ impl App {
           fastrender::ui::MenuCommand::ToggleBookmarkThisPage => {
             self.toggle_bookmark_for_active_tab();
           }
+          fastrender::ui::MenuCommand::ToggleFullScreen => {
+            let currently_fullscreen = self.window.fullscreen().is_some();
+            if currently_fullscreen {
+              self.window.set_fullscreen(None);
+            } else {
+              let monitor = self.window.current_monitor().or_else(|| self.window.primary_monitor());
+              self
+                .window
+                .set_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)));
+            }
+            self.window.request_redraw();
+          }
           fastrender::ui::MenuCommand::Quit => {
             self.shutdown();
             *control_flow = winit::event_loop::ControlFlow::Exit;

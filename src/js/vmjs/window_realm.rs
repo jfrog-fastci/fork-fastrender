@@ -1,5 +1,6 @@
 use crate::api::{BrowserDocumentDom2, BrowserTabHost, ConsoleMessageLevel};
 use crate::dom2::{self, NodeId, NodeKind};
+use crate::geometry::Rect;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::js::bindings::DomExceptionClassVmJs;
 use crate::js::clock::{Clock, RealClock};
@@ -31,7 +32,6 @@ use crate::resource::{
   ReferrerPolicy, ResourceFetcher,
 };
 use crate::style::media::MediaContext;
-use crate::Rect;
 use crate::web::events as web_events;
 use base64::engine::general_purpose;
 use base64::Engine as _;

@@ -26,9 +26,24 @@ const SHORTCUT_REOPEN_TAB: &str = "Cmd+Shift+T";
 const SHORTCUT_REOPEN_TAB: &str = "Ctrl+Shift+T";
 
 #[cfg(target_os = "macos")]
+const SHORTCUT_NEW_WINDOW: &str = "Cmd+N";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_NEW_WINDOW: &str = "Ctrl+N";
+
+#[cfg(target_os = "macos")]
 const SHORTCUT_RELOAD: &str = "Cmd+R";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_RELOAD: &str = "Ctrl+R";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_BOOKMARK_MANAGER: &str = "Cmd+Shift+O";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_BOOKMARK_MANAGER: &str = "Ctrl+Shift+O";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_TOGGLE_FULLSCREEN: &str = "Ctrl+Cmd+F";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_TOGGLE_FULLSCREEN: &str = "F11";
 
 #[cfg(target_os = "macos")]
 const SHORTCUT_ZOOM_IN: &str = "Cmd++";
@@ -87,6 +102,7 @@ pub struct MenuBarState {
 pub enum MenuCommand {
   NewTab,
   CloseTab,
+  NewWindow,
   Quit,
   Copy,
   Cut,
@@ -98,7 +114,10 @@ pub enum MenuCommand {
   ToggleDebugLogPanel,
   ToggleHistoryPanel,
   ToggleBookmarksPanel,
+  ToggleBookmarksManager,
+  ToggleDownloadsPanel,
   ToggleBookmarkThisPage,
+  ToggleFullScreen,
   Back,
   Forward,
   ReopenClosedTab,
@@ -262,10 +281,16 @@ pub fn menu_bar_ui(
             ui.close_menu();
           }
 
-          // Placeholder (full screen).
-          ui
-            .add_enabled(false, egui::Button::new("Toggle Full Screen"))
-            .on_disabled_hover_text("Not implemented yet");
+          if ui
+            .add(
+              egui::Button::new("Toggle Full Screen")
+                .shortcut_text(SHORTCUT_TOGGLE_FULLSCREEN),
+            )
+            .clicked()
+          {
+            commands.push(MenuCommand::ToggleFullScreen);
+            ui.close_menu();
+          }
         });
 
         // -------------------------------------------------------------------
@@ -345,21 +370,34 @@ pub fn menu_bar_ui(
             ui.close_menu();
           }
 
-          ui
-            .add_enabled(false, egui::Button::new("Bookmark manager…"))
-            .on_disabled_hover_text("Not implemented yet");
+          if ui
+            .add(
+              egui::Button::new("Bookmark manager…")
+                .shortcut_text(SHORTCUT_BOOKMARK_MANAGER),
+            )
+            .clicked()
+          {
+            commands.push(MenuCommand::ToggleBookmarksManager);
+            ui.close_menu();
+          }
         });
 
         // -------------------------------------------------------------------
         // Window
         // -------------------------------------------------------------------
         ui.menu_button("Window", |ui| {
-          ui
-            .add_enabled(false, egui::Button::new("New Window"))
-            .on_disabled_hover_text("Not implemented yet");
-          ui
-            .add_enabled(false, egui::Button::new("Show Downloads…"))
-            .on_disabled_hover_text("Not implemented yet");
+          if ui
+            .add(egui::Button::new("New Window").shortcut_text(SHORTCUT_NEW_WINDOW))
+            .clicked()
+          {
+            commands.push(MenuCommand::NewWindow);
+            ui.close_menu();
+          }
+
+          if ui.button("Show Downloads…").clicked() {
+            commands.push(MenuCommand::ToggleDownloadsPanel);
+            ui.close_menu();
+          }
         });
 
         // -------------------------------------------------------------------
@@ -384,6 +422,7 @@ pub fn menu_bar_ui(
 pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) -> Vec<ChromeAction> {
   match command {
     MenuCommand::NewTab => vec![ChromeAction::NewTab],
+    MenuCommand::NewWindow => vec![ChromeAction::NewWindow],
     MenuCommand::CloseTab => {
       if app.tabs.len() > 1 {
         app
@@ -398,6 +437,9 @@ pub fn dispatch_menu_command(command: MenuCommand, app: &mut BrowserAppState) ->
     MenuCommand::Back => vec![ChromeAction::Back],
     MenuCommand::Forward => vec![ChromeAction::Forward],
     MenuCommand::ReopenClosedTab => vec![ChromeAction::ReopenClosedTab],
+    MenuCommand::ToggleBookmarksManager => vec![ChromeAction::ToggleBookmarksManager],
+    MenuCommand::ToggleDownloadsPanel => vec![ChromeAction::ToggleDownloadsPanel],
+    MenuCommand::ToggleFullScreen => Vec::new(),
     MenuCommand::ZoomIn => {
       if let Some(tab) = app.active_tab_mut() {
         tab.zoom = zoom::zoom_in(tab.zoom);
@@ -469,6 +511,56 @@ mod tests {
     ]
   }
 
+  fn menu_bar_frame(
+    ctx: &egui::Context,
+    app: &BrowserAppState,
+    events: Vec<egui::Event>,
+  ) -> (Vec<MenuCommand>, egui::FullOutput) {
+    begin_frame(ctx, events);
+    let cmds = menu_bar_ui(ctx, app, MenuBarState::default());
+    let output = ctx.end_frame();
+    (cmds, output)
+  }
+
+  fn find_text_center(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<egui::Pos2> {
+    fn in_shape(shape: &egui::epaint::Shape, needle: &str) -> Option<egui::Pos2> {
+      match shape {
+        egui::epaint::Shape::Text(text) => {
+          if text.galley.text().contains(needle) {
+            Some(text.pos + text.galley.size() / 2.0)
+          } else {
+            None
+          }
+        }
+        egui::epaint::Shape::Vec(shapes) => shapes.iter().find_map(|s| in_shape(s, needle)),
+        _ => None,
+      }
+    }
+
+    shapes.iter().find_map(|clipped| in_shape(&clipped.shape, needle))
+  }
+
+  fn click_menu_item(ctx: &egui::Context, app: &BrowserAppState, menu: &str, item: &str) -> Vec<MenuCommand> {
+    let (_cmds, output) = menu_bar_frame(ctx, app, Vec::new());
+    let menu_pos = find_text_center(&output.shapes, menu)
+      .unwrap_or_else(|| panic!("failed to find menu bar label {menu:?}"));
+
+    let (cmds, output) = menu_bar_frame(ctx, app, left_click_at(menu_pos));
+    assert!(
+      cmds.is_empty(),
+      "expected opening the {menu} menu not to emit a command, got {cmds:?}"
+    );
+
+    // Egui's `menu_button` checks whether the menu is open before processing the click event that
+    // opens it, so the popup contents are generally not painted until the *next* frame.
+    let (_cmds, output) = menu_bar_frame(ctx, app, Vec::new());
+    let item_pos = find_text_center(&output.shapes, item)
+      .unwrap_or_else(|| panic!("failed to find menu item {menu} → {item}"));
+
+    let (cmds, _output) = menu_bar_frame(ctx, app, left_click_at(item_pos));
+    cmds
+  }
+
   #[test]
   fn dispatch_new_tab_emits_chrome_action() {
     let mut app = BrowserAppState::new();
@@ -481,20 +573,7 @@ mod tests {
   fn file_new_tab_menu_item_emits_command() {
     let ctx = egui::Context::default();
     let app = BrowserAppState::new();
-
-    // Frame 1: open the File menu.
-    begin_frame(&ctx, left_click_at(egui::pos2(10.0, 10.0)));
-    let cmds = menu_bar_ui(&ctx, &app, MenuBarState::default());
-    let _ = ctx.end_frame();
-    assert!(
-      cmds.is_empty(),
-      "expected opening the File menu not to emit a command, got {cmds:?}"
-    );
-
-    // Frame 2: click the first menu item ("New Tab").
-    begin_frame(&ctx, left_click_at(egui::pos2(20.0, 32.0)));
-    let cmds = menu_bar_ui(&ctx, &app, MenuBarState::default());
-    let _ = ctx.end_frame();
+    let cmds = click_menu_item(&ctx, &app, "File", "New Tab");
 
     assert!(
       cmds.iter().any(|c| matches!(c, MenuCommand::NewTab)),
@@ -511,5 +590,57 @@ mod tests {
     let actions = dispatch_menu_command(MenuCommand::ZoomIn, &mut app);
     assert!(actions.is_empty());
     assert!(app.active_tab().unwrap().zoom > before);
+  }
+
+  #[test]
+  fn window_new_window_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let app = BrowserAppState::new();
+    let cmds = click_menu_item(&ctx, &app, "Window", "New Window");
+
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::NewWindow)),
+      "expected Window → New Window to emit MenuCommand::NewWindow, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn window_show_downloads_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let app = BrowserAppState::new();
+    let cmds = click_menu_item(&ctx, &app, "Window", "Show Downloads…");
+
+    assert!(
+      cmds
+        .iter()
+        .any(|c| matches!(c, MenuCommand::ToggleDownloadsPanel)),
+      "expected Window → Show Downloads… to emit MenuCommand::ToggleDownloadsPanel, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn bookmarks_manager_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let app = BrowserAppState::new();
+    let cmds = click_menu_item(&ctx, &app, "Bookmarks", "Bookmark manager…");
+
+    assert!(
+      cmds
+        .iter()
+        .any(|c| matches!(c, MenuCommand::ToggleBookmarksManager)),
+      "expected Bookmarks → Bookmark manager… to emit MenuCommand::ToggleBookmarksManager, got {cmds:?}"
+    );
+  }
+
+  #[test]
+  fn view_toggle_full_screen_menu_item_emits_command() {
+    let ctx = egui::Context::default();
+    let app = BrowserAppState::new();
+    let cmds = click_menu_item(&ctx, &app, "View", "Toggle Full Screen");
+
+    assert!(
+      cmds.iter().any(|c| matches!(c, MenuCommand::ToggleFullScreen)),
+      "expected View → Toggle Full Screen to emit MenuCommand::ToggleFullScreen, got {cmds:?}"
+    );
   }
 }
