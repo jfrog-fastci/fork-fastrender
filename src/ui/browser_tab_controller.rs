@@ -175,6 +175,14 @@ impl BrowserTabController {
         input_node_id,
         paths,
       } if tab_id == self.tab_id => self.handle_file_picker_choose(input_node_id, paths),
+      UiToWorker::ColorPickerChoose {
+        tab_id,
+        input_node_id,
+        value,
+      } if tab_id == self.tab_id => self.handle_color_picker_choose(input_node_id, value),
+      UiToWorker::ColorPickerCancel { tab_id } if tab_id == self.tab_id => Ok(vec![
+        WorkerToUi::ColorPickerClosed { tab_id },
+      ]),
       UiToWorker::FilePickerCancel { tab_id } if tab_id == self.tab_id => Ok(vec![
         WorkerToUi::FilePickerClosed { tab_id },
       ]),
@@ -674,6 +682,7 @@ impl BrowserTabController {
     let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let mut action = InteractionAction::None;
+    let mut picker_value: Option<String> = None;
     let changed = self.document.mutate_dom(|dom| {
       let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
         dom,
@@ -686,6 +695,10 @@ impl BrowserTabController {
         &self.current_url,
         &self.base_url,
       );
+      if let InteractionAction::OpenColorPicker { input_node_id } = &next_action {
+        picker_value = crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
+          .and_then(|node| crate::dom::input_color_value_string(node));
+      }
       action = next_action;
       dom_changed
     });
@@ -797,6 +810,41 @@ impl BrowserTabController {
           input_node_id,
           kind,
           value: self.date_time_picker_value(input_node_id, kind),
+          anchor_css: self
+            .select_anchor_css(input_node_id)
+            .filter(|rect| {
+              rect.origin.x.is_finite()
+                && rect.origin.y.is_finite()
+                && rect.size.width.is_finite()
+                && rect.size.height.is_finite()
+            })
+            .unwrap_or_else(|| {
+              Rect::from_xywh(
+                if viewport_point.x.is_finite() {
+                  viewport_point.x
+                } else {
+                  0.0
+                },
+                if viewport_point.y.is_finite() {
+                  viewport_point.y
+                } else {
+                  0.0
+                },
+                1.0,
+                1.0,
+              )
+            }),
+        }];
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+        Ok(out)
+      }
+      InteractionAction::OpenColorPicker { input_node_id } => {
+        let mut out = vec![WorkerToUi::ColorPickerOpened {
+          tab_id: self.tab_id,
+          input_node_id,
+          value: picker_value.unwrap_or_else(|| "#000000".to_string()),
           anchor_css: self
             .select_anchor_css(input_node_id)
             .filter(|rect| {
@@ -1142,6 +1190,24 @@ impl BrowserTabController {
       self
         .document
         .mutate_dom(|dom| engine.file_picker_choose(dom, input_node_id, &paths));
+
+    if changed {
+      out.extend(self.paint_if_needed()?);
+    }
+
+    Ok(out)
+  }
+
+  fn handle_color_picker_choose(&mut self, input_node_id: usize, value: String) -> Result<Vec<WorkerToUi>> {
+    // Mirror the threaded worker semantics: choosing a value should close the popup even when it
+    // results in no DOM mutation (e.g. choosing the already-selected value).
+    let mut out = vec![WorkerToUi::ColorPickerClosed { tab_id: self.tab_id }];
+
+    let engine = &mut self.interaction;
+    let changed =
+      self
+        .document
+        .mutate_dom(|dom| engine.set_color_input_value(dom, input_node_id, &value));
 
     if changed {
       out.extend(self.paint_if_needed()?);

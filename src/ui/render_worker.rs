@@ -1817,6 +1817,13 @@ impl BrowserRuntime {
         // close notification can dismiss the popup deterministically.
         let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
       }
+      UiToWorker::ColorPickerChoose {
+        tab_id,
+        input_node_id,
+        value,
+      } => {
+        self.handle_color_picker_choose(tab_id, input_node_id, value);
+      }
       UiToWorker::ColorPickerCancel { tab_id } => {
         // Front-ends typically own the picker overlay state, so cancellation is a no-op on the
         // worker side. Emit `ColorPickerClosed` anyway so front-ends that expect an explicit close
@@ -4474,6 +4481,27 @@ impl BrowserRuntime {
 
     let engine = &mut tab.interaction;
     let dom_changed = doc.mutate_dom(|dom| engine.set_date_time_input_value(dom, input_node_id, &value));
+    if dom_changed {
+      tab.cancel.bump_paint();
+      tab.needs_repaint = true;
+    }
+  }
+
+  fn handle_color_picker_choose(&mut self, tab_id: TabId, input_node_id: usize, value: String) {
+    // Close the picker popup deterministically for any UI: `ColorPickerChoose` always corresponds
+    // to a user choosing a value in the picker overlay, so the popup should be dismissed even if
+    // the selection is a no-op (choosing the currently-set value).
+    let _ = self.ui_tx.send(WorkerToUi::ColorPickerClosed { tab_id });
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    let engine = &mut tab.interaction;
+    let dom_changed = doc.mutate_dom(|dom| engine.set_color_input_value(dom, input_node_id, &value));
     if dom_changed {
       tab.cancel.bump_paint();
       tab.needs_repaint = true;

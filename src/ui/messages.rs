@@ -476,6 +476,15 @@ pub enum UiToWorker {
   DateTimePickerCancel {
     tab_id: TabId,
   },
+  /// User chose a value in a color picker popup.
+  ///
+  /// The UI should send this after receiving [`WorkerToUi::ColorPickerOpened`].
+  ColorPickerChoose {
+    tab_id: TabId,
+    input_node_id: usize,
+    /// The raw value string; workers apply HTML sanitization rules for `type=color` (simple color).
+    value: String,
+  },
   /// User dismissed an open color picker popup without choosing a value.
   ///
   /// Front-ends typically send this when the user presses Escape or clicks outside the popup.
@@ -778,8 +787,8 @@ pub enum WorkerToUi {
   },
   /// Notification that a color picker popup should be dismissed.
   ///
-  /// Workers emit this in response to [`UiToWorker::ColorPickerCancel`] so front-ends can close the
-  /// overlay deterministically.
+  /// Workers emit this in response to [`UiToWorker::ColorPickerChoose`] and
+  /// [`UiToWorker::ColorPickerCancel`] so front-ends can close the overlay deterministically.
   ColorPickerClosed {
     tab_id: TabId,
   },

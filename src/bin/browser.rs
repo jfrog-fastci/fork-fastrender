@@ -6289,6 +6289,7 @@ impl App {
       | UiToWorker::SelectDropdownPick { tab_id, .. }
       | UiToWorker::DateTimePickerChoose { tab_id, .. }
       | UiToWorker::DateTimePickerCancel { tab_id }
+      | UiToWorker::ColorPickerChoose { tab_id, .. }
       | UiToWorker::ColorPickerCancel { tab_id }
       | UiToWorker::FilePickerChoose { tab_id, .. }
       | UiToWorker::FilePickerCancel { tab_id }
@@ -6335,6 +6336,7 @@ impl App {
           | UiToWorker::SelectDropdownPick { .. }
           | UiToWorker::DateTimePickerChoose { .. }
           | UiToWorker::DateTimePickerCancel { .. }
+          | UiToWorker::ColorPickerChoose { .. }
           | UiToWorker::ColorPickerCancel { .. }
           | UiToWorker::FilePickerChoose { .. }
           | UiToWorker::FilePickerCancel { .. }

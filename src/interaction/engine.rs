@@ -5170,6 +5170,86 @@ impl InteractionEngine {
     changed
   }
 
+  /// Update the value for an `<input type="color">` control as if the user edited it.
+  ///
+  /// This applies HTML "simple color" sanitization rules: invalid values sanitize to `#000000`.
+  pub fn set_color_input_value(
+    &mut self,
+    dom: &mut DomNode,
+    input_node_id: usize,
+    value: &str,
+  ) -> bool {
+    let mut index = DomIndexMut::new(dom);
+    let Some(node) = index.node(input_node_id) else {
+      return false;
+    };
+    if !is_color_input(node) {
+      return false;
+    }
+
+    if node_or_ancestor_is_inert(&index, input_node_id) || node_is_disabled(&index, input_node_id) {
+      return false;
+    }
+    if node_is_readonly(&index, input_node_id) {
+      return false;
+    }
+
+    // https://html.spec.whatwg.org/multipage/input.html#simple-colour
+    //
+    // A "simple color" is exactly 7 code points: '#' followed by 6 ASCII hex digits. Invalid values
+    // sanitize to black (`#000000`), matching `dom::input_color_value_string`.
+    let trimmed = trim_ascii_whitespace(value);
+    let sanitized = {
+      let valid = trimmed.len() == 7
+        && trimmed.starts_with('#')
+        && trimmed.as_bytes()[1..].iter().all(|b| b.is_ascii_hexdigit());
+      if valid {
+        let hex = &trimmed[1..];
+        let parsed = (
+          u8::from_str_radix(&hex[0..2], 16),
+          u8::from_str_radix(&hex[2..4], 16),
+          u8::from_str_radix(&hex[4..6], 16),
+        );
+        if let (Ok(r), Ok(g), Ok(b)) = parsed {
+          format!("#{r:02x}{g:02x}{b:02x}")
+        } else {
+          "#000000".to_string()
+        }
+      } else {
+        "#000000".to_string()
+      }
+    };
+
+    self.ensure_form_default_snapshot_for_control(&index, input_node_id);
+
+    let Some(node_mut) = index.node_mut(input_node_id) else {
+      return false;
+    };
+
+    // Any direct value mutation cancels an in-progress IME preedit string.
+    let mut changed = self.ime_cancel_internal();
+    let changed_value = set_node_attr(node_mut, "value", &sanitized);
+    changed |= changed_value;
+    if changed_value {
+      changed |= self.mark_user_validity(input_node_id);
+    }
+
+    // Keep caret state in sync for focused controls.
+    if self.state.focused == Some(input_node_id) {
+      let len = sanitized.chars().count();
+      self.text_edit = Some(TextEditState {
+        node_id: input_node_id,
+        caret: len,
+        caret_affinity: CaretAffinity::Downstream,
+        selection_anchor: None,
+        preferred_x: None,
+      });
+      changed |= self.sync_text_edit_paint_state();
+    }
+
+    changed
+  }
+
   pub fn focused_node_id(&self) -> Option<usize> {
     self.state.focused
   }
