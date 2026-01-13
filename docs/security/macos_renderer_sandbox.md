@@ -177,16 +177,10 @@ Common cases:
 
 ## Tooling + CI expectations
 
-Probe tool (macOS-only):
+Probe tool (macOS-only; built behind the non-default `macos_sandbox_probe` cargo feature):
 
 ```bash
 bash scripts/cargo_agent.sh run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
-
-# Or, directly:
-cargo run --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
-
-# Faster iteration builds (skip default renderer features):
-cargo run --no-default-features --features macos_sandbox_probe --bin macos_sandbox_probe -- --mode strict
 ```
 
 macOS sandbox unit tests:
