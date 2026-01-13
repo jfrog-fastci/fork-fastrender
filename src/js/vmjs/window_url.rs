@@ -2211,6 +2211,13 @@ pub fn install_window_url_bindings(
   // Expose globals.
   let url_key = alloc_key(&mut scope, "URL")?;
   scope.define_property(global, url_key, data_desc(Value::Object(url_ctor)))?;
+  // Legacy alias used by older scripts for `createObjectURL` (non-standard but common in the wild).
+  let webkit_url_key = alloc_key(&mut scope, "webkitURL")?;
+  scope.define_property(
+    global,
+    webkit_url_key,
+    data_desc(Value::Object(url_ctor)),
+  )?;
   let sp_key = alloc_key(&mut scope, "URLSearchParams")?;
   scope.define_property(global, sp_key, data_desc(Value::Object(sp_ctor)))?;
 
@@ -2739,6 +2746,13 @@ mod tests {
     }
   }
 
+  fn get_bool(value: Value) -> bool {
+    match value {
+      Value::Bool(b) => b,
+      other => panic!("expected bool value, got {other:?}"),
+    }
+  }
+
   #[test]
   fn object_prototype_to_string_uses_url_to_string_tag() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
@@ -2842,6 +2856,23 @@ mod tests {
        })()",
     )?;
     assert_eq!(get_string(realm.heap(), serialized), "a=1");
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn webkit_url_is_aliased_to_url_constructor() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    let is_fn = realm.exec_script("typeof webkitURL === 'function'")?;
+    assert!(get_bool(is_fn));
+
+    let is_same = realm.exec_script("webkitURL === URL")?;
+    assert!(get_bool(is_same));
+
+    let has_create_object_url = realm.exec_script("typeof webkitURL.createObjectURL === 'function'")?;
+    assert!(get_bool(has_create_object_url));
 
     realm.teardown();
     Ok(())
