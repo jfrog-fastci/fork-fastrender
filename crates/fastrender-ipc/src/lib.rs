@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Maximum size (in bytes) for a single IPC message payload.
 ///
@@ -640,4 +641,273 @@ pub trait IpcTransport {
 
   /// Send a message to the browser.
   fn send(&mut self, msg: RendererToBrowser) -> Result<(), Self::Error>;
+}
+
+// -----------------------------------------------------------------------------
+// WebSocket IPC (renderer ↔ network process)
+// -----------------------------------------------------------------------------
+
+/// Stable identifier for a renderer process participating in network-process IPC.
+///
+/// This is distinct from [`FrameId`]: a single renderer process can host many frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RendererId(pub u64);
+
+/// Identifier for a WebSocket connection scoped to a single renderer process.
+///
+/// This is chosen by the renderer and therefore **untrusted** when received by the network process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct WebSocketConnId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WebSocketErrorKind {
+  DuplicateConnId,
+}
+
+/// Renderer → network-process WebSocket commands.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WebSocketCommand {
+  Connect {
+    conn_id: WebSocketConnId,
+    url: String,
+  },
+  SendText {
+    conn_id: WebSocketConnId,
+    text: String,
+  },
+  Close {
+    conn_id: WebSocketConnId,
+  },
+  /// Best-effort abort used during renderer teardown.
+  Shutdown {
+    conn_id: WebSocketConnId,
+  },
+}
+
+/// Network-process → renderer WebSocket events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WebSocketEvent {
+  Error {
+    conn_id: WebSocketConnId,
+    kind: WebSocketErrorKind,
+  },
+  Close {
+    conn_id: WebSocketConnId,
+  },
+}
+
+impl WebSocketEvent {
+  pub fn conn_id(&self) -> WebSocketConnId {
+    match *self {
+      WebSocketEvent::Error { conn_id, .. } => conn_id,
+      WebSocketEvent::Close { conn_id } => conn_id,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebSocketConnState {
+  Connecting,
+  Closed,
+}
+
+#[derive(Debug)]
+struct WebSocketConnEntry {
+  #[allow(dead_code)]
+  url: String,
+  state: WebSocketConnState,
+}
+
+/// Network-process side WebSocket connection registry keyed by `(renderer_id, conn_id)`.
+///
+/// Security invariants:
+/// - The renderer is untrusted and may send duplicate or unknown `conn_id` values.
+/// - Duplicate `Connect` attempts are rejected deterministically. We **do not** replace the existing
+///   entry, preventing a compromised renderer from overriding a live connection by reusing IDs.
+/// - Commands for unknown `conn_id` values are ignored (no panic).
+#[derive(Debug, Default)]
+pub struct NetworkWebSocketManager {
+  conns: HashMap<RendererId, HashMap<WebSocketConnId, WebSocketConnEntry>>,
+}
+
+impl NetworkWebSocketManager {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn connection_count_for_test(&self, renderer_id: RendererId) -> usize {
+    self
+      .conns
+      .get(&renderer_id)
+      .map(|m| m.len())
+      .unwrap_or(0)
+  }
+
+  pub fn handle_command(&mut self, renderer_id: RendererId, cmd: WebSocketCommand) -> Vec<WebSocketEvent> {
+    match cmd {
+      WebSocketCommand::Connect { conn_id, url } => {
+        let renderer_conns = self.conns.entry(renderer_id).or_default();
+
+        if renderer_conns.contains_key(&conn_id) {
+          // Deterministic behaviour: reject the duplicate without touching the existing entry.
+          return vec![
+            WebSocketEvent::Error {
+              conn_id,
+              kind: WebSocketErrorKind::DuplicateConnId,
+            },
+            WebSocketEvent::Close { conn_id },
+          ];
+        }
+
+        renderer_conns.insert(
+          conn_id,
+          WebSocketConnEntry {
+            url,
+            state: WebSocketConnState::Connecting,
+          },
+        );
+
+        // Connection establishment is async in production; no immediate event is generated here.
+        Vec::new()
+      }
+
+      WebSocketCommand::SendText { conn_id, .. } => {
+        let Some(renderer_conns) = self.conns.get_mut(&renderer_id) else {
+          return Vec::new();
+        };
+        let Some(conn) = renderer_conns.get_mut(&conn_id) else {
+          return Vec::new();
+        };
+        if conn.state == WebSocketConnState::Closed {
+          return Vec::new();
+        }
+        // In the real implementation this would write to the socket; keep this logic-only manager
+        // silent to avoid turning unknown IDs into an amplification vector.
+        Vec::new()
+      }
+
+      WebSocketCommand::Close { conn_id } | WebSocketCommand::Shutdown { conn_id } => {
+        let Some(renderer_conns) = self.conns.get_mut(&renderer_id) else {
+          return Vec::new();
+        };
+        let Some(mut conn) = renderer_conns.remove(&conn_id) else {
+          return Vec::new();
+        };
+        conn.state = WebSocketConnState::Closed;
+        if renderer_conns.is_empty() {
+          self.conns.remove(&renderer_id);
+        }
+        vec![WebSocketEvent::Close { conn_id }]
+      }
+    }
+  }
+}
+
+/// Renderer-side WebSocket IPC backend.
+///
+/// The renderer may observe events for unknown `conn_id` values due to teardown races (e.g. the
+/// network process has a queued `Close` after the renderer dropped its local state). These events
+/// must be ignored without panicking.
+#[derive(Debug, Default)]
+pub struct RendererWebSocketBackend {
+  conns: HashMap<WebSocketConnId, ()>,
+  delivered: Vec<WebSocketEvent>,
+}
+
+impl RendererWebSocketBackend {
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  pub fn register_conn(&mut self, conn_id: WebSocketConnId) {
+    self.conns.insert(conn_id, ());
+  }
+
+  pub fn unregister_conn(&mut self, conn_id: WebSocketConnId) {
+    self.conns.remove(&conn_id);
+  }
+
+  /// Handle a network-originated event.
+  ///
+  /// Returns `true` if the event was delivered to a known connection.
+  pub fn handle_event(&mut self, event: WebSocketEvent) -> bool {
+    if !self.conns.contains_key(&event.conn_id()) {
+      return false;
+    }
+    self.delivered.push(event);
+    true
+  }
+
+  pub fn delivered_for_test(&self) -> &[WebSocketEvent] {
+    &self.delivered
+  }
+}
+
+#[cfg(test)]
+mod websocket_ipc_tests {
+  use super::*;
+
+  #[test]
+  fn duplicate_connect_is_rejected_deterministically() {
+    let mut mgr = NetworkWebSocketManager::new();
+    let renderer = RendererId(1);
+    let conn_id = WebSocketConnId(99);
+
+    let first = mgr.handle_command(
+      renderer,
+      WebSocketCommand::Connect {
+        conn_id,
+        url: "ws://example.invalid/".to_string(),
+      },
+    );
+    assert!(first.is_empty());
+    assert_eq!(mgr.connection_count_for_test(renderer), 1);
+
+    let second = mgr.handle_command(
+      renderer,
+      WebSocketCommand::Connect {
+        conn_id,
+        url: "ws://example.invalid/again".to_string(),
+      },
+    );
+    assert_eq!(
+      second,
+      vec![
+        WebSocketEvent::Error {
+          conn_id,
+          kind: WebSocketErrorKind::DuplicateConnId
+        },
+        WebSocketEvent::Close { conn_id }
+      ]
+    );
+    // Existing connection remains registered.
+    assert_eq!(mgr.connection_count_for_test(renderer), 1);
+  }
+
+  #[test]
+  fn send_unknown_conn_id_is_ignored() {
+    let mut mgr = NetworkWebSocketManager::new();
+    let renderer = RendererId(1);
+
+    let events = mgr.handle_command(
+      renderer,
+      WebSocketCommand::SendText {
+        conn_id: WebSocketConnId(123),
+        text: "hi".to_string(),
+      },
+    );
+    assert!(events.is_empty());
+    assert_eq!(mgr.connection_count_for_test(renderer), 0);
+  }
+
+  #[test]
+  fn renderer_backend_drops_unknown_conn_id_events() {
+    let mut backend = RendererWebSocketBackend::new();
+    // No connections registered yet.
+    let delivered = backend.handle_event(WebSocketEvent::Close {
+      conn_id: WebSocketConnId(55),
+    });
+    assert!(!delivered);
+    assert!(backend.delivered_for_test().is_empty());
+  }
 }
