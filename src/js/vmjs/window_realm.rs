@@ -26563,6 +26563,205 @@ fn node_contains_native(
   Ok(Value::Bool(false))
 }
 
+fn node_compare_document_position_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  // https://dom.spec.whatwg.org/#dom-node-comparedocumentposition
+  //
+  // `dom2` stores ShadowRoot nodes as children of their host element, but the DOM spec defines
+  // ShadowRoot as the root of a separate tree (i.e. its parent is null). Tree-order comparisons for
+  // `compareDocumentPosition()` therefore must stop at ShadowRoot boundaries.
+  const DOCUMENT_POSITION_DISCONNECTED: u16 = 1;
+  const DOCUMENT_POSITION_PRECEDING: u16 = 2;
+  const DOCUMENT_POSITION_FOLLOWING: u16 = 4;
+  const DOCUMENT_POSITION_CONTAINS: u16 = 8;
+  const DOCUMENT_POSITION_CONTAINED_BY: u16 = 16;
+  const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: u16 = 32;
+
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let platform = dom_platform_mut(vm).ok_or(VmError::TypeError("Illegal invocation"))?;
+  // Spec algorithm uses:
+  // - `node2` = this
+  // - `node1` = other
+  let node2 = platform.require_node_handle(scope.heap(), Value::Object(wrapper_obj))?;
+  let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node1 = platform.require_node_handle(scope.heap(), other_value)?;
+
+  if node1 == node2 {
+    return Ok(Value::Number(0.0));
+  }
+
+  let make_disconnected = |a: DomNodeKey, b: DomNodeKey| -> u16 {
+    let mut out =
+      DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC;
+
+    // Spec requires a consistent ordering between disconnected nodes. Use a deterministic
+    // per-wrapper key so results are stable within a realm.
+    //
+    // Note: `NodeId` values are only unique within a document, so include the document id.
+    let key_a = (a.document_id, a.node_id.index());
+    let key_b = (b.document_id, b.node_id.index());
+    if key_a < key_b {
+      out |= DOCUMENT_POSITION_PRECEDING;
+    } else {
+      out |= DOCUMENT_POSITION_FOLLOWING;
+    }
+    out
+  };
+
+  let Some(dom_ptr_2) = dom_ptr_for_document_id_read(vm, host, node2.document_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+  let Some(dom_ptr_1) = dom_ptr_for_document_id_read(vm, host, node1.document_id) else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  // Different backing `dom2::Document` allocations are always disconnected.
+  if dom_ptr_1 != dom_ptr_2 {
+    return Ok(Value::Number(make_disconnected(node1, node2) as f64));
+  }
+
+  // SAFETY: `dom_ptr_*` are valid for the duration of this native call.
+  let dom = unsafe { dom_ptr_1.as_ref() };
+
+  if node1.node_id.index() >= dom.nodes_len() || node2.node_id.index() >= dom.nodes_len() {
+    return Ok(Value::Number(make_disconnected(node1, node2) as f64));
+  }
+
+  fn parent_for_compare(dom: &dom2::Document, node: NodeId) -> Option<NodeId> {
+    if node.index() >= dom.nodes_len() {
+      return None;
+    }
+    if matches!(dom.node(node).kind, NodeKind::ShadowRoot { .. }) {
+      // ShadowRoot is a root boundary for tree order comparisons.
+      return None;
+    }
+    dom.parent_node(node)
+  }
+
+  fn tree_root(dom: &dom2::Document, mut node: NodeId) -> NodeId {
+    let mut remaining = dom.nodes_len().saturating_add(1);
+    while remaining > 0 {
+      remaining -= 1;
+      let Some(parent) = parent_for_compare(dom, node) else {
+        break;
+      };
+      node = parent;
+    }
+    node
+  }
+
+  let root1 = tree_root(dom, node1.node_id);
+  let root2 = tree_root(dom, node2.node_id);
+  if root1 != root2 {
+    return Ok(Value::Number(make_disconnected(node1, node2) as f64));
+  }
+
+  fn is_ancestor(dom: &dom2::Document, ancestor: NodeId, node: NodeId) -> bool {
+    let mut current = parent_for_compare(dom, node);
+    let mut remaining = dom.nodes_len().saturating_add(1);
+    while remaining > 0 {
+      remaining -= 1;
+      let Some(id) = current else {
+        break;
+      };
+      if id == ancestor {
+        return true;
+      }
+      current = parent_for_compare(dom, id);
+    }
+    false
+  }
+
+  // If node1 is an ancestor of node2, other contains this.
+  if is_ancestor(dom, node1.node_id, node2.node_id) {
+    let mask = DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_PRECEDING;
+    return Ok(Value::Number(mask as f64));
+  }
+  // If node1 is a descendant of node2, other is contained by this.
+  if is_ancestor(dom, node2.node_id, node1.node_id) {
+    let mask = DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_FOLLOWING;
+    return Ok(Value::Number(mask as f64));
+  }
+
+  fn compare_tree_order(dom: &dom2::Document, a: NodeId, b: NodeId) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    if a == b {
+      return Ordering::Equal;
+    }
+
+    fn path_to_root(dom: &dom2::Document, node: NodeId) -> Vec<NodeId> {
+      let mut out: Vec<NodeId> = Vec::new();
+      let mut current = Some(node);
+      let mut remaining = dom.nodes_len().saturating_add(1);
+      while remaining > 0 {
+        remaining -= 1;
+        let Some(id) = current else {
+          break;
+        };
+        out.push(id);
+        current = parent_for_compare(dom, id);
+      }
+      out.reverse();
+      out
+    }
+
+    let path_a = path_to_root(dom, a);
+    let path_b = path_to_root(dom, b);
+
+    let mut i = 0usize;
+    let min_len = path_a.len().min(path_b.len());
+    while i < min_len && path_a[i] == path_b[i] {
+      i += 1;
+    }
+
+    if i == path_a.len() {
+      // a is an ancestor of b, so it precedes b in tree order.
+      return Ordering::Less;
+    }
+    if i == path_b.len() {
+      return Ordering::Greater;
+    }
+
+    let common = path_a[i - 1];
+    let child_a = path_a[i];
+    let child_b = path_b[i];
+
+    let idx_a = dom
+      .node(common)
+      .children
+      .iter()
+      .position(|&c| c == child_a);
+    let idx_b = dom
+      .node(common)
+      .children
+      .iter()
+      .position(|&c| c == child_b);
+
+    match (idx_a, idx_b) {
+      (Some(a), Some(b)) => a.cmp(&b),
+      _ => child_a.index().cmp(&child_b.index()),
+    }
+  }
+
+  let order = compare_tree_order(dom, node1.node_id, node2.node_id);
+  let mask = match order {
+    std::cmp::Ordering::Less => DOCUMENT_POSITION_PRECEDING,
+    std::cmp::Ordering::Equal => 0,
+    std::cmp::Ordering::Greater => DOCUMENT_POSITION_FOLLOWING,
+  };
+  Ok(Value::Number(mask as f64))
+}
+
 fn node_child_nodes_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -38806,6 +39005,39 @@ fn init_window_globals(
       get_root_node_key,
       data_desc(Value::Object(get_root_node_func)),
     )?;
+    }
+
+    // Node.compareDocumentPosition
+    //
+    // WebIDL bindings install most Node methods, but `compareDocumentPosition()` is required by WPT
+    // DOM tests and is also used by real-world libraries. Install it if missing so both handwritten
+    // and WebIDL DOM bindings backends expose it.
+    let compare_document_position_key = alloc_key(&mut scope, "compareDocumentPosition")?;
+    if scope
+      .heap()
+      .object_get_own_property(node_proto, &compare_document_position_key)?
+      .is_none()
+    {
+      let compare_document_position_call_id =
+        vm.register_native_call(node_compare_document_position_native)?;
+      let compare_document_position_name = scope.alloc_string("compareDocumentPosition")?;
+      scope.push_root(Value::String(compare_document_position_name))?;
+      let compare_document_position_func = scope.alloc_native_function(
+        compare_document_position_call_id,
+        None,
+        compare_document_position_name,
+        1,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        compare_document_position_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(compare_document_position_func))?;
+      scope.define_property(
+        node_proto,
+        compare_document_position_key,
+        data_desc(Value::Object(compare_document_position_func)),
+      )?;
     }
 
     // Element.tagName
