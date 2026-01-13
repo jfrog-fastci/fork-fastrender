@@ -386,17 +386,14 @@ When hidden, the menu bar does not reserve any vertical space; keyboard shortcut
 Implemented items are wired up to existing browser UI actions (tabs, navigation, reload, zoom,
 clipboard, panels).
 
-Some menu entries are still placeholders and remain disabled (for example Undo/Redo).
+Some menu entries are still placeholders and remain disabled (for example **Edit → Undo/Redo**).
 
-The menu bar also includes entries for some features that are available elsewhere in the UI, even
-if those menu items are currently disabled:
+Notable enabled items:
 
-- **New Window**: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>.
-- **Show Downloads…**: use the downloads button in the toolbar.
-- **Bookmark manager…**: use <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> (Win/Linux) or
-  <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> (macOS).
-- **Toggle Full Screen**: use <kbd>F11</kbd> (Win/Linux) or <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd>
-  (macOS).
+- **Window → New Window** (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>N</kbd>)
+- **Window → Show Downloads…** (also available via the downloads toolbar button)
+- **Bookmarks → Bookmark manager…** (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> on Win/Linux; <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> on macOS)
+- **View → Toggle Full Screen** (<kbd>F11</kbd> on Win/Linux; <kbd>Ctrl</kbd>+<kbd>Cmd</kbd>+<kbd>F</kbd> on macOS)
 
 Help/About items open `about:help` / `about:version` in a new tab.
 
