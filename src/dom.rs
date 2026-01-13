@@ -2473,9 +2473,10 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
 
 fn strip_authored_file_input_state(node: &mut DomNode, deadline_counter: &mut usize) -> Result<()> {
   // File input selection state must only ever be set via user interaction (file picker). Some
-  // implementations store selected file paths in internal DOM attributes (e.g. `data-fastr-files`)
-  // for later submission; ensure remote markup cannot prefill them.
-  const INTERNAL_FILE_SELECTION_ATTRS: [&str; 1] = ["data-fastr-files"];
+  // implementations store selected file paths or the pseudo-value string in internal DOM attributes
+  // (e.g. `data-fastr-files`, `data-fastr-file-value`) for later submission/validation; ensure
+  // remote markup cannot prefill them.
+  const INTERNAL_FILE_SELECTION_ATTRS: [&str; 2] = ["data-fastr-files", "data-fastr-file-value"];
 
   let mut stack: Vec<*mut DomNode> = vec![node as *mut DomNode];
   while let Some(ptr) = stack.pop() {
@@ -10946,7 +10947,7 @@ mod tests {
   #[test]
   fn parse_html_strips_authored_file_input_selection_state() {
     let dom = parse_html(
-      r#"<form><input type="file" data-fastr-files='["/etc/passwd"]' value="/etc/passwd"></form>"#,
+      r#"<form><input type="file" data-fastr-files='["/etc/passwd"]' data-fastr-file-value="C:\\fakepath\\passwd" value="/etc/passwd"></form>"#,
     )
     .expect("parse html");
 
@@ -10969,6 +10970,7 @@ mod tests {
 
     let input = find_file_input(&dom).expect("file input");
     assert_eq!(input.get_attribute_ref("data-fastr-files"), None);
+    assert_eq!(input.get_attribute_ref("data-fastr-file-value"), None);
     assert_eq!(input.get_attribute_ref("value"), None);
   }
 
@@ -11355,7 +11357,7 @@ mod tests {
   #[test]
   fn parse_html_fragment_strips_authored_file_input_selection_state() {
     let nodes = parse_html_fragment(
-      r#"<input id="f" type="file" data-fastr-files='["/etc/passwd"]' value="/etc/passwd">"#,
+      r#"<input id="f" type="file" data-fastr-files='["/etc/passwd"]' data-fastr-file-value="C:\\fakepath\\passwd" value="/etc/passwd">"#,
       "div",
       HTML_NAMESPACE,
       DomParseOptions::default(),
@@ -11368,6 +11370,7 @@ mod tests {
       .find_map(|node| find_node_by_id(node, "f"))
       .expect("file input node");
     assert_eq!(input.get_attribute_ref("data-fastr-files"), None);
+    assert_eq!(input.get_attribute_ref("data-fastr-file-value"), None);
     assert_eq!(input.get_attribute_ref("value"), None);
   }
 
