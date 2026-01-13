@@ -2197,7 +2197,7 @@ pub fn chrome_ui_with_bookmarks(
           app.chrome.omnibox.selected = None;
           app.chrome.omnibox.original_input = None;
 
-          let input = app.chrome.address_bar_text.clone();
+          let input = app.chrome.address_bar_text.as_str();
           let suggestions = {
             let ctx = OmniboxContext {
               open_tabs: &app.tabs,
@@ -2207,10 +2207,15 @@ pub fn chrome_ui_with_bookmarks(
               bookmarks: omnibox_bookmarks,
               remote_search_suggest: Some(&app.chrome.remote_search_cache),
             };
-            build_omnibox_suggestions_default_limit(&ctx, &input)
+            build_omnibox_suggestions_default_limit(&ctx, input)
           };
           app.chrome.omnibox.suggestions = suggestions;
-          app.chrome.omnibox.last_built_for_input = input;
+          // Keep the allocation for the last-built input around: omnibox typing is a hot path.
+          app
+            .chrome
+            .omnibox
+            .last_built_for_input
+            .clone_from(&app.chrome.address_bar_text);
           app.chrome.omnibox.last_built_remote_fetched_at =
             app.chrome.remote_search_cache.fetched_at;
           if app.chrome.omnibox.suggestions.is_empty() {
@@ -2227,7 +2232,7 @@ pub fn chrome_ui_with_bookmarks(
             if app.chrome.omnibox.last_built_for_input != app.chrome.address_bar_text
               || app.chrome.omnibox.suggestions.is_empty()
             {
-              let input = app.chrome.address_bar_text.clone();
+              let input = app.chrome.address_bar_text.as_str();
               let suggestions = {
                 let ctx = OmniboxContext {
                   open_tabs: &app.tabs,
@@ -2237,10 +2242,14 @@ pub fn chrome_ui_with_bookmarks(
                   bookmarks: omnibox_bookmarks,
                   remote_search_suggest: Some(&app.chrome.remote_search_cache),
                 };
-                build_omnibox_suggestions_default_limit(&ctx, &input)
+                build_omnibox_suggestions_default_limit(&ctx, input)
               };
               app.chrome.omnibox.suggestions = suggestions;
-              app.chrome.omnibox.last_built_for_input = input;
+              app
+                .chrome
+                .omnibox
+                .last_built_for_input
+                .clone_from(&app.chrome.address_bar_text);
               app.chrome.omnibox.last_built_remote_fetched_at =
                 app.chrome.remote_search_cache.fetched_at;
             }
@@ -2294,7 +2303,7 @@ pub fn chrome_ui_with_bookmarks(
                 .is_some_and(|q| q == remote.query.as_str());
 
             if remote_is_for_current_query {
-              let input = app.chrome.address_bar_text.clone();
+              let input = app.chrome.address_bar_text.as_str();
               let suggestions = {
                 let ctx = OmniboxContext {
                   open_tabs: &app.tabs,
@@ -2304,10 +2313,14 @@ pub fn chrome_ui_with_bookmarks(
                   bookmarks: omnibox_bookmarks,
                   remote_search_suggest: Some(remote),
                 };
-                build_omnibox_suggestions_default_limit(&ctx, &input)
+                build_omnibox_suggestions_default_limit(&ctx, input)
               };
               app.chrome.omnibox.suggestions = suggestions;
-              app.chrome.omnibox.last_built_for_input = input;
+              app
+                .chrome
+                .omnibox
+                .last_built_for_input
+                .clone_from(&app.chrome.address_bar_text);
               if app.chrome.omnibox.suggestions.is_empty() {
                 app.chrome.omnibox.open = false;
               }
