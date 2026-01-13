@@ -38468,6 +38468,66 @@ fn input_checked_set_native(
   Ok(Value::Undefined)
 }
 
+fn html_media_element_network_state_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  Ok(Value::Number(0.0)) // NETWORK_EMPTY
+}
+
+fn html_media_element_ready_state_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  Ok(Value::Number(0.0)) // HAVE_NOTHING
+}
+
+fn html_media_element_seeking_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  Ok(Value::Bool(false))
+}
+
+fn html_media_element_load_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let _ = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_html_media_element_handle(scope.heap(), this)?;
+  Ok(Value::Undefined)
+}
+
 fn html_text_area_element_value_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -49001,32 +49061,80 @@ fn init_window_globals(
       scope.define_property(html_media_element_proto, key, desc)?;
     }
 
-    // Minimal readonly attributes used by common media readiness checks.
-    let readonly_attr_desc = |value: Value| PropertyDescriptor {
-      enumerable: true,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value,
-        writable: false,
-      },
-    };
+    // HTMLMediaElement readiness state stubs.
+    //
+    // These are read-only IDL attributes, so they must be accessors (not data properties) and must
+    // throw `TypeError("Illegal invocation")` on non-media receivers.
+    let network_state_get_call_id =
+      vm.register_native_call(html_media_element_network_state_get_native)?;
+    let network_state_get_name = scope.alloc_string("get networkState")?;
+    scope.push_root(Value::String(network_state_get_name))?;
+    let network_state_get_func = scope.alloc_native_function(
+      network_state_get_call_id,
+      None,
+      network_state_get_name,
+      0,
+    )?;
+    scope.heap_mut().object_set_prototype(
+      network_state_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(network_state_get_func))?;
     let network_state_key = alloc_key(&mut scope, "networkState")?;
     scope.define_property(
       html_media_element_proto,
       network_state_key,
-      readonly_attr_desc(Value::Number(0.0)), // NETWORK_EMPTY
+      idl_attribute_desc(Value::Object(network_state_get_func), Value::Undefined),
     )?;
+
+    let ready_state_get_call_id = vm.register_native_call(html_media_element_ready_state_get_native)?;
+    let ready_state_get_name = scope.alloc_string("get readyState")?;
+    scope.push_root(Value::String(ready_state_get_name))?;
+    let ready_state_get_func =
+      scope.alloc_native_function(ready_state_get_call_id, None, ready_state_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      ready_state_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(ready_state_get_func))?;
     let ready_state_key = alloc_key(&mut scope, "readyState")?;
     scope.define_property(
       html_media_element_proto,
       ready_state_key,
-      readonly_attr_desc(Value::Number(0.0)), // HAVE_NOTHING
+      idl_attribute_desc(Value::Object(ready_state_get_func), Value::Undefined),
     )?;
+
+    let seeking_get_call_id = vm.register_native_call(html_media_element_seeking_get_native)?;
+    let seeking_get_name = scope.alloc_string("get seeking")?;
+    scope.push_root(Value::String(seeking_get_name))?;
+    let seeking_get_func = scope.alloc_native_function(seeking_get_call_id, None, seeking_get_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      seeking_get_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(seeking_get_func))?;
     let seeking_key = alloc_key(&mut scope, "seeking")?;
     scope.define_property(
       html_media_element_proto,
       seeking_key,
-      readonly_attr_desc(Value::Bool(false)),
+      idl_attribute_desc(Value::Object(seeking_get_func), Value::Undefined),
+    )?;
+
+    // HTMLMediaElement.prototype.load() stub.
+    let load_call_id = vm.register_native_call(html_media_element_load_native)?;
+    let load_name = scope.alloc_string("load")?;
+    scope.push_root(Value::String(load_name))?;
+    let load_func = scope.alloc_native_function(load_call_id, None, load_name, 0)?;
+    scope.heap_mut().object_set_prototype(
+      load_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+    scope.push_root(Value::Object(load_func))?;
+    let load_key = alloc_key(&mut scope, "load")?;
+    scope.define_property(
+      html_media_element_proto,
+      load_key,
+      data_desc(Value::Object(load_func)),
     )?;
 
     let html_input_element_ctor =
@@ -56620,12 +56728,43 @@ mod tests {
     let ok = realm.exec_script(
       r#"(() => {
         if (typeof HTMLMediaElement !== 'function') return false;
-        if (typeof HTMLMediaElement.prototype.networkState !== 'number') return false;
-        if (typeof HTMLMediaElement.prototype.readyState !== 'number') return false;
-        if (typeof HTMLMediaElement.prototype.seeking !== 'boolean') return false;
-        if (HTMLMediaElement.prototype.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
-        if (HTMLMediaElement.prototype.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
-        if (HTMLMediaElement.prototype.seeking !== false) return false;
+        const constants = [
+          ['NETWORK_EMPTY', 0],
+          ['NETWORK_IDLE', 1],
+          ['NETWORK_LOADING', 2],
+          ['NETWORK_NO_SOURCE', 3],
+          ['HAVE_NOTHING', 0],
+          ['HAVE_METADATA', 1],
+          ['HAVE_CURRENT_DATA', 2],
+          ['HAVE_FUTURE_DATA', 3],
+          ['HAVE_ENOUGH_DATA', 4],
+        ];
+        for (const [name, value] of constants) {
+          if (HTMLMediaElement[name] !== value) return false;
+          const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement, name);
+          if (!desc || desc.value !== value || desc.writable !== false || desc.enumerable !== true || desc.configurable !== false) return false;
+          const protoDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, name);
+          if (!protoDesc || protoDesc.value !== value || protoDesc.writable !== false || protoDesc.enumerable !== true || protoDesc.configurable !== false) return false;
+        }
+        const networkState = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'networkState');
+        const readyState = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'readyState');
+        const seeking = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'seeking');
+        if (!networkState || typeof networkState.get !== 'function' || networkState.set !== undefined) return false;
+        if (!readyState || typeof readyState.get !== 'function' || readyState.set !== undefined) return false;
+        if (!seeking || typeof seeking.get !== 'function' || seeking.set !== undefined) return false;
+
+        if (typeof HTMLMediaElement.prototype.load !== 'function') return false;
+
+        // Brand checks: getters/methods must throw on non-media receivers.
+        const bogus = {};
+        try { networkState.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { readyState.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { seeking.get.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
+        try { HTMLMediaElement.prototype.load.call(bogus); return false; }
+        catch (e) { if (e.name !== 'TypeError' || e.message !== 'Illegal invocation') return false; }
         return true;
       })()"#,
     )?;
@@ -56653,6 +56792,14 @@ mod tests {
         if (audio.networkState !== HTMLMediaElement.NETWORK_EMPTY) return false;
         if (audio.readyState !== HTMLMediaElement.HAVE_NOTHING) return false;
         if (audio.seeking !== false) return false;
+        try {
+          const outV = video.load();
+          if (outV !== undefined) return false;
+          const outA = audio.load();
+          if (outA !== undefined) return false;
+        } catch (e) {
+          return false;
+        }
         return true;
       })()"#,
     )?;
