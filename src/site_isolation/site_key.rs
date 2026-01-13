@@ -1,9 +1,39 @@
 use crate::resource::{origin_from_url, DocumentOrigin};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use url::Url;
+
+/// How `file:` URLs are mapped into [`SiteKey`]s.
+///
+/// Real browsers treat `file:` documents as having opaque origins; for site isolation we need a
+/// policy that avoids co-hosting unrelated local files in the same renderer process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FileUrlSiteIsolation {
+  /// Legacy behaviour: all `file:` URLs share one site bucket.
+  ///
+  /// This is less secure but can reduce process churn in tests/harnesses that load many local
+  /// fixtures.
+  SingleSite,
+  /// Derive an opaque key from the full absolute file path (stable for a given file URL).
+  ///
+  /// Same file URL ⇒ same `SiteKey`
+  /// Different file paths ⇒ different `SiteKey`
+  OpaquePerUrl,
+  /// Derive an opaque key from the parent directory of the file path (stable per directory).
+  ///
+  /// Files in the same directory share a `SiteKey`; files in different directories do not.
+  OpaquePerDirectory,
+}
+
+impl Default for FileUrlSiteIsolation {
+  fn default() -> Self {
+    Self::OpaquePerUrl
+  }
+}
 
 /// Canonical key used to decide which renderer process hosts a document/frame.
 ///
@@ -41,6 +71,7 @@ pub type OriginKey = SiteKey;
 #[derive(Debug)]
 pub struct SiteKeyFactory {
   next_opaque_id: AtomicU64,
+  file_url_isolation: FileUrlSiteIsolation,
 }
 
 impl Default for SiteKeyFactory {
@@ -52,8 +83,17 @@ impl Default for SiteKeyFactory {
 impl SiteKeyFactory {
   /// Create a new factory whose first generated opaque ID will be `seed`.
   pub const fn new_with_seed(seed: u64) -> Self {
+    Self::new_with_seed_and_file_url_isolation(seed, FileUrlSiteIsolation::OpaquePerUrl)
+  }
+
+  /// Create a new factory with an explicit `file:` URL isolation mode.
+  pub const fn new_with_seed_and_file_url_isolation(
+    seed: u64,
+    file_url_isolation: FileUrlSiteIsolation,
+  ) -> Self {
     Self {
       next_opaque_id: AtomicU64::new(seed),
+      file_url_isolation,
     }
   }
 
@@ -67,6 +107,53 @@ impl SiteKeyFactory {
     FILE_ORIGIN.get_or_init(|| {
       origin_from_url("file:///").expect("file:/// must be a parseable URL")
     })
+  }
+
+  fn stable_file_hash_u64(&self, bytes: &[u8]) -> u64 {
+    // Domain-separated hash so `file:`-derived opaque IDs don't accidentally collide with other
+    // hashes should we introduce them in the future.
+    let mut hasher = Sha256::new();
+    hasher.update(b"fastrender:file-site-key:v1\0");
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+
+    // Use 64 bits (with a tag bit) since `SiteKey::Opaque` is a u64 today.
+    //
+    // Security note: collisions are still theoretically possible, but using a cryptographic hash and
+    // tagging into a disjoint ID space keeps the risk negligible for realistic workloads.
+    let mut first8 = [0u8; 8];
+    first8.copy_from_slice(&digest[..8]);
+    let raw = u64::from_le_bytes(first8);
+
+    // Tag file-derived opaque IDs into the top half of the u64 space so they won't collide with the
+    // sequential `new_opaque()` IDs unless a session performs ~2^63 opaque navigations.
+    raw | (1u64 << 63)
+  }
+
+  fn site_key_for_file_url(&self, parsed: &Url) -> SiteKey {
+    match self.file_url_isolation {
+      FileUrlSiteIsolation::SingleSite => SiteKey::Origin(Self::file_origin().clone()),
+      FileUrlSiteIsolation::OpaquePerUrl => {
+        if let Ok(path) = parsed.to_file_path() {
+          let id = self.stable_file_hash_u64(path.as_os_str().to_string_lossy().as_bytes());
+          SiteKey::Opaque(id)
+        } else {
+          let id = self.stable_file_hash_u64(parsed.as_str().as_bytes());
+          SiteKey::Opaque(id)
+        }
+      }
+      FileUrlSiteIsolation::OpaquePerDirectory => {
+        if let Ok(path) = parsed.to_file_path() {
+          let dir = path.parent().unwrap_or(Path::new(""));
+          let id = self.stable_file_hash_u64(dir.as_os_str().to_string_lossy().as_bytes());
+          SiteKey::Opaque(id)
+        } else {
+          // If we can't map the URL into a platform file path, fall back to per-URL hashing.
+          let id = self.stable_file_hash_u64(parsed.as_str().as_bytes());
+          SiteKey::Opaque(id)
+        }
+      }
+    }
   }
 
   /// Derive the site key for a navigation, optionally inheriting from a parent.
@@ -105,7 +192,7 @@ impl SiteKeyFactory {
             origin_from_url(parsed_embedded.as_str()).map_or_else(|| self.new_opaque(), SiteKey::Origin)
           }
         }
-        "file" => SiteKey::Origin(Self::file_origin().clone()),
+        "file" => self.site_key_for_file_url(&parsed_embedded),
         "about" => self.new_opaque(),
         "data" => self.new_opaque(),
         _ => self.new_opaque(),
@@ -125,7 +212,7 @@ impl SiteKeyFactory {
         }
         origin_from_url(url).map_or_else(|| self.new_opaque(), SiteKey::Origin)
       }
-      "file" => SiteKey::Origin(Self::file_origin().clone()),
+      "file" => self.site_key_for_file_url(&parsed),
       "about" => {
         let path = parsed.path();
         if path.eq_ignore_ascii_case("blank") || path.eq_ignore_ascii_case("srcdoc") {
@@ -151,6 +238,7 @@ pub fn site_key_for_navigation(url: &str, parent: Option<&SiteKey>) -> SiteKey {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use tempfile::tempdir;
 
   #[test]
   fn http_https_normalizes_host_case_and_default_ports() {
@@ -203,11 +291,41 @@ mod tests {
   }
 
   #[test]
-  fn file_urls_map_to_a_single_origin_key() {
-    let factory = SiteKeyFactory::new_with_seed(1);
+  fn different_file_paths_do_not_share_site_key_in_opaque_per_url_mode() {
+    let dir = tempdir().expect("temp dir");
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    std::fs::write(&a, "a").unwrap();
+    std::fs::write(&b, "b").unwrap();
 
-    let a = factory.site_key_for_navigation("file:///tmp/a.txt", None);
-    let b = factory.site_key_for_navigation("file:///home/user/b.txt", None);
+    let url_a = Url::from_file_path(&a).unwrap();
+    let url_b = Url::from_file_path(&b).unwrap();
+
+    let factory = SiteKeyFactory::new_with_seed_and_file_url_isolation(
+      1,
+      FileUrlSiteIsolation::OpaquePerUrl,
+    );
+
+    let key_a = factory.site_key_for_navigation(url_a.as_str(), None);
+    let key_b = factory.site_key_for_navigation(url_b.as_str(), None);
+    assert_ne!(key_a, key_b);
+    assert!(matches!(key_a, SiteKey::Opaque(_)));
+    assert!(matches!(key_b, SiteKey::Opaque(_)));
+  }
+
+  #[test]
+  fn same_file_url_maps_to_same_site_key_in_opaque_per_url_mode() {
+    let dir = tempdir().expect("temp dir");
+    let path = dir.path().join("index.html");
+    std::fs::write(&path, "<!doctype html>").unwrap();
+    let url = Url::from_file_path(&path).unwrap();
+
+    let factory = SiteKeyFactory::new_with_seed_and_file_url_isolation(
+      1,
+      FileUrlSiteIsolation::OpaquePerUrl,
+    );
+    let a = factory.site_key_for_navigation(url.as_str(), None);
+    let b = factory.site_key_for_navigation(url.as_str(), None);
     assert_eq!(a, b);
   }
 

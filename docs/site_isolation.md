@@ -130,8 +130,12 @@ strictly without needing eTLD+1 reasoning.
 
 For other schemes we either:
 
-- map to a stable bucket (`file://` → `SiteKey::File`, `about:*` internal pages → `SiteKey::Internal`), or
-- use an *opaque* key (`SiteKey::Opaque(_)`) when the document has an opaque origin.
+- map to a stable internal bucket (`about:*` internal pages → `SiteKey::Internal`), or
+- use an *opaque* key (`SiteKey::Opaque(_)`) when the document has an opaque origin or when we
+  intentionally avoid co-hosting unrelated documents.
+
+In particular, `file:` URLs are treated as *opaque* for process assignment, keyed by a stable hash
+of the absolute file URL by default (see §2.2).
 
 Recommended representation:
 
@@ -142,14 +146,10 @@ pub enum SiteKey {
     /// Network origins: https://example.com:443
     Origin { scheme: String, host: String, port: u16 },
 
-    /// All file:// documents currently share one site bucket.
+    /// Opaque site keys used for documents with opaque origins or schemes that should not co-host.
     ///
-    /// (This matches FastRender's existing `DocumentOrigin::same_origin` behavior for file:// in
-    /// `src/resource.rs`. Tightening file:// origin semantics can be done later, but must update
-    /// this doc.)
-    File,
-
-    /// Unique (opaque) site keys used for documents with opaque origins.
+    /// Some schemes intentionally generate a *fresh* opaque key per navigation (`data:`), while
+    /// others derive a stable opaque key (e.g. `file:` by hashing the absolute path).
     Opaque(OpaqueSiteId),
 
     /// Browser-internal documents that must never share a process with untrusted web content.
@@ -168,7 +168,8 @@ Important invariants:
 - **Different `SiteKey`s MUST NOT share a renderer process** (unless site isolation is explicitly
   turned off via a build/runtime flag for debugging).
 - `SiteKey::Opaque(_)` values are **never equal** unless they are literally the same `OpaqueSiteId`.
-  - i.e. identical `data:` URLs still produce different `SiteKey`s.
+  - For `data:` specifically, identical `data:` URLs still produce different `SiteKey`s (fresh
+    opaque key per navigation).
 
 ### 1.2 `FrameId`
 
@@ -275,7 +276,7 @@ fn derive_site_key(url: &Url, initiator_site: Option<&SiteKey>) -> SiteKey
 | URL kind | Example | `SiteKey` | Inherits `initiator_site`? |
 |---|---|---|---|
 | Network origin | `https://a.test/` | `SiteKey::Origin { https, a.test, 443 }` | N/A |
-| `file:` | `file:///tmp/a.html` | `SiteKey::File` | No |
+| `file:` | `file:///tmp/a.html` | `SiteKey::Opaque(stable_hash(file_url))` | No |
 | `about:blank` | `about:blank` | `initiator_site` if present, else `Opaque` | Yes (if present) |
 | `about:srcdoc` | `about:srcdoc` | `initiator_site` if present, else `Opaque` | Yes (if present) |
 | Internal `about:*` | `about:newtab` | `SiteKey::Internal` | No |
@@ -294,17 +295,30 @@ SiteKey::Origin {
 
 ### 2.2 `file:`
 
-All `file://` documents currently map to `SiteKey::File`.
+`file:` URLs are treated as *opaque* for process assignment so unrelated local files do not share a
+renderer process.
 
-This is intentionally simple and matches FastRender’s current resource-origin behavior (see
-`DocumentOrigin::same_origin` in `src/resource.rs`).
+**Rule (default; normative):**
+
+- Parse the URL with `url::Url`.
+- Derive a stable opaque site ID from the absolute file path (equivalently: from the normalized
+  `file://` URL string produced by `url::Url`).
+  - Same file URL ⇒ same `SiteKey`
+  - Different absolute file paths ⇒ different `SiteKey`
+
+Optional modes (for test/perf tuning; less normative):
+
+- **Per-directory**: hash only the parent directory so `file:///tmp/a.html` and `file:///tmp/b.html`
+  share a `SiteKey`, but `file:///home/user/x.html` does not.
+- **Single bucket (legacy)**: all `file:` URLs share one `SiteKey` (less secure; reduces process
+  churn).
 
 Security notes / rationale:
 
 - `file:` content often represents local secrets, and file reads should be brokered by the browser process.
-- `SiteKey::File` must **never** share a renderer process with network `SiteKey`s (`http(s)`).
-- If we later tighten `file:` origin semantics (e.g. make each `file:` navigation opaque/unique), update this section
-  and add tests so we don’t accidentally re-enable `file:`/web co-hosting.
+- `file:` site keys must **never** share a renderer process with network `SiteKey`s (`http(s)`).
+- This `SiteKey` policy is intentionally stricter than FastRender’s current `DocumentOrigin` semantics
+  for `file:` URLs (see `DocumentOrigin::same_origin` in `src/resource.rs`).
 
 ### 2.3 `about:blank`
 
