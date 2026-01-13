@@ -648,7 +648,9 @@ fn build_grid_spanning_distribution_tree(item_count: usize, columns: usize) -> B
   // - produce many spanning items (2-6 columns),
   // - mix track sizing functions that introduce growth limits (fit-content),
   // - keep the per-item subtree shallow so track sizing dominates.
-  const TEXT: &str = "supercalifragilisticexpialidocious lorem ipsum dolor sit amet";
+  // Keep this short but non-trivial so the benchmark stays focused on track distribution logic
+  // rather than text shaping.
+  const TEXT: &str = "supercalifragilisticexpialidocious lorem";
 
   let columns = columns.max(6);
 
@@ -921,6 +923,11 @@ fn bench_grid_spanning_distribution_hotspot(c: &mut Criterion) {
   }
 
   let mut group = c.benchmark_group("layout_hotspots_grid");
+  // This hotspot is a bit heavier than the other microbenches. Bump the measurement window so
+  // Criterion doesn't warn about not fitting 10 samples, while still keeping the overall suite
+  // quick to run.
+  group.measurement_time(Duration::from_millis(1_200));
+  group.sampling_mode(SamplingMode::Flat);
   group.bench_function("grid_spanning_distribution_hotspot", |b| {
     b.iter(|| {
       let _taffy_perf_guard = TaffyPerfCountersGuard::new();
