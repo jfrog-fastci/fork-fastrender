@@ -6187,7 +6187,13 @@ fn history_state_change_native(
       read_only_data_desc(cloned_state_value),
     )?;
 
+  {
     // Keep `history.length` in sync with the per-realm session history.
+    //
+    // Root the receiver while allocating property keys: `alloc_key` can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(history_obj))?;
+
     let length_key = alloc_key(&mut scope, "length")?;
     scope.define_property(
       history_obj,
@@ -23852,10 +23858,10 @@ fn node_append_child_native(
   // SAFETY: pointers returned by `dom_ptr_for_document_id_*` are valid for the duration of this
   // native call.
   let child_dom = unsafe { child_dom_ptr.as_ref() };
-  let child_is_fragment = matches!(
-    &child_dom.node(child_handle.node_id).kind,
-    NodeKind::DocumentFragment
-  );
+  let child_kind = &child_dom.node(child_handle.node_id).kind;
+  let child_is_shadow_root = matches!(child_kind, NodeKind::ShadowRoot { .. });
+  let child_is_fragment =
+    matches!(child_kind, NodeKind::DocumentFragment) || child_is_shadow_root;
   let fragment_children: Vec<NodeId> = if child_is_fragment {
     child_dom
       .node(child_handle.node_id)
@@ -23874,11 +23880,20 @@ fn node_append_child_native(
     .then(|| child_dom.parent_node(child_handle.node_id))
     .flatten();
 
-  let inserted_roots: Vec<NodeId> = if child_is_fragment && child_handle.document_id != parent_handle.document_id {
+  let inserted_roots: Vec<NodeId> = if child_is_fragment
+    && child_handle.document_id != parent_handle.document_id
+  {
     // Cross-document fragment insertion: fragment stays in its original document; its children are
     // adopted and inserted into the destination.
     if child_dom_ptr == dom_ptr {
-      if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_handle.node_id) {
+      let insert_result = if child_is_shadow_root {
+        unsafe { dom_ptr.as_mut() }.with_shadow_root_as_document_fragment(child_handle.node_id, |dom| {
+          dom.append_child(parent_handle.node_id, child_handle.node_id)
+        })
+      } else {
+        unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_handle.node_id)
+      };
+      if let Err(err) = insert_result {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
       for &child_id in &fragment_children {
@@ -23921,24 +23936,30 @@ fn node_append_child_native(
       inserted
     }
   } else {
-    let child_for_insert = if child_is_fragment {
-      child_handle.node_id
-    } else {
-      maybe_adopt_node_into_document(vm, scope, host, child_document_obj, document_obj, dom_ptr, child_handle)
-        .map_err(|err| match err {
-          VmError::TypeError(_) => VmError::TypeError("Node.appendChild requires a node argument"),
-          err => err,
-        })?
-        .node_id
-    };
-
-    if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_for_insert) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-    }
-
     if child_is_fragment {
+      let insert_result = if child_is_shadow_root {
+        unsafe { dom_ptr.as_mut() }.with_shadow_root_as_document_fragment(child_handle.node_id, |dom| {
+          dom.append_child(parent_handle.node_id, child_handle.node_id)
+        })
+      } else {
+        unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_handle.node_id)
+      };
+      if let Err(err) = insert_result {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
       fragment_children.clone()
     } else {
+      let child_for_insert =
+        maybe_adopt_node_into_document(vm, scope, host, child_document_obj, document_obj, dom_ptr, child_handle)
+          .map_err(|err| match err {
+            VmError::TypeError(_) => VmError::TypeError("Node.appendChild requires a node argument"),
+            err => err,
+          })?
+          .node_id;
+
+      if let Err(err) = unsafe { dom_ptr.as_mut() }.append_child(parent_handle.node_id, child_for_insert) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
       vec![child_for_insert]
     }
   };
@@ -24086,10 +24107,10 @@ fn node_insert_before_native(
     .ok_or(VmError::TypeError("Node.insertBefore requires a node argument"))?;
   // SAFETY: pointers are valid for the duration of this native call.
   let new_child_dom = unsafe { new_child_dom_ptr.as_ref() };
-  let new_child_is_fragment = matches!(
-    &new_child_dom.node(new_child_handle.node_id).kind,
-    NodeKind::DocumentFragment
-  );
+  let new_child_kind = &new_child_dom.node(new_child_handle.node_id).kind;
+  let new_child_is_shadow_root = matches!(new_child_kind, NodeKind::ShadowRoot { .. });
+  let new_child_is_fragment =
+    matches!(new_child_kind, NodeKind::DocumentFragment) || new_child_is_shadow_root;
   let fragment_children: Vec<NodeId> = if new_child_is_fragment {
     new_child_dom
       .node(new_child_handle.node_id)
@@ -24117,20 +24138,41 @@ fn node_insert_before_native(
           "",
         )?));
       }
+      // A ShadowRoot is never a tree child in the DOM Standard, so it cannot be a valid
+      // `referenceChild`.
+      {
+        // SAFETY: `dom_ptr` is valid for the duration of this native call.
+        let dom = unsafe { dom_ptr.as_ref() };
+        if matches!(
+          &dom.node(reference_handle.node_id).kind,
+          NodeKind::ShadowRoot { .. }
+        ) {
+          return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+        }
+      }
       Some(reference_handle.node_id)
     }
     None => None,
   };
 
-  let inserted_roots: Vec<NodeId> = if new_child_is_fragment && new_child_handle.document_id != parent_handle.document_id {
+  let inserted_roots: Vec<NodeId> = if new_child_is_fragment
+    && new_child_handle.document_id != parent_handle.document_id
+  {
     // Cross-document fragment insertion: fragment stays in its original document; its children are
     // adopted and inserted into the destination.
     if new_child_dom_ptr == dom_ptr {
-      if let Err(err) = unsafe { dom_ptr.as_mut() }.insert_before(
-        parent_handle.node_id,
-        new_child_handle.node_id,
-        reference_node_id,
-      ) {
+      let insert_result = if new_child_is_shadow_root {
+        unsafe { dom_ptr.as_mut() }.with_shadow_root_as_document_fragment(new_child_handle.node_id, |dom| {
+          dom.insert_before(parent_handle.node_id, new_child_handle.node_id, reference_node_id)
+        })
+      } else {
+        unsafe { dom_ptr.as_mut() }.insert_before(
+          parent_handle.node_id,
+          new_child_handle.node_id,
+          reference_node_id,
+        )
+      };
+      if let Err(err) = insert_result {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
       for &child_id in &fragment_children {
@@ -24171,10 +24213,20 @@ fn node_insert_before_native(
       inserted
     }
   } else {
-    let new_child_for_insert = if new_child_is_fragment {
-      new_child_handle.node_id
+    if new_child_is_fragment {
+      let insert_result = if new_child_is_shadow_root {
+        unsafe { dom_ptr.as_mut() }.with_shadow_root_as_document_fragment(new_child_handle.node_id, |dom| {
+          dom.insert_before(parent_handle.node_id, new_child_handle.node_id, reference_node_id)
+        })
+      } else {
+        unsafe { dom_ptr.as_mut() }.insert_before(parent_handle.node_id, new_child_handle.node_id, reference_node_id)
+      };
+      if let Err(err) = insert_result {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      fragment_children.clone()
     } else {
-      maybe_adopt_node_into_document(
+      let new_child_for_insert = maybe_adopt_node_into_document(
         vm,
         scope,
         host,
@@ -24183,19 +24235,14 @@ fn node_insert_before_native(
         dom_ptr,
         new_child_handle,
       )
-        .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?
-        .node_id
-    };
+      .map_err(|_| VmError::TypeError("Node.insertBefore requires a node argument"))?
+      .node_id;
 
-    if let Err(err) =
-      unsafe { dom_ptr.as_mut() }.insert_before(parent_handle.node_id, new_child_for_insert, reference_node_id)
-    {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-    }
-
-    if new_child_is_fragment {
-      fragment_children.clone()
-    } else {
+      if let Err(err) =
+        unsafe { dom_ptr.as_mut() }.insert_before(parent_handle.node_id, new_child_for_insert, reference_node_id)
+      {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
       vec![new_child_for_insert]
     }
   };
@@ -24323,6 +24370,16 @@ fn node_remove_child_native(
     ));
   };
 
+  // ShadowRoot is never a tree child in the DOM Standard, so it cannot be removed (even though
+  // `dom2` stores it as an internal child of its host element).
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if matches!(&dom.node(child_node_id).kind, NodeKind::ShadowRoot { .. }) {
+      return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+    }
+  }
+
   {
     // SAFETY: `dom_ptr` points at the `dom2::Document` backing this node and is valid for the
     // duration of this native call.
@@ -24411,6 +24468,19 @@ fn node_replace_child_native(
       "Node.replaceChild requires a DOM-backed document",
     ))?;
 
+  // ShadowRoot is never a tree child in the DOM Standard, so it cannot be replaced (even though
+  // `dom2` stores it as an internal child of its host element).
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if matches!(
+      &dom.node(old_child_handle.node_id).kind,
+      NodeKind::ShadowRoot { .. }
+    ) {
+      return Err(VmError::Throw(make_dom_exception(scope, "NotFoundError", "")?));
+    }
+  }
+
   let new_child_document_obj = node_wrapper_document_obj(scope, new_child_obj, new_child_handle.node_id)
     .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?;
   let mut new_child_dom_ptr = dom_ptr_for_document_id_mut(vm, host, new_child_handle.document_id)
@@ -24419,10 +24489,10 @@ fn node_replace_child_native(
   // SAFETY: pointers are valid for the duration of this native call.
   let new_child_dom = unsafe { new_child_dom_ptr.as_ref() };
 
-  let new_child_is_fragment = matches!(
-    &new_child_dom.node(new_child_handle.node_id).kind,
-    NodeKind::DocumentFragment
-  );
+  let new_child_kind = &new_child_dom.node(new_child_handle.node_id).kind;
+  let new_child_is_shadow_root = matches!(new_child_kind, NodeKind::ShadowRoot { .. });
+  let new_child_is_fragment =
+    matches!(new_child_kind, NodeKind::DocumentFragment) || new_child_is_shadow_root;
   let fragment_children: Vec<NodeId> = if new_child_is_fragment {
     new_child_dom
       .node(new_child_handle.node_id)
@@ -24441,15 +24511,28 @@ fn node_replace_child_native(
     .then(|| new_child_dom.parent_node(new_child_handle.node_id))
     .flatten();
 
-  let inserted_roots: Vec<NodeId> = if new_child_is_fragment && new_child_handle.document_id != parent_handle.document_id {
+  let inserted_roots: Vec<NodeId> = if new_child_is_fragment
+    && new_child_handle.document_id != parent_handle.document_id
+  {
     // Cross-document fragment replacement: fragment stays in its original document; its children are
     // adopted and inserted into the destination in place of `old_child`.
     if new_child_dom_ptr == dom_ptr {
-      if let Err(err) = unsafe { dom_ptr.as_mut() }.replace_child(
-        parent_handle.node_id,
-        new_child_handle.node_id,
-        old_child_handle.node_id,
-      ) {
+      let replace_result = if new_child_is_shadow_root {
+        unsafe { dom_ptr.as_mut() }.with_shadow_root_as_document_fragment(new_child_handle.node_id, |dom| {
+          dom.replace_child(
+            parent_handle.node_id,
+            new_child_handle.node_id,
+            old_child_handle.node_id,
+          )
+        })
+      } else {
+        unsafe { dom_ptr.as_mut() }.replace_child(
+          parent_handle.node_id,
+          new_child_handle.node_id,
+          old_child_handle.node_id,
+        )
+      };
+      if let Err(err) = replace_result {
         return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
       }
       for &child_id in &fragment_children {
@@ -24493,10 +24576,28 @@ fn node_replace_child_native(
       inserted
     }
   } else {
-    let new_child_for_replace = if new_child_is_fragment {
-      new_child_handle.node_id
+    if new_child_is_fragment {
+      let replace_result = if new_child_is_shadow_root {
+        unsafe { dom_ptr.as_mut() }.with_shadow_root_as_document_fragment(new_child_handle.node_id, |dom| {
+          dom.replace_child(
+            parent_handle.node_id,
+            new_child_handle.node_id,
+            old_child_handle.node_id,
+          )
+        })
+      } else {
+        unsafe { dom_ptr.as_mut() }.replace_child(
+          parent_handle.node_id,
+          new_child_handle.node_id,
+          old_child_handle.node_id,
+        )
+      };
+      if let Err(err) = replace_result {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
+      fragment_children.clone()
     } else {
-      maybe_adopt_node_into_document(
+      let new_child_for_replace = maybe_adopt_node_into_document(
         vm,
         scope,
         host,
@@ -24505,21 +24606,16 @@ fn node_replace_child_native(
         dom_ptr,
         new_child_handle,
       )
-        .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?
-        .node_id
-    };
+      .map_err(|_| VmError::TypeError("Node.replaceChild requires a node argument"))?
+      .node_id;
 
-    if let Err(err) = unsafe { dom_ptr.as_mut() }.replace_child(
-      parent_handle.node_id,
-      new_child_for_replace,
-      old_child_handle.node_id,
-    ) {
-      return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
-    }
-
-    if new_child_is_fragment {
-      fragment_children.clone()
-    } else {
+      if let Err(err) = unsafe { dom_ptr.as_mut() }.replace_child(
+        parent_handle.node_id,
+        new_child_for_replace,
+        old_child_handle.node_id,
+      ) {
+        return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+      }
       vec![new_child_for_replace]
     }
   };
@@ -41829,6 +41925,68 @@ mod tests {
         el.dispatchEvent(new Event('click'));
         if (fired !== 11) throw new Error(`expected fired 11, got ${fired}`);
         if (el.onclick !== b) throw new Error('expected el.onclick getter to survive adoption');
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn shadow_root_inserted_as_fragment_open() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const host = document.createElement('div');
+        const sr = host.attachShadow({ mode: 'open' });
+        const span = document.createElement('span');
+        sr.appendChild(span);
+        document.body.appendChild(host);
+
+        // Inserting a ShadowRoot must behave like inserting a DocumentFragment: move its children
+        // and empty it, without detaching it from its host.
+        document.body.appendChild(sr);
+        if (span.parentNode !== document.body) throw new Error('expected span to move into document.body');
+        if (document.body.lastChild !== span) throw new Error('expected span to be appended after host');
+        if (sr.childNodes.length !== 0) throw new Error(`expected sr to be empty, got ${sr.childNodes.length}`);
+        if (host.shadowRoot !== sr) throw new Error('expected host.shadowRoot identity to be preserved');
+
+        let ok = false;
+        try { host.removeChild(sr); } catch (e) { ok = e && e.name === 'NotFoundError'; }
+        if (!ok) throw new Error('expected host.removeChild(sr) to throw NotFoundError');
+
+        ok = false;
+        try { host.insertBefore(document.createElement('i'), sr); } catch (e) { ok = e && e.name === 'NotFoundError'; }
+        if (!ok) throw new Error('expected host.insertBefore(.., sr) to throw NotFoundError');
+
+        return true;
+      })()"#,
+    )?;
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn shadow_root_inserted_as_fragment_closed() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const host = document.createElement('div');
+        const sr = host.attachShadow({ mode: 'closed' });
+        const span = document.createElement('span');
+        sr.appendChild(span);
+        if (host.shadowRoot !== null) throw new Error('expected host.shadowRoot to be null for closed roots');
+
+        document.body.appendChild(host);
+        document.body.appendChild(sr);
+        if (span.parentNode !== document.body) throw new Error('expected span to move into document.body');
+        if (sr.childNodes.length !== 0) throw new Error(`expected sr to be empty, got ${sr.childNodes.length}`);
         return true;
       })()"#,
     )?;

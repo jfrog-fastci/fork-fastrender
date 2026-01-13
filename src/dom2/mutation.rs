@@ -1164,6 +1164,52 @@ impl Document {
     self.index_of_child_internal(parent, child)
   }
 
+  pub(crate) fn with_shadow_root_as_document_fragment<T>(
+    &mut self,
+    shadow_root: NodeId,
+    f: impl FnOnce(&mut Self) -> Result<T, DomError>,
+  ) -> Result<T, DomError> {
+    self.node_checked(shadow_root)?;
+    if !matches!(self.nodes[shadow_root.index()].kind, NodeKind::ShadowRoot { .. }) {
+      return Err(DomError::InvalidNodeType);
+    }
+
+    struct RestoreGuard {
+      doc: *mut Document,
+      node: NodeId,
+      kind: Option<NodeKind>,
+      parent: Option<NodeId>,
+    }
+
+    impl Drop for RestoreGuard {
+      fn drop(&mut self) {
+        // SAFETY: `doc` is valid for the extent of the mutation call that created this guard.
+        let doc = unsafe { &mut *self.doc };
+        if self.node.index() >= doc.nodes.len() {
+          return;
+        }
+        if let Some(kind) = self.kind.take() {
+          doc.nodes[self.node.index()].kind = kind;
+        }
+        doc.nodes[self.node.index()].parent = self.parent;
+      }
+    }
+
+    let old_kind = std::mem::replace(
+      &mut self.nodes[shadow_root.index()].kind,
+      NodeKind::DocumentFragment,
+    );
+    let old_parent = self.nodes[shadow_root.index()].parent;
+    let _guard = RestoreGuard {
+      doc: self as *mut Document,
+      node: shadow_root,
+      kind: Some(old_kind),
+      parent: old_parent,
+    };
+
+    f(self)
+  }
+
   pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<bool, DomError> {
     self.insert_before(parent, child, None)
   }

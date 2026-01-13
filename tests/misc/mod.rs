@@ -20,6 +20,7 @@ mod js_intersection_observer;
 mod js_time_determinism;
 mod js_url_bindings;
 mod js_vm_budget_tests;
+mod js_shadow_root_mutation;
 mod js_vm_top_level_await;
 mod js_webidl_binding_value_array_return;
 mod js_webidl_sequence_conversion;
