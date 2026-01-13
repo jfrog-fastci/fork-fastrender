@@ -380,7 +380,9 @@ fn yield_star_throw_suppresses_close_error_from_return_non_object() -> Result<()
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? => {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -454,7 +456,9 @@ fn yield_star_return_does_not_suppress_close_error_from_return_non_object() -> R
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? => {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -538,7 +542,9 @@ fn yield_star_throw_suppresses_close_error_from_return_promise_reject() -> Resul
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? => {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
@@ -617,7 +623,9 @@ fn yield_star_return_does_not_suppress_close_error_from_return_promise_reject() 
       "#,
     ) {
       Ok(v) => v,
-      Err(err) if is_unimplemented_async_generator_error(&mut rt, &err)? => return Ok(()),
+      Err(err) if _async_generator_support::is_unimplemented_async_generator_error(&mut rt, &err)? => {
+        return Ok(());
+      }
       Err(err) => return Err(err),
     };
     assert_eq!(value_to_string(&rt, value), "");
