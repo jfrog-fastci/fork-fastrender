@@ -1223,6 +1223,13 @@ fn group_chip_ui(
     let label = group_chip_a11y_label(title, collapsed);
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
   });
+  // Accessibility: if focus lands on a chip that is outside the horizontal scroll viewport, bring
+  // it into view so keyboard and screen-reader users can see the focused control.
+  //
+  // Guard against repaint loops by only scrolling when the rect is actually not visible.
+  if response.has_focus() && !ui.is_rect_visible(chip_rect) {
+    response.scroll_to_me(Some(egui::Align::Center));
+  }
 
   #[cfg(test)]
   {
@@ -1585,6 +1592,11 @@ fn tab_ui(
   });
   if interactive {
     super::show_tooltip_on_focus(ui, &response, title);
+  }
+  // Accessibility: when focus moves to a tab that is currently scrolled out of view, scroll the
+  // tab-strip so the focused tab becomes visible.
+  if response.has_focus() && !ui.is_rect_visible(tab_rect) {
+    response.scroll_to_me(Some(egui::Align::Center));
   }
 
   let visuals = ui.style().visuals.clone();
@@ -1986,6 +1998,11 @@ fn pinned_tab_ui(
   });
   if !closing {
     super::show_tooltip_on_focus(ui, &response, title);
+  }
+  // Accessibility: keep the focused pinned tab visible when the pinned segment overflows and the
+  // focused tab is currently out of view.
+  if response.has_focus() && !ui.is_rect_visible(tab_rect) {
+    response.scroll_to_me(Some(egui::Align::Center));
   }
 
   let visuals = ui.style().visuals.clone();
@@ -4301,6 +4318,24 @@ pub(super) fn tab_strip_ui(
   #[cfg(test)]
   {
     store_test_layout(ui.ctx(), strip_rect, tab_rects_for_test);
+    ui.ctx().data_mut(|d| {
+      d.insert_temp(
+        egui::Id::new("test_tab_strip_unpinned_scroll_offset_x"),
+        scroll_offset_x,
+      );
+      d.insert_temp(
+        egui::Id::new("test_tab_strip_unpinned_scroll_viewport_rect"),
+        unpinned_scroll_viewport_rect,
+      );
+      d.insert_temp(
+        egui::Id::new("test_tab_strip_pinned_scroll_offset_x"),
+        pinned_scroll_offset_x,
+      );
+      d.insert_temp(
+        egui::Id::new("test_tab_strip_pinned_scroll_viewport_rect"),
+        pinned_scroll_viewport_rect,
+      );
+    });
   }
 
   actions
@@ -4712,6 +4747,101 @@ mod tests {
       new_tab_id,
     ];
     assert_tab_traversal_forward(&ctx, &mut app, &collapsed_order);
+  }
+
+  #[test]
+  fn tab_strip_scrolls_focused_offscreen_tab_into_view() {
+    let ctx = egui::Context::default();
+    let mut app = BrowserAppState::new();
+
+    // Create enough unpinned tabs to overflow an 800px-wide tab strip.
+    const TAB_COUNT: usize = 20;
+    let mut last_tab_id = TabId(0);
+    for i in 0..TAB_COUNT {
+      let tab_id = TabId((i + 1) as u64);
+      last_tab_id = tab_id;
+      app.push_tab(
+        BrowserTabState::new(tab_id, format!("https://{i}.example/")),
+        i == 0, // keep the first tab active so active-tab auto-scroll doesn't trigger
+      );
+    }
+
+    // Frame 1: baseline render. The strip should start at scroll offset 0 and the last tab should
+    // be outside the viewport.
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    let scroll0 = ctx
+      .data(|d| d.get_temp::<f32>(egui::Id::new("test_tab_strip_unpinned_scroll_offset_x")))
+      .unwrap_or(0.0);
+    assert!(
+      scroll0.abs() < 0.01,
+      "expected initial scroll offset to be ~0, got {scroll0}"
+    );
+
+    let viewport0 = ctx
+      .data(|d| {
+        d.get_temp::<Option<Rect>>(egui::Id::new("test_tab_strip_unpinned_scroll_viewport_rect"))
+      })
+      .unwrap_or(None)
+      .expect("expected unpinned scroll viewport rect to be stored");
+
+    let (_strip_rect, tab_rects0) = load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let last_rect0 = *tab_rects0.last().expect("expected at least one tab rect");
+    assert!(
+      !viewport0.contains(last_rect0.center()),
+      "expected last tab to start offscreen, but it was already visible. last={last_rect0:?} viewport={viewport0:?}"
+    );
+
+    // Frame 2: request focus on the last tab. The strip should auto-scroll to reveal it.
+    let last_tab_widget_id = tab_strip_tab_widget_id(last_tab_id);
+    ctx.memory_mut(|mem| mem.request_focus(last_tab_widget_id));
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      ctx.memory(|mem| mem.has_focus(last_tab_widget_id)),
+      "expected focus to remain on the requested tab"
+    );
+
+    let mut scroll1 = ctx
+      .data(|d| d.get_temp::<f32>(egui::Id::new("test_tab_strip_unpinned_scroll_offset_x")))
+      .unwrap_or(0.0);
+
+    // Some egui versions apply `scroll_to_me` in the following frame. If we didn't scroll yet,
+    // render one more frame to allow the scroll request to take effect.
+    if scroll1 <= 0.1 {
+      begin_frame(&ctx, Vec::new());
+      let _ = render_tab_strip(&ctx, &mut app);
+      let _ = ctx.end_frame();
+      assert!(
+        ctx.memory(|mem| mem.has_focus(last_tab_widget_id)),
+        "expected focus to remain on the requested tab after scrolling"
+      );
+      scroll1 = ctx
+        .data(|d| d.get_temp::<f32>(egui::Id::new("test_tab_strip_unpinned_scroll_offset_x")))
+        .unwrap_or(0.0);
+    }
+    assert!(
+      scroll1 > 0.1,
+      "expected scroll offset to increase after focusing offscreen tab, got {scroll1}"
+    );
+
+    let viewport1 = ctx
+      .data(|d| {
+        d.get_temp::<Option<Rect>>(egui::Id::new("test_tab_strip_unpinned_scroll_viewport_rect"))
+      })
+      .unwrap_or(None)
+      .expect("expected unpinned scroll viewport rect to be stored");
+
+    let (_strip_rect, tab_rects1) = load_test_layout(&ctx).expect("missing tab strip layout metrics");
+    let last_rect1 = *tab_rects1.last().expect("expected at least one tab rect");
+    assert!(
+      viewport1.contains(last_rect1.center()),
+      "expected last tab to be scrolled into view. last={last_rect1:?} viewport={viewport1:?}"
+    );
   }
 
   #[test]
