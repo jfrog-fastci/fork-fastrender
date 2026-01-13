@@ -2416,6 +2416,55 @@ mod frame_hit_testing_tests {
     assert_eq!(tester.hit_test(20.0, 20.0), child);
     assert_eq!(tester.hit_test(5.0, 5.0), root, "outside subframe bounds");
   }
+
+  #[test]
+  fn hit_test_truncates_excess_subframes_to_keep_topmost() {
+    let root = FrameId(1);
+    let mut subframes = Vec::new();
+    for i in 0..=MAX_SUBFRAMES_PER_FRAME {
+      let child = FrameId((i as u64) + 2);
+      subframes.push(SubframeInfo {
+        child,
+        src: None,
+        transform: AffineTransform {
+          a: 1.0,
+          b: 0.0,
+          c: 0.0,
+          d: 1.0,
+          e: i as f32,
+          f: 0.0,
+        },
+        clip_stack: Vec::new(),
+        z_index: i as u64,
+        hit_testable: true,
+        referrer_policy: None,
+        sandbox_flags: SandboxFlags::NONE,
+        opaque_origin: false,
+      });
+    }
+
+    let mut tester = FrameHitTester::new(root);
+    tester.set_frame_size(root, 1000, 10);
+    for info in &subframes {
+      tester.set_frame_size(info.child, 1, 1);
+    }
+    tester.set_subframes(root, subframes);
+
+    // The lowest z-index subframe should be dropped.
+    assert_eq!(
+      tester.hit_test(0.5, 0.5),
+      root,
+      "expected the dropped subframe to no longer be hit-testable"
+    );
+
+    // Next subframe should still be present.
+    assert_eq!(tester.hit_test(1.5, 0.5), FrameId(3));
+
+    // The topmost subframe should be retained.
+    let last_x = MAX_SUBFRAMES_PER_FRAME as f32 + 0.5;
+    let last_child = FrameId((MAX_SUBFRAMES_PER_FRAME as u64) + 2);
+    assert_eq!(tester.hit_test(last_x, 0.5), last_child);
+  }
 }
 
 /// Abstract transport for browser↔renderer IPC.
