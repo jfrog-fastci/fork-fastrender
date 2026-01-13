@@ -1,4 +1,4 @@
-use crate::execution_context::{ExecutionContext, ModuleId, ScriptOrModule};
+use crate::execution_context::ModuleId;
 use crate::exec::{
   instantiate_module_decls,
   run_module,
