@@ -5,6 +5,7 @@ use crate::style::cascade::StyledNode;
 use crate::style::media::MediaContext;
 use crate::style::types::BackgroundBox;
 use crate::style::types::GridTrack;
+use crate::style::types::InterpolateSize;
 
 fn display(node: &StyledNode) -> String {
   node.styles.display.to_string()
@@ -99,6 +100,33 @@ fn supports_container_type_invalid_combo_is_unsupported() {
 fn supports_not_negates() {
   let css = r"@supports not (display: grid) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn supports_interpolate_size_allow_keywords_matches() {
+  let css = r"@supports (interpolate-size: allow-keywords) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_not_interpolate_size_allow_keywords_does_not_match() {
+  let css = r"@supports not (interpolate-size: allow-keywords) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn supports_interpolate_size_rejects_invalid_values() {
+  let css = r"@supports (interpolate-size: bogus) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn interpolate_size_parses_into_computed_style() {
+  let dom = dom::parse_html(r#"<div></div>"#).unwrap();
+  let stylesheet = parse_stylesheet(r#"div { interpolate-size: allow-keywords; }"#).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_first(&styled, "div").expect("div");
+  assert_eq!(div.styles.interpolate_size, InterpolateSize::AllowKeywords);
 }
 
 #[test]

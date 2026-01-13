@@ -5195,6 +5195,7 @@ fn is_inherited_property(name: &str) -> bool {
       | "caret-color"
       | "accent-color"
       | "cursor"
+      | "interpolate-size"
       | "visibility"
       | "pointer-events"
       | "user-select"
@@ -7138,6 +7139,7 @@ pub(crate) fn apply_property_from_source(
       styles.transition_timing_functions = source.transition_timing_functions.clone();
       styles.transition_behaviors = source.transition_behaviors.clone();
     }
+    "interpolate-size" => styles.interpolate_size = source.interpolate_size,
     "scroll-padding" => {
       set_scroll_padding_side(
         styles,
@@ -15675,6 +15677,13 @@ fn apply_declaration_with_base_internal_with_order(
         styles.transition_delays = delays.into();
         styles.transition_timing_functions = timings.into();
         styles.transition_behaviors = behaviors.into();
+      }
+    }
+    "interpolate-size" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = InterpolateSize::parse(kw) {
+          styles.interpolate_size = value;
+        }
       }
     }
     "scrollbar-gutter" => {

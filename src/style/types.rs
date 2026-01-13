@@ -299,6 +299,38 @@ impl ContainerType {
   }
 }
 
+/// Controls whether size keywords like `auto` participate in interpolation.
+///
+/// CSS: `interpolate-size`
+/// Spec: CSS Values and Units Level 5
+///
+/// This property is currently stored for feature-query correctness and future animation support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpolateSize {
+  /// Only numeric `<length-percentage>` values interpolate.
+  NumericOnly,
+  /// Allows interpolation between keyword sizes and numeric sizes where supported.
+  AllowKeywords,
+}
+
+impl Default for InterpolateSize {
+  fn default() -> Self {
+    Self::NumericOnly
+  }
+}
+
+impl InterpolateSize {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("numeric-only") {
+      Some(Self::NumericOnly)
+    } else if keyword.eq_ignore_ascii_case("allow-keywords") {
+      Some(Self::AllowKeywords)
+    } else {
+      None
+    }
+  }
+}
+
 /// Border collapsing model for tables
 ///
 /// CSS 2.1 §17.6.1: initial value is `separate`

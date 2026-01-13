@@ -142,6 +142,7 @@ use types::ImageRendering;
 use types::ImageResolution;
 use types::InsetValue;
 use types::IntrinsicSizeKeyword;
+use types::InterpolateSize;
 use types::Isolation;
 use types::JustifyContent;
 use types::LengthOrNumber;
@@ -985,6 +986,8 @@ pub struct ComputedStyle {
   pub transition_timing_functions: Arc<[TransitionTimingFunction]>,
   /// Behaviors used by transitions (CSS Transitions Level 2).
   pub transition_behaviors: Arc<[TransitionBehavior]>,
+  /// Whether size keywords like `auto` participate in interpolation (CSS `interpolate-size`).
+  pub interpolate_size: InterpolateSize,
   /// Anchor names exposed by this element (CSS `anchor-name`).
   pub anchor_names: Vec<String>,
   /// Anchor scoping for this element's subtree (CSS `anchor-scope`).
@@ -1481,6 +1484,7 @@ impl Default for ComputedStyle {
       transition_delays: vec![0.0].into(),
       transition_timing_functions: vec![TransitionTimingFunction::Ease].into(),
       transition_behaviors: vec![TransitionBehavior::Normal].into(),
+      interpolate_size: InterpolateSize::NumericOnly,
       anchor_names: Vec::new(),
       anchor_scope: AnchorScope::None,
       position_anchor: PositionAnchor::None,

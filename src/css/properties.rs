@@ -344,6 +344,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "inset-inline",
   "inset-inline-end",
   "inset-inline-start",
+  "interpolate-size",
   "isolation",
   "justify-content",
   "justify-items",
@@ -3695,6 +3696,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         parsed,
         PropertyValue::Length(len) if len.calc.is_none() && matches!(len.unit, LengthUnit::Percent)
       );
+    }
+    "interpolate-size" => {
+      return keyword_in_list(parsed, &["numeric-only", "allow-keywords"]);
     }
     "z-index" => {
       return matches!(parsed, PropertyValue::Number(_)) || keyword_in_list(parsed, &["auto"])
