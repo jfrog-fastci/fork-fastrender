@@ -50,3 +50,7 @@ The windowed `browser` app (feature `browser_ui`) also exposes **chrome** access
 tech via **AccessKit** (egui + accesskit-winit). See
 [`docs/chrome_accessibility.md`](chrome_accessibility.md) for the AccessKit mapping/debugging notes
 and how this relates to the renderer-side `AccessibilityNode` export.
+
+For the contributor workflow around page accessibility (inspecting the tree with `dump_a11y`, how
+viewport CSS bounds are computed/mapped for UI integration, and manual screen reader testing), see
+[`docs/page_accessibility.md`](page_accessibility.md).
