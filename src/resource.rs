@@ -43,7 +43,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::TryFrom;
-use std::io::{self, Cursor, Read, Seek, Write as _};
+use std::io::{self, Cursor, Read, Write as _};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -64,11 +64,11 @@ pub mod chrome;
 mod cors;
 #[cfg(feature = "direct_network")]
 mod curl_backend;
-mod file_backend;
 pub(crate) mod data_url;
-pub mod ipc_fetcher;
 #[cfg(feature = "disk_cache")]
 pub mod disk_cache;
+mod file_backend;
+pub mod ipc_fetcher;
 pub mod web_fetch;
 pub mod web_url;
 // WebSocket client helper (cookie integration) used by the vm-js Window `WebSocket` bindings.
@@ -79,10 +79,10 @@ pub mod web_url;
 #[cfg(feature = "direct_websocket")]
 pub(crate) mod websocket;
 pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
-pub use file_backend::{FileBackend, NoFileBackend, StdFsFileBackend};
-pub use ipc_fetcher::IpcResourceFetcher;
 #[cfg(feature = "disk_cache")]
 pub use disk_cache::{DiskCacheConfig, DiskCachingFetcher};
+pub use file_backend::{FileBackend, NoFileBackend, StdFsFileBackend};
+pub use ipc_fetcher::IpcResourceFetcher;
 
 // ============================================================================
 // Origin and resource policy
@@ -513,7 +513,10 @@ fn normalize_request_header_value(url: &str, value: &str) -> Result<String> {
     .iter()
     .any(|&b| b == 0x00 || b == b'\r' || b == b'\n')
   {
-    return Err(protocol_error(url, "invalid request header value: contains NUL/newline bytes"));
+    return Err(protocol_error(
+      url,
+      "invalid request header value: contains NUL/newline bytes",
+    ));
   }
   Ok(trim_http_whitespace(value).to_string())
 }
@@ -1325,9 +1328,7 @@ impl FetchDestination {
       | Self::VideoCors
       | Self::AudioCors
       | Self::StyleCors
-      | Self::ScriptCors => {
-        http_browser_origin_and_referer_for_url(url)
-      }
+      | Self::ScriptCors => http_browser_origin_and_referer_for_url(url),
       _ => None,
     }
   }
@@ -4034,10 +4035,7 @@ pub trait ResourceFetcher: Send + Sync {
     match classify_scheme(req.url) {
       ResourceScheme::Http | ResourceScheme::Https => {
         let mut headers = Vec::with_capacity(1);
-        headers.push((
-          "Range".to_string(),
-          format!("bytes={start}-{capped_end}"),
-        ));
+        headers.push(("Range".to_string(), format!("bytes={start}-{capped_end}")));
 
         let request = HttpRequest {
           fetch: req,
@@ -4157,120 +4155,63 @@ pub trait ResourceFetcher: Send + Sync {
         Ok(res)
       }
       ResourceScheme::File | ResourceScheme::Relative => {
-        let url_owned;
-        let url = match classify_scheme(req.url) {
-          ResourceScheme::Relative => {
-            url_owned = format!("file://{}", req.url);
-            url_owned.as_str()
-          }
-          _ => req.url,
+        // Avoid directly reading from `std::fs` here: many sandboxed configurations proxy filesystem
+        // access via a custom `ResourceFetcher`/IPC boundary. Implementations that want efficient
+        // range reads for local files should override this method.
+        //
+        // Fallback behavior: fetch the resource through the fetcher implementation, then slice the
+        // returned body.
+        let mut res = if max_bytes == 0 {
+          self.fetch_partial_with_request(req, 0)?
+        } else {
+          self.fetch_with_request(req)?
         };
 
-        let path_candidates = file_url_path_candidates(url);
-        let mut file = None;
-        let mut chosen_path: Option<std::path::PathBuf> = None;
-        let mut last_err = None;
-        for candidate in &path_candidates {
-          match std::fs::File::open(candidate) {
-            Ok(handle) => {
-              file = Some(handle);
-              chosen_path = Some(candidate.clone());
-              break;
-            }
-            Err(err) => last_err = Some(err),
-          }
-        }
-
-        let mut file = file.ok_or_else(|| {
-          let err = last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::NotFound, "not found"));
-          Error::Resource(
-            ResourceError::new(url.to_string(), err.to_string())
-              .with_final_url(url.to_string())
-              .with_source(err),
-          )
-        })?;
-
         if max_bytes == 0 {
-          let chosen_path = chosen_path.unwrap_or_else(|| std::path::PathBuf::from(url));
-          let content_type = guess_content_type_from_path(chosen_path.to_string_lossy().as_ref());
-          return Ok(FetchedResource::with_final_url(
-            Vec::new(),
-            content_type,
-            Some(url.to_string()),
-          ));
+          res.bytes.clear();
+          return Ok(res);
         }
 
-        // Seek to the requested offset and read at most `max_bytes`.
-        let meta = file.metadata().ok();
-        if let Some(meta) = &meta {
-          let len = meta.len();
-          if len == 0 {
-            if start == 0 {
-              let chosen_path = chosen_path.unwrap_or_else(|| std::path::PathBuf::from(url));
-              let content_type =
-                guess_content_type_from_path(chosen_path.to_string_lossy().as_ref());
-              return Ok(FetchedResource::with_final_url(
-                Vec::new(),
-                content_type,
-                Some(url.to_string()),
-              ));
-            }
-            return Err(Error::Resource(ResourceError::new(
-              url,
-              "byte range start is beyond end of empty file".to_string(),
-            )));
-          }
-          if start >= len {
-            return Err(Error::Resource(ResourceError::new(
-              url,
-              format!("byte range start {start} is beyond end of file (len={len})"),
-            )));
-          }
-        }
-
-        file
-          .seek(std::io::SeekFrom::Start(start))
-          .map_err(|err| {
-            Error::Resource(
-              ResourceError::new(url.to_string(), err.to_string())
-                .with_final_url(url.to_string())
-                .with_source(err),
-            )
-          })?;
-
-        let max_len_u64 = capped_end.saturating_sub(start).saturating_add(1);
-        let read_limit = usize::try_from(max_len_u64).unwrap_or(max_bytes);
-        let read_limit = read_limit.min(max_bytes);
-        let bytes = read_response_prefix(&mut file, read_limit).map_err(|err| {
-          Error::Resource(
-            ResourceError::new(url.to_string(), err.to_string())
-              .with_final_url(url.to_string())
-              .with_source(err),
-          )
+        let start_idx = usize::try_from(start).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            req.url,
+            format!("byte range start {start} is too large to slice in memory"),
+          ))
         })?;
-
-        let chosen_path = chosen_path.unwrap_or_else(|| std::path::PathBuf::from(url));
-        let content_type = guess_content_type_from_path(chosen_path.to_string_lossy().as_ref());
-        Ok(FetchedResource::with_final_url(
-          bytes,
-          content_type,
-          Some(url.to_string()),
-        ))
+        if start_idx >= res.bytes.len() {
+          return Err(Error::Resource(ResourceError::new(
+            req.url,
+            format!(
+              "byte range start {start} is beyond end of response body (len={})",
+              res.bytes.len()
+            ),
+          )));
+        }
+        let end_idx = usize::try_from(capped_end).map_err(|_| {
+          Error::Resource(ResourceError::new(
+            req.url,
+            format!("byte range end {capped_end} is too large to slice in memory"),
+          ))
+        })?;
+        let available_end = res.bytes.len().saturating_sub(1);
+        let end_idx = end_idx.min(available_end);
+        res.bytes = res.bytes[start_idx..=end_idx].to_vec();
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        Ok(res)
       }
       ResourceScheme::Data => {
         if max_bytes == 0 {
           return Ok(FetchedResource::new(Vec::new(), None));
         }
 
-        let decode_len = capped_end
-          .saturating_add(1)
-          .try_into()
-          .map_err(|_| {
-            Error::Resource(ResourceError::new(
-              req.url,
-              format!("byte range end {capped_end} is too large to decode"),
-            ))
-          })?;
+        let decode_len = capped_end.saturating_add(1).try_into().map_err(|_| {
+          Error::Resource(ResourceError::new(
+            req.url,
+            format!("byte range end {capped_end} is too large to decode"),
+          ))
+        })?;
         let mut res = data_url::decode_data_url_prefix(req.url, decode_len)?;
         let start_idx = usize::try_from(start).map_err(|_| {
           Error::Resource(ResourceError::new(
@@ -5013,7 +4954,11 @@ impl HttpFetcher {
     self.policy.reserve_budget(bytes.len())?;
 
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
-    Ok(FetchedResource::with_final_url(bytes, content_type, Some(url.to_string())))
+    Ok(FetchedResource::with_final_url(
+      bytes,
+      content_type,
+      Some(url.to_string()),
+    ))
   }
 
   fn fetch_data(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
@@ -5022,7 +4967,11 @@ impl HttpFetcher {
     // payload (which could otherwise abort the process on OOM).
     let decode_limit = limit.saturating_add(1);
     let mut resource = data_url::decode_data_url_prefix(url, decode_limit)?;
-    substitute_offline_fixture_placeholder_full(kind, &mut resource.bytes, &mut resource.content_type);
+    substitute_offline_fixture_placeholder_full(
+      kind,
+      &mut resource.bytes,
+      &mut resource.content_type,
+    );
     let len = resource.bytes.len();
     if len > limit {
       if let Some(remaining) = self.policy.remaining_budget() {
@@ -5033,7 +4982,10 @@ impl HttpFetcher {
           )));
         }
       }
-      return Err(policy_error(format!("response too large ({} > {} bytes)", len, limit)));
+      return Err(policy_error(format!(
+        "response too large ({} > {} bytes)",
+        len, limit
+      )));
     }
     self.policy.reserve_budget(len)?;
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
@@ -10041,7 +9993,11 @@ impl ResourceFetcher for HttpFetcher {
           // applies directly to the encoded representation. Compressed range responses are
           // ambiguous (the range can apply to the compressed stream, and prefixes are often not
           // independently decodable), so force identity encoding whenever callers request a range.
-          if req.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("range")) {
+          if req
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("range"))
+          {
             system_headers.push(("Accept-Encoding".to_string(), "identity".to_string()));
           }
 
@@ -10339,10 +10295,7 @@ impl ResourceFetcher for HttpFetcher {
     match scheme {
       ResourceScheme::Http | ResourceScheme::Https => {
         let mut headers = Vec::with_capacity(1);
-        headers.push((
-          "Range".to_string(),
-          format!("bytes={start}-{capped_end}"),
-        ));
+        headers.push(("Range".to_string(), format!("bytes={start}-{capped_end}")));
 
         let request = HttpRequest {
           fetch: req,
@@ -10423,7 +10376,9 @@ impl ResourceFetcher for HttpFetcher {
               let desired_len = desired_end
                 .checked_sub(start)
                 .and_then(|delta| delta.checked_add(1))
-                .ok_or_else(|| Error::Resource(ResourceError::new(url, "byte range length overflow")))?;
+                .ok_or_else(|| {
+                  Error::Resource(ResourceError::new(url, "byte range length overflow"))
+                })?;
               let desired_len = usize::try_from(desired_len).map_err(|_| {
                 Error::Resource(ResourceError::new(
                   url,
@@ -10480,15 +10435,12 @@ impl ResourceFetcher for HttpFetcher {
           return Ok(FetchedResource::new(Vec::new(), None));
         }
 
-        let decode_len = capped_end
-          .saturating_add(1)
-          .try_into()
-          .map_err(|_| {
-            Error::Resource(ResourceError::new(
-              url,
-              format!("byte range end {capped_end} is too large to decode"),
-            ))
-          })?;
+        let decode_len = capped_end.saturating_add(1).try_into().map_err(|_| {
+          Error::Resource(ResourceError::new(
+            url,
+            format!("byte range end {capped_end} is too large to decode"),
+          ))
+        })?;
         let mut res = data_url::decode_data_url_prefix(url, decode_len)?;
         let start_idx = usize::try_from(start).map_err(|_| {
           Error::Resource(ResourceError::new(
@@ -14261,8 +14213,8 @@ pub(crate) fn decode_data_url(url: &str) -> Result<FetchedResource> {
 mod tests {
   use super::data_url;
   use super::*;
-  use brotli::CompressorWriter;
   use crate::debug::runtime::RuntimeToggles;
+  use brotli::CompressorWriter;
   use flate2::write::GzEncoder;
   use flate2::Compression;
   use std::collections::VecDeque;
@@ -14313,7 +14265,8 @@ mod tests {
       return None;
     }
     let connect_addr = addr;
-    let connect = thread::spawn(move || TcpStream::connect_timeout(&connect_addr, Duration::from_millis(500)));
+    let connect =
+      thread::spawn(move || TcpStream::connect_timeout(&connect_addr, Duration::from_millis(500)));
 
     let start = Instant::now();
     let mut accepted = false;
@@ -14324,7 +14277,9 @@ mod tests {
           accepted = true;
           break;
         }
-        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(5)),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+          thread::sleep(Duration::from_millis(5))
+        }
         Err(err) => {
           eprintln!("skipping {context}: cannot accept localhost connection: {err}");
           break;
@@ -14332,10 +14287,7 @@ mod tests {
       }
     }
 
-    let connect_ok = connect
-      .join()
-      .ok()
-      .is_some_and(|res| res.is_ok());
+    let connect_ok = connect.join().ok().is_some_and(|res| res.is_ok());
     let _ = listener.set_nonblocking(false);
     if !(connect_ok && accepted) {
       eprintln!("skipping {context}: localhost TCP connections are blocked in this environment");
@@ -14349,13 +14301,28 @@ mod tests {
   fn fetch_request_defaults_credentials_mode_by_destination() {
     let cases: &[(FetchDestination, FetchCredentialsMode)] = &[
       (FetchDestination::Fetch, FetchCredentialsMode::SameOrigin),
-      (FetchDestination::StyleCors, FetchCredentialsMode::SameOrigin),
-      (FetchDestination::ImageCors, FetchCredentialsMode::SameOrigin),
-      (FetchDestination::VideoCors, FetchCredentialsMode::SameOrigin),
-      (FetchDestination::AudioCors, FetchCredentialsMode::SameOrigin),
+      (
+        FetchDestination::StyleCors,
+        FetchCredentialsMode::SameOrigin,
+      ),
+      (
+        FetchDestination::ImageCors,
+        FetchCredentialsMode::SameOrigin,
+      ),
+      (
+        FetchDestination::VideoCors,
+        FetchCredentialsMode::SameOrigin,
+      ),
+      (
+        FetchDestination::AudioCors,
+        FetchCredentialsMode::SameOrigin,
+      ),
       (FetchDestination::Font, FetchCredentialsMode::SameOrigin),
       (FetchDestination::Document, FetchCredentialsMode::Include),
-      (FetchDestination::DocumentNoUser, FetchCredentialsMode::Include),
+      (
+        FetchDestination::DocumentNoUser,
+        FetchCredentialsMode::Include,
+      ),
       (FetchDestination::Iframe, FetchCredentialsMode::Include),
       (FetchDestination::Style, FetchCredentialsMode::Include),
       (FetchDestination::Image, FetchCredentialsMode::Include),
@@ -14575,7 +14542,9 @@ mod tests {
   fn resource_policy_allows_bare_file_paths_by_default() {
     let policy = ResourcePolicy::new();
     assert_eq!(
-      policy.ensure_url_allowed("./foo.html").expect("bare path should be allowed"),
+      policy
+        .ensure_url_allowed("./foo.html")
+        .expect("bare path should be allowed"),
       ResourceScheme::Relative
     );
     assert_eq!(
@@ -15002,6 +14971,38 @@ mod tests {
       .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
       .expect("fetch file range");
     assert_eq!(res.bytes, b"567");
+  }
+
+  #[test]
+  fn resource_fetcher_default_range_does_not_bypass_fetch_with_request_for_file_urls() {
+    struct DenyFetcher;
+
+    impl ResourceFetcher for DenyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Err(Error::Other(format!("deny {url}")))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        Err(Error::Other(format!("deny {}", req.url)))
+      }
+    }
+
+    let mut file = NamedTempFile::new().expect("temp file");
+    file.write_all(b"0123456789").expect("write file");
+    file.flush().expect("flush");
+    let url = Url::from_file_path(file.path())
+      .expect("file url")
+      .to_string();
+
+    let fetcher = DenyFetcher;
+    let err = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 0..=3, 4)
+      .expect_err("expected default range impl to delegate to fetch_with_request");
+    assert!(matches!(err, Error::Other(_)), "unexpected error: {err:?}");
+    assert!(
+      err.to_string().contains("deny"),
+      "unexpected error message: {err}"
+    );
   }
 
   #[test]
@@ -15646,8 +15647,14 @@ mod tests {
       ("Cookie".to_string(), "a=b".to_string()),
       ("Origin".to_string(), "https://evil.example".to_string()),
       ("User-Agent".to_string(), "Spoof-UA".to_string()),
-      ("Access-Control-Request-Method".to_string(), "PUT".to_string()),
-      ("Access-Control-Request-Headers".to_string(), "x-test".to_string()),
+      (
+        "Access-Control-Request-Method".to_string(),
+        "PUT".to_string(),
+      ),
+      (
+        "Access-Control-Request-Headers".to_string(),
+        "x-test".to_string(),
+      ),
       (
         "Access-Control-Request-Private-Network".to_string(),
         "true".to_string(),
@@ -15662,9 +15669,18 @@ mod tests {
     assert_eq!(header_value(&headers, "User-Agent"), Some("Default-UA"));
     assert_eq!(header_value(&headers, "Origin"), None);
     assert_eq!(header_value(&headers, "Cookie"), None);
-    assert_eq!(header_value(&headers, "Access-Control-Request-Method"), None);
-    assert_eq!(header_value(&headers, "Access-Control-Request-Headers"), None);
-    assert_eq!(header_value(&headers, "Access-Control-Request-Private-Network"), None);
+    assert_eq!(
+      header_value(&headers, "Access-Control-Request-Method"),
+      None
+    );
+    assert_eq!(
+      header_value(&headers, "Access-Control-Request-Headers"),
+      None
+    );
+    assert_eq!(
+      header_value(&headers, "Access-Control-Request-Private-Network"),
+      None
+    );
 
     // Allowed user headers are preserved.
     assert_eq!(header_value(&headers, "X-Ok"), Some("1"));
@@ -15722,8 +15738,9 @@ mod tests {
     for idx in 0..=IPC_FETCH_MAX_HEADER_COUNT {
       user_headers.push((format!("x-test-{idx}"), "a".to_string()));
     }
-    let err = merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
-      .unwrap_err();
+    let err =
+      merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+        .unwrap_err();
     assert!(
       err.to_string().contains("too many request headers"),
       "unexpected error: {err}"
@@ -15735,10 +15752,13 @@ mod tests {
     let mut headers = Vec::new();
     let value = "a".repeat(IPC_FETCH_MAX_HEADER_VALUE_BYTES + 1);
     let user_headers = vec![("x-test".to_string(), value)];
-    let err = merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
-      .unwrap_err();
+    let err =
+      merge_user_request_headers("https://example.com/", "GET", &mut headers, &user_headers)
+        .unwrap_err();
     assert!(
-      err.to_string().contains("request header value exceeds IPC max bytes"),
+      err
+        .to_string()
+        .contains("request header value exceeds IPC max bytes"),
       "unexpected error: {err}"
     );
   }
@@ -15772,7 +15792,9 @@ mod tests {
       .with_referrer_url(&referrer_url);
     let err = fetcher.fetch_with_request(req).unwrap_err();
     assert!(
-      err.to_string().contains("referrer_url exceeds IPC max URL length"),
+      err
+        .to_string()
+        .contains("referrer_url exceeds IPC max URL length"),
       "unexpected error: {err}"
     );
   }
@@ -15790,7 +15812,9 @@ mod tests {
     };
     let err = fetcher.fetch_http_request(req).unwrap_err();
     assert!(
-      err.to_string().contains("request body exceeds IPC max size"),
+      err
+        .to_string()
+        .contains("request body exceeds IPC max size"),
       "unexpected error: {err}"
     );
   }
@@ -15806,7 +15830,9 @@ mod tests {
     resource.final_url = Some(final_url);
     let err = validate_ipc_final_url("https://example.com/", &resource).unwrap_err();
     assert!(
-      err.to_string().contains("final_url exceeds IPC max URL length"),
+      err
+        .to_string()
+        .contains("final_url exceeds IPC max URL length"),
       "unexpected error: {err}"
     );
   }
@@ -22087,9 +22113,9 @@ mod tests {
 
   #[test]
   fn http_fetcher_fetch_range_with_request_rejects_content_range_mismatch() {
-    let Some(listener) = try_bind_localhost(
-      "http_fetcher_fetch_range_with_request_rejects_content_range_mismatch",
-    ) else {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_fetch_range_with_request_rejects_content_range_mismatch")
+    else {
       return;
     };
     let addr = listener.local_addr().unwrap();
@@ -22138,9 +22164,9 @@ mod tests {
 
   #[test]
   fn http_fetcher_fetch_range_with_request_rejects_missing_content_range() {
-    let Some(listener) = try_bind_localhost(
-      "http_fetcher_fetch_range_with_request_rejects_missing_content_range",
-    ) else {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_fetch_range_with_request_rejects_missing_content_range")
+    else {
       return;
     };
     let addr = listener.local_addr().unwrap();
@@ -24457,8 +24483,7 @@ mod tests {
         max_bytes: usize,
       ) -> Result<FetchedResource> {
         self.range_calls.fetch_add(1, Ordering::SeqCst);
-        let mut res =
-          FetchedResource::new(b"range-body".to_vec(), Some("text/plain".to_string()));
+        let mut res = FetchedResource::new(b"range-body".to_vec(), Some("text/plain".to_string()));
         if res.bytes.len() > max_bytes {
           res.bytes.truncate(max_bytes);
         }
@@ -25614,14 +25639,20 @@ mod tests {
     assert_eq!(second.access_control_allow_origin.as_deref(), Some("*"));
 
     let snapshot = cache
-      .cached_entry(&CacheKey::new(FetchContextKind::Other, url.to_string()), None)
+      .cached_entry(
+        &CacheKey::new(FetchContextKind::Other, url.to_string()),
+        None,
+      )
       .expect("cache entry should exist after revalidation");
     let stored = snapshot
       .value
       .as_result()
       .expect("cache entry should be a resource");
     assert_eq!(stored.etag.as_deref(), Some("etag2"));
-    assert_eq!(stored.response_referrer_policy, Some(ReferrerPolicy::NoReferrer));
+    assert_eq!(
+      stored.response_referrer_policy,
+      Some(ReferrerPolicy::NoReferrer)
+    );
     assert_eq!(stored.access_control_allow_origin.as_deref(), Some("*"));
   }
 
