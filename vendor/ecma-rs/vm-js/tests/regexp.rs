@@ -626,6 +626,31 @@ fn regexp_named_groups_reset_in_quantifier_iterations() {
 }
 
 #[test]
+fn regexp_unicode_property_escape_ascii_and_script_han() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        const text = "\u{20BB7}a\u{20BB7}";
+        const m1u = new RegExp("\\p{Script=Han}", "u").exec(text);
+        const m1v = new RegExp("\\p{Script=Han}", "v").exec(text);
+        const m2u = new RegExp("\\p{ASCII}", "u").exec(text);
+        const m2v = new RegExp("\\p{ASCII}", "v").exec(text);
+        const m3u = new RegExp("\\P{ASCII}", "u").exec("a\u{20BB7}b");
+        const m3v = new RegExp("\\P{ASCII}", "v").exec("a\u{20BB7}b");
+        [m1u[0], m1u.index, m1v[0], m1v.index,
+         m2u[0], m2u.index, m2v[0], m2v.index,
+         m3u[0], m3u.index, m3v[0], m3v.index].join(",")
+      "#,
+    )
+    .unwrap();
+  assert_eq!(
+    as_utf8_lossy(&rt, value),
+    "𠮷,0,𠮷,0,a,2,a,2,𠮷,1,𠮷,1"
+  );
+}
+
+#[test]
 fn regexp_string_iterator_next_proxy_receiver_throws_type_error() {
   let mut rt = new_runtime();
   let value = rt

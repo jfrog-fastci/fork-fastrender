@@ -28627,11 +28627,12 @@ fn gen_resume_from_frames(
           };
 
           let Some(throw_method) = throw_method else {
-            // No `throw` method: close the delegate iterator (IteratorClose), then throw a
-            // TypeError.
+            // No `throw` method:
+            // Spec: perform ? IteratorClose(iteratorRecord, NormalCompletion(~empty~)), then
+            // throw a TypeError exception.
             //
-            // Errors thrown while closing (including non-object `return` results) override the
-            // protocol-violation TypeError.
+            // Per `yield*` delegation semantics, errors thrown while closing override the protocol
+            // violation TypeError.
             if let Err(close_err) = iterator::iterator_close(
               evaluator.vm,
               &mut *evaluator.host,
@@ -28643,12 +28644,12 @@ fn gen_resume_from_frames(
               state = gen_error_to_completion(evaluator, scope, close_err)?;
               continue;
             }
-            let err = throw_type_error(
+            let type_err = throw_type_error(
               evaluator.vm,
               scope,
               "yield* protocol violation: iterator does not have a throw method",
             )?;
-            state = completion_from_expr_result(Err(err))?;
+            state = gen_error_to_completion(evaluator, scope, type_err)?;
             continue;
           };
 

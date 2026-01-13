@@ -1214,6 +1214,18 @@ impl RegExpProgram {
 
             break;
           }
+          Inst::UnicodeProperty(prop) => {
+            let Some((cp, len)) =
+              decode_code_point(input, state.pos, flags.has_either_unicode_flag())
+            else {
+              break;
+            };
+            if !prop.matches_code_point(cp) {
+              break;
+            }
+            state.pos = state.pos.saturating_add(len);
+            state.pc += 1;
+          }
           Inst::AssertStart => {
             if state.pos == 0 {
               state.pc += 1;
@@ -1817,6 +1829,7 @@ impl RegExpProgram {
           }
           RegExpCompileError::Vm(err) => err,
         })?),
+        Inst::UnicodeProperty(prop) => Inst::UnicodeProperty(*prop),
         Inst::AssertStart => Inst::AssertStart,
         Inst::AssertEnd => Inst::AssertEnd,
         Inst::WordBoundary { negated } => Inst::WordBoundary { negated: *negated },
@@ -2028,6 +2041,7 @@ enum Inst {
   /// This is intentionally a single VM instruction to avoid exploding large properties-of-strings
   /// (e.g. `\p{RGI_Emoji}`) into tens of thousands of `Split` + `Char` instructions.
   UnicodeSet(UnicodeSetClass),
+  UnicodeProperty(UnicodeProperty),
   AssertStart,
   AssertEnd,
   WordBoundary { negated: bool },
@@ -2057,6 +2071,18 @@ enum Inst {
     negative: bool,
   },
   Match,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct UnicodeProperty {
+  kind: UnicodePropertyKind,
+  negated: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UnicodePropertyKind {
+  Ascii,
+  ScriptHan,
 }
 
 #[derive(Debug, Clone)]
@@ -2448,6 +2474,22 @@ fn ascii_lower(u: u16) -> u16 {
   }
 }
 
+fn eq_ascii_ignore_case(units: &[u16], ascii: &[u8]) -> bool {
+  if units.len() != ascii.len() {
+    return false;
+  }
+  units
+    .iter()
+    .copied()
+    .zip(ascii.iter().copied())
+    .all(|(u, b)| {
+      if u > 0x7F {
+        return false;
+      }
+      ascii_lower(u) == ascii_lower(b as u16)
+    })
+}
+
 fn is_regexp_identifier_start_ascii(u: u16) -> bool {
   u == (b'$' as u16)
     || u == (b'_' as u16)
@@ -2629,6 +2671,62 @@ pub(crate) fn advance_string_index(input: &[u16], index: usize, unicode: bool) -
   index.saturating_add(len)
 }
 
+impl UnicodeProperty {
+  fn matches_code_point(self, cp: u32) -> bool {
+    let is_match = match self.kind {
+      UnicodePropertyKind::Ascii => cp <= 0x7F,
+      UnicodePropertyKind::ScriptHan => range_table_contains(SCRIPT_HAN_RANGES, cp),
+    };
+    if self.negated { !is_match } else { is_match }
+  }
+}
+
+/// Inclusive ranges for the Unicode `Script=Han` property (Unicode v17.0.0).
+///
+/// Sourced from test262:
+/// `built-ins/RegExp/property-escapes/generated/Script_-_Han.js`.
+const SCRIPT_HAN_RANGES: &[(u32, u32)] = &[
+  (0x002E80, 0x002E99),
+  (0x002E9B, 0x002EF3),
+  (0x002F00, 0x002FD5),
+  (0x003005, 0x003005),
+  (0x003007, 0x003007),
+  (0x003021, 0x003029),
+  (0x003038, 0x00303B),
+  (0x003400, 0x004DBF),
+  (0x004E00, 0x009FFF),
+  (0x00F900, 0x00FA6D),
+  (0x00FA70, 0x00FAD9),
+  (0x016FE2, 0x016FE3),
+  (0x016FF0, 0x016FF6),
+  (0x020000, 0x02A6DF),
+  (0x02A700, 0x02B81D),
+  (0x02B820, 0x02CEAD),
+  (0x02CEB0, 0x02EBE0),
+  (0x02EBF0, 0x02EE5D),
+  (0x02F800, 0x02FA1D),
+  (0x030000, 0x03134A),
+  (0x031350, 0x033479),
+];
+
+fn range_table_contains(ranges: &[(u32, u32)], cp: u32) -> bool {
+  // Binary search over sorted, non-overlapping ranges.
+  let mut lo: usize = 0;
+  let mut hi: usize = ranges.len();
+  while lo < hi {
+    let mid = lo + (hi - lo) / 2;
+    let (start, end) = ranges[mid];
+    if cp < start {
+      hi = mid;
+    } else if cp > end {
+      lo = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  false
+}
+
 // --- Parser + compiler ---
 
 #[derive(Debug, Clone)]
@@ -2668,6 +2766,7 @@ enum Atom {
   Any,
   Class(CharClass),
   UnicodeSet(UnicodeSetClass),
+  UnicodeProperty(UnicodeProperty),
   Group {
     capture: Option<u32>,
     /// Inclusive range of capture-group indices contained within this group.
@@ -3627,6 +3726,22 @@ impl<'a> Parser<'a> {
           Ok(Atom::Literal(x as u32))
         }
       }
+      x if x == (b'p' as u16) || x == (b'P' as u16) => {
+        if !self.flags.has_either_unicode_flag() {
+          // Without Unicode mode, `\p` / `\P` are treated as identity escapes.
+          return Ok(Atom::Literal(x as u32));
+        }
+        // Unicode property escapes require `{...}` in Unicode mode.
+        if !self.eat(b'{' as u16) {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+        let negated = x == (b'P' as u16);
+        let prop = self.parse_unicode_property_escape(ctx, negated)?;
+        Ok(Atom::UnicodeProperty(prop))
+      }
       x if (b'1' as u16..=b'9' as u16).contains(&x) => {
         // `\1`-`\9` is either a DecimalEscape/backreference or (in non-unicode mode) an Annex B
         // legacy octal escape / identity escape.
@@ -3691,6 +3806,82 @@ impl<'a> Parser<'a> {
         }
       }
     }
+  }
+
+  fn parse_unicode_property_escape(
+    &mut self,
+    ctx: &mut CompileCtx<'_>,
+    negated: bool,
+  ) -> Result<UnicodeProperty, RegExpCompileError> {
+    // `{` has already been consumed.
+    let start = self.idx;
+    let mut eq_idx: Option<usize> = None;
+    let mut scan_i: usize = 0;
+    loop {
+      let Some(u) = self.peek() else {
+        return Err(RegExpSyntaxError {
+          message: "Invalid regular expression",
+        }
+        .into());
+      };
+      if u == (b'}' as u16) {
+        break;
+      }
+      if scan_i != 0 {
+        ctx.tick_every(scan_i)?;
+      }
+      scan_i = scan_i.wrapping_add(1);
+      if u == (b'=' as u16) {
+        // Multiple `=` signs are not supported by this minimal parser.
+        if eq_idx.is_some() {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+        eq_idx = Some(self.idx);
+      }
+      self.next();
+    }
+
+    let end = self.idx;
+    // Consume `}`.
+    self.next();
+
+    let body = &self.units[start..end];
+    let kind = match eq_idx {
+      None => {
+        if eq_ascii_ignore_case(body, b"ASCII") {
+          UnicodePropertyKind::Ascii
+        } else {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+      }
+      Some(eq_abs) => {
+        let eq_rel = eq_abs.saturating_sub(start);
+        if eq_rel == 0 || eq_rel + 1 >= body.len() {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+        let key = &body[..eq_rel];
+        let value = &body[eq_rel + 1..];
+        if eq_ascii_ignore_case(key, b"Script") && eq_ascii_ignore_case(value, b"Han") {
+          UnicodePropertyKind::ScriptHan
+        } else {
+          return Err(RegExpSyntaxError {
+            message: "Invalid regular expression",
+          }
+          .into());
+        }
+      }
+    };
+
+    Ok(UnicodeProperty { kind, negated })
   }
 
   fn parse_hex_escape_2(&mut self, _ctx: &mut CompileCtx<'_>) -> Result<u32, RegExpCompileError> {
@@ -4250,6 +4441,9 @@ impl ProgramBuilder {
       }
       Atom::UnicodeSet(cls) => {
         self.emit(ctx, Inst::UnicodeSet(cls))?;
+      }
+      Atom::UnicodeProperty(prop) => {
+        self.emit(ctx, Inst::UnicodeProperty(prop))?;
       }
       Atom::BackRef(n) => {
         self.emit(ctx, Inst::BackRef(n))?;
