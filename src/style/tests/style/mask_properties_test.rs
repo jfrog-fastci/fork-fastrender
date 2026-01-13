@@ -5,7 +5,7 @@ use crate::style::cascade::StyledNode;
 use crate::style::media::MediaContext;
 use crate::style::types::{
   BackgroundImage, BackgroundPosition, BackgroundRepeatKeyword, BackgroundSize,
-  BackgroundSizeComponent, BackgroundSizeKeyword, MaskClip, MaskComposite, MaskOrigin,
+  BackgroundSizeComponent, BackgroundSizeKeyword, MaskClip, MaskComposite, MaskMode, MaskOrigin,
 };
 use crate::style::values::Length;
 
@@ -145,4 +145,51 @@ fn mask_shorthand_resets_mask_size_when_omitted() {
     BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto),
     "mask shorthand without an explicit size should reset mask-size to its initial value"
   );
+}
+
+#[test]
+fn webkit_mask_longhands_alias_to_unprefixed() {
+  // Real-world sites frequently ship `-webkit-mask-*` fallbacks (sometimes without the unprefixed
+  // spelling). Ensure the parser canonicalizes these to the standardized `mask-*` properties so
+  // they apply identically.
+  let dom = dom::parse_html(r#"<div class="target"></div>"#).unwrap();
+  let stylesheet = parse_stylesheet(
+    r#"
+      .target {
+        -webkit-mask-image: url(a);
+        -webkit-mask-size: 10px 20px;
+        -webkit-mask-repeat: no-repeat;
+        -webkit-mask-position: 10px 20px;
+        -webkit-mask-mode: luminance;
+      }
+    "#,
+  )
+  .unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let style = &find_first(&styled, "div").expect("div").styles;
+  assert_eq!(style.mask_images.len(), 1);
+  let image = style.mask_images[0].clone();
+  assert!(matches!(
+    image,
+    Some(BackgroundImage::Url(ref url)) if url.url == "a" && url.override_resolution.is_none()
+  ));
+
+  assert_eq!(
+    style.mask_sizes[0],
+    BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(Length::px(10.0)),
+      BackgroundSizeComponent::Length(Length::px(20.0)),
+    )
+  );
+  assert_eq!(style.mask_repeats[0].x, BackgroundRepeatKeyword::NoRepeat);
+  assert_eq!(style.mask_repeats[0].y, BackgroundRepeatKeyword::NoRepeat);
+
+  let BackgroundPosition::Position { x, y } = style.mask_positions[0];
+  assert_eq!(x.alignment, 0.0);
+  assert_eq!(x.offset, Length::px(10.0));
+  assert_eq!(y.alignment, 0.0);
+  assert_eq!(y.offset, Length::px(20.0));
+
+  assert_eq!(style.mask_modes[0], MaskMode::Luminance);
 }
