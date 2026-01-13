@@ -5567,7 +5567,14 @@ impl App {
   }
 
   fn desired_animation_tick_tab(&self) -> Option<fastrender::ui::TabId> {
-    if self.window_occluded || self.window_minimized || !self.window_focused {
+    // During interactive window resizing, pause animation ticks to keep CPU available for the UI
+    // thread. The page will still repaint on user input / new frames, but we avoid continuously
+    // advancing CSS animation time while the user is dragging the window edge.
+    if self.window_occluded
+      || self.window_minimized
+      || !self.window_focused
+      || self.resize_burst_active
+    {
       return None;
     }
     let tab_id = self.browser_state.active_tab_id()?;
