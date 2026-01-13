@@ -28624,7 +28624,8 @@ fn gen_resume_from_frames(
           };
 
           let Some(throw_method) = throw_method else {
-            // No `throw` method: close the delegate iterator (IteratorClose), then throw a TypeError.
+            // No `throw` method: close the delegate iterator (IteratorClose), then throw a
+            // TypeError.
             //
             // Errors thrown while closing (including non-object `return` results) override the
             // protocol-violation TypeError.
