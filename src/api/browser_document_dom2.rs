@@ -812,34 +812,9 @@ impl BrowserDocumentDom2 {
       self.invalidate_all();
     }
 
-    // If we detect a DOM generation mismatch but have no host-side dirty flags set, attempt to
-    // classify any pending dom2 mutation records before falling back to a full pipeline run.
-    //
-    // This handles out-of-band DOM mutations (e.g. via raw `dom2::Document` pointers) and avoids
-    // forcing expensive style/layout work for disconnected-only mutations that cannot affect
-    // rendering.
-    if !self.style_dirty
-      && !self.layout_dirty
-      && self.dirty_style_nodes.is_empty()
-      && self.dirty_text_nodes.is_empty()
-      && self.dirty_structure_nodes.is_empty()
-      && self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
-    {
-      let mutations = self.dom.take_mutations();
-      if mutations.is_empty() {
-        // Generation changed but there are no structured mutations (e.g. direct `node_mut` edits).
-        // Fall back to a full invalidation to preserve correctness.
-        self.invalidate_all();
-      } else {
-        let render_affecting = self.apply_mutation_log(mutations);
-        if !render_affecting {
-          // No render-affecting mutations: record that we've now seen this generation so callers do
-          // not repeatedly flush layout, but keep cached layout artifacts intact.
-          self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
-          return Ok(BrowserDocumentDom2LayoutFlushKind::Noop);
-        }
-      }
-    }
+    // If the live `dom2` document was mutated out-of-band (e.g. via raw pointers), consume any
+    // pending structured mutation log so incremental relayout paths can be used.
+    self.sync_dirty_from_pending_dom_mutations();
 
     let needs_layout = self.style_dirty
       || self.layout_dirty
@@ -2611,6 +2586,51 @@ impl BrowserDocumentDom2 {
       || self.layout_dirty
       || self.paint_dirty
       || self.dom.mutation_generation() != self.last_seen_dom_mutation_generation
+  }
+
+  /// Consume any pending structured DOM mutations recorded by `dom2` when we notice the live
+  /// document's mutation generation has advanced.
+  ///
+  /// Many embedding layers (notably some VM-JS/WebIDL native handlers) can mutate the live
+  /// `dom2::Document` through raw pointers. In those cases `dom2` still records a `MutationLog`, but
+  /// unless we drain it the host layer will only observe a `mutation_generation` mismatch and may
+  /// fall back to a full pipeline run (missing incremental relayout opportunities).
+  fn sync_dirty_from_pending_dom_mutations(&mut self) {
+    if self.dom.mutation_generation() == self.last_seen_dom_mutation_generation {
+      return;
+    }
+
+    let mutations = self.dom.take_mutations();
+    if mutations.is_empty() {
+      // We observed a generation mismatch but have no structured mutation log. This can happen for
+      // truly out-of-band edits (e.g. `Document::node_mut`) *or* when mutations were already drained
+      // by `mutate_dom`/`DomHost::mutate_dom` and the generation mismatch is already reflected in our
+      // existing dirty flags.
+      //
+      // Only fall back to a full invalidation when we have no other dirtiness recorded; otherwise
+      // we'd accidentally downgrade incremental invalidation state already captured by
+      // `apply_mutation_log`.
+      let already_dirty = self.style_dirty
+        || self.layout_dirty
+        || self.form_state_dirty
+        || !self.dirty_style_nodes.is_empty()
+        || !self.dirty_form_state_style_nodes.is_empty()
+        || !self.dirty_text_nodes.is_empty()
+        || !self.dirty_structure_nodes.is_empty();
+      if !already_dirty {
+        self.invalidate_all();
+      }
+      return;
+    }
+
+    let render_affecting = self.apply_mutation_log(mutations);
+    if !render_affecting {
+      // `dom2::Document` bumps `mutation_generation` for all mutations, including changes in
+      // disconnected/inert subtrees. If none of the drained mutations can affect rendering, record
+      // that we've now "seen" this generation so future layout flushes do not repeatedly treat the
+      // document as dirty.
+      self.last_seen_dom_mutation_generation = self.dom.mutation_generation();
+    }
   }
 
   fn apply_mutation_log(&mut self, mutations: crate::dom2::MutationLog) -> bool {
@@ -4909,6 +4929,65 @@ mod tests {
     assert_eq!(after.incremental_relayouts, before.incremental_relayouts + 1);
     assert_eq!(after.full_restyles, before.full_restyles);
     assert_eq!(after.full_relayouts, before.full_relayouts);
+    Ok(())
+  }
+
+  #[test]
+  fn raw_pointer_text_mutation_is_applied_even_when_layout_already_dirty() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html =
+      "<!doctype html><html><body><div id=\"a\">One</div><div id=\"b\">Two</div></body></html>";
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(64, 64))?;
+    doc.render_frame()?;
+
+    let a = doc.dom().get_element_by_id("a").expect("<div id=a>");
+    let b = doc.dom().get_element_by_id("b").expect("<div id=b>");
+    let text_a = first_child_text_node_id(doc.dom(), a).expect("text node a");
+    let text_b = first_child_text_node_id(doc.dom(), b).expect("text node b");
+
+    // First change is host-classified (via mutate_dom).
+    assert!(doc.mutate_dom(|dom| dom.set_text_data(text_a, "Uno").expect("set text a")));
+
+    // Second change bypasses BrowserDocumentDom2 invalidation plumbing (raw pointer).
+    let mut dom_ptr = doc.dom_non_null();
+    unsafe {
+      dom_ptr
+        .as_mut()
+        .set_text_data(text_b, "Dos")
+        .expect("set text b via raw pointer");
+    }
+
+    // Rendering should incorporate *both* text mutations. If the raw-pointer mutation log is not
+    // drained when `layout_dirty` is already set, the prepared box tree would still contain "Two".
+    doc.render_frame()?;
+    let prepared = doc.prepared().expect("prepared");
+
+    fn collect_box_tree_text(root: &BoxNode) -> Vec<String> {
+      let mut out = Vec::new();
+      let mut stack: Vec<&BoxNode> = vec![root];
+      while let Some(node) = stack.pop() {
+        if let BoxType::Text(text_box) = &node.box_type {
+          out.push(text_box.text.clone());
+        }
+        if let Some(body) = node.footnote_body.as_deref() {
+          stack.push(body);
+        }
+        for child in node.children.iter().rev() {
+          stack.push(child);
+        }
+      }
+      out
+    }
+
+    let texts = collect_box_tree_text(&prepared.box_tree().root);
+    assert!(
+      texts.iter().any(|text| text == "Uno"),
+      "expected box tree to include updated text 'Uno', got: {texts:?}"
+    );
+    assert!(
+      texts.iter().any(|text| text == "Dos"),
+      "expected box tree to include updated text 'Dos', got: {texts:?}"
+    );
     Ok(())
   }
 
