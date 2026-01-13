@@ -1060,13 +1060,22 @@ impl Heap {
       roots.push(registry_root);
       roots.push(cleanup_some_root);
 
-      let job = Job::new(JobKind::FinalizationRegistryCleanup, move |ctx, host| {
+      let job = match Job::new(JobKind::FinalizationRegistryCleanup, move |ctx, host| {
         // `FinalizationRegistryCleanupJob` calls `cleanupSome` with no argument, which uses the
         // registry's own `[[CleanupCallback]]`.
         let _ = ctx.call(host, Value::Object(cleanup_some), Value::Object(registry), &[])?;
         Ok(())
-      })?
-      .with_roots(roots);
+      }) {
+        Ok(job) => job.with_roots(roots),
+        Err(err) => {
+          // If we fail to allocate the job closure, ensure we do not leak the persistent roots we
+          // created for it.
+          for root in roots {
+            self.remove_root(root);
+          }
+          return Err(err);
+        }
+      };
 
       hooks.host_enqueue_promise_job(job, realm);
     }

@@ -760,6 +760,14 @@ pub fn object_constructor_call(
         marker_key,
         data_desc(Value::String(s), true, false, false),
       )?;
+      // `Object("str")` must produce a String exotic object with a `length` data property.
+      let len = scope.heap().get_string(s)?.len_code_units();
+      let length_key = string_key(&mut scope, "length")?;
+      scope.define_property(
+        obj,
+        length_key,
+        data_desc(Value::Number(len as f64), false, false, false),
+      )?;
       Ok(Value::Object(obj))
     }
     Value::Number(n) => {
