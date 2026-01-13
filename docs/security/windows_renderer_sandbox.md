@@ -120,4 +120,6 @@ Windows sandbox/security regression tests live under:
 
 - `tests/sandbox/` (e.g. process handle escape, job-object process creation limits)
 - `tests/sandbox/windows_sandbox_appcontainer_spawn.rs` (AppContainer spawn + opt-out behaviour)
+- `tests/sandbox/windows_renderer_smoke.rs` (end-to-end: sandboxed child can initialize FastRender + render minimal HTML)
+- `tests/sandbox/windows_renderer_sandbox_test.rs` (end-to-end: token state + filesystem/network denial + job kill-on-close)
 - `crates/win-sandbox/tests/` (AppContainer/network/filesystem/restricted-token invariants + helper spawners)
