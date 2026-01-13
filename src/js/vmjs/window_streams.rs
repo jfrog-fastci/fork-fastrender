@@ -92,6 +92,12 @@ const MAX_READABLE_STREAM_QUEUED_BYTES: usize = 32 * 1024 * 1024; // 32MiB
 /// values).
 const MAX_READABLE_STREAM_QUEUED_ITEMS: usize = 100_000;
 
+/// Hard upper bound on number of queued chunks for byte/string streams.
+///
+/// Without this, hostile code can enqueue extremely small (or empty) chunks to grow the queue's
+/// metadata (VecDeque element storage) without exceeding `MAX_READABLE_STREAM_QUEUED_BYTES`.
+const MAX_READABLE_STREAM_QUEUED_CHUNKS: usize = 100_000;
+
 const READABLE_STREAM_QUEUE_LIMIT_ERROR: &str = "ReadableStream queue size limit exceeded";
 
 // --- Hidden, internal property keys -----------------------------------------------------------
@@ -4640,11 +4646,28 @@ fn enqueue_bytes_into_readable_stream(
       return Err(VmError::TypeError("ReadableStream is closed"));
     }
 
+    let byte_len = bytes.len();
     let new_total = stream_state
       .buffered_byte_len
-      .checked_add(bytes.len())
+      .checked_add(byte_len)
       .ok_or(VmError::OutOfMemory)?;
-    if new_total > MAX_READABLE_STREAM_QUEUED_BYTES {
+    let additional_chunks = if byte_len == 0 || byte_len <= STREAM_CHUNK_BYTES {
+      1
+    } else {
+      byte_len
+        .checked_add(STREAM_CHUNK_BYTES - 1)
+        .ok_or(VmError::OutOfMemory)?
+        / STREAM_CHUNK_BYTES
+    };
+    let new_chunk_total = stream_state
+      .byte_queue
+      .len()
+      .checked_add(additional_chunks)
+      .ok_or(VmError::OutOfMemory)?;
+
+    if new_total > MAX_READABLE_STREAM_QUEUED_BYTES
+      || new_chunk_total > MAX_READABLE_STREAM_QUEUED_CHUNKS
+    {
       let error_message = READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string();
       stream_state.state = StreamLifecycleState::Errored;
       stream_state.close_requested = true;
@@ -4765,7 +4788,14 @@ fn enqueue_string_into_readable_stream(
       .buffered_string_len
       .checked_add(chunk_len)
       .ok_or(VmError::OutOfMemory)?;
-    if new_total > MAX_READABLE_STREAM_QUEUED_BYTES {
+    let new_chunk_total = stream_state
+      .strings
+      .len()
+      .checked_add(1)
+      .ok_or(VmError::OutOfMemory)?;
+    if new_total > MAX_READABLE_STREAM_QUEUED_BYTES
+      || new_chunk_total > MAX_READABLE_STREAM_QUEUED_CHUNKS
+    {
       let error_message = READABLE_STREAM_QUEUE_LIMIT_ERROR.to_string();
       stream_state.state = StreamLifecycleState::Errored;
       stream_state.close_requested = true;
@@ -9097,6 +9127,41 @@ mod tests {
         }}
       "#,
       chunk_size = chunk_size,
+      iterations = iterations,
+    );
+    let _ = realm.exec_script(&script)?;
+
+    let p = realm.exec_script("reader.read()")?;
+    let Value::Object(p_obj) = p else {
+      return Err(VmError::InvariantViolation(
+        "ReadableStreamDefaultReader.read must return a Promise",
+      ));
+    };
+    assert_eq!(realm.heap().promise_state(p_obj)?, PromiseState::Rejected);
+
+    realm.teardown();
+    Ok(())
+  }
+
+  #[test]
+  fn readable_stream_enqueuing_past_total_chunk_cap_errors_stream() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    // Enqueue lots of empty chunks so total queued bytes stays low, but the queue length limit is
+    // exceeded.
+    let iterations = MAX_READABLE_STREAM_QUEUED_CHUNKS + 1;
+
+    let script = format!(
+      r#"
+        globalThis.stream = new ReadableStream({{
+          start(controller) {{ globalThis.controller = controller; }}
+        }});
+        globalThis.reader = stream.getReader();
+        globalThis.chunk = new Uint8Array(0);
+        for (let i = 0; i < {iterations}; i++) {{
+          controller.enqueue(chunk);
+        }}
+      "#,
       iterations = iterations,
     );
     let _ = realm.exec_script(&script)?;
