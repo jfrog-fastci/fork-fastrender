@@ -20738,7 +20738,12 @@ fn async_eval_expr_chain(
     Expr::Binary(binary)
       if matches!(
         binary.stx.operator,
-        OperatorName::Assignment | OperatorName::AssignmentAddition
+        OperatorName::Assignment
+          | OperatorName::AssignmentAddition
+          | OperatorName::AssignmentSubtraction
+          | OperatorName::AssignmentMultiplication
+          | OperatorName::AssignmentDivision
+          | OperatorName::AssignmentRemainder
       ) =>
     {
       async_eval_assignment_expr(evaluator, scope, &binary.stx)
@@ -21630,9 +21635,41 @@ fn async_eval_assignment_expr(
   match expr.operator {
     OperatorName::Assignment => async_eval_assignment_simple(evaluator, scope, expr),
     OperatorName::AssignmentAddition => async_eval_assignment_addition(evaluator, scope, expr),
+    OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentRemainder => async_eval_assignment_arithmetic_compound(evaluator, scope, expr),
     _ => Err(VmError::InvariantViolation(
       "async assignment evaluator called for non-assignment operator",
     )),
+  }
+}
+
+fn async_eval_assignment_arithmetic_compound(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  expr: &BinaryExpr,
+) -> Result<AsyncEval<Value>, VmError> {
+  if matches!(&*expr.left.stx, Expr::ObjPat(_) | Expr::ArrPat(_)) {
+    return Err(VmError::Unimplemented(
+      "arithmetic compound assignment to destructuring patterns",
+    ));
+  }
+
+  match &*expr.left.stx {
+    Expr::Id(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::IdPat(id) => {
+      let reference = Reference::Binding(&id.stx.name);
+      async_eval_assignment_apply_reference(evaluator, scope, expr, reference)
+    }
+    Expr::Member(member) => async_eval_assignment_to_member(evaluator, scope, expr, &member.stx),
+    Expr::ComputedMember(member) => {
+      async_eval_assignment_to_computed_member(evaluator, scope, expr, &member.stx)
+    }
+    _ => Err(VmError::Unimplemented("expression is not a reference")),
   }
 }
 
@@ -21859,10 +21896,22 @@ fn async_eval_assignment_to_member_after_base(
   let reference = {
     let mut key_scope = scope.reborrow();
     key_scope.push_root(base)?;
-    let key_s = key_scope.alloc_string(&member.right)?;
-    Reference::Property {
-      base,
-      key: PropertyKey::from_string(key_s),
+    if member.right.starts_with('#') {
+      let sym = key_scope
+        .heap()
+        .resolve_private_name_symbol(evaluator.env.lexical_env, &member.right)?
+        .ok_or(VmError::InvariantViolation("unresolved private name"))?;
+      Reference::Private {
+        base,
+        sym,
+        name: &member.right,
+      }
+    } else {
+      let key_s = key_scope.alloc_string(&member.right)?;
+      Reference::Property {
+        base,
+        key: PropertyKey::from_string(key_s),
+      }
     }
   };
 
@@ -22013,7 +22062,11 @@ fn async_eval_assignment_apply_reference(
         }
       }
     }
-    OperatorName::AssignmentAddition => {
+    OperatorName::AssignmentAddition
+    | OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentRemainder => {
       let mut op_scope = scope.reborrow();
       evaluator.root_reference(&mut op_scope, &reference)?;
 
@@ -22024,15 +22077,79 @@ fn async_eval_assignment_apply_reference(
 
       match async_eval_expr(evaluator, &mut op_scope, &expr.right)? {
         AsyncEval::Complete(right) => {
-          let mut add_scope = op_scope.reborrow();
-          add_scope.push_root(right)?;
-          let value = evaluator
-            .addition_operator(&mut add_scope, left, right)
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
-          add_scope.push_root(value)?;
+          let mut compound_scope = op_scope.reborrow();
+          compound_scope.push_root(right)?;
+
+          let value = match expr.operator {
+            OperatorName::AssignmentAddition => evaluator
+              .addition_operator(&mut compound_scope, left, right)
+              .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?,
+            OperatorName::AssignmentSubtraction
+            | OperatorName::AssignmentMultiplication
+            | OperatorName::AssignmentDivision
+            | OperatorName::AssignmentRemainder => {
+              let left_num = evaluator
+                .to_numeric(&mut compound_scope, left)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
+              let right_num = evaluator
+                .to_numeric(&mut compound_scope, right)
+                .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
+
+              match (left_num, right_num) {
+                (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
+                  OperatorName::AssignmentSubtraction => Value::Number(a - b),
+                  OperatorName::AssignmentMultiplication => Value::Number(a * b),
+                  OperatorName::AssignmentDivision => Value::Number(a / b),
+                  OperatorName::AssignmentRemainder => Value::Number(a % b),
+                  _ => unreachable!(),
+                }),
+                (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+                  let out = {
+                    let a = compound_scope.heap().get_bigint(a)?;
+                    let b = compound_scope.heap().get_bigint(b)?;
+
+                    if b.is_zero()
+                      && matches!(
+                        expr.operator,
+                        OperatorName::AssignmentDivision | OperatorName::AssignmentRemainder
+                      )
+                    {
+                      return Err(throw_range_error(evaluator.vm, &mut compound_scope, "Division by zero")?);
+                    }
+
+                    match expr.operator {
+                      OperatorName::AssignmentSubtraction => a.sub(b)?,
+                      OperatorName::AssignmentMultiplication => {
+                        a.mul_with_tick(b, &mut || evaluator.tick())?
+                      }
+                      OperatorName::AssignmentDivision => {
+                        let (q, _) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
+                        q
+                      }
+                      OperatorName::AssignmentRemainder => {
+                        let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
+                        r
+                      }
+                      _ => unreachable!(),
+                    }
+                  };
+                  let out = compound_scope.alloc_bigint(out)?;
+                  Ok(Value::BigInt(out))
+                }
+                _ => Err(throw_type_error(
+                  evaluator.vm,
+                  &mut compound_scope,
+                  "Cannot mix BigInt and other types",
+                )?),
+              }?
+            }
+            _ => unreachable!(),
+          };
+
+          compound_scope.push_root(value)?;
           evaluator
-            .put_value_to_reference(&mut add_scope, &reference, value)
-            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
+            .put_value_to_reference(&mut compound_scope, &reference, value)
+            .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err))?;
           Ok(AsyncEval::Complete(value))
         }
         AsyncEval::Suspend(mut suspend) => {
@@ -23555,7 +23672,12 @@ fn async_apply_binary_operator(
       Ok(Value::Bool(ok))
     }
     // Assignment operators are handled separately (they require reference semantics).
-    OperatorName::Assignment | OperatorName::AssignmentAddition => Err(VmError::InvariantViolation(
+    OperatorName::Assignment
+    | OperatorName::AssignmentAddition
+    | OperatorName::AssignmentSubtraction
+    | OperatorName::AssignmentMultiplication
+    | OperatorName::AssignmentDivision
+    | OperatorName::AssignmentRemainder => Err(VmError::InvariantViolation(
       "internal error: assignment operator in async_apply_binary_operator",
     )),
     _ => Err(VmError::Unimplemented("binary operator")),
@@ -26693,7 +26815,7 @@ fn async_resume_from_frames(
                 .heap()
                 .get_root(left_root)
                 .ok_or(VmError::InvariantViolation(
-                  "missing assignment addition left root",
+                  "missing compound assignment left root",
                 ))?;
 
               let assign_res = (|| -> Result<Value, VmError> {
@@ -26729,7 +26851,18 @@ fn async_resume_from_frames(
                         ))
                       }
                     };
-                    Reference::Property { base, key }
+                    match key {
+                      PropertyKey::Symbol(sym) if scope.heap().is_internal_symbol(sym) => {
+                        // Internal symbols are not observable from JS, so an internal symbol key
+                        // here corresponds to a private-name reference.
+                        let name = match &*expr.left.stx {
+                          Expr::Member(member) => member.stx.right.as_str(),
+                          _ => "",
+                        };
+                        Reference::Private { base, sym, name }
+                      }
+                      other => Reference::Property { base, key: other },
+                    }
                   }
                   _ => {
                     return Err(VmError::InvariantViolation(
@@ -26738,15 +26871,95 @@ fn async_resume_from_frames(
                   }
                 };
 
-                let mut add_scope = scope.reborrow();
-                add_scope.push_roots(&[left, right])?;
-                let value = evaluator
-                  .addition_operator(&mut add_scope, left, right)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
-                add_scope.push_root(value)?;
+                let mut compound_scope = scope.reborrow();
+                compound_scope.push_roots(&[left, right])?;
+
+                let value = match expr.operator {
+                  OperatorName::AssignmentAddition => evaluator
+                    .addition_operator(&mut compound_scope, left, right)
+                    .map_err(|err| {
+                      coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                    })?,
+                  OperatorName::AssignmentSubtraction
+                  | OperatorName::AssignmentMultiplication
+                  | OperatorName::AssignmentDivision
+                  | OperatorName::AssignmentRemainder => {
+                    let left_num = evaluator
+                      .to_numeric(&mut compound_scope, left)
+                      .map_err(|err| {
+                        coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                      })?;
+                    let right_num = evaluator
+                      .to_numeric(&mut compound_scope, right)
+                      .map_err(|err| {
+                        coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                      })?;
+
+                    match (left_num, right_num) {
+                      (NumericValue::Number(a), NumericValue::Number(b)) => Ok(match expr.operator {
+                        OperatorName::AssignmentSubtraction => Value::Number(a - b),
+                        OperatorName::AssignmentMultiplication => Value::Number(a * b),
+                        OperatorName::AssignmentDivision => Value::Number(a / b),
+                        OperatorName::AssignmentRemainder => Value::Number(a % b),
+                        _ => unreachable!(),
+                      }),
+                      (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+                        let out = {
+                          let a = compound_scope.heap().get_bigint(a)?;
+                          let b = compound_scope.heap().get_bigint(b)?;
+
+                          if b.is_zero()
+                            && matches!(
+                              expr.operator,
+                              OperatorName::AssignmentDivision | OperatorName::AssignmentRemainder
+                            )
+                          {
+                            return Err(throw_range_error(
+                              evaluator.vm,
+                              &mut compound_scope,
+                              "Division by zero",
+                            )?);
+                          }
+
+                          match expr.operator {
+                            OperatorName::AssignmentSubtraction => a.sub(b)?,
+                            OperatorName::AssignmentMultiplication => {
+                              a.mul_with_tick(b, &mut || evaluator.tick())?
+                            }
+                            OperatorName::AssignmentDivision => {
+                              let (q, _) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
+                              q
+                            }
+                            OperatorName::AssignmentRemainder => {
+                              let (_, r) = a.div_mod_with_tick(b, &mut || evaluator.tick())?;
+                              r
+                            }
+                            _ => unreachable!(),
+                          }
+                        };
+                        let out = compound_scope.alloc_bigint(out)?;
+                        Ok(Value::BigInt(out))
+                      }
+                      _ => Err(throw_type_error(
+                        evaluator.vm,
+                        &mut compound_scope,
+                        "Cannot mix BigInt and other types",
+                      )?),
+                    }?
+                  }
+                  _ => {
+                    return Err(VmError::InvariantViolation(
+                      "AssignAddAfterRhs used for unexpected operator",
+                    ))
+                  }
+                };
+
+                compound_scope.push_root(value)?;
                 evaluator
-                  .put_value_to_reference(&mut add_scope, &reference, value)
-                  .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut add_scope, err))?;
+                  .put_value_to_reference(&mut compound_scope, &reference, value)
+                  .map_err(|err| {
+                    coerce_error_to_throw_for_async(evaluator.vm, &mut compound_scope, err)
+                  })?;
                 Ok(value)
               })();
 
@@ -26780,7 +26993,7 @@ fn async_resume_from_frames(
         }
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
-            "assignment addition RHS frame received completion state",
+            "compound assignment RHS frame received completion state",
           ))
         }
       },
