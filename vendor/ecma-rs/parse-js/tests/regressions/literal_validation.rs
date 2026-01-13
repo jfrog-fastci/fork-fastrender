@@ -121,3 +121,24 @@ fn regex_x_escape_is_identity_in_non_unicode_mode() {
     SyntaxErrorType::ExpectedSyntax("valid regular expression")
   );
 }
+
+#[test]
+fn annex_b_incomplete_hex_and_unicode_regex_escapes_are_identity_in_non_unicode_mode() {
+  // Per Annex B, incomplete `\x`/`\u` escapes fall through to IdentityEscape in non-unicode mode.
+  assert!(parse("/\\xa/").is_ok());
+  assert!(parse("/\\u/").is_ok());
+  assert!(parse("/\\ua/").is_ok());
+}
+
+#[test]
+fn incomplete_hex_and_unicode_regex_escapes_are_errors_in_unicode_mode() {
+  // UnicodeMode (`/u` or `/v`) uses the stricter grammar where incomplete escapes are early errors.
+  for src in ["/\\xa/u", "/\\u/u", "/\\ua/u"] {
+    let err = parse(src).unwrap_err();
+    assert_eq!(
+      err.typ,
+      SyntaxErrorType::ExpectedSyntax("valid regular expression"),
+      "{src}"
+    );
+  }
+}
