@@ -39,6 +39,11 @@ pub enum SharedMemoryError {
     #[source]
     source: io::Error,
   },
+  #[error("failed to lock memfd seals")]
+  SealLockFailed {
+    #[source]
+    source: io::Error,
+  },
   #[error("failed to stat shared memory fd")]
   FstatFailed {
     #[source]
@@ -53,6 +58,8 @@ pub enum SharedMemoryError {
     #[source]
     source: io::Error,
   },
+  #[error("memfd missing required seals (got=0x{got:x}, required=0x{required:x})")]
+  MissingSeals { got: i32, required: i32 },
   #[error("mmap failed")]
   MmapFailed {
     #[source]
@@ -110,6 +117,20 @@ impl SharedMemory {
       });
     }
 
+    // Defense-in-depth: lock the seal set so an untrusted peer cannot persistently add
+    // `F_SEAL_WRITE` (breaking reuse of pooled buffers). Treat this as best-effort so the required
+    // size seals still take effect even when seal-locking is blocked by sandbox policy.
+    let rc = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SEAL) };
+    if rc != 0 {
+      let err = io::Error::last_os_error();
+      match err.raw_os_error() {
+        Some(libc::EINVAL) | Some(libc::ENOSYS) | Some(libc::EPERM) => {}
+        _ => {
+          return Err(SharedMemoryError::SealLockFailed { source: err });
+        }
+      }
+    }
+
     // Security: make the invariant explicit that newly created shared-memory regions start
     // zero-initialized. Even if the kernel typically provides zeroed pages, explicitly clearing the
     // mapping avoids leaking stale bytes (e.g. previous-process memory) if an fd is ever reused
@@ -138,6 +159,23 @@ impl SharedMemory {
     let size_usize: usize = size_u64
       .try_into()
       .map_err(|_| SharedMemoryError::SizeDoesNotFitInUsize { size: size_u64 })?;
+
+    // Require size seals so the sender cannot truncate/extend after we map (SIGBUS footgun).
+    // SAFETY: `fcntl` is called with a valid fd and the correct command.
+    let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals < 0 {
+      return Err(SharedMemoryError::GetSealsFailed {
+        source: io::Error::last_os_error(),
+      });
+    }
+    let required = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW;
+    if (seals & required) != required {
+      return Err(SharedMemoryError::MissingSeals {
+        got: seals,
+        required,
+      });
+    }
+
     Ok(Self { fd, size: size_usize })
   }
 
@@ -197,7 +235,7 @@ fn validate_size(size: usize) -> Result<u64, SharedMemoryError> {
   if size == 0 {
     return Err(SharedMemoryError::SizeIsZero);
   }
-  let size_u64: u64 = size as u64;
+  let size_u64: u64 = u64::try_from(size).unwrap_or(u64::MAX);
   if size_u64 > MAX_SHM_BYTES {
     return Err(SharedMemoryError::SizeTooLarge {
       size: size_u64,
@@ -418,5 +456,34 @@ mod tests {
 
     let result = SharedMemory::from_fd(read_fd);
     assert!(matches!(result, Err(SharedMemoryError::NotRegularFile { .. })));
+  }
+
+  #[test]
+  fn shared_memory_from_fd_requires_size_seals() {
+    // SAFETY: memfd_create is a syscall; name is NUL-terminated.
+    let raw = unsafe {
+      libc::memfd_create(
+        b"fastrender-shm-test\0".as_ptr().cast::<libc::c_char>(),
+        libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+      )
+    };
+    assert!(raw >= 0, "memfd_create failed: {}", io::Error::last_os_error());
+    // SAFETY: `raw` is owned by this test.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // SAFETY: `ftruncate` called with valid fd.
+    let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), 4096) };
+    assert_eq!(rc, 0, "ftruncate failed: {}", io::Error::last_os_error());
+
+    let err = SharedMemory::from_fd(fd).unwrap_err();
+    assert!(matches!(err, SharedMemoryError::MissingSeals { .. }));
+  }
+
+  #[test]
+  fn shared_memory_from_fd_accepts_properly_sealed_memfd() -> Result<(), SharedMemoryError> {
+    let shm = SharedMemory::create(4096)?;
+    let fd = shm.into_fd();
+    let wrapped = SharedMemory::from_fd(fd)?;
+    assert_eq!(wrapped.size(), 4096);
+    Ok(())
   }
 }
