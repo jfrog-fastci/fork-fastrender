@@ -62,6 +62,12 @@ pub use renderer_sandbox::{RendererSandbox, SandboxedChild};
 
 use thiserror::Error;
 
+#[cfg(windows)]
+pub use std::os::windows::io::RawHandle;
+
+#[cfg(not(windows))]
+pub type RawHandle = *mut core::ffi::c_void;
+
 /// Result type alias for win-sandbox operations.
 pub type Result<T> = std::result::Result<T, WinSandboxError>;
 
@@ -366,7 +372,7 @@ pub mod mitigations;
 mod spawn;
 
 #[cfg(windows)]
-pub use spawn::{spawn_sandboxed, ChildProcess, SandboxRequest, SpawnConfig};
+pub use spawn::{spawn_sandboxed, ChildProcess, SpawnConfig};
 
 pub mod support;
 pub use support::{is_appcontainer_supported, is_nested_job_supported, SandboxSupport};
@@ -426,7 +432,7 @@ mod tests {
   use std::{env, ffi::OsString, time::Duration};
 
   #[cfg(windows)]
-  use crate::{mitigations, spawn_sandboxed, SandboxRequest, SpawnConfig};
+  use crate::{mitigations, spawn_sandboxed, SpawnConfig};
 
   // This is a helper entrypoint that runs inside the sandboxed child process.
   //
@@ -446,21 +452,27 @@ mod tests {
     let exe = env::current_exe().unwrap();
 
     let test_name = "tests::verify_child_renderer_mitigations";
-    let args: Vec<OsString> = vec![
+    let args = vec![
       OsString::from("--ignored"),
       OsString::from("--exact"),
       OsString::from(test_name),
     ];
 
-    let mut cfg = SpawnConfig::new(exe);
-    cfg.args = args;
-    cfg.sandbox = SandboxRequest::None;
-    cfg.mitigation_policy = mitigations::renderer_mitigation_policy();
+    let cfg = SpawnConfig {
+      exe,
+      args,
+      env: Vec::new(),
+      current_dir: None,
+      inherit_handles: Vec::new(),
+      appcontainer: None,
+      job: None,
+      mitigation_policy: Some(mitigations::renderer_mitigation_policy()),
+    };
 
-    let mut child = spawn_sandboxed(&cfg).unwrap();
+    let child = spawn_sandboxed(&cfg).unwrap();
 
     let exit_code = child
-      .wait(Duration::from_secs(30))
+      .wait_timeout(Duration::from_secs(30))
       .expect("wait for sandboxed child")
       .expect("sandboxed child exit code");
 

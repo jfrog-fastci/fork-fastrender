@@ -10,11 +10,8 @@
 
 #![cfg(windows)]
 
-use crate::spawn::{
-  build_command_line, create_default_job, effective_mitigation_policy, finish_spawn, wide_from_os,
-  AttributeList, SandboxRequest, SpawnConfig, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-};
-use crate::{OwnedHandle, OwnedSid, Result, WinSandboxError};
+use crate::spawn::{build_command_line, build_environment_block, wide_null, AttributeList};
+use crate::{ChildProcess, OwnedHandle, OwnedSid, Result, SpawnConfig, WinSandboxError};
 
 use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
 use windows_sys::Win32::Foundation::{FALSE, HANDLE, TRUE};
@@ -26,9 +23,9 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::System::SystemServices::{SE_GROUP_INTEGRITY, SE_GROUP_INTEGRITY_ENABLED};
 use windows_sys::Win32::System::Threading::{
-  CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, CREATE_SUSPENDED,
-  EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTUPINFOEXW,
-  STARTUPINFOW,
+  CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken, CREATE_UNICODE_ENVIRONMENT,
+  EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+  PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 /// A restricted primary token suitable for spawning a sandboxed child process.
@@ -139,31 +136,69 @@ pub fn create_restricted_token_low_integrity() -> Result<OwnedHandle> {
 
 /// Spawn a child process with the provided primary token via `CreateProcessAsUserW`.
 ///
-/// The process is created suspended, placed into a Job Object, then resumed. This ensures job
-/// constraints (kill-on-close, active-process cap) are applied before the child runs arbitrary code.
-pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate::ChildProcess> {
-  let job = create_default_job()?;
-  let application_name = wide_from_os(cfg.exe.as_os_str());
+pub fn spawn_with_token(cfg: &SpawnConfig<'_>, token: &OwnedHandle) -> Result<ChildProcess> {
+  // Match the behavior of `spawn_sandboxed`: mitigations can be disabled via an env var.
+  let mitigation_policy = match cfg.mitigation_policy {
+    Some(bits) if bits != 0 && std::env::var_os("FASTR_DISABLE_WIN_MITIGATIONS").is_none() => {
+      Some(bits)
+    }
+    _ => None,
+  };
+
+  let application_name = wide_null(cfg.exe.as_os_str());
+  let mut cmdline = build_command_line(cfg.exe.as_os_str(), &cfg.args);
+
+  let env_block = build_environment_block(&cfg.env);
+  let env_ptr = env_block
+    .as_ref()
+    .map(|b| b.as_ptr() as *const core::ffi::c_void)
+    .unwrap_or(std::ptr::null());
+
   // If `lpCurrentDirectory` is NULL, Windows inherits the parent's current directory. For low
   // integrity/restricted tokens that directory may be inaccessible (e.g. a dev checkout that is not
   // readable at Low IL), causing `CreateProcessAsUserW` to fail with `ERROR_ACCESS_DENIED`.
   //
-  // Using the executable's parent directory is a best-effort choice: if the executable is
-  // loadable, the directory is generally traversable too.
-  let current_dir_wide = cfg.exe.parent().map(|p| wide_from_os(p.as_os_str()));
-  let current_dir_ptr = current_dir_wide
-    .as_ref()
-    .map(|wide| wide.as_ptr())
-    .unwrap_or(std::ptr::null());
-  let mut cmdline = build_command_line(&cfg.exe, &cfg.args);
+  // Prefer an explicit `cfg.current_dir` if provided. Otherwise, use the executable's parent
+  // directory as a best-effort choice: if the executable is loadable, the directory is generally
+  // traversable too.
+  let current_dir_w;
+  let current_dir_ptr = if let Some(dir) = &cfg.current_dir {
+    current_dir_w = wide_null(dir.as_os_str());
+    current_dir_w.as_ptr()
+  } else if let Some(parent) = cfg.exe.parent() {
+    current_dir_w = wide_null(parent.as_os_str());
+    current_dir_w.as_ptr()
+  } else {
+    std::ptr::null()
+  };
+
+  let b_inherit_handles = if cfg.inherit_handles.is_empty() {
+    FALSE
+  } else {
+    TRUE
+  };
+
+  let needs_job = cfg.job.is_some();
+  let needs_handle_list = !cfg.inherit_handles.is_empty();
+  let needs_mitigation = mitigation_policy.is_some();
+  let attribute_count =
+    (needs_job as u32) + (needs_handle_list as u32) + (needs_mitigation as u32);
+
+  // Attribute values must live until after CreateProcessAsUserW returns.
+  let mut inherit_handle_list: Vec<HANDLE> = cfg
+    .inherit_handles
+    .iter()
+    .map(|&h| h as HANDLE)
+    .collect();
+
+  let mut job_handle: HANDLE = std::ptr::null_mut();
+  if let Some(job) = cfg.job {
+    job_handle = job.handle();
+  }
+
+  let mut mitigation_policy_value: u64 = mitigation_policy.unwrap_or(0);
 
   let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-
-  let mitigation_policy = effective_mitigation_policy(cfg.mitigation_policy);
-  let mut mitigation_policy_value = mitigation_policy;
-  let mut handles = cfg.inherit_handles.clone();
-
-  let attribute_count = u32::from(!handles.is_empty()) + u32::from(mitigation_policy != 0);
 
   if attribute_count == 0 {
     let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
@@ -175,9 +210,9 @@ pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate:
         cmdline.as_mut_ptr(),
         std::ptr::null(),
         std::ptr::null(),
-        FALSE,
-        CREATE_SUSPENDED,
-        std::ptr::null(),
+        b_inherit_handles,
+        CREATE_UNICODE_ENVIRONMENT,
+        env_ptr as *const _ as *mut _,
         current_dir_ptr,
         &startup,
         &mut pi,
@@ -186,25 +221,32 @@ pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate:
     win32_bool("CreateProcessAsUserW", ok)?;
   } else {
     let mut attrs = AttributeList::new(attribute_count)?;
-    if !handles.is_empty() {
-      attrs.update_raw(
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-        handles.as_mut_ptr().cast(),
-        handles.len() * std::mem::size_of::<HANDLE>(),
+    if needs_job {
+      attrs.update(
+        PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+        (&mut job_handle as *mut HANDLE).cast(),
+        std::mem::size_of::<HANDLE>(),
       )?;
     }
-    if mitigation_policy != 0 {
-      attrs.update_raw(
-        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
-        std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
+    if needs_handle_list {
+      attrs.update(
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+        inherit_handle_list.as_mut_ptr().cast(),
+        inherit_handle_list.len() * std::mem::size_of::<HANDLE>(),
+      )?;
+    }
+    if needs_mitigation {
+      attrs.update(
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
+        (&mut mitigation_policy_value as *mut u64).cast(),
         std::mem::size_of::<u64>(),
       )?;
     }
 
     let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-    startup.lpAttributeList = attrs.list;
-    let flags = CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+    startup.lpAttributeList = attrs.ptr;
+    let flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
     let ok = unsafe {
       CreateProcessAsUserW(
         token.as_raw(),
@@ -212,9 +254,9 @@ pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate:
         cmdline.as_mut_ptr(),
         std::ptr::null(),
         std::ptr::null(),
-        if handles.is_empty() { FALSE } else { TRUE },
+        b_inherit_handles,
         flags,
-        std::ptr::null(),
+        env_ptr as *const _ as *mut _,
         current_dir_ptr,
         std::ptr::addr_of_mut!(startup).cast::<STARTUPINFOW>(),
         &mut pi,
@@ -223,7 +265,21 @@ pub fn spawn_with_token(cfg: &SpawnConfig, token: &OwnedHandle) -> Result<crate:
     win32_bool("CreateProcessAsUserW", ok)?;
   }
 
-  finish_spawn(job, pi, SandboxRequest::RestrictedToken)
+  if pi.hProcess.is_null() || pi.hThread.is_null() {
+    unsafe {
+      if !pi.hThread.is_null() {
+        windows_sys::Win32::Foundation::CloseHandle(pi.hThread);
+      }
+      if !pi.hProcess.is_null() {
+        windows_sys::Win32::Foundation::CloseHandle(pi.hProcess);
+      }
+    }
+    return Err(WinSandboxError::NullPointer {
+      func: "CreateProcessAsUserW",
+    });
+  }
+
+  Ok(ChildProcess::new(pi.hProcess, pi.hThread))
 }
 
 fn set_low_integrity(token: HANDLE) -> Result<()> {

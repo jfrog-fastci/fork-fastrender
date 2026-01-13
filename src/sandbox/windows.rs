@@ -164,8 +164,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
   GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-  NO_MULTIPLE_TRUSTEE, NO_INHERITANCE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
-  TRUSTEE_W,
+  NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
   ConvertStringSidToSidW, CreateRestrictedToken, FreeSid, GetLengthSid, OpenProcessToken,
@@ -189,9 +188,12 @@ use windows_sys::Win32::System::Threading::{
   GetExitCodeProcess, InitializeProcThreadAttributeList, ResumeThread, TerminateProcess,
   UpdateProcThreadAttribute, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_SUSPENDED,
   CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
-  PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_LIST,
+  LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
   PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
 };
+
+// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
+const NO_INHERITANCE: u32 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsSandboxLevel {
@@ -302,7 +304,7 @@ impl JobObject {
 struct AttributeList {
   heap: HANDLE,
   alloc: *mut std::ffi::c_void,
-  list: *mut PROC_THREAD_ATTRIBUTE_LIST,
+  list: LPPROC_THREAD_ATTRIBUTE_LIST,
   initialized: bool,
 }
 
@@ -322,7 +324,7 @@ impl AttributeList {
     if alloc.is_null() {
       return Err(io::Error::last_os_error());
     }
-    let list = alloc.cast::<PROC_THREAD_ATTRIBUTE_LIST>();
+    let list = alloc.cast::<std::ffi::c_void>();
     let ok = unsafe { InitializeProcThreadAttributeList(list, attribute_count, 0, &mut size) };
     if ok == 0 {
       let err = io::Error::last_os_error();
@@ -439,7 +441,7 @@ impl Drop for LocalAllocSid {
   fn drop(&mut self) {
     unsafe {
       if !self.sid.is_null() {
-        LocalFree(self.sid as isize);
+        LocalFree(self.sid as _);
       }
     }
   }
@@ -949,7 +951,7 @@ fn grant_read_execute_acl(path: &Path, sid: *mut std::ffi::c_void) -> io::Result
   let mut new_dacl: *mut windows_sys::Win32::Security::ACL = std::ptr::null_mut();
   let status = unsafe { SetEntriesInAclW(1, &mut ea, dacl, &mut new_dacl) };
   if status != ERROR_SUCCESS {
-    unsafe { LocalFree(sd as isize) };
+    unsafe { LocalFree(sd as _) };
     return Err(io::Error::from_raw_os_error(status as i32));
   }
 
@@ -966,8 +968,8 @@ fn grant_read_execute_acl(path: &Path, sid: *mut std::ffi::c_void) -> io::Result
   };
 
   unsafe {
-    LocalFree(sd as isize);
-    LocalFree(new_dacl as isize);
+    LocalFree(sd as _);
+    LocalFree(new_dacl as _);
   }
 
   if status != ERROR_SUCCESS {
@@ -2354,7 +2356,7 @@ mod tests {
       }
       let slice = std::slice::from_raw_parts(wide, len);
       let s = String::from_utf16_lossy(slice);
-      LocalFree(wide as isize);
+      LocalFree(wide as _);
       Ok(s)
     }
   }

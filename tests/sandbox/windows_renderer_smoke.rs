@@ -266,7 +266,7 @@ fn sid_to_string(sid: *mut std::ffi::c_void) -> Result<String, String> {
     }
     let slice = std::slice::from_raw_parts(wide, len);
     let s = String::from_utf16_lossy(slice);
-    LocalFree(wide as isize);
+    LocalFree(wide as _);
     Ok(s)
   }
 }

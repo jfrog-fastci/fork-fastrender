@@ -108,7 +108,6 @@ fn appcontainer_blocks_userprofile_filesystem_access() {
 
   let sandbox = RendererSandbox::appcontainer_no_capabilities();
   let child = sandbox.spawn(&exe, &args).expect("spawn sandboxed child process");
-
   let handle = child.process.as_raw();
   let status = wait_process(handle, 20_000).expect("wait for sandboxed child");
 

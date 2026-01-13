@@ -3,11 +3,11 @@
 use std::ffi::OsString;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use win_sandbox::{spawn_sandboxed, SandboxRequest, SpawnConfig};
+use win_sandbox::{restricted_token, RestrictedToken, SpawnConfig};
 use windows_sys::Win32::Foundation::{
   CloseHandle, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HANDLE,
 };
@@ -19,11 +19,14 @@ use windows_sys::Win32::Security::Authorization::{
   ConvertStringSidToSidW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
   NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, WaitForSingleObject, INFINITE};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const TEST_NAME: &str = "restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile";
 const ENV_TEST_FILE: &str = "WIN_SANDBOX_TEST_USERPROFILE_FILE";
 const ENV_TEST_DEPTH: &str = "WIN_SANDBOX_TEST_DEPTH";
+
+// `accctrl.h` defines `NO_INHERITANCE` as 0, but `windows-sys` does not currently export it.
+const NO_INHERITANCE: u32 = 0;
 
 #[link(name = "advapi32")]
 extern "system" {
@@ -68,7 +71,7 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
     fn drop(&mut self) {
       unsafe {
         if !self.0.is_null() {
-          LocalFree(self.0.cast());
+          LocalFree(self.0 as _);
         }
       }
     }
@@ -104,7 +107,7 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
     fn drop(&mut self) {
       unsafe {
         if !self.0.is_null() {
-          LocalFree(self.0.cast());
+          LocalFree(self.0 as _);
         }
       }
     }
@@ -128,23 +131,6 @@ fn set_users_only_dacl(path: &Path) -> std::io::Result<()> {
   }
 
   Ok(())
-}
-
-fn wait_process(handle: HANDLE) -> std::io::Result<std::process::ExitStatus> {
-  // SAFETY: caller owns the process handle and we wait indefinitely for it to signal.
-  let wait_rc = unsafe { WaitForSingleObject(handle, INFINITE) };
-  if wait_rc != 0 {
-    return Err(std::io::Error::last_os_error());
-  }
-
-  let mut exit_code: u32 = 0;
-  // SAFETY: `exit_code` is writable.
-  let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
-  if ok == 0 {
-    return Err(std::io::Error::last_os_error());
-  }
-
-  Ok(std::process::ExitStatus::from_raw(exit_code))
 }
 
 fn current_integrity_rid() -> u32 {
@@ -252,29 +238,43 @@ fn restricted_token_spawn_enforces_low_integrity_and_blocks_userprofile() {
     "parent should be able to read the file it created"
   );
 
-  // Pass the file path to the child via env var (inherited through the environment block).
-  std::env::set_var(ENV_TEST_FILE, &file_path);
-  std::env::set_var(ENV_TEST_DEPTH, "1");
-
-  let mut cfg = SpawnConfig::new(exe);
-  cfg.args = vec![
-    OsString::from("--exact"),
-    OsString::from(TEST_NAME),
-    OsString::from("--nocapture"),
+  let env = vec![
+    (
+      OsString::from(ENV_TEST_FILE),
+      file_path.as_os_str().to_os_string(),
+    ),
+    (OsString::from(ENV_TEST_DEPTH), OsString::from("1")),
   ];
-  cfg.sandbox = SandboxRequest::RestrictedToken;
 
-  let child = spawn_sandboxed(&cfg).expect("spawn restricted-token child");
-  assert_eq!(
-    child.level,
-    SandboxRequest::RestrictedToken,
-    "expected restricted-token sandbox level"
-  );
+  let cfg = SpawnConfig {
+    exe,
+    args: vec![
+      OsString::from("--exact"),
+      OsString::from(TEST_NAME),
+      OsString::from("--nocapture"),
+    ],
+    env,
+    current_dir: None,
+    inherit_handles: Vec::new(),
+    appcontainer: None,
+    job: None,
+    mitigation_policy: None,
+  };
 
-  let status = wait_process(child.process.as_raw()).expect("wait for child");
-  assert!(status.success(), "child should exit successfully");
+  let token = RestrictedToken::for_current_process_low_integrity()
+    .expect("create restricted token")
+    .into_handle();
+
+  let child = restricted_token::spawn_with_token(&cfg, &token).expect("spawn restricted-token child");
+
+  let exit_code = child
+    .wait_timeout(Duration::from_secs(30))
+    .expect("wait for child")
+    .unwrap_or_else(|| {
+      let _ = child.kill();
+      panic!("timed out waiting for restricted-token child to exit");
+    });
+  assert_eq!(exit_code, 0, "child should exit successfully");
 
   let _ = std::fs::remove_file(&file_path);
-  std::env::remove_var(ENV_TEST_FILE);
-  std::env::remove_var(ENV_TEST_DEPTH);
 }

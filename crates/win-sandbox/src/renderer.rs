@@ -280,7 +280,8 @@ fn spawn_windows(
   use windows_sys::Win32::System::Threading::{
     CreateProcessW, ResumeThread, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTUPINFOEXW, STARTUPINFOW,
+    PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+    STARTUPINFOEXW, STARTUPINFOW,
   };
 
   struct RawWin32Handle(HANDLE);
@@ -338,7 +339,13 @@ fn spawn_windows(
   let env_block = build_environment_block(env);
   let cwd_w = exe.parent().map(|p| to_wide_null(p.as_os_str()));
 
-  let mitigation_policy = crate::spawn::effective_mitigation_policy(sandbox.mitigation_policy);
+  let mitigation_policy = if sandbox.mitigation_policy != 0
+    && std::env::var_os("FASTR_DISABLE_WIN_MITIGATIONS").is_some()
+  {
+    0
+  } else {
+    sandbox.mitigation_policy
+  };
 
   fn should_fallback_without_mitigations(err: &WinSandboxError) -> bool {
     const ERROR_INVALID_PARAMETER: u32 = 87;
@@ -409,7 +416,7 @@ fn spawn_windows(
         CapabilityCount: 0,
         Reserved: 0,
       };
-      attrs.update_raw(
+      attrs.update(
         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
         std::ptr::addr_of_mut!(security_capabilities).cast(),
         std::mem::size_of::<windows_sys::Win32::Security::SECURITY_CAPABILITIES>(),
@@ -417,7 +424,7 @@ fn spawn_windows(
     }
 
     if !handles.is_empty() {
-      attrs.update_raw(
+      attrs.update(
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
         handles_for_attr.as_mut_ptr().cast(),
         std::mem::size_of::<HANDLE>() * handles_for_attr.len(),
@@ -425,8 +432,8 @@ fn spawn_windows(
     }
 
     if mitigation_policy != 0 {
-      attrs.update_raw(
-        crate::spawn::PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY,
+      attrs.update(
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY as usize,
         std::ptr::addr_of_mut!(mitigation_policy_value).cast(),
         std::mem::size_of::<u64>(),
       )?;
@@ -434,7 +441,7 @@ fn spawn_windows(
 
     let mut si: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
     si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-    si.lpAttributeList = attrs.list;
+    si.lpAttributeList = attrs.ptr;
 
     let inherit: i32 = if handles.is_empty() { 0 } else { 1 };
     let flags =

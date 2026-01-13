@@ -39,7 +39,7 @@ use windows_sys::Win32::System::Threading::{
   CreateProcessAsUserW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess,
   GetExitCodeProcess, InitializeProcThreadAttributeList, OpenProcess, TerminateProcess,
   UpdateProcThreadAttribute, WaitForSingleObject, PROCESS_INFORMATION, PROCESS_DUP_HANDLE,
-  PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, PROC_THREAD_ATTRIBUTE_LIST, STARTUPINFOEXW,
+  LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, STARTUPINFOEXW,
 };
 
 const ENV_CHILD_MODE: &str = "FASTR_SANDBOX_TEST_CHILD";
@@ -319,7 +319,7 @@ fn sid_to_string(sid: *mut std::ffi::c_void) -> Result<String, String> {
     }
     let slice = std::slice::from_raw_parts(wide, len);
     let s = String::from_utf16_lossy(slice);
-    LocalFree(wide as isize);
+    LocalFree(wide as _);
     Ok(s)
   }
 }
@@ -568,14 +568,14 @@ fn spawn_appcontainer_child(parent_pid: u32, test_filter: &str) -> Result<u32, S
     }
 
     let mut attr_buf = vec![0u8; attr_size];
-    let attr_list = attr_buf.as_mut_ptr() as *mut PROC_THREAD_ATTRIBUTE_LIST;
+    let attr_list = attr_buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
     if InitializeProcThreadAttributeList(attr_list, attribute_count, 0, &mut attr_size) == 0 {
       let err = GetLastError();
       return Err(format!(
         "InitializeProcThreadAttributeList failed (err={err})"
       ));
     }
-    struct AttrListGuard(*mut PROC_THREAD_ATTRIBUTE_LIST);
+    struct AttrListGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
     impl Drop for AttrListGuard {
       fn drop(&mut self) {
         unsafe {
@@ -717,7 +717,7 @@ fn set_low_integrity_token(token: HANDLE) -> Result<(), String> {
         unsafe {
           if !self.0.is_null() {
             // ConvertStringSidToSidW uses LocalAlloc.
-            LocalFree(self.0 as isize);
+            LocalFree(self.0 as _);
           }
         }
       }
@@ -836,7 +836,7 @@ fn spawn_restricted_token_child(parent_pid: u32, test_filter: &str) -> Result<u3
     let _inherit_guard = HandleInheritGuard::new(&handles);
 
     // Optional attribute list restricting inherited handles.
-    struct AttrListGuard(*mut PROC_THREAD_ATTRIBUTE_LIST);
+    struct AttrListGuard(LPPROC_THREAD_ATTRIBUTE_LIST);
     impl Drop for AttrListGuard {
       fn drop(&mut self) {
         unsafe {
@@ -866,7 +866,7 @@ fn spawn_restricted_token_child(parent_pid: u32, test_filter: &str) -> Result<u3
       }
 
       attr_buf = vec![0u8; attr_size];
-      let attr_list = attr_buf.as_mut_ptr() as *mut PROC_THREAD_ATTRIBUTE_LIST;
+      let attr_list = attr_buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
       if InitializeProcThreadAttributeList(attr_list, attribute_count, 0, &mut attr_size) == 0 {
         let err = GetLastError();
         return Err(format!("InitializeProcThreadAttributeList failed (err={err})"));
