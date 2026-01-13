@@ -661,7 +661,7 @@ pub(super) fn resolve_item_baselines(
   let mut first_group_key: Option<u16> = None;
   #[derive(Clone, Copy)]
   struct BaselineGroupStats {
-    count: usize,
+    count: u32,
     max_baseline: f32,
   }
 
