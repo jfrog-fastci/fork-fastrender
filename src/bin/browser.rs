@@ -8838,6 +8838,7 @@ struct App {
   bookmarks_panel_open: bool,
   downloads_panel_open: bool,
   downloads_panel_request_focus: bool,
+  downloads_panel_search_query: String,
   clear_browsing_data_dialog_open: bool,
   clear_browsing_data_dialog_request_focus: bool,
   bookmarks_manager: fastrender::ui::bookmarks_manager::BookmarksManagerState,
@@ -9757,6 +9758,7 @@ impl App {
       bookmarks_panel_open: false,
       downloads_panel_open: false,
       downloads_panel_request_focus: false,
+      downloads_panel_search_query: String::new(),
       clear_browsing_data_dialog_open: false,
       clear_browsing_data_dialog_request_focus: false,
       clear_browsing_data_range: fastrender::ui::ClearBrowsingDataRange::default(),
@@ -14618,7 +14620,7 @@ impl App {
         }
       }
       PageContextMenuAction::ToggleHistoryPanel => {
-        self.downloads_panel_open = false;
+        self.close_downloads_panel();
         let action = PageContextMenuAction::ToggleHistoryPanel;
         let result = apply_page_context_menu_action(
           &mut self.bookmarks,
@@ -14632,7 +14634,7 @@ impl App {
         }
       }
       PageContextMenuAction::ToggleBookmarksPanel => {
-        self.downloads_panel_open = false;
+        self.close_downloads_panel();
         let action = PageContextMenuAction::ToggleBookmarksPanel;
         let result = apply_page_context_menu_action(
           &mut self.bookmarks,
@@ -14652,6 +14654,12 @@ impl App {
     session_dirty
   }
 
+  fn close_downloads_panel(&mut self) {
+    self.downloads_panel_open = false;
+    self.downloads_panel_request_focus = false;
+    self.downloads_panel_search_query.clear();
+  }
+
   fn render_downloads_panel(&mut self, ctx: &egui::Context) {
     use fastrender::ui::UiToWorker;
 
@@ -14662,6 +14670,7 @@ impl App {
       ctx,
       fastrender::ui::panels::DownloadsPanelInput {
         downloads: &self.browser_state.downloads.downloads,
+        search_query: &mut self.downloads_panel_search_query,
         theme: &self.theme,
         request_initial_focus,
         download_dir: &self.download_dir,
@@ -14669,8 +14678,7 @@ impl App {
     );
 
     if output.close_requested {
-      self.downloads_panel_open = false;
-      self.downloads_panel_request_focus = false;
+      self.close_downloads_panel();
       self.page_has_focus = self.should_restore_page_focus();
     }
 
@@ -18494,8 +18502,8 @@ impl App {
         }
         ChromeAction::ToggleDownloadsPanel => {
           let next = !self.downloads_panel_open;
-          self.downloads_panel_open = next;
           if next {
+            self.downloads_panel_open = true;
             self.downloads_panel_request_focus = true;
             // Keep the right-side panel area exclusive: downloads share the same side panel space as
             // history/bookmarks.
@@ -18505,7 +18513,7 @@ impl App {
             self.bookmarks_manager.clear_transient();
             self.page_has_focus = false;
           } else {
-            self.downloads_panel_request_focus = false;
+            self.close_downloads_panel();
             self.page_has_focus = self.should_restore_page_focus();
           }
           self.window.request_redraw();
@@ -18535,7 +18543,7 @@ impl App {
           self.history_panel_open = !self.history_panel_open;
           if self.history_panel_open {
             self.bookmarks_panel_open = false;
-            self.downloads_panel_open = false;
+            self.close_downloads_panel();
             self.bookmarks_manager.clear_transient();
             self.history_panel_request_focus_search = true;
             self.page_has_focus = false;
@@ -18548,7 +18556,7 @@ impl App {
           self.bookmarks_panel_open = !self.bookmarks_panel_open;
           if self.bookmarks_panel_open {
             self.history_panel_open = false;
-            self.downloads_panel_open = false;
+            self.close_downloads_panel();
             self.bookmarks_manager.request_focus_search();
             // While the manager is open, do not forward keyboard focus to the page. The manager
             // itself will request focus for its search box.
@@ -19629,8 +19637,7 @@ impl App {
               self.history_panel_open = !self.history_panel_open;
               if self.history_panel_open {
                 self.bookmarks_panel_open = false;
-                self.downloads_panel_open = false;
-                self.downloads_panel_request_focus = false;
+                self.close_downloads_panel();
                 self.bookmarks_manager.clear_transient();
                 self.history_panel_request_focus_search = true;
                 self.page_has_focus = false;
@@ -19642,8 +19649,7 @@ impl App {
               self.bookmarks_panel_open = !self.bookmarks_panel_open;
               if self.bookmarks_panel_open {
                 self.history_panel_open = false;
-                self.downloads_panel_open = false;
-                self.downloads_panel_request_focus = false;
+                self.close_downloads_panel();
                 self.history_panel_request_focus_search = false;
                 self.bookmarks_manager.request_focus_search();
                 self.page_has_focus = false;
@@ -19968,8 +19974,7 @@ impl App {
       && ctx.input(|i| i.key_pressed(egui::Key::Escape))
       && !self.chrome_has_text_focus
     {
-      self.downloads_panel_open = false;
-      self.downloads_panel_request_focus = false;
+      self.close_downloads_panel();
       self.page_has_focus = self.should_restore_page_focus();
     }
     if self.downloads_panel_open {

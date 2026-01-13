@@ -6,6 +6,7 @@ use super::super::{downloads_panel, theme::BrowserTheme, DownloadEntry};
 
 pub struct DownloadsPanelInput<'a> {
   pub downloads: &'a [DownloadEntry],
+  pub search_query: &'a mut String,
   pub theme: &'a BrowserTheme,
   pub request_initial_focus: bool,
   pub download_dir: &'a Path,
@@ -17,6 +18,7 @@ pub fn downloads_panel_ui(ctx: &egui::Context, input: DownloadsPanelInput<'_>) -
   downloads_panel::downloads_panel_ui(
     ctx,
     input.downloads,
+    input.search_query,
     input.theme,
     input.request_initial_focus,
     input.download_dir,

@@ -9,8 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-  a11y_labels, motion::UiMotion, panel_empty_state, panel_header_with_actions, theme::BrowserTheme,
-  BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
+  a11y_labels, motion::UiMotion, panel_empty_state, panel_header_with_actions, panel_search_field,
+  theme::BrowserTheme, BrowserIcon, DownloadEntry, DownloadId, DownloadStatus, TabId,
 };
 
 fn format_bytes(bytes: u64) -> String {
@@ -58,6 +58,50 @@ fn download_progress_a11y_label(
   }
 }
 
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+  if needle.is_empty() {
+    return true;
+  }
+  if haystack.is_empty() {
+    return false;
+  }
+
+  let haystack = haystack.as_bytes();
+  let needle = needle.as_bytes();
+  if needle.len() > haystack.len() {
+    return false;
+  }
+
+  // Naive ASCII case-insensitive substring search. This avoids allocating `to_ascii_lowercase()`
+  // strings every frame while still remaining linear in the total length of download strings.
+  for start in 0..=haystack.len().saturating_sub(needle.len()) {
+    if haystack[start].to_ascii_lowercase() != needle[0].to_ascii_lowercase() {
+      continue;
+    }
+    let mut matched = true;
+    for offset in 1..needle.len() {
+      if haystack[start + offset].to_ascii_lowercase() != needle[offset].to_ascii_lowercase() {
+        matched = false;
+        break;
+      }
+    }
+    if matched {
+      return true;
+    }
+  }
+
+  false
+}
+
+pub fn download_matches_query(entry: &DownloadEntry, query: &str) -> bool {
+  let query = query.trim();
+  if query.is_empty() {
+    return true;
+  }
+
+  contains_ignore_ascii_case(&entry.file_name, query) || contains_ignore_ascii_case(&entry.url, query)
+}
+
 #[derive(Debug, Default)]
 pub struct DownloadsPanelOutput {
   pub close_requested: bool,
@@ -77,6 +121,7 @@ fn store_test_id(ctx: &egui::Context, key: &'static str, id: egui::Id) {
 pub fn downloads_panel_ui(
   ctx: &egui::Context,
   downloads: &[DownloadEntry],
+  search_query: &mut String,
   theme: &BrowserTheme,
   request_initial_focus: bool,
   download_dir: &Path,
@@ -141,10 +186,30 @@ pub fn downloads_panel_ui(
       header_out.close_response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, "Close downloads panel")
       });
-      if request_initial_focus {
-        header_out.close_response.request_focus();
+      ui.add_space(6.0);
+
+      let mut request_focus_search = request_initial_focus;
+      let search_out = panel_search_field(
+        ui,
+        "downloads_panel_search",
+        search_query,
+        "Search downloads…",
+        &mut request_focus_search,
+        "Search downloads",
+      );
+      // Allow Escape to close the downloads panel when the search field is focused *and* there is
+      // nothing left to clear.
+      if search_out.response.has_focus()
+        && ui.input(|i| i.key_pressed(egui::Key::Escape))
+        && !search_out.cleared
+        && search_query.trim().is_empty()
+      {
+        out.close_requested = true;
       }
+
+      ui.add_space(8.0);
       ui.separator();
+      ui.add_space(4.0);
 
       if downloads.is_empty() {
         panel_empty_state(ui, BrowserIcon::Download, "No downloads yet", None, None);
@@ -179,9 +244,26 @@ pub fn downloads_panel_ui(
       let row_content_h = (content_h + row_padding * 2.0).ceil();
       let row_total_h = row_content_h + row_gap;
 
+      let query = search_query.trim();
+      let filtered_count = if query.is_empty() {
+        None
+      } else {
+        let matches = downloads
+          .iter()
+          .rev()
+          .filter(|entry| download_matches_query(entry, query))
+          .count();
+        if matches == 0 {
+          panel_empty_state(ui, BrowserIcon::Search, "No matching downloads", None, None);
+          return;
+        }
+        Some(matches)
+      };
+      let row_count = filtered_count.unwrap_or(downloads.len());
+
       egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .show_rows(ui, row_total_h, downloads.len(), |ui, row_range| {
+        .show_rows(ui, row_total_h, row_count, |ui, row_range| {
           // `show_rows` virtualizes the list: egui only builds the rows that intersect the current
           // viewport. This keeps the downloads panel cost proportional to the number of visible
           // rows, even when the history contains thousands of entries.
@@ -197,17 +279,7 @@ pub fn downloads_panel_ui(
           // Fetch the pointer position once per frame; avoid per-row `ctx.input` calls.
           let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
 
-          let total = downloads.len();
-
-          for row_idx in row_range {
-            let Some(entry) = total
-              .checked_sub(1)
-              .and_then(|last| last.checked_sub(row_idx))
-              .and_then(|idx| downloads.get(idx))
-            else {
-              continue;
-            };
-
+          let mut render_row = |ui: &mut egui::Ui, entry: &DownloadEntry| {
             let width = ui.available_width().max(0.0);
             let (_alloc_id, row_rect) = ui.allocate_space(egui::vec2(width, row_total_h));
             let rect = egui::Rect::from_min_max(
@@ -445,6 +517,36 @@ pub fn downloads_panel_ui(
                 }
               });
             });
+          };
+
+          if query.is_empty() {
+            let total = downloads.len();
+            for row_idx in row_range {
+              let Some(entry) = total
+                .checked_sub(1)
+                .and_then(|last| last.checked_sub(row_idx))
+                .and_then(|idx| downloads.get(idx))
+              else {
+                continue;
+              };
+              render_row(ui, entry);
+            }
+          } else {
+            let mut match_idx = 0usize;
+            for entry in downloads.iter().rev() {
+              if !download_matches_query(entry, query) {
+                continue;
+              }
+              if match_idx < row_range.start {
+                match_idx += 1;
+                continue;
+              }
+              if match_idx >= row_range.end {
+                break;
+              }
+              render_row(ui, entry);
+              match_idx += 1;
+            }
           }
         });
     });
@@ -456,8 +558,10 @@ pub fn downloads_panel_ui(
 mod tests {
   use std::path::PathBuf;
 
-  use super::{download_progress_a11y_label, downloads_panel_ui};
   use crate::ui::theme::BrowserTheme;
+  use crate::ui::{DownloadEntry, DownloadId, DownloadStatus, TabId};
+
+  use super::{download_matches_query, download_progress_a11y_label, downloads_panel_ui};
 
   fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
     let mut raw = egui::RawInput::default();
@@ -493,17 +597,32 @@ mod tests {
     let ctx = egui::Context::default();
     let theme = BrowserTheme::light(None);
     let download_dir = PathBuf::from("test-download-dir");
+    let mut search_query = String::new();
 
     // Frame 0: capture the show-folder button id.
     begin_frame(&ctx, Vec::new());
-    let _ = downloads_panel_ui(&ctx, &[], &theme, false, &download_dir);
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
     let _ = ctx.end_frame();
     let show_folder_id = expect_temp_id(&ctx, "downloads_panel_show_folder_button_id");
 
     // Frame 1: move focus to the show-folder button.
     ctx.memory_mut(|mem| mem.request_focus(show_folder_id));
     begin_frame(&ctx, Vec::new());
-    let _ = downloads_panel_ui(&ctx, &[], &theme, false, &download_dir);
+    let _ = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
     let _ = ctx.end_frame();
     assert!(
       ctx.memory(|mem| mem.has_focus(show_folder_id)),
@@ -520,7 +639,14 @@ mod tests {
         modifiers: egui::Modifiers::default(),
       }],
     );
-    let output = downloads_panel_ui(&ctx, &[], &theme, false, &download_dir);
+    let output = downloads_panel_ui(
+      &ctx,
+      &[],
+      &mut search_query,
+      &theme,
+      false,
+      download_dir.as_path(),
+    );
     let _ = ctx.end_frame();
 
     assert_eq!(
@@ -528,5 +654,45 @@ mod tests {
       vec![download_dir.clone()],
       "expected Show downloads folder to open injected dir"
     );
+  }
+
+  fn sample_entry(file_name: &str, url: &str) -> DownloadEntry {
+    DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id: TabId(1),
+      url: url.to_string(),
+      file_name: file_name.to_string(),
+      path: PathBuf::from("/tmp/example"),
+      status: DownloadStatus::Completed,
+    }
+  }
+
+  #[test]
+  fn download_matches_query_empty_query_matches_all() {
+    let entry = sample_entry("example.zip", "https://example.com/example.zip");
+    assert!(download_matches_query(&entry, ""));
+    assert!(download_matches_query(&entry, "   "));
+  }
+
+  #[test]
+  fn download_matches_query_matches_file_name_case_insensitively() {
+    let entry = sample_entry("Example.ZIP", "https://example.com/other");
+    assert!(download_matches_query(&entry, "example"));
+    assert!(download_matches_query(&entry, "ZIP"));
+    assert!(download_matches_query(&entry, "ple.z"));
+  }
+
+  #[test]
+  fn download_matches_query_matches_url_case_insensitively() {
+    let entry = sample_entry("file.bin", "https://EXAMPLE.com/Path/File.BIN");
+    assert!(download_matches_query(&entry, "example.com"));
+    assert!(download_matches_query(&entry, "path/file"));
+    assert!(download_matches_query(&entry, "FILE.bin"));
+  }
+
+  #[test]
+  fn download_matches_query_rejects_non_matches() {
+    let entry = sample_entry("example.zip", "https://example.com/example.zip");
+    assert!(!download_matches_query(&entry, "nope"));
   }
 }
