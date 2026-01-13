@@ -19951,9 +19951,6 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       self.egui_ctx.end_frame()
     };
     let repaint_after = full_output.repaint_after;
-    if let Some(text) = self.pending_clipboard_text.take() {
-      full_output.platform_output.copied_text = text;
-    }
 
     let mut platform_output = full_output.platform_output;
     // Security/perf: egui clipboard writes can originate from UI actions that include untrusted
