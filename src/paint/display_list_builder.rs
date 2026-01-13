@@ -7356,25 +7356,35 @@ impl DisplayListBuilder {
           if let ReplacedType::Iframe {
             src,
             srcdoc,
+            sandbox,
             referrer_policy,
             frame_token: _,
             ..
           } = replaced_type
           {
+            let sandbox = *sandbox;
+            let sandbox_opaque_origin = sandbox.opaque_origin();
             if let Some(cache) = self.image_cache.as_ref() {
               // When site isolation is enabled, cross-origin iframes become out-of-process and the
               // parent frame must not recursively render their content. Instead, emit a metadata
               // slot so the browser compositor can interleave the child surface at the correct
               // paint order.
-              if runtime::runtime_toggles().truthy("FASTR_SITE_ISOLATION") && srcdoc.is_none() {
-                let resolved_src = cache.resolve_url(src.as_str());
-                let is_about_blank = resolved_src
+              if runtime::runtime_toggles().truthy("FASTR_SITE_ISOLATION")
+                && (srcdoc.is_none() || sandbox_opaque_origin)
+              {
+                // `srcdoc` iframes always navigate to `about:srcdoc`.
+                let resolved_src = if srcdoc.is_some() {
+                  "about:srcdoc".to_string()
+                } else {
+                  cache.resolve_url(src.as_str())
+                };
+                let is_about = resolved_src
                   .trim_matches(|c: char| {
                     matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
                   })
                   .to_ascii_lowercase()
                   .starts_with("about:");
-                if !resolved_src.is_empty() && !is_about_blank {
+                if !resolved_src.is_empty() && (!is_about || sandbox_opaque_origin) {
                   let parent_origin = cache
                     .resource_context()
                     .and_then(|ctx| ctx.policy.document_origin)
@@ -7393,7 +7403,7 @@ impl DisplayListBuilder {
                     _ => false,
                   };
 
-                  if is_cross_origin {
+                  if sandbox_opaque_origin || is_cross_origin {
                     let (content_rect, clip_radii) =
                       self.replaced_content_rect_and_radii(rect, style_for_image);
                     let clip_item = Self::replaced_content_clip_item(
