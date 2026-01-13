@@ -102,15 +102,16 @@ impl StreamingHtmlParser {
   /// Run the tokenizer/tree-builder until it either needs a script, needs more input, or finishes.
   pub fn pump(&mut self) -> Result<StreamingParserYield> {
     loop {
-      match self.parser.pump()? {
+        match self.parser.pump()? {
         Html5everPump::Script(script) => {
           // html5ever yields `TokenizerResult::Script` for any parsed `</script>` end tag, even when
           // the resulting `<script>` element is not eligible for execution (e.g. inside inert
           // `<template>` contents).
           //
-          // The HTML script preparation algorithm early-outs when the script element is not
-          // connected, so these should not block parsing. Filter them out here so callers only see
-          // pause points that actually require script scheduling/execution.
+          // The HTML script preparation algorithm ("prepare the script element") early-outs when
+          // the element is not connected, so these should not block parsing. Filter them out here
+          // so callers only see pause points that actually require script scheduling/execution:
+          // https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
           let should_yield = if let Some(mut doc) = self.document_mut() {
             if doc.is_connected_for_scripting(script) {
               // Ensure declarative shadow roots are attached before any connected script executes.
@@ -125,6 +126,17 @@ impl StreamingHtmlParser {
               doc.attach_shadow_roots();
               true
             } else {
+              // Even though we are not going to yield (and therefore will not run the full "prepare
+              // the script element" algorithm), we still need to mirror its internal-slot side
+              // effects:
+              // - clear the element's "parser document" slot, and
+              // - if it was non-null and `async` is missing, set the "force async" flag.
+              //
+              // This is required even when the script does *not* execute because it is disconnected
+              // (e.g. inside `<template>`). Otherwise a later DOM mutation that moves the same
+              // element into the document would incorrectly treat it as a parser-inserted (potentially
+              // parser-blocking) script rather than a dynamic/async one.
+              // https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
               if let NodeKind::Element {
                 tag_name,
                 namespace,

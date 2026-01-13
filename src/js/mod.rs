@@ -919,6 +919,19 @@ pub(crate) fn prepare_script_element_dom2(
     return false;
   }
 
+  // WHATWG HTML "prepare the script element":
+  // https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
+  //
+  // The algorithm snapshots the element's "parser document" internal slot and then *clears* it.
+  // If the slot was non-null and the element does not have an `async` attribute, it also sets the
+  // element's "force async" flag.
+  //
+  // Non-obvious but important: these internal-slot updates happen even if the algorithm later
+  // returns early and the script never executes (unsupported type, empty inline script, etc).
+  // Clearing `script_parser_document` ensures future DOM mutations/re-insertion re-run preparation
+  // as a *dynamic* script (so DOM insertion code doesn't treat it as still parser-inserted), and
+  // setting `script_force_async` ensures those later preparations are async-like rather than
+  // parser-blocking.
   let was_parser_inserted = doc.node(script).script_parser_document;
   doc
     .set_script_parser_document(script, false)
@@ -948,8 +961,9 @@ pub(crate) fn prepare_script_element_dom2(
     return spec.src_attr_present;
   }
 
-  // HTML: If there is no `src` attribute and the source text is empty, "prepare a script" returns
-  // early (after clearing parser-document/force-async as above).
+  // HTML "script-processing-empty": if there is no `src` attribute and the source text is empty,
+  // "prepare a script" returns early *after* clearing parser-document/force-async above.
+  // https://html.spec.whatwg.org/multipage/scripting.html#script-processing-empty
   spec.src_attr_present || !spec.inline_text.is_empty()
 }
 #[cfg(test)]

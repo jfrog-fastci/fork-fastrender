@@ -1674,6 +1674,18 @@ impl BrowserTabHost {
             }
 
             if !self.dom().is_connected_for_scripting(script) {
+              // The streaming parser yielded a `</script>` boundary, but the element is no longer
+              // connected for scripting (e.g. it lived inside an inert `<template>`, or it was
+              // removed by a microtask checkpoint above).
+              //
+              // In WHATWG HTML, the parser would still run "prepare the script element" here, which
+              // clears the element's "parser document" slot and may set the "force async" flag even
+              // though the algorithm then returns early without executing:
+              // https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
+              //
+              // We won't call `prepare_script_element_dom2` for disconnected scripts, so mirror those
+              // internal-slot side effects explicitly to ensure later DOM mutations/reinsertion treat
+              // the element as a dynamic (async) script rather than still parser-inserted.
               self.mutate_dom(|dom| {
                 if let NodeKind::Element {
                   tag_name,
@@ -1709,10 +1721,16 @@ impl BrowserTabHost {
               &base,
             );
 
-            // HTML: "prepare the script element" can return early without executing the script
-            // (e.g. unsupported `type`, empty inline script). In that case, the spec clears the
-            // "parser document" internal slot (and may set force-async) so future mutations/insertion
-            // treat the element like a dynamic script.
+            // WHATWG HTML "prepare the script element" can return early without executing the script
+            // (unsupported `type`, empty inline script, etc), *after* clearing the "parser document"
+            // internal slot and (when appropriate) setting the "force async" flag:
+            // - https://html.spec.whatwg.org/multipage/scripting.html#prepare-a-script
+            // - https://html.spec.whatwg.org/multipage/scripting.html#script-processing-empty
+            //
+            // This is subtle but important: we must apply those internal-slot updates even for
+            // non-executing scripts so later DOM mutation can re-trigger script preparation, and so
+            // the element behaves like a dynamic/async script rather than incorrectly remaining
+            // parser-blocking.
             let should_run = self.mutate_dom(|dom| {
               (
                 crate::js::prepare_script_element_dom2(dom, script, &spec),
