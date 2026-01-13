@@ -154,6 +154,62 @@ enum NumericValue {
   BigInt(GcBigInt),
 }
 
+/// A minimal reference representation used for assignment evaluation.
+///
+/// This intentionally mirrors the interpreter (`exec.rs`) evaluation strategy:
+/// - Evaluate the assignment target *reference* (binding resolution or member base+key) before
+///   evaluating the RHS.
+/// - Preserve observable order for computed member keys (`ToPropertyKey` before RHS).
+/// - Preserve global binding resolution semantics by capturing whether a global property existed at
+///   reference-evaluation time.
+#[derive(Clone, Debug)]
+enum AssignmentReference {
+  Binding(BindingReference),
+  /// A property reference.
+  ///
+  /// Note: per ECMA-262, the reference stores the *base value* (which may be a primitive). Property
+  /// assignment performs `ToObject(base)` for the actual `[[Set]]` operation but uses the original
+  /// base value as the receiver (`this` value) for `[[Set]]`.
+  Property { base: Value, key: PropertyKey },
+}
+
+#[derive(Clone, Debug)]
+enum BindingReference {
+  Declarative { env: GcEnv, name: String },
+  Object { binding_object: GcObject, name: String },
+  GlobalProperty { name: String },
+  Unresolvable { name: String },
+}
+
+impl BindingReference {
+  fn name(&self) -> &str {
+    match self {
+      BindingReference::Declarative { name, .. }
+      | BindingReference::Object { name, .. }
+      | BindingReference::GlobalProperty { name }
+      | BindingReference::Unresolvable { name } => name.as_str(),
+    }
+  }
+
+  fn as_resolved_binding(&self) -> ResolvedBinding<'_> {
+    match self {
+      BindingReference::Declarative { env, name } => ResolvedBinding::Declarative {
+        env: *env,
+        name: name.as_str(),
+      },
+      BindingReference::Object {
+        binding_object,
+        name,
+      } => ResolvedBinding::Object {
+        binding_object: *binding_object,
+        name: name.as_str(),
+      },
+      BindingReference::GlobalProperty { name } => ResolvedBinding::GlobalProperty { name: name.as_str() },
+      BindingReference::Unresolvable { name } => ResolvedBinding::Unresolvable { name: name.as_str() },
+    }
+  }
+}
+
 fn throw_reference_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> Result<VmError, VmError> {
   let intr = vm
     .intrinsics()
@@ -3950,120 +4006,25 @@ impl<'vm> HirEvaluator<'vm> {
         //
         // Destructuring assignment patterns evaluate the RHS first.
         let pat = self.get_pat(body, target)?;
+        match &pat.kind {
+          hir_js::PatKind::Ident(_) | hir_js::PatKind::AssignTarget(_) => {
+            let reference = self.eval_assignment_reference(scope, body, target)?;
 
-        match pat.kind {
-          hir_js::PatKind::Ident(name_id) => {
-            let name = self.resolve_name(name_id)?;
             let mut scope = scope.reborrow();
-
-            let reference = self.env.resolve_binding_reference(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut scope,
-              name.as_str(),
-            )?;
+            self.root_assignment_reference(&mut scope, &reference)?;
 
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-            self.env.set_resolved_binding(
-              self.vm,
-              &mut *self.host,
-              &mut *self.hooks,
-              &mut scope,
-              reference,
-              v,
-              self.strict,
-            )?;
+            self.maybe_set_anonymous_function_name_for_assignment(&mut scope, &reference, v)?;
+            self.put_value_to_assignment_reference(&mut scope, &reference, v)?;
             Ok(v)
           }
-          hir_js::PatKind::AssignTarget(expr_id) => {
-            let target_expr = self.get_expr(body, expr_id)?;
-            match &target_expr.kind {
-              hir_js::ExprKind::Ident(name_id) => {
-                let name = self.resolve_name(*name_id)?;
-                let mut scope = scope.reborrow();
-
-                let reference = self.env.resolve_binding_reference(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut scope,
-                  name.as_str(),
-                )?;
-
-                let v = self.eval_expr(&mut scope, body, value)?;
-                scope.push_root(v)?;
-                self.env.set_resolved_binding(
-                  self.vm,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  &mut scope,
-                  reference,
-                  v,
-                  self.strict,
-                )?;
-                Ok(v)
-              }
-              hir_js::ExprKind::Member(member) => {
-                if member.optional {
-                  // Optional chaining is never a valid assignment target; this should be rejected by
-                  // early errors before execution begins.
-                  return Err(VmError::InvariantViolation(
-                    "optional chaining used in assignment target",
-                  ));
-                }
-
-                let mut scope = scope.reborrow();
-
-                // Evaluate the property reference first (including computed property keys).
-                let base = self.eval_expr(&mut scope, body, member.object)?;
-                scope.push_root(base)?;
-
-                let key = self.eval_object_key(&mut scope, body, &member.property)?;
-                root_property_key(&mut scope, key)?;
-
-                // `AssignmentExpression : LeftHandSideExpression = AssignmentExpression` evaluates
-                // the LHS reference (including `RequireObjectCoercible` for member bases) before
-                // evaluating the RHS. This ensures `null[key()] = rhs()` runs `key()` but does not
-                // evaluate `rhs()`.
-                crate::spec_ops::require_object_coercible(base)?;
-
-                // Evaluate RHS after LHS reference evaluation.
-                let v = self.eval_expr(&mut scope, body, value)?;
-                scope.push_root(v)?;
-
-                let obj = scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, base)?;
-                scope.push_root(Value::Object(obj))?;
-
-                let receiver = base;
-                let ok = crate::spec_ops::internal_set_with_host_and_hooks(
-                  self.vm,
-                  &mut scope,
-                  &mut *self.host,
-                  &mut *self.hooks,
-                  obj,
-                  key,
-                  v,
-                  receiver,
-                )?;
-                if !ok && self.strict {
-                  return Err(VmError::TypeError("Cannot assign to read-only property"));
-                }
-                Ok(v)
-              }
-              _ => Err(VmError::Unimplemented(
-                "assignment target (hir-js compiled path)",
-              )),
-            }
-          }
           _ => {
-            // Destructuring assignment patterns evaluate the RHS first, then perform
-            // `DestructuringAssignmentEvaluation` on the resulting value.
+            // Root the RHS across pattern assignment evaluation in case it allocates and triggers GC.
             let mut scope = scope.reborrow();
             let v = self.eval_expr(&mut scope, body, value)?;
             scope.push_root(v)?;
-            self.assign_pattern(&mut scope, body, target, v)?;
+            self.assign_to_pat(&mut scope, body, target, v)?;
             Ok(v)
           }
         }
@@ -4085,6 +4046,211 @@ impl<'vm> HirEvaluator<'vm> {
       | hir_js::AssignOp::NullishAssign => self.eval_logical_assignment(scope, body, op, target, value),
       _ => Err(VmError::Unimplemented("assignment operator (hir-js compiled path)")),
     }
+  }
+
+  fn eval_assignment_reference(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    target: hir_js::PatId,
+  ) -> Result<AssignmentReference, VmError> {
+    let pat = self.get_pat(body, target)?;
+    match &pat.kind {
+      hir_js::PatKind::Ident(name_id) => self.eval_assignment_binding_reference(scope, *name_id),
+      hir_js::PatKind::AssignTarget(expr_id) => {
+        let target_expr = self.get_expr(body, *expr_id)?;
+        match &target_expr.kind {
+          hir_js::ExprKind::Ident(name_id) => self.eval_assignment_binding_reference(scope, *name_id),
+          hir_js::ExprKind::Member(member) => self.eval_assignment_member_reference(scope, body, member),
+          _ => Err(VmError::Unimplemented(
+            "assignment target (hir-js compiled path)",
+          )),
+        }
+      }
+      _ => Err(VmError::Unimplemented(
+        "assignment pattern (hir-js compiled path)",
+      )),
+    }
+  }
+
+  fn eval_assignment_binding_reference(
+    &mut self,
+    scope: &mut Scope<'_>,
+    name_id: hir_js::NameId,
+  ) -> Result<AssignmentReference, VmError> {
+    let name = self.resolve_name(name_id)?;
+    let reference = self.env.resolve_binding_reference(
+      self.vm,
+      &mut *self.host,
+      &mut *self.hooks,
+      scope,
+      name.as_str(),
+    )?;
+    let owned = match reference {
+      ResolvedBinding::Declarative { env, .. } => BindingReference::Declarative { env, name },
+      ResolvedBinding::Object {
+        binding_object, ..
+      } => BindingReference::Object {
+        binding_object,
+        name,
+      },
+      ResolvedBinding::GlobalProperty { .. } => BindingReference::GlobalProperty { name },
+      ResolvedBinding::Unresolvable { .. } => BindingReference::Unresolvable { name },
+    };
+    Ok(AssignmentReference::Binding(owned))
+  }
+
+  fn eval_assignment_member_reference(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    member: &hir_js::MemberExpr,
+  ) -> Result<AssignmentReference, VmError> {
+    if member.optional {
+      // Optional chaining is never a valid assignment target; this should be rejected by early
+      // errors before execution begins.
+      return Err(VmError::InvariantViolation(
+        "optional chaining used in assignment target",
+      ));
+    }
+
+    let base = self.eval_expr(scope, body, member.object)?;
+
+    let mut scope = scope.reborrow();
+    // Root the base across key evaluation: `ToPropertyKey` can invoke user code and allocate.
+    scope.push_root(base)?;
+    let key = self.eval_object_key(&mut scope, body, &member.property)?;
+    root_property_key(&mut scope, key)?;
+
+    // `RequireObjectCoercible(base)` happens during reference evaluation, *before* the RHS is
+    // evaluated. For computed member expressions, the key has already been evaluated at this point
+    // (per spec).
+    if matches!(base, Value::Null | Value::Undefined) {
+      return Err(VmError::TypeError("Cannot convert undefined or null to object"));
+    }
+
+    Ok(AssignmentReference::Property { base, key })
+  }
+
+  fn root_assignment_reference(
+    &self,
+    scope: &mut Scope<'_>,
+    reference: &AssignmentReference,
+  ) -> Result<(), VmError> {
+    let AssignmentReference::Property { base, key } = reference else {
+      return Ok(());
+    };
+    // Root both base and key together so `push_roots` can treat them as extra roots if growing the
+    // root stack triggers a GC.
+    let roots = [
+      *base,
+      match key {
+        PropertyKey::String(s) => Value::String(*s),
+        PropertyKey::Symbol(s) => Value::Symbol(*s),
+      },
+    ];
+    scope.push_roots(&roots)?;
+    Ok(())
+  }
+
+  fn put_value_to_assignment_reference(
+    &mut self,
+    scope: &mut Scope<'_>,
+    reference: &AssignmentReference,
+    value: Value,
+  ) -> Result<(), VmError> {
+    match reference {
+      AssignmentReference::Binding(reference) => self.env.set_resolved_binding(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        scope,
+        reference.as_resolved_binding(),
+        value,
+        self.strict,
+      ),
+      AssignmentReference::Property { base, key } => {
+        let mut set_scope = scope.reborrow();
+        self.root_assignment_reference(&mut set_scope, reference)?;
+        // Root `value` across `ToObject(base)` in case boxing triggers a GC.
+        set_scope.push_root(value)?;
+        let obj = set_scope.to_object(self.vm, &mut *self.host, &mut *self.hooks, *base)?;
+        set_scope.push_root(Value::Object(obj))?;
+
+        let receiver = *base;
+        let ok = crate::spec_ops::internal_set_with_host_and_hooks(
+          self.vm,
+          &mut set_scope,
+          &mut *self.host,
+          &mut *self.hooks,
+          obj,
+          *key,
+          value,
+          receiver,
+        )?;
+        if ok {
+          Ok(())
+        } else if self.strict {
+          Err(VmError::TypeError("Cannot assign to read-only property"))
+        } else {
+          Ok(())
+        }
+      }
+    }
+  }
+
+  fn maybe_set_anonymous_function_name_for_assignment(
+    &mut self,
+    scope: &mut Scope<'_>,
+    reference: &AssignmentReference,
+    value: Value,
+  ) -> Result<(), VmError> {
+    let Value::Object(func_obj) = value else {
+      return Ok(());
+    };
+
+    // `SetFunctionName` only applies to actual Function objects. Callable Proxies are callable, but
+    // are not function objects and should not have their `name` mutated.
+    let (current_name, is_native_non_constructable) = match scope.heap().get_function(func_obj) {
+      Ok(f) => (
+        f.name,
+        matches!(f.call, crate::function::CallHandler::Native(_)) && f.construct.is_none(),
+      ),
+      Err(VmError::NotCallable) => return Ok(()),
+      Err(err) => return Err(err),
+    };
+
+    // Name inference only applies to "anonymous function definitions" (ECMA-262), which excludes
+    // anonymous built-in/native functions such as Promise combinator element callbacks.
+    //
+    // `vm-js` represents user-defined class constructors as native functions (so they can throw
+    // when called without `new`), so keep name inference enabled for constructable native
+    // functions.
+    if is_native_non_constructable {
+      return Ok(());
+    }
+    if !scope
+      .heap()
+      .get_string(current_name)?
+      .as_code_units()
+      .is_empty()
+    {
+      return Ok(());
+    }
+
+    let key = match reference {
+      AssignmentReference::Binding(name_ref) => {
+        // Root the allocated key string: `set_function_name` may allocate and trigger GC while
+        // pushing its own roots.
+        let name_s = scope.alloc_string(name_ref.name())?;
+        scope.push_root(Value::String(name_s))?;
+        PropertyKey::String(name_s)
+      }
+      AssignmentReference::Property { key, .. } => *key,
+    };
+
+    crate::function_properties::set_function_name(scope, func_obj, key, None)?;
+    Ok(())
   }
 
   fn eval_compound_assignment(

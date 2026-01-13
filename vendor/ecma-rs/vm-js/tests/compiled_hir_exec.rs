@@ -1586,6 +1586,90 @@ fn compiled_simple_assignment_evaluates_member_base_before_rhs() -> Result<(), V
   Ok(())
 }
 
+#[test]
+fn compiled_assignment_evaluates_lhs_before_rhs() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){
+        let log = "";
+        function key(){ log += "k"; return "x"; }
+        function rhs(){ log += "r"; return 1; }
+        let o = {};
+        o[key()] = rhs();
+        return log;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("kr")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
+fn compiled_assignment_sets_anonymous_function_name_for_binding() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){
+        let g;
+        g = function(){};
+        return g.name;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("g")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
+#[test]
+fn compiled_assignment_sets_anonymous_function_name_for_property() -> Result<(), VmError> {
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let vm = Vm::new(VmOptions::default());
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){
+        let o = {};
+        o.h = function(){};
+        return o.h.name;
+      }
+      f();
+    "#,
+  )?;
+  let result = rt.exec_compiled_script(script)?;
+
+  let mut scope = rt.heap.scope();
+  scope.push_root(result)?;
+  let expected = scope.alloc_string("h")?;
+  assert!(result.same_value(Value::String(expected), scope.heap()));
+  Ok(())
+}
+
 fn proxy_get_trap(
   _vm: &mut Vm,
   _scope: &mut vm_js::Scope<'_>,
