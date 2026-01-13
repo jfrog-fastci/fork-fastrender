@@ -1477,6 +1477,55 @@ impl Document {
       }
     }
   }
+
+  /// Live range "replace data" steps.
+  ///
+  /// Updates boundary-point offsets for all live ranges when a `CharacterData` node's data is
+  /// replaced via the DOM "replace data" primitive (used by `CharacterData.deleteData`,
+  /// `CharacterData.replaceData`, and the `data` setter).
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#concept-cd-replace (steps 8–11).
+  pub(super) fn live_range_replace_data_steps(
+    &mut self,
+    node: NodeId,
+    offset: usize,
+    removed_len: usize,
+    inserted_len: usize,
+  ) {
+    // Fast path: no live ranges.
+    if self.ranges.is_empty() {
+      return;
+    }
+
+    let end = offset + removed_len;
+
+    for range in &mut self.ranges {
+      if range.start.node == node {
+        if range.start.offset > offset && range.start.offset <= end {
+          range.start.offset = offset;
+        } else if range.start.offset > end {
+          // increase by inserted_len and decrease by removed_len
+          range.start.offset = range
+            .start
+            .offset
+            .saturating_sub(removed_len)
+            .saturating_add(inserted_len);
+        }
+      }
+
+      if range.end.node == node {
+        if range.end.offset > offset && range.end.offset <= end {
+          range.end.offset = offset;
+        } else if range.end.offset > end {
+          range.end.offset = range
+            .end
+            .offset
+            .saturating_sub(removed_len)
+            .saturating_add(inserted_len);
+        }
+      }
+    }
+  }
 }
 
 #[cfg(test)]

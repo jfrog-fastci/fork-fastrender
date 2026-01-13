@@ -1137,7 +1137,7 @@ impl Document {
 
     // Comments are currently ignored by renderer DOM snapshots, so treat comment data changes as
     // non-render-affecting. Still queue MutationObserver CharacterData records so observers and
-    // future live-mutation hooks (e.g. Range/NodeIterator) observe the update.
+    // future live-mutation hooks observe the update.
     let _ = self.queue_mutation_record_character_data(node_id, Some(old_value));
     Ok(true)
   }

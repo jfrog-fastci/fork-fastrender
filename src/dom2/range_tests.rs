@@ -891,3 +891,62 @@ fn range_to_string_matches_dom_stringifier_expectations() {
   doc.range_set_end(range, last_text, 4).unwrap();
   assert_eq!(doc.range_to_string(range).unwrap(), "div\nAnother div\nLast");
 }
+
+#[test]
+fn live_range_replace_data_deletion_clamps_and_shifts_offsets() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let t = doc.create_text("abcdef"); // UTF-16 length = 6
+
+  // Delete 2 code units starting at offset 2 ("cd").
+  let offset = 2usize;
+  let count = 2usize;
+
+  // Range whose start/end offsets are inside the deleted segment (including the end boundary).
+  let r_inside = doc.create_range();
+  doc.range_set_start(r_inside, t, 3).unwrap();
+  doc.range_set_end(r_inside, t, 4).unwrap();
+
+  // Range whose start is exactly at the deletion boundary, and end is at the segment end.
+  let r_boundary = doc.create_range();
+  doc.range_set_start(r_boundary, t, 2).unwrap();
+  doc.range_set_end(r_boundary, t, 4).unwrap();
+
+  // Range entirely after the deleted segment should shift left by `count`.
+  let r_after = doc.create_range();
+  doc.range_set_start(r_after, t, 5).unwrap();
+  doc.range_set_end(r_after, t, 6).unwrap();
+
+  assert!(doc.replace_data(t, offset, count, "").unwrap());
+  assert_eq!(doc.text_data(t).unwrap(), "abef");
+
+  assert_eq!(doc.range_start_container(r_inside).unwrap(), t);
+  assert_eq!(doc.range_end_container(r_inside).unwrap(), t);
+  assert_eq!(doc.range_start_offset(r_inside).unwrap(), offset);
+  assert_eq!(doc.range_end_offset(r_inside).unwrap(), offset);
+
+  assert_eq!(doc.range_start_offset(r_boundary).unwrap(), offset);
+  assert_eq!(doc.range_end_offset(r_boundary).unwrap(), offset);
+
+  assert_eq!(doc.range_start_offset(r_after).unwrap(), 3);
+  assert_eq!(doc.range_end_offset(r_after).unwrap(), 4);
+}
+
+#[test]
+fn live_range_replace_data_insertion_shifts_by_utf16_code_units() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let t = doc.create_text("abcd"); // UTF-16 length = 4
+
+  let r = doc.create_range();
+  doc.range_set_start(r, t, 4).unwrap();
+  doc.range_set_end(r, t, 4).unwrap();
+
+  // Insert a single emoji (UTF-16 length 2) at offset 2.
+  assert!(doc.replace_data(t, 2, 0, "😀").unwrap());
+  assert_eq!(doc.text_data(t).unwrap(), "ab😀cd");
+
+  assert_eq!(doc.range_start_container(r).unwrap(), t);
+  assert_eq!(doc.range_end_container(r).unwrap(), t);
+  // End of text shifts by +2 code units.
+  assert_eq!(doc.range_start_offset(r).unwrap(), 6);
+  assert_eq!(doc.range_end_offset(r).unwrap(), 6);
+}
