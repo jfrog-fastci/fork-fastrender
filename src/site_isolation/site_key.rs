@@ -48,6 +48,15 @@ pub enum SiteKey {
   Opaque(u64),
 }
 
+impl SiteKey {
+  /// Convenience helper for deriving a site key from a parsed URL for a top-level navigation.
+  ///
+  /// This is equivalent to `site_key_for_navigation(url.as_str(), None)`.
+  pub fn from_url(url: &Url) -> Self {
+    site_key_for_navigation(url.as_str(), None)
+  }
+}
+
 impl fmt::Display for SiteKey {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {

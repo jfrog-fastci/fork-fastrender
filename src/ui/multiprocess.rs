@@ -256,6 +256,42 @@ pub struct TabState {
 pub enum RendererToBrowser {
   /// A renderer event scoped to a specific frame.
   FrameReady { frame_id: FrameId },
+  NavigationCommitted { frame_id: FrameId },
+  NavigationFailed { frame_id: FrameId },
+  SubframesDiscovered { parent_frame_id: FrameId },
+  InputAck { frame_id: FrameId },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererToBrowserKind {
+  FrameReady,
+  NavigationCommitted,
+  NavigationFailed,
+  SubframesDiscovered,
+  InputAck,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameOwnershipViolation {
+  UnknownFrame { frame_id: FrameId },
+  NotOwner {
+    frame_id: FrameId,
+    expected: Option<RendererProcessId>,
+    actual: RendererProcessId,
+  },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultiprocessSecurityEvent {
+  ProtocolViolation {
+    process_id: RendererProcessId,
+    frame_id: FrameId,
+    message: RendererToBrowserKind,
+    violation: FrameOwnershipViolation,
+  },
+  ProcessTerminated {
+    process_id: RendererProcessId,
+  },
 }
 
 /// Deterministic browser-side model of tabs/frames hosted in shared renderer processes.
@@ -264,6 +300,7 @@ pub struct MultiprocessBrowser {
   process_registry: RendererProcessRegistry,
   tabs: HashMap<TabId, TabState>,
   frames: HashMap<FrameId, FrameState>,
+  security_events: Vec<MultiprocessSecurityEvent>,
 }
 
 impl MultiprocessBrowser {
@@ -309,6 +346,13 @@ impl MultiprocessBrowser {
 
   pub fn process_attached_frames(&self, process_id: RendererProcessId) -> Vec<FrameId> {
     self.process_registry.attached_frames(process_id)
+  }
+
+  /// Returns and clears any recorded multiprocess security events.
+  ///
+  /// These are primarily intended for tests that want to assert protocol-violation handling.
+  pub fn take_security_events(&mut self) -> Vec<MultiprocessSecurityEvent> {
+    std::mem::take(&mut self.security_events)
   }
 
   /// Create a new tab and root frame for the provided URL.
@@ -369,10 +413,25 @@ impl MultiprocessBrowser {
 
     match msg {
       RendererToBrowser::FrameReady { frame_id } => {
-        let Some(frame) = self.frames.get(&frame_id) else {
-          return false;
-        };
-        frame.process == Some(process_id)
+        self.validate_frame_message(process_id, frame_id, RendererToBrowserKind::FrameReady)
+      }
+      RendererToBrowser::NavigationCommitted { frame_id } => self.validate_frame_message(
+        process_id,
+        frame_id,
+        RendererToBrowserKind::NavigationCommitted,
+      ),
+      RendererToBrowser::NavigationFailed { frame_id } => self.validate_frame_message(
+        process_id,
+        frame_id,
+        RendererToBrowserKind::NavigationFailed,
+      ),
+      RendererToBrowser::SubframesDiscovered { parent_frame_id } => self.validate_frame_message(
+        process_id,
+        parent_frame_id,
+        RendererToBrowserKind::SubframesDiscovered,
+      ),
+      RendererToBrowser::InputAck { frame_id } => {
+        self.validate_frame_message(process_id, frame_id, RendererToBrowserKind::InputAck)
       }
     }
   }
@@ -433,5 +492,120 @@ impl MultiprocessBrowser {
         tab.crashed = true;
       }
     }
+  }
+
+  fn validate_frame_message(
+    &mut self,
+    process_id: RendererProcessId,
+    frame_id: FrameId,
+    kind: RendererToBrowserKind,
+  ) -> bool {
+    let Some(frame) = self.frames.get(&frame_id) else {
+      self.protocol_violation(
+        process_id,
+        frame_id,
+        kind,
+        FrameOwnershipViolation::UnknownFrame { frame_id },
+      );
+      return false;
+    };
+
+    if frame.process == Some(process_id) {
+      return true;
+    }
+
+    self.protocol_violation(
+      process_id,
+      frame_id,
+      kind,
+      FrameOwnershipViolation::NotOwner {
+        frame_id,
+        expected: frame.process,
+        actual: process_id,
+      },
+    );
+    false
+  }
+
+  fn protocol_violation(
+    &mut self,
+    process_id: RendererProcessId,
+    frame_id: FrameId,
+    message: RendererToBrowserKind,
+    violation: FrameOwnershipViolation,
+  ) {
+    self.security_events.push(MultiprocessSecurityEvent::ProtocolViolation {
+      process_id,
+      frame_id,
+      message,
+      violation,
+    });
+    self.crash_process(process_id);
+    self
+      .security_events
+      .push(MultiprocessSecurityEvent::ProcessTerminated { process_id });
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn protocol_violation_kills_renderer_process() {
+    let mut browser = MultiprocessBrowser::new();
+
+    let tab_a = browser.open_tab("https://a.example/").expect("open tab a");
+    let tab_b = browser.open_tab("https://b.example/").expect("open tab b");
+
+    let proc_a = browser.process_for_tab(tab_a).expect("proc a");
+    let proc_b = browser.process_for_tab(tab_b).expect("proc b");
+    assert_ne!(proc_a, proc_b, "tabs from different SiteKeys should not share a process");
+
+    let frame_a = browser.root_frame(tab_a).expect("root frame a");
+    let frame_b = browser.root_frame(tab_b).expect("root frame b");
+
+    // Attacker: process A attempts to send FrameReady for frame B.
+    assert!(
+      !browser.handle_renderer_message(proc_a, RendererToBrowser::FrameReady { frame_id: frame_b }),
+      "expected spoofed FrameReady to be rejected"
+    );
+    assert!(
+      !browser.process_is_alive(proc_a),
+      "expected protocol violation to terminate offending process"
+    );
+    assert!(
+      browser.tab_is_crashed(tab_a),
+      "expected tab A to be marked crashed when its renderer is terminated"
+    );
+    assert!(
+      !browser.tab_is_crashed(tab_b),
+      "expected unrelated tab B to remain live"
+    );
+    assert!(
+      browser.process_is_alive(proc_b),
+      "expected unrelated renderer process to remain alive"
+    );
+    assert!(
+      browser.handle_renderer_message(proc_b, RendererToBrowser::FrameReady { frame_id: frame_b }),
+      "expected honest process to still be able to send messages"
+    );
+
+    let events = browser.take_security_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        MultiprocessSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          ..
+        } if *process_id == proc_a && *frame_id == frame_b
+      )),
+      "expected protocol violation event to be recorded (events={events:?})"
+    );
+
+    // Root frame A should now be crashed.
+    assert!(browser.frame_is_crashed(frame_a));
   }
 }
