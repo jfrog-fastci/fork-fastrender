@@ -5340,7 +5340,26 @@ fn location_pathname_set_native(
   let Some(mut url) = parse_location_url(scope, location_obj)? else {
     return Ok(Value::Undefined);
   };
-  url.set_path(&pathname);
+
+  // The WHATWG URL parser treats `?`/`#` as query/fragment delimiters when parsing a path input.
+  // `url::Url::set_path` percent-encodes these code points instead, so split them ourselves to
+  // preserve delimiter semantics (mirrors `WebUrl::set_search`).
+  let (path_and_query, fragment) = match pathname.split_once('#') {
+    Some((before, fragment)) => (before, Some(fragment)),
+    None => (pathname.as_str(), None),
+  };
+  let (path, query) = match path_and_query.split_once('?') {
+    Some((path, query)) => (path, Some(query)),
+    None => (path_and_query, None),
+  };
+
+  url.set_path(path);
+  if let Some(query) = query {
+    url.set_query(Some(query));
+  }
+  if let Some(fragment) = fragment {
+    url.set_fragment(Some(fragment));
+  }
   let new_href = url.to_string();
   let new_href_s = scope.alloc_string(&new_href)?;
   request_location_navigation(
@@ -51539,6 +51558,31 @@ mod tests {
     realm.reset_interrupt();
     let href_v = realm.exec_script("location.href")?;
     assert_eq!(get_string(realm.heap(), href_v), req.url);
+    let search_v = realm.exec_script("location.search")?;
+    assert_eq!(get_string(realm.heap(), search_v), "?y=2");
+    let hash_v = realm.exec_script("location.hash")?;
+    assert_eq!(get_string(realm.heap(), hash_v), "#new");
+    Ok(())
+  }
+
+  #[test]
+  fn location_pathname_set_updates_query_and_hash_requests_navigation() -> Result<(), VmError> {
+    let mut realm = new_realm(WindowRealmConfig::new(
+      "https://example.invalid:8443/path?x=1#h",
+    ))?;
+    assert!(realm
+      .exec_script("location.pathname = '/next?y=2#new'; 1 + 2")
+      .is_err());
+    let req = realm
+      .take_pending_navigation_request()
+      .expect("expected pending navigation request");
+    assert_eq!(req.url, "https://example.invalid:8443/next?y=2#new");
+    assert_eq!(req.replace, false);
+    realm.reset_interrupt();
+    let href_v = realm.exec_script("location.href")?;
+    assert_eq!(get_string(realm.heap(), href_v), req.url);
+    let pathname_v = realm.exec_script("location.pathname")?;
+    assert_eq!(get_string(realm.heap(), pathname_v), "/next");
     let search_v = realm.exec_script("location.search")?;
     assert_eq!(get_string(realm.heap(), search_v), "?y=2");
     let hash_v = realm.exec_script("location.hash")?;
