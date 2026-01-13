@@ -4418,6 +4418,93 @@ fn compiled_strict_block_function_decls_are_block_scoped() -> Result<(), VmError
 }
 
 #[test]
+fn compiled_sloppy_block_function_decls_do_not_initialize_when_not_executed() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        if (false) {
+          function g() { return 1; }
+        }
+        return typeof g;
+      }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined");
+  Ok(())
+}
+
+#[test]
+fn compiled_sloppy_block_function_decls_update_var_binding_when_executed() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f() {
+        let before = typeof g;
+        if (true) { function g() { return 1; } }
+        let after = typeof g;
+        return before + "," + after;
+      }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined,function");
+  Ok(())
+}
+
+#[test]
+fn compiled_sloppy_switch_case_function_decl_not_executed_leaves_undefined() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(x) {
+        switch (x) {
+          case 0:
+            function g() { return 1; }
+            break;
+        }
+        if (x === 0) return g();
+        return typeof g;
+      }
+      f(1) + "," + f(0)
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  let Value::String(s) = result else {
+    panic!("expected string, got {result:?}");
+  };
+  assert_eq!(rt.heap().get_string(s)?.to_utf8_lossy(), "undefined,1");
+  Ok(())
+}
+
+#[test]
 fn compiled_nested_function_use_strict_directive_is_detected() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));

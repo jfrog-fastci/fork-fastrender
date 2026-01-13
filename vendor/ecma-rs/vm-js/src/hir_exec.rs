@@ -1041,6 +1041,16 @@ impl<'vm> HirEvaluator<'vm> {
     body: &hir_js::Body,
     stmts: &[hir_js::StmtId],
   ) -> Result<(), VmError> {
+    self.instantiate_function_decls_in_stmt_list(scope, body, stmts, /* in_stmt_list */ true)
+  }
+
+  fn instantiate_function_decls_in_stmt_list(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+    in_stmt_list: bool,
+  ) -> Result<(), VmError> {
     for stmt_id in stmts {
       self.vm.tick()?;
       let stmt = self.get_stmt(body, *stmt_id)?;
@@ -1063,12 +1073,67 @@ impl<'vm> HirEvaluator<'vm> {
             continue;
           }
           let name = self.resolve_name(def.name)?;
+          let name_str = name.as_str();
+          let span_start = def.span.start;
+          let span_end = def.span.end;
+
+          // Strict mode: only top-level function declarations are var-scoped.
+          //
+          // Block-scoped function declarations are instantiated at block/switch entry in a fresh
+          // lexical environment (see `instantiate_block_scoped_function_decls_in_stmt_list`).
+          if self.strict {
+            let func_obj = self.alloc_user_function_object(
+              scope,
+              body_id,
+              span_start,
+              span_end,
+              name_str,
+              /* is_arrow */ false,
+              /* is_constructable */ true,
+              EcmaFunctionKind::Decl,
+              /* name_binding */ None,
+            )?;
+            // Root the function object while assigning into the environment.
+            let mut assign_scope = scope.reborrow();
+            assign_scope.push_root(Value::Object(func_obj))?;
+            self.env.set_var(
+              self.vm,
+              &mut *self.host,
+              &mut *self.hooks,
+              &mut assign_scope,
+              name_str,
+              Value::Object(func_obj),
+            )?;
+            continue;
+          }
+
+          // Non-strict mode: Annex B block-level function declarations behave like `var` bindings
+          // (function-scoped), but are initialized only when their containing statement list is
+          // evaluated.
+          //
+          // We approximate that by:
+          // - Declaring the var binding up-front during instantiation (so `typeof f` before the
+          //   block runs is `"undefined"` instead of ReferenceError).
+          // - Deferring function object creation/assignment to statement-list evaluation time.
+          if !in_stmt_list {
+            let eligible = match decl_body.function.as_ref() {
+              None => true,
+              Some(meta) => !meta.async_ && !meta.generator,
+            };
+            if eligible {
+              self.env.declare_var(self.vm, scope, name_str)?;
+              continue;
+            }
+          }
+
+          // Top-level (function/script body) function declarations are initialized during
+          // instantiation so they can be called before their declaration statement executes.
           let func_obj = self.alloc_user_function_object(
             scope,
             body_id,
-            def.span.start,
-            def.span.end,
-            name.as_str(),
+            span_start,
+            span_end,
+            name_str,
             /* is_arrow */ false,
             /* is_constructable */ true,
             EcmaFunctionKind::Decl,
@@ -1082,54 +1147,52 @@ impl<'vm> HirEvaluator<'vm> {
             &mut *self.host,
             &mut *self.hooks,
             &mut assign_scope,
-            name.as_str(),
+            name_str,
             Value::Object(func_obj),
           )?;
         }
-        // Strict mode: only top-level function declarations are var-scoped.
-        //
-        // Block-scoped function declarations are instantiated at block/switch entry in a fresh
-        // lexical environment (see `instantiate_block_scoped_function_decls_in_stmt_list`).
         _ if self.strict => {}
-        // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
+        // Non-strict mode: collect nested function declarations for var-binding creation, but do not
+        // initialize them until their containing statement list executes.
         hir_js::StmtKind::Block(inner) => {
-          self.instantiate_function_decls(scope, body, inner.as_slice())?;
+          self.instantiate_function_decls_in_stmt_list(scope, body, inner.as_slice(), false)?;
         }
         hir_js::StmtKind::If {
           consequent,
           alternate,
           ..
         } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(consequent))?;
+          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(consequent), false)?;
           if let Some(alt) = alternate {
-            self.instantiate_function_decls(scope, body, std::slice::from_ref(alt))?;
+            self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(alt), false)?;
           }
         }
         hir_js::StmtKind::While { body: inner, .. }
         | hir_js::StmtKind::DoWhile { body: inner, .. }
+        | hir_js::StmtKind::ForIn { body: inner, .. }
         | hir_js::StmtKind::Labeled { body: inner, .. }
         | hir_js::StmtKind::With { body: inner, .. } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner))?;
+          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(inner), false)?;
         }
         hir_js::StmtKind::For { body: inner, .. } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(inner))?;
+          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(inner), false)?;
         }
         hir_js::StmtKind::Try {
           block,
           catch,
           finally_block,
         } => {
-          self.instantiate_function_decls(scope, body, std::slice::from_ref(block))?;
+          self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(block), false)?;
           if let Some(catch) = catch {
-            self.instantiate_function_decls(scope, body, std::slice::from_ref(&catch.body))?;
+            self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(&catch.body), false)?;
           }
           if let Some(finally_block) = finally_block {
-            self.instantiate_function_decls(scope, body, std::slice::from_ref(finally_block))?;
+            self.instantiate_function_decls_in_stmt_list(scope, body, std::slice::from_ref(finally_block), false)?;
           }
         }
         hir_js::StmtKind::Switch { cases, .. } => {
           for case in cases {
-            self.instantiate_function_decls(scope, body, case.consequent.as_slice())?;
+            self.instantiate_function_decls_in_stmt_list(scope, body, case.consequent.as_slice(), false)?;
           }
         }
         _ => {}
@@ -1270,6 +1333,73 @@ impl<'vm> HirEvaluator<'vm> {
     Ok(())
   }
 
+  fn instantiate_sloppy_function_decls_in_stmt_list(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    stmts: &[hir_js::StmtId],
+  ) -> Result<(), VmError> {
+    if self.strict {
+      return Ok(());
+    }
+    for stmt_id in stmts {
+      // Tick per statement list entry so blocks with many declarations still consume fuel even if
+      // their bodies do no other work.
+      self.vm.tick()?;
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
+        continue;
+      };
+      let def = self
+        .hir()
+        .def(*def_id)
+        .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+      let Some(body_id) = def.body else {
+        continue;
+      };
+      let decl_body = self.get_body(body_id)?;
+      if decl_body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      // Only ordinary (non-async, non-generator) function declarations participate in Annex B
+      // block-level var-scoping.
+      if decl_body
+        .function
+        .as_ref()
+        .is_some_and(|meta| meta.async_ || meta.generator)
+      {
+        continue;
+      }
+
+      let name = self.resolve_name(def.name)?;
+      let name_str = name.as_str();
+      let func_obj = self.alloc_user_function_object(
+        scope,
+        body_id,
+        def.span.start,
+        def.span.end,
+        name_str,
+        /* is_arrow */ false,
+        /* is_constructable */ true,
+        EcmaFunctionKind::Decl,
+        /* name_binding */ None,
+      )?;
+
+      // Root the function object while assigning into the environment.
+      let mut assign_scope = scope.reborrow();
+      assign_scope.push_root(Value::Object(func_obj))?;
+      self.env.set_var(
+        self.vm,
+        &mut *self.host,
+        &mut *self.hooks,
+        &mut assign_scope,
+        name_str,
+        Value::Object(func_obj),
+      )?;
+    }
+    Ok(())
+  }
+
   fn eval_stmt_list(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1354,6 +1484,7 @@ impl<'vm> HirEvaluator<'vm> {
             block_env,
             stmts.as_slice(),
           )?;
+          self.instantiate_sloppy_function_decls_in_stmt_list(scope, body, stmts.as_slice())?;
           self.eval_stmt_list(scope, body, stmts.as_slice())
         })();
         self.env.set_lexical_env(scope.heap_mut(), prev);
@@ -1366,8 +1497,14 @@ impl<'vm> HirEvaluator<'vm> {
       } => {
         let test_value = self.eval_expr(scope, body, *test)?;
         if scope.heap().to_boolean(test_value)? {
+          self.instantiate_sloppy_function_decls_in_stmt_list(
+            scope,
+            body,
+            std::slice::from_ref(consequent),
+          )?;
           self.eval_stmt(scope, body, *consequent)
         } else if let Some(alt) = alternate {
+          self.instantiate_sloppy_function_decls_in_stmt_list(scope, body, std::slice::from_ref(alt))?;
           self.eval_stmt(scope, body, *alt)
         } else {
           Ok(Flow::empty())
@@ -1387,7 +1524,11 @@ impl<'vm> HirEvaluator<'vm> {
           if !scope.heap().to_boolean(test_value)? {
             return Ok(Flow::normal(v));
           }
-
+          self.instantiate_sloppy_function_decls_in_stmt_list(
+            &mut scope,
+            body,
+            std::slice::from_ref(inner),
+          )?;
           let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
           match stmt_result {
             Flow::Normal(_) | Flow::Continue(None, _) => {}
@@ -1410,7 +1551,11 @@ impl<'vm> HirEvaluator<'vm> {
 
         loop {
           self.vm.tick()?;
-
+          self.instantiate_sloppy_function_decls_in_stmt_list(
+            &mut scope,
+            body,
+            std::slice::from_ref(inner),
+          )?;
           let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
           match stmt_result {
             Flow::Normal(_) | Flow::Continue(None, _) => {}
@@ -1504,6 +1649,11 @@ impl<'vm> HirEvaluator<'vm> {
                 }
               }
 
+              self.instantiate_sloppy_function_decls_in_stmt_list(
+                &mut scope,
+                body,
+                std::slice::from_ref(inner),
+              )?;
               let body_result = self.eval_stmt(&mut scope, body, *inner)?;
               match body_result {
                 Flow::Normal(_) | Flow::Continue(None, _) => {}
@@ -1554,6 +1704,11 @@ impl<'vm> HirEvaluator<'vm> {
             }
           }
 
+          self.instantiate_sloppy_function_decls_in_stmt_list(
+            &mut scope,
+            body,
+            std::slice::from_ref(inner),
+          )?;
           let stmt_result = self.eval_stmt(&mut scope, body, *inner)?;
           match stmt_result {
             Flow::Normal(_) | Flow::Continue(None, _) => {}
@@ -1671,7 +1826,14 @@ impl<'vm> HirEvaluator<'vm> {
               }
             }
 
-            let flow = match self.eval_stmt(&mut iter_scope, body, *inner) {
+            let flow = match (|| {
+              self.instantiate_sloppy_function_decls_in_stmt_list(
+                &mut iter_scope,
+                body,
+                std::slice::from_ref(inner),
+              )?;
+              self.eval_stmt(&mut iter_scope, body, *inner)
+            })() {
               Ok(f) => f,
               Err(err) => {
                 if iter_env.is_some() {
@@ -1803,7 +1965,14 @@ impl<'vm> HirEvaluator<'vm> {
               return Err(err);
             }
 
-            let flow = match self.eval_stmt(&mut iter_scope, body, *inner) {
+            let flow = match (|| {
+              self.instantiate_sloppy_function_decls_in_stmt_list(
+                &mut iter_scope,
+                body,
+                std::slice::from_ref(inner),
+              )?;
+              self.eval_stmt(&mut iter_scope, body, *inner)
+            })() {
               Ok(f) => f,
               Err(err) => {
                 if iter_env.is_some() {
@@ -1923,6 +2092,11 @@ impl<'vm> HirEvaluator<'vm> {
               if case_idx % CASE_TICK_EVERY == 0 {
                 self.vm.tick()?;
               }
+              self.instantiate_sloppy_function_decls_in_stmt_list(
+                &mut switch_scope,
+                body,
+                case.consequent.as_slice(),
+              )?;
               for stmt_id in &case.consequent {
                 let stmt_result = self.eval_stmt(&mut switch_scope, body, *stmt_id)?;
                 match stmt_result {
@@ -2131,6 +2305,7 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::StmtKind::Labeled { label, body: inner } => {
         let mut new_label_set: Vec<hir_js::NameId> = label_set.to_vec();
         new_label_set.push(*label);
+        self.instantiate_sloppy_function_decls_in_stmt_list(scope, body, std::slice::from_ref(inner))?;
         let flow = self.eval_stmt_labelled(scope, body, *inner, new_label_set.as_slice())?;
         match flow {
           Flow::Break(Some(target), value) if target == *label => Ok(Flow::Normal(value)),
@@ -2169,7 +2344,14 @@ impl<'vm> HirEvaluator<'vm> {
         let with_env = with_scope.alloc_object_env_record(binding_object, Some(outer), true)?;
         self.env.set_lexical_env(with_scope.heap_mut(), with_env);
 
-        let result = self.eval_stmt_labelled(&mut with_scope, body, *inner, label_set);
+        let result = (|| {
+          self.instantiate_sloppy_function_decls_in_stmt_list(
+            &mut with_scope,
+            body,
+            std::slice::from_ref(inner),
+          )?;
+          self.eval_stmt_labelled(&mut with_scope, body, *inner, label_set)
+        })();
 
         // Always restore the outer lexical environment so later statements run in the correct
         // scope.
