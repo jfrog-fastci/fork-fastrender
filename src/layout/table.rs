@@ -3414,9 +3414,11 @@ fn collect_source_rows<'a>(table_box: &'a BoxNode) -> Vec<&'a BoxNode> {
 }
 
 /// Computes the grid line centers and item start offsets for the collapsed border model.
-/// Line widths are centered on the grid lines; outer lines contribute half their width to
-/// the measured extent so the remaining half may spill into the table's margin area
-/// (CSS 2.1 §17.6.2).
+///
+/// Line widths are centered on the grid lines. `padding_start` / `padding_end` control where the
+/// first/last grid line centers sit relative to the fragment origin (e.g. for collapsed-border
+/// tables we pass half of the baseline outer border widths so the fragment origin aligns with the
+/// baseline outer border paint edge; CSS 2.1 §17.6.2).
 fn collapsed_line_positions(
   sizes: &[f32],
   line_widths: &[f32],
@@ -4369,18 +4371,16 @@ fn build_table_collapsed_borders_metadata(
   // - `column_line_pos` / `row_line_pos` are **grid line center** coordinates in the table
   //   fragment's local space (i.e. relative to the table fragment origin). These are the same
   //   coordinates used when positioning child cell fragments.
-  // - In the collapsed-border model the table fragment is sized/positioned in terms of the *outer*
-  //   grid line centers (CSS 2.1 §17.6.2), so border strokes can legitimately extend outside the
-  //   table fragment rect.
+  // - For collapsed-border tables, the fragment origin is aligned with the **baseline outer border
+  //   paint edge** (CSS 2.1 §17.6.2), so the outer grid line centers are inset by half of the
+  //   baseline outer border widths.
   // - `vertical_line_max` / `horizontal_line_max` are the **layout baseline** line widths: the
   //   widths that were used to position the grid in layout. In particular, the outer left/right
   //   edges are based on the first row per §17.6.2.
   //
   // Baseline-vs-spill:
-  // - Border strokes are centered on grid lines. Layout therefore accounts for only *half* of the
-  //   baseline outer border on each side; the remaining half paints outside the fragment (into the
-  //   margin area).
-  // - Later rows/columns can still resolve thicker winning *outer-edge* segments than the baseline
+  // - Border strokes are centered on grid lines.
+  // - Later rows/columns can resolve thicker winning *outer-edge* segments than the baseline
   //   without affecting layout. When that happens, the inside edge of the grid must not move
   //   (otherwise the table would "widen"); instead the extra thickness is painted on the outside
   //   (spills outward into the margin). See the paint-time `inside` clamping in
@@ -4391,31 +4391,51 @@ fn build_table_collapsed_borders_metadata(
   // corner joins). It may extend outside the table fragment rect (including into negative
   // coordinates on the start edges) and must not be clamped during display list build/culling,
   // otherwise thick outer-edge winners can be clipped.
-  let mut outer_left_half = 0.0f32;
-  let mut outer_right_half = 0.0f32;
+  //
+  // This must stay in sync with the paint-time `inside` clamping in `render_table_collapsed_borders`.
+  let baseline_left = vertical_line_max.first().copied().unwrap_or(0.0);
+  let baseline_right = vertical_line_max
+    .get(structure.column_count)
+    .copied()
+    .unwrap_or(0.0);
+  let mut outer_left_outward = 0.0f32;
+  let mut outer_right_outward = 0.0f32;
   if let (Some(left), Some(right)) = (
     collapsed_borders.vertical.first(),
     collapsed_borders.vertical.get(structure.column_count),
   ) {
     for row in 0..structure.row_count {
       check_layout_deadline(&mut deadline_counter)?;
-      outer_left_half = outer_left_half.max(left.get(row).map(|b| b.width * 0.5).unwrap_or(0.0));
-      outer_right_half =
-        outer_right_half.max(right.get(row).map(|b| b.width * 0.5).unwrap_or(0.0));
+      let left_width = left.get(row).map(|b| b.width).unwrap_or(0.0);
+      let left_inside = (left_width.min(baseline_left)) * 0.5;
+      outer_left_outward = outer_left_outward.max(left_width - left_inside);
+
+      let right_width = right.get(row).map(|b| b.width).unwrap_or(0.0);
+      let right_inside = (right_width.min(baseline_right)) * 0.5;
+      outer_right_outward = outer_right_outward.max(right_width - right_inside);
     }
   }
 
-  let mut outer_top_half = 0.0f32;
-  let mut outer_bottom_half = 0.0f32;
+  let baseline_top = horizontal_line_max.first().copied().unwrap_or(0.0);
+  let baseline_bottom = horizontal_line_max
+    .get(structure.row_count)
+    .copied()
+    .unwrap_or(0.0);
+  let mut outer_top_outward = 0.0f32;
+  let mut outer_bottom_outward = 0.0f32;
   if let (Some(top), Some(bottom)) = (
     collapsed_borders.horizontal.first(),
     collapsed_borders.horizontal.get(structure.row_count),
   ) {
     for col in 0..structure.column_count {
       check_layout_deadline(&mut deadline_counter)?;
-      outer_top_half = outer_top_half.max(top.get(col).map(|b| b.width * 0.5).unwrap_or(0.0));
-      outer_bottom_half =
-        outer_bottom_half.max(bottom.get(col).map(|b| b.width * 0.5).unwrap_or(0.0));
+      let top_width = top.get(col).map(|b| b.width).unwrap_or(0.0);
+      let top_inside = (top_width.min(baseline_top)) * 0.5;
+      outer_top_outward = outer_top_outward.max(top_width - top_inside);
+
+      let bottom_width = bottom.get(col).map(|b| b.width).unwrap_or(0.0);
+      let bottom_inside = (bottom_width.min(baseline_bottom)) * 0.5;
+      outer_bottom_outward = outer_bottom_outward.max(bottom_width - bottom_inside);
     }
   }
 
@@ -4449,13 +4469,13 @@ fn build_table_collapsed_borders_metadata(
   }
 
   let min_x = column_line_pos.first().copied().unwrap_or(0.0)
-    - outer_left_half.max(max_corner_half);
+    - outer_left_outward.max(max_corner_half);
   let max_x = column_line_pos.last().copied().unwrap_or(0.0)
-    + outer_right_half.max(max_corner_half);
+    + outer_right_outward.max(max_corner_half);
   let min_y = row_line_pos.first().copied().unwrap_or(0.0)
-    - outer_top_half.max(max_corner_half);
+    - outer_top_outward.max(max_corner_half);
   let max_y = row_line_pos.last().copied().unwrap_or(0.0)
-    + outer_bottom_half.max(max_corner_half);
+    + outer_bottom_outward.max(max_corner_half);
 
   Ok(TableCollapsedBorders {
     column_count: structure.column_count,
@@ -8498,18 +8518,18 @@ impl FormattingContext for TableFormattingContext {
 
       // Collapsed border model geometry (CSS 2.1 §17.6.2).
       //
-      // Coordinate convention (important for avoiding negative-origin clipping in paint/culling):
+      // Coordinate convention (important for paint/culling correctness):
       //
       // - `column_line_pos` / `row_line_pos` store **grid line center** positions measured from the
-      //   table fragment origin. `*_line_pos[0]` is the start outer grid line center and
-      //   `*_line_pos.last()` is the end outer grid line center.
-      //   - Note: for collapsed-border tables the fragment origin is aligned with the table grid
-      //     box border edge used for sizing (the outer grid line centers), *not* with the outer
-      //     paint edge. Since strokes are centered on the grid lines, the painted border can
-      //     legitimately extend outside the fragment rect (including into negative coordinates on
-      //     the start edges).
+      //   table fragment origin. Strokes are centered on these grid lines.
+      // - For collapsed-border tables, the fragment origin is aligned with the **baseline outer
+      //   border paint edge** (i.e. the outside edge of the border width that layout used to size
+      //   the table). Therefore the outer grid line centers are inset:
+      //   `*_line_pos[0] == 0.5 * baseline_outer_width_start` and
+      //   `*_line_pos.last() == fragment_size - 0.5 * baseline_outer_width_end`.
       // - `col_offsets` / `row_offsets` are the **inside edges** of each cell slot:
-      //   `offsets[i] = line_pos[i] + 0.5 * line_width[i]`.
+      //   `offsets[i] = line_pos[i] + 0.5 * line_width[i]`. Under this convention, the first cell
+      //   starts after the *full* baseline outer border width.
       //
       // Baseline-vs-spill: §17.6.2 defines special baseline outer widths used for *layout* (e.g.
       // left/right come from the first row). If later rows/columns resolve a thicker winning
@@ -8517,7 +8537,8 @@ impl FormattingContext for TableFormattingContext {
       // widen); instead the extra thickness must paint outward into the margin (see
       // `render_table_collapsed_borders`; WPT `border-collapse-basic-001`). This is why
       // `TableCollapsedBorders.paint_bounds` can extend beyond the fragment rect and must not be
-      // clamped during display list construction/culling.
+      // clamped during display list construction/culling. With the convention above, `paint_bounds`
+      // becomes negative only when a thicker outer-edge winner spills outward beyond the baseline.
       let (content_width, content_height, content_origin_x, content_origin_y) =
         match collapsed_borders.as_ref() {
           Some(collapsed_borders) => {
@@ -8543,8 +8564,14 @@ impl FormattingContext for TableFormattingContext {
               horizontal_line_max.push(segments.iter().map(|b| b.width).fold(0.0, f32::max));
             }
 
-            let (cols, starts, collapsed_width) =
-              collapsed_line_positions(&col_widths, &vertical_line_max, pad_left, pad_right);
+            let grid_pad_left = vertical_line_max.first().copied().unwrap_or(0.0) * 0.5;
+            let grid_pad_right = vertical_line_max.last().copied().unwrap_or(0.0) * 0.5;
+            let (cols, starts, collapsed_width) = collapsed_line_positions(
+              &col_widths,
+              &vertical_line_max,
+              grid_pad_left,
+              grid_pad_right,
+            );
             column_line_pos = cols;
             col_offsets = starts;
 
@@ -8553,14 +8580,20 @@ impl FormattingContext for TableFormattingContext {
               check_layout_deadline(&mut deadline_counter)?;
               row_heights.push(row.height);
             }
-            let (rows, starts, collapsed_height) =
-              collapsed_line_positions(&row_heights, &horizontal_line_max, pad_top, pad_bottom);
+            let grid_pad_top = horizontal_line_max.first().copied().unwrap_or(0.0) * 0.5;
+            let grid_pad_bottom = horizontal_line_max.last().copied().unwrap_or(0.0) * 0.5;
+            let (rows, starts, collapsed_height) = collapsed_line_positions(
+              &row_heights,
+              &horizontal_line_max,
+              grid_pad_top,
+              grid_pad_bottom,
+            );
             row_line_pos = rows;
             row_offsets = starts;
 
-            let content_origin_x = col_offsets.first().copied().unwrap_or(pad_left)
+            let content_origin_x = column_line_pos.first().copied().unwrap_or(0.0)
               - vertical_line_max.first().copied().unwrap_or(0.0) * 0.5;
-            let content_origin_y = row_offsets.first().copied().unwrap_or(pad_top)
+            let content_origin_y = row_line_pos.first().copied().unwrap_or(0.0)
               - horizontal_line_max.first().copied().unwrap_or(0.0) * 0.5;
 
             (
@@ -20199,10 +20232,10 @@ mod tests {
     let constraints = LayoutConstraints::definite_width(100.0);
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
-    // Width should include half of the outer collapsed borders (1.5 + 1.5) even with zero cell width.
-    assert!(fragment.bounds.width() >= 3.0);
-    // Height should include half of the outer collapsed borders (1 + 1) plus at least a minimal row height.
-    assert!(fragment.bounds.height() >= 3.0);
+    // Width should include the outer collapsed borders (3 + 3) even with zero cell width.
+    assert!(fragment.bounds.width() >= 6.0);
+    // Height should include the outer collapsed borders (2 + 2) plus at least a minimal row height.
+    assert!(fragment.bounds.height() >= 4.0);
   }
 
   #[test]
@@ -20247,8 +20280,8 @@ mod tests {
     let constraints = LayoutConstraints::definite_width(10.0);
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
-    // Expect half the top border + two minimal rows + half the bottom border.
-    assert!((fragment.bounds.height() - 4.0).abs() < 0.51);
+    // Expect the full top border + two minimal rows + the full bottom border.
+    assert!((fragment.bounds.height() - 6.0).abs() < 0.51);
   }
 
   #[test]
@@ -20303,10 +20336,10 @@ mod tests {
       })
       .expect("cell fragment");
     // Cell should be offset by the collapsed borders.
-    assert!((cell_frag.bounds.x() - 3.0).abs() < 0.51);
-    assert!((cell_frag.bounds.y() - 2.0).abs() < 0.51);
-    // Table width should include both borders (half inside the bounds) plus the cell.
-    assert!(fragment.bounds.width() >= cell_frag.bounds.width() + 6.0);
+    assert!((cell_frag.bounds.x() - 6.0).abs() < 0.51);
+    assert!((cell_frag.bounds.y() - 4.0).abs() < 0.51);
+    // Table width should include both borders plus the cell.
+    assert!(fragment.bounds.width() >= cell_frag.bounds.width() + 12.0);
   }
 
   #[test]
@@ -20436,10 +20469,10 @@ mod tests {
       .find(|f| f.bounds.y().abs() < f32::EPSILON)
       .expect("first row cell");
 
-    // Cell offset should reflect only half of the first row's 2px border (≈1px), not the later 10px border.
+    // Cell offset should reflect only the first row's 2px border, not the later 10px border.
     assert!(
-      first_cell.bounds.x() < 2.0,
-      "cell offset should use first-row border, got {}",
+      (first_cell.bounds.x() - 2.0).abs() < 0.51,
+      "cell offset should use first-row border (2px), got {}",
       first_cell.bounds.x()
     );
     // Table width should not inflate to include the thicker second-row border.
@@ -20508,10 +20541,10 @@ mod tests {
       .as_ref()
       .expect("expected collapsed borders metadata on the table fragment");
 
-    // Paint bounds must include the thick second-row border segment: a 20px stroke extends 10px
-    // past the left grid line.
+    // Paint bounds must include the thick second-row border segment: a 20px outer segment with a
+    // 2px baseline must spill outward by 18px.
     assert!(
-      borders.paint_bounds.x() <= -9.9,
+      borders.paint_bounds.x() <= -17.9,
       "expected paint bounds to include thick outer segment (got x={})",
       borders.paint_bounds.x()
     );
@@ -20529,8 +20562,8 @@ mod tests {
       .find(|cell| cell.bounds.y().abs() < 1e-3)
       .expect("first row cell");
     assert!(
-      first_row_cell.bounds.x() < 2.0,
-      "cell offset should use first-row border, got {}",
+      (first_row_cell.bounds.x() - 2.0).abs() < 0.51,
+      "cell offset should use first-row border (2px), got {}",
       first_row_cell.bounds.x()
     );
   }

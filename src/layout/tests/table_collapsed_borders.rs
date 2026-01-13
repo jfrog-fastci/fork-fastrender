@@ -455,7 +455,7 @@ fn collapsed_table_borders_include_outer_edge_spill_with_repeated_thead() {
 
     saw_thick_spill = true;
     assert!(
-      borders.paint_bounds.min_x() <= -9.9,
+      borders.paint_bounds.min_x() <= -17.9,
       "expected paint bounds to include thick outer spill on continuation fragment (min_x={})",
       borders.paint_bounds.min_x()
     );
@@ -1058,11 +1058,10 @@ fn collapsed_table_outer_border_spills_into_margin() {
   // CSS 2.1 §17.6.2: later rows/columns with thicker *outer* collapsed border winners must not
   // widen the table's layout box; the excess must spill outward into the margin area.
   //
-  // Our collapsed-border coordinate convention uses the outer grid line center as the table
-  // fragment's `x=0`, so even the baseline outer border paints half outside the fragment bounds.
-  // Paint bounds must therefore include the baseline half-outside *plus* any additional spill,
-  // otherwise culling/tiling logic can clip thick outer-edge segments (WPT
-  // `border-collapse-basic-001`).
+  // Our collapsed-border coordinate convention aligns the table fragment origin (`x=0`) with the
+  // baseline outer border paint edge. The baseline border therefore paints fully inside the table
+  // fragment bounds, and `paint_bounds` goes negative only when a thicker outer-edge winner spills
+  // outward beyond that baseline (WPT `border-collapse-basic-001`).
   const EPSILON: f32 = 0.1;
 
   let html = r#"
@@ -1113,7 +1112,7 @@ fn collapsed_table_outer_border_spills_into_margin() {
     .copied()
     .unwrap_or(0.0)
     - baseline_half;
-  let expected_spill = (20.0 * 0.5) - (2.0 * 0.5); // 9px
+  let expected_spill = 20.0 - 2.0; // 18px
   let expected_min_x = baseline_outer_edge - expected_spill;
   assert!(
     (borders.paint_bounds.min_x() - expected_min_x).abs() < EPSILON,

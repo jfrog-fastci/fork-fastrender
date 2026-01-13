@@ -15087,8 +15087,9 @@ impl DisplayListRenderer {
         //
         // `inside` is therefore capped to the baseline half-width so any excess thickness paints
         // outward only. When changing this logic, keep `TableCollapsedBorders.paint_bounds` in
-        // sync: display list culling relies on it and it may legitimately have a negative origin
-        // (WPT `border-collapse-basic-001`).
+        // sync: display list culling relies on it. With the table fragment origin aligned to the
+        // baseline outer border paint edge, `paint_bounds` becomes negative only when a thicker
+        // outer-edge winner spills outward beyond that baseline (WPT `border-collapse-basic-001`).
         let baseline_edge = if is_left_edge || is_right_edge {
           base_edge_width
         } else {

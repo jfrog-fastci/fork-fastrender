@@ -518,8 +518,8 @@ pub struct TableCollapsedBorders {
   ///
   /// Coordinates are in the table fragment's local space, measured from the table fragment origin
   /// (same origin used by child cell fragments). For collapsed-border tables this origin is aligned
-  /// with the outer grid line centers (CSS 2.1 §17.6.2), so border strokes can legitimately paint
-  /// into negative coordinates.
+  /// with the **baseline outer border paint edge** (CSS 2.1 §17.6.2), so the outer grid line
+  /// centers are inset by half of the baseline outer border widths.
   pub column_line_positions: Vec<f32>,
   /// Grid line center positions for horizontal boundaries (len = `row_count + 1`).
   ///
@@ -540,11 +540,11 @@ pub struct TableCollapsedBorders {
   pub horizontal_line_base: Vec<f32>,
   /// Bounds covering all collapsed border strokes (relative to the table fragment origin).
   ///
-  /// This can have a negative origin because collapsed border strokes are centered on the outer
-  /// grid line centers, with half the stroke painting into the margin area (CSS 2.1 §17.6.2). When
-  /// later rows/columns resolve thicker winning outer-edge segments than the baseline, that extra
-  /// thickness also spills outward and must be included here so display list culling does not clip
-  /// the border.
+  /// This can extend outside the table fragment rect (including into negative coordinates on the
+  /// start edges) when a later row/column resolves a thicker winning *outer-edge* border segment
+  /// than the baseline widths used for layout. That excess thickness must spill outward into the
+  /// margin instead of widening the table, and it must be included here so display list culling
+  /// does not clip the border (CSS 2.1 §17.6.2; WPT `border-collapse-basic-001`).
   pub paint_bounds: Rect,
   /// Row range `[start, end)` (in original table row indices) covered by the first repeated
   /// header group (`<thead>` / `display: table-header-group`).

@@ -3350,8 +3350,9 @@ fn innermost_footer_table_at<'a>(
 /// This mirrors `layout::table::collapsed_line_positions`, but only returns the line centers
 /// (fragmentation does not need the per-row/column start offsets).
 ///
-/// Line widths are centered on the grid lines; outer lines contribute half their width to the
-/// measured extent so the remaining half may spill into the table's margin area (CSS 2.1 §17.6.2).
+/// Line widths are centered on the grid lines. `padding_start` / `padding_end` describe the
+/// distance from the fragment origin to the first/last grid line centers (e.g. half of the
+/// baseline outer border widths when the slice includes the table's outer edges; CSS 2.1 §17.6.2).
 fn collapsed_line_positions(
   sizes: &[f32],
   line_widths: &[f32],
@@ -3674,29 +3675,44 @@ fn inject_table_headers_and_footers(
           // layout (§17.6.2). That extra thickness must spill outward into the margin instead of
           // widening the table (WPT `border-collapse-basic-001`), so we must recompute paint bounds
           // from the actual outer-edge segment widths for this fragment slice.
-          let mut outer_left_half = 0.0f32;
-          let mut outer_right_half = 0.0f32;
+          //
+          // This must match the paint-time "inside" clamping in
+          // `paint::display_list_renderer::render_table_collapsed_borders`.
+          let baseline_left = orig_borders.vertical_line_width(0);
+          let baseline_right = orig_borders.vertical_line_width(orig_borders.column_count);
+          let mut outer_left_outward = 0.0f32;
+          let mut outer_right_outward = 0.0f32;
           if new_row_count > 0 {
             // `vertical_borders` is column-major: `[col0 rows..., col1 rows..., ...]`.
             for row in 0..new_row_count {
-              outer_left_half = outer_left_half.max(vertical_borders[row].width * 0.5);
+              let width = vertical_borders[row].width;
+              let inside = (width.min(baseline_left)) * 0.5;
+              outer_left_outward = outer_left_outward.max(width - inside);
             }
             let right_start = orig_borders.column_count * new_row_count;
             for idx in right_start..right_start + new_row_count {
-              outer_right_half = outer_right_half.max(vertical_borders[idx].width * 0.5);
+              let width = vertical_borders[idx].width;
+              let inside = (width.min(baseline_right)) * 0.5;
+              outer_right_outward = outer_right_outward.max(width - inside);
             }
           }
 
-          let mut outer_top_half = 0.0f32;
-          let mut outer_bottom_half = 0.0f32;
+          let baseline_top = horizontal_line_base.first().copied().unwrap_or(0.0);
+          let baseline_bottom = horizontal_line_base.last().copied().unwrap_or(0.0);
+          let mut outer_top_outward = 0.0f32;
+          let mut outer_bottom_outward = 0.0f32;
           if orig_borders.column_count > 0 {
             // `horizontal_borders` is boundary-major: `[boundary0 cols..., boundary1 cols..., ...]`.
             for col in 0..orig_borders.column_count {
-              outer_top_half = outer_top_half.max(horizontal_borders[col].width * 0.5);
+              let width = horizontal_borders[col].width;
+              let inside = (width.min(baseline_top)) * 0.5;
+              outer_top_outward = outer_top_outward.max(width - inside);
             }
             let bottom_start = new_row_count * orig_borders.column_count;
             for idx in bottom_start..bottom_start + orig_borders.column_count {
-              outer_bottom_half = outer_bottom_half.max(horizontal_borders[idx].width * 0.5);
+              let width = horizontal_borders[idx].width;
+              let inside = (width.min(baseline_bottom)) * 0.5;
+              outer_bottom_outward = outer_bottom_outward.max(width - inside);
             }
           }
 
@@ -3705,17 +3721,17 @@ fn inject_table_headers_and_footers(
             .first()
             .copied()
             .unwrap_or(0.0)
-            - outer_left_half.max(max_corner_half);
+            - outer_left_outward.max(max_corner_half);
           let max_x = orig_borders
             .column_line_positions
             .last()
             .copied()
             .unwrap_or(0.0)
-            + outer_right_half.max(max_corner_half);
+            + outer_right_outward.max(max_corner_half);
           let min_y = row_line_positions.first().copied().unwrap_or(0.0)
-            - outer_top_half.max(max_corner_half);
+            - outer_top_outward.max(max_corner_half);
           let max_y = row_line_positions.last().copied().unwrap_or(0.0)
-            + outer_bottom_half.max(max_corner_half);
+            + outer_bottom_outward.max(max_corner_half);
 
           clipped.table_borders = Some(Arc::new(TableCollapsedBorders {
             column_count: orig_borders.column_count,
