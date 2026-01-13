@@ -30659,4 +30659,65 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn yield_star_missing_throw_non_object_return_result_overrides_protocol_violation() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+      (function () {
+        let closed = false;
+        const iter = {
+          next() {
+            return { value: 0, done: false };
+          },
+          // Missing `throw`; `yield*` should close the iterator via IteratorClose.
+          // Returning a non-object from `return` should throw a TypeError that overrides the
+          // protocol-violation TypeError.
+          return() {
+            closed = true;
+            return 1;
+          },
+        };
+
+        const iterable = {
+          [Symbol.iterator]() {
+            return iter;
+          },
+        };
+
+        function* gen() {
+          try {
+            yield* iterable;
+            return "unexpected";
+          } catch (e) {
+            return e && e.message;
+          }
+        }
+
+        const it = gen();
+        const first = it.next();
+        if (first.value !== 0 || first.done !== false) return false;
+
+        const res = it.throw(42);
+        return (
+          closed === true &&
+          res.done === true &&
+          res.value === "IteratorClose: iterator.return did not return an object"
+        );
+      })()
+    "#,
+    )?;
+
+    assert_eq!(
+      value,
+      Value::Bool(true),
+      "expected IteratorClose return-result TypeError to override the yield* missing-throw TypeError"
+    );
+
+    Ok(())
+  }
 }
