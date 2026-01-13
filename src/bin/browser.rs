@@ -13295,6 +13295,7 @@ impl App {
       fastrender::ui::WorkerToUi::RequestOpenInNewTab { tab_id, url } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.watchdog_armed = false;
           tab.unresponsive = false;
         }
         self.open_url_in_new_tab(url);
@@ -13309,6 +13310,7 @@ impl App {
       fastrender::ui::WorkerToUi::RequestOpenInNewTabRequest { tab_id, request } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.last_worker_msg_at = std::time::SystemTime::now();
+          tab.watchdog_armed = false;
           tab.unresponsive = false;
         }
         self.open_request_in_new_tab(request);
