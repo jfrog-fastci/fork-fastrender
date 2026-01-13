@@ -1299,18 +1299,15 @@ impl Heap {
   /// This is the spec-shaped "brand check" for generator objects (i.e. objects with generator
   /// internal slots).
   pub fn is_generator_object(&self, obj: GcObject) -> bool {
-    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(_)))
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(g)) if !g.is_async)
   }
 
   /// Returns `true` if `obj` currently points to a live AsyncGenerator object allocation.
   ///
   /// This is the spec-shaped "brand check" for async generator objects (i.e. objects with async
   /// generator internal slots).
-  ///
-  /// Note: async generator objects are not yet implemented in `vm-js`, so this currently always
-  /// returns `false`.
-  pub fn is_async_generator_object(&self, _obj: GcObject) -> bool {
-    false
+  pub fn is_async_generator_object(&self, obj: GcObject) -> bool {
+    matches!(self.get_heap_object(obj.0), Ok(HeapObject::Generator(g)) if g.is_async)
   }
 
   /// Returns `true` if `obj` currently points to a live ArrayBuffer object allocation.
@@ -8551,7 +8548,27 @@ impl<'a> Scope<'a> {
       scope.push_root(Value::Object(proto))?;
     }
 
-    let gen = JsGenerator::new(prototype, state, continuation);
+    let gen = JsGenerator::new(prototype, false, state, continuation);
+    let new_bytes = gen.heap_size_bytes();
+    scope.heap.ensure_can_allocate(new_bytes)?;
+
+    let obj = HeapObject::Generator(gen);
+    Ok(GcObject(scope.heap.alloc_unchecked(obj, new_bytes)?))
+  }
+
+  pub(crate) fn alloc_async_generator_with_prototype(
+    &mut self,
+    prototype: Option<GcObject>,
+    state: GeneratorState,
+    continuation: Option<Box<GeneratorContinuation>>,
+  ) -> Result<GcObject, VmError> {
+    // Root the prototype during allocation in case `ensure_can_allocate` triggers a GC.
+    let mut scope = self.reborrow();
+    if let Some(proto) = prototype {
+      scope.push_root(Value::Object(proto))?;
+    }
+
+    let gen = JsGenerator::new(prototype, true, state, continuation);
     let new_bytes = gen.heap_size_bytes();
     scope.heap.ensure_can_allocate(new_bytes)?;
 
@@ -10144,6 +10161,7 @@ impl Trace for GeneratorContinuation {
 #[derive(Debug)]
 struct JsGenerator {
   object: JsObject,
+  is_async: bool,
   state: GeneratorState,
   continuation: Option<Box<GeneratorContinuation>>,
 }
@@ -10151,11 +10169,13 @@ struct JsGenerator {
 impl JsGenerator {
   fn new(
     prototype: Option<GcObject>,
+    is_async: bool,
     state: GeneratorState,
     continuation: Option<Box<GeneratorContinuation>>,
   ) -> Self {
     Self {
       object: JsObject::new(prototype),
+      is_async,
       state,
       continuation,
     }

@@ -29665,6 +29665,141 @@ fn gen_root_values_for_continuation(
   Ok(())
 }
 
+pub(crate) fn async_generator_resume_call(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Internal job callback for async generator `.next/.return/.throw`.
+  //
+  // `builtins::{async_generator_prototype_next,return,throw}` enqueues a Promise job that calls this
+  // native function. The async generator instance, promise capability, and request payload are
+  // captured in native slots on `callee`.
+  let slots = scope.heap().get_function_native_slots(callee)?;
+  if slots.len() < 5 {
+    return Err(VmError::InvariantViolation(
+      "async generator resume callback missing native slots",
+    ));
+  }
+
+  let gen_obj = match slots[0] {
+    Value::Object(o) => o,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async generator resume callback missing generator object",
+      ))
+    }
+  };
+  let resolve = slots[1];
+  let reject = slots[2];
+  let op = match slots[3] {
+    Value::Number(n) => n as u32,
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async generator resume callback missing operation code",
+      ))
+    }
+  };
+  let arg = slots[4];
+
+  // Root captured values across generator execution and promise resolution.
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(gen_obj))?;
+  scope.push_root(resolve)?;
+  scope.push_root(reject)?;
+  scope.push_root(arg)?;
+
+  let input = match op {
+    0 => GeneratorResumeInput::Next(arg),
+    1 => GeneratorResumeInput::Return(arg),
+    2 => GeneratorResumeInput::Throw(arg),
+    _ => {
+      return Err(VmError::InvariantViolation(
+        "async generator resume callback has invalid operation code",
+      ))
+    }
+  };
+
+  let resume_result = generator_resume(vm, &mut scope, host, hooks, gen_obj, input);
+  match resume_result {
+    Ok(outcome) => {
+      let iter_result = match outcome {
+        GeneratorResumeOutcome::Yield(v) => {
+          // AsyncGenerator yields produce iterator result objects that resolve the returned Promise.
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let mut obj_scope = scope.reborrow();
+          obj_scope.push_root(v)?;
+          let out = obj_scope.alloc_object()?;
+          obj_scope.push_root(Value::Object(out))?;
+          obj_scope
+            .heap_mut()
+            .object_set_prototype(out, Some(intr.object_prototype()))?;
+          let value_key = PropertyKey::from_string(obj_scope.alloc_string("value")?);
+          obj_scope.create_data_property_or_throw(out, value_key, v)?;
+          let done_key = PropertyKey::from_string(obj_scope.alloc_string("done")?);
+          obj_scope.create_data_property_or_throw(out, done_key, Value::Bool(false))?;
+          Value::Object(out)
+        }
+        GeneratorResumeOutcome::Done(v) => {
+          let intr = vm
+            .intrinsics()
+            .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+          let mut obj_scope = scope.reborrow();
+          obj_scope.push_root(v)?;
+          let out = obj_scope.alloc_object()?;
+          obj_scope.push_root(Value::Object(out))?;
+          obj_scope
+            .heap_mut()
+            .object_set_prototype(out, Some(intr.object_prototype()))?;
+          let value_key = PropertyKey::from_string(obj_scope.alloc_string("value")?);
+          obj_scope.create_data_property_or_throw(out, value_key, v)?;
+          let done_key = PropertyKey::from_string(obj_scope.alloc_string("done")?);
+          obj_scope.create_data_property_or_throw(out, done_key, Value::Bool(true))?;
+          Value::Object(out)
+        }
+        GeneratorResumeOutcome::YieldIteratorResult(v) => v,
+      };
+
+      let mut call_scope = scope.reborrow();
+      call_scope.push_root(iter_result)?;
+      let _ = vm.call_with_host_and_hooks(
+        host,
+        &mut call_scope,
+        hooks,
+        resolve,
+        Value::Undefined,
+        &[iter_result],
+      )?;
+      Ok(Value::Undefined)
+    }
+    Err(err) => {
+      let err = coerce_error_to_throw_for_async(vm, &mut scope, err);
+      match err {
+        VmError::Throw(value) | VmError::ThrowWithStack { value, .. } => {
+          let mut call_scope = scope.reborrow();
+          call_scope.push_root(value)?;
+          let _ = vm.call_with_host_and_hooks(
+            host,
+            &mut call_scope,
+            hooks,
+            reject,
+            Value::Undefined,
+            &[value],
+          )?;
+          Ok(Value::Undefined)
+        }
+        other => Err(other),
+      }
+    }
+  }
+}
+
 pub(crate) fn generator_resume(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -29891,10 +30026,6 @@ pub(crate) fn run_ecma_function(
   env.set_source_info(source, base_offset, prefix_len);
 
   if func.stx.generator {
-    if func.stx.async_ {
-      return Err(VmError::Unimplemented("async generator functions"));
-    }
-
     let intr = vm
       .intrinsics()
       .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
@@ -29907,8 +30038,9 @@ pub(crate) fn run_ecma_function(
     init_scope.push_root(new_target)?;
     init_scope.push_roots(args)?;
 
-    // `OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%")` (ECMA-262): generator instances use
-    // `F.prototype` when it is an object, otherwise fall back to `%GeneratorPrototype%`.
+    // `OrdinaryCreateFromConstructor(F, "%GeneratorPrototype%")` / `OrdinaryCreateFromConstructor(F, "%AsyncGeneratorPrototype%")`
+    // (ECMA-262): generator instances use `F.prototype` when it is an object, otherwise fall back
+    // to the corresponding intrinsic prototype.
     let proto_key_s = init_scope.alloc_string("prototype")?;
     init_scope.push_root(Value::String(proto_key_s))?;
     let proto_key = PropertyKey::from_string(proto_key_s);
@@ -29921,9 +30053,14 @@ pub(crate) fn run_ecma_function(
       Value::Object(callee),
     )?;
     init_scope.push_root(proto_value)?;
+    let fallback = if func.stx.async_ {
+      intr.async_generator_prototype()
+    } else {
+      intr.generator_prototype()
+    };
     let proto_obj = match proto_value {
       Value::Object(o) => o,
-      _ => intr.generator_prototype(),
+      _ => fallback,
     };
 
     let mut boxed_args: Vec<Value> = Vec::new();
@@ -29947,11 +30084,19 @@ pub(crate) fn run_ecma_function(
       frames: VecDeque::new(),
     };
 
-    let gen_obj = init_scope.alloc_generator_with_prototype(
-      Some(proto_obj),
-      GeneratorState::SuspendedStart,
-      Some(box_try_new_vm(cont)?),
-    )?;
+    let gen_obj = if func.stx.async_ {
+      init_scope.alloc_async_generator_with_prototype(
+        Some(proto_obj),
+        GeneratorState::SuspendedStart,
+        Some(box_try_new_vm(cont)?),
+      )?
+    } else {
+      init_scope.alloc_generator_with_prototype(
+        Some(proto_obj),
+        GeneratorState::SuspendedStart,
+        Some(box_try_new_vm(cont)?),
+      )?
+    };
     return Ok(Value::Object(gen_obj));
   }
 
