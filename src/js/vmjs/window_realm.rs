@@ -7237,6 +7237,34 @@ fn get_or_create_node_wrapper(
   };
   scope.push_root(Value::Object(wrapper))?;
 
+  // ShadowRoot wrappers should inherit from `ShadowRoot.prototype` (not Node.prototype) so
+  // `ShadowRoot` accessors like `innerHTML` are available and `instanceof ShadowRoot` works when
+  // the interface object exists.
+  if let Some(dom) = dom {
+    if matches!(&dom.node(node_id).kind, NodeKind::ShadowRoot { .. }) {
+      if let Some(global) = vm
+        .user_data::<WindowRealmUserData>()
+        .and_then(|data| data.window_obj())
+      {
+        scope.push_root(Value::Object(global))?;
+        let ctor_key = alloc_key(scope, "ShadowRoot")?;
+        if let Some(Value::Object(ctor_obj)) =
+          scope.heap().object_get_own_data_property_value(global, &ctor_key)?
+        {
+          scope.push_root(Value::Object(ctor_obj))?;
+          let proto_key = alloc_key(scope, "prototype")?;
+          if let Some(Value::Object(proto_obj)) =
+            scope.heap().object_get_own_data_property_value(ctor_obj, &proto_key)?
+          {
+            scope
+              .heap_mut()
+              .object_set_prototype(wrapper, Some(proto_obj))?;
+          }
+        }
+      }
+    }
+  }
+
   let is_html_element = dom
     .map(|dom| {
       DomInterface::primary_for_node_kind(&dom.node(node_id).kind).implements(DomInterface::HTMLElement)
@@ -31828,6 +31856,84 @@ fn element_inner_html_set_native(
   Ok(Value::Undefined)
 }
 
+fn shadow_root_inner_html_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  if !matches!(dom.node(handle.node_id).kind, NodeKind::ShadowRoot { .. }) {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  match dom.shadow_root_inner_html(handle.node_id) {
+    Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn shadow_root_inner_html_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  };
+
+  let handle = node_handle_from_wrapper_obj(vm, scope, wrapper_obj, "Illegal invocation")?;
+
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let mut dom_ptr = dom_ptr_for_document_id_mut(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  {
+    // SAFETY: `dom_ptr` is valid for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_ref() };
+    if !matches!(dom.node(handle.node_id).kind, NodeKind::ShadowRoot { .. }) {
+      return Err(VmError::TypeError("Illegal invocation"));
+    }
+  }
+
+  // SAFETY: `dom_ptr` points at the `dom2::Document` backing this shadow root, and we have exclusive
+  // access for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_mut() };
+  if let Err(err) = dom.set_shadow_root_inner_html(handle.node_id, &html) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  sync_cached_child_nodes_for_wrapper(vm, scope, handle.document_obj, dom, wrapper_obj, handle.node_id)?;
+  sync_cached_children_for_wrapper(vm, scope, handle.document_obj, dom, wrapper_obj, handle.node_id)?;
+
+  let needs_microtask = dom.take_mutation_observer_microtask_needed();
+  maybe_queue_mutation_observer_microtask(vm, scope, host, hooks, handle.document_obj, needs_microtask)?;
+
+  Ok(Value::Undefined)
+}
+
 fn element_outer_html_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -36060,6 +36166,54 @@ fn init_window_globals(
       shadow_root_ctor
     };
 
+    // ShadowRoot.prototype.innerHTML
+    let inner_html_key = alloc_key(&mut scope, "innerHTML")?;
+    if scope
+      .heap()
+      .object_get_own_property(shadow_root_proto, &inner_html_key)?
+      .is_none()
+    {
+      let shadow_root_inner_html_get_call_id =
+        vm.register_native_call(shadow_root_inner_html_get_native)?;
+      let shadow_root_inner_html_get_name = scope.alloc_string("get innerHTML")?;
+      scope.push_root(Value::String(shadow_root_inner_html_get_name))?;
+      let shadow_root_inner_html_get_func = scope.alloc_native_function(
+        shadow_root_inner_html_get_call_id,
+        None,
+        shadow_root_inner_html_get_name,
+        0,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        shadow_root_inner_html_get_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(shadow_root_inner_html_get_func))?;
+
+      let shadow_root_inner_html_set_call_id =
+        vm.register_native_call(shadow_root_inner_html_set_native)?;
+      let shadow_root_inner_html_set_name = scope.alloc_string("set innerHTML")?;
+      scope.push_root(Value::String(shadow_root_inner_html_set_name))?;
+      let shadow_root_inner_html_set_func = scope.alloc_native_function(
+        shadow_root_inner_html_set_call_id,
+        None,
+        shadow_root_inner_html_set_name,
+        1,
+      )?;
+      scope.heap_mut().object_set_prototype(
+        shadow_root_inner_html_set_func,
+        Some(realm.intrinsics().function_prototype()),
+      )?;
+      scope.push_root(Value::Object(shadow_root_inner_html_set_func))?;
+
+      scope.define_property(
+        shadow_root_proto,
+        inner_html_key,
+        idl_attribute_desc(
+          Value::Object(shadow_root_inner_html_get_func),
+          Value::Object(shadow_root_inner_html_set_func),
+        ),
+      )?;
+    }
     let _text_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let text_ctor = make_illegal_ctor(&mut scope, "Text")?;
       scope.push_root(Value::Object(text_ctor))?;
@@ -47663,6 +47817,46 @@ mod tests {
     let root = host.dom().get_element_by_id("root").expect("missing #root");
     assert_eq!(host.dom().inner_html(root).unwrap(), "ab");
 
+    Ok(())
+  }
+
+  #[test]
+  fn shadow_root_inner_html_round_trips_and_does_not_affect_host_light_dom() -> Result<(), VmError> {
+    let renderer_dom =
+      crate::dom::parse_html("<!doctype html><html><body></body></html>").unwrap();
+    let mut host = crate::js::HostDocumentState::from_renderer_dom(&renderer_dom);
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      "(() => {\n\
+        const host = document.createElement('div');\n\
+        host.innerHTML = '<i id=\"light\">light</i>';\n\
+        const sr = host.attachShadow({ mode: 'open' });\n\
+        sr.innerHTML = '<span id=a>hi</span>';\n\
+        if (!sr.innerHTML.includes('<span id=\"a\">hi</span>')) return 'open_roundtrip:' + sr.innerHTML;\n\
+        if (host.shadowRoot !== sr) return 'open_shadowRoot_identity';\n\
+        if (host.innerHTML !== '<i id=\"light\">light</i>') return 'open_host:' + host.innerHTML;\n\
+\n\
+        sr.innerHTML = '';\n\
+        if (sr.innerHTML !== '') return 'open_clear:' + sr.innerHTML;\n\
+        if (host.innerHTML !== '<i id=\"light\">light</i>') return 'open_host_after:' + host.innerHTML;\n\
+\n\
+        const host2 = document.createElement('div');\n\
+        host2.appendChild(document.createTextNode('light'));\n\
+        const sr2 = host2.attachShadow({ mode: 'closed' });\n\
+        if (host2.shadowRoot !== null) return 'closed_shadowRoot_exposed';\n\
+        sr2.innerHTML = '<span id=a>hi</span>';\n\
+        if (!sr2.innerHTML.includes('<span id=\"a\">hi</span>')) return 'closed_roundtrip:' + sr2.innerHTML;\n\
+        sr2.innerHTML = '';\n\
+        if (sr2.innerHTML !== '') return 'closed_clear:' + sr2.innerHTML;\n\
+        if (host2.textContent !== 'light') return 'closed_host_text:' + host2.textContent;\n\
+        return 'ok';\n\
+      })()",
+    )?;
+
+    assert_eq!(get_string(realm.heap(), result), "ok");
     Ok(())
   }
 

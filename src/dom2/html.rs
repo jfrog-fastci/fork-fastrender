@@ -106,6 +106,19 @@ impl Document {
     Ok(super::serialization::serialize_children(self, element))
   }
 
+  /// Serialize a shadow root's shadow tree children as HTML.
+  ///
+  /// This corresponds to the platform `ShadowRoot.innerHTML` getter (HTML fragment serialisation).
+  pub fn shadow_root_inner_html(&self, shadow_root: NodeId) -> DomResult<String> {
+    let Some(node) = self.nodes.get(shadow_root.index()) else {
+      return Err(DomError::NotFoundError);
+    };
+    if !matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+      return Err(DomError::InvalidNodeType);
+    }
+    Ok(super::serialization::serialize_children(self, shadow_root))
+  }
+
   /// Backwards-compatible alias for callers that still use `get_inner_html`.
   pub fn get_inner_html(&self, element: NodeId) -> DomResult<String> {
     self.inner_html(element)
@@ -132,6 +145,41 @@ impl Document {
     // Append the fragment; `DocumentFragment` insertion semantics splice its children into the
     // element (in order) and empty the fragment.
     let _ = self.append_child(element, fragment)?;
+    Ok(())
+  }
+
+  /// Parse and replace the contents of a shadow root.
+  ///
+  /// Spec: <https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-shadowroot-innerhtml>
+  pub fn set_shadow_root_inner_html(&mut self, shadow_root: NodeId, html: &str) -> DomResult<()> {
+    let Some(node) = self.nodes.get(shadow_root.index()) else {
+      return Err(DomError::NotFoundError);
+    };
+    if !matches!(node.kind, NodeKind::ShadowRoot { .. }) {
+      return Err(DomError::InvalidNodeType);
+    }
+
+    // Context element for fragment parsing: the shadow root's host.
+    let host = node.parent.ok_or(DomError::NotFoundError)?;
+
+    let fragment = super::dom_parsing::parse_html_fragment_as_fragment(self, host, html)?;
+
+    // Remove existing shadow tree children via the structured DOM mutation APIs so live traversals
+    // and MutationObserver records observe the removals.
+    let old_children = self.nodes[shadow_root.index()].children.clone();
+    for child in old_children {
+      let should_remove = self
+        .nodes
+        .get(child.index())
+        .is_some_and(|node| node.parent == Some(shadow_root));
+      if should_remove {
+        self.remove_child(shadow_root, child)?;
+      }
+    }
+
+    // Append the fragment; `DocumentFragment` insertion semantics splice its children into the
+    // shadow root (in order) and empty the fragment.
+    let _ = self.append_child(shadow_root, fragment)?;
     Ok(())
   }
 
