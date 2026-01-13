@@ -11665,6 +11665,104 @@ mod external_memory_accounting_tests {
 }
 
 #[cfg(test)]
+mod small_int_string_cache_stress_tests {
+  use super::*;
+  use crate::{Budget, JsRuntime, Vm, VmError, VmHostHooks, VmOptions};
+
+  fn count_digit_only_strings(heap: &Heap) -> usize {
+    let mut count = 0usize;
+    for slot in &heap.slots {
+      let Some(obj) = slot.value.as_ref() else {
+        continue;
+      };
+      let HeapObject::String(s) = obj else {
+        continue;
+      };
+      let units = s.as_code_units();
+      if units.is_empty() {
+        continue;
+      }
+      if units
+        .iter()
+        .all(|u| (b'0' as u16..=b'9' as u16).contains(u))
+      {
+        count += 1;
+      }
+    }
+    count
+  }
+
+  #[test]
+  fn array_concat_reuses_cached_index_key_strings() -> Result<(), VmError> {
+    #[derive(Default)]
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+      }
+    }
+
+    // Use generous heap limits and set `gc_threshold == max_bytes` so this test can observe
+    // allocation churn without GC collecting unreachable temporary strings mid-operation.
+    let max_bytes = 64 * 1024 * 1024;
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(max_bytes, max_bytes));
+    let mut rt = JsRuntime::new(vm, heap)?;
+    rt.vm.set_budget(Budget::unlimited(1));
+
+    let mut host = ();
+    let mut hooks = NoopHooks::default();
+    let callee = rt.realm().intrinsics().array_prototype();
+
+    // Run everything inside one scope so intermediate values stay rooted.
+    let mut scope = rt.heap.scope();
+
+    // Pre-fill the small-int string cache for the index range we'll use. The test below asserts
+    // `Array.prototype.concat` does not allocate fresh index strings when these are already cached.
+    for i in 0..4000u32 {
+      let _ = scope.alloc_u32_index_string(i)?;
+    }
+
+    // Construct a dense array of length 4000 without invoking the JS evaluator.
+    let a = scope.alloc_array(4000)?;
+    scope.push_root(Value::Object(a))?;
+    {
+      let elems = scope.heap_mut().array_fast_elements_mut(a)?;
+      let desc = PropertyDescriptor {
+        enumerable: true,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(0.0),
+          writable: true,
+        },
+      };
+      elems.resize(4000, Some(desc));
+    }
+
+    let before = count_digit_only_strings(scope.heap());
+    let out = crate::builtins::array_prototype_concat(
+      &mut rt.vm,
+      &mut scope,
+      &mut host,
+      &mut hooks,
+      callee,
+      Value::Object(a),
+      &[],
+    )?;
+    // Root the result so its elements aren't collected if concat triggers allocation pressure.
+    scope.push_root(out)?;
+    let after = count_digit_only_strings(scope.heap());
+
+    let delta = after.saturating_sub(before);
+    assert!(
+      delta < 100,
+      "expected concat to reuse cached index key strings; allocated {delta} digit-only strings"
+    );
+    Ok(())
+  }
+}
+
+#[cfg(test)]
 mod detached_array_buffer_tests {
   use super::*;
 

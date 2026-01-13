@@ -8781,6 +8781,54 @@ fn alloc_string_from_u64(scope: &mut Scope<'_>, n: u64) -> Result<crate::GcStrin
   scope.alloc_string(s)
 }
 
+/// Allocates a canonical index property key (decimal digits) for a `usize` index.
+///
+/// For array indices in `[0, 2^32 - 2]`, this uses the heap's small-int string cache via
+/// [`Scope::alloc_array_index_key`]. Larger indices fall back to allocating a fresh decimal string.
+///
+/// Returns both the `PropertyKey` and a `Value` that can be pushed onto the root stack to keep the
+/// underlying key string alive across allocations/GC.
+fn alloc_array_index_key_from_usize(
+  scope: &mut Scope<'_>,
+  idx: usize,
+) -> Result<(PropertyKey, Value), VmError> {
+  // Per ECMA-262, an array index is a canonical uint32 string whose numeric value is not 2^32 - 1.
+  const MAX_ARRAY_INDEX: usize = (u32::MAX as usize) - 1;
+  if idx <= MAX_ARRAY_INDEX {
+    let key = scope.alloc_array_index_key(idx as u32)?;
+    let PropertyKey::String(s) = key else {
+      return Err(VmError::InvariantViolation(
+        "alloc_array_index_key returned non-string key",
+      ));
+    };
+    return Ok((key, Value::String(s)));
+  }
+
+  // Very large indices are not array indices and therefore do not benefit from the small-int cache.
+  let s = alloc_string_from_usize(scope, idx)?;
+  Ok((PropertyKey::from_string(s), Value::String(s)))
+}
+
+/// `u64` variant of [`alloc_array_index_key_from_usize`].
+fn alloc_array_index_key_from_u64(
+  scope: &mut Scope<'_>,
+  idx: u64,
+) -> Result<(PropertyKey, Value), VmError> {
+  const MAX_ARRAY_INDEX: u64 = (u32::MAX as u64) - 1;
+  if idx <= MAX_ARRAY_INDEX {
+    let key = scope.alloc_array_index_key(idx as u32)?;
+    let PropertyKey::String(s) = key else {
+      return Err(VmError::InvariantViolation(
+        "alloc_array_index_key returned non-string key",
+      ));
+    };
+    return Ok((key, Value::String(s)));
+  }
+
+  let s = alloc_string_from_u64(scope, idx)?;
+  Ok((PropertyKey::from_string(s), Value::String(s)))
+}
+
 fn iterator_result_object(
   scope: &mut Scope<'_>,
   object_prototype: GcObject,
@@ -11745,9 +11793,8 @@ pub fn array_prototype_to_spliced(
     }
 
     let mut iter_scope = scope.reborrow();
-    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
-    iter_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
+    let (key, key_root) = alloc_array_index_key_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(key_root)?;
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, key, Value::Object(obj))?;
     iter_scope.push_root(value)?;
     iter_scope.create_data_property_or_throw(out, key, value)?;
@@ -11763,9 +11810,8 @@ pub fn array_prototype_to_spliced(
     let mut iter_scope = scope.reborrow();
     iter_scope.push_root(item)?;
 
-    let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
-    iter_scope.push_root(Value::String(key_s))?;
-    let key = PropertyKey::from_string(key_s);
+    let (key, key_root) = alloc_array_index_key_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(key_root)?;
     iter_scope.create_data_property_or_throw(out, key, item)?;
     k = k.checked_add(1).ok_or(VmError::OutOfMemory)?;
   }
@@ -11783,13 +11829,11 @@ pub fn array_prototype_to_spliced(
 
     let mut iter_scope = scope.reborrow();
 
-    let from_s = alloc_string_from_usize(&mut iter_scope, from)?;
-    iter_scope.push_root(Value::String(from_s))?;
-    let from_key = PropertyKey::from_string(from_s);
+    let (from_key, from_root) = alloc_array_index_key_from_usize(&mut iter_scope, from)?;
+    iter_scope.push_root(from_root)?;
 
-    let to_s = alloc_string_from_usize(&mut iter_scope, k)?;
-    iter_scope.push_root(Value::String(to_s))?;
-    let to_key = PropertyKey::from_string(to_s);
+    let (to_key, to_root) = alloc_array_index_key_from_usize(&mut iter_scope, k)?;
+    iter_scope.push_root(to_root)?;
 
     let value = iter_scope.get_with_host_and_hooks(vm, host, hooks, obj, from_key, Value::Object(obj))?;
     iter_scope.push_root(value)?;
@@ -12785,9 +12829,8 @@ pub fn array_prototype_concat(
         }
         let mut iter_scope = scope.reborrow();
 
-        let key_s = alloc_string_from_usize(&mut iter_scope, k)?;
-        iter_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
+        let (key, key_root) = alloc_array_index_key_from_usize(&mut iter_scope, k)?;
+        iter_scope.push_root(key_root)?;
         if crate::spec_ops::internal_has_property_with_host_and_hooks(
           vm,
           &mut iter_scope,
@@ -12807,9 +12850,8 @@ pub fn array_prototype_concat(
           )?;
           iter_scope.push_root(value)?;
 
-          let to_s = alloc_string_from_u64(&mut iter_scope, *n)?;
-          iter_scope.push_root(Value::String(to_s))?;
-          let to_key = PropertyKey::from_string(to_s);
+          let (to_key, to_root) = alloc_array_index_key_from_u64(&mut iter_scope, *n)?;
+          iter_scope.push_root(to_root)?;
           crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
             vm,
             &mut iter_scope,
@@ -12833,9 +12875,8 @@ pub fn array_prototype_concat(
     }
     let mut iter_scope = scope.reborrow();
     iter_scope.push_root(item)?;
-    let to_s = alloc_string_from_u64(&mut iter_scope, *n)?;
-    iter_scope.push_root(Value::String(to_s))?;
-    let to_key = PropertyKey::from_string(to_s);
+    let (to_key, to_root) = alloc_array_index_key_from_u64(&mut iter_scope, *n)?;
+    iter_scope.push_root(to_root)?;
     crate::spec_ops::create_data_property_or_throw_with_host_and_hooks(
       vm,
       &mut iter_scope,
@@ -24998,9 +25039,8 @@ impl<'a> JsonParser<'a> {
         let value = self.parse_value(vm, &mut el_scope)?;
         el_scope.push_root(value)?;
 
-        let key_s = alloc_string_from_usize(&mut el_scope, idx)?;
-        el_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
+        let (key, key_root) = alloc_array_index_key_from_usize(&mut el_scope, idx)?;
+        el_scope.push_root(key_root)?;
         el_scope.define_property(array, key, data_desc(value, true, true, true))?;
       }
 
@@ -25057,9 +25097,8 @@ impl<'a> JsonParser<'a> {
         let (value, source_info) = self.parse_value_with_source(vm, &mut el_scope, meta)?;
         el_scope.push_root(value)?;
 
-        let key_s = alloc_string_from_usize(&mut el_scope, idx)?;
-        el_scope.push_root(Value::String(key_s))?;
-        let key = PropertyKey::from_string(key_s);
+        let (key, key_root) = alloc_array_index_key_from_usize(&mut el_scope, idx)?;
+        el_scope.push_root(key_root)?;
         el_scope.define_property(array, key, data_desc(value, true, true, true))?;
 
         vec_try_push(&mut sources, source_info)?;
@@ -25471,8 +25510,13 @@ pub fn json_parse(
           let mut idx_scope = scope.reborrow();
           idx_scope.push_root(Value::Object(obj))?;
 
-          let idx_s = alloc_string_from_usize(&mut idx_scope, i)?;
-          idx_scope.push_root(Value::String(idx_s))?;
+          let (idx_key, idx_root) = alloc_array_index_key_from_usize(&mut idx_scope, i)?;
+          idx_scope.push_root(idx_root)?;
+          let PropertyKey::String(idx_s) = idx_key else {
+            return Err(VmError::InvariantViolation(
+              "alloc_array_index_key returned non-string key",
+            ));
+          };
           let new_element = internalize_json_property(
             vm,
             &mut idx_scope,
@@ -25497,7 +25541,7 @@ pub fn json_parse(
               host,
               hooks,
               obj,
-              PropertyKey::from_string(idx_s),
+              idx_key,
             )?;
           } else {
             // Spec: `Perform ? CreateDataProperty(val, prop, newElement)`.
@@ -25510,7 +25554,7 @@ pub fn json_parse(
               host,
               hooks,
               obj,
-              PropertyKey::from_string(idx_s),
+              idx_key,
               new_element,
             )?;
           }
@@ -26128,8 +26172,13 @@ pub fn json_stringify(
           out.push_unit(b',' as u16)?;
         }
         let mut el_scope = scope.reborrow();
-        let key_s = alloc_string_from_usize(&mut el_scope, i)?;
-        el_scope.push_root(Value::String(key_s))?;
+        let (key, key_root) = alloc_array_index_key_from_usize(&mut el_scope, i)?;
+        el_scope.push_root(key_root)?;
+        let PropertyKey::String(key_s) = key else {
+          return Err(VmError::InvariantViolation(
+            "alloc_array_index_key returned non-string key",
+          ));
+        };
         let element =
           prepare_json_value_for_property(vm, &mut el_scope, host, hooks, state, obj, key_s)?
             .unwrap_or(Value::Null);
@@ -26149,8 +26198,13 @@ pub fn json_stringify(
           out.push_units(&state.indent, || vm.tick())?;
         }
         let mut el_scope = scope.reborrow();
-        let key_s = alloc_string_from_usize(&mut el_scope, i)?;
-        el_scope.push_root(Value::String(key_s))?;
+        let (key, key_root) = alloc_array_index_key_from_usize(&mut el_scope, i)?;
+        el_scope.push_root(key_root)?;
+        let PropertyKey::String(key_s) = key else {
+          return Err(VmError::InvariantViolation(
+            "alloc_array_index_key returned non-string key",
+          ));
+        };
         let element =
           prepare_json_value_for_property(vm, &mut el_scope, host, hooks, state, obj, key_s)?
             .unwrap_or(Value::Null);
