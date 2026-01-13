@@ -180,6 +180,7 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
       WorkerToUi::DownloadStarted { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::DownloadProgress { tab_id: t, .. } => *t == tab_id,
       WorkerToUi::DownloadFinished { tab_id: t, .. } => *t == tab_id,
+      _ => false,
     })
     .collect();
 

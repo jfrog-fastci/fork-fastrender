@@ -1664,6 +1664,12 @@ impl BrowserRuntime {
         // close notification can dismiss the popup deterministically.
         let _ = self.ui_tx.send(WorkerToUi::DateTimePickerClosed { tab_id });
       }
+      UiToWorker::ColorPickerCancel { tab_id } => {
+        // Front-ends typically own the picker overlay state, so cancellation is a no-op on the
+        // worker side. Emit `ColorPickerClosed` anyway so front-ends that expect an explicit close
+        // notification can dismiss the popup deterministically.
+        let _ = self.ui_tx.send(WorkerToUi::ColorPickerClosed { tab_id });
+      }
       UiToWorker::FilePickerChoose {
         tab_id,
         input_node_id,
@@ -3328,7 +3334,7 @@ impl BrowserRuntime {
       dom_changed,
       action,
       anchor_css,
-      date_time_value,
+      picker_value,
       scroll_changed,
       mouseup_target,
       mouseup_target_element_id,
@@ -3345,7 +3351,7 @@ impl BrowserRuntime {
         dom_changed,
         action,
         anchor_css,
-        date_time_value,
+        picker_value,
         focus_scroll,
         mouseup_target,
         mouseup_target_element_id,
@@ -3398,13 +3404,9 @@ impl BrowserRuntime {
             // offsets internally.
             select_anchor_css(box_tree, fragment_tree, &scroll_snapshot, *select_node_id)
           }
-          InteractionAction::OpenDateTimePicker { input_node_id, .. } => styled_node_anchor_css(
-            box_tree,
-            fragment_tree,
-            &scroll_snapshot,
-            *input_node_id,
-          ),
-          InteractionAction::OpenFilePicker { input_node_id, .. } => styled_node_anchor_css(
+          InteractionAction::OpenDateTimePicker { input_node_id, .. }
+          | InteractionAction::OpenColorPicker { input_node_id }
+          | InteractionAction::OpenFilePicker { input_node_id, .. } => styled_node_anchor_css(
             box_tree,
             fragment_tree,
             &scroll_snapshot,
@@ -3413,7 +3415,7 @@ impl BrowserRuntime {
           _ => None,
         };
 
-        let date_time_value = match &action {
+        let picker_value = match &action {
           InteractionAction::OpenDateTimePicker { input_node_id, kind } => Some(
             crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
               .map(|node| match *kind {
@@ -3433,6 +3435,11 @@ impl BrowserRuntime {
                   crate::dom::input_week_value_string(node).unwrap_or_default()
                 }
               })
+              .unwrap_or_default(),
+          ),
+          InteractionAction::OpenColorPicker { input_node_id } => Some(
+            crate::dom::find_node_mut_by_preorder_id(dom, *input_node_id)
+              .and_then(|node| crate::dom::input_color_value_string(node))
               .unwrap_or_default(),
           ),
           _ => None,
@@ -3466,7 +3473,7 @@ impl BrowserRuntime {
             dom_changed,
             action,
             anchor_css,
-            date_time_value,
+            picker_value,
             focus_scroll,
             mouseup_target,
             mouseup_target_element_id,
@@ -3496,7 +3503,7 @@ impl BrowserRuntime {
         dom_changed,
         action,
         anchor_css,
-        date_time_value,
+        picker_value,
         scroll_changed,
         mouseup_target,
         mouseup_target_element_id,
@@ -3736,12 +3743,32 @@ impl BrowserRuntime {
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
           .unwrap_or(cursor_anchor_css);
 
-        let value = date_time_value.unwrap_or_default();
+        let value = picker_value.clone().unwrap_or_default();
 
         let _ = self.ui_tx.send(WorkerToUi::DateTimePickerOpened {
           tab_id,
           input_node_id,
           kind,
+          value,
+          anchor_css,
+        });
+        if dom_changed || scroll_changed {
+          tab.needs_repaint = true;
+        }
+      }
+      InteractionAction::OpenColorPicker { input_node_id } => {
+        // Prefer anchoring the popup to the `<input>` control's box, falling back to the cursor
+        // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
+        let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
+        let anchor_css = anchor_css
+          .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+          .unwrap_or(cursor_anchor_css);
+
+        let value = picker_value.clone().unwrap_or_default();
+
+        let _ = self.ui_tx.send(WorkerToUi::ColorPickerOpened {
+          tab_id,
+          input_node_id,
           value,
           anchor_css,
         });
@@ -4748,6 +4775,40 @@ impl BrowserRuntime {
             tab_id,
             input_node_id,
             kind,
+            value,
+            anchor_css,
+          });
+
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+        InteractionAction::OpenColorPicker { input_node_id } => {
+          let anchor_css = doc
+            .prepared()
+            .and_then(|prepared| {
+              styled_node_anchor_css(
+                prepared.box_tree(),
+                prepared.fragment_tree(),
+                &tab.scroll_state,
+                input_node_id,
+              )
+            })
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0));
+
+          let mut value: String = String::new();
+          let _ = doc.mutate_dom(|dom| {
+            value = crate::dom::find_node_mut_by_preorder_id(dom, input_node_id)
+              .and_then(|node| crate::dom::input_color_value_string(node))
+              .unwrap_or_default();
+            false
+          });
+
+          let _ = self.ui_tx.send(WorkerToUi::ColorPickerOpened {
+            tab_id,
+            input_node_id,
             value,
             anchor_css,
           });

@@ -1814,12 +1814,20 @@ impl BrowserAppState {
         // Front-ends that show a picker overlay should dismiss it.
         update.request_redraw = true;
       }
+      WorkerToUi::ColorPickerOpened { .. } => {
+        // Front-ends may show an overlay picker for color inputs.
+        update.request_redraw = true;
+      }
+      WorkerToUi::ColorPickerClosed { .. } => {
+        // Front-ends that show a picker overlay should dismiss it.
+        update.request_redraw = true;
+      }
       WorkerToUi::FilePickerOpened { .. } => {
-        // Front-ends may show an overlay picker for `<input type=file>`.
+        // Front-ends may show a file picker for file inputs.
         update.request_redraw = true;
       }
       WorkerToUi::FilePickerClosed { .. } => {
-        // Front-ends that show a picker overlay should dismiss it.
+        // Front-ends that show a file picker should dismiss it.
         update.request_redraw = true;
       }
       WorkerToUi::Stage { tab_id, stage } => {

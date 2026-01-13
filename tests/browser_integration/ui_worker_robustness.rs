@@ -86,6 +86,7 @@ fn is_tab_effect_message(msg: &WorkerToUi, tab_id: TabId) -> bool {
     | WorkerToUi::DownloadProgress { tab_id: msg_tab, .. }
     | WorkerToUi::DownloadFinished { tab_id: msg_tab, .. } => *msg_tab == tab_id,
     WorkerToUi::DebugLog { .. } => false,
+    _ => false,
   }
 }
 

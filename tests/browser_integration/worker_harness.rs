@@ -141,6 +141,8 @@ pub enum WorkerToUiEvent {
     download_id: DownloadId,
     outcome: DownloadOutcome,
   },
+  /// Catch-all event for forward compatibility when `WorkerToUi` grows new variants.
+  Other { msg: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +172,7 @@ pub enum WorkerEventKind {
   DownloadStarted,
   DownloadProgress,
   DownloadFinished,
+  Other,
 }
 
 impl WorkerToUiEvent {
@@ -200,6 +203,7 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::DownloadStarted { .. } => WorkerEventKind::DownloadStarted,
       WorkerToUiEvent::DownloadProgress { .. } => WorkerEventKind::DownloadProgress,
       WorkerToUiEvent::DownloadFinished { .. } => WorkerEventKind::DownloadFinished,
+      WorkerToUiEvent::Other { .. } => WorkerEventKind::Other,
     }
   }
 }
@@ -418,6 +422,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
+    other => (WorkerToUiEvent::Other { msg: format!("{other:?}") }, None),
   }
 }
 

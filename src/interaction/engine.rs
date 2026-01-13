@@ -91,6 +91,9 @@ pub enum InteractionAction {
     input_node_id: usize,
     kind: DateTimeInputKind,
   },
+  OpenColorPicker {
+    input_node_id: usize,
+  },
   OpenFilePicker {
     input_node_id: usize,
     multiple: bool,
@@ -1945,6 +1948,10 @@ fn is_radio_input(node: &DomNode) -> bool {
 
 fn is_range_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("range")
+}
+
+fn is_color_input(node: &DomNode) -> bool {
+  is_input(node) && input_type(node).eq_ignore_ascii_case("color")
 }
 
 fn is_file_input(node: &DomNode) -> bool {
@@ -6532,6 +6539,12 @@ impl InteractionEngine {
                   kind,
                 };
               }
+            } else if index.node(target_id).is_some_and(is_color_input) {
+              if !node_is_disabled(&index, target_id) {
+                action = InteractionAction::OpenColorPicker {
+                  input_node_id: target_id,
+                };
+              }
             } else if index.node(target_id).is_some_and(is_reset_control) {
               if is_disabled_or_inert(&index, target_id) {
                 // Disabled reset controls do not reset.
@@ -8489,6 +8502,12 @@ impl InteractionEngine {
               kind,
             };
           }
+        } else if index.node(focused).is_some_and(is_color_input) {
+          if !node_is_disabled(&index, focused) {
+            action = InteractionAction::OpenColorPicker {
+              input_node_id: focused,
+            };
+          }
         } else if index.node(focused).is_some_and(is_file_input) {
           if !node_is_disabled(&index, focused) {
             let multiple = index
@@ -8696,6 +8715,12 @@ impl InteractionEngine {
             action = InteractionAction::OpenDateTimePicker {
               input_node_id: focused,
               kind,
+            };
+          }
+        } else if index.node(focused).is_some_and(is_color_input) {
+          if !node_is_disabled(&index, focused) {
+            action = InteractionAction::OpenColorPicker {
+              input_node_id: focused,
             };
           }
         } else if index.node(focused).is_some_and(is_file_input) {
@@ -8927,6 +8952,12 @@ impl InteractionEngine {
               kind,
             };
           }
+        } else if index.node(focused).is_some_and(is_color_input) {
+          if !node_is_disabled(&index, focused) {
+            action = InteractionAction::OpenColorPicker {
+              input_node_id: focused,
+            };
+          }
         } else if index.node(focused).is_some_and(is_file_input) {
           if !node_is_disabled(&index, focused) {
             let multiple = index
@@ -9123,6 +9154,12 @@ impl InteractionEngine {
             action = InteractionAction::OpenDateTimePicker {
               input_node_id: focused,
               kind,
+            };
+          }
+        } else if index.node(focused).is_some_and(is_color_input) {
+          if !node_is_disabled(&index, focused) {
+            action = InteractionAction::OpenColorPicker {
+              input_node_id: focused,
             };
           }
         } else if index.node(focused).is_some_and(is_file_input) {

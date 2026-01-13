@@ -463,6 +463,13 @@ pub enum UiToWorker {
   DateTimePickerCancel {
     tab_id: TabId,
   },
+  /// User dismissed an open color picker popup without choosing a value.
+  ///
+  /// Front-ends typically send this when the user presses Escape or clicks outside the popup.
+  /// Workers may treat this as a no-op or use it to emit [`WorkerToUi::ColorPickerClosed`].
+  ColorPickerCancel {
+    tab_id: TabId,
+  },
   /// User chose one or more files in a file picker popup for an `<input type=file>` control.
   ///
   /// The UI should send this after receiving [`WorkerToUi::FilePickerOpened`].
@@ -728,6 +735,27 @@ pub enum WorkerToUi {
   /// Workers emit this in response to [`UiToWorker::DateTimePickerChoose`] and
   /// [`UiToWorker::DateTimePickerCancel`] so front-ends can close the overlay deterministically.
   DateTimePickerClosed {
+    tab_id: TabId,
+  },
+  /// Request that the UI open a color picker popup for an `<input type=color>` control.
+  ///
+  /// This is emitted in response to user activation (click, Enter/Space) on inputs with
+  /// `type=color`.
+  ColorPickerOpened {
+    tab_id: TabId,
+    input_node_id: usize,
+    /// Current value string for the input, after applying HTML sanitization rules.
+    value: String,
+    /// Bounding box of the `<input>` control in **viewport CSS coordinates**.
+    ///
+    /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
+    anchor_css: Rect,
+  },
+  /// Notification that a color picker popup should be dismissed.
+  ///
+  /// Workers emit this in response to [`UiToWorker::ColorPickerCancel`] so front-ends can close the
+  /// overlay deterministically.
+  ColorPickerClosed {
     tab_id: TabId,
   },
   /// Request that the UI open a file picker popup for an `<input type=file>` control.
