@@ -3998,6 +3998,36 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn regexp_v_enables_unicode_mode_for_control_escapes() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = JsRuntime::new(vm, heap)?;
+
+    // `\c` is a legacy control escape. In UnicodeMode (either `u` or `v`), it must be followed by
+    // an ASCII letter, otherwise it is a syntax error (unicode-restricted identity escape).
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("\\c", "v"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("\\c1", "v"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+
+    // Same restriction inside character classes.
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[\\c]", "v"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+    assert!(eval_bool(
+      &mut rt,
+      r#"(function () { try { new RegExp("[\\c1]", "v"); return false; } catch (e) { return e instanceof SyntaxError && e.message === "Invalid regular expression"; } })()"#,
+    )?);
+
+    Ok(())
+  }
 }
 
 #[cfg(test)]
