@@ -5,18 +5,37 @@ use std::thread;
 
 use crate::ipc::framing::{read_frame, write_frame, MAX_IPC_MESSAGE_BYTES};
 use crate::ipc::IpcError;
+use http::{header::HeaderName, Method};
+use serde::{Deserialize, Serialize};
 
 pub type RequestId = u64;
+
+pub const MAX_URL_BYTES: usize = 1024 * 1024;
+pub const MAX_METHOD_BYTES: usize = 64;
+pub const MAX_HEADER_COUNT: usize = 1024;
+pub const MAX_TOTAL_HEADER_BYTES: usize = 256 * 1024;
+pub const MAX_HEADER_NAME_BYTES: usize = 1024;
+pub const MAX_HEADER_VALUE_BYTES: usize = 32 * 1024;
+pub const MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_RESPONSE_BODY_BYTES: usize = 50 * 1024 * 1024;
+pub const MAX_EVENT_BYTES: usize = 4 * 1024 * 1024;
+pub const DEFAULT_MAX_QUEUED_EVENTS: usize = 1024;
 
 /// Limits controlling allocations and work for the network IPC protocol.
 #[derive(Debug, Clone)]
 pub struct NetworkMessageLimits {
   /// Maximum accepted byte length for URL strings.
   pub max_url_bytes: usize,
+  /// Maximum accepted byte length for HTTP method strings.
+  pub max_method_bytes: usize,
   /// Maximum number of headers (including duplicates).
   pub max_header_count: usize,
   /// Maximum total bytes across all header names and values.
   pub max_total_header_bytes: usize,
+  /// Maximum accepted byte length of an individual header name.
+  pub max_header_name_bytes: usize,
+  /// Maximum accepted byte length of an individual header value.
+  pub max_header_value_bytes: usize,
   /// Maximum size of a request body in bytes.
   pub max_request_body_bytes: usize,
   /// Maximum size of a response body in bytes.
@@ -28,14 +47,17 @@ pub struct NetworkMessageLimits {
 impl Default for NetworkMessageLimits {
   fn default() -> Self {
     Self {
-      max_url_bytes: 1024 * 1024,
-      max_header_count: 1024,
-      max_total_header_bytes: 256 * 1024,
-      max_request_body_bytes: 10 * 1024 * 1024,
-      max_response_body_bytes: 50 * 1024 * 1024,
+      max_url_bytes: MAX_URL_BYTES,
+      max_method_bytes: MAX_METHOD_BYTES,
+      max_header_count: MAX_HEADER_COUNT,
+      max_total_header_bytes: MAX_TOTAL_HEADER_BYTES,
+      max_header_name_bytes: MAX_HEADER_NAME_BYTES,
+      max_header_value_bytes: MAX_HEADER_VALUE_BYTES,
+      max_request_body_bytes: MAX_REQUEST_BODY_BYTES,
+      max_response_body_bytes: MAX_RESPONSE_BODY_BYTES,
       // Keep event payloads comfortably under the global frame cap so routing doesn't need to
       // special-case unusually large frames.
-      max_event_bytes: 4 * 1024 * 1024,
+      max_event_bytes: MAX_EVENT_BYTES,
     }
   }
 }
@@ -43,14 +65,17 @@ impl Default for NetworkMessageLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkLimitKind {
   UrlBytes,
+  MethodBytes,
   HeaderCount,
   TotalHeaderBytes,
+  HeaderNameBytes,
+  HeaderValueBytes,
   RequestBodyBytes,
   ResponseBodyBytes,
   EventBytes,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum ValidationError {
   #[error("limit exceeded ({kind:?}): attempted {attempted} (limit {limit})")]
   LimitExceeded {
@@ -62,6 +87,18 @@ pub enum ValidationError {
   #[error("header total bytes overflowed")]
   HeaderBytesOverflow,
 
+  #[error("invalid HTTP method")]
+  InvalidMethod,
+
+  #[error("forbidden HTTP method")]
+  ForbiddenMethod,
+
+  #[error("invalid header name")]
+  InvalidHeaderName,
+
+  #[error("invalid header value")]
+  InvalidHeaderValue,
+
   #[error("string length exceeds u32::MAX: {len}")]
   StringLenTooLarge { len: usize },
 
@@ -69,7 +106,7 @@ pub enum ValidationError {
   BodyLenTooLarge { len: usize },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum DecodeError {
   #[error("unexpected end of message")]
   UnexpectedEof,
@@ -84,8 +121,20 @@ pub enum DecodeError {
   InvalidUtf8 {
     field: &'static str,
     #[source]
-    source: std::string::FromUtf8Error,
+    source: std::str::Utf8Error,
   },
+
+  #[error("invalid HTTP method")]
+  InvalidMethod,
+
+  #[error("forbidden HTTP method")]
+  ForbiddenMethod,
+
+  #[error("invalid header name")]
+  InvalidHeaderName,
+
+  #[error("invalid header value")]
+  InvalidHeaderValue,
 
   #[error("limit exceeded ({kind:?}): attempted {attempted} (limit {limit})")]
   LimitExceeded {
@@ -120,6 +169,21 @@ pub enum TransportError {
 
   #[error("validation error: {0}")]
   Validation(#[from] ValidationError),
+}
+
+/// Errors surfaced by the network process when rejecting attacker-controlled input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum NetworkError {
+  #[error("invalid request: {message}")]
+  InvalidRequest { message: String },
+}
+
+impl From<TransportError> for NetworkError {
+  fn from(err: TransportError) -> Self {
+    Self::InvalidRequest {
+      message: err.to_string(),
+    }
+  }
 }
 
 impl From<IpcError> for TransportError {
@@ -202,6 +266,27 @@ fn validate_headers(
 
   let mut total: usize = 0;
   for (name, value) in headers {
+    if name.as_bytes().len() > limits.max_header_name_bytes {
+      return Err(ValidationError::LimitExceeded {
+        kind: NetworkLimitKind::HeaderNameBytes,
+        limit: limits.max_header_name_bytes,
+        attempted: name.as_bytes().len(),
+      });
+    }
+    if value.as_bytes().len() > limits.max_header_value_bytes {
+      return Err(ValidationError::LimitExceeded {
+        kind: NetworkLimitKind::HeaderValueBytes,
+        limit: limits.max_header_value_bytes,
+        attempted: value.as_bytes().len(),
+      });
+    }
+    if HeaderName::from_bytes(name.as_bytes()).is_err() {
+      return Err(ValidationError::InvalidHeaderName);
+    }
+    if !is_valid_header_value(value.as_bytes()) {
+      return Err(ValidationError::InvalidHeaderValue);
+    }
+
     total = total
       .checked_add(name.as_bytes().len())
       .and_then(|v| v.checked_add(value.as_bytes().len()))
@@ -215,6 +300,43 @@ fn validate_headers(
     }
   }
   Ok(())
+}
+
+fn validate_method(method: &str, limits: &NetworkMessageLimits) -> Result<(), ValidationError> {
+  if method.is_empty() {
+    return Err(ValidationError::InvalidMethod);
+  }
+  if method.as_bytes().len() > limits.max_method_bytes {
+    return Err(ValidationError::LimitExceeded {
+      kind: NetworkLimitKind::MethodBytes,
+      limit: limits.max_method_bytes,
+      attempted: method.as_bytes().len(),
+    });
+  }
+  if Method::from_bytes(method.as_bytes()).is_err() {
+    return Err(ValidationError::InvalidMethod);
+  }
+  if method.eq_ignore_ascii_case("CONNECT")
+    || method.eq_ignore_ascii_case("TRACE")
+    || method.eq_ignore_ascii_case("TRACK")
+  {
+    return Err(ValidationError::ForbiddenMethod);
+  }
+  Ok(())
+}
+
+fn is_valid_header_value(value: &[u8]) -> bool {
+  // Basic hardening against header injection; keep consistent with other IPC validators.
+  if value.iter().any(|&b| matches!(b, 0x00 | b'\r' | b'\n')) {
+    return false;
+  }
+  if value.first().is_some_and(|b| matches!(b, b' ' | b'\t')) {
+    return false;
+  }
+  if value.last().is_some_and(|b| matches!(b, b' ' | b'\t')) {
+    return false;
+  }
+  true
 }
 
 fn encode_u16_be(out: &mut Vec<u8>, v: u16) {
@@ -259,6 +381,7 @@ fn encode_message(
       out.push(1);
       encode_u64_be(&mut out, req.request_id);
 
+      validate_method(&req.method, limits)?;
       if req.url.as_bytes().len() > limits.max_url_bytes {
         return Err(ValidationError::LimitExceeded {
           kind: NetworkLimitKind::UrlBytes,
@@ -403,11 +526,6 @@ impl<'a> BytesCursor<'a> {
     })?;
     self.take(len)
   }
-
-  fn read_len_prefixed_string(&mut self, field: &'static str) -> Result<String, DecodeError> {
-    let bytes = self.read_len_prefixed_bytes()?;
-    String::from_utf8(bytes.to_vec()).map_err(|source| DecodeError::InvalidUtf8 { field, source })
-  }
 }
 
 fn decode_headers(
@@ -430,6 +548,21 @@ fn decode_headers(
     let name_bytes = cur.read_len_prefixed_bytes()?;
     let value_bytes = cur.read_len_prefixed_bytes()?;
 
+    if name_bytes.len() > limits.max_header_name_bytes {
+      return Err(DecodeError::LimitExceeded {
+        kind: NetworkLimitKind::HeaderNameBytes,
+        limit: limits.max_header_name_bytes,
+        attempted: name_bytes.len(),
+      });
+    }
+    if value_bytes.len() > limits.max_header_value_bytes {
+      return Err(DecodeError::LimitExceeded {
+        kind: NetworkLimitKind::HeaderValueBytes,
+        limit: limits.max_header_value_bytes,
+        attempted: value_bytes.len(),
+      });
+    }
+
     total = total
       .checked_add(name_bytes.len())
       .and_then(|v| v.checked_add(value_bytes.len()))
@@ -442,17 +575,23 @@ fn decode_headers(
       });
     }
 
-    let name =
-      String::from_utf8(name_bytes.to_vec()).map_err(|source| DecodeError::InvalidUtf8 {
-        field: "header_name",
-        source,
-      })?;
-    let value =
-      String::from_utf8(value_bytes.to_vec()).map_err(|source| DecodeError::InvalidUtf8 {
-        field: "header_value",
-        source,
-      })?;
-    out.push((name, value));
+    let name_str = std::str::from_utf8(name_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+      field: "header_name",
+      source,
+    })?;
+    if HeaderName::from_bytes(name_bytes).is_err() {
+      return Err(DecodeError::InvalidHeaderName);
+    }
+
+    let value_str = std::str::from_utf8(value_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+      field: "header_value",
+      source,
+    })?;
+    if !is_valid_header_value(value_bytes) {
+      return Err(DecodeError::InvalidHeaderValue);
+    }
+
+    out.push((name_str.to_owned(), value_str.to_owned()));
   }
   Ok(out)
 }
@@ -466,7 +605,27 @@ fn decode_message(
   let msg = match ty {
     1 => {
       let request_id = cur.read_u64_be()?;
-      let method = cur.read_len_prefixed_string("method")?;
+      let method_bytes = cur.read_len_prefixed_bytes()?;
+      if method_bytes.len() > limits.max_method_bytes {
+        return Err(DecodeError::LimitExceeded {
+          kind: NetworkLimitKind::MethodBytes,
+          limit: limits.max_method_bytes,
+          attempted: method_bytes.len(),
+        });
+      }
+      let method_str = std::str::from_utf8(method_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+        field: "method",
+        source,
+      })?;
+      if Method::from_bytes(method_bytes).is_err() {
+        return Err(DecodeError::InvalidMethod);
+      }
+      if method_str.eq_ignore_ascii_case("CONNECT")
+        || method_str.eq_ignore_ascii_case("TRACE")
+        || method_str.eq_ignore_ascii_case("TRACK")
+      {
+        return Err(DecodeError::ForbiddenMethod);
+      }
       let url_bytes = cur.read_len_prefixed_bytes()?;
       if url_bytes.len() > limits.max_url_bytes {
         return Err(DecodeError::LimitExceeded {
@@ -475,11 +634,10 @@ fn decode_message(
           attempted: url_bytes.len(),
         });
       }
-      let url =
-        String::from_utf8(url_bytes.to_vec()).map_err(|source| DecodeError::InvalidUtf8 {
-          field: "url",
-          source,
-        })?;
+      let url_str = std::str::from_utf8(url_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+        field: "url",
+        source,
+      })?;
       let headers = decode_headers(&mut cur, limits)?;
       let body_bytes = cur.read_len_prefixed_bytes()?;
       if body_bytes.len() > limits.max_request_body_bytes {
@@ -492,8 +650,8 @@ fn decode_message(
       let body = body_bytes.to_vec();
       NetworkMessage::Request(NetworkRequest {
         request_id,
-        method,
-        url,
+        method: method_str.to_owned(),
+        url: url_str.to_owned(),
         headers,
         body,
       })
@@ -535,6 +693,12 @@ fn decode_message(
               limit: limits.max_event_bytes,
               attempted: data_bytes.len(),
             });
+          }
+          if is_text {
+            std::str::from_utf8(data_bytes).map_err(|source| DecodeError::InvalidUtf8 {
+              field: "websocket_text_data",
+              source,
+            })?;
           }
           let data = data_bytes.to_vec();
           NetworkMessage::Event(NetworkEvent::WebSocketFrame {
@@ -752,9 +916,22 @@ where
   R: Read + Send + 'static,
   W: Write + Send + 'static,
 {
+  spawn_routed_client_with_capacity(reader, writer, DEFAULT_MAX_QUEUED_EVENTS)
+}
+
+pub fn spawn_routed_client_with_capacity<R, W>(
+  reader: ConnectionReader<R>,
+  writer: ConnectionWriter<W>,
+  max_queued_events: usize,
+) -> RoutedClient<W>
+where
+  R: Read + Send + 'static,
+  W: Write + Send + 'static,
+{
   let pending: Arc<Mutex<HashMap<RequestId, mpsc::Sender<NetworkResponse>>>> =
     Arc::new(Mutex::new(HashMap::new()));
-  let (events_tx, events_rx) = mpsc::channel();
+  // Use a bounded channel so a peer that floods async events cannot cause unbounded memory growth.
+  let (events_tx, events_rx) = mpsc::sync_channel(max_queued_events.max(1));
 
   let pending_for_thread = pending.clone();
   let recv_thread = thread::spawn(move || {
@@ -774,7 +951,12 @@ where
           }
         }
         Ok(NetworkMessage::Event(ev)) => {
-          let _ = events_tx.send(ev);
+          match events_tx.try_send(ev) {
+            Ok(()) => {}
+            // Overflow: terminate the receiver thread so the connection is dropped and memory usage
+            // stays bounded.
+            Err(mpsc::TrySendError::Full(_)) | Err(mpsc::TrySendError::Disconnected(_)) => break,
+          }
         }
         Ok(NetworkMessage::Request(_)) => {
           // Client should not receive requests. Treat as protocol violation and stop.
@@ -804,6 +986,7 @@ where
 mod tests {
   use super::*;
   use std::io::{self, Cursor};
+  use std::time::Duration;
 
   #[derive(Clone)]
   struct SharedVecWriter(Arc<Mutex<Vec<u8>>>);
@@ -891,5 +1074,171 @@ mod tests {
     let mut reader = ConnectionReader::new(partial, limits);
     let decoded = reader.recv().unwrap();
     assert_eq!(decoded, msg);
+  }
+
+  fn build_request_payload(
+    request_id: RequestId,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+  ) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.push(1);
+    encode_u64_be(&mut payload, request_id);
+    encode_string(&mut payload, method).unwrap();
+    encode_string(&mut payload, url).unwrap();
+    encode_u32_be(&mut payload, headers.len() as u32);
+    for (name, value) in headers {
+      encode_string(&mut payload, name).unwrap();
+      encode_string(&mut payload, value).unwrap();
+    }
+    encode_bytes(&mut payload, body).unwrap();
+    payload
+  }
+
+  fn build_ws_event_payload(request_id: RequestId, is_text: bool, data: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.push(3);
+    payload.push(1);
+    encode_u64_be(&mut payload, request_id);
+    payload.push(u8::from(is_text));
+    encode_bytes(&mut payload, data).unwrap();
+    payload
+  }
+
+  fn frame_payload(payload: &[u8]) -> Vec<u8> {
+    let mut framed = Vec::new();
+    write_frame(&mut framed, payload).unwrap();
+    framed
+  }
+
+  fn recv_network_error(framed: Vec<u8>, limits: NetworkMessageLimits) -> NetworkError {
+    let mut reader = ConnectionReader::new(Cursor::new(framed), limits);
+    let err = reader.recv().unwrap_err();
+    err.into()
+  }
+
+  #[test]
+  fn rejects_oversized_url() {
+    let limits = NetworkMessageLimits {
+      max_url_bytes: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "GET", "aa", &[], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_invalid_method_chars() {
+    let limits = NetworkMessageLimits::default();
+    let payload = build_request_payload(1, "GET\n", "a", &[], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_forbidden_method() {
+    let limits = NetworkMessageLimits::default();
+    let payload = build_request_payload(1, "CONNECT", "a", &[], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_header_name_over_limit() {
+    let limits = NetworkMessageLimits {
+      max_header_name_bytes: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "GET", "a", &[("ab", "c")], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_invalid_header_value() {
+    let limits = NetworkMessageLimits::default();
+    let payload = build_request_payload(1, "GET", "a", &[("x", "bad\n")], &[]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn rejects_body_over_limit_without_panicking() {
+    let limits = NetworkMessageLimits {
+      max_request_body_bytes: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_request_payload(1, "POST", "a", &[], &[1, 2]);
+    let outcome = std::panic::catch_unwind(|| recv_network_error(frame_payload(&payload), limits));
+    assert!(outcome.is_ok(), "expected InvalidRequest, got panic");
+    assert!(matches!(
+      outcome.unwrap(),
+      NetworkError::InvalidRequest { .. }
+    ));
+  }
+
+  #[test]
+  fn rejects_event_over_limit() {
+    let limits = NetworkMessageLimits {
+      max_event_bytes: 1,
+      ..NetworkMessageLimits::default()
+    };
+    let payload = build_ws_event_payload(1, false, &[1, 2]);
+    let err = recv_network_error(frame_payload(&payload), limits);
+    assert!(matches!(err, NetworkError::InvalidRequest { .. }));
+  }
+
+  #[test]
+  fn queued_events_are_capped() {
+    let limits = NetworkMessageLimits::default();
+    let mut bytes = Vec::new();
+    let ev1 = build_ws_event_payload(1, false, b"a");
+    let ev2 = build_ws_event_payload(1, false, b"b");
+    write_frame(&mut bytes, &ev1).unwrap();
+    write_frame(&mut bytes, &ev2).unwrap();
+
+    let reader = ConnectionReader::new(Cursor::new(bytes), limits.clone());
+    let writer = ConnectionWriter::new(SharedVecWriter(Arc::new(Mutex::new(Vec::new()))), limits);
+    let client = spawn_routed_client_with_capacity(reader, writer, 1);
+
+    // Give the receiver thread time to fill the bounded channel.
+    thread::sleep(Duration::from_millis(100));
+
+    let got = client.events().recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(matches!(got, NetworkEvent::WebSocketFrame { .. }));
+    let err = client
+      .events()
+      .recv_timeout(Duration::from_secs(1))
+      .unwrap_err();
+    assert!(
+      matches!(err, mpsc::RecvTimeoutError::Disconnected),
+      "expected overflow to terminate receiver thread, got {err:?}"
+    );
+  }
+
+  #[test]
+  fn malformed_messages_never_panic() {
+    let limits = NetworkMessageLimits::default();
+    let cases: Vec<Vec<u8>> = vec![
+      vec![],
+      vec![0],
+      vec![1],
+      vec![1, 0, 0, 0],
+      {
+        let mut payload = Vec::new();
+        payload.push(1);
+        // request_id only partially present
+        payload.extend_from_slice(&[0, 0, 0]);
+        payload
+      },
+    ];
+
+    for payload in cases {
+      let outcome = std::panic::catch_unwind(|| decode_message(&payload, &limits));
+      assert!(outcome.is_ok(), "decode panicked on payload {payload:?}");
+    }
   }
 }
