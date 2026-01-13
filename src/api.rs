@@ -58,6 +58,21 @@
 //! workers, or use [`FastRenderFactory`] to build long-lived per-tab/per-thread
 //! renderers that still share expensive immutable resources (system font list,
 //! decoded image cache, shared HTTP/disk cache).
+//!
+//! # Runtime stacks (document vs tab, JS vs no JS)
+//!
+//! FastRender exposes multiple stateful “document/tab” containers in addition to the one-shot
+//! `FastRender::render_*` APIs. They differ in which DOM representation they use and whether they
+//! include JavaScript execution + an event loop:
+//!
+//! - [`BrowserDocument`]: renderer `dom::DomNode`, no JS/event loop.
+//! - [`BrowserDocumentDom2`] / [`BrowserDocument2`]: live `dom2::Document` + render caching, no
+//!   JS/event loop.
+//! - [`BrowserTab`]: `dom2` + JS executor + HTML event loop + navigation/history.
+//! - [`BrowserDocumentJs`]: legacy JS host wrapper (manual script execution; no HTML `<script>`
+//!   scheduling).
+//!
+//! See `docs/runtime_stacks.md` in the repository for a fuller comparison and usage guidance.
 
 use crate::accessibility::AccessibilityNode;
 use crate::animation;
