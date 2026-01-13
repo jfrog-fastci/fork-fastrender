@@ -248,7 +248,13 @@ impl SiteLock {
   fn registrable_domain(host: &str) -> String {
     static PSL: OnceLock<List> = OnceLock::new();
     let list = PSL.get_or_init(List::default);
-    let host = host.to_ascii_lowercase();
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+
+    // IP literals do not have a registrable domain; treat the full host as the site key so we do
+    // not accidentally group unrelated IPs together (e.g. `127.0.0.1` vs `192.0.2.1`).
+    if host.parse::<std::net::IpAddr>().is_ok() {
+      return host;
+    }
     match list.domain(host.as_bytes()) {
       Some(domain) => String::from_utf8_lossy(domain.as_bytes()).into_owned(),
       None => Self::registrable_domain_fallback(&host),
@@ -632,6 +638,22 @@ mod tests {
     // Scheme must match.
     let http_subdomain = site_key_for_navigation("http://b.example.com/", None);
     assert!(!lock.matches_url("http://b.example.com/", &http_subdomain));
+  }
+
+  #[test]
+  fn schemeful_site_lock_does_not_group_ip_addresses() {
+    let lock_site = site_key_for_navigation("https://127.0.0.1/", None);
+    let lock = SiteLock::from_site_key(&lock_site, SiteIsolationMode::PerSite);
+
+    let other_ip = site_key_for_navigation("https://192.0.2.1/", None);
+    assert!(!lock.matches_url("https://192.0.2.1/", &other_ip));
+    assert!(lock.matches_url("https://127.0.0.1/", &lock_site));
+
+    let lock_v6_site = site_key_for_navigation("https://[2001:db8::1]/", None);
+    let lock_v6 = SiteLock::from_site_key(&lock_v6_site, SiteIsolationMode::PerSite);
+    let other_v6 = site_key_for_navigation("https://[2001:db8::2]/", None);
+    assert!(!lock_v6.matches_url("https://[2001:db8::2]/", &other_v6));
+    assert!(lock_v6.matches_url("https://[2001:db8::1]/", &lock_v6_site));
   }
 }
 
