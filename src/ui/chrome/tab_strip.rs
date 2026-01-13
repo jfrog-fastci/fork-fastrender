@@ -4105,6 +4105,63 @@ mod tests {
   }
 
   #[test]
+  fn scroll_clamp_restarts_when_user_scrolls_mid_clamp() {
+    let ctx = egui::Context::default();
+    let mut style = egui::Style::default();
+    style.animation_time = 1.0;
+    ctx.set_style(style);
+
+    let motion = UiMotion::new(true);
+    let clamp_anim_id = egui::Id::new("test_scroll_clamp_anim_user_scroll");
+
+    let max_scroll_x = 100.0;
+    let desired_scroll_offset_x = 200.0;
+
+    // Frame 1: start clamping at an out-of-range scroll offset.
+    let (clamped0, _end_spacer0, clamping0) = tab_strip_scroll_clamp(
+      &ctx,
+      motion,
+      clamp_anim_id,
+      desired_scroll_offset_x,
+      max_scroll_x,
+      0.0,
+    );
+    assert!(clamping0);
+    assert!((clamped0 - desired_scroll_offset_x).abs() < 1e-6);
+
+    // Frame 2: simulate the user scrolling while the clamp animation is active. The clamp should
+    // restart from the user's new position, rather than continuing along the old animation track.
+    let user_offset_x = 180.0;
+    let (clamped1, _end_spacer1, clamping1) = tab_strip_scroll_clamp(
+      &ctx,
+      motion,
+      clamp_anim_id,
+      user_offset_x,
+      max_scroll_x,
+      0.05,
+    );
+    assert!(clamping1);
+    assert!(
+      (clamped1 - user_offset_x).abs() < 1e-6,
+      "expected clamp to restart from user scroll offset"
+    );
+
+    // Frame 3: with no further user scrolling, the clamp should now progress toward the max scroll
+    // based on the restarted animation.
+    let (clamped2, _end_spacer2, clamping2) = tab_strip_scroll_clamp(
+      &ctx,
+      motion,
+      clamp_anim_id,
+      user_offset_x,
+      max_scroll_x,
+      0.10,
+    );
+    assert!(clamping2);
+    assert!(clamped2 < user_offset_x - 0.01);
+    assert!(clamped2 > max_scroll_x - 1e-6);
+  }
+
+  #[test]
   fn sizing_without_overflow_prefers_max_width() {
     let sizing = compute_tab_strip_sizing(1200.0, 3);
     assert!(!sizing.overflow);
