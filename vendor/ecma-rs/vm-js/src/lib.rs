@@ -204,6 +204,10 @@ mod regexp_unicode_resolver_tests;
 #[path = "../tests/unit/scf.rs"]
 mod scf_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/class_static_block_hir_exec.rs"]
+mod class_static_block_hir_exec_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;
