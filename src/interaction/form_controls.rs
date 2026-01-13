@@ -1,6 +1,7 @@
 use crate::interaction::state::FileSelection;
 use crate::interaction::InteractionState;
 use crate::text::caret::CaretAffinity;
+use crate::tree::box_tree::ImePreeditPaintState;
 
 /// Derive the display label/value for an `<input type="file">` control from the live interaction state.
 ///
@@ -70,15 +71,18 @@ pub(crate) fn text_edit_state_for_value_char_len(
   (caret, caret_affinity, selection)
 }
 
-/// Returns the current non-empty IME preedit string for `node_id`, when present.
+/// Returns the current non-empty IME preedit (composition) state for `node_id`, when present.
 pub(crate) fn ime_preedit_for_node(
   interaction_state: Option<&InteractionState>,
   node_id: usize,
-) -> Option<String> {
+) -> Option<ImePreeditPaintState> {
   interaction_state
-    .and_then(|state| state.ime_preedit_for(node_id))
-    .filter(|t| !t.is_empty())
-    .map(|t| t.to_string())
+    .and_then(|state| state.ime_preedit_state_for(node_id))
+    .filter(|state| !state.text.is_empty())
+    .map(|state| ImePreeditPaintState {
+      text: state.text.clone(),
+      cursor: state.cursor,
+    })
 }
 
 #[cfg(test)]
@@ -164,4 +168,3 @@ mod tests {
     assert_eq!(selection, None);
   }
 }
-

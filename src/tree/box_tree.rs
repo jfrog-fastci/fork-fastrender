@@ -270,7 +270,7 @@ pub struct FormControl {
   ///
   /// This is a browser-UI hint used to render in-progress IME text at the caret without mutating
   /// the DOM value attribute/textarea contents.
-  pub ime_preedit: Option<String>,
+  pub ime_preedit: Option<ImePreeditPaintState>,
 }
 
 impl PartialEq for FormControl {
@@ -284,6 +284,21 @@ impl PartialEq for FormControl {
       && self.invalid == other.invalid
       && self.ime_preedit == other.ime_preedit
   }
+}
+
+/// IME preedit (composition) state as consumed by paint/layout.
+///
+/// This mirrors [`crate::interaction::ImePreeditState`] but lives in the paint-facing box tree so
+/// render backends can position the caret within the composition string without depending on
+/// interaction-layer types.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ImePreeditPaintState {
+  pub text: String,
+  /// Cursor/selection range within `text`, in character indices.
+  ///
+  /// When `Some((start, end))` and `start != end`, the IME is indicating a selection within the
+  /// preedit string. Renderers should clamp the range to `text.chars().count()`.
+  pub cursor: Option<(usize, usize)>,
 }
 
 /// Specific form control kinds

@@ -871,6 +871,14 @@ impl InteractionState {
   }
 
   #[inline]
+  pub fn ime_preedit_state_for(&self, node_id: usize) -> Option<&ImePreeditState> {
+    self
+      .ime_preedit
+      .as_ref()
+      .filter(|state| state.node_id == node_id)
+  }
+
+  #[inline]
   pub fn text_edit_for(&self, node_id: usize) -> Option<&TextEditPaintState> {
     self
       .text_edit

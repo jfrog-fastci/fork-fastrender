@@ -126,7 +126,7 @@ use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
-use crate::text::caret::{caret_stops_for_runs, caret_x_for_position};
+use crate::text::caret::{caret_stops_for_runs, caret_x_for_position, CaretAffinity};
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle;
 use crate::text::font_db::ScaledMetrics;
@@ -10270,19 +10270,76 @@ impl Painter {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
         let value_is_empty = value.is_empty();
+        let preedit = control
+          .ime_preedit
+          .as_ref()
+          .filter(|state| !state.text.is_empty());
+        let display_is_empty = value_is_empty && preedit.is_none();
 
         let mut generated: Option<String> = None;
         let mut paint_text: Option<&str> = None;
         let mut fallback_color = base_color;
         let mut is_placeholder = false;
+        let mut ime_caret_idx: Option<usize> = None;
+        let mut ime_selection: Option<(usize, usize)> = None;
+        let mut preedit_range: Option<(usize, usize)> = None;
+
+        let byte_offset_for_char_idx = |text: &str, char_idx: usize| -> usize {
+          if char_idx == 0 {
+            return 0;
+          }
+          let mut count = 0usize;
+          for (byte_idx, _) in text.char_indices() {
+            if count == char_idx {
+              return byte_idx;
+            }
+            count += 1;
+          }
+          text.len()
+        };
 
         match kind {
           TextControlKind::Password => {
-            if !value_is_empty {
-              let mask_len = value.chars().count();
+            if !display_is_empty {
+              let committed_len = value.chars().count();
+              let preedit_len = preedit.map(|state| state.text.chars().count()).unwrap_or(0);
+              let (replace_start, replace_end) = if preedit.is_some() {
+                (*selection).unwrap_or((*caret, *caret))
+              } else {
+                (*caret, *caret)
+              };
+              let replace_start = replace_start.min(committed_len);
+              let replace_end = replace_end.min(committed_len);
+              let replaced_len = if preedit.is_some() {
+                replace_end.saturating_sub(replace_start)
+              } else {
+                0
+              };
+              let total_len = committed_len
+                .saturating_sub(replaced_len)
+                .saturating_add(preedit_len);
+              let mask_len = total_len.clamp(3, 50);
               generated = Some("•".repeat(mask_len));
               paint_text = generated.as_deref();
               fallback_color = base_color;
+
+              if let Some(preedit) = preedit {
+                let preedit_len = preedit.text.chars().count();
+                preedit_range = Some((replace_start, replace_start.saturating_add(preedit_len)));
+                let (cursor_start, cursor_end) = preedit
+                  .cursor
+                  .map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
+                  .unwrap_or((preedit_len, preedit_len));
+                let cursor_start = cursor_start.min(preedit_len);
+                let cursor_end = cursor_end.min(preedit_len);
+                ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
+                if cursor_start != cursor_end {
+                  ime_selection = Some((
+                    replace_start.saturating_add(cursor_start),
+                    replace_start.saturating_add(cursor_end),
+                  ));
+                }
+              }
             } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
               paint_text = Some(ph);
               fallback_color = placeholder_color;
@@ -10290,7 +10347,43 @@ impl Painter {
             }
           }
           TextControlKind::Number => {
-            if !value_is_empty {
+            if let Some(preedit) = preedit {
+              let committed_len = value.chars().count();
+              let (replace_start, replace_end) = (*selection).unwrap_or((*caret, *caret));
+              let replace_start = replace_start.min(committed_len);
+              let replace_end = replace_end.min(committed_len);
+              let start_byte = byte_offset_for_char_idx(value, replace_start);
+              let end_byte = byte_offset_for_char_idx(value, replace_end);
+
+              let mut combined = String::with_capacity(
+                value
+                  .len()
+                  .saturating_sub(end_byte.saturating_sub(start_byte))
+                  .saturating_add(preedit.text.len()),
+              );
+              combined.push_str(&value[..start_byte]);
+              combined.push_str(&preedit.text);
+              combined.push_str(&value[end_byte..]);
+              generated = Some(combined);
+              paint_text = generated.as_deref();
+              fallback_color = base_color;
+
+              let preedit_len = preedit.text.chars().count();
+              preedit_range = Some((replace_start, replace_start.saturating_add(preedit_len)));
+              let (cursor_start, cursor_end) = preedit
+                .cursor
+                .map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
+                .unwrap_or((preedit_len, preedit_len));
+              let cursor_start = cursor_start.min(preedit_len);
+              let cursor_end = cursor_end.min(preedit_len);
+              ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
+              if cursor_start != cursor_end {
+                ime_selection = Some((
+                  replace_start.saturating_add(cursor_start),
+                  replace_start.saturating_add(cursor_end),
+                ));
+              }
+            } else if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
@@ -10300,7 +10393,43 @@ impl Painter {
             }
           }
           TextControlKind::Date => {
-            if !value_is_empty {
+            if let Some(preedit) = preedit {
+              let committed_len = value.chars().count();
+              let (replace_start, replace_end) = (*selection).unwrap_or((*caret, *caret));
+              let replace_start = replace_start.min(committed_len);
+              let replace_end = replace_end.min(committed_len);
+              let start_byte = byte_offset_for_char_idx(value, replace_start);
+              let end_byte = byte_offset_for_char_idx(value, replace_end);
+
+              let mut combined = String::with_capacity(
+                value
+                  .len()
+                  .saturating_sub(end_byte.saturating_sub(start_byte))
+                  .saturating_add(preedit.text.len()),
+              );
+              combined.push_str(&value[..start_byte]);
+              combined.push_str(&preedit.text);
+              combined.push_str(&value[end_byte..]);
+              generated = Some(combined);
+              paint_text = generated.as_deref();
+              fallback_color = base_color;
+
+              let preedit_len = preedit.text.chars().count();
+              preedit_range = Some((replace_start, replace_start.saturating_add(preedit_len)));
+              let (cursor_start, cursor_end) = preedit
+                .cursor
+                .map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
+                .unwrap_or((preedit_len, preedit_len));
+              let cursor_start = cursor_start.min(preedit_len);
+              let cursor_end = cursor_end.min(preedit_len);
+              ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
+              if cursor_start != cursor_end {
+                ime_selection = Some((
+                  replace_start.saturating_add(cursor_start),
+                  replace_start.saturating_add(cursor_end),
+                ));
+              }
+            } else if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
@@ -10314,7 +10443,43 @@ impl Painter {
             }
           }
           TextControlKind::Plain => {
-            if !value_is_empty {
+            if let Some(preedit) = preedit {
+              let committed_len = value.chars().count();
+              let (replace_start, replace_end) = (*selection).unwrap_or((*caret, *caret));
+              let replace_start = replace_start.min(committed_len);
+              let replace_end = replace_end.min(committed_len);
+              let start_byte = byte_offset_for_char_idx(value, replace_start);
+              let end_byte = byte_offset_for_char_idx(value, replace_end);
+
+              let mut combined = String::with_capacity(
+                value
+                  .len()
+                  .saturating_sub(end_byte.saturating_sub(start_byte))
+                  .saturating_add(preedit.text.len()),
+              );
+              combined.push_str(&value[..start_byte]);
+              combined.push_str(&preedit.text);
+              combined.push_str(&value[end_byte..]);
+              generated = Some(combined);
+              paint_text = generated.as_deref();
+              fallback_color = base_color;
+
+              let preedit_len = preedit.text.chars().count();
+              preedit_range = Some((replace_start, replace_start.saturating_add(preedit_len)));
+              let (cursor_start, cursor_end) = preedit
+                .cursor
+                .map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
+                .unwrap_or((preedit_len, preedit_len));
+              let cursor_start = cursor_start.min(preedit_len);
+              let cursor_end = cursor_end.min(preedit_len);
+              ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
+              if cursor_start != cursor_end {
+                ime_selection = Some((
+                  replace_start.saturating_add(cursor_start),
+                  replace_start.saturating_add(cursor_end),
+                ));
+              }
+            } else if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
@@ -10394,6 +10559,7 @@ impl Painter {
           a: 0.35,
         };
         let mut selection_rects: Vec<Rect> = Vec::new();
+        let mut preedit_underline_rects: Vec<Rect> = Vec::new();
         let mut caret_rect: Option<(Rect, Rgba)> = None;
 
         if control.focused && !control.disabled {
@@ -10431,7 +10597,44 @@ impl Painter {
           };
           let caret_stops = caret_stops_for_runs(display_text, &text_runs, total_advance);
 
-          if let Some((sel_start, sel_end)) = *selection {
+          if !matches!(kind, TextControlKind::Password) && text_style.color.a > f32::EPSILON {
+            if let Some((pre_start, pre_end)) = preedit_range {
+              let pre_start = pre_start.min(max_chars);
+              let pre_end = pre_end.min(max_chars);
+              if pre_start < pre_end {
+                let underline_y = (bottom - 1.0).max(top);
+                let segments = if text_runs.is_empty() {
+                  let x1 = fallback_char_advance * pre_start as f32;
+                  let x2 = fallback_char_advance * pre_end as f32;
+                  vec![(x1.min(x2), x1.max(x2))]
+                } else {
+                  crate::text::caret::selection_segments_for_char_range(
+                    display_text,
+                    &text_runs,
+                    pre_start,
+                    pre_end,
+                  )
+                };
+                for (seg_start, seg_end) in segments {
+                  let underline_rect = Rect::from_xywh(
+                    start_x + seg_start,
+                    underline_y,
+                    (seg_end - seg_start).max(0.0),
+                    1.0,
+                  );
+                  if let Some(clipped) = underline_rect
+                    .intersection(padding_rect)
+                    .filter(|r| r.width() > 0.0 && r.height() > 0.0)
+                  {
+                    preedit_underline_rects.push(clipped);
+                  }
+                }
+              }
+            }
+          }
+
+          let selection_for_paint = if preedit.is_some() { ime_selection } else { *selection };
+          if let Some((sel_start, sel_end)) = selection_for_paint {
             let sel_start = sel_start.min(max_chars);
             let sel_end = sel_end.min(max_chars);
             if sel_start != sel_end {
@@ -10467,9 +10670,17 @@ impl Painter {
             CaretColor::Auto => style.color,
           };
           if !caret_color.is_transparent() {
-            let caret_idx = (*caret).min(max_chars);
+            let caret_idx = ime_caret_idx
+              .unwrap_or_else(|| (*caret).min(max_chars))
+              .min(max_chars);
+            let caret_affinity_for_paint = if preedit.is_some() {
+              CaretAffinity::Downstream
+            } else {
+              *caret_affinity
+            };
             let caret_x = start_x
-              + caret_x_for_position(&caret_stops, caret_idx, *caret_affinity).unwrap_or(0.0);
+              + caret_x_for_position(&caret_stops, caret_idx, caret_affinity_for_paint)
+                .unwrap_or(0.0);
             let max_caret_x = (rect.max_x() - 1.0).max(rect.x());
             let caret_x = caret_x.clamp(rect.x(), max_caret_x);
 
@@ -10525,6 +10736,16 @@ impl Painter {
           }
         }
 
+        for underline_rect in preedit_underline_rects {
+          let device_rect_raw = self.device_rect(underline_rect);
+          let device_rect = Rect::from_xywh(
+            device_rect_raw.x().round(),
+            device_rect_raw.y().round(),
+            device_rect_raw.width().round().max(1.0),
+            device_rect_raw.height().round().max(1.0),
+          );
+          fill_rect_masked_crisp(&mut self.pixmap, device_rect, text_style.color, clip_mask);
+        }
         if let Some((caret_rect, caret_color)) = caret_rect {
           let device_rect_raw = self.device_rect(caret_rect);
           let device_rect = Rect::from_xywh(
@@ -10549,13 +10770,72 @@ impl Painter {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
 
+        let preedit = control
+          .ime_preedit
+          .as_ref()
+          .filter(|state| !state.text.is_empty());
         let value_is_empty = value.is_empty();
         let rect = inset_rect(content_rect, 2.0);
 
+        let mut generated: Option<String> = None;
         let mut paint_text: Option<&str> = None;
         let mut fallback_color = base_color;
         let mut is_placeholder = false;
-        if !value_is_empty {
+        let mut ime_caret_idx: Option<usize> = None;
+        let mut ime_selection: Option<(usize, usize)> = None;
+        let mut preedit_range: Option<(usize, usize)> = None;
+
+        let byte_offset_for_char_idx = |text: &str, char_idx: usize| -> usize {
+          if char_idx == 0 {
+            return 0;
+          }
+          let mut count = 0usize;
+          for (byte_idx, _) in text.char_indices() {
+            if count == char_idx {
+              return byte_idx;
+            }
+            count += 1;
+          }
+          text.len()
+        };
+
+        if let Some(preedit) = preedit {
+          let committed_len = value.chars().count();
+          let (replace_start, replace_end) = (*selection).unwrap_or((*caret, *caret));
+          let replace_start = replace_start.min(committed_len);
+          let replace_end = replace_end.min(committed_len);
+          let start_byte = byte_offset_for_char_idx(value, replace_start);
+          let end_byte = byte_offset_for_char_idx(value, replace_end);
+
+          let mut combined = String::with_capacity(
+            value
+              .len()
+              .saturating_sub(end_byte.saturating_sub(start_byte))
+              .saturating_add(preedit.text.len()),
+          );
+          combined.push_str(&value[..start_byte]);
+          combined.push_str(&preedit.text);
+          combined.push_str(&value[end_byte..]);
+          generated = Some(combined);
+          paint_text = generated.as_deref();
+          fallback_color = base_color;
+
+          let preedit_len = preedit.text.chars().count();
+          preedit_range = Some((replace_start, replace_start.saturating_add(preedit_len)));
+          let (cursor_start, cursor_end) = preedit
+            .cursor
+            .map(|(a, b)| if a <= b { (a, b) } else { (b, a) })
+            .unwrap_or((preedit_len, preedit_len));
+          let cursor_start = cursor_start.min(preedit_len);
+          let cursor_end = cursor_end.min(preedit_len);
+          ime_caret_idx = Some(replace_start.saturating_add(cursor_end));
+          if cursor_start != cursor_end {
+            ime_selection = Some((
+              replace_start.saturating_add(cursor_start),
+              replace_start.saturating_add(cursor_end),
+            ));
+          }
+        } else if !value_is_empty {
           paint_text = Some(value.as_str());
           fallback_color = base_color;
         } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
@@ -10601,8 +10881,17 @@ impl Painter {
 
         let display_text = paint_text.unwrap_or("");
         let max_chars = display_text.chars().count();
-        let caret_idx = (*caret).min(max_chars);
-        let selection = (*selection).map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
+        let caret_idx = ime_caret_idx
+          .unwrap_or_else(|| (*caret).min(max_chars))
+          .min(max_chars);
+        let caret_affinity_for_paint = if preedit.is_some() {
+          CaretAffinity::Downstream
+        } else {
+          *caret_affinity
+        };
+        let selection_for_paint = if preedit.is_some() { ime_selection } else { *selection };
+        let selection =
+          selection_for_paint.map(|(start, end)| (start.min(max_chars), end.min(max_chars)));
         let mut caret_rect: Option<(Rect, Rgba)> = None;
 
         let mut metrics_sample = display_text;
@@ -10755,6 +11044,60 @@ impl Painter {
             );
           }
 
+          if control.focused && !control.disabled {
+            if let Some((pre_start, pre_end)) = preedit_range {
+              let seg_start = pre_start.max(line.start_char).min(line.end_char);
+              let seg_end = pre_end.max(line.start_char).min(line.end_char);
+              if seg_start < seg_end && text_style.color.a > f32::EPSILON && line_len > 0 {
+                let start_col = seg_start - line.start_char;
+                let end_col = seg_end - line.start_char;
+                let underline_y = (bottom - 1.0).max(top);
+                let fallback_char_advance = if line_len > 0 {
+                  (fallback_advance / line_len as f32).max(0.0)
+                } else {
+                  0.0
+                };
+                let segments = if line_runs.is_empty() {
+                  let x1 = fallback_char_advance * start_col as f32;
+                  let x2 = fallback_char_advance * end_col as f32;
+                  vec![(x1.min(x2), x1.max(x2))]
+                } else {
+                  crate::text::caret::selection_segments_for_char_range(
+                    line_text,
+                    &line_runs,
+                    start_col,
+                    end_col,
+                  )
+                };
+                for (seg_start, seg_end) in segments {
+                  let underline_rect = Rect::from_xywh(
+                    start_x + seg_start,
+                    underline_y,
+                    (seg_end - seg_start).max(0.0),
+                    1.0,
+                  );
+                  if let Some(clipped) = underline_rect.intersection(rect) {
+                    if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                      let device_rect_raw = self.device_rect(clipped);
+                      let device_rect = Rect::from_xywh(
+                        device_rect_raw.x().round(),
+                        device_rect_raw.y().round(),
+                        device_rect_raw.width().round().max(1.0),
+                        device_rect_raw.height().round().max(1.0),
+                      );
+                      fill_rect_masked_crisp(
+                        &mut self.pixmap,
+                        device_rect,
+                        text_style.color,
+                        textarea_clip_mask,
+                      );
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           if caret_rect.is_none()
             && line_idx == caret_line_idx
             && control.focused
@@ -10763,7 +11106,7 @@ impl Painter {
           {
             let caret_col = caret_idx.saturating_sub(line.start_char).min(line_len);
             let caret_x = start_x
-              + caret_x_for_position(&caret_stops, caret_col, *caret_affinity).unwrap_or(0.0);
+              + caret_x_for_position(&caret_stops, caret_col, caret_affinity_for_paint).unwrap_or(0.0);
             let max_caret_x = (line_rect.max_x() - 1.0).max(line_rect.x());
             let caret_x = caret_x.clamp(line_rect.x(), max_caret_x);
 
