@@ -614,4 +614,23 @@ mod tests {
     let err = vp9_is_keyframe(&[0x00_u8]).expect_err("invalid marker should error");
     assert!(matches!(err, MediaError::Demux(_)));
   }
+
+  #[test]
+  fn vp9_keyframe_detection_rejects_truncated_header() {
+    let err = vp9_is_keyframe(&[]).expect_err("empty frame should error");
+    assert!(matches!(err, MediaError::Demux(_)));
+  }
+
+  #[test]
+  fn vp9_keyframe_detection_rejects_profile3_reserved_bit_set() {
+    // frame_marker=0b10, profile=3 (11), reserved=1 (invalid)
+    let err = vp9_is_keyframe(&[0xB8_u8]).expect_err("reserved bit set should error");
+    let MediaError::Demux(msg) = err else {
+      panic!("expected demux error, got {err:?}");
+    };
+    assert!(
+      msg.contains("reserved"),
+      "expected error mentioning reserved bit, got {msg:?}"
+    );
+  }
 }
