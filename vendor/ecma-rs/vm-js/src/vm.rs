@@ -4,6 +4,7 @@ use crate::error::VmError;
 use crate::exec::{AsyncContinuation, RuntimeEnv};
 use crate::execution_context::ExecutionContext;
 use crate::execution_context::ModuleId;
+use crate::execution_context::ScriptId;
 use crate::execution_context::ScriptOrModule;
 use crate::fallible_alloc::arc_try_new_vm;
 use crate::function::{
@@ -317,6 +318,12 @@ pub struct Vm {
   /// This is the engine's equivalent of ECMA-262's Agent Record `[[ModuleAsyncEvaluationCount]]`
   /// and is incremented by `IncrementModuleAsyncEvaluationCount`.
   module_async_evaluation_count: u64,
+  /// Counter used to assign fresh [`ScriptId`] values to executed classic scripts.
+  ///
+  /// Each `JsRuntime::exec_*script*` entry point assigns a new ScriptId and installs it into the
+  /// active execution context so dynamic `import()` can pass `ModuleReferrer::Script(..)` to host
+  /// module loading hooks.
+  next_script_id: u64,
   stack: Vec<StackFrame>,
   execution_context_stack: Vec<ExecutionContext>,
   /// Intern table for `ScriptOrModule` identities stored on function objects.
@@ -618,6 +625,7 @@ impl Vm {
       budget: BudgetState::new(Budget::unlimited(check_time_every)),
       unscoped_math_random_state,
       module_async_evaluation_count: 0,
+      next_script_id: 0,
       stack: Vec::new(),
       execution_context_stack: Vec::new(),
       script_or_module_table: Vec::new(),
@@ -2275,6 +2283,16 @@ impl Vm {
       .iter()
       .rev()
       .find_map(|ctx| ctx.script_or_module)
+  }
+
+  /// Generates a fresh [`ScriptId`] for a classic script execution.
+  pub(crate) fn fresh_script_id(&mut self) -> Result<ScriptId, VmError> {
+    let raw = self.next_script_id;
+    self.next_script_id = self
+      .next_script_id
+      .checked_add(1)
+      .ok_or(VmError::LimitExceeded("ScriptId overflow"))?;
+    Ok(ScriptId::from_raw(raw))
   }
 
   pub(crate) fn intern_script_or_module(

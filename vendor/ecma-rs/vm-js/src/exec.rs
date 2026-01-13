@@ -1957,9 +1957,10 @@ impl JsRuntime {
       col,
     };
 
+    let script_id = self.vm.fresh_script_id()?;
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
-      script_or_module: None,
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -2050,9 +2051,10 @@ impl JsRuntime {
       line,
       col,
     };
+    let script_id = self.vm.fresh_script_id()?;
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
-      script_or_module: None,
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -2254,9 +2256,10 @@ impl JsRuntime {
       col,
     };
 
+    let script_id = self.vm.fresh_script_id()?;
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
-      script_or_module: None,
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -2590,7 +2593,7 @@ impl JsRuntime {
           let cont = AsyncContinuation {
             env: env.clone(),
             strict: strict_at_suspend,
-            exec_ctx: None,
+            exec_ctx: Some(exec_ctx),
             script_ast: Some(top.clone()),
             this_root,
             new_target_root,
@@ -2737,9 +2740,10 @@ impl JsRuntime {
       col,
     };
 
+    let script_id = self.vm.fresh_script_id()?;
     let exec_ctx = crate::ExecutionContext {
       realm: self.realm.id(),
-      script_or_module: None,
+      script_or_module: Some(ScriptOrModule::Script(script_id)),
     };
     let result: Result<Value, VmError> = (|| {
       let mut vm_ctx = self.vm.execution_context_guard(exec_ctx)?;
@@ -3068,7 +3072,7 @@ impl JsRuntime {
           let cont = AsyncContinuation {
             env: env.clone(),
             strict: strict_at_suspend,
-            exec_ctx: None,
+            exec_ctx: Some(exec_ctx),
             script_ast: Some(top.clone()),
             this_root,
             new_target_root,

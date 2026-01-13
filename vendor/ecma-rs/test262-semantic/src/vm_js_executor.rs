@@ -189,7 +189,11 @@ struct Test262ModuleHooks {
   /// Each [`Realm`] owns persistent GC roots and must be explicitly torn down with access to the
   /// [`Heap`] before dropping.
   created_realms: Vec<Realm>,
-  /// Directory used to resolve `ModuleReferrer::Realm` (dynamic import from classic scripts).
+  /// Directory used to resolve dynamic `import()` from classic scripts.
+  ///
+  /// `vm-js` passes `ModuleReferrer::Script(_)` when a classic script is the active
+  /// `ScriptOrModule`, but some embeddings may still fall back to `ModuleReferrer::Realm(_)` when no
+  /// script identity is available.
   test_dir: PathBuf,
   /// Sandbox root for module loading. All resolved module paths must stay within this directory.
   ///
