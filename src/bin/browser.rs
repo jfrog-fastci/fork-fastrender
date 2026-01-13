@@ -9298,6 +9298,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
       | UiToWorker::FilePickerChoose { tab_id, .. }
       | UiToWorker::FilePickerCancel { tab_id }
       | UiToWorker::TextInput { tab_id, .. }
+      | UiToWorker::A11ySetTextValue { tab_id, .. }
+      | UiToWorker::A11ySetTextSelection { tab_id, .. }
       | UiToWorker::ImePreedit { tab_id, .. }
       | UiToWorker::ImeCommit { tab_id, .. }
       | UiToWorker::ImeCancel { tab_id }
@@ -9349,6 +9351,8 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
           | UiToWorker::FilePickerChoose { .. }
           | UiToWorker::FilePickerCancel { .. }
           | UiToWorker::TextInput { .. }
+          | UiToWorker::A11ySetTextValue { .. }
+          | UiToWorker::A11ySetTextSelection { .. }
           | UiToWorker::ImePreedit { .. }
           | UiToWorker::ImeCommit { .. }
           | UiToWorker::ImeCancel { .. }
