@@ -14,7 +14,7 @@ fn main() {
 
     // Re-run if the toolchain environment changes. These vars are honored by libvpx's configure
     // script and affect the produced `libvpx.a`.
-    for var in ["CC", "CXX", "CFLAGS", "AR", "AS", "CROSS", "MAKE"] {
+    for var in ["CC", "CXX", "CFLAGS", "AR", "AS", "LD", "CROSS", "MAKE"] {
         println!("cargo:rerun-if-env-changed={var}");
         println!("cargo:rerun-if-env-changed={var}_{target_key}");
     }
@@ -158,6 +158,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
     let mut ar = get_scoped_env("AR", &target_key);
     let make_env = get_scoped_env("MAKE", &target_key);
     let as_env = get_scoped_env("AS", &target_key);
+    let mut ld = get_scoped_env("LD", &target_key);
     let cross_env = get_scoped_env("CROSS", &target_key);
 
     // Default to the clang toolchain when building for native Unix targets. The repository already
@@ -167,7 +168,16 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         cc = "clang".to_string();
     }
     if cxx.is_empty() && target_os != "windows" {
-        cxx = "clang++".to_string();
+        // We build a decoder-only libvpx with libyuv disabled, so a dedicated C++ driver isn't
+        // required. Using the same tool as `CC` is more likely to be present in minimal
+        // environments.
+        cxx = cc.clone();
+    }
+    if ld.is_empty() && target_os != "windows" {
+        // Some minimal CI environments don't have `gcc`, but they do have `clang` (required by this
+        // repo's `.cargo/config.toml` linker setting). Configure uses `LD` for link tests, so set
+        // it explicitly.
+        ld = cc.clone();
     }
     if ar.is_empty() && target_os != "windows" {
         ar = if tool_in_path("llvm-ar") {
@@ -234,7 +244,7 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
 
     let source_tree_hash = hash_dir_contents(&src_dir);
     let build_fingerprint = format!(
-        "target={target}\nhost={host}\ncc={cc}\ncxx={cxx}\ncflags={cflags}\nar={ar}\nmake={effective_make}\nas={effective_as}\ncross={effective_cross}\nlibvpx_source_tree_hash={source_tree_hash}\nconfigure_args={}\n",
+        "target={target}\nhost={host}\ncc={cc}\ncxx={cxx}\nld={ld}\ncflags={cflags}\nar={ar}\nmake={effective_make}\nas={effective_as}\ncross={effective_cross}\nlibvpx_source_tree_hash={source_tree_hash}\nconfigure_args={}\n",
         configure_args.join(" ")
     );
 
@@ -280,6 +290,9 @@ Cross-compiling the bundled libvpx for MSVC is not supported; build on Windows o
         }
         if !ar.is_empty() {
             configure_cmd.env("AR", &ar);
+        }
+        if !ld.is_empty() {
+            configure_cmd.env("LD", &ld);
         }
         if !effective_cross.is_empty() {
             configure_cmd.env("CROSS", &effective_cross);
@@ -424,8 +437,7 @@ fn find_windows_posix_shell(target: &str, host: &str) -> String {
     for candidate in ["sh", "bash"] {
         match Command::new(candidate).arg("-c").arg("exit 0").status() {
             Ok(status) if status.success() => return candidate.to_string(),
-            Ok(_) => continue,
-            Err(_) => {}
+            _ => continue,
         }
     }
 
