@@ -62,6 +62,7 @@ pub struct AccessKitConnectivitySnapshot {
 ///
 /// This is intended for page-a11y subtree injection tests: if injected nodes are not connected to
 /// the tree root, they will show up as *orphans* (present in `update.nodes` but unreachable).
+#[track_caller]
 pub fn assert_accesskit_update_has_no_orphans<'a, I>(
   update: &'a accesskit::TreeUpdate,
   root_id_fallback: Option<accesskit::NodeId>,
@@ -83,6 +84,7 @@ pub fn assert_accesskit_update_has_no_orphans<'a, I>(
 ///
 /// When this fails, it prints a full [`AccessKitConnectivitySnapshot`] to help debug why the node
 /// is unreachable.
+#[track_caller]
 pub fn assert_accesskit_node_is_reachable<'a, I>(
   update: &'a accesskit::TreeUpdate,
   target: accesskit::NodeId,
@@ -252,10 +254,12 @@ impl AccessKitTestTree {
     self.connectivity_snapshot_from_platform_output(&output.platform_output)
   }
 
+  #[track_caller]
   pub fn assert_update_has_no_orphans(&self, update: &accesskit::TreeUpdate) {
     assert_accesskit_update_has_no_orphans(update, self.root_id, self.nodes_iter());
   }
 
+  #[track_caller]
   pub fn assert_node_is_reachable(
     &self,
     update: &accesskit::TreeUpdate,
@@ -665,15 +669,18 @@ pub fn accesskit_connectivity_pretty_json_from_full_output(output: &egui::FullOu
   accesskit_connectivity_pretty_json_from_platform_output(&output.platform_output)
 }
 
+#[track_caller]
 pub fn assert_accesskit_platform_output_has_no_orphans(output: &egui::PlatformOutput) {
   let update = accesskit_update_from_platform_output(output);
   assert_accesskit_update_has_no_orphans(update, None, std::iter::empty());
 }
 
+#[track_caller]
 pub fn assert_accesskit_full_output_has_no_orphans(output: &egui::FullOutput) {
   assert_accesskit_platform_output_has_no_orphans(&output.platform_output);
 }
 
+#[track_caller]
 pub fn assert_accesskit_platform_output_node_is_reachable(
   output: &egui::PlatformOutput,
   target: accesskit::NodeId,
@@ -682,6 +689,7 @@ pub fn assert_accesskit_platform_output_node_is_reachable(
   assert_accesskit_node_is_reachable(update, target, None, std::iter::empty());
 }
 
+#[track_caller]
 pub fn assert_accesskit_full_output_node_is_reachable(
   output: &egui::FullOutput,
   target: accesskit::NodeId,
