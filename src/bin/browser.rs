@@ -1228,6 +1228,36 @@ mod browser_show_menu_bar_env_tests {
   }
 }
 
+#[cfg(all(test, feature = "browser_ui"))]
+mod browser_accesskit_enabled_tests {
+  use super::new_browser_egui_context;
+
+  #[test]
+  fn browser_egui_context_emits_accesskit_updates_by_default() {
+    let ctx = new_browser_egui_context(1.0);
+
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    // Keep unit tests deterministic: avoid egui falling back to OS time for animations.
+    raw.time = Some(0.0);
+    raw.focused = true;
+
+    ctx.begin_frame(raw);
+    egui::CentralPanel::default().show(&ctx, |ui| {
+      ui.label("accesskit smoke test");
+    });
+    let output = ctx.end_frame();
+
+    assert!(
+      output.platform_output.accesskit_update.is_some(),
+      "expected browser egui context to enable AccessKit output"
+    );
+  }
+}
+
 #[cfg(test)]
 mod open_typed_in_new_tab_tests {
   use super::open_typed_in_new_tab_state;
@@ -5811,6 +5841,16 @@ enum ChromeA11yBackend {
 }
 
 #[cfg(feature = "browser_ui")]
+fn new_browser_egui_context(pixels_per_point: f32) -> egui::Context {
+  let egui_ctx = egui::Context::default();
+  // Ensure AccessKit output is always enabled in the real browser UI so page a11y subtree merges
+  // have a carrier `PlatformOutput.accesskit_update` to deliver to egui-winit's adapter.
+  egui_ctx.enable_accesskit();
+  egui_ctx.set_pixels_per_point(pixels_per_point);
+  egui_ctx
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -6427,8 +6467,7 @@ impl App {
     let ui_scale = applied_appearance.ui_scale;
     let pixels_per_point = system_pixels_per_point * ui_scale;
 
-    let egui_ctx = egui::Context::default();
-    egui_ctx.set_pixels_per_point(pixels_per_point);
+    let egui_ctx = new_browser_egui_context(pixels_per_point);
     let egui_state = egui_winit::State::new(event_loop);
 
     let theme_override = match applied_appearance.theme {
@@ -14731,21 +14770,24 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
         if self.perf_log_enabled {
           let wheel_cap_after = self.wheel_events_buf.capacity();
           let paste_cap_after = self.paste_events_buf.capacity();
-          if wheel_cap_after > wheel_cap_before || paste_cap_after > paste_cap_before {
-            eprintln!(
-              "[{ENV_PERF_LOG}] egui scratch buffers grew: wheel {wheel_cap_before}→{wheel_cap_after}, paste {paste_cap_before}→{paste_cap_after} (raw.events={}, wheel={}, paste={})",
-              raw.events.len(),
-              self.wheel_events_buf.len(),
-              self.paste_events_buf.len(),
-            );
-          }
+        if wheel_cap_after > wheel_cap_before || paste_cap_after > paste_cap_before {
+          eprintln!(
+            "[{ENV_PERF_LOG}] egui scratch buffers grew: wheel {wheel_cap_before}→{wheel_cap_after}, paste {paste_cap_before}→{paste_cap_after} (raw.events={}, wheel={}, paste={})",
+            raw.events.len(),
+            self.wheel_events_buf.len(),
+            self.paste_events_buf.len(),
+          );
         }
+      }
 
-        raw
-      };
+      raw
+    };
 
-      self.egui_ctx.begin_frame(raw_input);
-    }
+    // Defensive: make sure AccessKit stays enabled even if something toggles egui options at
+    // runtime. This is cheap and guarantees every frame has an update carrier for merged page a11y.
+    self.egui_ctx.enable_accesskit();
+    self.egui_ctx.begin_frame(raw_input);
+  }
 
     let ctx = self.egui_ctx.clone();
     fastrender::ui::motion::UiMotion::set_ctx_reduced_motion(
