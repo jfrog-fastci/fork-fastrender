@@ -990,6 +990,35 @@ fn regexp_control_escape_cx_matches_control_character() {
     Value::Bool(true)
   );
 
+  // Annex B: when `\c` is not followed by an ASCII letter, the `\` is treated as a literal and
+  // the following `c` is treated as a normal character (so the pattern matches the two-character
+  // string `\c`).
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("\\c").test("\\c")"#).unwrap(),
+    Value::Bool(true)
+  );
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("\\c").test("c")"#).unwrap(),
+    Value::Bool(false)
+  );
+
+  // Same Annex B behaviour in character classes: `/[\\c]/` matches both `\` and `c`.
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("[\\c]").test("\\")"#).unwrap(),
+    Value::Bool(true)
+  );
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("[\\c]").test("c")"#).unwrap(),
+    Value::Bool(true)
+  );
+
+  // In non-UnicodeMode character classes, `\c` control escapes also accept decimal digits and `_`
+  // (`ClassControlLetter`).
+  assert_eq!(
+    rt.exec_script(r#"new RegExp("[\\c0]").test("\u0010")"#).unwrap(),
+    Value::Bool(true)
+  );
+
   let value = rt
     .exec_script(r#"try { new RegExp("\\c", "u"); "no"; } catch (e) { e.name }"#)
     .unwrap();

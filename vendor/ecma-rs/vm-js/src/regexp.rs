@@ -4111,21 +4111,35 @@ impl<'a> Parser<'a> {
                 }
                 .into());
               }
-              // Legacy: treat as identity escape of `c`.
-              return Ok(CharClassItem::Char(e as u32));
+              // Annex B: in non-UnicodeMode, an invalid `\c` escape in a character class causes
+              // the backslash itself to be treated as a literal class atom and leaves the `c` to
+              // be parsed as a normal class character.
+              //
+              // Example: `/[\\c]/` matches both `\\` and `c`.
+              self.idx = self.idx.saturating_sub(1);
+              return Ok(CharClassItem::Char(b'\\' as u32));
             };
-            if !is_ascii_letter(next) {
-              if self.flags.has_either_unicode_flag() {
-                return Err(RegExpSyntaxError {
-                  message: "Invalid regular expression",
-                }
-                .into());
-              }
-              // Legacy: treat as identity escape of `c` and keep the next character.
-              return Ok(CharClassItem::Char(e as u32));
+
+            // In non-UnicodeMode, `\c` control escapes accept both ASCII letters and the Annex B
+            // `ClassControlLetter` set (decimal digit or `_`).
+            let legacy_class_control =
+              !self.flags.has_either_unicode_flag() && (is_decimal_digit(next) || next == (b'_' as u16));
+
+            if is_ascii_letter(next) || legacy_class_control {
+              self.next();
+              return Ok(CharClassItem::Char(((next as u8) & 0x1F) as u32));
             }
-            self.next();
-            Ok(CharClassItem::Char(((next as u8) & 0x1F) as u32))
+
+            if self.flags.has_either_unicode_flag() {
+              return Err(RegExpSyntaxError {
+                message: "Invalid regular expression",
+              }
+              .into());
+            }
+
+            // Annex B fallback: treat as a literal backslash and leave `c` for the next atom.
+            self.idx = self.idx.saturating_sub(1);
+            Ok(CharClassItem::Char(b'\\' as u32))
           }
           x if x == (b'n' as u16) => Ok(CharClassItem::Char(0x000A)),
           x if x == (b'r' as u16) => Ok(CharClassItem::Char(0x000D)),
@@ -4265,8 +4279,12 @@ impl<'a> Parser<'a> {
             }
             .into());
           }
-          // Legacy: treat as identity escape of `c`.
-          return Ok(Atom::Literal(e as u32));
+          // Annex B: when `\c` is not followed by an ASCII letter, treat the `\` as a literal
+          // backslash and leave the `c` to be parsed as a normal pattern character.
+          //
+          // This matches JS behaviour: `new RegExp("\\c")` matches the two-character string `\c`.
+          self.idx = self.idx.saturating_sub(1);
+          return Ok(Atom::Literal(b'\\' as u32));
         };
         if !is_ascii_letter(next) {
           if self.flags.has_either_unicode_flag() {
@@ -4275,8 +4293,10 @@ impl<'a> Parser<'a> {
             }
             .into());
           }
-          // Legacy: treat as identity escape of `c` and keep the next character.
-          return Ok(Atom::Literal(e as u32));
+          // Same Annex B rule as above: `\c0` / `\c_` etc become a literal backslash followed by
+          // `c...`.
+          self.idx = self.idx.saturating_sub(1);
+          return Ok(Atom::Literal(b'\\' as u32));
         }
         self.next();
         Ok(Atom::Literal(((next as u8) & 0x1F) as u32))
