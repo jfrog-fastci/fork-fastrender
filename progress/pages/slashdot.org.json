@@ -14,31 +14,31 @@
     "layout": 12.0211723,
     "paint": 17.029994091666666
   },
-  "notes": "",
+  "notes": "Good: renders match Chrome closely. Remaining diffs are small and mostly due to text rasterization/AA and a few-pixel discrepancy in the sponsored badge background edge.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 50081,
-    "diff_percent": 5.2168,
-    "perceptual": 0.5222,
+    "diff_pixels": 24242,
+    "diff_percent": 2.5252,
+    "perceptual": 0.0014,
     "first_mismatch": {
-      "x": 125,
-      "y": 4,
+      "x": 126,
+      "y": 12,
       "baseline_rgba": [
-        166,
-        105,
-        52,
+        255,
+        255,
+        255,
         255
       ],
       "rendered_rgba": [
-        255,
-        255,
-        255,
+        166,
+        105,
+        52,
         255
       ]
     },
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "910bb27fb383468a77d8b7f118d6ffa72f60cbcb"
+    "computed_at_commit": "8bf9e2eb25959922508216096e17d07dcc19c045"
   },
   "hotspot": "paint",
   "failure_stage": null,
