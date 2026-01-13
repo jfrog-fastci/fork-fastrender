@@ -20,13 +20,17 @@ fn drive_hover_until(
       return;
     }
 
-    if let Some((frame_id, hovered_url, cursor)) = parent.recv_hover_changed(Duration::from_millis(50)) {
-      if let Some(effective) = router.on_hover_changed(frame_id, hovered_url, cursor) {
+    if let Some((frame_id, seq, hovered_url, cursor)) =
+      parent.recv_hover_changed(Duration::from_millis(50))
+    {
+      if let Some(effective) = router.on_hover_changed(frame_id, seq, hovered_url, cursor) {
         *ui_state = effective;
       }
     }
-    if let Some((frame_id, hovered_url, cursor)) = child.recv_hover_changed(Duration::from_millis(50)) {
-      if let Some(effective) = router.on_hover_changed(frame_id, hovered_url, cursor) {
+    if let Some((frame_id, seq, hovered_url, cursor)) =
+      child.recv_hover_changed(Duration::from_millis(50))
+    {
+      if let Some(effective) = router.on_hover_changed(frame_id, seq, hovered_url, cursor) {
         *ui_state = effective;
       }
     }

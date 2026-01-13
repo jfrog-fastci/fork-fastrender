@@ -1286,6 +1286,7 @@ impl<T: IpcTransport> RendererMainLoop<T> {
             frame.last_hover_sent = Some(state.clone());
             let _ = self.transport.send(RendererToBrowser::HoverChanged {
               frame_id,
+              seq,
               hovered_url: state.hovered_url.clone(),
               cursor: state.cursor,
             });

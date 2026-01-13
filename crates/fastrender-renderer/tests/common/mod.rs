@@ -489,7 +489,7 @@ impl RendererProc {
   pub fn recv_hover_changed(
     &self,
     timeout: Duration,
-  ) -> Option<(FrameId, Option<String>, CursorKind)> {
+  ) -> Option<(FrameId, u64, Option<String>, CursorKind)> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
       let msg = match self.rx.recv_timeout(Duration::from_millis(50)) {
@@ -499,11 +499,12 @@ impl RendererProc {
       };
       if let RendererToBrowser::HoverChanged {
         frame_id,
+        seq,
         hovered_url,
         cursor,
       } = msg
       {
-        return Some((frame_id, hovered_url, cursor));
+        return Some((frame_id, seq, hovered_url, cursor));
       }
     }
     None

@@ -1186,6 +1186,11 @@ pub enum RendererToBrowser {
   /// status bar UI, but must never update address bar, history, or other security-sensitive state.
   HoverChanged {
     frame_id: FrameId,
+    /// Sequence number of the input event that triggered this hover state.
+    ///
+    /// This matches the `seq` sent in [`BrowserToRenderer::PointerMove`] and allows the browser to
+    /// ignore out-of-order hover updates (e.g. when pointer moves are processed asynchronously).
+    seq: u64,
     hovered_url: Option<String>,
     cursor: CursorKind,
   },
@@ -1709,6 +1714,7 @@ pub struct HoverRouter {
   pointer_root: Option<(f32, f32)>,
   hit_frame: FrameId,
   hover_by_frame: HashMap<FrameId, HoverState>,
+  last_seq_by_frame: HashMap<FrameId, u64>,
   last_effective: HoverState,
 }
 
@@ -1719,6 +1725,7 @@ impl HoverRouter {
       pointer_root: None,
       hit_frame: root,
       hover_by_frame: HashMap::new(),
+      last_seq_by_frame: HashMap::new(),
       last_effective: HoverState::default(),
     }
   }
@@ -1783,9 +1790,16 @@ impl HoverRouter {
   pub fn on_hover_changed(
     &mut self,
     frame_id: FrameId,
+    seq: u64,
     hovered_url: Option<String>,
     cursor: CursorKind,
   ) -> Option<HoverState> {
+    let last_seq = self.last_seq_by_frame.get(&frame_id).copied().unwrap_or(0);
+    if seq < last_seq {
+      return None;
+    }
+    self.last_seq_by_frame.insert(frame_id, seq);
+
     let state = HoverState { hovered_url, cursor };
     self.hover_by_frame.insert(frame_id, state.clone());
 
@@ -2584,7 +2598,7 @@ mod hover_router_tests {
     // A stale hover update from a previous time the pointer was inside the child.
     assert!(
       router
-        .on_hover_changed(child, None, CursorKind::Text)
+        .on_hover_changed(child, 1, None, CursorKind::Text)
         .is_none(),
       "child hover should be ignored while root is hit"
     );
@@ -2599,7 +2613,7 @@ mod hover_router_tests {
 
     // Fresh hover update from child should now be forwarded.
     let effective = router
-      .on_hover_changed(child, None, CursorKind::Text)
+      .on_hover_changed(child, 2, None, CursorKind::Text)
       .expect("expected hover update for hit frame");
     assert_eq!(effective.cursor, CursorKind::Text);
   }
@@ -2633,13 +2647,14 @@ mod hover_router_tests {
     // Root previously hovered a link (stale state while pointer is inside the child).
     router.on_hover_changed(
       root,
+      1,
       Some("https://root.example/old".to_string()),
       CursorKind::Pointer,
     );
 
     // Enter child and receive a child hover state.
     let _ = router.on_pointer_move(&tester, 1.0, 1.0);
-    let _ = router.on_hover_changed(child, None, CursorKind::Text);
+    let _ = router.on_hover_changed(child, 2, None, CursorKind::Text);
 
     // Leaving the child should emit a conservative reset to default, not the stale root link.
     let (_targets, emit) = router.on_pointer_move(&tester, 50.0, 50.0);
