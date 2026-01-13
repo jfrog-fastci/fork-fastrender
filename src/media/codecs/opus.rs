@@ -186,6 +186,13 @@ impl OpusDecoder {
 mod tests {
   use super::*;
 
+  #[test]
+  fn opus_head_rejects_invalid_magic() {
+    let mut bad = [0u8; 19];
+    bad[..8].copy_from_slice(b"NotOpus!");
+    assert!(parse_opus_head(&bad).is_err());
+  }
+
   fn build_opus_head(channels: u8, pre_skip: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(19);
     out.extend_from_slice(b"OpusHead");
@@ -295,5 +302,43 @@ mod tests {
       chunk.duration_ns,
       (expected_frames as u64 * 1_000_000_000u64) / OPUS_SAMPLE_RATE_HZ as u64
     );
+  }
+
+  #[cfg(feature = "media_webm")]
+  #[test]
+  fn decode_first_opus_frame_from_webm_fixture() {
+    use crate::media::demux::webm::WebmDemuxer;
+    use crate::media::MediaCodec;
+    use std::io::Cursor;
+
+    let bytes = include_bytes!("../../../tests/fixtures/media/test_vp9_opus.webm");
+    let cursor = Cursor::new(bytes.as_slice());
+    let mut demuxer = WebmDemuxer::open(cursor).expect("open webm fixture");
+
+    let audio_track = demuxer
+      .tracks()
+      .iter()
+      .find(|t| t.codec == MediaCodec::Opus)
+      .expect("webm fixture should contain an Opus audio track");
+    let track_id = audio_track.id;
+
+    let mut decoder = OpusDecoder::new(&audio_track.codec_private).expect("create Opus decoder");
+
+    let mut decoded: Option<DecodedAudioChunk> = None;
+    while let Some(pkt) = demuxer.next_packet().expect("read packet") {
+      if pkt.track_id != track_id {
+        continue;
+      }
+      if let Some(chunk) = decoder.decode(&pkt).expect("decode opus packet") {
+        if !chunk.samples.is_empty() {
+          decoded = Some(chunk);
+          break;
+        }
+      }
+    }
+
+    let decoded = decoded.expect("expected at least one decoded Opus chunk");
+    assert_eq!(decoded.sample_rate_hz, OPUS_SAMPLE_RATE_HZ);
+    assert_eq!(decoded.samples.len() % decoded.channels as usize, 0);
   }
 }
