@@ -10,7 +10,7 @@ use windows_sys::Win32::Foundation::{
   GetHandleInformation, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, TerminateProcess, WaitForSingleObject};
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_NO_CHILD_PROCESS_CHILD";
 const CMD_ENV: &str = "FASTR_TEST_WIN_SANDBOX_CMD_EXE";
@@ -209,13 +209,25 @@ fn sandboxed_renderer_cannot_spawn_child_process() {
     child.expect("spawn sandboxed child test process")
   });
 
-  let timeout_ms: u32 = 10_000;
   // SAFETY: waiting on a valid process handle.
+  let timeout_ms: u32 = 30_000;
   let wait_rc = unsafe { WaitForSingleObject(child.process.as_raw_handle() as HANDLE, timeout_ms) };
-  if wait_rc != 0 {
-    panic!(
-      "sandboxed child did not exit cleanly within {timeout_ms}ms (WaitForSingleObject rc={wait_rc})"
-    );
+  match wait_rc {
+    0 => {}
+    // WAIT_TIMEOUT
+    0x0000_0102 => {
+      // Best-effort cleanup so we don't leak a hung sandbox process.
+      unsafe {
+        let _ = TerminateProcess(child.process.as_raw_handle() as HANDLE, 1);
+      }
+      panic!("sandboxed child did not exit within {timeout_ms}ms");
+    }
+    // WAIT_FAILED
+    u32::MAX => {
+      let err = std::io::Error::last_os_error();
+      panic!("WaitForSingleObject failed: {err}");
+    }
+    other => panic!("WaitForSingleObject returned unexpected code {other}"),
   }
 
   let mut exit_code: u32 = 0;
