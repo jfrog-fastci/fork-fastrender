@@ -5327,13 +5327,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut cpu_sampler = ProcessCpuSampler::new(perf_log_writer.clone(), hud_enabled);
 
   // Keep a single profile autosave worker (bookmarks/history) across all windows.
-  let (profile_autosave_tx, mut profile_autosave) =
-    match fastrender::ui::ProfileAutosaveHandle::spawn(bookmarks_path.clone(), history_path.clone())
-    {
-      Ok(handle) => (Some(handle.sender()), Some(handle)),
+  let (profile_autosave_tx, mut profile_autosave, mut profile_autosave_error_rx) =
+    match fastrender::ui::ProfileAutosaveHandle::spawn_with_error_channel(
+      bookmarks_path.clone(),
+      history_path.clone(),
+    ) {
+      Ok((handle, error_rx)) => (Some(handle.sender()), Some(handle), Some(error_rx)),
       Err(err) => {
         eprintln!("failed to start profile autosave: {err}");
-        (None, None)
+        (None, None, None)
       }
     };
 
@@ -7162,6 +7164,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       let now = std::time::Instant::now();
       if history_autosave_send_scheduler.take_if_due(now) {
         let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateHistory(global_history.clone()));
+      }
+    }
+
+    // Surface profile autosave failures (bookmarks/history) via chrome toasts.
+    let mut autosave_error_toast: Option<String> = None;
+    let mut autosave_error_disconnected = false;
+    if let Some(rx) = profile_autosave_error_rx.as_ref() {
+      loop {
+        match rx.try_recv() {
+          Ok(err) => {
+            autosave_error_toast = Some(match err {
+              fastrender::ui::ProfileAutosaveError::Bookmarks { path, message } => {
+                format!("Failed to save bookmarks\n{path}\n{message}")
+              }
+              fastrender::ui::ProfileAutosaveError::History { path, message } => {
+                format!("Failed to save history\n{path}\n{message}")
+              }
+            });
+          }
+          Err(std::sync::mpsc::TryRecvError::Empty) => break,
+          Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            autosave_error_disconnected = true;
+            break;
+          }
+        }
+      }
+    }
+    if autosave_error_disconnected {
+      profile_autosave_error_rx = None;
+    }
+    if let Some(text) = autosave_error_toast {
+      for win in windows.values_mut() {
+        win
+          .app
+          .show_chrome_toast_with_kind(fastrender::ui::ToastKind::Error, &text);
+        win.app.window.request_redraw();
       }
     }
 

@@ -319,7 +319,7 @@ pub use panel_widgets::{
   panel_search_field,
   PanelEmptyStateOutput, PanelHeaderOutput, PanelListRowResponse, SearchFieldOutput,
 };
-pub use profile_autosave::{AutosaveMsg, ProfileAutosaveHandle};
+pub use profile_autosave::{AutosaveMsg, ProfileAutosaveError, ProfileAutosaveHandle};
 pub use profile_persistence::{
   bookmarks_path, history_path, load_bookmarks, load_history, parse_bookmarks_json,
   parse_history_json, save_bookmarks_atomic, save_history_atomic, LoadOutcome, LoadSource,

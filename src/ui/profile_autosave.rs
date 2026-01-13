@@ -10,6 +10,13 @@ use super::global_history::GlobalHistoryEntry;
 
 const DEFAULT_BOOKMARKS_DEBOUNCE: Duration = Duration::from_secs(1);
 const DEFAULT_HISTORY_DEBOUNCE: Duration = Duration::from_secs(8);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileAutosaveError {
+  Bookmarks { path: String, message: String },
+  History { path: String, message: String },
+}
+
 #[derive(Debug)]
 pub enum AutosaveMsg {
   UpdateBookmarks(BookmarkStore),
@@ -50,6 +57,51 @@ impl ProfileAutosaveHandle {
     bookmarks_debounce: Duration,
     history_debounce: Duration,
   ) -> Result<Self, String> {
+    Self::spawn_with_debounce_impl(
+      bookmarks_path,
+      history_path,
+      bookmarks_debounce,
+      history_debounce,
+      None,
+    )
+  }
+
+  pub fn spawn_with_error_channel(
+    bookmarks_path: PathBuf,
+    history_path: PathBuf,
+  ) -> Result<(Self, mpsc::Receiver<ProfileAutosaveError>), String> {
+    Self::spawn_with_debounce_with_error_channel(
+      bookmarks_path,
+      history_path,
+      DEFAULT_BOOKMARKS_DEBOUNCE,
+      DEFAULT_HISTORY_DEBOUNCE,
+    )
+  }
+
+  pub fn spawn_with_debounce_with_error_channel(
+    bookmarks_path: PathBuf,
+    history_path: PathBuf,
+    bookmarks_debounce: Duration,
+    history_debounce: Duration,
+  ) -> Result<(Self, mpsc::Receiver<ProfileAutosaveError>), String> {
+    let (error_tx, error_rx) = mpsc::channel::<ProfileAutosaveError>();
+    let handle = Self::spawn_with_debounce_impl(
+      bookmarks_path,
+      history_path,
+      bookmarks_debounce,
+      history_debounce,
+      Some(error_tx),
+    )?;
+    Ok((handle, error_rx))
+  }
+
+  fn spawn_with_debounce_impl(
+    bookmarks_path: PathBuf,
+    history_path: PathBuf,
+    bookmarks_debounce: Duration,
+    history_debounce: Duration,
+    error_tx: Option<mpsc::Sender<ProfileAutosaveError>>,
+  ) -> Result<Self, String> {
     let (tx, rx) = mpsc::channel::<AutosaveMsg>();
     let join = std::thread::Builder::new()
       .name("fastr_profile_autosave".to_string())
@@ -60,6 +112,7 @@ impl ProfileAutosaveHandle {
           history_path,
           bookmarks_debounce,
           history_debounce,
+          error_tx,
         );
       })
       .map_err(|err| format!("failed to spawn profile autosave thread: {err}"))?;
@@ -116,6 +169,7 @@ fn autosave_worker_main(
   history_path: PathBuf,
   bookmarks_debounce: Duration,
   history_debounce: Duration,
+  error_tx: Option<mpsc::Sender<ProfileAutosaveError>>,
 ) {
   // Keep an in-memory snapshot of bookmarks so we can apply incremental deltas without cloning the
   // entire store for each update.
@@ -176,6 +230,7 @@ fn autosave_worker_main(
           &bookmarks_state,
           &mut bookmarks_dirty,
           &mut pending_history,
+          error_tx.as_ref(),
         );
         next_bookmarks_write = None;
         next_history_write = None;
@@ -188,6 +243,7 @@ fn autosave_worker_main(
           &bookmarks_state,
           &mut bookmarks_dirty,
           &mut pending_history,
+          error_tx.as_ref(),
         );
         break;
       }
@@ -199,6 +255,12 @@ fn autosave_worker_main(
               "failed to autosave bookmarks to {}: {err}",
               bookmarks_path.display()
             );
+            if let Some(tx) = error_tx.as_ref() {
+              let _ = tx.send(ProfileAutosaveError::Bookmarks {
+                path: bookmarks_path.to_string_lossy().to_string(),
+                message: err,
+              });
+            }
           }
           bookmarks_dirty = false;
           next_bookmarks_write = None;
@@ -208,6 +270,12 @@ fn autosave_worker_main(
           if let Some(history) = pending_history.take() {
             if let Err(err) = save_history_atomic(&history_path, &history) {
               eprintln!("failed to autosave history to {}: {err}", history_path.display());
+              if let Some(tx) = error_tx.as_ref() {
+                let _ = tx.send(ProfileAutosaveError::History {
+                  path: history_path.to_string_lossy().to_string(),
+                  message: err,
+                });
+              }
             }
           }
           next_history_write = None;
@@ -224,6 +292,7 @@ fn flush_pending(
   bookmarks_state: &BookmarkStore,
   bookmarks_dirty: &mut bool,
   pending_history: &mut Option<GlobalHistoryStore>,
+  error_tx: Option<&mpsc::Sender<ProfileAutosaveError>>,
 ) {
   if *bookmarks_dirty {
     if let Err(err) = save_bookmarks_atomic(bookmarks_path, bookmarks_state) {
@@ -231,6 +300,12 @@ fn flush_pending(
         "failed to autosave bookmarks to {}: {err}",
         bookmarks_path.display()
       );
+      if let Some(tx) = error_tx {
+        let _ = tx.send(ProfileAutosaveError::Bookmarks {
+          path: bookmarks_path.to_string_lossy().to_string(),
+          message: err,
+        });
+      }
     }
     *bookmarks_dirty = false;
   }
@@ -238,6 +313,12 @@ fn flush_pending(
   if let Some(history) = pending_history.take() {
     if let Err(err) = save_history_atomic(history_path, &history) {
       eprintln!("failed to autosave history to {}: {err}", history_path.display());
+      if let Some(tx) = error_tx {
+        let _ = tx.send(ProfileAutosaveError::History {
+          path: history_path.to_string_lossy().to_string(),
+          message: err,
+        });
+      }
     }
   }
 }
@@ -394,5 +475,48 @@ mod tests {
     assert!(err.contains("autosave thread disconnected"));
 
     autosave.shutdown_with_timeout(Duration::from_millis(10));
+  }
+
+  #[test]
+  fn reports_autosave_errors_via_channel() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create a file (not a directory) so `create_dir_all(parent)` fails deterministically.
+    let not_a_dir = dir.path().join("not_a_dir");
+    std::fs::write(&not_a_dir, b"not a directory").unwrap();
+
+    let bookmarks_path = not_a_dir.join("bookmarks.json");
+    let history_path = dir.path().join("history.json");
+
+    let (autosave, error_rx) = ProfileAutosaveHandle::spawn_with_debounce_with_error_channel(
+      bookmarks_path.clone(),
+      history_path,
+      Duration::from_secs(3600),
+      Duration::from_secs(3600),
+    )
+    .unwrap();
+
+    let mut bookmarks = BookmarkStore::default();
+    bookmarks.toggle("https://example.com/", Some("Example"));
+    autosave.send(AutosaveMsg::UpdateBookmarks(bookmarks)).unwrap();
+
+    // Force an immediate write attempt (which should fail).
+    autosave.flush(Duration::from_millis(500)).unwrap();
+
+    let err = error_rx
+      .recv_timeout(Duration::from_millis(500))
+      .expect("expected autosave error");
+    match err {
+      ProfileAutosaveError::Bookmarks { path, message } => {
+        assert_eq!(path, bookmarks_path.to_string_lossy().to_string());
+        assert!(
+          message.contains("failed to create"),
+          "unexpected error message: {message:?}"
+        );
+      }
+      other => panic!("expected bookmarks error, got: {other:?}"),
+    }
+
+    autosave.shutdown_with_timeout(Duration::from_millis(500));
   }
 }
