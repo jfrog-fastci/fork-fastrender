@@ -2,11 +2,12 @@
 
 use std::ffi::OsString;
 use std::io;
+use std::os::windows::io::{AsRawHandle, RawHandle};
 
-use fastrender::sandbox::windows::appcontainer::appcontainer_apis;
 use fastrender::sandbox::windows::{spawn_sandboxed_with_config, SpawnConfig, WindowsSandboxLevel};
 use windows_sys::Win32::Foundation::{
-  CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, HANDLE,
+  CloseHandle, GetHandleInformation, GetLastError, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER,
+  HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
@@ -31,12 +32,18 @@ const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 
 #[test]
 fn appcontainer_token_omits_all_application_packages_group_when_hardened() {
-  if appcontainer_apis().is_err() {
-    eprintln!(
-      "skipping ALL APPLICATION PACKAGES hardening test: AppContainer APIs unavailable on this host"
-    );
+  if !crate::common::windows_sandbox::require_full_windows_sandbox(
+    "appcontainer_token_omits_all_application_packages_group_when_hardened",
+  ) {
     return;
   }
+
+  // Ensure developer environment overrides don't silently change test semantics.
+  let _env_guard = crate::common::EnvVarsGuard::remove(&[
+    "FASTR_DISABLE_RENDERER_SANDBOX",
+    "FASTR_WINDOWS_RENDERER_SANDBOX",
+    "FASTR_ALLOW_UNSANDBOXED_RENDERER",
+  ]);
 
   let exe = std::env::current_exe().expect("current test exe path");
   let child_test_name = concat!(
@@ -51,10 +58,25 @@ fn appcontainer_token_omits_all_application_packages_group_when_hardened() {
     OsString::from("--nocapture"),
   ];
 
+  let stdout = std::io::stdout().as_raw_handle();
+  let stderr = std::io::stderr().as_raw_handle();
+
+  let mut handles: Vec<RawHandle> = Vec::new();
+  let mut to_make_inheritable: Vec<HANDLE> = Vec::new();
+  if !stdout.is_null() {
+    handles.push(stdout);
+    to_make_inheritable.push(stdout as HANDLE);
+  }
+  if !stderr.is_null() && stderr != stdout {
+    handles.push(stderr);
+    to_make_inheritable.push(stderr as HANDLE);
+  }
+  let _inherit_guard = HandleInheritGuard::new(&to_make_inheritable);
+
   let child = spawn_sandboxed_with_config(
     &exe,
     &args,
-    &[],
+    &handles,
     SpawnConfig {
       all_application_packages_hardened: true,
     },
@@ -62,17 +84,16 @@ fn appcontainer_token_omits_all_application_packages_group_when_hardened() {
   .expect("spawn sandboxed child");
 
   let level = child.level;
+  assert_eq!(
+    level,
+    WindowsSandboxLevel::AppContainer,
+    "expected AppContainer sandboxing (no silent fallback)"
+  );
   let exit_code = child.wait().expect("wait for sandboxed child");
   assert_eq!(
     exit_code, 0,
     "sandboxed child exited with code {exit_code} (sandbox_level={level:?})"
   );
-
-  if level != WindowsSandboxLevel::AppContainer {
-    eprintln!(
-      "skipping ALL APPLICATION PACKAGES group assertion: sandbox spawn fell back to {level:?}"
-    );
-  }
 }
 
 #[test]
@@ -99,10 +120,10 @@ fn appcontainer_all_application_packages_hardening_child() {
   let token = TokenHandle(token);
 
   let is_appcontainer = query_token_is_app_container(token.0).expect("query TokenIsAppContainer");
-  if !is_appcontainer {
-    eprintln!("skipping: child token is not an AppContainer token (sandbox fallback?)");
-    return;
-  }
+  assert!(
+    is_appcontainer,
+    "expected child token to be an AppContainer token (no silent fallback)"
+  );
 
   let groups = query_token_groups(token.0).expect("query TokenGroups");
   let has_aap = groups
@@ -124,6 +145,42 @@ AppContainer token still contains {ALL_APPLICATION_PACKAGES_SID} group"
       "expected AppContainer token to NOT contain ALL APPLICATION PACKAGES ({ALL_APPLICATION_PACKAGES_SID}) \
 when hardening is enabled; token groups={groups:?}"
     );
+  }
+}
+
+struct HandleInheritGuard {
+  saved: Vec<(HANDLE, u32)>,
+}
+
+impl HandleInheritGuard {
+  fn new(handles: &[HANDLE]) -> Self {
+    let mut saved = Vec::with_capacity(handles.len());
+    for handle in handles {
+      if *handle == 0 || *handle == INVALID_HANDLE_VALUE {
+        continue;
+      }
+      let mut flags: u32 = 0;
+      let ok = unsafe { GetHandleInformation(*handle, &mut flags) };
+      if ok == 0 {
+        continue;
+      }
+      saved.push((*handle, flags));
+      let _ = unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    Self { saved }
+  }
+}
+
+impl Drop for HandleInheritGuard {
+  fn drop(&mut self) {
+    for (handle, flags) in self.saved.drain(..) {
+      let inherit = if (flags & HANDLE_FLAG_INHERIT) != 0 {
+        HANDLE_FLAG_INHERIT
+      } else {
+        0
+      };
+      let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, inherit) };
+    }
   }
 }
 
