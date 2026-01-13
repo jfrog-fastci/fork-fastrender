@@ -2980,6 +2980,22 @@ pub struct LayoutDiagnostics {
   pub layout_cache_stores: Option<usize>,
   pub layout_cache_evictions: Option<usize>,
   pub layout_cache_clones: Option<usize>,
+  /// Layout cache lookups where a style override fingerprint was present.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub layout_cache_override_lookups: Option<u64>,
+  /// Layout cache hits served from the thread-local cache for override keys.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub layout_cache_override_tls_hits: Option<u64>,
+  /// Layout cache hits served from the shared cross-thread cache for override keys (only when
+  /// `FASTR_LAYOUT_CACHE_SHARE_OVERRIDES` is enabled).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub layout_cache_override_shared_hits: Option<u64>,
+  /// Layout cache misses for override keys.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub layout_cache_override_misses: Option<u64>,
+  /// Entries inserted into the shared cross-thread layout result cache (base + override).
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub layout_cache_shared_inserts: Option<u64>,
   pub inline_reshape_lookups: Option<usize>,
   pub inline_reshape_hits: Option<usize>,
   pub inline_reshape_stores: Option<usize>,
@@ -7535,6 +7551,17 @@ impl FastRender {
         rec.stats.layout.layout_cache_stores = Some(cache_stores);
         rec.stats.layout.layout_cache_evictions = Some(cache_evictions);
         rec.stats.layout.layout_cache_clones = Some(cache_clones);
+        if toggles.truthy("FASTR_LAYOUT_PROFILE")
+          || toggles.truthy("FASTR_LAYOUT_CACHE_OVERRIDE_PROFILE")
+        {
+          let (lookups, tls_hits, shared_hits, misses, shared_inserts) =
+            crate::layout::formatting_context::layout_override_cache_counters();
+          rec.stats.layout.layout_cache_override_lookups = Some(lookups);
+          rec.stats.layout.layout_cache_override_tls_hits = Some(tls_hits);
+          rec.stats.layout.layout_cache_override_shared_hits = Some(shared_hits);
+          rec.stats.layout.layout_cache_override_misses = Some(misses);
+          rec.stats.layout.layout_cache_shared_inserts = Some(shared_inserts);
+        }
         rec.stats.layout.flex_cache_clones =
           Some(crate::layout::flex_profile::layout_cache_clone_count() as usize);
         let taffy = crate::layout::taffy_integration::taffy_counters();

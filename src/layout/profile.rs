@@ -244,6 +244,23 @@ pub fn log_layout_profile(total: Duration) {
       grid_counters.override_shared_hits
     ));
   }
+  let (override_lookups, override_tls_hits, override_shared_hits, override_misses, shared_inserts) =
+    crate::layout::formatting_context::layout_override_cache_counters();
+  if override_lookups > 0
+    || override_tls_hits > 0
+    || override_shared_hits > 0
+    || override_misses > 0
+    || shared_inserts > 0
+  {
+    parts.push(format!(
+      "layout_cache_override_lookups={} layout_cache_override_tls_hits={} layout_cache_override_shared_hits={} layout_cache_override_misses={} layout_cache_shared_inserts={}",
+      override_lookups,
+      override_tls_hits,
+      override_shared_hits,
+      override_misses,
+      shared_inserts
+    ));
+  }
   eprintln!(
     "layout profile (inclusive): total_ms={:.2} {}",
     total_ms,
