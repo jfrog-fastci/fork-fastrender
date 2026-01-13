@@ -239,7 +239,7 @@ impl<R: Read + Seek> WebmDemuxer<R> {
         dts_ns: pts_ns,
         pts_ns,
         duration_ns,
-        data,
+        data: data.into(),
         is_keyframe,
       }));
     }

@@ -24,7 +24,7 @@ impl AacDecoder {
 
   pub fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Option<DecodedAudioChunk>> {
     let sym_packet =
-      SymphoniaPacket::new_from_slice(0, packet.pts_ns, packet.duration_ns, &packet.data);
+      SymphoniaPacket::new_from_slice(0, packet.pts_ns, packet.duration_ns, packet.as_slice());
 
     let decoded = self
       .decoder
@@ -166,7 +166,7 @@ mod tests {
       dts_ns: pts_ns,
       pts_ns,
       duration_ns,
-      data: pkt.data.as_ref().to_vec(),
+      data: pkt.data.as_ref().to_vec().into(),
       is_keyframe: false,
     };
     let decoded = decoder

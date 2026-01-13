@@ -10,9 +10,10 @@
 use mp4parse::unstable::Indice;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::Range;
+use std::sync::Arc;
 use thiserror::Error;
 
-use super::{MediaError, MediaPacket, MediaResult, MediaTrackType};
+use super::{MediaData, MediaError, MediaPacket, MediaResult, MediaTrackType};
 
 #[derive(Debug, Error)]
 pub enum Mp4Error {
@@ -22,6 +23,15 @@ pub enum Mp4Error {
   InvalidBoxSize,
   #[error("invalid mp4: {0}")]
   Invalid(&'static str),
+  #[error(
+    "mp4 sample out of bounds (track {track_index}, sample {sample_index}): {range:?} (file len {file_len})"
+  )]
+  SampleOutOfBounds {
+    track_index: usize,
+    sample_index: usize,
+    range: Range<usize>,
+    file_len: usize,
+  },
   #[error("unsupported mp4 box version {version} for {box_name}")]
   UnsupportedBoxVersion { box_name: &'static str, version: u8 },
   #[error("missing required mp4 box: {0}")]
@@ -123,18 +133,29 @@ impl Mp4Track {
 
 #[derive(Debug, Clone)]
 pub struct Mp4Demuxer {
+  bytes: Arc<[u8]>,
   tracks: Vec<Mp4Track>,
 }
 
 impl Mp4Demuxer {
+  /// Parses an MP4 from in-memory bytes.
+  ///
+  /// Note: This convenience overload clones `bytes` into an `Arc<[u8]>`. Call
+  /// [`Mp4Demuxer::from_arc`] to avoid the copy when you already have an `Arc` (e.g. from a memory
+  /// map or `Vec<u8>`).
   pub fn new(bytes: &[u8]) -> Result<Self> {
-    Self::from_bytes(bytes)
+    Self::from_arc(Arc::from(bytes))
   }
 
   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-    let moov = find_top_level_box(bytes, fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
+    Self::from_arc(Arc::from(bytes))
+  }
 
-    let tracks = parse_moov(bytes, moov)?
+  pub fn from_arc(bytes: Arc<[u8]>) -> Result<Self> {
+    let moov =
+      find_top_level_box(bytes.as_ref(), fourcc(b"moov"))?.ok_or(Mp4Error::MissingBox("moov"))?;
+
+    let tracks = parse_moov(bytes.as_ref(), moov)?
       .into_iter()
       .map(build_track)
       .collect::<Result<Vec<_>>>()?;
@@ -143,12 +164,64 @@ impl Mp4Demuxer {
       return Err(Mp4Error::MissingBox("trak"));
     }
 
-    Ok(Self { tracks })
+    Ok(Self { bytes, tracks })
   }
 
   #[must_use]
   pub fn tracks(&self) -> &[Mp4Track] {
     &self.tracks
+  }
+
+  /// Returns demuxed packets for `track_index` (0-based, in decode order).
+  ///
+  /// Packet bytes are returned as [`MediaData::Shared`] ranges into the original `Arc<[u8]>`.
+  pub fn packets_for_track(&self, track_index: usize) -> Result<Vec<MediaPacket>> {
+    let Some(track) = self.tracks.get(track_index) else {
+      return Err(Mp4Error::Invalid("mp4 track index out of range"));
+    };
+
+    let mut packets = Vec::with_capacity(track.samples.len());
+
+    for (sample_index, sample) in track.samples.iter().enumerate() {
+      let start = usize::try_from(sample.offset).unwrap_or(usize::MAX);
+      let end = start
+        .checked_add(sample.size as usize)
+        .unwrap_or(usize::MAX);
+      let range = start..end;
+
+      if range.start >= range.end || range.end > self.bytes.len() {
+        return Err(Mp4Error::SampleOutOfBounds {
+          track_index,
+          sample_index,
+          range,
+          file_len: self.bytes.len(),
+        });
+      }
+
+      let pts_ns = *track
+        .pts_ns_by_sample
+        .get(sample_index)
+        .ok_or(Mp4Error::Invalid("mp4 pts index out of range"))?;
+      let dts_ns = ticks_to_ns(
+        i64::try_from(sample.dts_ticks).unwrap_or(i64::MAX),
+        track.timescale,
+      );
+      let duration_ns = ticks_to_ns(i64::from(sample.duration_ticks), track.timescale);
+
+      packets.push(MediaPacket {
+        track_id: u64::from(track.id),
+        dts_ns,
+        pts_ns,
+        duration_ns,
+        data: MediaData::Shared {
+          bytes: Arc::clone(&self.bytes),
+          range,
+        },
+        is_keyframe: sample.is_sync,
+      });
+    }
+
+    Ok(packets)
   }
 
   /// Seeks all tracks to the first sample with `pts_ns >= time_ns`.
@@ -707,7 +780,7 @@ impl<R: Read + Seek> Mp4TrackDemuxer<R> {
       dts_ns,
       pts_ns,
       duration_ns,
-      data,
+      data: data.into(),
       is_keyframe: indice.sync,
     }))
   }
@@ -1328,6 +1401,7 @@ impl<'a> TableRunIter<'a> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::sync::Arc;
 
   #[test]
   fn seek_uses_binary_search_when_pts_monotonic() {
@@ -1471,7 +1545,7 @@ mod tests {
 
     // Emitted in decode/sample index order (not PTS order).
     assert_eq!(
-      packets.iter().map(|p| p.data.as_slice()).collect::<Vec<_>>(),
+      packets.iter().map(|p| p.as_slice()).collect::<Vec<_>>(),
       vec![b"A".as_slice(), b"B".as_slice(), b"C".as_slice()]
     );
 
@@ -1487,5 +1561,52 @@ mod tests {
       vec![0, 2_000_000_000, 1_000_000_000]
     );
     assert!(packets[2].pts_ns < packets[1].pts_ns);
+  }
+
+  #[test]
+  fn mp4_packets_use_shared_data_and_ranges_match_sample_table() {
+    let bytes: &[u8] = include_bytes!("../../tests/fixtures/media/test_h264_aac.mp4");
+    let arc: Arc<[u8]> = Arc::from(bytes);
+    let demuxer = Mp4Demuxer::from_arc(Arc::clone(&arc)).expect("parse mp4");
+
+    for (track_index, track) in demuxer.tracks().iter().enumerate() {
+      let packets = demuxer
+        .packets_for_track(track_index)
+        .expect("packets for track");
+      assert_eq!(
+        packets.len(),
+        track.samples.len(),
+        "track {track_index} packet count should match sample table"
+      );
+
+      for (sample_index, (packet, sample)) in packets.iter().zip(track.samples.iter()).enumerate()
+      {
+        let start = usize::try_from(sample.offset).unwrap();
+        let end = start + sample.size as usize;
+        let expected = start..end;
+
+        assert_eq!(packet.track_id, u64::from(track.id()));
+        assert_eq!(
+          packet.dts_ns,
+          ticks_to_ns(
+            i64::try_from(sample.dts_ticks).unwrap_or(i64::MAX),
+            track.timescale()
+          )
+        );
+        assert_eq!(packet.is_keyframe, sample.is_sync);
+
+        match &packet.data {
+          MediaData::Shared { bytes, range } => {
+            assert!(Arc::ptr_eq(bytes, &arc));
+            assert_eq!(
+              range, &expected,
+              "track {track_index} sample {sample_index} range mismatch"
+            );
+            assert_eq!(packet.as_slice(), &arc[expected]);
+          }
+          other => panic!("expected Shared packet data, got {other:?}"),
+        }
+      }
+    }
   }
 }

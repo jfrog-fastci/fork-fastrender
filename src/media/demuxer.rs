@@ -349,7 +349,7 @@ fn mp4_fill_peeked<R: Read + Seek>(
       dts_ns: pts_ns,
       pts_ns,
       duration_ns: 0,
-      data: sample.bytes.to_vec(),
+      data: sample.bytes.to_vec().into(),
       is_keyframe: sample.is_sync,
     });
     return Ok(());

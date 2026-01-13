@@ -135,7 +135,7 @@ impl H264Decoder {
 
 impl VideoDecoder for H264Decoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedVideoFrame>> {
-    self.mp4_to_annexb(&packet.data)?;
+    self.mp4_to_annexb(packet.as_slice())?;
 
     let decoded = self
       .decoder
@@ -299,14 +299,15 @@ impl OpusDecoder {
 impl AudioDecoder for OpusDecoder {
   fn decode(&mut self, packet: &MediaPacket) -> MediaResult<Vec<DecodedAudioChunk>> {
     const MAX_FRAME_SIZE: usize = 5760; // 120ms @ 48kHz
+    let data = packet.as_slice();
     let ch = self.channels as usize;
     let mut out = vec![0f32; MAX_FRAME_SIZE * ch];
 
     let n = unsafe {
       audiopus_sys::opus_decode_float(
         self.st,
-        packet.data.as_ptr(),
-        packet.data.len() as i32,
+        data.as_ptr(),
+        data.len() as i32,
         out.as_mut_ptr(),
         MAX_FRAME_SIZE as i32,
         0,
@@ -371,4 +372,3 @@ fn opus_strerror(code: i32) -> String {
     }
   }
 }
-
