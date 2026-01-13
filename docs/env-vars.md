@@ -277,6 +277,8 @@ These are emitted by the paint pipeline:
 - `FASTR_CASCADE_PROFILE=1` – cascade profiling (populates `RenderDiagnostics.stats.cascade` with
   selector candidate/match counters and `:has()` evaluation counters).
 - `FASTR_LAYOUT_PROFILE=1` – layout-context profiling.
+- `FASTR_GRID_MEASURE_CACHE_PROFILE=1` – grid item measurement cache profiling (TLS/shared hits/misses plus override-key breakdown). When enabled (or when `FASTR_LAYOUT_PROFILE=1` is enabled), additional counters are exposed via `RenderDiagnostics.stats.layout.grid_measure_cache_*` and `layout profile` logs.
+- `FASTR_GRID_MEASURE_CACHE_SHARE_OVERRIDES=0|1` – opt into storing style override (`override_fingerprint`) grid measure keys in the shared cross-thread cache. Defaults to off; use with `FASTR_GRID_MEASURE_CACHE_PROFILE=1` to confirm override-heavy workloads benefit without polluting the cache.
 - `FASTR_FLEX_PROFILE=1` – flex profiling (with additional `FASTR_FLEX_PROFILE_*` knobs).
 - `FASTR_SVG_PROFILE=1` – print per-render inline SVG serialization stats (calls/bytes/time and whether
   document CSS embedding was enabled).
