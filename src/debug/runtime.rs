@@ -481,6 +481,21 @@ impl DebugConfig {
       "FASTR_LOG_FLOAT_CONTEXT",
       truthy(raw.get("FASTR_LOG_FLOAT_CONTEXT"), false),
     );
+
+    // Optional FloatContext debug output controls.
+    config.insert_usize(
+      "FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS",
+      raw
+        .get("FASTR_LOG_FLOAT_CONTEXT_MAX_SEGS")
+        .and_then(|v| v.parse().ok())
+        .or(Some(16)),
+    );
+    config.insert_usize(
+      "FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER",
+      raw
+        .get("FASTR_LOG_FLOAT_CONTEXT_LOG_SCANNED_OVER")
+        .and_then(|v| v.parse().ok()),
+    );
     config.insert_bool(
       "FASTR_FLEX_PROFILE",
       truthy(raw.get("FASTR_FLEX_PROFILE"), false),
