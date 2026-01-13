@@ -11560,10 +11560,10 @@ impl FormattingContext for BlockFormattingContext {
         Float(FloatMeta),
       }
 
-      let mut segments: Vec<Segment<'_>> = Vec::new();
+      let mut segments: Vec<Segment<'_>> = Vec::with_capacity(box_node.children.len());
       // Store inline-run children in a single arena so we can reference them by index range without
       // allocating a new Vec for every flushed run.
-      let mut inline_nodes: Vec<&BoxNode> = Vec::new();
+      let mut inline_nodes: Vec<&BoxNode> = Vec::with_capacity(box_node.children.len());
       let mut run_start: Option<usize> = None;
       let mut deadline_counter = 0usize;
       for child in &box_node.children {
