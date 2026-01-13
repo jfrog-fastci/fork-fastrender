@@ -931,6 +931,12 @@ pub enum WorkerToUi {
   /// to keep the payload deterministic (useful for tests/snapshots).
   PageAccessibility {
     tab_id: TabId,
+    /// Monotonic per-tab generation incremented on each committed navigation (including error
+    /// pages).
+    ///
+    /// UIs must treat this as part of the identity for all page nodes to avoid AccessKit `NodeId`
+    /// reuse across navigations (DOM preorder ids restart at 1 for each new document).
+    document_generation: u32,
     tree: AccessibilityNode,
     bounds_css: Vec<(usize, Rect)>,
   },

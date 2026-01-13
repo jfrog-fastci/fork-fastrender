@@ -6,9 +6,10 @@ use crate::geometry::{Point, Rect};
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
+use crate::ui::messages::TabId;
+use crate::ui::encode_page_node_id;
 use accesskit::{Node, NodeBuilder, NodeClassSet, NodeId, Role, Tree, TreeUpdate};
 use std::collections::HashMap;
-use std::num::NonZeroU128;
 
 /// Transforms FastRender page-coordinate bounds into AccessKit's root coordinate space.
 ///
@@ -83,13 +84,6 @@ impl AccessKitBoundsTransform {
       y1 as f64,
     ))
   }
-}
-
-fn node_id_from_preorder_id(preorder_id: usize) -> NodeId {
-  NodeId(
-    NonZeroU128::new(preorder_id as u128)
-      .unwrap_or_else(|| panic!("preorder id must be non-zero (got {preorder_id})")),
-  )
 }
 
 fn collect_box_bounds(tree: &FragmentTree) -> HashMap<usize, Rect> {
@@ -242,6 +236,8 @@ fn accessible_name_for_dom_node(node: &DomNode) -> Option<String> {
 /// `document_offset` positions the document viewport within the containing window (e.g. for a
 /// split chrome/content layout). For a single full-window document, pass `Point::ZERO`.
 pub fn build_accesskit_tree_update_for_document(
+  tab_id: TabId,
+  document_generation: u32,
   prepared: &PreparedDocument,
   scroll_state: &ScrollState,
   document_offset: Point,
@@ -267,6 +263,7 @@ pub fn build_accesskit_tree_update_for_document(
     node: &'a DomNode,
     next_child: usize,
     node_id: NodeId,
+    dom_node_id: usize,
   }
 
   // Keep an explicit stack to avoid recursion (deep DOMs should not overflow).
@@ -274,11 +271,12 @@ pub fn build_accesskit_tree_update_for_document(
   let root_preorder_id = *node_ids
     .get(&(prepared.dom() as *const DomNode))
     .expect("root DOM node should have a preorder id");
-  let root_node_id = node_id_from_preorder_id(root_preorder_id);
+  let root_node_id = encode_page_node_id(tab_id, document_generation, root_preorder_id);
   stack.push(Frame {
     node: prepared.dom(),
     next_child: 0,
     node_id: root_node_id,
+    dom_node_id: root_preorder_id,
   });
 
   // Built AccessKit nodes.
@@ -300,12 +298,13 @@ pub fn build_accesskit_tree_update_for_document(
       let preorder_id = *node_ids
         .get(&(child as *const DomNode))
         .expect("DOM traversal should have assigned a preorder id");
-      let child_node_id = node_id_from_preorder_id(preorder_id);
+      let child_node_id = encode_page_node_id(tab_id, document_generation, preorder_id);
 
       stack.push(Frame {
         node: child,
         next_child: 0,
         node_id: child_node_id,
+        dom_node_id: preorder_id,
       });
       children_stack.push(Vec::new());
       continue;
@@ -321,7 +320,7 @@ pub fn build_accesskit_tree_update_for_document(
       builder.set_name(name);
     }
 
-    if let Some(bounds_page) = bounds_by_styled_node_id.get(&(finished.node_id.0.get() as usize)) {
+    if let Some(bounds_page) = bounds_by_styled_node_id.get(&finished.dom_node_id) {
       if let Some(bounds) = transform.transform_rect(*bounds_page) {
         builder.set_bounds(bounds);
       }
@@ -355,7 +354,6 @@ mod tests {
   use crate::text::font_db::FontConfig;
   use crate::{FastRender, RenderOptions};
   use accesskit::NodeId;
-  use std::num::NonZeroU128;
 
   fn node_id_for_dom_id(root: &DomNode, id_attr: &str) -> usize {
     let ids = enumerate_dom_ids(root);
@@ -416,12 +414,13 @@ mod tests {
       .expect("prepare html");
 
     let target_dom_id = node_id_for_dom_id(prepared.dom(), "target");
-    let target_node_id = NodeId(
-      NonZeroU128::new(target_dom_id as u128)
-        .unwrap_or_else(|| panic!("dom id must be non-zero: {target_dom_id}")),
-    );
+    let tab_id = crate::ui::messages::TabId(1);
+    let document_generation = 1;
+    let target_node_id = crate::ui::encode_page_node_id(tab_id, document_generation, target_dom_id);
 
     let update_unscrolled = build_accesskit_tree_update_for_document(
+      tab_id,
+      document_generation,
       &prepared,
       &ScrollState::with_viewport(Point::ZERO),
       Point::ZERO,
@@ -431,8 +430,10 @@ mod tests {
 
      // Keep the scroll offset well within the expected scroll range so future clamping behaviour
      // does not make this test flaky.
-     let scroll_y = 1000.0;
+    let scroll_y = 1000.0;
     let update_scrolled = build_accesskit_tree_update_for_document(
+      tab_id,
+      document_generation,
       &prepared,
       &ScrollState::with_viewport(Point::new(0.0, scroll_y)),
       Point::ZERO,

@@ -97,6 +97,9 @@ pub mod a11y_labels;
 #[cfg(feature = "browser_ui")]
 pub mod os_clipboard;
 
+// Page (document) accessibility helpers (AccessKit node-id encoding/decoding).
+pub mod page_a11y;
+
 // egui widget accessibility helpers (AccessKit).
 #[cfg(feature = "browser_ui")]
 pub mod a11y;
@@ -202,6 +205,9 @@ pub use cancel::CancelGens;
 pub use renderer_process_id::RendererProcessId;
 
 pub use process_assignment::{ProcessAssignmentEvent, ProcessAssignmentState, ProcessModel};
+
+#[cfg(feature = "a11y_accesskit")]
+pub use page_a11y::{decode_page_node_id, dom_node_id_for_current_page_action, encode_page_node_id};
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
 // `browser_ui` feature gate.

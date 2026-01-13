@@ -11997,7 +11997,6 @@ impl App {
       | UiToWorker::PointerUp { tab_id, .. }
       | UiToWorker::DropFiles { tab_id, .. }
       | UiToWorker::ContextMenuRequest { tab_id, .. }
-      | UiToWorker::AccessKitAction { tab_id, .. }
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
       | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
@@ -12149,7 +12148,6 @@ impl App {
           UiToWorker::SetMediaPreferences { .. }
           | UiToWorker::SetDebugLogEnabled { .. }
           | UiToWorker::ContextMenuRequest { .. }
-          | UiToWorker::AccessKitAction { .. }
           | UiToWorker::CreateTab { .. }
           | UiToWorker::NewTab { .. }
           | UiToWorker::CloseTab { .. }
@@ -21252,6 +21250,30 @@ impl App {
       )
     }
 
+    // Page (document) node actions: verify the request targets the active document generation
+    // before forwarding to the worker. This prevents stale screen-reader requests (targeting nodes
+    // from a previous navigation) from affecting the newly loaded page.
+    if let Some((tab_id, generation, _dom_node_id)) =
+      fastrender::ui::decode_page_node_id(request.target)
+    {
+      let Some(active_tab) = self.browser_state.active_tab_id() else {
+        return;
+      };
+      if tab_id != active_tab {
+        return;
+      }
+      let current_generation = self
+        .browser_state
+        .tab(active_tab)
+        .and_then(|tab| tab.page_accessibility.as_ref())
+        .map(|snap| snap.document_generation);
+      if current_generation != Some(generation) {
+        return;
+      }
+      let _ = self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitActionRequest { tab_id, request });
+      return;
+    }
+
     match request.action {
       accesskit::Action::Focus | accesskit::Action::Click | accesskit::Action::Default => {
         if request.target == compositor_a11y::page_node_id() {
@@ -22337,13 +22359,13 @@ impl App {
             // we don't yet know the final hit-test position (it will be derived from the focused
             // element bounds).
             self.close_context_menu();
-             self.pending_context_menu_request = Some(PendingContextMenuRequest {
-               tab_id: active_tab,
-               pos_css: (0.0, 0.0),
-               anchor_points: None,
-               match_pos_css: false,
-             });
-            self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitAction {
+            self.pending_context_menu_request = Some(PendingContextMenuRequest {
+              tab_id: active_tab,
+              pos_css: (0.0, 0.0),
+              anchor_points: None,
+              match_pos_css: false,
+            });
+            self.send_worker_msg(fastrender::ui::UiToWorker::AccessKitActionRequest {
               tab_id: active_tab,
               request: accesskit::ActionRequest {
                 action: accesskit::Action::ShowContextMenu,

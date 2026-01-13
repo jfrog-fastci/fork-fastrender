@@ -448,6 +448,11 @@ struct TabState {
   history: TabHistory,
   loading: bool,
   pending_history_entry: bool,
+  /// Monotonic per-tab generation, incremented each time a new document is committed.
+  ///
+  /// This is used to namespace AccessKit node ids so page nodes cannot be reused across
+  /// navigations (which would otherwise be likely because DOM preorder ids restart at 1).
+  document_generation: u32,
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
@@ -531,6 +536,7 @@ impl TabState {
       history: TabHistory::new(),
       loading: false,
       pending_history_entry: false,
+      document_generation: 0,
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
@@ -3557,10 +3563,18 @@ impl BrowserRuntime {
           return;
         };
 
-        let target_node_id: usize = match usize::try_from(request.target.0.get()) {
-          Ok(id) => id,
-          Err(_) => return,
+        let Some((decoded_tab, generation, target_node_id)) =
+          crate::ui::decode_page_node_id(request.target)
+        else {
+          return;
         };
+        if decoded_tab != tab_id {
+          return;
+        }
+        // Ignore stale action requests that target a previous document generation.
+        if generation != tab.document_generation {
+          return;
+        }
 
         let next_scroll = {
           let Some(prepared) = doc.prepared() else {
@@ -3600,8 +3614,21 @@ impl BrowserRuntime {
             return;
           };
 
-          let target_node_id = usize::try_from(request.target.0.get()).ok();
-          let target = target_node_id.or(tab.interaction.interaction_state().focused);
+          let decoded_target = match crate::ui::decode_page_node_id(request.target) {
+            Some((decoded_tab, generation, dom_node_id)) => {
+              if decoded_tab != tab_id {
+                return;
+              }
+              if generation != tab.document_generation {
+                return;
+              }
+              Some(dom_node_id)
+            }
+            None => None,
+          };
+
+          let target = decoded_target.or(tab.interaction.interaction_state().focused);
+
           let anchor_rect = target.and_then(|target| {
             tab.document.as_ref().and_then(|doc| {
               doc.prepared().and_then(|prepared| {
@@ -3628,13 +3655,19 @@ impl BrowserRuntime {
 
           let max_x = tab.viewport_css.0 as f32;
           let max_y = tab.viewport_css.1 as f32;
-          let sanitize = |v: f32, max: f32| if v.is_finite() { v.clamp(0.0, max) } else { 0.0 };
+          let sanitize = |v: f32, max: f32| {
+            if v.is_finite() {
+              v.clamp(0.0, max)
+            } else {
+              0.0
+            }
+          };
           pos.0 = sanitize(pos.0, max_x);
           pos.1 = sanitize(pos.1, max_y);
           pos
         };
 
-        self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::default());
+        self.handle_context_menu_request(tab_id, pos_css, crate::ui::PointerModifiers::NONE);
       }
       _ => {}
     }
@@ -9963,6 +9996,7 @@ impl BrowserRuntime {
           tab.last_base_url = base_url.clone();
           tab.site_key = Some(site_key_for_navigation(&committed_url, None));
           tab.site_mismatch_restarts = 0;
+          tab.document_generation = tab.document_generation.wrapping_add(1);
           if about_pages::is_about_url(&committed_url) || !js_prepaint_synced {
             tab.js_tab = None;
             tab.js_dom_mapping_generation = 0;
@@ -10203,6 +10237,7 @@ impl BrowserRuntime {
     tab.last_base_url = base_url.clone();
     tab.site_key = Some(site_key_for_navigation(&committed_url, None));
     tab.site_mismatch_restarts = 0;
+    tab.document_generation = tab.document_generation.wrapping_add(1);
     if about_pages::is_about_url(&committed_url) || !js_prepaint_synced {
       tab.js_tab = None;
       tab.js_dom_mapping_generation = 0;
@@ -10302,11 +10337,16 @@ impl BrowserRuntime {
           {
             #[cfg(feature = "browser_ui")]
             {
-              let subtree = page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &tree);
+              let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
+                tab_id,
+                tab.document_generation,
+                &tree,
+              );
               msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
             }
             msgs.push(WorkerToUi::PageAccessibility {
               tab_id,
+              document_generation: tab.document_generation,
               tree,
               bounds_css,
             });
@@ -10549,6 +10589,7 @@ impl BrowserRuntime {
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
     tab.site_key = Some(site_key_for_navigation(about_pages::ABOUT_ERROR, None));
     tab.site_mismatch_restarts = 0;
+    tab.document_generation = tab.document_generation.wrapping_add(1);
 
     tab.loading = false;
     tab.pending_history_entry = false;
@@ -10591,11 +10632,16 @@ impl BrowserRuntime {
     if let Some((tree, bounds_css)) = page_accessibility {
       #[cfg(feature = "browser_ui")]
       {
-        let subtree = page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &tree);
+        let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
+          tab_id,
+          tab.document_generation,
+          &tree,
+        );
         msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
       }
       msgs.push(WorkerToUi::PageAccessibility {
         tab_id,
+        document_generation: tab.document_generation,
         tree,
         bounds_css,
       });
@@ -10776,11 +10822,16 @@ impl BrowserRuntime {
         {
           #[cfg(feature = "browser_ui")]
           {
-            let subtree = page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &tree);
+            let subtree = page_accesskit_subtree::accesskit_subtree_for_page(
+              tab_id,
+              tab.document_generation,
+              &tree,
+            );
             msgs.push(WorkerToUi::PageAccessKitSubtree { tab_id, subtree });
           }
           msgs.push(WorkerToUi::PageAccessibility {
             tab_id,
+            document_generation: tab.document_generation,
             tree,
             bounds_css,
           });

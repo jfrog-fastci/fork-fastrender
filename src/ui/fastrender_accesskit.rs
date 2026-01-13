@@ -3,7 +3,7 @@
 use crate::accessibility::AccessibilityNode;
 use crate::dom::DomNode;
 use crate::interaction::InteractionState;
-use crate::ui::fast_accesskit_actions::accesskit_node_id_from_fastrender;
+use crate::ui::encode_page_node_id;
 use crate::{FastRender, Result};
 use accesskit::{NodeBuilder, NodeId, Role, Tree, TreeUpdate};
 
@@ -25,16 +25,20 @@ fn accesskit_role_from_fastrender(role: &str) -> Role {
 }
 
 fn build_accesskit_node_recursive(
+  tab_id: crate::ui::messages::TabId,
+  document_generation: u32,
   node: &AccessibilityNode,
   interaction_state: Option<&InteractionState>,
   classes: &mut accesskit::NodeClassSet,
   out: &mut Vec<(NodeId, accesskit::Node)>,
 ) -> NodeId {
-  let id = accesskit_node_id_from_fastrender(node.node_id);
+  let id = encode_page_node_id(tab_id, document_generation, node.dom_node_id);
 
   let mut child_ids = Vec::with_capacity(node.children.len());
   for child in &node.children {
     child_ids.push(build_accesskit_node_recursive(
+      tab_id,
+      document_generation,
       child,
       interaction_state,
       classes,
@@ -79,7 +83,7 @@ fn build_accesskit_node_recursive(
   // Expose caret/selection state for focused text controls.
   if matches!(node.role.as_str(), "textbox" | "searchbox" | "combobox") {
     if let Some(state) = interaction_state {
-      if let Some(edit) = state.text_edit_for(node.node_id) {
+      if let Some(edit) = state.text_edit_for(node.dom_node_id) {
         let text_len = node
           .value
           .as_deref()
@@ -113,6 +117,8 @@ fn build_accesskit_node_recursive(
 /// This bridges FastRender's accessibility tree (roles/names/states) into an AccessKit `TreeUpdate`
 /// suitable for windowed UI integration.
 pub fn build_accesskit_tree_update_for_dom(
+  tab_id: crate::ui::messages::TabId,
+  document_generation: u32,
   renderer: &mut FastRender,
   dom: &DomNode,
   width: u32,
@@ -120,21 +126,35 @@ pub fn build_accesskit_tree_update_for_dom(
   interaction_state: Option<&InteractionState>,
 ) -> Result<TreeUpdate> {
   let tree = renderer.accessibility_tree_with_interaction_state(dom, width, height, interaction_state)?;
-  Ok(accesskit_tree_update_from_accessibility_tree(&tree, interaction_state))
+  Ok(accesskit_tree_update_from_accessibility_tree(
+    tab_id,
+    document_generation,
+    &tree,
+    interaction_state,
+  ))
 }
 
 /// Convert a FastRender accessibility tree into an AccessKit tree update.
 pub fn accesskit_tree_update_from_accessibility_tree(
+  tab_id: crate::ui::messages::TabId,
+  document_generation: u32,
   tree: &AccessibilityNode,
   interaction_state: Option<&InteractionState>,
 ) -> TreeUpdate {
   let mut classes = accesskit::NodeClassSet::default();
   let mut nodes = Vec::new();
-  let root_id = build_accesskit_node_recursive(tree, interaction_state, &mut classes, &mut nodes);
+  let root_id = build_accesskit_node_recursive(
+    tab_id,
+    document_generation,
+    tree,
+    interaction_state,
+    &mut classes,
+    &mut nodes,
+  );
 
   let focus = interaction_state
     .and_then(|state| state.focused)
-    .map(accesskit_node_id_from_fastrender);
+    .map(|id| encode_page_node_id(tab_id, document_generation, id));
 
   TreeUpdate {
     nodes,
@@ -197,6 +217,8 @@ mod tests {
     engine.set_text_selection_range(input_id, 1, 3);
 
     let update = build_accesskit_tree_update_for_dom(
+      crate::ui::messages::TabId(1),
+      1,
       &mut renderer,
       &dom,
       800,
@@ -205,7 +227,7 @@ mod tests {
     )
     .expect("accesskit tree");
 
-    let node_id = accesskit_node_id_from_fastrender(input_id);
+    let node_id = encode_page_node_id(crate::ui::messages::TabId(1), 1, input_id);
     let node = node_from_update(&update, node_id);
 
     assert_eq!(node.role(), Role::TextField);
@@ -238,6 +260,8 @@ mod tests {
     engine.set_text_selection_caret(input_id, 2);
 
     let update = build_accesskit_tree_update_for_dom(
+      crate::ui::messages::TabId(1),
+      1,
       &mut renderer,
       &dom,
       800,
@@ -246,7 +270,7 @@ mod tests {
     )
     .expect("accesskit tree");
 
-    let node_id = accesskit_node_id_from_fastrender(input_id);
+    let node_id = encode_page_node_id(crate::ui::messages::TabId(1), 1, input_id);
     let node = node_from_update(&update, node_id);
 
     let sel = node.text_selection().expect("text selection");

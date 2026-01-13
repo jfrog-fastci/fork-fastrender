@@ -2,22 +2,8 @@
 
 use crate::accessibility::AccessibilityNode;
 use crate::ui::messages::PageAccessKitSubtree;
+use crate::ui::encode_page_node_id;
 use crate::ui::TabId;
-use std::num::NonZeroU128;
-
-fn node_id_for_tab(tab_id: TabId, local_id: u64) -> accesskit::NodeId {
-  // We keep page subtree node ids deterministic and namespaced per tab to avoid collisions with
-  // egui's own AccessKit node ids.
-  //
-  // Layout:
-  // - High 64 bits: `TabId` (non-zero in normal operation).
-  // - Low 64 bits: stable, per-tree local id (1-based).
-  //
-  // This intentionally produces ids that are "large" (>= 2^64) so they are very unlikely to
-  // collide with any UI/chrome node ids allocated by egui/accesskit_winit.
-  let raw = ((tab_id.0 as u128) << 64) | (local_id as u128);
-  accesskit::NodeId(NonZeroU128::new(raw).expect("node id must be non-zero")) // fastrender-allow-unwrap
-}
 
 fn role_from_fastr_role(role: &str) -> accesskit::Role {
   // `crate::accessibility` uses a stringy, browser-like role vocabulary. Map the subset we produce
@@ -52,15 +38,13 @@ fn normalize_name(name: &str) -> Option<String> {
 
 fn build_subtree_nodes(
   tab_id: TabId,
+  document_generation: u32,
   node: &AccessibilityNode,
-  next_local_id: &mut u64,
   classes: &mut accesskit::NodeClassSet,
   nodes_out: &mut Vec<(accesskit::NodeId, accesskit::Node)>,
   focus_out: &mut Option<accesskit::NodeId>,
 ) -> accesskit::NodeId {
-  let local_id = *next_local_id;
-  *next_local_id = next_local_id.saturating_add(1);
-  let id = node_id_for_tab(tab_id, local_id);
+  let id = encode_page_node_id(tab_id, document_generation, node.dom_node_id);
 
   if node.states.focused {
     *focus_out = Some(id);
@@ -68,7 +52,14 @@ fn build_subtree_nodes(
 
   let mut children_ids = Vec::with_capacity(node.children.len());
   for child in &node.children {
-    let child_id = build_subtree_nodes(tab_id, child, next_local_id, classes, nodes_out, focus_out);
+    let child_id = build_subtree_nodes(
+      tab_id,
+      document_generation,
+      child,
+      classes,
+      nodes_out,
+      focus_out,
+    );
     children_ids.push(child_id);
   }
 
@@ -90,16 +81,19 @@ fn build_subtree_nodes(
 
 /// Convert a renderer [`AccessibilityNode`] tree into an AccessKit subtree update suitable for
 /// embedding into a windowed browser's overall accessibility tree.
-pub fn accesskit_subtree_for_page(tab_id: TabId, root: &AccessibilityNode) -> PageAccessKitSubtree {
+pub fn accesskit_subtree_for_page(
+  tab_id: TabId,
+  document_generation: u32,
+  root: &AccessibilityNode,
+) -> PageAccessKitSubtree {
   let mut nodes: Vec<(accesskit::NodeId, accesskit::Node)> = Vec::new();
   let mut focus_id: Option<accesskit::NodeId> = None;
-  let mut next_local_id: u64 = 1;
   let mut classes = accesskit::NodeClassSet::new();
 
   let root_id = build_subtree_nodes(
     tab_id,
+    document_generation,
     root,
-    &mut next_local_id,
     &mut classes,
     &mut nodes,
     &mut focus_id,

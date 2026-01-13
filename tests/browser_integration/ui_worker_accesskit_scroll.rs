@@ -1,9 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::dom::{enumerate_dom_ids, parse_html_with_options, DomNode, DomParseOptions};
+use fastrender::ui::encode_page_node_id;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
-use std::num::NonZeroU128;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -28,6 +28,30 @@ fn wait_for_frame(
     if let WorkerToUi::FrameReady { tab_id: got, frame } = msg {
       if got == tab_id {
         return frame;
+      }
+    }
+  }
+}
+
+fn wait_for_page_generation(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> u32 {
+  let deadline = Instant::now() + timeout;
+  loop {
+    let remaining = deadline
+      .checked_duration_since(Instant::now())
+      .unwrap_or(Duration::from_secs(0));
+    assert!(
+      remaining > Duration::ZERO,
+      "timed out waiting for PageAccessibility"
+    );
+    let msg = rx.recv_timeout(remaining).expect("worker msg");
+    if let WorkerToUi::PageAccessibility {
+      tab_id: got,
+      document_generation,
+      ..
+    } = msg
+    {
+      if got == tab_id {
+        return document_generation;
       }
     }
   }
@@ -77,8 +101,7 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
     </html>
   "#;
 
-  // AccessKit node IDs for page content are expected to round-trip through the worker as DOM/styled
-  // pre-order IDs. Resolve the target id using the same DOM parser helpers used across tests.
+  // Resolve the DOM pre-order id using the same DOM parser helpers used across tests.
   let dom = parse_html_with_options(html, DomParseOptions::default()).expect("parse html");
   let target_node_id = node_id_by_id_attr(&dom, "target");
 
@@ -105,9 +128,11 @@ fn accesskit_scroll_into_view_scrolls_viewport_to_reveal_target_node() {
     "expected initial scroll position to be at top"
   );
 
+  let document_generation = wait_for_page_generation(&ui_rx, tab_id, DEFAULT_TIMEOUT);
+
   let request = accesskit::ActionRequest {
     action: accesskit::Action::ScrollIntoView,
-    target: accesskit::NodeId(NonZeroU128::new(target_node_id as u128).expect("non-zero node id")),
+    target: encode_page_node_id(tab_id, document_generation, target_node_id),
     data: None,
   };
 

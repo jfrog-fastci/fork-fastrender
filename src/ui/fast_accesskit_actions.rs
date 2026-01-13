@@ -8,7 +8,7 @@ use crate::interaction::{InteractionAction, InteractionEngine, KeyAction};
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
-use std::num::NonZeroU128;
+use crate::ui::decode_page_node_id;
 
 /// Shared context for routing AccessKit [`accesskit::ActionRequest`]s into FastRender's interaction
 /// engine.
@@ -117,27 +117,10 @@ impl ChromeDocumentContext<'_> {
   }
 }
 
-/// Encode a FastRender DOM pre-order node id into an AccessKit [`accesskit::NodeId`].
-///
-/// FastRender uses stable 1-indexed pre-order ids (matching `crate::dom::enumerate_dom_ids`).
-/// AccessKit requires a non-zero `u128`, so we store the id directly.
-pub fn accesskit_node_id_from_fastrender(node_id: usize) -> accesskit::NodeId {
-  let raw = NonZeroU128::new(node_id as u128)
-    // SAFETY: the fallback value is a constant non-zero sentinel.
-    .unwrap_or_else(|| unsafe { NonZeroU128::new_unchecked(1) });
-  accesskit::NodeId(raw)
-}
-
 /// Decode an AccessKit [`accesskit::NodeId`] into a FastRender DOM pre-order node id.
 pub fn fastrender_node_id_from_accesskit(node_id: accesskit::NodeId) -> Option<usize> {
-  let raw = node_id.0.get();
-  if raw == 0 {
-    return None;
-  }
-  if raw > usize::MAX as u128 {
-    return None;
-  }
-  Some(raw as usize)
+  let (_tab_id, _generation, dom_node_id) = decode_page_node_id(node_id)?;
+  Some(dom_node_id)
 }
 
 fn text_control_len_chars(dom: &mut DomNode, node_id: usize) -> Option<usize> {
@@ -343,6 +326,10 @@ mod tests {
       .is_some()
   }
 
+  fn page_node_id(dom_node_id: usize) -> accesskit::NodeId {
+    crate::ui::encode_page_node_id(crate::ui::messages::TabId(1), 1, dom_node_id)
+  }
+
   #[test]
   fn accesskit_focus_sets_interaction_focus() {
     let mut dom = crate::dom::parse_html(
@@ -372,7 +359,7 @@ mod tests {
       &mut ctx,
       accesskit::ActionRequest {
         action: accesskit::Action::Focus,
-        target: accesskit_node_id_from_fastrender(button_id),
+        target: page_node_id(button_id),
         data: None,
       },
     );
@@ -414,7 +401,7 @@ mod tests {
       &mut ctx,
       accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
-        target: accesskit_node_id_from_fastrender(input_id),
+        target: page_node_id(input_id),
         data: Some(accesskit::ActionData::Value("hello".into())),
       },
     );
@@ -431,7 +418,7 @@ mod tests {
     )
     .expect("parse");
     let input_id = find_node_id_by_id_attr(&mut dom, "y");
-    let target = accesskit_node_id_from_fastrender(input_id);
+    let target = page_node_id(input_id);
 
     let mut engine = InteractionEngine::new();
     let mut needs_redraw = false;
@@ -575,7 +562,7 @@ mod tests {
       &mut ctx,
       accesskit::ActionRequest {
         action: accesskit::Action::Default,
-        target: accesskit_node_id_from_fastrender(checkbox_id),
+        target: page_node_id(checkbox_id),
         data: None,
       },
     );
@@ -649,7 +636,7 @@ mod tests {
         &mut ctx,
         accesskit::ActionRequest {
           action: accesskit::Action::Focus,
-          target: accesskit_node_id_from_fastrender(a_id),
+          target: page_node_id(a_id),
           data: None,
         },
       ));
@@ -657,7 +644,7 @@ mod tests {
         &mut ctx,
         accesskit::ActionRequest {
           action: accesskit::Action::Focus,
-          target: accesskit_node_id_from_fastrender(b_id),
+          target: page_node_id(b_id),
           data: None,
         },
       ));

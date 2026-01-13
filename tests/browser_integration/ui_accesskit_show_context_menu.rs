@@ -3,6 +3,7 @@
 use super::support;
 use fastrender::ui::messages::{KeyAction, NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
+use std::num::NonZeroU128;
 use std::time::Duration;
 
 // Rendering + layout can take a few seconds under CI contention.
@@ -66,10 +67,14 @@ fn accesskit_show_context_menu_on_focused_link_reports_link_url() {
   // Simulate an assistive-technology "Show context menu" action.
   worker
     .ui_tx
-    .send(UiToWorker::AccessKitAction {
+    .send(UiToWorker::AccessKitActionRequest {
       tab_id,
-      action: accesskit::Action::ShowContextMenu,
-      target_node_id: None,
+      request: accesskit::ActionRequest {
+        action: accesskit::Action::ShowContextMenu,
+        // Use a non-page `NodeId` so the worker falls back to the currently focused DOM node.
+        target: accesskit::NodeId(NonZeroU128::new(1).expect("non-zero node id")),
+        data: None,
+      },
     })
     .unwrap();
 
