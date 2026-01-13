@@ -2282,6 +2282,7 @@ pub fn install_window_websocket_ipc_bindings_with_guard<Host: WindowRealmHost + 
   };
   {
     let mut lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fetcher: Arc<dyn ResourceFetcher> = Arc::new(crate::resource::HttpFetcher::new());
     lock.insert(
       env_id,
       EnvState::new_ipc(WindowWebSocketEnv::for_document(fetcher, document_url), ipc_state),
