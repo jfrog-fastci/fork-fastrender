@@ -2952,6 +2952,17 @@ impl DisplayList {
     }
   }
 
+  /// Create a display list from a vector of items, copying relevant metadata from an existing list.
+  ///
+  /// This is useful when constructing derived display lists (e.g. splitting a list into layers)
+  /// where metadata such as scroll-linked animation participation must be preserved.
+  pub(crate) fn from_items_with_metadata(
+    items: Vec<DisplayItem>,
+    metadata_source: &DisplayList,
+  ) -> Self {
+    metadata_source.with_items(items)
+  }
+
   pub(crate) fn with_items(&self, items: Vec<DisplayItem>) -> Self {
     let bounds = Self::compute_bounds(&items);
     Self {
