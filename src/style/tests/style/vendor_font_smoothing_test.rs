@@ -72,3 +72,24 @@ fn font_smoothing_unset_behaves_like_inherit() {
     "expected -webkit-font-smoothing: unset to behave like inherit for inherited property"
   );
 }
+
+#[test]
+fn font_smooth_never_disables_subpixel_aa() {
+  let styles = div_styles("<div></div>", "div { font-smooth: never; }");
+  assert!(
+    !styles.allow_subpixel_aa,
+    "expected font-smooth: never to disable subpixel AA"
+  );
+}
+
+#[test]
+fn font_smooth_auto_overrides_inherited_antialiased() {
+  let styles = div_styles(
+    "<body><div></div></body>",
+    "body { -webkit-font-smoothing: antialiased; } div { font-smooth: auto; }",
+  );
+  assert!(
+    styles.allow_subpixel_aa,
+    "expected font-smooth: auto to override inherited -webkit-font-smoothing: antialiased and enable subpixel AA"
+  );
+}

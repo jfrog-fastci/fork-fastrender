@@ -45,6 +45,24 @@ fn moz_osx_font_smoothing_grayscale_is_parsed() {
 }
 
 #[test]
+fn font_smooth_never_is_parsed_and_inherited() {
+  let styled = styled_root(r#"<div style="font-smooth: never"><span></span></div>"#);
+  let div = find_first(&styled, "div").expect("div");
+  let span = find_first(div, "span").expect("span");
+  assert_eq!(div.styles.font_smoothing, FontSmoothing::None);
+  assert_eq!(span.styles.font_smoothing, FontSmoothing::None);
+}
+
+#[test]
+fn font_smooth_always_is_parsed_and_inherited() {
+  let styled = styled_root(r#"<div style="font-smooth: always"><span></span></div>"#);
+  let div = find_first(&styled, "div").expect("div");
+  let span = find_first(div, "span").expect("span");
+  assert_eq!(div.styles.font_smoothing, FontSmoothing::Grayscale);
+  assert_eq!(span.styles.font_smoothing, FontSmoothing::Grayscale);
+}
+
+#[test]
 fn supports_font_smoothing_declarations() {
   assert!(supports_declaration(
     "-webkit-font-smoothing",
