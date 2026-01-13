@@ -1147,6 +1147,7 @@ fn websocket_ctor_construct<Host: WindowRealmHost + 'static>(
           env_id,
           ws_id,
           WsTaskKind::Close,
+          0,
           move |vm_host, heap, vm, hooks, ws_obj| {
             let mut scope = heap.scope();
             let ev = make_simple_event(&mut scope, "error")?;
