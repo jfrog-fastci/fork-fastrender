@@ -90,9 +90,9 @@ pub struct ChromeFrameDocument {
 fn has_nontrivial_interaction_state(state: &InteractionState) -> bool {
   state.focused.is_some()
     || state.focus_visible
-    || !state.focus_chain.is_empty()
-    || !state.hover_chain.is_empty()
-    || !state.active_chain.is_empty()
+    || !state.focus_chain().is_empty()
+    || !state.hover_chain().is_empty()
+    || !state.active_chain().is_empty()
     || !state.visited_links.is_empty()
     || state.ime_preedit.is_some()
     || state.text_edit.is_some()
