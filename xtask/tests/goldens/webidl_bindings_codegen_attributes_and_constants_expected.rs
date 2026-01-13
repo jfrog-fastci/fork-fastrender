@@ -186,6 +186,8 @@ pub mod window {
         };
         BindingValue::Object(v)
       }
+      ConvertedValue::Promise { promise, .. } => BindingValue::Object(promise),
+      ConvertedValue::AsyncSequence { object, .. } => BindingValue::Object(object),
       ConvertedValue::Sequence { elem_ty, values } => {
         let mut out_values: Vec<BindingValue<RtJsValue<Host, R>>> =
           Vec::with_capacity(values.len());

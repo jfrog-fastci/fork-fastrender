@@ -1934,6 +1934,10 @@ fn generate_bindings_module_for_target_unformatted(
   out.push_str("      };\n");
   out.push_str("      BindingValue::Object(v)\n");
   out.push_str("    }\n");
+  // `Promise<T>` and `async sequence<T>` conversions currently surface as opaque JS objects to the
+  // host (the element/inner types are metadata; iteration/awaiting happens in host code).
+  out.push_str("    ConvertedValue::Promise { promise, .. } => BindingValue::Object(promise),\n");
+  out.push_str("    ConvertedValue::AsyncSequence { object, .. } => BindingValue::Object(object),\n");
   out.push_str("    ConvertedValue::Sequence { elem_ty, values } => {\n");
   out.push_str(
     "      let mut out_values: Vec<BindingValue<RtJsValue<Host, R>>> = Vec::with_capacity(values.len());\n",
