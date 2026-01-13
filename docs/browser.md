@@ -54,8 +54,14 @@ end-to-end:
   - click to focus and type into basic text inputs / textareas
   - pointer toggles for checkboxes / radios
 
-Note: the window currently starts by navigating to `about:newtab`, which now acts as a basic start
-page (showing bookmarks + recently visited pages when available).
+Startup note:
+
+- When run **without** a URL, the windowed `browser` app tries to restore the previous session
+  (windows + tabs + per-tab zoom + best-effort scroll restoration).
+- When run **with** a URL, it opens that URL and does not restore unless `--restore` is provided.
+- If no session exists yet, it falls back to `about:newtab`, which acts as a basic start page
+  (showing bookmarks + recently visited pages when available). Use `--no-restore` to disable session
+  restore.
 
 ### DOM interaction (non-JS)
 
