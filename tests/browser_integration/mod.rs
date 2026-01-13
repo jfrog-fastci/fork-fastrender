@@ -92,6 +92,7 @@ mod ui_worker_fragment_navigation;
 mod ui_worker_history;
 mod ui_worker_hover_active;
 mod ui_worker_hover_cursor;
+mod ui_worker_hover_text_cursor;
 mod ui_worker_interaction;
 mod ui_fieldset_disabled;
 mod ui_worker_keyboard;

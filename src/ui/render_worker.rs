@@ -22,7 +22,9 @@ use crate::render_control::{
 };
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
+use crate::style::computed::Visibility;
 use crate::style::types::OrientationTransform;
+use crate::style::types::UserSelect;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
 use crate::ui::browser_limits::BrowserLimits;
@@ -421,6 +423,48 @@ fn cursor_for_form_control(dom: &mut crate::dom::DomNode, dom_node_id: usize) ->
   }
 
   CursorKind::Default
+}
+
+fn box_node_by_id<'a>(box_tree: &'a crate::BoxTree, target_box_id: usize) -> Option<&'a crate::BoxNode> {
+  let mut stack: Vec<&crate::BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.id == target_box_id {
+      return Some(node);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn box_is_selectable_for_document_text_cursor(box_node: &crate::BoxNode) -> bool {
+  // Keep this aligned with `interaction::engine::box_is_selectable_for_document_selection` so we
+  // only show the I-beam cursor when document selection can start at this box.
+  let style = box_node.style.as_ref();
+  if style.visibility != Visibility::Visible {
+    return false;
+  }
+  if style.user_select == UserSelect::None {
+    return false;
+  }
+  if style.inert {
+    return false;
+  }
+  true
+}
+
+fn box_id_is_selectable_text_for_document_cursor(box_tree: &crate::BoxTree, box_id: usize) -> bool {
+  let Some(box_node) = box_node_by_id(box_tree, box_id) else {
+    return false;
+  };
+  if !box_is_selectable_for_document_text_cursor(box_node) {
+    return false;
+  }
+  matches!(box_node.box_type, crate::BoxType::Text(_))
 }
 
 fn compute_scroll_metrics(
@@ -2735,7 +2779,14 @@ impl BrowserRuntime {
                   (resolved, CursorKind::Pointer)
                 }
                 HitTestKind::FormControl => (None, cursor_for_form_control(dom, hit.dom_node_id)),
-                _ => (None, CursorKind::Default),
+                _ => {
+                  let cursor = if box_id_is_selectable_text_for_document_cursor(box_tree, hit.box_id) {
+                    CursorKind::Text
+                  } else {
+                    CursorKind::Default
+                  };
+                  (None, cursor)
+                }
               };
               (hovered_url, cursor, Some(hit.dom_node_id), element_id)
             }
