@@ -24,6 +24,9 @@ pub mod shm;
 pub mod unix_seqpacket;
 pub mod websocket;
 
+#[cfg(unix)]
+pub mod bootstrap;
+
 #[cfg(target_os = "linux")]
 pub mod frame_slots;
 
