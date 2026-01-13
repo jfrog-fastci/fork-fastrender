@@ -3085,8 +3085,7 @@ fn readable_stream_tee_read_rejected_native(
   };
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  let reason_string = scope.heap_mut().to_string(reason)?;
-  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+  let msg = best_effort_reason_string(scope, reason, "ReadableStream tee rejected")?;
 
   let pending0 = error_readable_stream(vm, scope, callee, branch0_obj, msg.clone())?;
   if let Some(pending) = pending0 {
@@ -3848,8 +3847,7 @@ fn readable_stream_controller_error_native(
   let stream_obj = readable_stream_controller_stream(scope, controller_obj)?;
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  let reason_string = scope.heap_mut().to_string(reason)?;
-  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+  let msg = best_effort_reason_string(scope, reason, "ReadableStream errored")?;
 
   let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
   if let Some(pending) = pending {
@@ -5439,6 +5437,17 @@ fn vm_error_to_rejection_value(
   }
 }
 
+fn best_effort_reason_string(scope: &mut Scope<'_>, reason: Value, fallback: &str) -> Result<String, VmError> {
+  // The `reason` can be any JS value. Converting it to a string may throw (e.g. Symbols, or custom
+  // objects with throwing `toString`). For stream algorithms, we must not let those errors escape,
+  // otherwise internal Promise reactions could throw and leave streams in inconsistent states.
+  match scope.heap_mut().to_string(reason) {
+    Ok(reason_string) => Ok(scope.heap().get_string(reason_string)?.to_utf8_lossy()),
+    Err(err) if err.is_throw_completion() => Ok(fallback.to_string()),
+    Err(err) => Err(err),
+  }
+}
+
 fn promise_reject_with_reason(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -6048,8 +6057,7 @@ fn transform_controller_error_native(
   let stream_obj = transform_controller_readable_stream(scope, controller_obj)?;
 
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
-  let reason_string = scope.heap_mut().to_string(reason)?;
-  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+  let msg = best_effort_reason_string(scope, reason, "TransformStream errored")?;
 
   let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
   if let Some(pending) = pending {
@@ -6300,8 +6308,7 @@ fn transform_close_after_flush_rejected_native(
     }
   };
 
-  let reason_string = scope.heap_mut().to_string(reason)?;
-  let msg = scope.heap().get_string(reason_string)?.to_utf8_lossy();
+  let msg = best_effort_reason_string(scope, reason, "TransformStream transform rejected")?;
   let pending = error_readable_stream(vm, scope, callee, stream_obj, msg)?;
   if let Some(pending) = pending {
     settle_pending_read(
