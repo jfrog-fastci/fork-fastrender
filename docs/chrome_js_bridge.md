@@ -22,6 +22,9 @@ Repo reality (today): the in-tree `browser` binary still renders its chrome via 
 not load a chrome HTML/JS document and does not install this bridge yet (see
 [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)).
 
+For the privileged internal URL schemes used by renderer-chrome (`chrome://` assets and
+`chrome-action:` actions), see [`docs/renderer_chrome_schemes.md`](renderer_chrome_schemes.md).
+
 ---
 
 ## Purpose

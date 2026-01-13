@@ -34,9 +34,14 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
   `src/ui/render_worker.rs` (navigation prepare path calls `validate_user_navigation_url_scheme`).
 - Integration test asserts “unsupported schemes fail fast (no error page render)”:
   `tests/browser_integration/ui_worker_unsupported_scheme.rs`.
+- Defense-in-depth for subresource fetches: `src/resource.rs` (scheme classification and
+  `ResourcePolicy::allowed_schemes`) treats unknown schemes as `Other` and blocks them by default.
 
 **Invariant:** The content renderer must treat `chrome://…` and `chrome-action:…` as unsupported
 schemes (no navigation, no fetch, no side effects).
+
+**Do not** “fix” `chrome://` support by adding `chrome` to the global allowlists above. If/when
+`chrome://` is implemented, it must be enabled only inside the trusted chrome renderer context.
 
 ---
 
@@ -70,6 +75,10 @@ When implemented, `chrome://` URLs should be resolved as:
 1. Parse the URL (`chrome://<namespace>/<path>` or similar).
 2. Map `(namespace, path)` to a **fixed allowlisted asset key**.
 3. Serve bytes from a trusted source (typically embedded via `include_bytes!` or a read-only bundle).
+
+Implementation reference (existing pattern): repo-owned UI assets are already embedded via
+`include_bytes!` in places like `src/ui/icons.rs` (SVGs in `assets/browser_icons/`). A future
+`chrome://icons/...` mapping would likely reuse these bytes rather than touching the filesystem.
 
 Security requirements for the resolver/fetcher:
 
@@ -117,6 +126,12 @@ unsupported navigation scheme (see the enforcement section above).
 - Arguments (if any) must be explicitly parsed/validated; no eval; no shell-like escaping rules.
 - Dispatch must be reachable only from the trusted chrome renderer context.
 
+Implementation note: in the untrusted content worker, link resolution helpers (e.g.
+`src/ui/url.rs::resolve_link_url`) intentionally only special-case `javascript:` and will happily
+return absolute `chrome-action:...` URLs. This is safe because the later navigation stage enforces
+`validate_user_navigation_url_scheme` and rejects unsupported schemes. In the *trusted* chrome
+renderer, you would instead intercept `chrome-action:` before attempting navigation.
+
 ---
 
 ## Guidance: adding new assets/actions
@@ -154,4 +169,3 @@ unsupported navigation scheme (see the enforcement section above).
   The expected behavior for untrusted content is:
   - `WorkerToUi::NavigationFailed { .. }`
   - no `WorkerToUi::FrameReady { .. }` for the failed navigation.
-
