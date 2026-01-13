@@ -2,14 +2,12 @@ use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use crate::layout::float_context::{
   float_profile_stats, reset_float_profile_counters, FloatContext, FloatSide,
 };
-use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 #[test]
 fn float_context_prunes_active_edges_without_per_float_work() {
-  static LOCK: Mutex<()> = Mutex::new(());
-  let _lock = LOCK.lock();
+  let _lock = super::layout_profile_lock();
 
   let mut raw = HashMap::new();
   raw.insert("FASTR_LAYOUT_PROFILE".to_string(), "1".to_string());

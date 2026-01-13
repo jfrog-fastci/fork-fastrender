@@ -189,6 +189,7 @@ fn float_context_incremental_float_placement_complete_before_deadline() {
 #[test]
 fn float_context_dense_boundary_find_fit_does_not_rescan_quadratically() {
   let _delay_guard = TestRenderDelayGuard::set(Some(0));
+  let _lock = super::layout_profile_lock();
 
   // A dense-boundary regression: alternate left/right floats on every row and request a find_fit
   // with a tall height so the naive "range query + advance boundary" loop would repeatedly rescan

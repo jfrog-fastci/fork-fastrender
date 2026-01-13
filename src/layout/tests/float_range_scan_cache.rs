@@ -2,15 +2,12 @@ use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use crate::layout::float_context::{
   float_profile_stats, reset_float_profile_counters, FloatContext, FloatSide,
 };
-use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-static LOCK: Mutex<()> = Mutex::new(());
-
 #[test]
 fn float_range_queries_do_not_clone_sweep_state() {
-  let _lock = LOCK.lock();
+  let _lock = super::layout_profile_lock();
   let mut raw = HashMap::new();
   raw.insert("FASTR_LAYOUT_PROFILE".to_string(), "1".to_string());
   let toggles = Arc::new(RuntimeToggles::from_map(raw));
@@ -55,7 +52,7 @@ fn float_range_queries_do_not_clone_sweep_state() {
 
 #[test]
 fn float_range_queries_do_not_quadratically_scan_range_segments() {
-  let _lock = LOCK.lock();
+  let _lock = super::layout_profile_lock();
   let mut raw = HashMap::new();
   raw.insert("FASTR_LAYOUT_PROFILE".to_string(), "1".to_string());
   let toggles = Arc::new(RuntimeToggles::from_map(raw));

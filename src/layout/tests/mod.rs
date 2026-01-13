@@ -3,6 +3,11 @@
 //! These tests were migrated from `tests/layout/` because they import internal modules and therefore
 //! should run under `cargo test --lib` instead of as integration tests.
 
+pub(super) fn layout_profile_lock() -> parking_lot::MutexGuard<'static, ()> {
+  static LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+  LOCK.lock()
+}
+
 mod abspos_aspect_ratio_auto_auto_non_replaced;
 mod abspos_auto_height_intrinsic_remeasure_clamped_width;
 mod abspos_blockification;
