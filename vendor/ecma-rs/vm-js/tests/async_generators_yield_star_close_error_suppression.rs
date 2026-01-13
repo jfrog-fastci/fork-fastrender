@@ -1,6 +1,7 @@
 use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 mod _async_generator_support;
+use crate::_async_generator_support::is_unimplemented_async_generator_error;
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
