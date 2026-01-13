@@ -9,9 +9,12 @@ static NEXT_REALM_ID: AtomicU64 = AtomicU64::new(1);
 /// An ECMAScript realm: global object + intrinsics.
 ///
 /// This type owns a set of **persistent GC roots** registered with the [`Heap`]. Call
-/// [`Realm::teardown`] to unregister those roots when the embedding is finished with the realm (for
-/// example, when running many `test262` tests by creating a fresh realm per test while reusing a
-/// single heap).
+/// [`Realm::teardown`] to unregister those roots when the embedding is finished with the realm.
+///
+/// Note: [`Realm::teardown`] only cleans up *realm-owned* heap roots. Long-lived embeddings that
+/// reuse the same [`Vm`] + [`Heap`] across many realms should also call
+/// [`Vm::teardown_realm`](crate::Vm::teardown_realm) to remove VM-owned per-realm state (for
+/// example template literal caches that hold their own persistent roots).
 #[derive(Debug)]
 pub struct Realm {
   id: RealmId,
@@ -678,7 +681,7 @@ impl Realm {
       return Err(err);
     }
 
-    vm.set_intrinsics(intrinsics);
+    vm.set_intrinsics_for_realm(id, intrinsics);
 
     let global_lexical_env = global_lexical_env.ok_or(VmError::InvariantViolation(
       "global lexical environment missing after successful Realm::new",
@@ -730,10 +733,12 @@ impl Realm {
       heap.remove_root(root);
     }
 
-    // Clear the heap-level default `Object.prototype` pointer. After teardown the realm's GC
-    // handles may become invalid, and the embedding must not execute scripts without constructing a
-    // fresh realm.
-    heap.set_default_object_prototype(None);
+    // If this realm's `%Object.prototype%` is installed as the heap's default prototype (used for
+    // `F.prototype` objects), clear it. Other realms may still be alive, so avoid clobbering a
+    // different realm's default prototype.
+    if heap.default_object_prototype() == Some(self.intrinsics.object_prototype()) {
+      heap.set_default_object_prototype(None);
+    }
   }
 
   /// Alias for [`Realm::teardown`].

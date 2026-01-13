@@ -345,6 +345,11 @@ pub struct Vm {
   // For now `vm-js` assumes a single active realm per `Vm`. When multiple realms are supported,
   // this will likely become realm-indexed state.
   intrinsics: Option<Intrinsics>,
+  /// The [`RealmId`] that `intrinsics` (and other single-realm VM state) currently corresponds to.
+  ///
+  /// This is used to avoid clearing the wrong realm's state when tearing down a realm that is not
+  /// the most recently-initialized realm.
+  intrinsics_realm: Option<RealmId>,
   /// Set of global `var`/function declaration names in the current realm.
   ///
   /// This models the GlobalEnvironmentRecord's internal `[[VarNames]]` list, which is used by
@@ -381,6 +386,7 @@ impl std::fmt::Debug for Vm {
     ds.field("async_continuations", &self.async_continuations.len());
     ds.field("module_graph", &self.module_graph.is_some());
     ds.field("intrinsics", &self.intrinsics);
+    ds.field("intrinsics_realm", &self.intrinsics_realm);
     ds.field("global_var_names", &self.global_var_names.len());
     #[cfg(test)]
     {
@@ -582,6 +588,7 @@ impl Vm {
       async_continuations: HashMap::new(),
       module_graph: None,
       intrinsics: None,
+      intrinsics_realm: None,
       global_var_names: HashSet::new(),
       #[cfg(test)]
       native_calls_len_override: None,
@@ -721,6 +728,41 @@ impl Vm {
 
     let mut ctx = TeardownCtx { heap };
     self.microtasks.teardown(&mut ctx);
+  }
+
+  /// Tears down VM-owned state for `realm`.
+  ///
+  /// This is intended for long-lived embeddings that create and tear down multiple realms while
+  /// reusing a single [`Vm`] and [`Heap`]. In addition to a realm's own heap-level persistent roots
+  /// (see [`crate::Realm::teardown`]), the VM may also own per-realm state such as:
+  /// - cached intrinsic handles,
+  /// - tracked global `var`/function names,
+  /// - deterministic `Math.random()` PRNG state,
+  /// - and cached template objects (tagged template literal `GetTemplateObject` cache).
+  ///
+  /// This method cleans up that VM-owned state for the provided [`RealmId`], including unregistering
+  /// any persistent GC roots held by the VM (notably template objects).
+  ///
+  /// This method is **idempotent**: calling it multiple times for the same realm is safe.
+  pub fn teardown_realm(&mut self, heap: &mut Heap, realm: RealmId) {
+    // Remove cached template objects for this realm, unregistering their persistent roots so they
+    // are eligible for collection.
+    self.template_registry.retain(|key, entry| {
+      if key.realm != realm {
+        return true;
+      }
+      heap.remove_root(entry.root);
+      false
+    });
+
+    // Clear VM-owned per-realm state only if it belongs to `realm`.
+    if self.intrinsics_realm == Some(realm) {
+      self.intrinsics = None;
+      self.intrinsics_realm = None;
+      self.global_var_names.clear();
+      // Reset to the default seed so a fresh realm starts from a deterministic state.
+      self.math_random_state = self.options.math_random_seed;
+    }
   }
 
   /// Returns the number of in-progress async continuations currently stored in the VM.
@@ -1254,6 +1296,14 @@ impl Vm {
   /// `$262.createRealm`) may need to temporarily swap intrinsics while creating new realms.
   pub fn set_intrinsics(&mut self, intrinsics: Intrinsics) {
     self.intrinsics = Some(intrinsics);
+    // Without an explicit realm id, we cannot safely associate these intrinsics with a specific
+    // realm for teardown purposes.
+    self.intrinsics_realm = None;
+  }
+
+  pub(crate) fn set_intrinsics_for_realm(&mut self, realm: RealmId, intrinsics: Intrinsics) {
+    self.intrinsics = Some(intrinsics);
+    self.intrinsics_realm = Some(realm);
     // Intrinsics are installed per realm. Treat this as the realm initialization boundary for
     // `Math.random()` and reset the per-realm PRNG state.
     self.math_random_state = self.options.math_random_seed;
@@ -3925,6 +3975,76 @@ mod tests {
     let second = vm.module_namespace_getter_call_id()?;
     assert_eq!(first, second);
     assert_eq!(len, vm.native_calls.len());
+    Ok(())
+  }
+
+  #[test]
+  fn teardown_realm_clears_template_registry_and_intrinsics() -> Result<(), VmError> {
+    use crate::exec::eval_script_with_host_and_hooks;
+    use crate::microtasks::MicrotaskQueue;
+    use crate::{ExecutionContext, HeapLimits, Realm};
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let realm_id = realm.id();
+
+    // Execute a script with a tagged template literal so the VM populates its template registry
+    // (`GetTemplateObject` cache) with a persistent root.
+    {
+      let exec_ctx = ExecutionContext {
+        realm: realm_id,
+        script_or_module: None,
+      };
+      let mut vm_ctx = vm.execution_context_guard(exec_ctx)?;
+      let mut scope = heap.scope();
+      let source_string = scope.alloc_string("function tag(s) { return s; } tag`hello`;")?;
+      let mut host = ();
+      let mut hooks = MicrotaskQueue::new();
+      let _ = eval_script_with_host_and_hooks(
+        &mut *vm_ctx,
+        &mut scope,
+        &mut host,
+        &mut hooks,
+        source_string,
+      )?;
+      // The test script should not enqueue Promise jobs.
+      assert!(hooks.is_empty());
+    }
+
+    // Extract the cached template root id and object handle.
+    let (template_root, template_obj) = {
+      let (_key, entry) = vm
+        .template_registry
+        .iter()
+        .find(|(k, _)| k.realm == realm_id)
+        .expect("expected template registry entry for realm");
+      let template_root = entry.root;
+      let Some(Value::Object(template_obj)) = heap.get_root(template_root) else {
+        panic!("expected template object to be held by persistent root");
+      };
+      (template_root, template_obj)
+    };
+
+    // Realm teardown should unregister realm-owned roots, but should not touch VM-owned template
+    // roots.
+    realm.teardown(&mut heap);
+    assert_eq!(
+      heap.persistent_root_count(),
+      1,
+      "expected template root to remain after Realm::teardown"
+    );
+    assert!(heap.get_root(template_root).is_some());
+
+    // VM teardown should remove template registry entries (and their roots) and clear intrinsics.
+    vm.teardown_realm(&mut heap, realm_id);
+    assert!(heap.get_root(template_root).is_none());
+    assert!(!vm.template_registry.keys().any(|k| k.realm == realm_id));
+    assert!(vm.intrinsics().is_none());
+
+    // After GC, the template object should no longer be live.
+    heap.collect_garbage();
+    assert!(!heap.is_valid_object(template_obj));
     Ok(())
   }
 

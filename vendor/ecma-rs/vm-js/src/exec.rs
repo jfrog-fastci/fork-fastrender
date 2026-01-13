@@ -2947,6 +2947,8 @@ impl JsRuntime {
 
 impl Drop for JsRuntime {
   fn drop(&mut self) {
+    let realm_id = self.realm.id();
+
     // Discard any pending Promise jobs so we don't drop `Job`s that still own persistent roots.
     //
     // This matters in tests/embedders that early-return on errors (including OOM) without running a
@@ -2959,6 +2961,7 @@ impl Drop for JsRuntime {
     self.modules.teardown(&mut self.vm, &mut self.heap);
     self.env.teardown(&mut self.heap);
     self.realm.teardown(&mut self.heap);
+    self.vm.teardown_realm(&mut self.heap, realm_id);
   }
 }
 
@@ -28645,11 +28648,11 @@ fn gen_resume_from_frames(
 
           let Some(throw_method) = throw_method else {
             // No `throw` method:
-            // Spec: perform ? IteratorClose(iteratorRecord, NormalCompletion(~empty~)), then
-            // throw a TypeError exception.
+            // Spec: perform ? IteratorClose(iteratorRecord, NormalCompletion(~empty~)), then throw
+            // a TypeError exception (protocol violation).
             //
-            // Per `yield*` delegation semantics, errors thrown while closing override the protocol
-            // violation TypeError.
+            // Errors thrown while closing (including non-object `return` results) override the
+            // protocol violation.
             if let Err(close_err) = iterator::iterator_close(
               evaluator.vm,
               &mut *evaluator.host,
