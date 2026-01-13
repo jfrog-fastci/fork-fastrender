@@ -152,3 +152,100 @@ test(() => {
   assert_equals(it.referenceNode, a1);
   assert_false(it.pointerBeforeReferenceNode);
 }, "NodeIterator pre-remove steps: pointer-after-reference moves reference to previous sibling's last inclusive descendant");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+
+  const a = document.createElement("span");
+  const a1 = document.createElement("span");
+  a.appendChild(a1);
+
+  const b = document.createElement("span");
+  const b1 = document.createElement("span");
+  b.appendChild(b1);
+
+  root.appendChild(a);
+  root.appendChild(b);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ALL, null);
+
+  // Advance to b1, then flip pointerBeforeReferenceNode to true without moving.
+  it.nextNode(); // root
+  it.nextNode(); // a
+  it.nextNode(); // a1
+  it.nextNode(); // b
+  it.nextNode(); // b1
+  it.previousNode(); // b1 (toggle pointerBeforeReferenceNode => true)
+
+  assert_equals(it.referenceNode, b1);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // Removing `b` leaves no following node. Since `b` has a previous sibling, the reference should
+  // fall back to that previous sibling's last inclusive descendant (a1), and pointerBeforeReferenceNode
+  // should flip to false.
+  root.removeChild(b);
+
+  assert_equals(it.referenceNode, a1);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove steps: pointer-before-reference with no following node falls back to previous sibling's last inclusive descendant");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+
+  const a = document.createElement("span");
+  const a1 = document.createElement("span");
+  a.appendChild(a1);
+  root.appendChild(a);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ALL, null);
+
+  // Advance to the leaf so pointerBeforeReferenceNode is false.
+  it.nextNode(); // root
+  it.nextNode(); // a
+  it.nextNode(); // a1
+
+  assert_equals(it.referenceNode, a1);
+  assert_false(it.pointerBeforeReferenceNode);
+
+  // With pointerBeforeReferenceNode false and no previous sibling, reference should fall back to
+  // the removed node's parent, while pointerBeforeReferenceNode remains false.
+  root.removeChild(a);
+
+  assert_equals(it.referenceNode, root);
+  assert_false(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove steps: pointer-after-reference with no previous sibling falls back to the removed node's parent");
+
+test(() => {
+  clear_children(document.body);
+
+  const root = document.createElement("div");
+  const a = document.createElement("span");
+  const a1 = document.createElement("span");
+  a.appendChild(a1);
+  root.appendChild(a);
+  document.body.appendChild(root);
+
+  const it = document.createNodeIterator(root, NodeFilter.SHOW_ALL, null);
+
+  // Move into the root's subtree so reference is a descendant.
+  it.nextNode(); // root
+  it.nextNode(); // a
+  it.nextNode(); // a1
+  it.previousNode(); // a1 (toggle pointerBeforeReferenceNode => true)
+
+  assert_equals(it.referenceNode, a1);
+  assert_true(it.pointerBeforeReferenceNode);
+
+  // Removing the iterator root should *not* run NodeIterator pre-remove steps for this iterator,
+  // per spec (early return when toBeRemovedNode === iterator.root).
+  document.body.removeChild(root);
+
+  assert_equals(it.referenceNode, a1);
+  assert_true(it.pointerBeforeReferenceNode);
+}, "NodeIterator pre-remove steps: removing the iterator root does not update referenceNode/pointerBeforeReferenceNode");
