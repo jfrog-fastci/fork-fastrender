@@ -55,22 +55,23 @@ timeout -k 10 600 bash scripts/cargo_agent.sh xtask browser --release --hud --pe
 Set `FASTR_PERF_LOG=1` when running the windowed browser to emit **JSON Lines** (one JSON object per
 line) describing UI responsiveness events.
 
-For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1` and writes the
-JSONL stream to a file under repo guardrails):
+For interactive captures, prefer the convenience wrapper (handles `FASTR_PERF_LOG=1` and tees the
+JSONL stdout stream to a file under repo guardrails):
 
 ```bash
-timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --out target/browser_perf.jsonl --url about:test-layout-stress
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl
 
 # Capture + summarize (runs `browser_perf_log_summary` after the browser exits):
-timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --out target/browser_perf.jsonl --url about:test-layout-stress --summary
+timeout -k 10 600 bash scripts/capture_browser_perf_log.sh --url about:test-layout-stress --out target/browser_perf.jsonl --summary
 ```
 
 Typical run (writes a JSONL log you can post-process with `jq`, pandas, etc.):
 
 ```bash
-FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
+FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT= \
   timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress
+  bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- about:test-layout-stress \
+  | tee target/browser_perf.jsonl
 ```
 
 When enabled, you should expect events covering at least:
@@ -85,8 +86,7 @@ include:
 - `schema_version` (integer) — currently `2` (omitted on some legacy/diagnostic events).
 - `event` (string) — event kind (current: `frame`, `input`, `resize`, `navigation`, `ttfp`, `stage`; plus
   periodic diagnostics like `idle_sample` (legacy alias: `idle_summary`) / `worker_wake_summary` / `cpu_summary`).
-- `ts_ms` (integer) — monotonic timestamp in milliseconds since process start (some legacy/diagnostic
-  events use `t_ms`).
+- `t_ms` (integer) — monotonic timestamp in milliseconds since process start (some events use `ts_ms`).
 - `window_id` (string) — identifier for the window instance (or `"process"` for process-wide
   summaries).
 - Event-specific numeric fields such as `ui_frame_ms`, `input_to_present_ms`, `resize_to_present_ms`,
@@ -155,8 +155,8 @@ is enabled. The raw stream is useful for deep dives but hard to compare without 
 `browser_perf_log_summary` helper to compute percentile summaries:
 
 ```bash
-cat perf.jsonl | bash scripts/run_limited.sh --as 64G -- \
-  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary -- --json
+cat perf.jsonl | timeout -k 10 600 bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --release --bin browser_perf_log_summary
 ```
 
 The summary tool is resilient to unknown/extra JSON fields so older captures keep working as the
@@ -192,14 +192,14 @@ Each log line is a JSON object that includes:
 
 - `schema_version` (currently `2`)
 - `event` (tag)
-- `ts_ms` (monotonic timestamp in milliseconds since process start)
+- `t_ms` (monotonic timestamp in milliseconds since process start)
 - `window_id` (string)
 
 Event payload fields (current schema in `src/bin/browser.rs`, `perf_log::PerfEvent`):
 
 - `event=frame`: `ui_frame_ms`, `fps` (optional), plus window state flags (`window_focused`,
   `window_occluded`, `window_minimized`) and `active_tab_id` (optional).
-- `event=input`: `kind` (`keyboard|mouse_wheel|pointer_move|button`), `input_to_present_ms`,
+- `event=input`: `input_kind` (`keyboard|mouse_wheel|pointer_move|button`), `input_to_present_ms`,
   `input_ts_ms`, `count`, and `active_tab_id` (optional).
 - `event=resize`: `resize_to_present_ms`, `resize_ts_ms`, `new_width_px`, `new_height_px`.
 - `event=navigation`: `tab_id`, `navigation_seqno`, `url`.
