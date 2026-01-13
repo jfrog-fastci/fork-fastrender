@@ -81,11 +81,23 @@ pub fn send_fd(sock: &UnixStream, fd: BorrowedFd<'_>) -> io::Result<()> {
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
   let flags = 0;
 
-  let rc = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, flags) };
-  if rc < 0 {
-    return Err(io::Error::last_os_error());
+  loop {
+    let rc = unsafe { libc::sendmsg(sock.as_raw_fd(), &msg, flags) };
+    if rc < 0 {
+      let err = io::Error::last_os_error();
+      if err.kind() == io::ErrorKind::Interrupted {
+        continue;
+      }
+      return Err(err);
+    }
+    if rc as usize != PAYLOAD.len() {
+      return Err(io::Error::new(
+        io::ErrorKind::WriteZero,
+        "short sendmsg while sending fd",
+      ));
+    }
+    return Ok(());
   }
-  Ok(())
 }
 
 /// Receive a single file descriptor over a connected Unix domain socket.
@@ -123,29 +135,57 @@ pub fn recv_fd(sock: &UnixStream) -> io::Result<OwnedFd> {
 
   // SAFETY: `recvmsg` writes into the provided iov/control buffers which are valid for the call.
   let mut need_manual_cloexec = false;
-  let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags) };
-  let _rc = if rc >= 0 {
-    rc
-  } else {
+  let read_len = loop {
+    // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
+    msg.msg_controllen = CONTROL_LEN;
+    msg.msg_flags = 0;
+    let rc = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags) };
+    if rc >= 0 {
+      break rc as usize;
+    }
     let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
     // Some older kernels/sandboxed environments reject MSG_CMSG_CLOEXEC with EINVAL. Retry without
     // the flag and set FD_CLOEXEC manually on the received fd.
     if err.raw_os_error() == Some(libc::EINVAL) && (flags & libc::MSG_CMSG_CLOEXEC) != 0 {
       need_manual_cloexec = true;
-      let rc2 = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
-      if rc2 < 0 {
-        return Err(io::Error::last_os_error());
+      loop {
+        msg.msg_controllen = CONTROL_LEN;
+        msg.msg_flags = 0;
+        let rc2 = unsafe { libc::recvmsg(sock.as_raw_fd(), &mut msg, flags & !libc::MSG_CMSG_CLOEXEC) };
+        if rc2 >= 0 {
+          break rc2 as usize;
+        }
+        let err2 = io::Error::last_os_error();
+        if err2.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(err2);
       }
-      rc2
     } else {
       return Err(err);
     }
   };
 
+  if read_len == 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::UnexpectedEof,
+      "peer closed socket while receiving fd",
+    ));
+  }
+
   if (msg.msg_flags & libc::MSG_CTRUNC) != 0 {
     return Err(io::Error::new(
       io::ErrorKind::InvalidData,
       "control message truncated while receiving fd",
+    ));
+  }
+  if (msg.msg_flags & libc::MSG_TRUNC) != 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "payload truncated while receiving fd",
     ));
   }
 

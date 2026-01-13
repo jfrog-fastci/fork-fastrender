@@ -216,37 +216,57 @@ fn recv_msg_inner(
   // retry without the flag and then set FD_CLOEXEC manually.
   let mut need_manual_cloexec = false;
   #[cfg(any(target_os = "linux", target_os = "android"))]
-  let read_len = {
+  let read_len = loop {
+    // `recvmsg` mutates `msg_controllen` on success. Ensure retries start with the full buffer.
+    hdr.msg_controllen = control_buf_len;
+    hdr.msg_flags = 0;
+
     // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
     // for the duration of the call.
     let rc = unsafe { libc::recvmsg(sock_fd, &mut hdr, libc::MSG_CMSG_CLOEXEC) };
     if rc >= 0 {
-      rc
-    } else {
-      let err = io::Error::last_os_error();
-      if err.raw_os_error() == Some(libc::EINVAL) {
-        need_manual_cloexec = true;
-        // Retry without MSG_CMSG_CLOEXEC.
-        let rc2 = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
-        if rc2 < 0 {
-          return Err(RecvMsgError::Io(io::Error::last_os_error()));
-        }
-        rc2
-      } else {
-        return Err(RecvMsgError::Io(err));
-      }
+      break rc;
     }
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    if err.raw_os_error() == Some(libc::EINVAL) {
+      need_manual_cloexec = true;
+      // Retry without MSG_CMSG_CLOEXEC.
+      let rc2 = loop {
+        hdr.msg_controllen = control_buf_len;
+        hdr.msg_flags = 0;
+        let rc2 = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
+        if rc2 >= 0 {
+          break rc2;
+        }
+        let err2 = io::Error::last_os_error();
+        if err2.kind() == io::ErrorKind::Interrupted {
+          continue;
+        }
+        return Err(RecvMsgError::Io(err2));
+      };
+      break rc2;
+    }
+    return Err(RecvMsgError::Io(err));
   };
   #[cfg(not(any(target_os = "linux", target_os = "android")))]
-  let read_len = {
+  let read_len = loop {
     need_manual_cloexec = true;
+    hdr.msg_controllen = control_buf_len;
+    hdr.msg_flags = 0;
     // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
     // for the duration of the call.
     let rc = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
-    if rc < 0 {
-      return Err(RecvMsgError::Io(io::Error::last_os_error()));
+    if rc >= 0 {
+      break rc;
     }
-    rc
+    let err = io::Error::last_os_error();
+    if err.kind() == io::ErrorKind::Interrupted {
+      continue;
+    }
+    return Err(RecvMsgError::Io(err));
   };
 
   let read_len = read_len as usize;
