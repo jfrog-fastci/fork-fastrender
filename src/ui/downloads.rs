@@ -138,6 +138,28 @@ pub fn filename_from_url(url: &str) -> String {
   derived.unwrap_or_else(|| "download".to_string())
 }
 
+fn default_download_dir_from_sources(
+  browser_env: Option<&str>,
+  legacy_env: Option<&str>,
+  user_downloads: Option<&Path>,
+  cwd: &Path,
+) -> PathBuf {
+  // Prefer the browser CLI/env knob, but keep the old `FASTR_DOWNLOAD_DIR` key as an alias for
+  // existing test setups.
+  if let Some(raw) = browser_env
+    .filter(|raw| !raw.is_empty())
+    .or_else(|| legacy_env.filter(|raw| !raw.is_empty()))
+  {
+    return PathBuf::from(raw);
+  }
+
+  if let Some(dir) = user_downloads {
+    return dir.to_path_buf();
+  }
+
+  cwd.to_path_buf()
+}
+
 /// Resolve the base download directory for the browser UI worker.
 ///
 /// Front-ends can override this per-worker via [`crate::ui::messages::UiToWorker::SetDownloadDirectory`].
@@ -146,23 +168,24 @@ pub fn filename_from_url(url: &str) -> String {
 /// `FASTR_BROWSER_DOWNLOAD_DIR` runtime toggle (or the legacy `FASTR_DOWNLOAD_DIR` alias).
 pub fn default_download_dir() -> PathBuf {
   let toggles = crate::debug::runtime::runtime_toggles();
-  // Prefer the browser CLI/env knob, but keep the old `FASTR_DOWNLOAD_DIR` key as an alias for
-  // existing test setups.
-  if let Some(raw) = toggles
-    .get("FASTR_BROWSER_DOWNLOAD_DIR")
-    .or_else(|| toggles.get("FASTR_DOWNLOAD_DIR"))
-  {
-    return PathBuf::from(raw);
-  }
 
-  #[cfg(feature = "browser_ui")]
-  if let Some(user_dirs) = directories::UserDirs::new() {
-    if let Some(dir) = user_dirs.download_dir() {
-      return dir.to_path_buf();
+  let browser_env = toggles.get("FASTR_BROWSER_DOWNLOAD_DIR");
+  let legacy_env = toggles.get("FASTR_DOWNLOAD_DIR");
+
+  let user_downloads: Option<PathBuf> = {
+    #[cfg(feature = "browser_ui")]
+    {
+      directories::UserDirs::new()
+        .and_then(|user_dirs| user_dirs.download_dir().map(Path::to_path_buf))
     }
-  }
+    #[cfg(not(feature = "browser_ui"))]
+    {
+      None
+    }
+  };
 
-  std::env::temp_dir().join("fastrender-downloads")
+  let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+  default_download_dir_from_sources(browser_env, legacy_env, user_downloads.as_deref(), &cwd)
 }
 
 #[cfg(test)]
@@ -193,5 +216,59 @@ mod tests {
   fn sanitize_empty_falls_back_to_download() {
     assert_eq!(sanitize_download_filename("/"), "download".to_string());
     assert_eq!(sanitize_download_filename("   "), "download".to_string());
+  }
+
+  #[test]
+  fn default_download_dir_prefers_browser_env_over_legacy_env() {
+    let cwd = Path::new("cwd");
+    let user = Path::new("user_downloads");
+
+    assert_eq!(
+      default_download_dir_from_sources(Some("browser_env"), Some("legacy_env"), Some(user), cwd),
+      PathBuf::from("browser_env")
+    );
+  }
+
+  #[test]
+  fn default_download_dir_uses_legacy_env_when_browser_env_unset() {
+    let cwd = Path::new("cwd");
+    let user = Path::new("user_downloads");
+
+    assert_eq!(
+      default_download_dir_from_sources(None, Some("legacy_env"), Some(user), cwd),
+      PathBuf::from("legacy_env")
+    );
+  }
+
+  #[test]
+  fn default_download_dir_prefers_user_downloads_over_cwd() {
+    let cwd = Path::new("cwd");
+    let user = Path::new("user_downloads");
+
+    assert_eq!(
+      default_download_dir_from_sources(None, None, Some(user), cwd),
+      user.to_path_buf()
+    );
+  }
+
+  #[test]
+  fn default_download_dir_falls_back_to_cwd() {
+    let cwd = Path::new("cwd");
+
+    assert_eq!(
+      default_download_dir_from_sources(None, None, None, cwd),
+      cwd.to_path_buf()
+    );
+  }
+
+  #[test]
+  fn default_download_dir_ignores_empty_env_values() {
+    let cwd = Path::new("cwd");
+    let user = Path::new("user_downloads");
+
+    assert_eq!(
+      default_download_dir_from_sources(Some(""), Some(""), Some(user), cwd),
+      user.to_path_buf()
+    );
   }
 }
