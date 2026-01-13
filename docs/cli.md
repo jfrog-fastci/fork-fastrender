@@ -29,14 +29,16 @@ scripts are **not** executed unless you opt in with `--js`.
   - `render_pages --js …` (render cached pageset HTML under `fetches/html/`)
   - `render_fixtures --js …` (render offline fixtures under `tests/pages/fixtures/`)
   - `pageset_progress run --js …` (pageset scoreboard renders)
-- Browser smoke test:
-  - `browser --headless-smoke --js …` (vm-js smoke test; does not expose the shared JS budget flags)
-    - Example:
+- Browser:
+  - `browser --js …` (windowed browser UI; experimental)
+  - `browser --headless-smoke --js …` (headless smoke test mode; selects a vm-js `BrowserTab` harness)
+  - Note: the `browser` binary does not expose the shared JS budget flags.
+  - Example (headless smoke test):
 
-      ```bash
-      bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
-        --headless-smoke --js
-      ```
+    ```bash
+    bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser -- \
+      --headless-smoke --js
+    ```
 
 When `--js` is enabled in the render CLIs above, they use the `vm-js`-backed
 [`api::BrowserTab`](../src/api/browser_tab.rs) and drive it via `BrowserTab::run_until_stable`
