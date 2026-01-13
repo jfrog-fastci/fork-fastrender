@@ -283,38 +283,35 @@ impl<'a> InlineFloatIntegration<'a> {
       // `start_y`, the line must be pushed down until it finds a non-zero width segment.
       f32::EPSILON
     };
-    let y = if options.line_height > 0.0 {
-      self
-        .float_ctx
-        .find_fit(min_width, options.line_height, start_y)
-    } else {
-      // For zero-height lines, just check if width fits
-      let mut y = start_y;
-      loop {
-        let (left_edge, width) = self.float_ctx.available_width_at_y(y);
-        if width >= min_width {
-          return LineSpace::new(y, left_edge, width);
-        }
 
-        // Find the next position where width might change
-        let next_y = self.float_ctx.next_float_boundary_after(y);
-        if next_y <= y {
-          // No more float boundaries, return current position
-          return LineSpace::new(y, left_edge, width);
-        }
-        y = next_y;
+    if options.line_height > 0.0 {
+      let (y, left_edge, right_edge) = self
+        .float_ctx
+        .find_fit_with_edges(min_width, options.line_height, start_y);
+      return LineSpace {
+        y,
+        left_edge,
+        right_edge,
+        width: (right_edge - left_edge).max(0.0),
+      };
+    }
+
+    // For zero-height lines, just check if width fits
+    let mut y = start_y;
+    loop {
+      let (left_edge, width) = self.float_ctx.available_width_at_y(y);
+      if width >= min_width {
+        return LineSpace::new(y, left_edge, width);
       }
-    };
 
-    let (left_edge, width) = if options.line_height > 0.0 {
-      self
-        .float_ctx
-        .available_width_in_range(y, y + options.line_height)
-    } else {
-      self.float_ctx.available_width_at_y(y)
-    };
-
-    LineSpace::new(y, left_edge, width)
+      // Find the next position where width might change
+      let next_y = self.float_ctx.next_float_boundary_after(y);
+      if next_y <= y {
+        // No more float boundaries, return current position
+        return LineSpace::new(y, left_edge, width);
+      }
+      y = next_y;
+    }
   }
 
   /// Like [`Self::find_line_space`], but queries floats within a containing block span in the float
@@ -351,48 +348,42 @@ impl<'a> InlineFloatIntegration<'a> {
     } else {
       f32::EPSILON
     };
-    let y = if options.line_height > 0.0 {
-      self.float_ctx.find_fit_in_containing_block(
-        min_width,
-        options.line_height,
-        start_y,
-        containing_left,
-        containing_width,
-      )
-    } else {
-      let mut y = start_y;
-      loop {
-        let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
-          y,
+
+    if options.line_height > 0.0 {
+      let (y, left_edge, right_edge) = self
+        .float_ctx
+        .find_fit_in_containing_block_with_edges(
+          min_width,
+          options.line_height,
+          start_y,
           containing_left,
           containing_width,
         );
-        if width >= min_width {
-          return LineSpace::new(y, left_edge, width);
-        }
-
-        let next_y = self.float_ctx.next_float_boundary_after(y);
-        if next_y <= y {
-          return LineSpace::new(y, left_edge, width);
-        }
-        y = next_y;
-      }
-    };
-
-    let (left_edge, width) = if options.line_height > 0.0 {
-      self.float_ctx.available_width_in_range_in_containing_block(
+      return LineSpace {
         y,
-        y + options.line_height,
+        left_edge,
+        right_edge,
+        width: (right_edge - left_edge).max(0.0),
+      };
+    }
+
+    let mut y = start_y;
+    loop {
+      let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
+        y,
         containing_left,
         containing_width,
-      )
-    } else {
-      self
-        .float_ctx
-        .available_width_at_y_in_containing_block(y, containing_left, containing_width)
-    };
+      );
+      if width >= min_width {
+        return LineSpace::new(y, left_edge, width);
+      }
 
-    LineSpace::new(y, left_edge, width)
+      let next_y = self.float_ctx.next_float_boundary_after(y);
+      if next_y <= y {
+        return LineSpace::new(y, left_edge, width);
+      }
+      y = next_y;
+    }
   }
 
   /// Computes the position to place a line, handling clearance
@@ -516,35 +507,32 @@ impl<'a> InlineFloatIntegrationMut<'a> {
     } else {
       f32::EPSILON
     };
-    let y = if options.line_height > 0.0 {
-      self
-        .float_ctx
-        .find_fit(min_width, options.line_height, start_y)
-    } else {
-      let mut y = start_y;
-      loop {
-        let (left_edge, width) = self.float_ctx.available_width_at_y(y);
-        if width >= min_width {
-          return LineSpace::new(y, left_edge, width);
-        }
 
-        let next_y = self.float_ctx.next_float_boundary_after(y);
-        if next_y <= y {
-          return LineSpace::new(y, left_edge, width);
-        }
-        y = next_y;
+    if options.line_height > 0.0 {
+      let (y, left_edge, right_edge) = self
+        .float_ctx
+        .find_fit_with_edges(min_width, options.line_height, start_y);
+      return LineSpace {
+        y,
+        left_edge,
+        right_edge,
+        width: (right_edge - left_edge).max(0.0),
+      };
+    }
+
+    let mut y = start_y;
+    loop {
+      let (left_edge, width) = self.float_ctx.available_width_at_y(y);
+      if width >= min_width {
+        return LineSpace::new(y, left_edge, width);
       }
-    };
 
-    let (left_edge, width) = if options.line_height > 0.0 {
-      self
-        .float_ctx
-        .available_width_in_range(y, y + options.line_height)
-    } else {
-      self.float_ctx.available_width_at_y(y)
-    };
-
-    LineSpace::new(y, left_edge, width)
+      let next_y = self.float_ctx.next_float_boundary_after(y);
+      if next_y <= y {
+        return LineSpace::new(y, left_edge, width);
+      }
+      y = next_y;
+    }
   }
 
   pub fn find_line_space_in_containing_block(
@@ -574,48 +562,42 @@ impl<'a> InlineFloatIntegrationMut<'a> {
     } else {
       f32::EPSILON
     };
-    let y = if options.line_height > 0.0 {
-      self.float_ctx.find_fit_in_containing_block(
-        min_width,
-        options.line_height,
-        start_y,
-        containing_left,
-        containing_width,
-      )
-    } else {
-      let mut y = start_y;
-      loop {
-        let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
-          y,
+
+    if options.line_height > 0.0 {
+      let (y, left_edge, right_edge) = self
+        .float_ctx
+        .find_fit_in_containing_block_with_edges(
+          min_width,
+          options.line_height,
+          start_y,
           containing_left,
           containing_width,
         );
-        if width >= min_width {
-          return LineSpace::new(y, left_edge, width);
-        }
-
-        let next_y = self.float_ctx.next_float_boundary_after(y);
-        if next_y <= y {
-          return LineSpace::new(y, left_edge, width);
-        }
-        y = next_y;
-      }
-    };
-
-    let (left_edge, width) = if options.line_height > 0.0 {
-      self.float_ctx.available_width_in_range_in_containing_block(
+      return LineSpace {
         y,
-        y + options.line_height,
+        left_edge,
+        right_edge,
+        width: (right_edge - left_edge).max(0.0),
+      };
+    }
+
+    let mut y = start_y;
+    loop {
+      let (left_edge, width) = self.float_ctx.available_width_at_y_in_containing_block(
+        y,
         containing_left,
         containing_width,
-      )
-    } else {
-      self
-        .float_ctx
-        .available_width_at_y_in_containing_block(y, containing_left, containing_width)
-    };
+      );
+      if width >= min_width {
+        return LineSpace::new(y, left_edge, width);
+      }
 
-    LineSpace::new(y, left_edge, width)
+      let next_y = self.float_ctx.next_float_boundary_after(y);
+      if next_y <= y {
+        return LineSpace::new(y, left_edge, width);
+      }
+      y = next_y;
+    }
   }
 
   /// Computes the position to place a line, handling clearance

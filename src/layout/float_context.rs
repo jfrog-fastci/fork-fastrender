@@ -2607,6 +2607,30 @@ impl FloatContext {
     containing_block_left: f32,
     containing_block_width: f32,
   ) -> f32 {
+    self
+      .find_fit_in_containing_block_with_edges(
+        width,
+        height,
+        min_y,
+        containing_block_left,
+        containing_block_width,
+      )
+      .0
+  }
+
+  /// Like [`Self::find_fit_in_containing_block`], but also returns the float-induced edges.
+  ///
+  /// Returns `(y, left_edge, right_edge)` where `y` is the first vertical position at or below
+  /// `min_y` such that the most constrained segment within `[y, y + height)` still has at least
+  /// `min_width` available width.
+  pub fn find_fit_in_containing_block_with_edges(
+    &self,
+    min_width: f32,
+    height: f32,
+    min_y: f32,
+    containing_block_left: f32,
+    containing_block_width: f32,
+  ) -> (f32, f32, f32) {
     let containing_left = if containing_block_left.is_finite() {
       containing_block_left
     } else {
@@ -2615,16 +2639,13 @@ impl FloatContext {
     let containing_width = clamp_positive_finite(containing_block_width);
     let containing_right = containing_left + containing_width;
 
-    let target_width = clamp_positive_finite(width);
-    let target_height = clamp_positive_finite(height);
-    let (y, _left, _right) = self.find_fit_using_range_cache(
-      target_width,
-      target_height,
+    self.find_fit_using_range_cache(
+      min_width,
+      height,
       min_y,
       containing_left,
       containing_right,
-    );
-    y
+    )
   }
 
   /// Compute the clearance needed for an element with the given clear value
@@ -2893,16 +2914,22 @@ impl FloatContext {
   ///
   /// The Y position where the box can be placed.
   pub fn find_fit(&self, width: f32, height: f32, min_y: f32) -> f32 {
-    let target_width = clamp_positive_finite(width);
-    let target_height = clamp_positive_finite(height);
-    let (y, _left, _right) = self.find_fit_using_range_cache(
-      target_width,
-      target_height,
+    self.find_fit_with_edges(width, height, min_y).0
+  }
+
+  /// Like [`Self::find_fit`], but also returns the float-induced edges.
+  ///
+  /// Returns `(y, left_edge, right_edge)` where `y` is the first vertical position at or below
+  /// `min_y` such that the most constrained segment within `[y, y + height)` still has at least
+  /// `min_width` available width.
+  pub fn find_fit_with_edges(&self, min_width: f32, height: f32, min_y: f32) -> (f32, f32, f32) {
+    self.find_fit_using_range_cache(
+      min_width,
+      height,
       min_y,
       0.0,
       self.containing_block_width,
-    );
-    y
+    )
   }
 
   /// Clear all floats from the context
