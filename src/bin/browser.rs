@@ -5338,6 +5338,13 @@ impl App {
     } else {
       first_line.to_string()
     };
+    let retry_a11y_label = tab
+      .current_url()
+      .or(tab.committed_url.as_deref())
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .map(|url| format!("Retry navigation to {url}"))
+      .unwrap_or_else(|| "Retry navigation".to_string());
     let mut details_open = details_open_initial && error_is_open;
 
     let popup = egui::Area::new(infobar_id)
@@ -5400,8 +5407,9 @@ impl App {
                 let retry_resp = ui
                   .push_id(infobar_id.with("retry"), |ui| ui.button("Retry"))
                   .inner;
-                retry_resp.widget_info(|| {
-                  egui::WidgetInfo::labeled(egui::WidgetType::Button, "Retry navigation")
+                retry_resp.widget_info({
+                  let label = retry_a11y_label.clone();
+                  move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
                 });
                 if retry_resp.clicked() {
                   retry = true;
