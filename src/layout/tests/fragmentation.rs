@@ -1268,6 +1268,59 @@ fn pagination_keeps_fragment_boundary_margins_separate() {
 }
 
 #[test]
+fn unforced_page_break_truncates_collapsed_margins_between_siblings() {
+  let mut first_style = ComputedStyle::default();
+  first_style.height = Some(Length::px(30.0));
+  first_style.margin_bottom = Some(Length::px(80.0));
+
+  let mut second_style = ComputedStyle::default();
+  second_style.height = Some(Length::px(30.0));
+  second_style.margin_top = Some(Length::px(60.0));
+
+  let first = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let second = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![first, second],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+  let fragments = engine.layout_tree(&box_tree).expect("layout");
+
+  assert_eq!(
+    fragments.additional_fragments.len(),
+    1,
+    "expected pagination overflow to produce 2 pages"
+  );
+  let first_page = &fragments.root;
+  let second_page = &fragments.additional_fragments[0];
+
+  let first_block = first_page
+    .children
+    .iter()
+    .find(|c| matches!(c.content, FragmentContent::Block { .. }) && (c.bounds.height() - 30.0).abs() < 0.1)
+    .expect("first page block");
+  let second_block = second_page
+    .children
+    .iter()
+    .find(|c| matches!(c.content, FragmentContent::Block { .. }) && (c.bounds.height() - 30.0).abs() < 0.1)
+    .expect("second page block");
+
+  let trailing_space = first_page.bounds.height() - first_block.bounds.max_y();
+  assert!(
+    trailing_space.abs() < 0.1,
+    "unforced breaks should truncate collapsed adjoining margins (trailing_space={trailing_space})"
+  );
+  assert!(
+    second_block.bounds.y().abs() < 0.1,
+    "unforced breaks should truncate the following block's leading margin (y={})",
+    second_block.bounds.y()
+  );
+}
+
+#[test]
 fn multicolumn_unforced_break_truncates_leading_margins() {
   let mut root_style = ComputedStyle::default();
   root_style.column_count = Some(2);
