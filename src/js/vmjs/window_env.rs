@@ -1410,6 +1410,19 @@ fn navigator_ua_data_to_json_native(
   Ok(Value::Object(result))
 }
 
+fn navigator_java_enabled_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Compatibility stub: always return `false` and never throw.
+  Ok(Value::Bool(false))
+}
+
 fn navigator_ua_data_get_high_entropy_values_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1915,6 +1928,39 @@ pub(crate) fn install_window_shims_vm_js(
   }
   define_read_only_vm_js(scope, navigator, "languages", Value::Object(languages))?;
 
+  // Legacy navigator plugin/mimetype probes (common in fingerprinting / feature detection code).
+  // Keep these deterministic and forgiving: empty arrays and a non-throwing `javaEnabled()` stub.
+  let plugins = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(plugins))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(plugins, Some(realm.intrinsics().array_prototype()))?;
+  define_read_only_vm_js(scope, navigator, "plugins", Value::Object(plugins))?;
+
+  let mime_types = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(mime_types))?;
+  scope
+    .heap_mut()
+    .object_set_prototype(mime_types, Some(realm.intrinsics().array_prototype()))?;
+  define_read_only_vm_js(scope, navigator, "mimeTypes", Value::Object(mime_types))?;
+
+  let java_enabled_call_id = vm.register_native_call(navigator_java_enabled_native)?;
+  let java_enabled_name = scope.alloc_string("javaEnabled")?;
+  scope.push_root(Value::String(java_enabled_name))?;
+  let java_enabled_func =
+    scope.alloc_native_function(java_enabled_call_id, None, java_enabled_name, 0)?;
+  scope.heap_mut().object_set_prototype(
+    java_enabled_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(java_enabled_func))?;
+  define_read_only_vm_js(
+    scope,
+    navigator,
+    "javaEnabled",
+    Value::Object(java_enabled_func),
+  )?;
+
   // UA Client Hints: `navigator.userAgentData` (NavigatorUAData).
   //
   // Many real-world sites probe this surface unguarded; keep it deterministic and forgiving.
@@ -2184,6 +2230,19 @@ pub fn install_window_shims(
   let max_touch_points = if ua_data_info.mobile { 5.0 } else { 0.0 };
   define_read_only_number(rt, navigator, "maxTouchPoints", max_touch_points)?;
   define_read_only_bool(rt, navigator, "webdriver", false)?;
+
+  // Legacy navigator plugin/mimetype probes (common in fingerprinting / feature detection code).
+  // Keep these deterministic and forgiving: empty arrays and a non-throwing `javaEnabled()` stub.
+  let plugins = rt.alloc_array()?;
+  define_read_only_data_property(rt, navigator, "plugins", plugins, false)?;
+  let mime_types = rt.alloc_array()?;
+  define_read_only_data_property(rt, navigator, "mimeTypes", mime_types, false)?;
+  let java_enabled = rt.alloc_function_value_with_name_length(
+    "javaEnabled",
+    0,
+    |_rt, _this, _args| Ok(Value::Bool(false)),
+  )?;
+  define_read_only_data_property(rt, navigator, "javaEnabled", java_enabled, false)?;
 
   // UA Client Hints: `navigator.userAgentData` (NavigatorUAData).
   //
@@ -3112,5 +3171,62 @@ mod tests {
         .unwrap(),
       Value::Bool(true)
     );
+  }
+
+  #[test]
+  fn navigator_plugins_mimetypes_and_java_enabled_are_present() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/").unwrap();
+
+    assert_eq!(
+      host
+        .exec_script("Array.isArray(navigator.plugins) && navigator.plugins.length === 0")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("Array.isArray(navigator.mimeTypes) && navigator.mimeTypes.length === 0")
+        .unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      host
+        .exec_script("typeof navigator.javaEnabled === 'function' && navigator.javaEnabled() === false")
+        .unwrap(),
+      Value::Bool(true)
+    );
+  }
+
+  #[test]
+  fn legacy_navigator_plugins_mimetypes_and_java_enabled_are_present() {
+    let mut rt = VmJsRuntime::new();
+    let window = rt.alloc_object_value().unwrap();
+    let media = MediaContext::screen(800.0, 600.0);
+    install_window_shims(&mut rt, window, WindowEnv::from_media(media)).unwrap();
+
+    let navigator = get_prop(&mut rt, window, "navigator");
+
+    let plugins = get_prop(&mut rt, navigator, "plugins");
+    let Value::Object(plugins_obj) = plugins else {
+      panic!("expected plugins to be an object");
+    };
+    assert!(rt.heap().object_is_array(plugins_obj).unwrap());
+    assert_eq!(get_prop(&mut rt, plugins, "length"), Value::Number(0.0));
+
+    let mime_types = get_prop(&mut rt, navigator, "mimeTypes");
+    let Value::Object(mime_types_obj) = mime_types else {
+      panic!("expected mimeTypes to be an object");
+    };
+    assert!(rt.heap().object_is_array(mime_types_obj).unwrap());
+    assert_eq!(get_prop(&mut rt, mime_types, "length"), Value::Number(0.0));
+
+    let java_enabled = get_prop(&mut rt, navigator, "javaEnabled");
+    assert!(
+      rt.is_callable(java_enabled),
+      "expected navigator.javaEnabled to be callable"
+    );
+    let result = rt.call_function(java_enabled, navigator, &[]).unwrap();
+    assert_eq!(result, Value::Bool(false));
   }
 }
