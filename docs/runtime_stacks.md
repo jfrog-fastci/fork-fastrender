@@ -5,7 +5,7 @@ This doc is a **choose-the-right-type** reference that answers:
 
 - Which DOM representation is in use?
 - Can JavaScript run?
-- Is there an event loop (tasks + microtasks)?
+- Is there an event loop (tasks + microtasks + timers + `requestAnimationFrame`)?
 - Do live DOM mutations trigger rerendering?
 
 All types below are exported as `fastrender::api::*` and also re-exported at the crate root
