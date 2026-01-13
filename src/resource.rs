@@ -21424,6 +21424,56 @@ mod tests {
   }
 
   #[test]
+  fn http_fetcher_fetch_partial_rejects_missing_content_range() {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_fetch_partial_rejects_missing_content_range")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"abc";
+      // Intentionally omit Content-Range even though we return 206.
+      let headers = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.bin", addr);
+    let err = fetcher
+      .fetch_partial(&url, 3)
+      .expect_err("expected missing Content-Range to be rejected");
+    handle.join().unwrap();
+
+    assert!(
+      matches!(err, Error::Resource(_)),
+      "expected Error::Resource, got: {err:?}"
+    );
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("range: bytes=0-2"),
+      "expected Range header to be sent, got: {req}"
+    );
+  }
+
+  #[test]
   fn http_fetcher_fetch_range_with_request_sends_range_and_identity_encoding() {
     let Some(listener) =
       try_bind_localhost("http_fetcher_fetch_range_with_request_sends_range_and_identity_encoding")
@@ -21563,6 +21613,56 @@ mod tests {
     let err = fetcher
       .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
       .expect_err("expected mismatched content-range to be rejected");
+    handle.join().unwrap();
+
+    assert!(
+      matches!(err, Error::Resource(_)),
+      "expected Error::Resource, got: {err:?}"
+    );
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("range: bytes=5-7"),
+      "expected Range header to be sent, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_fetch_range_with_request_rejects_missing_content_range() {
+    let Some(listener) = try_bind_localhost(
+      "http_fetcher_fetch_range_with_request_rejects_missing_content_range",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"abc";
+      // Intentionally omit Content-Range even though we return 206.
+      let headers = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.bin", addr);
+    let err = fetcher
+      .fetch_range_with_request(FetchRequest::new(&url, FetchDestination::Fetch), 5..=7, 10)
+      .expect_err("expected missing Content-Range to be rejected");
     handle.join().unwrap();
 
     assert!(
