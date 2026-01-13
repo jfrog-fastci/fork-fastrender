@@ -99,6 +99,7 @@ These are optional wrappers for the most common loops:
   - `scripts/chrome_baseline.sh` also patches HTML to force a light color scheme + white background by default to avoid platform dark-mode/background differences (set `ALLOW_DARK_MODE=1` or run it with `--allow-dark-mode` to opt out).
   - Writes a report at `<out>/report.html` (default: `target/chrome_vs_fastrender/report.html`).
   - Core flags: `--pages <csv>`, `--shard <index>/<total>`, `--viewport <WxH>`, `--dpr <float>`, `--jobs <n>`, `--timeout <secs>`, `--out-dir <dir>`, `--chrome <path>`, `--js {on|off}`, `--no-chrome`, `--no-fastrender`, `--diff-only`, `--tolerance <u8>`, `--max-diff-percent <float>`, `--max-perceptual-distance <float>`, `--ignore-alpha`, `--sort-by {pixel|percent|perceptual}`, `--fail-on-differences`, `--no-build`.
+  - Note: this wrapper’s `--js {on|off}` flag is forwarded to the **Chrome** capture step only (it does not enable `render_pages --js`). To diff JS-enabled pages in both engines, run the steps manually (`scripts/chrome_baseline.sh --js on` + `render_pages --js ...`).
   - `--pages` accepts cached stems or URLs; URL-looking inputs are normalized to cached stems best-effort (strip scheme/leading `www.`, etc).
   - Per-step timeouts: `--chrome-timeout <secs>` / `--render-timeout <secs>` override `--timeout`.
   - Passing page stems that are not present under `fetches/html/*.html` is an error (run `fetch_pages` first).
@@ -110,6 +111,7 @@ These are optional wrappers for the most common loops:
     - `<out>/chrome/`, `<out>/fastrender/`, `<out>/report.html`, `<out>/report.json`.
   - When reusing existing FastRender renders (`--no-fastrender` / `--diff-only`), xtask validates per-fixture metadata to prevent stale diffs; pass `--allow-stale-fastrender-renders` to override.
   - Core flags mirror `bash scripts/cargo_agent.sh xtask fixture-chrome-diff` (run `bash scripts/cargo_agent.sh xtask fixture-chrome-diff --help` for details; the wrapper forwards through newer selection flags like `--from-progress` / `--all-fixtures`).
+  - Note: `xtask fixture-chrome-diff --js {on|off}` currently toggles JavaScript in the **Chrome** baseline step only; FastRender renders are still static by default. If you need JS-enabled FastRender fixture renders, run `render_fixtures --js` directly (and then `diff_renders`).
   - Legacy `--chrome-out-dir` / `--fastr-out-dir` / `--report-html` / `--report-json` flags are still accepted but must match the `<out>/chrome` / `<out>/fastrender` / `<out>/report.*` layout.
 - Run any command under a hard memory cap (uses `prlimit` when available): `bash scripts/run_limited.sh --as 64G -- <command...>`
 - Profile one page with samply (saves profile + prints summary): `scripts/profile_samply.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
@@ -480,7 +482,7 @@ bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --releas
   - `<out>/overlay/<fixture>.png` (when `--overlay` is enabled; rendered by `inspect_frag`)
   - `<out>/report.html`, `<out>/report.json`
 - Notes:
-  - JavaScript is disabled by default (Chrome baseline uses an injected CSP, matching FastRender's default static pipeline; enable `--js on` to execute author scripts).
+  - JavaScript is disabled by default. The `--js {on|off}` flag currently toggles JavaScript in the **Chrome** baseline step only (it controls whether an injected CSP blocks scripts). FastRender fixture renders are still static by default; use `render_fixtures --js` directly if you want JS-enabled FastRender fixture renders.
   - When `--no-chrome` is set, existing Chrome baseline metadata (`<out>/chrome/<fixture>.json`) is validated against the current `--viewport`, `--dpr`, `--media`, and `--js` values when present. Missing metadata emits a warning; use `--require-chrome-metadata` to fail fast.
   - When `--no-chrome` is set, the command checks the stored Chrome baseline metadata against the current fixture `index.html`, other fixture-local inputs like `assets/`, `styles.css`, etc, and the shared fixtures-root `assets/` directory (when available). If the fixture inputs have changed since the baseline was generated, it fails fast to avoid misleading diffs. Use `--allow-stale-chrome-baselines` to downgrade this to a warning.
   - Pass `--write-snapshot` to also write per-fixture snapshots/diagnostics for later `diff_snapshots` (equivalent to `render_fixtures --write-snapshot`).
