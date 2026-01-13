@@ -4,6 +4,7 @@ pub(crate) mod accessibility;
 pub(crate) mod env;
 pub(crate) mod global_state;
 pub(crate) mod locks;
+pub(crate) mod media_assets;
 pub(crate) mod net;
 pub(crate) mod rayon;
 // Compatibility shim (some older tests still reference `crate::common::rayon_test_util`).
