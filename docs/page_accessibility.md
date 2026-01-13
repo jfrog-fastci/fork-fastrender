@@ -57,6 +57,9 @@ The UI worker’s helper that implements this end-to-end is:
 The UI then maps viewport-local CSS rects into egui/window coordinates via:
 
 - [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs) (`InputMapping::rect_css_to_rect_points*`).
+  - Note: this produces **egui points** (logical pixels). If you need physical window pixels for an
+    OS-facing API, multiply by `egui_ctx.pixels_per_point()` / `Window::scale_factor()` as
+    appropriate for the frontend.
 
 ### Browser UI worker protocol (page a11y snapshot status)
 
