@@ -374,6 +374,120 @@ impl<'vm> HirEvaluator<'vm> {
       return Err(VmError::InvariantViolation("function body missing function metadata"));
     };
 
+    const PROLOGUE_TICK_EVERY: usize = 32;
+
+    // Pre-create all parameter bindings before evaluating default initializers so identifier
+    // references during parameter evaluation observe TDZ semantics.
+    //
+    // Note: this is a best-effort subset; currently only identifier parameters are supported on the
+    // compiled path.
+    let env_rec = self.env.lexical_env();
+    for param in &func_meta.params {
+      self.vm.tick()?;
+      if param.rest {
+        return Err(VmError::Unimplemented("rest parameters (hir-js compiled path)"));
+      }
+      let pat = self.get_pat(body, param.pat)?;
+      let hir_js::PatKind::Ident(name_id) = pat.kind else {
+        return Err(VmError::Unimplemented(
+          "non-identifier parameters (hir-js compiled path)",
+        ));
+      };
+      let name = self.resolve_name(name_id)?;
+      if !scope.heap().env_has_binding(env_rec, name.as_str())? {
+        scope.env_create_mutable_binding(env_rec, name.as_str())?;
+      }
+    }
+
+    // Create a minimal `arguments` object for non-arrow functions.
+    //
+    // This must happen before default parameter initializers run so defaults can read `arguments`.
+    // We do not implement mapped arguments objects yet.
+    if !func_meta.is_arrow && !scope.heap().env_has_binding(env_rec, "arguments")? {
+      let intr = self.vm.intrinsics();
+
+      let args_obj = scope.alloc_arguments_object()?;
+      scope.push_root(Value::Object(args_obj))?;
+
+      // Best-effort `[[Prototype]]`: requires intrinsics. Unit tests and low-level embeddings can
+      // execute compiled functions without a realm; in that case we still create an arguments object
+      // with a null prototype.
+      if let Some(intr) = intr {
+        scope
+          .heap_mut()
+          .object_set_prototype(args_obj, Some(intr.object_prototype()))?;
+      }
+
+      let len = args.len() as f64;
+      let len_key = PropertyKey::from_string(scope.alloc_string("length")?);
+      scope.define_property(
+        args_obj,
+        len_key,
+        PropertyDescriptor {
+          enumerable: false,
+          configurable: true,
+          kind: PropertyKind::Data {
+            value: Value::Number(len),
+            writable: true,
+          },
+        },
+      )?;
+
+      for (i, v) in args.iter().copied().enumerate() {
+        if i % PROLOGUE_TICK_EVERY == 0 {
+          self.vm.tick()?;
+        }
+        let mut idx_scope = scope.reborrow();
+        idx_scope.push_root(v)?;
+        let i_u32 = u32::try_from(i).map_err(|_| VmError::OutOfMemory)?;
+        let key = PropertyKey::from_string(idx_scope.alloc_u32_index_string(i_u32)?);
+        idx_scope.define_property(
+          args_obj,
+          key,
+          PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Data {
+              value: v,
+              writable: true,
+            },
+          },
+        )?;
+      }
+
+      // Strict-mode `arguments` objects have poison-pill `callee`/`caller` accessors.
+      if self.strict {
+        if let Some(intr) = intr {
+          let thrower = intr.throw_type_error();
+          scope.push_root(Value::Object(thrower))?;
+          for prop_name in ["callee", "caller"] {
+            let key_s = scope.alloc_string(prop_name)?;
+            scope.push_root(Value::String(key_s))?;
+            let key = PropertyKey::from_string(key_s);
+            scope.define_property(
+              args_obj,
+              key,
+              PropertyDescriptor {
+                enumerable: false,
+                configurable: false,
+                kind: PropertyKind::Accessor {
+                  get: Value::Object(thrower),
+                  set: Value::Object(thrower),
+                },
+              },
+            )?;
+          }
+        }
+      }
+
+      scope.env_create_mutable_binding(env_rec, "arguments")?;
+      scope.heap_mut().env_initialize_binding(
+        env_rec,
+        "arguments",
+        Value::Object(args_obj),
+      )?;
+    }
+
     // Bind parameters.
     for (idx, param) in func_meta.params.iter().enumerate() {
       self.vm.tick()?;
@@ -401,7 +515,6 @@ impl<'vm> HirEvaluator<'vm> {
       };
 
       // Parameters are mutable bindings in the function environment.
-      let env_rec = self.env.lexical_env();
       if !scope.heap().env_has_binding(env_rec, name.as_str())? {
         scope.env_create_mutable_binding(env_rec, name.as_str())?;
       }
