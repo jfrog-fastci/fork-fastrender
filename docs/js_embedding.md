@@ -165,7 +165,7 @@ see [`docs/live_rendering_loop.md`](live_rendering_loop.md) for:
 ## Where the host environment lives
 
 The JS “host environment” is everything ECMAScript expects the embedding to provide: globals, host
-hooks, tasks/microtasks, and Web APIs.
+hooks, task/microtask/timer scheduling, and Web APIs.
 
 ### Public embedding surface (`src/api/*`)
 
