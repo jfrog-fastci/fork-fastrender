@@ -106,7 +106,7 @@ impl<'a> Parser<'a> {
       return self.stmt(ctx);
     }
 
-    let [t0, t1, _t2] = self.peek_n();
+    let [t0, t1, t2] = self.peek_n();
     match t0.typ {
       // Lexical declarations are not valid `Statement`s (they are
       // `StatementListItem`s). They must be wrapped in a block: `if (...) { let x = 1; }`.
@@ -143,18 +143,35 @@ impl<'a> Parser<'a> {
           "statement (not a declaration)",
         )))
       }
+      // `using` is contextual: only treat it as a declaration keyword when followed by a valid
+      // BindingIdentifier on the same line. This avoids breaking existing code like:
+      // - `using[x] = 0` (member access)
+      // - `using\nlet = 1` (ASI + identifier)
       TT::KeywordUsing
-        if t1.typ == TT::BraceOpen
-          || t1.typ == TT::BracketOpen
-          || is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+        if t1.preceded_by_line_terminator && is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+      {
+        Ok(self.expr_stmt(ctx)?.into_wrapped())
+      }
+      TT::KeywordUsing if is_valid_pattern_identifier(t1.typ, ctx.rules) => Err(t0.error(
+        SyntaxErrorType::ExpectedSyntax("statement (not a declaration)"),
+      )),
+      // `await using` is also contextual: it only forms a declaration when the token after `using`
+      // can start a BindingList (i.e. a BindingIdentifier). Otherwise it must be parsed as an
+      // `await` expression (e.g. `await using[x]`).
+      TT::KeywordAwait
+        if t1.typ == TT::KeywordUsing
+          && t2.preceded_by_line_terminator
+          && is_valid_pattern_identifier(t2.typ, ctx.rules) =>
+      {
+        Ok(self.expr_stmt(ctx)?.into_wrapped())
+      }
+      TT::KeywordAwait
+        if t1.typ == TT::KeywordUsing && is_valid_pattern_identifier(t2.typ, ctx.rules) =>
       {
         Err(t0.error(SyntaxErrorType::ExpectedSyntax(
           "statement (not a declaration)",
         )))
       }
-      TT::KeywordAwait if t1.typ == TT::KeywordUsing => Err(t0.error(
-        SyntaxErrorType::ExpectedSyntax("statement (not a declaration)"),
-      )),
 
       // Legacy (Annex B) function declarations are permitted in a small set of
       // statement positions (e.g. labelled and `if` statement clauses) in
@@ -187,7 +204,7 @@ impl<'a> Parser<'a> {
   }
 
   pub fn stmt(&mut self, ctx: ParseCtx) -> SyntaxResult<Node<Stmt>> {
-    let [t0, t1, _t2] = self.peek_n();
+    let [t0, t1, t2] = self.peek_n();
     #[rustfmt::skip]
     let stmt: Node<Stmt> = match t0.typ {
       TT::BraceOpen => self.block_stmt(ctx)?.into_wrapped(),
@@ -211,10 +228,12 @@ impl<'a> Parser<'a> {
       //
       // TypeScript: `let identifier :` is a variable declaration with type annotation, not a labeled statement
       TT::KeywordLet if t1.typ == TT::BraceOpen || t1.typ == TT::BracketOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) || matches!(t1.typ, TT::KeywordAwait | TT::KeywordYield) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
-      // `using` is a contextual keyword for resource management
-      TT::KeywordUsing if t1.typ == TT::BraceOpen || t1.typ == TT::BracketOpen || is_valid_pattern_identifier(t1.typ, ctx.rules) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
-      // `await using` for async resource management
-      TT::KeywordAwait if t1.typ == TT::KeywordUsing => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
+      // `using` is a contextual keyword for resource management. It only starts a declaration when
+      // followed by a valid BindingIdentifier on the same line (see test262 split-across-lines ASI tests).
+      TT::KeywordUsing if !t1.preceded_by_line_terminator && is_valid_pattern_identifier(t1.typ, ctx.rules) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
+      // `await using` for async resource management. Disambiguate from `await` expressions like
+      // `await using[x]` by requiring a BindingIdentifier after `using` (and on the same line).
+      TT::KeywordAwait if t1.typ == TT::KeywordUsing && !t2.preceded_by_line_terminator && is_valid_pattern_identifier(t2.typ, ctx.rules) => self.var_decl(ctx, VarDeclParseMode::Asi)?.into_wrapped(),
       TT::KeywordContinue => self.continue_stmt(ctx)?.into_wrapped(),
       TT::KeywordDebugger => self.debugger_stmt()?.into_wrapped(),
       TT::KeywordDo => self.do_while_stmt(ctx)?.into_wrapped(),
@@ -679,9 +698,15 @@ impl<'a> Parser<'a> {
       p.require(TT::KeywordFor)?;
       p.require(TT::ParenthesisOpen)?;
       let init = {
-        let [t0, t1] = p.peek_n();
+        let [t0, t1, t2] = p.peek_n();
         match t0.typ {
-          TT::KeywordVar | TT::KeywordConst | TT::KeywordUsing => {
+          TT::KeywordVar | TT::KeywordConst => {
+            ForTripleStmtInit::Decl(p.var_decl(header_ctx, VarDeclParseMode::Leftmost)?)
+          }
+          // `using` is contextual - only a declaration if followed by a BindingIdentifier on the same line.
+          TT::KeywordUsing
+            if !t1.preceded_by_line_terminator && is_valid_pattern_identifier(t1.typ, ctx.rules) =>
+          {
             ForTripleStmtInit::Decl(p.var_decl(header_ctx, VarDeclParseMode::Leftmost)?)
           }
           // `let` is contextual - only a declaration if followed by a pattern
@@ -693,7 +718,11 @@ impl<'a> Parser<'a> {
             ForTripleStmtInit::Decl(p.var_decl(header_ctx, VarDeclParseMode::Leftmost)?)
           }
           // TypeScript: await using in for loop
-          TT::KeywordAwait if t1.typ == TT::KeywordUsing => {
+          TT::KeywordAwait
+            if t1.typ == TT::KeywordUsing
+              && !t2.preceded_by_line_terminator
+              && is_valid_pattern_identifier(t2.typ, ctx.rules) =>
+          {
             ForTripleStmtInit::Decl(p.var_decl(header_ctx, VarDeclParseMode::Leftmost)?)
           }
           TT::Semicolon => ForTripleStmtInit::None,
@@ -731,9 +760,9 @@ impl<'a> Parser<'a> {
   }
 
   pub fn for_in_of_lhs(&mut self, ctx: ParseCtx) -> SyntaxResult<ForInOfLhs> {
-    let [t0, t1] = self.peek_n();
+    let [t0, t1, t2] = self.peek_n();
     Ok(match t0.typ {
-      TT::KeywordVar | TT::KeywordConst | TT::KeywordUsing => ForInOfLhs::Decl({
+      TT::KeywordVar | TT::KeywordConst => ForInOfLhs::Decl({
         let mode = self.var_decl_mode()?;
         let pat = self.pat_decl(ctx)?;
 
@@ -766,6 +795,48 @@ impl<'a> Parser<'a> {
 
         (mode, pat)
       }),
+      // `using` is contextual: in `for (... in/of ...)` heads, treat it as a declaration keyword
+      // only when followed by a plausible BindingIdentifier. In particular, `for (using of ...)`
+      // must be interpreted as an identifier assignment target (test262 lookahead restriction).
+      TT::KeywordUsing
+        if !t1.preceded_by_line_terminator
+          && is_valid_pattern_identifier(t1.typ, ctx.rules)
+          && t1.typ != TT::KeywordOf =>
+      {
+        ForInOfLhs::Decl({
+          let mode = self.var_decl_mode()?;
+          let pat = self.pat_decl(ctx)?;
+
+          // TypeScript: type annotation (parse and discard for error recovery)
+          if !self.is_strict_ecmascript() && self.consume_if(TT::Colon).is_match() {
+            let _ = self.type_expr(ctx);
+          }
+          self.recover_for_in_of_initializer(ctx);
+
+          // Error recovery: consume excess declarations (e.g., `for (const a, b of arr)`)
+          // This handles malformed syntax like: `for (var x, y of arr)` or `for (const a, { [b]: c} of arr)`
+          if self.should_recover() {
+            while self.peek().typ == TT::Comma {
+              self.consume(); // consume comma
+
+              // Check if we've reached 'in' or 'of' (edge case)
+              if self.peek().typ == TT::KeywordIn || self.peek().typ == TT::KeywordOf {
+                break;
+              }
+
+              // Parse and discard additional pattern (for error recovery)
+              let _ = self.pat_decl(ctx);
+
+              // Parse and discard type annotation if present
+              if !self.is_strict_ecmascript() && self.consume_if(TT::Colon).is_match() {
+                let _ = self.type_expr(ctx);
+              }
+            }
+          }
+
+          (mode, pat)
+        })
+      }
       // `let` is contextual - only a declaration if followed by a pattern
       TT::KeywordLet
         if t1.typ == TT::BraceOpen
@@ -803,7 +874,11 @@ impl<'a> Parser<'a> {
         })
       }
       // TypeScript: await using in for-of loop
-      TT::KeywordAwait if t1.typ == TT::KeywordUsing => ForInOfLhs::Decl({
+      TT::KeywordAwait
+        if t1.typ == TT::KeywordUsing
+          && !t2.preceded_by_line_terminator
+          && is_valid_pattern_identifier(t2.typ, ctx.rules) =>
+      ForInOfLhs::Decl({
         let mode = self.var_decl_mode()?;
         let pat = self.pat_decl(ctx)?;
 
@@ -968,8 +1043,13 @@ impl<'a> Parser<'a> {
               _ => Self::Triple,
             }
           }
-          // `await using` for async resource management
-          TT::KeywordAwait if p.peek_n::<2>()[1].typ == TT::KeywordUsing => {
+          // `await using` for async resource management. Disambiguate from `await` expressions by
+          // requiring a BindingIdentifier after `using`.
+          TT::KeywordAwait
+            if p.peek_n::<2>()[1].typ == TT::KeywordUsing
+              && !p.peek_n::<3>()[2].preceded_by_line_terminator
+              && is_valid_pattern_identifier(p.peek_n::<3>()[2].typ, ctx.rules) =>
+          {
             p.var_decl(ctx, VarDeclParseMode::Leftmost)?;
             match p.peek().typ {
               TT::KeywordIn => Self::In,
@@ -987,9 +1067,8 @@ impl<'a> Parser<'a> {
               Self::In
             } else if next == TT::KeywordOf {
               Self::Of
-            } else if next == TT::BraceOpen
-              || next == TT::BracketOpen
-              || is_valid_pattern_identifier(next, ctx.rules)
+            } else if !next_token.preceded_by_line_terminator
+              && is_valid_pattern_identifier(next, ctx.rules)
             {
               p.var_decl(ctx, VarDeclParseMode::Leftmost)?;
               match p.peek().typ {
