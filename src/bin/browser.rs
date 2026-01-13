@@ -3203,6 +3203,12 @@ struct BrowserCliArgs {
   #[arg(long = "no-restore", action = clap::ArgAction::SetTrue, overrides_with = "restore")]
   no_restore: bool,
 
+  /// Override the browser session file location (and corresponding lock file)
+  ///
+  /// When unset, defaults to `FASTR_BROWSER_SESSION_PATH`, then a per-user config directory.
+  #[arg(long = "session-path", value_name = "PATH")]
+  session_path: Option<std::path::PathBuf>,
+
   /// Override the address-space memory limit in MiB (0 disables)
   ///
   /// When unset, defaults to the `FASTR_BROWSER_MEM_LIMIT_MB` environment variable.
@@ -4881,7 +4887,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     return Ok(());
   }
 
-  let session_path = fastrender::ui::session::session_path();
+  let session_path =
+    if let Some(path) = cli.session_path.as_ref().filter(|p| !p.as_os_str().is_empty()) {
+      path.clone()
+    } else {
+      fastrender::ui::session::session_path()
+    };
   let session_lock = match fastrender::ui::session::acquire_session_lock(&session_path) {
     Ok(lock) => lock,
     Err(fastrender::ui::session::SessionLockError::AlreadyLocked { lock_path }) => {
