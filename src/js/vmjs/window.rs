@@ -4405,6 +4405,46 @@ mod tests {
   }
 
   #[test]
+  fn session_storage_is_isolated_between_window_hosts_and_does_not_dispatch_storage_events() -> Result<()> {
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+
+    let dom_a = dom2::Document::new(QuirksMode::NoQuirks);
+    let dom_b = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host_a = WindowHost::new(dom_a, "https://example.com/a")?;
+    let mut host_b = WindowHost::new(dom_b, "https://example.com/b")?;
+
+    host_b.exec_script(
+      "globalThis.__events = [];\n\
+       addEventListener('storage', (e) => {\n\
+         __events.push({\n\
+           key: e.key,\n\
+           isSession: (e.storageArea === sessionStorage),\n\
+         });\n\
+       });",
+    )?;
+
+    host_a.exec_script("sessionStorage.setItem('k', 'v');")?;
+
+    // Each `WindowHost` models a separate top-level browsing context (tab) by default, so its
+    // sessionStorage must not be shared with other hosts of the same origin.
+    assert_eq!(host_b.exec_script("sessionStorage.getItem('k')")?, Value::Null);
+
+    // Ensure that no storage events were delivered cross-tab for this sessionStorage mutation.
+    host_b.run_until_idle(RunLimits {
+      max_tasks: 10,
+      max_microtasks: 10,
+      max_wall_time: None,
+    })?;
+
+    let got_events_v = host_b.exec_script("JSON.stringify(__events)")?;
+    let got_events = value_to_string(&host_b, got_events_v);
+    assert_eq!(got_events, "[]");
+
+    crate::js::web_storage::reset_default_web_storage_hub_for_tests();
+    Ok(())
+  }
+
+  #[test]
   fn abort_signal_onabort_runs_with_real_vm_host() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
