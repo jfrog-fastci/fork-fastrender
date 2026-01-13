@@ -870,6 +870,8 @@ mod types;
 mod util;
 #[cfg(test)]
 mod rerun_detection_tests;
+#[cfg(all(test, feature = "taffy_tree"))]
+mod rerun_measure_tests;
 
 /// Grid layout algorithm
 /// This consists of a few phases:
@@ -1357,44 +1359,55 @@ where
   rerun_column_sizing = width_was_indefinite && has_percentage_column;
 
   if !rerun_column_sizing {
-    // Precompute prefix sums of the other-axis track sizes so each item's spanned other-axis
-    // available space can be computed in O(1) rather than summing over its track span.
-    //
-    // Note: we include `content_alignment_adjustment` exactly as `GridItem::available_space()` does.
-    let mut row_prefix_sum: Vec<f32> = Vec::with_capacity(rows.len() + 1);
-    row_prefix_sum.push(0.0);
-    for track in rows.iter() {
-      row_prefix_sum.push(row_prefix_sum.last().copied().unwrap() + track.base_size + track.content_alignment_adjustment);
-    }
+    // For most items, intrinsic inline-size contributions do not depend on block-size resolution.
+    // The primary cross-axis dependency is aspect ratio. Avoid a full re-measure scan unless there
+    // are any aspect-ratio items that cross intrinsic columns.
+    let has_aspect_ratio_crossing_intrinsic_column = items
+      .iter()
+      .any(|item| item.crosses_intrinsic_column && item.aspect_ratio.is_some());
 
-    let min_content_contribution_changed = items
-      .iter_mut()
-      .filter(|item| {
-        item.crosses_intrinsic_column && (width_was_indefinite || item.aspect_ratio.is_some())
-      })
-      .any(|item| {
-        let range = item.track_range_excluding_lines(AbstractAxis::Block);
-        let other_axis_sum = row_prefix_sum[range.end] - row_prefix_sum[range.start];
-        let mut available_space = Size::NONE;
-        available_space.height = Some(other_axis_sum);
-        let new_min_content_contribution = item.min_content_contribution(
-          AbstractAxis::Inline,
-          tree,
-          available_space,
-          inner_node_size,
+    if has_aspect_ratio_crossing_intrinsic_column {
+      // Precompute prefix sums of the other-axis track sizes so each item's spanned other-axis
+      // available space can be computed in O(1) rather than summing over its track span.
+      //
+      // Note: we include `content_alignment_adjustment` exactly as `GridItem::available_space()` does.
+      let mut row_prefix_sum: Vec<f32> = Vec::with_capacity(rows.len() + 1);
+      row_prefix_sum.push(0.0);
+      for track in rows.iter() {
+        row_prefix_sum.push(
+          row_prefix_sum.last().copied().unwrap()
+            + track.base_size
+            + track.content_alignment_adjustment,
         );
+      }
 
-        let has_changed =
-          Some(new_min_content_contribution) != item.min_content_contribution_cache.width;
+      let min_content_contribution_changed = items
+        .iter_mut()
+        .filter(|item| item.crosses_intrinsic_column && item.aspect_ratio.is_some())
+        .any(|item| {
+          let range = item.track_range_excluding_lines(AbstractAxis::Block);
+          let other_axis_sum = row_prefix_sum[range.end] - row_prefix_sum[range.start];
+          let mut available_space = Size::NONE;
+          available_space.height = Some(other_axis_sum);
+          let new_min_content_contribution = item.min_content_contribution(
+            AbstractAxis::Inline,
+            tree,
+            available_space,
+            inner_node_size,
+          );
 
-        item.available_space_cache = Some(available_space);
-        item.min_content_contribution_cache.width = Some(new_min_content_contribution);
-        item.max_content_contribution_cache.width = None;
-        item.minimum_contribution_cache.width = None;
+          let has_changed =
+            Some(new_min_content_contribution) != item.min_content_contribution_cache.width;
 
-        has_changed
-      });
-    rerun_column_sizing = min_content_contribution_changed;
+          item.available_space_cache = Some(available_space);
+          item.min_content_contribution_cache.width = Some(new_min_content_contribution);
+          item.max_content_contribution_cache.width = None;
+          item.minimum_contribution_cache.width = None;
+
+          has_changed
+        });
+      rerun_column_sizing = min_content_contribution_changed;
+    }
   } else {
     // Clear intrisic width caches
     items.iter_mut().for_each(|item| {
@@ -1458,42 +1471,53 @@ where
     || (width_was_indefinite && has_percentage_row_gap);
 
   if !rerun_row_sizing {
-    // Precompute prefix sums of the other-axis track sizes so each item's spanned other-axis
-    // available space can be computed in O(1) rather than summing over its track span.
-    //
-    // Note: we include `content_alignment_adjustment` exactly as `GridItem::available_space()` does.
-    let mut column_prefix_sum: Vec<f32> = Vec::with_capacity(columns.len() + 1);
-    column_prefix_sum.push(0.0);
-    for track in columns.iter() {
-      column_prefix_sum.push(column_prefix_sum.last().copied().unwrap() + track.base_size + track.content_alignment_adjustment);
-    }
+    // As with the inline-axis rerun check above, avoid remeasuring every item unless it could
+    // legitimately have a cross-axis dependency (aspect ratio).
+    let has_aspect_ratio_crossing_intrinsic_row =
+      items.iter().any(|item| item.crosses_intrinsic_row && item.aspect_ratio.is_some());
 
-    let min_content_contribution_changed = items
-      .iter_mut()
-      .filter(|item| item.crosses_intrinsic_row)
-      .any(|item| {
-        let range = item.track_range_excluding_lines(AbstractAxis::Inline);
-        let other_axis_sum = column_prefix_sum[range.end] - column_prefix_sum[range.start];
-        let mut available_space = Size::NONE;
-        available_space.width = Some(other_axis_sum);
-        let new_min_content_contribution = item.min_content_contribution(
-          AbstractAxis::Block,
-          tree,
-          available_space,
-          inner_node_size,
+    if has_aspect_ratio_crossing_intrinsic_row {
+      // Precompute prefix sums of the other-axis track sizes so each item's spanned other-axis
+      // available space can be computed in O(1) rather than summing over its track span.
+      //
+      // Note: we include `content_alignment_adjustment` exactly as `GridItem::available_space()` does.
+      let mut column_prefix_sum: Vec<f32> = Vec::with_capacity(columns.len() + 1);
+      column_prefix_sum.push(0.0);
+      for track in columns.iter() {
+        column_prefix_sum.push(
+          column_prefix_sum.last().copied().unwrap()
+            + track.base_size
+            + track.content_alignment_adjustment,
         );
+      }
 
-        let has_changed =
-          Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
+      let min_content_contribution_changed = items
+        .iter_mut()
+        .filter(|item| item.crosses_intrinsic_row && item.aspect_ratio.is_some())
+        .any(|item| {
+          let range = item.track_range_excluding_lines(AbstractAxis::Inline);
+          let other_axis_sum = column_prefix_sum[range.end] - column_prefix_sum[range.start];
+          let mut available_space = Size::NONE;
+          available_space.width = Some(other_axis_sum);
+          let new_min_content_contribution = item.min_content_contribution(
+            AbstractAxis::Block,
+            tree,
+            available_space,
+            inner_node_size,
+          );
 
-        item.available_space_cache = Some(available_space);
-        item.min_content_contribution_cache.height = Some(new_min_content_contribution);
-        item.max_content_contribution_cache.height = None;
-        item.minimum_contribution_cache.height = None;
+          let has_changed =
+            Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
 
-        has_changed
-      });
-    rerun_row_sizing = min_content_contribution_changed;
+          item.available_space_cache = Some(available_space);
+          item.min_content_contribution_cache.height = Some(new_min_content_contribution);
+          item.max_content_contribution_cache.height = None;
+          item.minimum_contribution_cache.height = None;
+
+          has_changed
+        });
+      rerun_row_sizing = min_content_contribution_changed;
+    }
   } else {
     items.iter_mut().for_each(|item| {
       // Clear intrinsic height caches
