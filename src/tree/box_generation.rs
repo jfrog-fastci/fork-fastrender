@@ -1341,6 +1341,12 @@ fn svg_inlined_presentation_attr(name: &str) -> bool {
     || name.eq_ignore_ascii_case("letter-spacing")
     || name.eq_ignore_ascii_case("word-spacing")
     || name.eq_ignore_ascii_case("text-anchor")
+    || name.eq_ignore_ascii_case("shape-rendering")
+    || name.eq_ignore_ascii_case("vector-effect")
+    || name.eq_ignore_ascii_case("color-rendering")
+    || name.eq_ignore_ascii_case("color-interpolation")
+    || name.eq_ignore_ascii_case("color-interpolation-filters")
+    || name.eq_ignore_ascii_case("mask-type")
 }
 
 fn attrs_need_svg_inlined_presentation_stripping(attrs: &[(String, String)]) -> bool {
@@ -2032,6 +2038,69 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
   any.then_some(out)
 }
 
+fn svg_rendering_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
+  let mut out = String::new();
+  let mut any = false;
+
+  let mut start_decl = |out: &mut String, any: &mut bool| {
+    if *any {
+      out.push_str("; ");
+    } else {
+      *any = true;
+    }
+  };
+
+  if let Some(value) = style.svg_shape_rendering {
+    if parent.and_then(|p| p.svg_shape_rendering) != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("shape-rendering: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  if let Some(value) = style.svg_vector_effect {
+    if parent.and_then(|p| p.svg_vector_effect) != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("vector-effect: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  if let Some(value) = style.svg_color_rendering {
+    if parent.and_then(|p| p.svg_color_rendering) != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("color-rendering: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  if let Some(value) = style.svg_color_interpolation {
+    if parent.and_then(|p| p.svg_color_interpolation) != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("color-interpolation: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  if let Some(value) = style.svg_color_interpolation_filters {
+    if parent.and_then(|p| p.svg_color_interpolation_filters) != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("color-interpolation-filters: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  if let Some(value) = style.svg_mask_type {
+    if parent.and_then(|p| p.svg_mask_type) != Some(value) {
+      start_decl(&mut out, &mut any);
+      out.push_str("mask-type: ");
+      out.push_str(value.as_css_str());
+    }
+  }
+
+  any.then_some(out)
+}
+
 fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
   use crate::style::display::Display;
   use crate::style::types::{ClipPath, FilterFunction};
@@ -2438,6 +2507,9 @@ fn serialize_svg_mask_subtree_with_namespaces(
           merge_style_attribute(&mut attrs, &extra);
         }
         if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
+        if let Some(extra) = svg_rendering_style(&styled.styles, parent_svg_styles) {
           merge_style_attribute(&mut attrs, &extra);
         }
         if let Some(extra) = svg_text_style(&styled.styles, parent_svg_styles) {
@@ -4110,6 +4182,10 @@ fn serialize_svg_subtree(
             merge_style_attribute(attrs_mut, &extra);
           }
           if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
+          }
+          if let Some(extra) = svg_rendering_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
             merge_style_attribute(attrs_mut, &extra);
           }

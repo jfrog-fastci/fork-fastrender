@@ -192,8 +192,14 @@ use types::ShapeOutside;
 use types::StrokeDasharray;
 use types::StrokeLinecap;
 use types::StrokeLinejoin;
+use types::SvgColorInterpolation;
+use types::SvgColorInterpolationFilters;
+use types::SvgColorRendering;
+use types::SvgMaskType;
+use types::SvgShapeRendering;
 use types::SvgTextAnchor;
 use types::SvgUrlOrNone;
+use types::SvgVectorEffect;
 use types::TabSize;
 use types::TableLayout;
 use types::TextAlign;
@@ -1304,6 +1310,12 @@ pub struct ComputedStyle {
   pub svg_marker_mid: Option<SvgUrlOrNone>,
   pub svg_marker_end: Option<SvgUrlOrNone>,
   pub svg_text_anchor: Option<SvgTextAnchor>,
+  pub svg_shape_rendering: Option<SvgShapeRendering>,
+  pub svg_vector_effect: Option<SvgVectorEffect>,
+  pub svg_color_rendering: Option<SvgColorRendering>,
+  pub svg_color_interpolation: Option<SvgColorInterpolation>,
+  pub svg_color_interpolation_filters: Option<SvgColorInterpolationFilters>,
+  pub svg_mask_type: Option<SvgMaskType>,
 
   pub background_color: Rgba,
   /// True when the computed `background-color` value originated from a system color keyword (or a
@@ -1728,6 +1740,12 @@ impl Default for ComputedStyle {
       svg_marker_mid: None,
       svg_marker_end: None,
       svg_text_anchor: None,
+      svg_shape_rendering: None,
+      svg_vector_effect: None,
+      svg_color_rendering: None,
+      svg_color_interpolation: None,
+      svg_color_interpolation_filters: None,
+      svg_mask_type: None,
       background_color: Rgba::TRANSPARENT,
       background_color_is_system: false,
       background_images: vec![default_layer.image.clone()].into(),

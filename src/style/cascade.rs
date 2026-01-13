@@ -18962,6 +18962,12 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.svg_marker_mid = parent.svg_marker_mid.clone();
   styles.svg_marker_end = parent.svg_marker_end.clone();
   styles.svg_text_anchor = parent.svg_text_anchor;
+  styles.svg_shape_rendering = parent.svg_shape_rendering;
+  styles.svg_vector_effect = parent.svg_vector_effect;
+  styles.svg_color_rendering = parent.svg_color_rendering;
+  styles.svg_color_interpolation = parent.svg_color_interpolation;
+  styles.svg_color_interpolation_filters = parent.svg_color_interpolation_filters;
+  styles.svg_mask_type = parent.svg_mask_type;
 
   // CSS Custom Properties inherit according to registration.
   styles.custom_property_registry = parent.custom_property_registry.clone();
@@ -39471,6 +39477,26 @@ fn svg_presentation_attribute_hints(
   }
   if let Some(value) = node.get_attribute_ref("marker-end") {
     push_parsed(&mut declarations, "marker-end", value);
+  }
+
+  // SVG rendering properties.
+  if let Some(value) = node.get_attribute_ref("shape-rendering") {
+    push_parsed(&mut declarations, "shape-rendering", value);
+  }
+  if let Some(value) = node.get_attribute_ref("vector-effect") {
+    push_parsed(&mut declarations, "vector-effect", value);
+  }
+  if let Some(value) = node.get_attribute_ref("color-rendering") {
+    push_parsed(&mut declarations, "color-rendering", value);
+  }
+  if let Some(value) = node.get_attribute_ref("color-interpolation") {
+    push_parsed(&mut declarations, "color-interpolation", value);
+  }
+  if let Some(value) = node.get_attribute_ref("color-interpolation-filters") {
+    push_parsed(&mut declarations, "color-interpolation-filters", value);
+  }
+  if let Some(value) = node.get_attribute_ref("mask-type") {
+    push_parsed(&mut declarations, "mask-type", value);
   }
 
   // SVG can set `color` and font properties as presentation attributes.

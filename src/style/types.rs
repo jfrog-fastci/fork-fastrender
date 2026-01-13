@@ -1286,6 +1286,182 @@ pub enum SvgTextAnchor {
   End,
 }
 
+/// SVG `shape-rendering` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgShapeRendering {
+  Auto,
+  OptimizeSpeed,
+  CrispEdges,
+  GeometricPrecision,
+}
+
+impl SvgShapeRendering {
+  pub fn parse_keyword(value: &str) -> Option<Self> {
+    if value.eq_ignore_ascii_case("auto") {
+      Some(Self::Auto)
+    } else if value.eq_ignore_ascii_case("optimizespeed") {
+      Some(Self::OptimizeSpeed)
+    } else if value.eq_ignore_ascii_case("crispedges") {
+      Some(Self::CrispEdges)
+    } else if value.eq_ignore_ascii_case("geometricprecision") {
+      Some(Self::GeometricPrecision)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::Auto => "auto",
+      Self::OptimizeSpeed => "optimizeSpeed",
+      Self::CrispEdges => "crispEdges",
+      Self::GeometricPrecision => "geometricPrecision",
+    }
+  }
+}
+
+/// SVG `vector-effect` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgVectorEffect {
+  None,
+  NonScalingStroke,
+}
+
+impl SvgVectorEffect {
+  pub fn parse_keyword(value: &str) -> Option<Self> {
+    if value.eq_ignore_ascii_case("none") {
+      Some(Self::None)
+    } else if value.eq_ignore_ascii_case("non-scaling-stroke") {
+      Some(Self::NonScalingStroke)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::None => "none",
+      Self::NonScalingStroke => "non-scaling-stroke",
+    }
+  }
+}
+
+/// SVG `color-rendering` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgColorRendering {
+  Auto,
+  OptimizeSpeed,
+  OptimizeQuality,
+}
+
+impl SvgColorRendering {
+  pub fn parse_keyword(value: &str) -> Option<Self> {
+    if value.eq_ignore_ascii_case("auto") {
+      Some(Self::Auto)
+    } else if value.eq_ignore_ascii_case("optimizespeed") {
+      Some(Self::OptimizeSpeed)
+    } else if value.eq_ignore_ascii_case("optimizequality") {
+      Some(Self::OptimizeQuality)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::Auto => "auto",
+      Self::OptimizeSpeed => "optimizeSpeed",
+      Self::OptimizeQuality => "optimizeQuality",
+    }
+  }
+}
+
+/// SVG `color-interpolation` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgColorInterpolation {
+  Auto,
+  SRgb,
+  LinearRgb,
+}
+
+impl SvgColorInterpolation {
+  pub fn parse_keyword(value: &str) -> Option<Self> {
+    if value.eq_ignore_ascii_case("auto") {
+      Some(Self::Auto)
+    } else if value.eq_ignore_ascii_case("srgb") {
+      Some(Self::SRgb)
+    } else if value.eq_ignore_ascii_case("linearrgb") {
+      Some(Self::LinearRgb)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::Auto => "auto",
+      Self::SRgb => "sRGB",
+      Self::LinearRgb => "linearRGB",
+    }
+  }
+}
+
+/// SVG `color-interpolation-filters` property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgColorInterpolationFilters {
+  Auto,
+  SRgb,
+  LinearRgb,
+}
+
+impl SvgColorInterpolationFilters {
+  pub fn parse_keyword(value: &str) -> Option<Self> {
+    if value.eq_ignore_ascii_case("auto") {
+      Some(Self::Auto)
+    } else if value.eq_ignore_ascii_case("srgb") {
+      Some(Self::SRgb)
+    } else if value.eq_ignore_ascii_case("linearrgb") {
+      Some(Self::LinearRgb)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::Auto => "auto",
+      Self::SRgb => "sRGB",
+      Self::LinearRgb => "linearRGB",
+    }
+  }
+}
+
+/// SVG `mask-type` property (for `<mask>` elements).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgMaskType {
+  Luminance,
+  Alpha,
+}
+
+impl SvgMaskType {
+  pub fn parse_keyword(value: &str) -> Option<Self> {
+    if value.eq_ignore_ascii_case("luminance") {
+      Some(Self::Luminance)
+    } else if value.eq_ignore_ascii_case("alpha") {
+      Some(Self::Alpha)
+    } else {
+      None
+    }
+  }
+
+  pub fn as_css_str(self) -> &'static str {
+    match self {
+      Self::Luminance => "luminance",
+      Self::Alpha => "alpha",
+    }
+  }
+}
+
 /// Computed value for `appearance`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Appearance {

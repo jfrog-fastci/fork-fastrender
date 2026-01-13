@@ -7544,6 +7544,14 @@ pub(crate) fn apply_property_from_source(
     "marker-mid" => styles.svg_marker_mid = source.svg_marker_mid.clone(),
     "marker-end" => styles.svg_marker_end = source.svg_marker_end.clone(),
     "text-anchor" => styles.svg_text_anchor = source.svg_text_anchor,
+    "shape-rendering" => styles.svg_shape_rendering = source.svg_shape_rendering,
+    "vector-effect" => styles.svg_vector_effect = source.svg_vector_effect,
+    "color-rendering" => styles.svg_color_rendering = source.svg_color_rendering,
+    "color-interpolation" => styles.svg_color_interpolation = source.svg_color_interpolation,
+    "color-interpolation-filters" => {
+      styles.svg_color_interpolation_filters = source.svg_color_interpolation_filters
+    }
+    "mask-type" => styles.svg_mask_type = source.svg_mask_type,
     "background-image" => {
       styles.background_images = source.background_images.clone();
       styles.rebuild_background_layers();
@@ -8009,6 +8017,30 @@ fn apply_global_keyword(
       }
       "text-anchor" => {
         styles.svg_text_anchor = Some(SvgTextAnchor::Start);
+        return true;
+      }
+      "shape-rendering" => {
+        styles.svg_shape_rendering = Some(SvgShapeRendering::Auto);
+        return true;
+      }
+      "vector-effect" => {
+        styles.svg_vector_effect = Some(SvgVectorEffect::None);
+        return true;
+      }
+      "color-rendering" => {
+        styles.svg_color_rendering = Some(SvgColorRendering::Auto);
+        return true;
+      }
+      "color-interpolation" => {
+        styles.svg_color_interpolation = Some(SvgColorInterpolation::SRgb);
+        return true;
+      }
+      "color-interpolation-filters" => {
+        styles.svg_color_interpolation_filters = Some(SvgColorInterpolationFilters::LinearRgb);
+        return true;
+      }
+      "mask-type" => {
+        styles.svg_mask_type = Some(SvgMaskType::Luminance);
         return true;
       }
       _ => {}
@@ -16198,6 +16230,48 @@ fn apply_declaration_with_base_internal_with_order(
           styles.svg_text_anchor = Some(SvgTextAnchor::Middle);
         } else if kw.eq_ignore_ascii_case("end") {
           styles.svg_text_anchor = Some(SvgTextAnchor::End);
+        }
+      }
+    }
+    "shape-rendering" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgShapeRendering::parse_keyword(kw) {
+          styles.svg_shape_rendering = Some(value);
+        }
+      }
+    }
+    "vector-effect" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgVectorEffect::parse_keyword(kw) {
+          styles.svg_vector_effect = Some(value);
+        }
+      }
+    }
+    "color-rendering" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgColorRendering::parse_keyword(kw) {
+          styles.svg_color_rendering = Some(value);
+        }
+      }
+    }
+    "color-interpolation" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgColorInterpolation::parse_keyword(kw) {
+          styles.svg_color_interpolation = Some(value);
+        }
+      }
+    }
+    "color-interpolation-filters" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgColorInterpolationFilters::parse_keyword(kw) {
+          styles.svg_color_interpolation_filters = Some(value);
+        }
+      }
+    }
+    "mask-type" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if let Some(value) = SvgMaskType::parse_keyword(kw) {
+          styles.svg_mask_type = Some(value);
         }
       }
     }

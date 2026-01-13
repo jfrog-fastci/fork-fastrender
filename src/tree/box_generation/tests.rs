@@ -7898,6 +7898,164 @@ fn svg_document_css_embedding_policy_respects_svg_count_overrides_and_size_limit
 }
 
 #[test]
+fn inline_svg_inlines_svg_rendering_properties_from_document_css_when_embedding_disabled() {
+  let html = r#"
+    <style>
+      svg .shape {
+        shape-rendering: CRISPEDGES;
+        vector-effect: Non-Scaling-Stroke;
+        color-rendering: optimizequality;
+        color-interpolation: linearrgb;
+        color-interpolation-filters: sRgb;
+      }
+      svg mask {
+        mask-type: ALPHA;
+      }
+    </style>
+    <svg width="10" height="10" viewBox="0 0 10 10">
+      <defs>
+        <mask id="m">
+          <rect width="10" height="10" fill="white" />
+        </mask>
+      </defs>
+      <rect class="shape" width="10" height="10" mask="url(#m)" />
+    </svg>
+  "#;
+
+  let content = runtime::with_runtime_toggles(
+    Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+      "0".to_string(),
+    )]))),
+    || serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg"),
+  );
+
+  assert!(
+    content.svg.contains("shape-rendering: crispEdges"),
+    "shape-rendering should be inlined with canonical casing (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("vector-effect: non-scaling-stroke"),
+    "vector-effect should be inlined with canonical casing (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("color-rendering: optimizeQuality"),
+    "color-rendering should be inlined with canonical casing (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("color-interpolation: linearRGB"),
+    "color-interpolation should be inlined with canonical casing (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("color-interpolation-filters: sRGB"),
+    "color-interpolation-filters should be inlined with canonical casing (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("mask-type: alpha"),
+    "mask-type should be inlined with canonical casing (svg={})",
+    content.svg
+  );
+}
+
+#[test]
+fn inline_svg_inlines_svg_rendering_properties_from_presentation_attributes() {
+  let html = r#"
+    <svg width="10" height="10" viewBox="0 0 10 10">
+      <defs>
+        <mask id="m" mask-type="alpha">
+          <rect width="10" height="10" fill="white" />
+        </mask>
+      </defs>
+      <rect
+        width="10"
+        height="10"
+        mask="url(#m)"
+        shape-rendering="crispEdges"
+        vector-effect="non-scaling-stroke"
+        color-rendering="optimizeQuality"
+        color-interpolation="linearRGB"
+        color-interpolation-filters="sRGB"
+      />
+    </svg>
+  "#;
+
+  let content = runtime::with_runtime_toggles(
+    Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+      "0".to_string(),
+    )]))),
+    || serialized_inline_svg_content_from_html(html, 20.0, 20.0).expect("serialize svg"),
+  );
+
+  assert!(
+    content.svg.contains("shape-rendering: crispEdges"),
+    "presentation attribute should be inlined into style (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("vector-effect: non-scaling-stroke"),
+    "presentation attribute should be inlined into style (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("color-rendering: optimizeQuality"),
+    "presentation attribute should be inlined into style (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("color-interpolation: linearRGB"),
+    "presentation attribute should be inlined into style (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("color-interpolation-filters: sRGB"),
+    "presentation attribute should be inlined into style (svg={})",
+    content.svg
+  );
+  assert!(
+    content.svg.contains("mask-type: alpha"),
+    "presentation attribute should be inlined into style (svg={})",
+    content.svg
+  );
+
+  assert!(
+    !content.svg.contains("shape-rendering=\""),
+    "authored presentation attributes should be stripped once we inline computed styles (svg={})",
+    content.svg
+  );
+  assert!(
+    !content.svg.contains("vector-effect=\""),
+    "authored presentation attributes should be stripped once we inline computed styles (svg={})",
+    content.svg
+  );
+  assert!(
+    !content.svg.contains("color-rendering=\""),
+    "authored presentation attributes should be stripped once we inline computed styles (svg={})",
+    content.svg
+  );
+  assert!(
+    !content.svg.contains("color-interpolation=\""),
+    "authored presentation attributes should be stripped once we inline computed styles (svg={})",
+    content.svg
+  );
+  assert!(
+    !content.svg.contains("color-interpolation-filters=\""),
+    "authored presentation attributes should be stripped once we inline computed styles (svg={})",
+    content.svg
+  );
+  assert!(
+    !content.svg.contains("mask-type=\""),
+    "authored presentation attributes should be stripped once we inline computed styles (svg={})",
+    content.svg
+  );
+}
+
+#[test]
 fn inline_svg_malformed_style_attribute_is_stripped_before_inlined_presentation_styles() {
   let html = r#"
   <style>
