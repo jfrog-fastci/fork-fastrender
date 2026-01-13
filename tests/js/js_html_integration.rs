@@ -824,6 +824,78 @@ fn p1_document_write_limit_max_calls_exceeded_throws_rangeerror_and_is_determini
 }
 
 #[test]
+fn p1_document_write_limit_total_bytes_exceeded_throws_rangeerror_and_is_deterministic() -> Result<()> {
+  // Each write injects 12 bytes of markup (`<a id=a></a>`). With a 24-byte total budget, the third
+  // write deterministically exceeds the cumulative limit.
+  let js_options = JsExecutionOptions {
+    max_document_write_bytes_total: 24,
+    ..JsExecutionOptions::default()
+  };
+  let mut h = Harness::new(
+    "https://example.invalid/p1_document_write_limit_total_bytes.html",
+    js_options,
+  )?;
+
+  h.register_html_source(
+    r#"<!doctype html><body>
+      <script>
+        document.write('<a id=a></a>');
+        document.write('<a id=b></a>');
+        document.write('<a id=c></a>');
+      </script>
+      <script>
+        console.log("after");
+        console.log("a:" + (document.getElementById("a") !== null));
+        console.log("b:" + (document.getElementById("b") !== null));
+        console.log("c:" + (document.getElementById("c") !== null));
+      </script>
+    </body>"#,
+  );
+
+  h.navigate()?;
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec![
+      "after".to_string(),
+      "a:true".to_string(),
+      "b:true".to_string(),
+      "c:false".to_string(),
+    ]
+  );
+
+  let exc = js_exception_messages(&h.tab).join("\n");
+  assert!(
+    exc.contains("document.write exceeded max cumulative bytes"),
+    "expected JS exception mentioning document.write total-byte limit, got: {exc:?}"
+  );
+  assert!(
+    exc.contains("limit=24"),
+    "expected JS exception to include the configured total-byte limit, got: {exc:?}"
+  );
+  assert!(
+    exc.contains("RangeError"),
+    "expected document.write limit to surface as a RangeError, got: {exc:?}"
+  );
+
+  assert!(
+    h.tab.dom().get_element_by_id("a").is_some(),
+    "expected first document.write call to insert element a"
+  );
+  assert!(
+    h.tab.dom().get_element_by_id("b").is_some(),
+    "expected second document.write call to insert element b"
+  );
+  assert!(
+    h.tab.dom().get_element_by_id("c").is_none(),
+    "expected third document.write call to be a no-op after exceeding total-byte limit"
+  );
+
+  Ok(())
+}
+
+#[test]
 fn p1_document_write_is_noop_after_parsing_completes() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p1_document_write_late.html", js_options)?;
