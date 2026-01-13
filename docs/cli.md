@@ -89,7 +89,7 @@ These are optional wrappers for the most common loops:
   - Defaults to `--features disk_cache`; set `DISK_CACHE=0` or `NO_DISK_CACHE=1` or pass `--no-disk-cache` to opt out; pass `--disk-cache` to force-enable.
   - Fonts: defaults to bundled fixtures; pass `--system-fonts` (alias `--no-bundled-fonts`) to run `pageset_progress` against host system fonts (useful for Chrome accuracy diffs). `--system-fonts` forces `FASTR_USE_BUNDLED_FONTS=0` and `CI=0` for the `pageset_progress` subprocess so the behavior is predictable even when those env vars are set.
   - Supports `--jobs/-j`, `--fetch-timeout`, `--render-timeout`, `--cache-dir`, `--no-fetch`, `--refresh`, `--pages`, `--shard`, `--allow-http-error-status`, `--allow-collisions`, `--timings`, `--bundled-fonts` (default) / `--system-fonts` (alias `--no-bundled-fonts`), `--accuracy` (plus `--accuracy-baseline`, `--accuracy-baseline-dir`, `--accuracy-tolerance`, `--accuracy-max-diff-percent`, and `--accuracy-diff-dir`), and `--capture-missing-failure-fixtures` (plus `--capture-missing-failure-fixtures-out-dir`, `--capture-missing-failure-fixtures-allow-missing-resources`, and `--capture-missing-failure-fixtures-overwrite`).
-  - Prefetch/report flags like `--prefetch-fonts` / `--prefetch-images` / `--prefetch-media` / `--report-json` / `--discover-only` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
+  - Prefetch/report flags like `--prefetch-fonts` / `--prefetch-images` / `--prefetch-media` / `--prefetch-scripts` / `--report-json` / `--discover-only` passed after `--` are forwarded to `prefetch_assets` when disk cache is enabled.
   - Pass extra `pageset_progress run` flags after `--` (for example `--accuracy`; consider `--system-fonts` for Chrome diffs so font substitution doesn’t dominate the results).
   - Use `--dry-run` to print the underlying `bash scripts/cargo_agent.sh xtask pageset ...` command instead of executing it.
 - Cached-pages Chrome-vs-FastRender diff (best-effort; non-deterministic): `scripts/chrome_vs_fastrender.sh [options] [--] [page_stem...]`
@@ -170,7 +170,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Fonts: bundled fonts are best for deterministic perf/timing; use `--system-fonts` when generating `pageset_progress run --accuracy` metrics against Chrome screenshots so diffs are less dominated by font substitution. `--system-fonts` forces `FASTR_USE_BUNDLED_FONTS=0` and `CI=0` for the `pageset_progress` subprocess so host font usage is predictable even when those env vars are set.
   - Disk cache directory override: `--cache-dir <dir>` is forwarded to both `prefetch_assets` and `pageset_progress` so the warmed cache matches the render step (defaults to `fetches/assets/`).
   - Disk cache tuning flags passed after `--` (e.g. `--disk-cache-max-bytes`, `--disk-cache-max-age-secs`, `--disk-cache-lock-stale-secs`) are also forwarded to `prefetch_assets` when it runs.
-  - Prefetch tuning flags passed after `--` (e.g. `--prefetch-fonts`, `--prefetch-images`, `--prefetch-iframes`) are also forwarded to `prefetch_assets` when it runs.
+  - Prefetch tuning flags passed after `--` (e.g. `--prefetch-fonts`, `--prefetch-images`, `--prefetch-media`, `--prefetch-scripts`, `--prefetch-iframes`) are also forwarded to `prefetch_assets` when it runs.
   - Accuracy capture: `--accuracy` stores Chrome-vs-FastRender diff metrics per ok page in `progress/pages/*.json`.
     - Defaults to comparing against existing baselines under `fetches/chrome_renders/`.
     - Use `--accuracy-baseline chrome` to auto-generate missing baseline PNGs via `scripts/chrome_baseline.sh`.
@@ -274,6 +274,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
       - Budgets: `--max-media-bytes-per-file` (default **10 MiB**) and `--max-media-bytes-per-page` (default **50 MiB**). Set either to `0` to disable the cap.
       - When caps are enabled, `prefetch_assets` probes size using a partial fetch and **skips** media URLs that would exceed the budgets (recorded as `false` in the JSON report).
       - Current limitation: `<track src>` and `<link rel="preload" as="video|audio|track">` are not discovered by the media prefetcher yet.
+    - `--prefetch-scripts`: prefetch script resources referenced directly from HTML (`<script src>`, script `preload`, `modulepreload`). This is opt-in because it can significantly increase cache size.
     - `--prefetch-iframes` (alias `--prefetch-documents`): prefetch `<iframe src>` documents and best-effort warm their linked stylesheets (and images when `--prefetch-images` is enabled).
     - `--prefetch-embeds`: prefetch `<object data>` and `<embed src>` subresources. If the fetched resource is HTML, it is treated like a nested document and its CSS/images can also be warmed (same behavior as `--prefetch-iframes`).
     - `--prefetch-icons`: prefetch icon resources referenced by `<link rel=icon|shortcut icon|apple-touch-icon|mask-icon href=...>` without enabling full `--prefetch-images` (note: `--prefetch-images` already includes these).
