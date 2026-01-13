@@ -42,7 +42,9 @@ use crate::operator::OPERATORS;
 use crate::parse::operator::MULTARY_OPERATOR_MAPPING;
 use crate::parse::operator::UNARY_OPERATOR_MAPPING;
 use crate::num::JsNumber;
+use crate::token::keyword_from_str;
 use crate::token::TT;
+use pat::is_valid_class_or_func_name;
 use pat::is_valid_pattern_identifier;
 use pat::ParsePatternRules;
 use util::lhs_expr_to_assign_target_with_recover;
@@ -370,7 +372,18 @@ impl<'a> Parser<'a> {
       let (type_parameters, parameters, return_type, arrow) = if is_unparenthesised_single_param {
         // Single-unparenthesised-parameter arrow function.
         // Parse arrow first for fast fail (and in case we are merely trying to parse as arrow function), before we mutate state by creating nodes and adding symbols.
-        let param_name = p.consume().loc;
+        let param_tok = p.consume();
+        let param_loc = param_tok.loc;
+        let param_name = p.identifier_string_from_token(&param_tok)?;
+        // See `id_name`/`id_pat`: escaped keywords lex as `TT::Identifier` but must still
+        // participate in context-dependent reserved-word restrictions.
+        if param_tok.typ == TT::Identifier {
+          if let Some(keyword_tt) = keyword_from_str(&param_name) {
+            if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+              return Err(param_tok.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+            }
+          }
+        }
         // TypeScript: return type annotation (after param, before =>) - may be type predicate.
         let return_type = if !p.is_strict_ecmascript() && p.consume_if(TT::Colon).is_match() {
           Some(p.type_expr_or_predicate(ctx)?)
@@ -379,19 +392,19 @@ impl<'a> Parser<'a> {
         };
         let arrow = p.require(TT::EqualsChevronRight)?;
         let pattern = Node::new(
-          param_name,
+          param_loc,
           PatDecl {
             pat: Node::new(
-              param_name,
+              param_loc,
               IdPat {
-                name: p.string(param_name),
+                name: param_name,
               },
             )
             .into_wrapped(),
           },
         );
         let param = Node::new(
-          param_name,
+          param_loc,
           ParamDecl {
             decorators: vec![],
             rest: false,
@@ -552,6 +565,13 @@ impl<'a> Parser<'a> {
         yield_expr_allowed: false,
       });
       let name = p.maybe_class_or_func_name(name_ctx);
+      if let Some(name) = name.as_ref() {
+        if let Some(keyword_tt) = keyword_from_str(&name.stx.name) {
+          if !is_valid_class_or_func_name(keyword_tt, name_ctx.rules) {
+            return Err(name.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+          }
+        }
+      }
       let func = p.with_loc(|p| {
         // TypeScript: generic type parameters
         let type_parameters = if !p.is_strict_ecmascript()
@@ -628,6 +648,13 @@ impl<'a> Parser<'a> {
       }
       let res = (|| {
         let name = p.maybe_class_or_func_name(ctx);
+        if let Some(name) = name.as_ref() {
+          if let Some(keyword_tt) = keyword_from_str(&name.stx.name) {
+            if !is_valid_class_or_func_name(keyword_tt, ctx.rules) {
+              return Err(name.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+            }
+          }
+        }
         if let Some(name) = name.as_ref() {
           p.validate_strict_binding_identifier_name(name.loc, &name.stx.name)?;
         }
@@ -726,6 +753,13 @@ impl<'a> Parser<'a> {
       }
       let res = (|| {
         let name = p.maybe_class_or_func_name(ctx);
+        if let Some(name) = name.as_ref() {
+          if let Some(keyword_tt) = keyword_from_str(&name.stx.name) {
+            if !is_valid_class_or_func_name(keyword_tt, ctx.rules) {
+              return Err(name.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+            }
+          }
+        }
         if let Some(name) = name.as_ref() {
           p.validate_strict_binding_identifier_name(name.loc, &name.stx.name)?;
         }
@@ -827,16 +861,20 @@ impl<'a> Parser<'a> {
     if !is_valid_pattern_identifier(t.typ, ctx.rules) {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     };
-    let name = self.identifier_name(t.loc);
-
-    // `await`/`yield` are reserved words when the corresponding grammar parameter is present.
-    // Unicode escape sequences in the source spelling must not bypass this restriction
-    // (e.g. `\u0061wait`).
-    if (!ctx.rules.await_allowed && name == "await") || (!ctx.rules.yield_allowed && name == "yield") {
-      return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+    let name = self.identifier_string_from_token(&t)?;
+    // Unicode escapes prevent keyword tokenization, so escaped keywords lex as
+    // `TT::Identifier`. Early errors that depend on IdentifierName StringValue
+    // (not token type) must still apply.
+    if t.typ == TT::Identifier {
+      if let Some(keyword_tt) = keyword_from_str(&name) {
+        if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+          return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+        }
+      }
     }
-
-    if self.is_strict_ecmascript() && self.is_strict_mode() && Parser::is_strict_mode_reserved_word(&name)
+    if self.is_strict_ecmascript()
+      && self.is_strict_mode()
+      && Parser::is_strict_mode_reserved_word(&name)
     {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     }
@@ -1225,10 +1263,10 @@ impl<'a> Parser<'a> {
                       let mut right = right_tok.loc;
                       match right_tok.typ {
                         TT::Identifier | TT::PrivateMember => {
-                          prop = p.string(right);
+                          prop = p.identifier_string_from_token(&right_tok)?;
                         }
                         t if KEYWORDS_MAPPING.contains_key(&t) => {
-                          prop = p.string(right);
+                          prop = p.identifier_string_from_token(&right_tok)?;
                         }
                         _ => {
                           if !p.should_recover() {
@@ -2097,10 +2135,10 @@ impl<'a> Parser<'a> {
               let mut right = right_tok.loc;
               match right_tok.typ {
                 TT::Identifier | TT::PrivateMember => {
-                  prop = self.string(right);
+                  prop = self.identifier_string_from_token(&right_tok)?;
                 }
                 t if KEYWORDS_MAPPING.contains_key(&t) => {
-                  prop = self.string(right);
+                  prop = self.identifier_string_from_token(&right_tok)?;
                 }
                 _ => {
                   if !self.should_recover() {

@@ -78,7 +78,7 @@ impl<'a> Parser<'a> {
         debug_assert!(crate::parse::expr::pat::is_valid_pattern_identifier(
           t.typ, ctx.rules
         ));
-        self.string(t.loc)
+        self.identifier_string_from_token(&t)?
       };
 
       let next = self.peek();
@@ -565,8 +565,9 @@ impl<'a> Parser<'a> {
       // Example: `const x: C[#bar] = 3;` (indexed access with private name)
       // The type checker will catch this as a semantic error
       TT::PrivateMember => {
-        let loc = self.peek().loc;
-        let name = self.consume_as_string();
+        let tok = self.consume();
+        let loc = tok.loc;
+        let name = self.identifier_string_from_token(&tok)?;
         let reference = Node::new(loc, TypeReference {
           name: TypeEntityName::Identifier(name),
           type_arguments: None,
@@ -628,23 +629,44 @@ impl<'a> Parser<'a> {
   fn require_type_identifier(&mut self) -> SyntaxResult<String> {
     let t = self.consume();
     match t.typ {
-      TT::Identifier |
-      TT::KeywordThis |
-      TT::KeywordAwait | TT::KeywordYield | TT::KeywordAsync |
-      TT::KeywordAs | TT::KeywordFrom | TT::KeywordOf | TT::KeywordGet | TT::KeywordSet | TT::KeywordConstructor |
-      TT::KeywordAbstract | TT::KeywordAsserts | TT::KeywordDeclare | TT::KeywordImplements |
-      TT::KeywordIs | TT::KeywordModule | TT::KeywordNamespace |
-      TT::KeywordOverride | TT::KeywordPrivate | TT::KeywordProtected | TT::KeywordPublic |
-      TT::KeywordReadonly | TT::KeywordSatisfies | TT::KeywordStatic |
-      TT::KeywordUsing | TT::KeywordOut | TT::KeywordLet |
-      TT::KeywordIntrinsic |
+      TT::Identifier => self.identifier_string_from_token(&t),
+      TT::KeywordThis
+      | TT::KeywordAwait
+      | TT::KeywordYield
+      | TT::KeywordAsync
+      | TT::KeywordAs
+      | TT::KeywordFrom
+      | TT::KeywordOf
+      | TT::KeywordGet
+      | TT::KeywordSet
+      | TT::KeywordConstructor
+      | TT::KeywordAbstract
+      | TT::KeywordAsserts
+      | TT::KeywordDeclare
+      | TT::KeywordImplements
+      | TT::KeywordIs
+      | TT::KeywordModule
+      | TT::KeywordNamespace
+      | TT::KeywordOverride
+      | TT::KeywordPrivate
+      | TT::KeywordProtected
+      | TT::KeywordPublic
+      | TT::KeywordReadonly
+      | TT::KeywordSatisfies
+      | TT::KeywordStatic
+      | TT::KeywordUsing
+      | TT::KeywordOut
+      | TT::KeywordLet
+      | TT::KeywordIntrinsic
       // Allow type keywords as identifiers in typeof queries like: typeof undefined, typeof this
-      TT::KeywordUndefinedType |
-      TT::KeywordSuper |  // TypeScript: Error recovery - allow 'super' as type identifier
+      | TT::KeywordUndefinedType
+      // TypeScript: Error recovery - allow 'super' as type identifier
+      | TT::KeywordSuper
       // TypeScript: Error recovery - allow reserved keywords in qualified type names
       // Examples: `x.void`, `typeof Controller.prototype.delete`, `typeof foo.var`
-      TT::KeywordVoid | TT::KeywordDelete | TT::KeywordVar
-      => Ok(self.string(t.loc)),
+      | TT::KeywordVoid
+      | TT::KeywordDelete
+      | TT::KeywordVar => Ok(self.string(t.loc)),
       _ => Err(t.error(SyntaxErrorType::ExpectedSyntax("type identifier")))
     }
   }
@@ -1027,7 +1049,12 @@ impl<'a> Parser<'a> {
   fn type_property_key(&mut self, ctx: ParseCtx) -> SyntaxResult<TypePropertyKey> {
     let t = self.peek();
     match t.typ {
-      TT::Identifier => Ok(TypePropertyKey::Identifier(self.consume_as_string())),
+      TT::Identifier => {
+        let tok = self.consume();
+        Ok(TypePropertyKey::Identifier(
+          self.identifier_string_from_token(&tok)?,
+        ))
+      }
       TT::LiteralString => Ok(TypePropertyKey::String(self.lit_str_val()?)),
       TT::LiteralNumber => Ok(TypePropertyKey::Number(self.lit_num_val()?.to_string())),
       TT::BracketOpen => {
@@ -1038,7 +1065,12 @@ impl<'a> Parser<'a> {
       }
       // TypeScript: Error recovery - private names in type/interface property signatures
       // Semantically invalid but accept for error recovery (e.g., `type A = { #foo: string }`)
-      TT::PrivateMember => Ok(TypePropertyKey::Identifier(self.consume_as_string())),
+      TT::PrivateMember => {
+        let tok = self.consume();
+        Ok(TypePropertyKey::Identifier(
+          self.identifier_string_from_token(&tok)?,
+        ))
+      }
       _ => {
         // Allow keywords as property names
         if crate::lex::KEYWORDS_MAPPING.contains_key(&t.typ) {
@@ -1354,7 +1386,8 @@ impl<'a> Parser<'a> {
       let label = {
         let t = p.peek();
         if t.typ == TT::Identifier || KEYWORDS_MAPPING.contains_key(&t.typ) {
-          let name = p.consume_as_string();
+          let tok = p.consume();
+          let name = p.identifier_string_from_token(&tok)?;
           match p.peek().typ {
             TT::Colon => Some(name),
             TT::Question => {
@@ -1653,7 +1686,8 @@ impl<'a> Parser<'a> {
 
       let name = if p.peek().typ == TT::Identifier || KEYWORDS_MAPPING.contains_key(&p.peek().typ) {
         let checkpoint = p.checkpoint();
-        let n = p.consume_as_string();
+        let tok = p.consume();
+        let n = p.identifier_string_from_token(&tok)?;
         // Check if followed by colon, question, or equals (for error recovery)
         if p.peek().typ == TT::Colon || p.peek().typ == TT::Question || p.peek().typ == TT::Equals {
           Some(n)

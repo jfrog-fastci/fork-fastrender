@@ -536,16 +536,33 @@ impl<'a> Parser<'a> {
     self.str(loc).to_string()
   }
 
-  /// Returns the *decoded* identifier text for the given token span.
+  /// Get the ECMAScript *StringValue* of an identifier-like token.
   ///
-  /// ECMAScript identifiers may contain Unicode escape sequences (e.g.
-  /// `\\u0061sync`). The lexer validates these escapes when tokenising, but it
-  /// only records the token span. Downstream consumers (AST/VM) expect the
-  /// decoded identifier name.
-  fn identifier_name(&self, loc: Loc) -> String {
+  /// `parse-js` stores tokens as raw source spans (`Loc`). For `TT::Identifier` tokens that
+  /// include Unicode escape sequences (e.g. `l\\u0065t`, `\\u0061sync`, `yi\\u0065ld`), the raw
+  /// source slice is **not** the identifier's StringValue. Downstream passes (binding resolution,
+  /// early errors keyed off IdentifierName StringValue, etc.) must operate on the decoded form.
+  ///
+  /// This helper decodes `\\uXXXX` and `\\u{...}` sequences for identifier tokens and returns the
+  /// decoded identifier string. Other token types cannot contain escapes by construction and are
+  /// returned as their raw source text.
+  pub(crate) fn identifier_string_from_token(&self, t: &Token) -> SyntaxResult<String> {
+    match t.typ {
+      TT::Identifier | TT::PrivateMember => self.decode_identifier_escapes(t.loc, Some(t.typ)),
+      _ => Ok(self.string(t.loc)),
+    }
+  }
+
+  fn decode_identifier_escapes(&self, loc: Loc, actual_token: Option<TT>) -> SyntaxResult<String> {
     let raw = self.str(loc);
+    self
+      .decode_identifier_escapes_inner(raw)
+      .map_err(|_| loc.error(SyntaxErrorType::InvalidCharacterEscape, actual_token))
+  }
+
+  fn decode_identifier_escapes_inner(&self, raw: &str) -> Result<String, ()> {
     if !raw.as_bytes().contains(&b'\\') {
-      return raw.to_string();
+      return Ok(raw.to_string());
     }
 
     let bytes = raw.as_bytes();
@@ -553,54 +570,52 @@ impl<'a> Parser<'a> {
     let mut i = 0;
     while i < bytes.len() {
       if bytes[i] != b'\\' {
-        // Safe: `i` is always kept on a UTF-8 codepoint boundary.
-        let ch = raw[i..].chars().next().unwrap();
+        let ch = raw[i..].chars().next().ok_or(())?;
         out.push(ch);
         i += ch.len_utf8();
         continue;
       }
 
-      // Identifier escapes are always Unicode escapes: `\uXXXX` or `\u{X...}`.
-      // The lexer already validated the escape sequence, so fall back to the raw
-      // text on any unexpected shape.
-      if bytes.get(i + 1) != Some(&b'u') {
-        return raw.to_string();
+      // UnicodeEscapeSequence in IdentifierName: `\uXXXX` or `\u{...}`
+      if i + 1 >= bytes.len() || bytes[i + 1] != b'u' {
+        return Err(());
       }
-      i += 2; // skip `\u`
 
-      if bytes.get(i) == Some(&b'{') {
-        i += 1; // skip `{`
-        let start = i;
-        while i < bytes.len() && bytes[i] != b'}' {
-          i += 1;
+      if i + 2 < bytes.len() && bytes[i + 2] == b'{' {
+        let mut j = i + 3;
+        while j < bytes.len() && bytes[j] != b'}' {
+          j += 1;
         }
-        if i >= bytes.len() {
-          return raw.to_string();
+        if j >= bytes.len() {
+          return Err(());
         }
-        let hex = &raw[start..i];
-        let value = u32::from_str_radix(hex, 16).ok();
-        let ch = value.and_then(char::from_u32);
-        let Some(ch) = ch else {
-          return raw.to_string();
-        };
+        let hex = &raw[i + 3..j];
+        if hex.is_empty() || !hex.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
+          return Err(());
+        }
+        let value = u32::from_str_radix(hex, 16).map_err(|_| ())?;
+        if value > 0x10FFFF {
+          return Err(());
+        }
+        let ch = char::from_u32(value).ok_or(())?;
         out.push(ch);
-        i += 1; // skip `}`
+        i = j + 1;
       } else {
-        if i + 4 > bytes.len() {
-          return raw.to_string();
+        if i + 6 > bytes.len() {
+          return Err(());
         }
-        let hex = &raw[i..i + 4];
-        let value = u32::from_str_radix(hex, 16).ok();
-        let ch = value.and_then(char::from_u32);
-        let Some(ch) = ch else {
-          return raw.to_string();
-        };
+        let hex = &raw[i + 2..i + 6];
+        if !hex.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
+          return Err(());
+        }
+        let value = u32::from_str_radix(hex, 16).map_err(|_| ())?;
+        let ch = char::from_u32(value).ok_or(())?;
         out.push(ch);
-        i += 4;
+        i += 6;
       }
     }
 
-    out
+    Ok(out)
   }
 
   pub fn checkpoint(&self) -> ParserCheckpoint {
@@ -937,7 +952,7 @@ impl<'a> Parser<'a> {
     if t.typ != TT::Identifier {
       return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
     }
-    Ok(self.identifier_name(t.loc))
+    self.identifier_string_from_token(&t)
   }
 
   /// Require an identifier, but allow TypeScript type keywords as identifiers
@@ -952,7 +967,7 @@ impl<'a> Parser<'a> {
       // NOTE: `yield` is treated as an identifier outside generator contexts for parse recovery.
       || t.typ == TT::KeywordYield
     {
-      return Ok(self.identifier_name(t.loc));
+      return self.identifier_string_from_token(&t);
     }
     // Allow TypeScript type keywords as identifiers
     match t.typ {
@@ -966,7 +981,7 @@ impl<'a> Parser<'a> {
       | TT::KeywordUndefinedType
       | TT::KeywordUnknown
       | TT::KeywordObjectType
-      | TT::KeywordBigIntType => Ok(self.identifier_name(t.loc)),
+      | TT::KeywordBigIntType => Ok(self.string(t.loc)),
       _ => Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier"))),
     }
   }

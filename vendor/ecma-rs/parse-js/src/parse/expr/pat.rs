@@ -12,6 +12,7 @@ use crate::ast::node::Node;
 use crate::error::SyntaxErrorType;
 use crate::error::SyntaxResult;
 use crate::lex::KEYWORDS_MAPPING;
+use crate::token::keyword_from_str;
 use crate::token::TT;
 use crate::token::UNRESERVED_KEYWORDS;
 
@@ -77,16 +78,15 @@ pub fn is_valid_class_or_func_name(typ: TT, rules: ParsePatternRules) -> bool {
 
 impl<'a> Parser<'a> {
   pub fn maybe_class_or_func_name(&mut self, ctx: ParseCtx) -> Option<Node<ClassOrFuncName>> {
-    self
-      .consume_if_pred(|t| is_valid_class_or_func_name(t.typ, ctx.rules))
-      .map(|t| {
-        Node::new(
-          t.loc,
-          ClassOrFuncName {
-            name: self.identifier_name(t.loc),
-          },
-        )
-      })
+    let next = self.peek();
+    if !is_valid_class_or_func_name(next.typ, ctx.rules) {
+      return None;
+    }
+    let t = self.consume();
+    let name = self
+      .identifier_string_from_token(&t)
+      .unwrap_or_else(|_| self.string(t.loc));
+    Some(Node::new(t.loc, ClassOrFuncName { name }))
   }
 
   /// Parses an identifier pattern.
@@ -96,13 +96,13 @@ impl<'a> Parser<'a> {
       if !is_valid_pattern_identifier(t.typ, ctx.rules) {
         return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
       }
-      let name = p.identifier_name(t.loc);
-
-      // `await`/`yield` are reserved words when the corresponding grammar parameter is present.
-      // Unicode escape sequences in identifiers must not bypass this restriction.
-      if (!ctx.rules.await_allowed && name == "await") || (!ctx.rules.yield_allowed && name == "yield")
-      {
-        return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+      let name = p.identifier_string_from_token(&t)?;
+      if t.typ == TT::Identifier {
+        if let Some(keyword_tt) = keyword_from_str(&name) {
+          if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+            return Err(t.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+          }
+        }
       }
       if p.is_strict_ecmascript()
         && p.is_strict_mode()
@@ -166,20 +166,17 @@ impl<'a> Parser<'a> {
                 } else if !is_valid_pattern_identifier(n.stx.tt, ctx.rules) {
                   return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
                 }
-                let Some(string_value) = p.identifier_name_string_value(&n.stx.key) else {
-                  return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
-                };
-
-                if (!ctx.rules.await_allowed && string_value.as_ref() == "await")
-                  || (!ctx.rules.yield_allowed && string_value.as_ref() == "yield")
-                {
-                  return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                if n.stx.tt == TT::Identifier {
+                  if let Some(keyword_tt) = keyword_from_str(&n.stx.key) {
+                    if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+                      return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                    }
+                  }
                 }
-
                 if p.is_strict_ecmascript()
                   && p.is_strict_mode()
-                  && (Parser::is_strict_mode_reserved_word(string_value.as_ref())
-                    || Parser::is_strict_mode_restricted_binding_identifier(string_value.as_ref()))
+                  && (Parser::is_strict_mode_reserved_word(&n.stx.key)
+                    || Parser::is_strict_mode_restricted_binding_identifier(&n.stx.key))
                 {
                   return Err(n.error(SyntaxErrorType::ExpectedSyntax("identifier")));
                 }

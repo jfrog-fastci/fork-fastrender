@@ -38,6 +38,7 @@ use crate::lex::KEYWORDS_MAPPING;
 use crate::loc::Loc;
 use crate::num::JsNumber;
 use crate::operator::OperatorName;
+use crate::token::keyword_from_str;
 use crate::token::TT;
 use num_bigint::BigInt;
 use std::collections::HashSet;
@@ -3789,15 +3790,24 @@ impl<'a> Parser<'a> {
                          id: direct_key.map_stx(|n| IdExpr { name: n.key }),
                        }
                      }
-                   } else {
-                     if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
-                       return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
-                     }
-                     if p.consume_if(TT::Equals).is_match() {
-                       let key_name = direct_key.stx.key.clone();
-                       let key_loc = direct_key.loc;
-                       let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
-                       let id_expr = Node::new(
+                    } else {
+                      if !is_valid_pattern_identifier(direct_key.stx.tt, ctx.rules) {
+                        return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+                      }
+                      if direct_key.stx.tt == TT::Identifier {
+                        if let Some(keyword_tt) = keyword_from_str(&direct_key.stx.key) {
+                          if !is_valid_pattern_identifier(keyword_tt, ctx.rules) {
+                            return Err(direct_key.error(SyntaxErrorType::ExpectedSyntax(
+                              "identifier",
+                            )));
+                          }
+                        }
+                      }
+                      if p.consume_if(TT::Equals).is_match() {
+                        let key_name = direct_key.stx.key.clone();
+                        let key_loc = direct_key.loc;
+                        let default_val = p.expr(ctx, [TT::Comma, TT::Semicolon, TT::BraceClose])?;
+                        let id_expr = Node::new(
                          key_loc,
                          IdExpr {
                            name: key_name.clone(),

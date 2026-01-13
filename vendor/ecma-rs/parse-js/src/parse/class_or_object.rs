@@ -699,8 +699,10 @@ impl<'a> Parser<'a> {
         }
         // There's no trailing `n`.
         TT::LiteralBigInt => self.lit_bigint_val()?.to_string(),
-        TT::PrivateMember => self.consume_as_string(),
-        TT::Identifier => self.consume_as_string(),
+        TT::PrivateMember | TT::Identifier => {
+          let tok = self.consume();
+          self.identifier_string_from_token(&tok)?
+        }
         // Any keyword is allowed as a key.
         t if KEYWORDS_MAPPING.contains_key(&t) => self.consume_as_string(),
         // TypeScript-style recovery: allow asterisk as property key (malformed generator).

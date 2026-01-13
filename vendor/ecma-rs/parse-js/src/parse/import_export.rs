@@ -79,7 +79,13 @@ impl<'a> Parser<'a> {
         // names without an `as` clause (e.g. `export { "☿" } from "./m.js";`).
         (ModuleExportImportName::Str(name), !is_export)
       },
-      t if is_valid_pattern_identifier(t, ctx.rules) => (ModuleExportImportName::Ident(self.consume_as_string()), false),
+      t if is_valid_pattern_identifier(t, ctx.rules) => {
+        let tok = self.consume();
+        (
+          ModuleExportImportName::Ident(self.identifier_string_from_token(&tok)?),
+          false,
+        )
+      },
       // `default` is special: in exports it can be used without alias, but in imports it requires an alias
       TT::KeywordDefault if is_export => (ModuleExportImportName::Ident(self.consume_as_string()), false),
       // Any other keyword is allowed. In imports, local bindings are identifiers so an alias is
@@ -373,7 +379,8 @@ impl<'a> Parser<'a> {
       return Err(self.peek().error(SyntaxErrorType::ExpectedNotFound));
     }
 
-    let first_name = self.consume_as_string();
+    let first_tok = self.consume();
+    let first_name = self.identifier_string_from_token(&first_tok)?;
     let rhs = if first_name == "require" && self.peek().typ == TT::ParenthesisOpen {
       self.require(TT::ParenthesisOpen)?;
       let module = self.lit_str_val()?;
@@ -387,7 +394,8 @@ impl<'a> Parser<'a> {
         self.consume(); // .
         let next = self.peek();
         if next.typ == TT::Identifier || KEYWORDS_MAPPING.contains_key(&next.typ) {
-          path.push(self.consume_as_string());
+          let tok = self.consume();
+          path.push(self.identifier_string_from_token(&tok)?);
         } else {
           // Error recovery: allow incomplete dotted names
           break;

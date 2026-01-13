@@ -166,7 +166,7 @@ impl<'a> Parser<'a> {
       // Also allow keywords as namespace names for error recovery (e.g., `namespace debugger {}`)
       let t = p.consume();
       let name = if t.typ == TT::Identifier {
-        p.string(t.loc)
+        p.identifier_string_from_token(&t)?
       } else if crate::lex::KEYWORDS_MAPPING.contains_key(&t.typ) {
         // Allow any keyword as namespace name for error recovery
         p.string(t.loc)

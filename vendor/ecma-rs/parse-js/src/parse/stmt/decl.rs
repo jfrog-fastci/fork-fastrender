@@ -14,10 +14,12 @@ use crate::ast::stmt::decl::VarDeclarator;
 use crate::error::SyntaxErrorType;
 use crate::error::SyntaxResult;
 use crate::operator::OperatorName;
+use crate::parse::expr::pat::is_valid_class_or_func_name;
 use crate::parse::expr::pat::ParsePatternRules;
 use crate::parse::expr::Asi;
 use crate::parse::AsiContext;
 use crate::token::TT;
+use crate::token::keyword_from_str;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VarDeclParseMode {
@@ -183,6 +185,13 @@ impl<'a> Parser<'a> {
       if name.is_none() && !export_default {
         return Err(start.error(SyntaxErrorType::ExpectedSyntax("function name"), None));
       };
+      if let Some(name) = name.as_ref() {
+        if let Some(keyword_tt) = keyword_from_str(&name.stx.name) {
+          if !is_valid_class_or_func_name(keyword_tt, ctx.rules) {
+            return Err(name.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+          }
+        }
+      }
       let function = p.with_loc(|p| {
         // TypeScript: generic type parameters
         let type_parameters = if !p.is_strict_ecmascript()
@@ -293,6 +302,13 @@ impl<'a> Parser<'a> {
         if name.is_none() && !export_default {
           return Err(start.error(SyntaxErrorType::ExpectedSyntax("class name"), None));
         };
+        if let Some(name) = name.as_ref() {
+          if let Some(keyword_tt) = keyword_from_str(&name.stx.name) {
+            if !is_valid_class_or_func_name(keyword_tt, ctx.rules) {
+              return Err(name.error(SyntaxErrorType::ExpectedSyntax("identifier")));
+            }
+          }
+        }
         if let Some(name) = name.as_ref() {
           p.validate_strict_binding_identifier_name(name.loc, &name.stx.name)?;
         }
