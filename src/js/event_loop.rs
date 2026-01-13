@@ -744,12 +744,10 @@ impl<Host: 'static> EventLoop<Host> {
 
       // Reserve space up-front so we can safely move the `FnOnce` out of the external queue
       // without risking it being dropped on enqueue failure.
-      {
-        let queue = &mut self.task_queues[source.as_usize()];
-        queue
-          .try_reserve(1)
-          .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
-      }
+      let reserved_source_idx = source.as_usize();
+      self.task_queues[reserved_source_idx]
+        .try_reserve(1)
+        .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
 
       let task = {
         let mut lock = self
@@ -771,7 +769,13 @@ impl<Host: 'static> EventLoop<Host> {
       let source = task.source;
       let runnable = task.runnable;
       // `EventLoop::queue_task` does not require `Send`, so wrap the Send task in a local closure.
-      self.task_queues[source.as_usize()].push_back(Task::new_with_seq(
+      debug_assert_eq!(
+        source.as_usize(),
+        reserved_source_idx,
+        "external task queue front changed during drain"
+      );
+      let source_idx = source.as_usize();
+      self.task_queues[source_idx].push_back(Task::new_with_seq(
         source,
         seq,
         move |host, event_loop| runnable(host, event_loop),
