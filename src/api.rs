@@ -2411,6 +2411,48 @@ pub struct PaintedFrame {
   pub scroll_state: ScrollState,
 }
 
+/// Summary of whether an incremental paint fast-path was used.
+///
+/// Incremental painting currently targets:
+/// - partial repaint (dirty region) using the display-list renderer, and
+/// - scroll blit + exposed-strip repaint.
+///
+/// These fast-paths are only supported when `FASTR_PAINT_BACKEND=display_list` (the default). When
+/// the legacy paint backend is selected, incremental paths must conservatively fall back to full
+/// repaint to avoid producing incorrect output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IncrementalPaintReport {
+  /// Whether an incremental paint fast-path was actually used for the last incremental paint
+  /// entrypoint.
+  pub incremental_used: bool,
+  /// When `incremental_used == false`, an optional reason describing why incremental paint was
+  /// disabled.
+  pub disabled_reason: Option<IncrementalPaintDisabledReason>,
+}
+
+impl IncrementalPaintReport {
+  #[inline]
+  pub fn disabled_reason_message(self) -> Option<&'static str> {
+    self.disabled_reason.map(IncrementalPaintDisabledReason::message)
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncrementalPaintDisabledReason {
+  /// The runtime-selected paint backend is legacy/immediate mode, so incremental paint optimizations
+  /// (which rely on the display-list renderer) are unavailable.
+  PaintBackendLegacy,
+}
+
+impl IncrementalPaintDisabledReason {
+  #[inline]
+  pub fn message(self) -> &'static str {
+    match self {
+      IncrementalPaintDisabledReason::PaintBackendLegacy => "paint backend is legacy",
+    }
+  }
+}
+
 /// Result of a prepare operation that includes diagnostics.
 #[derive(Clone)]
 pub struct PreparedDocumentReport {

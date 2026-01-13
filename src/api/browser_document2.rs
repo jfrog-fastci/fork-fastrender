@@ -28,6 +28,7 @@ pub struct BrowserDocument2 {
   last_dom_mapping: Option<RendererDomSnapshot>,
   last_painted_scroll_state: Option<ScrollState>,
   paint_damage: Option<Rect>,
+  last_incremental_paint_report: Option<super::IncrementalPaintReport>,
   animation_clock: Arc<dyn Clock>,
   realtime_animations_enabled: bool,
   animation_timeline_origin: Option<Duration>,
@@ -83,6 +84,7 @@ impl BrowserDocument2 {
       last_dom_mapping: None,
       last_painted_scroll_state: None,
       paint_damage,
+      last_incremental_paint_report: None,
       animation_clock: Arc::new(RealClock::default()),
       realtime_animations_enabled: false,
       animation_timeline_origin: None,
@@ -129,6 +131,7 @@ impl BrowserDocument2 {
     self.prepared = Some(document);
     self.last_dom_mapping = None;
     self.last_painted_scroll_state = None;
+    self.last_incremental_paint_report = None;
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
@@ -231,6 +234,14 @@ impl BrowserDocument2 {
     self.last_dom_mapping.as_ref()
   }
 
+  /// Returns the incremental-paint report recorded for the most recent `*_into` paint entrypoint.
+  ///
+  /// This is primarily intended for embedders and tests that need visibility into whether partial
+  /// repaint / scroll-blit optimizations were used or conservatively disabled.
+  pub fn last_incremental_paint_report(&self) -> Option<super::IncrementalPaintReport> {
+    self.last_incremental_paint_report
+  }
+
   /// Renders a new frame if anything has been invalidated since the last successful frame.
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
@@ -281,6 +292,7 @@ impl BrowserDocument2 {
     output: &mut Option<super::Pixmap>,
     paint_deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<ScrollState> {
+    self.record_incremental_paint_report();
     let frame = self.render_frame_with_deadlines(paint_deadline)?;
     self.copy_frame_into_pixmap(&frame.pixmap, output)?;
     Ok(frame.scroll_state)
@@ -307,6 +319,7 @@ impl BrowserDocument2 {
     let Some(frame) = self.render_if_needed_with_deadlines(paint_deadline)? else {
       return Ok(None);
     };
+    self.record_incremental_paint_report();
     self.copy_frame_into_pixmap(&frame.pixmap, output)?;
     Ok(Some(frame.scroll_state))
   }
@@ -553,6 +566,7 @@ impl BrowserDocument2 {
     self.layout_dirty = true;
     self.paint_dirty = true;
     self.last_painted_scroll_state = None;
+    self.last_incremental_paint_report = None;
     self.mark_full_paint_damage();
   }
 
@@ -631,6 +645,32 @@ impl BrowserDocument2 {
     }
     dst.copy_from_slice(src);
     Ok(())
+  }
+
+  fn record_incremental_paint_report(&mut self) {
+    use crate::paint::painter::{paint_backend_from_env, PaintBackend};
+
+    // Incremental paint fast paths (partial repaint + scroll blit) rely on the display-list
+    // renderer. If the runtime paint backend is legacy/immediate mode, we must not attempt to blit
+    // and then repaint only exposed strips: the legacy backend cannot repaint subregions from a
+    // cached display list.
+    let backend = if let Some(prepared) = self.prepared.as_ref() {
+      crate::debug::runtime::with_thread_runtime_toggles(
+        Arc::clone(&prepared.runtime_toggles),
+        paint_backend_from_env,
+      )
+    } else {
+      crate::debug::runtime::with_thread_runtime_toggles(
+        self.renderer.resolve_runtime_toggles(&self.options),
+        paint_backend_from_env,
+      )
+    };
+
+    self.last_incremental_paint_report = Some(super::IncrementalPaintReport {
+      incremental_used: false,
+      disabled_reason: (backend != PaintBackend::DisplayList)
+        .then_some(super::IncrementalPaintDisabledReason::PaintBackendLegacy),
+    });
   }
 }
 

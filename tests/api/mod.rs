@@ -12,6 +12,7 @@ mod diagnostics;
 mod dom2_geometry_scrollport;
 mod fragmentation;
 mod js_exports;
+mod incremental_paint_backend;
 mod meta_viewport;
 mod prepared;
 mod prepared_document_geometry_tree;

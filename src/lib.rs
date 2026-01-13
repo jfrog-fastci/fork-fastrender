@@ -306,6 +306,8 @@ pub use api::LayoutArtifacts;
 pub use api::LayoutDiagnostics;
 pub use api::PaintDiagnostics;
 pub use api::PaintedFrame;
+pub use api::IncrementalPaintDisabledReason;
+pub use api::IncrementalPaintReport;
 pub use api::Pixmap;
 pub use api::PreparedDocument;
 pub use api::PreparedDocumentReport;
