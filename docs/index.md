@@ -35,6 +35,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Multiprocess & security: [`instructions/multiprocess_security.md`](../instructions/multiprocess_security.md)
 - Multiprocess threat model (renderer IPC trust boundary): [multiprocess_threat_model.md](multiprocess_threat_model.md)
 - Site isolation process model (per-origin, OOPIF): [site_isolation.md](site_isolation.md)
+- Linux IPC (shared memory + FD passing checklist): [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)
 - Renderer chrome (future): [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md)
 - Chrome JS bridge (trusted UI API surface): [chrome_js_bridge.md](chrome_js_bridge.md)
 
