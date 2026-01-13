@@ -1,6 +1,6 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Once, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ use super::convert::sanitize_sample;
 use crate::media::audio_clock::InterpolatedAudioClock;
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
+use super::restart::{AudioStreamFactory, ResilientStreamManager, RestartPolicy};
 use cpal::traits::{HostTrait, StreamTrait};
 
 pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
@@ -64,6 +65,85 @@ fn select_output_device(host: &cpal::Host, selector: &DeviceSelector) -> Result<
   }
 }
 
+const STREAM_RESTART_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const STREAM_RESTART_MAX_ATTEMPTS: usize = 5;
+const STREAM_RESTART_INITIAL_BACKOFF: Duration = Duration::from_millis(50);
+const STREAM_RESTART_MAX_BACKOFF: Duration = Duration::from_millis(500);
+
+static FALLBACK_WARN_ONCE: Once = Once::new();
+
+/// Shared stream error state updated by CPAL's error callback.
+struct StreamErrorState {
+  pending: AtomicBool,
+  count: AtomicU64,
+}
+
+impl StreamErrorState {
+  fn new() -> Self {
+    Self {
+      pending: AtomicBool::new(false),
+      count: AtomicU64::new(0),
+    }
+  }
+
+  fn record(&self) {
+    // Called from CPAL's error callback; keep it RT-safe (no allocation/locks).
+    self.count.fetch_add(1, Ordering::Relaxed);
+    self.pending.store(true, Ordering::Release);
+  }
+}
+
+struct CpalStreamFactory {
+  selector: DeviceSelector,
+  expected: AudioStreamConfig,
+  last_callback_frames: Arc<AtomicU32>,
+  estimated_latency_nanos: Arc<AtomicU64>,
+  mixer: Arc<MixerState>,
+  clock: Arc<InterpolatedAudioClock>,
+  diagnostics: Arc<CpalStreamDiagnostics>,
+  errors: Arc<StreamErrorState>,
+}
+
+impl AudioStreamFactory for CpalStreamFactory {
+  type Stream = cpal::Stream;
+  type Error = AudioError;
+
+  fn open_default_stream(&mut self) -> Result<Self::Stream, Self::Error> {
+    let host = cpal::default_host();
+    let device = select_output_device(&host, &self.selector)?;
+
+    let (stream_config, sample_format, fixed_frames) =
+      select_output_stream_config_matching(&device, self.expected)?;
+
+    self.last_callback_frames.store(0, Ordering::Relaxed);
+
+    // Reset the latency estimate until the callback provides a better value.
+    let initial_latency = fixed_frames
+      .map(|frames| frames_to_duration(self.expected.sample_rate_hz, frames as u64))
+      .unwrap_or_else(|| frames_to_duration(self.expected.sample_rate_hz, 1024));
+    self
+      .estimated_latency_nanos
+      .store(duration_to_nanos_u64(initial_latency), Ordering::Relaxed);
+
+    let stream = build_stream(
+      &device,
+      &stream_config,
+      sample_format,
+      self.mixer.clone(),
+      self.clock.clone(),
+      fixed_frames,
+      self.last_callback_frames.clone(),
+      self.estimated_latency_nanos.clone(),
+      self.errors.clone(),
+      self.diagnostics.clone(),
+    )?;
+    stream
+      .play()
+      .map_err(|err| AudioError::StreamPlayFailed(err.to_string()))?;
+    Ok(stream)
+  }
+}
+
 /// CPAL-based audio output backend (cross-platform).
 ///
 /// Clocking notes:
@@ -91,6 +171,8 @@ pub struct CpalAudioBackend {
   mixer: Arc<MixerState>,
   clock: Arc<InterpolatedAudioClock>,
   diagnostics: Arc<CpalStreamDiagnostics>,
+  fell_back_to_null: Arc<AtomicBool>,
+  fallback_start: Arc<OnceLock<Instant>>,
   // `cpal::Stream` is neither `Send` nor `Sync`, so it cannot live inside a `Send + Sync`
   // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its lifetime
   // via a shutdown channel + join handle.
@@ -121,6 +203,8 @@ impl CpalAudioBackend {
       .per_stream_max_buffered_duration
       .min(MAX_BUFFERED_DURATION);
     let diagnostics = Arc::new(CpalStreamDiagnostics::new());
+    let fell_back_to_null = Arc::new(AtomicBool::new(false));
+    let fallback_start = Arc::new(OnceLock::new());
 
     // `cpal::Stream` is not `Send`/`Sync`, so it cannot live inside a `Send + Sync`
     // `AudioBackend` implementation. Keep the stream on a dedicated thread and control its
@@ -137,9 +221,12 @@ impl CpalAudioBackend {
     let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel::<()>();
 
     let diagnostics_thread = diagnostics.clone();
+    let thread_fell_back_to_null = fell_back_to_null.clone();
+    let thread_fallback_start = fallback_start.clone();
     let thread = std::thread::spawn(move || {
       let selector = selector;
-      let init = (|| -> Result<(ReadyState, cpal::Stream), AudioError> {
+      let init =
+        (|| -> Result<(ReadyState, cpal::Stream, Arc<StreamErrorState>), AudioError> {
         let host = cpal::default_host();
         let device = select_output_device(&host, &selector)?;
 
@@ -161,6 +248,7 @@ impl CpalAudioBackend {
 
         let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz));
         let mixer = Arc::new(MixerState::new(config));
+        let errors = Arc::new(StreamErrorState::new());
 
         let stream = build_stream(
           &device,
@@ -171,6 +259,7 @@ impl CpalAudioBackend {
           fixed_callback_frames,
           last_callback_frames.clone(),
           estimated_latency_nanos.clone(),
+          errors.clone(),
           diagnostics_thread.clone(),
         )?;
         stream
@@ -187,10 +276,11 @@ impl CpalAudioBackend {
             clock,
           ),
           stream,
+          errors,
         ))
       })();
 
-      let (ready, _stream) = match init {
+      let (ready, stream, errors) = match init {
         Ok(ok) => ok,
         Err(err) => {
           let _ = ready_tx.send(Err(err));
@@ -198,10 +288,60 @@ impl CpalAudioBackend {
         }
       };
 
-      let _ = ready_tx.send(Ok(ready));
-      // Keep the stream alive until shutdown is requested.
-      let _ = shutdown_rx.recv();
-      drop(_stream);
+      let _ = ready_tx.send(Ok(ready.clone()));
+
+      let (config, _fixed_callback_frames, last_callback_frames, estimated_latency_nanos, mixer, clock) =
+        ready;
+      let clock_for_fallback = clock.clone();
+      let policy = RestartPolicy {
+        max_attempts: STREAM_RESTART_MAX_ATTEMPTS,
+        initial_backoff: STREAM_RESTART_INITIAL_BACKOFF,
+        max_backoff: STREAM_RESTART_MAX_BACKOFF,
+      };
+      let factory = CpalStreamFactory {
+        selector,
+        expected: config,
+        last_callback_frames,
+        estimated_latency_nanos,
+        mixer,
+        clock,
+        diagnostics: diagnostics_thread,
+        errors: errors.clone(),
+      };
+      let mut manager = ResilientStreamManager::new_running(factory, policy, stream);
+
+      loop {
+        let now = Instant::now();
+
+        if errors.pending.swap(false, Ordering::AcqRel) {
+          manager.request_restart(now);
+        }
+
+        let out = manager.tick(now);
+        if out.entered_fallback {
+          let played = clock_for_fallback.now_at(now);
+          let start = now.checked_sub(played).unwrap_or(now);
+          let _ = thread_fallback_start.set(start);
+          thread_fell_back_to_null.store(true, Ordering::Release);
+          FALLBACK_WARN_ONCE.call_once(|| {
+            eprintln!(
+              "warning: CPAL output stream failed and could not be restarted; falling back to NullAudioBackend (silence)"
+            );
+          });
+          break;
+        }
+
+        let sleep = manager
+          .next_attempt_at()
+          .and_then(|next| next.checked_duration_since(now))
+          .map(|dur| dur.min(STREAM_RESTART_POLL_INTERVAL))
+          .unwrap_or(STREAM_RESTART_POLL_INTERVAL);
+
+        match shutdown_rx.recv_timeout(sleep) {
+          Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+          Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+      }
     });
 
     let (
@@ -234,6 +374,8 @@ impl CpalAudioBackend {
       mixer,
       clock,
       diagnostics,
+      fell_back_to_null,
+      fallback_start,
       shutdown_tx,
       stream_thread: Mutex::new(Some(thread)),
     })
@@ -264,6 +406,15 @@ impl AudioBackend for CpalAudioBackend {
 
   fn output_info(&self) -> AudioOutputInfo {
     self.report_warnings_once();
+    if self.fell_back_to_null.load(Ordering::Acquire) {
+      return AudioOutputInfo {
+        config: self.config,
+        callback_frames: None,
+        estimated_output_latency: Duration::ZERO,
+        backend_name: "null",
+      };
+    }
+
     let callback_frames = self.fixed_callback_frames.or_else(|| match self
       .last_callback_frames
       .load(Ordering::Relaxed)
@@ -284,6 +435,17 @@ impl AudioBackend for CpalAudioBackend {
 
   fn clock(&self) -> AudioClock {
     self.report_warnings_once();
+    if self.fell_back_to_null.load(Ordering::Acquire) {
+      let start = self
+        .fallback_start
+        .get()
+        .copied()
+        .unwrap_or_else(Instant::now);
+      return AudioClock::Instant {
+        start,
+        sample_rate_hz: self.config.sample_rate_hz,
+      };
+    }
     AudioClock::OutputFrames {
       clock: self.clock.clone(),
     }
@@ -593,6 +755,84 @@ fn select_output_stream_config(
   Ok((config, sample_format))
 }
 
+fn select_output_stream_config_matching(
+  device: &cpal::Device,
+  expected: AudioStreamConfig,
+) -> Result<(cpal::StreamConfig, cpal::SampleFormat, Option<u32>), AudioError> {
+  use cpal::traits::DeviceTrait;
+
+  let mut best: Option<(cpal::SupportedStreamConfig, u8)> = None;
+
+  if let Ok(configs) = device.supported_output_configs() {
+    for range in configs {
+      if range.channels() != expected.channels {
+        continue;
+      }
+
+      let min_rate = range.min_sample_rate().0;
+      let max_rate = range.max_sample_rate().0;
+      if !(min_rate <= expected.sample_rate_hz && expected.sample_rate_hz <= max_rate) {
+        continue;
+      }
+
+      let fmt_score = match range.sample_format() {
+        cpal::SampleFormat::F32 => 3,
+        cpal::SampleFormat::I16 => 2,
+        cpal::SampleFormat::U16 => 1,
+        _ => 0,
+      };
+      if fmt_score == 0 {
+        continue;
+      }
+
+      let cfg = range.with_sample_rate(cpal::SampleRate(expected.sample_rate_hz));
+      match best.as_ref() {
+        Some((_, best_score)) if *best_score >= fmt_score => {}
+        _ => best = Some((cfg, fmt_score)),
+      }
+    }
+  }
+
+  let supported = if let Some((cfg, _)) = best {
+    cfg
+  } else {
+    let cfg = device
+      .default_output_config()
+      .map_err(|err| AudioError::DefaultOutputConfigFailed(err.to_string()))?;
+
+    if cfg.channels() != expected.channels || cfg.sample_rate().0 != expected.sample_rate_hz {
+      return Err(AudioError::StreamConfigMismatch {
+        expected_channels: usize::from(expected.channels),
+        expected_sample_rate_hz: expected.sample_rate_hz,
+        channels: usize::from(cfg.channels()),
+        sample_rate_hz: cfg.sample_rate().0,
+      });
+    }
+    cfg
+  };
+
+  let sample_format = supported.sample_format();
+  let config: cpal::StreamConfig = supported.into();
+  if config.channels == 0 || config.channels > MAX_CHANNELS {
+    return Err(AudioError::invalid_spec(format!(
+      "unsupported output channel count {}",
+      config.channels
+    )));
+  }
+  if config.sample_rate.0 == 0 || config.sample_rate.0 > MAX_SAMPLE_RATE_HZ {
+    return Err(AudioError::invalid_spec(format!(
+      "unsupported output sample rate {}",
+      config.sample_rate.0
+    )));
+  }
+
+  let fixed_frames = match config.buffer_size {
+    cpal::BufferSize::Fixed(frames) => Some(frames),
+    cpal::BufferSize::Default => None,
+  };
+  Ok((config, sample_format, fixed_frames))
+}
+
 fn build_stream(
   device: &cpal::Device,
   config: &cpal::StreamConfig,
@@ -602,6 +842,7 @@ fn build_stream(
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
+  errors: Arc<StreamErrorState>,
   diagnostics: Arc<CpalStreamDiagnostics>,
 ) -> Result<cpal::Stream, AudioError> {
   match sample_format {
@@ -613,6 +854,7 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
+      errors,
       diagnostics,
     ),
     cpal::SampleFormat::I16 => build_stream_typed::<i16>(
@@ -623,6 +865,7 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
+      errors,
       diagnostics,
     ),
     cpal::SampleFormat::U16 => build_stream_typed::<u16>(
@@ -633,6 +876,7 @@ fn build_stream(
       fixed_callback_frames,
       last_callback_frames,
       estimated_latency_nanos,
+      errors,
       diagnostics,
     ),
     other => Err(AudioError::UnsupportedSampleFormat(format!("{other:?}"))),
@@ -647,6 +891,7 @@ fn build_stream_typed<T>(
   fixed_callback_frames: Option<u32>,
   last_callback_frames: Arc<AtomicU32>,
   estimated_latency_nanos: Arc<AtomicU64>,
+  errors: Arc<StreamErrorState>,
   diagnostics: Arc<CpalStreamDiagnostics>,
 ) -> Result<cpal::Stream, AudioError>
 where
@@ -662,10 +907,12 @@ where
 
   let err_cb = {
     let diagnostics = diagnostics.clone();
+    let errors = errors.clone();
     move |_err| {
       // Avoid printing from the (likely RT) error callback. Record the event and let non-RT code
       // print at most once.
       diagnostics.set_stream_error(1);
+      errors.record();
     }
   };
 

@@ -34,6 +34,7 @@ mod latency;
 pub mod engine;
 pub mod limits;
 mod null_backend;
+mod restart;
 mod ring_buffer;
 #[cfg(feature = "audio_cpal")]
 mod thread_priority;
