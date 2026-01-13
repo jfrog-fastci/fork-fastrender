@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -1739,7 +1739,7 @@ impl WebSocketEvent {
 /// - Commands for unknown `conn_id` values are ignored (no panic).
 #[derive(Debug, Default)]
 pub struct NetworkWebSocketManager {
-  conns: HashMap<RendererId, HashMap<WebSocketConnId, ()>>,
+  conns: HashMap<RendererId, HashSet<WebSocketConnId>>,
   limits: NetworkWebSocketManagerLimits,
   active_total: usize,
 }
@@ -1766,7 +1766,7 @@ impl NetworkWebSocketManager {
     };
     self.active_total = self.active_total.saturating_sub(conns.len());
     // Return deterministic event ordering for tests/logging.
-    let mut ids: Vec<WebSocketConnId> = conns.keys().copied().collect();
+    let mut ids: Vec<WebSocketConnId> = conns.into_iter().collect();
     ids.sort_by_key(|id| id.0);
     ids
       .into_iter()
@@ -1787,7 +1787,7 @@ impl NetworkWebSocketManager {
       WebSocketCommand::Connect { conn_id, url: _url } => {
         let renderer_count = match self.conns.get(&renderer_id) {
           Some(renderer_conns) => {
-            if renderer_conns.contains_key(&conn_id) {
+            if renderer_conns.contains(&conn_id) {
               // Deterministic behaviour: reject the duplicate without touching the existing entry.
               return vec![
                 WebSocketEvent::Error {
@@ -1835,10 +1835,7 @@ impl NetworkWebSocketManager {
           ];
         }
 
-        renderer_conns.insert(
-          conn_id,
-          (),
-        );
+        renderer_conns.insert(conn_id);
         self.active_total = self.active_total.saturating_add(1);
 
         // Connection establishment is async in production; no immediate event is generated here.
@@ -1849,7 +1846,7 @@ impl NetworkWebSocketManager {
         let Some(renderer_conns) = self.conns.get_mut(&renderer_id) else {
           return Vec::new();
         };
-        if !renderer_conns.contains_key(&conn_id) {
+        if !renderer_conns.contains(&conn_id) {
           return Vec::new();
         }
         // In the real implementation this would write to the socket; keep this logic-only manager
@@ -1861,7 +1858,7 @@ impl NetworkWebSocketManager {
         let Some(renderer_conns) = self.conns.get_mut(&renderer_id) else {
           return Vec::new();
         };
-        if renderer_conns.remove(&conn_id).is_none() {
+        if !renderer_conns.remove(&conn_id) {
           return Vec::new();
         }
         self.active_total = self.active_total.saturating_sub(1);
