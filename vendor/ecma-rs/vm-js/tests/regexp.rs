@@ -1141,8 +1141,29 @@ fn regexp_negated_empty_class_matches_any_code_unit() {
 fn regexp_negated_class_with_literal_closing_bracket_is_not_empty() {
   let mut rt = new_runtime();
   let value = rt
-    .exec_script(r#""a]".match(/[^]]/g).join("") === "a""#)
+    .exec_script(
+      r#"
+        (() => {
+          // `]` always terminates a character class. This means:
+          // - `[^]]` parses as `[^]` (a negated empty class matching any code unit) followed by a
+          //   literal `]` outside the class.
+          // - To include `]` *inside* the class, it must be escaped as `\]`.
+          return (
+            "a]".match(/[^]]/g).join("") === "a]" &&
+            "a]".match(/[^\]]/g).join("") === "a"
+          );
+        })()
+      "#,
+    )
     .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn regexp_empty_character_class_matches_nothing() {
+  // Regression test for parsing `[]`: an empty character class is valid and matches nothing.
+  let mut rt = new_runtime();
+  let value = rt.exec_script(r#"/[]/.exec("a") === null"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 }
 
