@@ -201,7 +201,16 @@ Alternatively, link against a system-provided libvpx.",
         }
         fs::create_dir_all(&build_dir).expect("create libvpx build dir");
 
-        let mut configure_cmd = Command::new(&configure_src_path);
+        // `configure` is a POSIX shell script. On Windows hosts, invoke it via
+        // `sh`/`bash` (as required by libvpx's upstream README).
+        let mut configure_cmd = if host.contains("windows") {
+            let shell = find_windows_posix_shell(&target, &host);
+            let mut cmd = Command::new(shell);
+            cmd.arg(&configure_src_path);
+            cmd
+        } else {
+            Command::new(&configure_src_path)
+        };
         configure_cmd.current_dir(&build_dir);
 
         // Ensure libvpx's configure sees the target-scoped tool variables that Cargo/cc-rs
@@ -315,6 +324,23 @@ fn emit_rerun_if_changed_recursively(src_dir: &Path) {
 fn unsupported(target: &str, host: &str, msg: &str) -> ! {
     println!("cargo:warning=libvpx-sys-bundled: {msg} (target={target}, host={host})");
     panic!("libvpx-sys-bundled: {msg} (target={target}, host={host})");
+}
+
+fn find_windows_posix_shell(target: &str, host: &str) -> String {
+    for candidate in ["sh", "bash"] {
+        match Command::new(candidate).arg("-c").arg("exit 0").status() {
+            Ok(status) if status.success() => return candidate.to_string(),
+            Ok(_) => return candidate.to_string(),
+            Err(_) => {}
+        }
+    }
+
+    unsupported(
+        target,
+        host,
+        "Windows builds of bundled libvpx require a POSIX shell (`sh`/`bash`) in PATH. \
+Install MSYS2 or Cygwin and ensure the shell is available.",
+    );
 }
 
 fn get_scoped_env(var: &str, target_key: &str) -> String {
