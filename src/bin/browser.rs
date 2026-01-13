@@ -226,6 +226,18 @@ fn date_picker_day_a11y_label(year: i32, month: u32, day: u32, selected: bool) -
   }
 }
 
+/// Apply browser-like Shift+wheel semantics (treat vertical wheel deltas as horizontal scrolling).
+#[cfg(any(test, feature = "browser_ui"))]
+fn remap_wheel_delta_for_shift(delta: (f32, f32), shift: bool) -> (f32, f32) {
+  if shift {
+    // Preserve any true horizontal delta (e.g. from a trackpad) while reinterpreting vertical
+    // scrolling as horizontal.
+    (delta.0 + delta.1, 0.0)
+  } else {
+    delta
+  }
+}
+
 #[cfg(any(test, feature = "browser_ui"))]
 fn should_restore_page_focus_for_state(
   address_bar_has_focus: bool,
@@ -2012,7 +2024,9 @@ mod scroll_coalescer_tests {
 #[cfg(test)]
 mod clipboard_limit_tests {
   use super::write_clipboard_update_if_within_limit;
-  use fastrender::ui::protocol_limits::{sanitize_worker_to_ui_clipboard_message, MAX_CLIPBOARD_TEXT_BYTES};
+  use fastrender::ui::protocol_limits::{
+    sanitize_worker_to_ui_clipboard_message, MAX_CLIPBOARD_TEXT_BYTES,
+  };
   use fastrender::ui::{TabId, WorkerToUi};
 
   #[test]
@@ -2049,6 +2063,23 @@ mod clipboard_limit_tests {
     });
     assert!(wrote);
     assert!(called);
+  }
+}
+
+#[cfg(test)]
+mod wheel_delta_shift_mapping_tests {
+  use super::remap_wheel_delta_for_shift;
+
+  #[test]
+  fn shift_wheel_maps_vertical_delta_to_horizontal() {
+    assert_eq!(remap_wheel_delta_for_shift((0.0, 5.0), false), (0.0, 5.0));
+    assert_eq!(remap_wheel_delta_for_shift((0.0, 5.0), true), (5.0, 0.0));
+  }
+
+  #[test]
+  fn shift_wheel_preserves_existing_horizontal_delta() {
+    assert_eq!(remap_wheel_delta_for_shift((3.0, 0.0), true), (3.0, 0.0));
+    assert_eq!(remap_wheel_delta_for_shift((3.0, 7.0), true), (10.0, 0.0));
   }
 }
 #[cfg(feature = "browser_ui")]
@@ -16615,7 +16646,9 @@ add an explicit match arm for new tab-scoped UiToWorker variants to avoid Debug 
               // Ctrl/Cmd+wheel is treated as zoom (handled in `ui::chrome_ui`), so do not forward it
               // to the page scroll pipeline.
               if !modifiers.command {
-                self.wheel_events_buf.push((*unit, *delta));
+                let (dx, dy) =
+                  remap_wheel_delta_for_shift((delta.x, delta.y), modifiers.shift);
+                self.wheel_events_buf.push((*unit, egui::vec2(dx, dy)));
               }
             }
             egui::Event::Paste(text) => {
