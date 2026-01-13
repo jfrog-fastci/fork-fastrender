@@ -218,6 +218,18 @@ cargo test --features browser_ui accesskit
   bar, toolbar buttons, menus).
 - Page content is *not* exposed yet (rendered as a bitmap).
 
+### Inspecting the OS accessibility tree (optional)
+
+Sometimes it’s faster to use an accessibility inspector to confirm what nodes/roles/names are being
+exposed, instead of relying on screen reader speech alone.
+
+- macOS: **Accessibility Inspector** (Xcode → Open Developer Tool → Accessibility Inspector)
+- Windows: **Inspect.exe** (Windows SDK, UI Automation tree)
+- Linux: **Accerciser** (AT-SPI tree)
+
+Note: today these tools will mostly show the browser chrome (egui widgets). The rendered page is a
+bitmap so it won’t expose a rich web content subtree yet.
+
 ### macOS: VoiceOver
 
 1. Enable VoiceOver: `Cmd+F5`.
