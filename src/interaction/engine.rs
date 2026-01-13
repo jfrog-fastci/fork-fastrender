@@ -1712,6 +1712,82 @@ fn is_button(node: &DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
 }
 
+fn is_details(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("details"))
+}
+
+fn is_summary(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("summary"))
+}
+
+/// Returns `Some(details_id)` if `summary_id` is the *details summary* for its parent `<details>`.
+///
+/// A details summary is:
+/// - a `<summary>` element
+/// - whose parent is a `<details>` element
+/// - and which is the *first* `<summary>` element child of that `<details>`.
+fn details_owner_for_summary(index: &DomIndexMut, summary_id: usize) -> Option<usize> {
+  let summary = index.node(summary_id)?;
+  if !is_summary(summary) {
+    return None;
+  }
+
+  let details_id = index.parent.get(summary_id).copied().unwrap_or(0);
+  if details_id == 0 {
+    return None;
+  }
+  if !index.node(details_id).is_some_and(is_details) {
+    return None;
+  }
+
+  // Find the first `<summary>` element child of the `<details>` in DOM order (ignore nested
+  // summaries).
+  for node_id in (details_id + 1)..index.id_to_node.len() {
+    if !is_ancestor_or_self(index, details_id, node_id) {
+      break;
+    }
+    if index.parent.get(node_id).copied().unwrap_or(0) != details_id {
+      continue;
+    }
+    if index.node(node_id).is_some_and(is_summary) {
+      return (node_id == summary_id).then_some(details_id);
+    }
+  }
+
+  None
+}
+
+/// Walk up the ancestor chain (including `start`) to find the nearest details summary.
+///
+/// Returns `(summary_id, details_id)` when found.
+fn nearest_details_summary(index: &DomIndexMut, mut node_id: usize) -> Option<(usize, usize)> {
+  while node_id != 0 {
+    if let Some(details_id) = details_owner_for_summary(index, node_id) {
+      return Some((node_id, details_id));
+    }
+    node_id = index.parent.get(node_id).copied().unwrap_or(0);
+  }
+  None
+}
+
+fn toggle_details_open(index: &mut DomIndexMut, details_id: usize) -> bool {
+  let Some(node_mut) = index.node_mut(details_id) else {
+    return false;
+  };
+  if !is_details(node_mut) {
+    return false;
+  }
+  if node_mut.get_attribute_ref("open").is_some() {
+    remove_node_attr(node_mut, "open")
+  } else {
+    set_node_attr(node_mut, "open", "")
+  }
+}
+
 fn input_type(node: &DomNode) -> &str {
   node
     .get_attribute_ref("type")
@@ -1827,6 +1903,10 @@ fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool
     return true;
   }
 
+  if details_owner_for_summary(index, node_id).is_some() {
+    return true;
+  }
+
   if is_input(node) {
     return !input_type(node).eq_ignore_ascii_case("hidden");
   }
@@ -1910,6 +1990,7 @@ fn tab_stop_tabindex(index: &DomIndexMut, inert: &[bool], node_id: usize) -> Opt
     true
   } else {
     is_focusable_anchor(node)
+      || details_owner_for_summary(index, node_id).is_some()
       || is_input(node)
       || is_textarea(node)
       || is_select(node)
@@ -4873,6 +4954,10 @@ impl InteractionEngine {
     let allow_link_activation = matches!(button, PointerButton::Primary | PointerButton::Middle);
 
     let mut click_target = if click_qualifies { down_semantic } else { None };
+    // `<details>/<summary>`: clicking the "details summary" toggles the parent `<details open>`
+    // attribute. Compute this from the original semantic target before label resolution so summary
+    // clicks inside a `<label>` still toggle.
+    let summary_toggle = click_target.and_then(|id| nearest_details_summary(&index, id));
     if is_primary_button {
       if let Some(target_id) = click_target {
         if index.node(target_id).is_some_and(is_label) {
@@ -4892,6 +4977,13 @@ impl InteractionEngine {
 
     if click_qualifies {
       if let Some(target_id) = click_target {
+        if is_primary_button {
+          if let Some((summary_id, details_id)) = summary_toggle {
+            if !node_or_ancestor_is_inert(&index, summary_id) {
+              dom_changed |= toggle_details_open(&mut index, details_id);
+            }
+          }
+        }
         if node_or_ancestor_is_inert(&index, target_id) {
           // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
         } else if index.node(target_id).is_some_and(is_select) {
@@ -6690,6 +6782,8 @@ impl InteractionEngine {
       KeyAction::Enter => {
         if node_or_ancestor_is_inert(&index, focused) {
           // Inert subtrees are not interactive.
+        } else if let Some(details_id) = details_owner_for_summary(&index, focused) {
+          changed |= toggle_details_open(&mut index, details_id);
         } else if let Some(kind) = index
           .node(focused)
           .and_then(|node| date_time_input_kind(node))
@@ -6841,6 +6935,8 @@ impl InteractionEngine {
       KeyAction::Space | KeyAction::ShiftSpace => {
         if node_or_ancestor_is_inert(&index, focused) {
           // Inert subtrees are not interactive.
+        } else if let Some(details_id) = details_owner_for_summary(&index, focused) {
+          changed |= toggle_details_open(&mut index, details_id);
         } else if let Some(kind) = index
           .node(focused)
           .and_then(|node| date_time_input_kind(node))
@@ -7025,38 +7121,40 @@ impl InteractionEngine {
 
     let mut action = InteractionAction::None;
 
-      match key {
-        KeyAction::Enter => {
-          if node_or_ancestor_is_inert(&index, focused) {
-            // Inert subtrees are not interactive.
-          } else if index.node(focused).is_some_and(is_select) {
-            let mut computed_disabled = false;
-            let control = match box_tree
-              .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
-            {
-              Some((_, control, disabled, _)) => {
-                computed_disabled = disabled;
-                Some(control)
-              }
-              None => select_control_snapshot_from_dom(&index, focused),
-            };
-            if let Some(control) = control {
-              let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
-              if !disabled {
-                let is_dropdown = !control.multiple && control.size == 1;
-                if is_dropdown {
-                  action = InteractionAction::OpenSelectDropdown {
-                    select_node_id: focused,
-                    control,
-                  };
-                }
+    match key {
+      KeyAction::Enter => {
+        if node_or_ancestor_is_inert(&index, focused) {
+          // Inert subtrees are not interactive.
+        } else if let Some(details_id) = details_owner_for_summary(&index, focused) {
+          changed |= toggle_details_open(&mut index, details_id);
+        } else if index.node(focused).is_some_and(is_select) {
+          let mut computed_disabled = false;
+          let control = match box_tree
+            .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
+          {
+            Some((_, control, disabled, _)) => {
+              computed_disabled = disabled;
+              Some(control)
+            }
+            None => select_control_snapshot_from_dom(&index, focused),
+          };
+          if let Some(control) = control {
+            let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
+            if !disabled {
+              let is_dropdown = !control.multiple && control.size == 1;
+              if is_dropdown {
+                action = InteractionAction::OpenSelectDropdown {
+                  select_node_id: focused,
+                  control,
+                };
               }
             }
-          } else if let Some(href) = index
-            .node(focused)
-            .filter(|node| is_anchor_with_href(node))
-            .and_then(|node| node.get_attribute_ref("href"))
-          {
+          }
+        } else if let Some(href) = index
+          .node(focused)
+          .filter(|node| is_anchor_with_href(node))
+          .and_then(|node| node.get_attribute_ref("href"))
+        {
           if let Some(resolved) = resolve_url(base_url, href) {
             if self.state.visited_links.insert(focused) {
               changed = true;
@@ -7151,38 +7249,40 @@ impl InteractionEngine {
             }
           }
         }
-        }
-        KeyAction::Space | KeyAction::ShiftSpace => {
-          if node_or_ancestor_is_inert(&index, focused) {
-            // Inert subtrees are not interactive.
-          } else if index.node(focused).is_some_and(is_select) {
-            let mut computed_disabled = false;
-            let control = match box_tree
-              .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
-            {
-              Some((_, control, disabled, _)) => {
-                computed_disabled = disabled;
-                Some(control)
-              }
-              None => select_control_snapshot_from_dom(&index, focused),
-            };
-            if let Some(control) = control {
-              let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
-              if !disabled {
-                let is_dropdown = !control.multiple && control.size == 1;
-                if is_dropdown {
-                  action = InteractionAction::OpenSelectDropdown {
-                    select_node_id: focused,
-                    control,
-                  };
-                }
+      }
+      KeyAction::Space | KeyAction::ShiftSpace => {
+        if node_or_ancestor_is_inert(&index, focused) {
+          // Inert subtrees are not interactive.
+        } else if let Some(details_id) = details_owner_for_summary(&index, focused) {
+          changed |= toggle_details_open(&mut index, details_id);
+        } else if index.node(focused).is_some_and(is_select) {
+          let mut computed_disabled = false;
+          let control = match box_tree
+            .and_then(|box_tree| select_control_snapshot_from_box_tree(box_tree, focused))
+          {
+            Some((_, control, disabled, _)) => {
+              computed_disabled = disabled;
+              Some(control)
+            }
+            None => select_control_snapshot_from_dom(&index, focused),
+          };
+          if let Some(control) = control {
+            let disabled = is_disabled_or_inert(&index, focused) || computed_disabled;
+            if !disabled {
+              let is_dropdown = !control.multiple && control.size == 1;
+              if is_dropdown {
+                action = InteractionAction::OpenSelectDropdown {
+                  select_node_id: focused,
+                  control,
+                };
               }
             }
-          } else if index.node(focused).is_some_and(is_checkbox_input) {
-            if !node_is_disabled(&index, focused) {
-              if let Some(node_mut) = index.node_mut(focused) {
-                let dom_changed = dom_mutation::toggle_checkbox(node_mut);
-                changed |= dom_changed;
+          }
+        } else if index.node(focused).is_some_and(is_checkbox_input) {
+          if !node_is_disabled(&index, focused) {
+            if let Some(node_mut) = index.node_mut(focused) {
+              let dom_changed = dom_mutation::toggle_checkbox(node_mut);
+              changed |= dom_changed;
               if dom_changed {
                 changed |= self.mark_user_validity(focused);
               }
