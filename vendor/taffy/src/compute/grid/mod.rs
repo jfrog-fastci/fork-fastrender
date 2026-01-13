@@ -1221,12 +1221,15 @@ where
   //
   // Note: virtual items (subgrid descendants mapped into the parent) participate in baseline
   // alignment and must contribute to track sizing.
-  let has_align_self_baseline_item = items
-    .iter()
-    .any(|item| item.align_self == AlignSelf::Baseline);
-  let has_justify_self_baseline_item = items
-    .iter()
-    .any(|item| item.justify_self == AlignSelf::Baseline);
+  let mut has_align_self_baseline_item = false;
+  let mut has_justify_self_baseline_item = false;
+  for item in items.iter() {
+    has_align_self_baseline_item |= item.align_self == AlignSelf::Baseline;
+    has_justify_self_baseline_item |= item.justify_self == AlignSelf::Baseline;
+    if has_align_self_baseline_item && has_justify_self_baseline_item {
+      break;
+    }
+  }
 
   // Baseline shims affect intrinsic size contributions via margins. `justify-self: baseline`
   // requires horizontal baseline information (`first_baselines.x`) which is only available once
