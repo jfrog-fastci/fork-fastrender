@@ -102,14 +102,14 @@ impl SourceText {
     if line_count <= Self::MAX_LINE_STARTS {
       let mut line_starts: Vec<u32> = Vec::new();
       if line_starts.try_reserve_exact(line_count).is_err() {
-        // If we can't even allocate a small bounded line-start table, fall back to a minimal table
-        // that still keeps `line_col` correct (but potentially slower on multi-line sources).
-        line_starts.push(0u32);
+        // If we can't even allocate a small bounded line-start table, fall back to an empty table.
+        // Correctness comes from scanning in `line_col`; keep `stride != 1` for multi-line sources
+        // so scanning is enabled.
         let stride = if newline_count == 0 { 1 } else { 2 };
         return Self {
           name,
           text,
-          line_starts,
+          line_starts: Vec::new(),
           line_start_stride: stride,
           external_memory: None,
         };
@@ -144,11 +144,10 @@ impl SourceText {
     let mut line_starts: Vec<u32> = Vec::new();
     if line_starts.try_reserve_exact(Self::MAX_LINE_STARTS).is_err() {
       // Fall back to a minimal table; correctness comes from scanning in `line_col`.
-      line_starts.push(0u32);
       return Self {
         name,
         text,
-        line_starts,
+        line_starts: Vec::new(),
         line_start_stride: 2,
         external_memory: None,
       };
@@ -537,5 +536,21 @@ mod oom_tests {
     let _guard = FailAllocsGuard::new();
     let err = SourceText::new_charged(&mut heap, name, text).expect_err("expected OOM");
     assert!(matches!(err, VmError::OutOfMemory));
+  }
+
+  #[test]
+  fn source_text_new_falls_back_to_empty_line_table_on_alloc_failure() {
+    // Pre-allocate name/text so the only allocation attempt inside `SourceText::new` is the bounded
+    // line-start table.
+    let name: Arc<str> = Arc::from("<inline>");
+    let text: Arc<str> = Arc::from("a\nb\nc");
+
+    let _guard = FailAllocsGuard::new();
+    let source = SourceText::new(name, text);
+
+    // Even with an empty line-start table, `line_col` must remain correct via scanning.
+    assert_eq!(source.line_col(0), (1, 1));
+    assert_eq!(source.line_col(2), (2, 1));
+    assert_eq!(source.line_col(4), (3, 1));
   }
 }
