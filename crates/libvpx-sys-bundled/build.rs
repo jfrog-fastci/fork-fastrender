@@ -7,9 +7,8 @@ use std::{collections::hash_map::DefaultHasher, path::Path};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // The libvpx sources are vendored, so changes are rare, but if they do happen we should
-    // rebuild.
-    println!("cargo:rerun-if-changed=upstream/libvpx/configure");
+    // The libvpx sources are vendored. Re-run if anything in the vendored tree changes.
+    println!("cargo:rerun-if-changed=upstream/libvpx");
     // Re-run if the toolchain environment changes. These vars are honored by libvpx's configure
     // script and affect the produced `libvpx.a`.
     println!("cargo:rerun-if-env-changed=CC");
@@ -60,9 +59,9 @@ fn main() {
     let cc = env::var("CC").unwrap_or_default();
     let cflags = env::var("CFLAGS").unwrap_or_default();
     let ar = env::var("AR").unwrap_or_default();
-    let configure_src_hash = hash_file_contents(&configure_src_path);
+    let source_tree_hash = hash_dir_contents(&src_dir);
     let build_fingerprint = format!(
-        "target={target}\ncc={cc}\ncflags={cflags}\nar={ar}\nlibvpx_configure_hash={configure_src_hash}\nconfigure_args={}\n",
+        "target={target}\ncc={cc}\ncflags={cflags}\nar={ar}\nlibvpx_source_tree_hash={source_tree_hash}\nconfigure_args={}\n",
         configure_args.join(" ")
     );
 
@@ -117,9 +116,34 @@ fn run(mut cmd: Command, desc: &str) {
     }
 }
 
-fn hash_file_contents(path: &Path) -> u64 {
-    let bytes = fs::read(path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+fn hash_dir_contents(root: &Path) -> u64 {
+    // Hash all files in the directory recursively, in a stable path order, to produce a
+    // deterministic fingerprint of the vendored libvpx sources.
+    let mut paths = Vec::new();
+    collect_files(root, root, &mut paths);
+    paths.sort();
+
     let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
+    for rel_path in paths {
+        rel_path.hash(&mut hasher);
+        let abs = root.join(&rel_path);
+        let bytes = fs::read(&abs).unwrap_or_else(|e| panic!("failed to read {}: {e}", abs.display()));
+        bytes.hash(&mut hasher);
+    }
     hasher.finish()
+}
+
+fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("failed to read dir {}: {e}", dir.display()));
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|e| panic!("failed to read dir entry under {}: {e}", dir.display()));
+        let path = entry.path();
+        let ty = entry.file_type().unwrap_or_else(|e| panic!("failed to get file type for {}: {e}", path.display()));
+        if ty.is_dir() {
+            collect_files(root, &path, out);
+        } else if ty.is_file() {
+            let rel = path.strip_prefix(root).expect("strip_prefix").to_path_buf();
+            out.push(rel);
+        }
+    }
 }
