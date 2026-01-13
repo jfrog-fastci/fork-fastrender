@@ -392,7 +392,9 @@ fn video_controls_consume_space_and_arrow_keys() {
             }
             #marker { width: 200px; height: 20px; background: rgb(255, 0, 0); }
             video:focus + #marker { background: rgb(0, 255, 0); }
-            #spacer { height: 5000px; }
+            /* Make the page horizontally scrollable as well so ArrowLeft/ArrowRight fallback
+               scrolling would be observable if it were incorrectly triggered. */
+            #spacer { height: 5000px; width: 2000px; }
           </style>
         </head>
         <body>
@@ -431,6 +433,24 @@ fn video_controls_consume_space_and_arrow_keys() {
 
   // Ensure any follow-up paint/scroll messages from focusing are drained before the scroll-key
   // assertions below.
+  let _ = drain_for(&rx, Duration::from_millis(200));
+
+  // Scroll the viewport horizontally so ArrowLeft can be tested as well (ArrowLeft at x=0 would
+  // clamp and appear as a no-op even if fallback scrolling were incorrectly triggered).
+  tx.send(scroll_msg(tab_id, (80.0, 0.0), None)).unwrap();
+  let baseline_viewport = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::FrameReady { frame, .. } if frame.scroll_state.viewport.x > baseline_viewport.x + 1.0
+    )
+  })
+  .and_then(|msg| match msg {
+    WorkerToUi::FrameReady { frame, .. } => Some(frame.scroll_state.viewport),
+    _ => None,
+  })
+  .expect("timed out waiting for horizontal scroll baseline");
+
+  // Drain any messages produced by the baseline scroll.
   let _ = drain_for(&rx, Duration::from_millis(200));
 
   let assert_no_viewport_scroll_change = |msgs: &[WorkerToUi]| {
@@ -474,6 +494,24 @@ fn video_controls_consume_space_and_arrow_keys() {
   tx.send(key_action(
     tab_id,
     fastrender::interaction::KeyAction::ArrowDown,
+  ))
+  .unwrap();
+  let msgs = drain_for(&rx, Duration::from_secs(1));
+  assert_no_viewport_scroll_change(&msgs);
+
+  // ArrowRight/ArrowLeft should also be consumed by video controls (and must not trigger horizontal
+  // fallback scrolling).
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ArrowRight,
+  ))
+  .unwrap();
+  let msgs = drain_for(&rx, Duration::from_secs(1));
+  assert_no_viewport_scroll_change(&msgs);
+
+  tx.send(key_action(
+    tab_id,
+    fastrender::interaction::KeyAction::ArrowLeft,
   ))
   .unwrap();
   let msgs = drain_for(&rx, Duration::from_secs(1));
