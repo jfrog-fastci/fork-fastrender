@@ -182,6 +182,11 @@ Not all builds implement all of these toggles yet; unsupported values are expect
   - Useful when debugging interactive resize performance (should configure at most once per rendered frame).
 - `FASTR_BROWSER_SHOW_MENU_BAR=0|1` – override whether the in-window menu bar is shown.
   - When set, this takes precedence over the persisted session setting (useful for CI).
+- `FASTR_BROWSER_RENDERER_CHROME=0|1` – experimental: render the browser chrome UI using FastRender
+  (“renderer-chrome”) instead of egui.
+  - This is a work-in-progress under [`instructions/renderer_chrome.md`](../instructions/renderer_chrome.md).
+  - When enabled, the browser uses a custom `accesskit_winit::Adapter` path instead of egui’s
+    built-in AccessKit integration. See [chrome_accessibility.md](chrome_accessibility.md).
 
 ### Browser session file (tabs / zoom persistence)
 
