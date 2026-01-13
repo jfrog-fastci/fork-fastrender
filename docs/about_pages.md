@@ -6,6 +6,12 @@ FastRender’s desktop `browser` binary exposes a small set of built-in, **offli
 These pages are implemented in [`src/ui/about_pages.rs`](../src/ui/about_pages.rs) and rendered
 through the normal UI worker pipeline (they are **not** `chrome://` renderer-chrome pages).
 
+Implementation note: the HTML for these pages loads a shared stylesheet from
+[`chrome://styles/about.css`](../src/ui/about_pages.rs). This is a **small allowlisted** `chrome://`
+asset that is only permitted when the initiating document is an `about:` page (see
+[`src/ui/about_pages_fetcher.rs`](../src/ui/about_pages_fetcher.rs)). Untrusted web pages must not be
+able to fetch arbitrary `chrome://...` resources.
+
 If you add/remove an internal page, keep this document consistent with the `ABOUT_*` constants and
 `ABOUT_PAGE_URLS` in `src/ui/about_pages.rs`.
 

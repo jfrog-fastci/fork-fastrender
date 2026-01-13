@@ -53,8 +53,18 @@ schemes” rule, which will also reject `chrome://` and `chrome-action:`:
   (persistent `localStorage`), while treating `about:`/`data:`/`file:` as opaque:
   [`src/js/web_storage.rs`](../src/js/web_storage.rs) (`origin_key_from_document_url`).
 
-**Invariant:** The content renderer must treat `chrome://…` and `chrome-action:…` as unsupported
-schemes (no navigation, no fetch, no side effects).
+**Invariant (untrusted content):** Untrusted web content must treat `chrome://…` and
+`chrome-action:…` as unsupported schemes (no navigation, no fetch, no side effects).
+
+**Important exception (internal `about:` pages):** The UI worker installs an origin-gated fetcher
+(`AboutPagesCompositeFetcher` in [`src/ui/about_pages_fetcher.rs`](../src/ui/about_pages_fetcher.rs))
+that allows `about:` pages to load a small allowlisted set of shared `chrome://` assets. Today this
+is used for the shared `about:` page stylesheet:
+
+- `chrome://styles/about.css` (see `ABOUT_SHARED_CSS_URL` in [`src/ui/about_pages.rs`](../src/ui/about_pages.rs))
+
+This does **not** mean `chrome://` is generally enabled for untrusted documents: non-`about:`
+origins are rejected, and unknown `chrome://` assets fail closed.
 
 **Do not** “fix” `chrome://` support by adding `chrome` to the global allowlists above. If/when
 `chrome://` is implemented, it must be enabled only inside the trusted chrome renderer context.
@@ -89,7 +99,12 @@ Only in the **trusted browser-process chrome renderer**.
 It must **not** be enabled for:
 - web page navigations (typed URL, link clicks, redirects),
 - subresource fetching in untrusted documents (`<img>`, `<link>`, `fetch()`, etc),
-- `about:` pages as currently implemented (they are rendered through the untrusted worker pipeline).
+- navigations to `chrome://...` (even from internal pages; `chrome://` is not a user-facing URL scheme).
+
+Current implementation note: internal `about:` pages are allowed to load a small allowlisted subset
+of `chrome://` assets (currently just the shared stylesheet `chrome://styles/about.css`). This is
+enforced by origin checks in `AboutPagesCompositeFetcher` and is intended purely for offline UI
+styling, not for general `chrome://` support.
 
 ### Resolution model
 
