@@ -1,5 +1,6 @@
+use crate::dom2::RendererDomMapping;
 use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
-use crate::interaction::state::DocumentSelectionState;
+use crate::interaction::state::{DocumentSelectionState, DocumentSelectionStateDom2};
 use crate::style::computed::Visibility;
 use crate::style::types::UserSelect;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType};
@@ -78,7 +79,11 @@ fn text_fragment_span(
   let node_len = boundaries.len().saturating_sub(1);
   let start = char_idx_for_byte(boundaries, source_range.start());
   let end = char_idx_for_byte(boundaries, source_range.end());
-  let (frag_start, frag_end) = if start <= end { (start, end) } else { (end, start) };
+  let (frag_start, frag_end) = if start <= end {
+    (start, end)
+  } else {
+    (end, start)
+  };
 
   Some(TextFragmentSpan {
     node_id,
@@ -297,3 +302,16 @@ pub(crate) fn apply_document_selection_to_fragment_tree(
   }
 }
 
+/// Apply a `dom2`-stable document selection onto a fragment tree for paint-time highlighting.
+///
+/// This projects the selection into renderer preorder space using `mapping`, then reuses the legacy
+/// selection application logic.
+pub(crate) fn apply_document_selection_to_fragment_tree_dom2(
+  box_tree: &BoxTree,
+  fragment_tree: &mut FragmentTree,
+  mapping: &RendererDomMapping,
+  selection: Option<&DocumentSelectionStateDom2>,
+) {
+  let projected = selection.map(|sel| sel.project_to_preorder(mapping));
+  apply_document_selection_to_fragment_tree(box_tree, fragment_tree, projected.as_ref());
+}

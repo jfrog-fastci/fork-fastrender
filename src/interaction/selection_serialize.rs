@@ -1,3 +1,5 @@
+use crate::dom2;
+use crate::dom2::RendererDomMapping;
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
 use crate::style::types::UserSelect;
@@ -6,6 +8,7 @@ use crate::style::types::WritingMode;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType, MarkerContent};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashSet;
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 /// A document text selection, used for serializing clipboard text.
@@ -35,11 +38,64 @@ pub struct DocumentSelectionPoint {
   pub char_offset: usize,
 }
 
+/// A `dom2`-stable selection endpoint.
+///
+/// `dom2::NodeId` indices are stable across DOM mutations, but they are **not** ordered by DOM
+/// position. Use [`cmp_point_dom2`] (via the current [`RendererDomMapping`]) to compare points in
+/// DOM order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DocumentSelectionPointDom2 {
+  pub node_id: dom2::NodeId,
+  pub char_offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DocumentSelectionRangeDom2 {
+  pub start: DocumentSelectionPointDom2,
+  pub end: DocumentSelectionPointDom2,
+}
+
+/// Compare two `dom2` selection points in *DOM order* using the current renderer preorder mapping.
+///
+/// This is required because `dom2::NodeId::index()` is stable but does not reflect DOM order after
+/// mutations (inserts, moves, etc).
+pub(crate) fn cmp_point_dom2(
+  a: DocumentSelectionPointDom2,
+  b: DocumentSelectionPointDom2,
+  mapping: &RendererDomMapping,
+) -> Ordering {
+  match (
+    mapping.preorder_for_node_id(a.node_id),
+    mapping.preorder_for_node_id(b.node_id),
+  ) {
+    (Some(a_pre), Some(b_pre)) => a_pre
+      .cmp(&b_pre)
+      .then_with(|| a.char_offset.cmp(&b.char_offset)),
+    (Some(_), None) => Ordering::Less,
+    (None, Some(_)) => Ordering::Greater,
+    // Deterministic fallback for detached/unmapped nodes.
+    (None, None) => a
+      .node_id
+      .index()
+      .cmp(&b.node_id.index())
+      .then_with(|| a.char_offset.cmp(&b.char_offset)),
+  }
+}
+
 impl DocumentSelectionRange {
   pub fn normalized(mut self) -> Self {
     if self.start.node_id > self.end.node_id
       || (self.start.node_id == self.end.node_id && self.start.char_offset > self.end.char_offset)
     {
+      std::mem::swap(&mut self.start, &mut self.end);
+    }
+    self
+  }
+}
+
+impl DocumentSelectionRangeDom2 {
+  pub fn normalized(mut self, mapping: &RendererDomMapping) -> Self {
+    if cmp_point_dom2(self.start, self.end, mapping) == Ordering::Greater {
       std::mem::swap(&mut self.start, &mut self.end);
     }
     self

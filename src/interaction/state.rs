@@ -1,6 +1,9 @@
-use crate::text::caret::CaretAffinity;
-use crate::interaction::selection_serialize::{DocumentSelectionPoint, DocumentSelectionRange};
 use crate::dom2::{NodeId, RendererDomMapping};
+use crate::interaction::selection_serialize::{
+  cmp_point_dom2, DocumentSelectionPoint, DocumentSelectionPointDom2, DocumentSelectionRange,
+  DocumentSelectionRangeDom2,
+};
+use crate::text::caret::CaretAffinity;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
 use std::path::PathBuf;
@@ -85,6 +88,95 @@ impl DocumentSelectionState {
   }
 }
 
+/// Document selection state backed by `dom2::NodeId` endpoints.
+///
+/// `dom2::NodeId` values are stable across DOM mutations, but their numeric indices do not reflect
+/// DOM order. Any logic that compares endpoints must use the current renderer preorder mapping.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DocumentSelectionStateDom2 {
+  /// The entire rendered document (excluding non-selectable/hidden content).
+  All,
+  /// One or more explicit selection ranges.
+  Ranges(DocumentSelectionRangesDom2),
+}
+
+impl DocumentSelectionStateDom2 {
+  /// Returns true when this selection contains at least one non-collapsed range.
+  pub fn has_highlight(&self) -> bool {
+    match self {
+      Self::All => true,
+      Self::Ranges(ranges) => ranges.has_highlight(),
+    }
+  }
+
+  /// Project this `dom2` selection into renderer preorder space (legacy selection representation).
+  ///
+  /// This keeps selection endpoints stable across DOM mutations while still allowing downstream
+  /// systems (layout/paint/fragment highlighting) to operate on preorder ids.
+  pub fn project_to_preorder(&self, mapping: &RendererDomMapping) -> DocumentSelectionState {
+    fn project_point(
+      point: DocumentSelectionPointDom2,
+      mapping: &RendererDomMapping,
+    ) -> Option<DocumentSelectionPoint> {
+      mapping
+        .preorder_for_node_id(point.node_id)
+        .map(|node_id| DocumentSelectionPoint {
+          node_id,
+          char_offset: point.char_offset,
+        })
+    }
+
+    fn project_range(
+      range: DocumentSelectionRangeDom2,
+      mapping: &RendererDomMapping,
+    ) -> Option<DocumentSelectionRange> {
+      Some(DocumentSelectionRange {
+        start: project_point(range.start, mapping)?,
+        end: project_point(range.end, mapping)?,
+      })
+    }
+
+    match self {
+      DocumentSelectionStateDom2::All => DocumentSelectionState::All,
+      DocumentSelectionStateDom2::Ranges(ranges) => {
+        let mut projected_ranges: Vec<DocumentSelectionRange> = ranges
+          .ranges
+          .iter()
+          .copied()
+          .filter_map(|r| project_range(r, mapping))
+          .collect();
+
+        let mut anchor = project_point(ranges.anchor, mapping);
+        let mut focus = project_point(ranges.focus, mapping);
+
+        if anchor.is_none() || focus.is_none() {
+          // Fallback to the first projected range when the anchor/focus endpoints are no longer
+          // mappable (e.g. detached nodes).
+          if let Some(first) = projected_ranges.first().copied() {
+            anchor = Some(first.start);
+            focus = Some(first.end);
+          }
+        }
+
+        let mut projected = DocumentSelectionRanges {
+          ranges: std::mem::take(&mut projected_ranges),
+          primary: ranges.primary,
+          anchor: anchor.unwrap_or(DocumentSelectionPoint {
+            node_id: 0,
+            char_offset: 0,
+          }),
+          focus: focus.unwrap_or(DocumentSelectionPoint {
+            node_id: 0,
+            char_offset: 0,
+          }),
+        };
+        projected.normalize();
+        DocumentSelectionState::Ranges(projected)
+      }
+    }
+  }
+}
+
 /// A multi-range document selection.
 ///
 /// Ranges are expected to be:
@@ -116,10 +208,7 @@ impl DocumentSelectionRanges {
   }
 
   pub fn has_highlight(&self) -> bool {
-    self
-      .ranges
-      .iter()
-      .any(|r| r.start != r.end)
+    self.ranges.iter().any(|r| r.start != r.end)
   }
 
   fn cmp_point(a: DocumentSelectionPoint, b: DocumentSelectionPoint) -> Ordering {
@@ -128,10 +217,7 @@ impl DocumentSelectionRanges {
       .then_with(|| a.char_offset.cmp(&b.char_offset))
   }
 
-  fn range_contains_range(
-    outer: &DocumentSelectionRange,
-    inner: &DocumentSelectionRange,
-  ) -> bool {
+  fn range_contains_range(outer: &DocumentSelectionRange, inner: &DocumentSelectionRange) -> bool {
     Self::cmp_point(outer.start, inner.start) != Ordering::Greater
       && Self::cmp_point(outer.end, inner.end) != Ordering::Less
   }
@@ -187,6 +273,129 @@ impl DocumentSelectionRanges {
       self.anchor = primary.start;
       self.focus = primary.end;
     }
+  }
+}
+
+/// A `dom2` multi-range document selection.
+///
+/// Ranges are expected to be:
+/// - normalized (`start <= end` in DOM order),
+/// - ordered by DOM position, and
+/// - non-overlapping (adjacent/overlapping ranges are merged).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DocumentSelectionRangesDom2 {
+  pub ranges: Vec<DocumentSelectionRangeDom2>,
+  /// Index into `ranges` representing the primary range for caret/extension semantics.
+  pub primary: usize,
+  /// Fixed anchor point for extending the primary range.
+  pub anchor: DocumentSelectionPointDom2,
+  /// Moving focus point for extending the primary range.
+  pub focus: DocumentSelectionPointDom2,
+}
+
+impl DocumentSelectionRangesDom2 {
+  pub fn collapsed(point: DocumentSelectionPointDom2) -> Self {
+    Self {
+      ranges: vec![DocumentSelectionRangeDom2 {
+        start: point,
+        end: point,
+      }],
+      primary: 0,
+      anchor: point,
+      focus: point,
+    }
+  }
+
+  pub fn has_highlight(&self) -> bool {
+    self.ranges.iter().any(|r| r.start != r.end)
+  }
+
+  fn range_contains_range(
+    outer: &DocumentSelectionRangeDom2,
+    inner: &DocumentSelectionRangeDom2,
+    mapping: &RendererDomMapping,
+  ) -> bool {
+    cmp_point_dom2(outer.start, inner.start, mapping) != Ordering::Greater
+      && cmp_point_dom2(outer.end, inner.end, mapping) != Ordering::Less
+  }
+
+  /// Ensure `ranges` are normalized, sorted, and non-overlapping (merging overlap/adjacency).
+  ///
+  /// Also repairs `primary` to point at the range containing the current anchor/focus span.
+  pub fn normalize(&mut self, mapping: &RendererDomMapping) {
+    if self.ranges.is_empty() {
+      self.primary = 0;
+      return;
+    }
+
+    for range in &mut self.ranges {
+      *range = range.normalized(mapping);
+    }
+
+    self.ranges.sort_by(|a, b| {
+      cmp_point_dom2(a.start, b.start, mapping).then_with(|| cmp_point_dom2(a.end, b.end, mapping))
+    });
+
+    let mut merged: Vec<DocumentSelectionRangeDom2> = Vec::with_capacity(self.ranges.len());
+    for range in self.ranges.drain(..) {
+      if let Some(last) = merged.last_mut() {
+        // Merge when overlapping or adjacent.
+        if cmp_point_dom2(range.start, last.end, mapping) != Ordering::Greater {
+          if cmp_point_dom2(range.end, last.end, mapping) == Ordering::Greater {
+            last.end = range.end;
+          }
+          continue;
+        }
+      }
+      merged.push(range);
+    }
+    self.ranges = merged;
+
+    // Repair primary index based on the current anchor/focus span.
+    let primary_span = DocumentSelectionRangeDom2 {
+      start: self.anchor,
+      end: self.focus,
+    }
+    .normalized(mapping);
+    if let Some(idx) = self
+      .ranges
+      .iter()
+      .position(|r| Self::range_contains_range(r, &primary_span, mapping))
+    {
+      self.primary = idx;
+    } else {
+      // Fallback: clamp primary into bounds and update anchor/focus to match.
+      self.primary = self.primary.min(self.ranges.len().saturating_sub(1));
+      let primary = self.ranges[self.primary];
+      self.anchor = primary.start;
+      self.focus = primary.end;
+    }
+  }
+}
+
+/// Returns true when `point` lies within any *non-collapsed* range in the selection.
+///
+/// This mirrors the legacy `document_selection_contains_point` helper in `interaction::engine`, but
+/// operates on `dom2::NodeId` endpoints and uses the current preorder mapping for ordering.
+pub(crate) fn document_selection_contains_point_dom2(
+  selection: &DocumentSelectionStateDom2,
+  point: DocumentSelectionPointDom2,
+  mapping: &RendererDomMapping,
+) -> bool {
+  match selection {
+    DocumentSelectionStateDom2::All => true,
+    DocumentSelectionStateDom2::Ranges(ranges) => ranges.ranges.iter().any(|range| {
+      // Collapsed ranges represent a caret without any selected text; starting a drag-drop from such
+      // a point would be surprising when other ranges in the selection are highlighted.
+      if range.start == range.end {
+        return false;
+      }
+      let range = range.normalized(mapping);
+      // Allow starting a drag at either boundary. This is more forgiving than the half-open
+      // selection model and better matches typical "click anywhere on the highlight" UX.
+      cmp_point_dom2(range.start, point, mapping) != Ordering::Greater
+        && cmp_point_dom2(point, range.end, mapping) != Ordering::Greater
+    }),
   }
 }
 
@@ -320,7 +529,9 @@ impl InteractionState {
   pub(crate) fn mutate_active_chain(&mut self, f: impl FnOnce(&mut Vec<usize>)) {
     f(&mut self.active_chain);
     self.active_chain_membership.clear();
-    self.active_chain_membership.reserve(self.active_chain.len());
+    self
+      .active_chain_membership
+      .reserve(self.active_chain.len());
     for &id in &self.active_chain {
       self.active_chain_membership.insert(id);
     }
@@ -532,6 +743,8 @@ pub struct InteractionStateDom2 {
   pub text_edit: Option<TextEditPaintStateDom2>,
   /// Live form state for value-bearing and toggleable controls.
   pub form_state: FormStateDom2,
+  /// Current document (non-form-control) selection.
+  pub document_selection: Option<DocumentSelectionStateDom2>,
   /// Node ids (controls/forms) that have flipped HTML "user validity" from false to true.
   pub user_validity: FxHashSet<NodeId>,
 }
@@ -609,6 +822,11 @@ impl InteractionStateDom2 {
       })
     });
 
+    let document_selection = self
+      .document_selection
+      .as_ref()
+      .map(|sel| sel.project_to_preorder(mapping));
+
     let mut projected = InteractionState::default();
     projected.focused = focused_preorder;
     projected.focus_visible = self.focus_visible && focused_preorder.is_some();
@@ -619,10 +837,89 @@ impl InteractionStateDom2 {
     projected.ime_preedit = ime_preedit;
     projected.text_edit = text_edit;
     projected.form_state = self.form_state.project_to_preorder(mapping);
-    // Document selection state is currently tracked by the preorder-id based interaction engine.
-    // Porting it to stable node ids is out of scope for this initial projection layer.
-    projected.document_selection = None;
+    projected.document_selection = document_selection;
     projected.user_validity = user_validity;
     projected
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn document_selection_dom2_projection_tracks_preorder_after_sibling_insertion() {
+    let mut doc =
+      crate::dom2::parse_html("<!doctype html><html><body><div id=a>hello</div></body></html>")
+        .expect("parse html");
+
+    let div = doc.get_element_by_id("a").expect("div");
+    let text = doc.node(div).children[0];
+
+    let start = DocumentSelectionPointDom2 {
+      node_id: text,
+      char_offset: 1,
+    };
+    let end = DocumentSelectionPointDom2 {
+      node_id: text,
+      char_offset: 4,
+    };
+
+    let selection = DocumentSelectionStateDom2::Ranges(DocumentSelectionRangesDom2 {
+      ranges: vec![DocumentSelectionRangeDom2 { start, end }],
+      primary: 0,
+      anchor: start,
+      focus: end,
+    });
+
+    let initial_mapping = doc.to_renderer_dom_with_mapping().mapping;
+    let initial_preorder = initial_mapping
+      .preorder_for_node_id(text)
+      .expect("text node preorder");
+
+    // Insert a new earlier sibling (before the selected text node).
+    let new_text = doc.create_text("X");
+    assert!(
+      doc
+        .insert_before(div, new_text, Some(text))
+        .expect("insert before"),
+      "expected insertion to report a change"
+    );
+
+    let updated_mapping = doc.to_renderer_dom_with_mapping().mapping;
+    let inserted_preorder = updated_mapping
+      .preorder_for_node_id(new_text)
+      .expect("inserted node preorder");
+    let updated_preorder = updated_mapping
+      .preorder_for_node_id(text)
+      .expect("text node preorder after insertion");
+
+    assert_eq!(
+      inserted_preorder, initial_preorder,
+      "inserting a new sibling before the selected text node should take its old preorder id"
+    );
+    assert_eq!(
+      updated_preorder,
+      initial_preorder.saturating_add(1),
+      "the selected text node should shift forward by one preorder position"
+    );
+
+    let projected = selection.project_to_preorder(&updated_mapping);
+    let DocumentSelectionState::Ranges(projected) = projected else {
+      panic!("expected projected selection to be a range");
+    };
+    assert_eq!(projected.ranges.len(), 1);
+    let projected_range = projected.ranges[0];
+
+    assert_eq!(projected_range.start.node_id, updated_preorder);
+    assert_eq!(projected_range.end.node_id, updated_preorder);
+    assert_eq!(projected_range.start.char_offset, 1);
+    assert_eq!(projected_range.end.char_offset, 4);
+
+    assert_eq!(
+      updated_mapping.node_id_for_preorder(projected_range.start.node_id),
+      Some(text),
+      "projected preorder endpoints should still map back to the same logical dom2 node"
+    );
   }
 }
