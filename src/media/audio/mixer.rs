@@ -218,8 +218,9 @@ fn apply_signed_offset_frames(base_frame: u64, offset_ns: i64, sample_rate: u32)
 mod tests {
   use super::*;
   use crate::media::audio::{test_signal, AudioStreamConfig, TimedAudioSegment};
-  use std::sync::atomic::AtomicU64;
+  use crate::media::audio_clock::InterpolatedAudioClock;
   use std::sync::Arc;
+  use std::time::Instant;
 
   fn seg(start_ms: u64, samples: &[f32], sample_rate: u32) -> TimedAudioSegment {
     TimedAudioSegment {
@@ -317,10 +318,10 @@ mod tests {
       .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0], 10))
       .unwrap();
 
-    let frames_played = Arc::new(AtomicU64::new(4));
+    let inner_clock = Arc::new(InterpolatedAudioClock::new(10));
+    inner_clock.on_callback_end_at(Instant::now(), 4, None);
     let clock = AudioClock::OutputFrames {
-      frames_played,
-      sample_rate_hz: 10,
+      clock: inner_clock,
     };
     let output_info = AudioOutputInfo {
       config: AudioStreamConfig::new(10, 1),
@@ -352,10 +353,10 @@ mod tests {
       .push_segment(seg(0, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 10))
       .unwrap();
 
-    let frames_played = Arc::new(AtomicU64::new(4));
+    let inner_clock = Arc::new(InterpolatedAudioClock::new(10));
+    inner_clock.on_callback_end_at(Instant::now(), 4, None);
     let clock = AudioClock::OutputFrames {
-      frames_played,
-      sample_rate_hz: 10,
+      clock: inner_clock,
     };
 
     let mut out = vec![0.0; 2];

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread;
 
@@ -10,6 +10,7 @@ use parking_lot::{Condvar, Mutex, RwLock};
 
 use super::convert::{sanitize_mix_sample, sanitize_sample};
 use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
+use crate::media::audio_clock::InterpolatedAudioClock;
 
 /// An audio backend that mixes sinks and writes the resulting PCM stream into a `.wav` file.
 ///
@@ -18,7 +19,7 @@ use super::{AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
 pub struct WavAudioBackend {
   config: AudioStreamConfig,
   mixer: Arc<MixerState>,
-  frames_played: Arc<AtomicU64>,
+  clock: Arc<InterpolatedAudioClock>,
   state: Arc<BackendState>,
   worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -50,23 +51,23 @@ impl WavAudioBackend {
     let writer = hound::WavWriter::new(BufWriter::new(file), spec)
       .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
 
-    let frames_played = Arc::new(AtomicU64::new(0));
     let mixer = Arc::new(MixerState::new(config));
+    let clock = Arc::new(InterpolatedAudioClock::new(config.sample_rate_hz.max(1)));
     let state = Arc::new(BackendState::new());
 
     let worker_state = Arc::clone(&state);
     let worker_mixer = Arc::clone(&mixer);
-    let worker_frames = Arc::clone(&frames_played);
+    let worker_clock = Arc::clone(&clock);
 
     let handle = thread::Builder::new()
       .name("wav-audio-backend".to_string())
-      .spawn(move || run_mix_loop(writer, worker_mixer, worker_frames, channels, worker_state))
+      .spawn(move || run_mix_loop(writer, worker_mixer, worker_clock, channels, worker_state))
       .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
 
     Ok(Self {
       config,
       mixer,
-      frames_played,
+      clock,
       state,
       worker: Mutex::new(Some(handle)),
     })
@@ -80,8 +81,7 @@ impl AudioBackend for WavAudioBackend {
 
   fn clock(&self) -> AudioClock {
     AudioClock::OutputFrames {
-      frames_played: self.frames_played.clone(),
-      sample_rate_hz: self.config.sample_rate_hz,
+      clock: self.clock.clone(),
     }
   }
 
@@ -306,7 +306,7 @@ const CHUNK_FRAMES: usize = 1024;
 fn run_mix_loop(
   mut writer: hound::WavWriter<BufWriter<File>>,
   mixer: Arc<MixerState>,
-  frames_played: Arc<AtomicU64>,
+  clock: Arc<InterpolatedAudioClock>,
   channels: u16,
   state: Arc<BackendState>,
 ) {
@@ -355,7 +355,8 @@ fn run_mix_loop(
     }
 
     let frames = (to_write / channels as usize) as u64;
-    frames_played.fetch_add(frames, Ordering::Relaxed);
+    let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
+    clock.on_callback_end(frames_u32);
   }
 
   let _ = writer.finalize();
