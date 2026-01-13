@@ -2145,18 +2145,22 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
     return;
   }
 
-  // Keep the socket responsive to shutdown by using a small read timeout.
+  // Keep the socket responsive to shutdown by using small I/O timeouts.
   //
   // NOTE: This is best-effort. For TLS streams we still attempt to apply the timeout to the
   // underlying TCP socket when accessible.
   match socket.get_ref() {
     tungstenite::stream::MaybeTlsStream::Plain(stream) => {
       let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+      let _ = stream.set_write_timeout(Some(Duration::from_millis(50)));
     }
     tungstenite::stream::MaybeTlsStream::Rustls(stream) => {
       let _ = stream
         .get_ref()
         .set_read_timeout(Some(Duration::from_millis(50)));
+      let _ = stream
+        .get_ref()
+        .set_write_timeout(Some(Duration::from_millis(50)));
     }
     #[allow(unreachable_patterns)]
     _ => {}
