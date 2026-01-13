@@ -9,6 +9,7 @@ use crate::paint::rasterize::fill_rect;
 use crate::scroll::ScrollState;
 use crate::style::color::Rgba;
 use crate::ui::about_pages;
+use crate::ui::clipboard;
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, ScrollMetrics, TabId, UiToWorker, WorkerToUi,
@@ -986,9 +987,10 @@ impl BrowserTabController {
         false
       });
     }
-    let Some(text) = copied else {
+    let Some(mut text) = copied else {
       return Ok(Vec::new());
     };
+    clipboard::clamp_clipboard_text_in_place(&mut text);
     Ok(vec![WorkerToUi::SetClipboardText {
       tab_id: self.tab_id,
       text,
@@ -1004,7 +1006,8 @@ impl BrowserTabController {
     });
 
     let mut out = Vec::new();
-    if let Some(text) = cut_text {
+    if let Some(mut text) = cut_text {
+      clipboard::clamp_clipboard_text_in_place(&mut text);
       out.push(WorkerToUi::SetClipboardText {
         tab_id: self.tab_id,
         text,
@@ -1017,6 +1020,7 @@ impl BrowserTabController {
   }
 
   fn handle_paste(&mut self, text: &str) -> Result<Vec<WorkerToUi>> {
+    let text = clipboard::clamp_clipboard_text(text);
     let changed = self
       .document
       .mutate_dom(|dom| self.interaction.clipboard_paste(dom, text));

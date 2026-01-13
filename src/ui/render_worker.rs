@@ -32,6 +32,7 @@ use crate::tree::box_tree::{BoxNode, BoxType, ImageSelectionContext, ReplacedTyp
 use crate::ui::about_pages;
 use crate::ui::browser_limits::BrowserLimits;
 use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
+use crate::ui::clipboard;
 use crate::ui::find_in_page::{FindIndex, FindMatch, FindOptions};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
@@ -4860,7 +4861,8 @@ impl BrowserRuntime {
       });
     }
 
-    if let Some(text) = copied {
+    if let Some(mut text) = copied {
+      clipboard::clamp_clipboard_text_in_place(&mut text);
       let _ = self
         .ui_tx
         .send(WorkerToUi::SetClipboardText { tab_id, text });
@@ -4882,7 +4884,8 @@ impl BrowserRuntime {
       dom_changed
     });
 
-    if let Some(text) = cut_text {
+    if let Some(mut text) = cut_text {
+      clipboard::clamp_clipboard_text_in_place(&mut text);
       let _ = self
         .ui_tx
         .send(WorkerToUi::SetClipboardText { tab_id, text });
@@ -4902,6 +4905,7 @@ impl BrowserRuntime {
       return;
     };
 
+    let text = clipboard::clamp_clipboard_text(text);
     let changed = doc.mutate_dom(|dom| tab.interaction.clipboard_paste(dom, text));
     if changed {
       tab.cancel.bump_paint();

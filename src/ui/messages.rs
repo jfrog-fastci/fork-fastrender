@@ -537,6 +537,9 @@ pub enum UiToWorker {
   ///
   /// The worker is responsible for applying the text at the caret, replacing any selection, and
   /// respecting inert/disabled/readonly rules.
+  ///
+  /// Security: UIs should clamp `text` to [`crate::ui::clipboard::MAX_CLIPBOARD_TEXT_BYTES`] bytes
+  /// before sending. Workers should treat this message as untrusted and may defensively clamp again.
   Paste {
     tab_id: TabId,
     text: String,
@@ -859,6 +862,10 @@ pub enum WorkerToUi {
   /// Request that the UI set the OS clipboard text.
   ///
   /// This is typically emitted in response to [`UiToWorker::Copy`] or [`UiToWorker::Cut`].
+  ///
+  /// Security: workers should keep `text` bounded (see
+  /// [`crate::ui::clipboard::MAX_CLIPBOARD_TEXT_BYTES`]). Front-ends must treat this payload as
+  /// untrusted and clamp before forwarding into the OS clipboard.
   SetClipboardText {
     tab_id: TabId,
     text: String,

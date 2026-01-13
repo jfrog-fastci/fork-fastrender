@@ -6717,6 +6717,17 @@ impl App {
       }
     }
 
+    // Security: `UiToWorker::Paste` typically comes from the OS clipboard and may be arbitrarily
+    // large. Clamp at the browser/renderer boundary so the renderer cannot be flooded with huge
+    // payloads.
+    let msg = match msg {
+      UiToWorker::Paste { tab_id, mut text } => {
+        fastrender::ui::clipboard::clamp_clipboard_text_in_place(&mut text);
+        UiToWorker::Paste { tab_id, text }
+      }
+      other => other,
+    };
+
     // Keep overlay scrollbars visible when a scroll is initiated via any input path (wheel, track
     // click, thumb drag, keyboard shortcuts that synthesize `ScrollTo`, etc).
     if matches!(
@@ -7848,6 +7859,17 @@ impl App {
         self.launch_native_file_picker_dialog(*tab_id, *input_node_id, *multiple, accept);
         request_redraw = true;
       }
+    }
+
+    if let fastrender::ui::WorkerToUi::SetClipboardText { tab_id: _, text } = &msg {
+      // Defer OS clipboard writes to the next egui frame so we can use egui-winit's platform output
+      // plumbing.
+      //
+      // Security: the renderer is untrusted. Clamp the payload before copying it so a compromised
+      // renderer cannot force the browser process to allocate unbounded memory via `SetClipboardText`.
+      let text = fastrender::ui::clipboard::clamp_clipboard_text(text);
+      self.pending_clipboard_text = Some(text.to_string());
+      request_redraw = true;
     }
 
     let update = self.browser_state.apply_worker_msg(msg);

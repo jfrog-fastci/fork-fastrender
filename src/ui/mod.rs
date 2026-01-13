@@ -37,6 +37,7 @@ mod string_match;
 pub mod load_progress;
 pub mod search_suggest;
 pub mod messages;
+pub mod clipboard;
 pub mod media_prefs;
 pub mod downloads;
 pub mod protocol_limits;
