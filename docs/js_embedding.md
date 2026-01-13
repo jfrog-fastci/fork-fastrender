@@ -89,6 +89,15 @@ What it does **not** do yet (important gaps):
   for import map support.
 - a full DOM/Web API surface exposed to JS (bindings are still being built out).
 
+### Privileged chrome UI realms (renderer-chrome)
+
+The JS embedding layer also supports the idea of a **trusted “chrome UI” realm** (for renderer-chrome:
+browser UI rendered by FastRender in the browser process). Those realms may be granted additional
+capabilities via a privileged `globalThis.chrome` object.
+
+This privileged bridge must **never** be installed in untrusted content realms. See
+[`docs/chrome_js_bridge.md`](chrome_js_bridge.md) for the API surface and installation model.
+
 ### Minimal Rust example (create doc → run loop → render)
 
 This example uses the production `vm-js` runtime via the convenience constructors on `BrowserTab`
