@@ -20,6 +20,17 @@ use super::common::alignment::apply_alignment_fallback;
 #[cfg(feature = "content_size")]
 use super::common::content_size::compute_content_size_contribution;
 
+// Test-only instrumentation for detecting redundant `measure_child_size` calls.
+//
+// This counter is incremented only at the min-content automatic-min-size measurement call site in
+// `determine_flex_base_size`. See the unit test at the end of this file.
+#[cfg(all(test, feature = "taffy_tree"))]
+use std::cell::Cell;
+#[cfg(all(test, feature = "taffy_tree"))]
+thread_local! {
+  static MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS: Cell<usize> = Cell::new(0);
+}
+
 /// The intermediate results of a flexbox calculation for a single item
 struct FlexItem {
   /// The identifier for the associated node
@@ -953,6 +964,8 @@ fn determine_flex_base_size(
         let child_available_space = Size::MIN_CONTENT.with_cross(dir, cross_axis_available_space);
 
         debug_log!("COMPUTE CHILD MIN SIZE:");
+        #[cfg(all(test, feature = "taffy_tree"))]
+        MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.set(count.get() + 1));
         tree.measure_child_size(
           child.node,
           child_known_dimensions,
@@ -3587,5 +3600,44 @@ mod tests {
       children.len(),
       tree.measure_call_count
     );
+  }
+
+  #[test]
+  fn flexbox_min_content_auto_min_size_reuses_flex_basis_measurement() {
+    // Reset test-only counter.
+    super::MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.set(0));
+
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+
+    let children: Vec<NodeId> =
+      (0..5).map(|_| taffy.new_leaf(Style::default()).unwrap()).collect();
+
+    let root = taffy
+      .new_with_children(
+        Style {
+          display: Display::Flex,
+          ..Default::default()
+        },
+        &children,
+      )
+      .unwrap();
+
+    // Run layout under a min-content constraint so that the flex-basis measurement and the
+    // automatic-min-size min-content measurement would otherwise be identical.
+    taffy.compute_layout(root, Size::MIN_CONTENT).unwrap();
+
+    let calls =
+      super::MIN_CONTENT_AUTOMATIC_MIN_SIZE_MEASURE_CALLS.with(|count| count.get());
+    assert_eq!(calls, 0);
+
+    // Sanity: ensure we produced finite layouts (no NaNs).
+    let root_layout = taffy.layout(root).unwrap();
+    assert!(root_layout.size.width.is_finite());
+    assert!(root_layout.size.height.is_finite());
+    for child in children {
+      let layout = taffy.layout(child).unwrap();
+      assert!(layout.size.width.is_finite());
+      assert!(layout.size.height.is_finite());
+    }
   }
 }
