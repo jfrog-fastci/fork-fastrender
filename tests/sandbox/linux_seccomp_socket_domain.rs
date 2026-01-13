@@ -12,6 +12,7 @@ fn socket_domain_filter_allows_unix_denies_inet() {
     let status = fastrender::sandbox::apply_renderer_sandbox(
       fastrender::sandbox::RendererSandboxConfig {
         network_policy: fastrender::sandbox::NetworkPolicy::AllowUnixSocketsOnly,
+        ..Default::default()
       },
     )
     .expect("apply Linux sandbox");
