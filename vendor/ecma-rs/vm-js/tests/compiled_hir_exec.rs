@@ -2198,6 +2198,33 @@ fn compiled_function_use_strict_makes_unbound_assignment_throw_reference_error()
 }
 
 #[test]
+fn compiled_strict_block_function_decls_are_block_scoped() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      function f(){
+        "use strict";
+        {
+          g();
+          function g(){ return 1; }
+        }
+        try { g; return false; } catch(e) { return true; }
+      }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_computed_member_object_key_uses_to_property_key() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -3096,6 +3123,31 @@ fn compiled_lexical_tdz_shadowing_throws() -> Result<(), VmError> {
     VmError::ThrowWithStack { .. } => Ok(()),
     other => panic!("expected ThrowWithStack, got {other:?}"),
   }
+}
+
+#[test]
+fn compiled_class_decl_tdz_shadows_outer_binding() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let C = 1;
+      function f() {
+        try { C; } catch(e) { return true; }
+        return false;
+        class C {}
+      }
+      f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
 }
 
 #[test]

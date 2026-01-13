@@ -927,6 +927,12 @@ impl<'vm> HirEvaluator<'vm> {
             Value::Object(func_obj),
           )?;
         }
+        // Strict mode: only top-level function declarations are var-scoped.
+        //
+        // Block-scoped function declarations are instantiated at block/switch entry in a fresh
+        // lexical environment (see `instantiate_block_scoped_function_decls_in_stmt_list`).
+        _ if self.strict => {}
+        // Non-strict mode: treat block function declarations as var-scoped (Annex B-ish).
         hir_js::StmtKind::Block(inner) => {
           self.instantiate_function_decls(scope, body, inner.as_slice())?;
         }
@@ -999,7 +1005,6 @@ impl<'vm> HirEvaluator<'vm> {
           if decl_body.kind != hir_js::BodyKind::Class {
             continue;
           }
-
           let name = self.resolve_name(def.name)?;
           // Keep the engine robust against malformed HIR (e.g. a binding already exists).
           if scope.heap().env_has_binding(env, name.as_str())? {
@@ -1047,6 +1052,61 @@ impl<'vm> HirEvaluator<'vm> {
     }
     Ok(())
   }
+
+  fn instantiate_block_scoped_function_decls_in_stmt_list(
+    &mut self,
+    scope: &mut Scope<'_>,
+    body: &hir_js::Body,
+    env: GcEnv,
+    stmts: &[hir_js::StmtId],
+  ) -> Result<(), VmError> {
+    if !self.strict {
+      return Ok(());
+    }
+    for stmt_id in stmts {
+      // Tick per statement list entry so large blocks of function declarations cannot be
+      // instantiated without consuming fuel.
+      self.vm.tick()?;
+      let stmt = self.get_stmt(body, *stmt_id)?;
+      let hir_js::StmtKind::Decl(def_id) = &stmt.kind else {
+        continue;
+      };
+      let def = self
+        .hir()
+        .def(*def_id)
+        .ok_or(VmError::InvariantViolation("hir def id missing from compiled script"))?;
+      let Some(body_id) = def.body else {
+        continue;
+      };
+      let decl_body = self.get_body(body_id)?;
+      if decl_body.kind != hir_js::BodyKind::Function {
+        continue;
+      }
+      let name = self.resolve_name(def.name)?;
+      let name_str = name.as_str();
+      if scope.heap().env_has_binding(env, name_str)? {
+        // Duplicate block-scoped declarations are early errors; keep the engine robust.
+        return Err(VmError::TypeError("Identifier has already been declared"));
+      }
+
+      scope.env_create_mutable_binding(env, name_str)?;
+      let func_obj = self.alloc_user_function_object(
+        scope,
+        body_id,
+        name_str,
+        /* is_arrow */ false,
+        /* name_binding */ None,
+      )?;
+
+      let mut init_scope = scope.reborrow();
+      init_scope.push_root(Value::Object(func_obj))?;
+      init_scope
+        .heap_mut()
+        .env_initialize_binding(env, name_str, Value::Object(func_obj))?;
+    }
+    Ok(())
+  }
+
   fn eval_stmt_list(
     &mut self,
     scope: &mut Scope<'_>,
@@ -1125,6 +1185,12 @@ impl<'vm> HirEvaluator<'vm> {
         self.env.set_lexical_env(scope.heap_mut(), block_env);
         let result = (|| {
           self.instantiate_lexical_decls(scope, body, stmts.as_slice(), block_env)?;
+          self.instantiate_block_scoped_function_decls_in_stmt_list(
+            scope,
+            body,
+            block_env,
+            stmts.as_slice(),
+          )?;
           self.eval_stmt_list(scope, body, stmts.as_slice())
         })();
         self.env.set_lexical_env(scope.heap_mut(), prev);
@@ -1622,6 +1688,19 @@ impl<'vm> HirEvaluator<'vm> {
               body,
               case.consequent.as_slice(),
               switch_env,
+            )?;
+          }
+          // Strict mode: block-scoped function declarations in the case block are instantiated in
+          // the case block lexical environment (ECMA-262 `BlockDeclarationInstantiation`).
+          for (i, case) in cases.iter().enumerate() {
+            if i % CASE_TICK_EVERY == 0 {
+              self.vm.tick()?;
+            }
+            self.instantiate_block_scoped_function_decls_in_stmt_list(
+              &mut switch_scope,
+              body,
+              switch_env,
+              case.consequent.as_slice(),
             )?;
           }
 
