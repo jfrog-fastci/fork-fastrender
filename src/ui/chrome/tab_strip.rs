@@ -1506,8 +1506,8 @@ fn tab_ui(
       move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
     });
     super::show_tooltip_on_focus(ui, &close_resp, "Close tab (Ctrl/Cmd+W)");
-    close_clicked = close_reveal_target
-      && (close_resp.clicked() || super::keyboard_activate(ui, &close_resp));
+    close_clicked =
+      close_reveal_target && (close_resp.clicked() || super::keyboard_activate(ui, &close_resp));
 
     // Micro-interaction: fade close button hover fill in/out.
     let close_rounding =
@@ -3440,12 +3440,21 @@ pub(super) fn tab_strip_ui(
       };
 
       let drop_id = egui::Id::new("tab_strip_drop_indicator").with(drag_anim_key);
-      let drop_x = motion.animate_f32(
+      // Animate the indicator in the scroll area's *content* coordinate space so it tracks
+      // horizontal scrolling without lag (similar to the active-tab underline).
+      let segment_scroll_offset_x = if dragging_is_pinned {
+        pinned_scroll_offset_x
+      } else {
+        scroll_offset_x
+      };
+      let drop_x_content = (drop_x - group_clip_rect.min.x) + segment_scroll_offset_x;
+      let drop_x_content = motion.animate_f32(
         ui.ctx(),
         drop_id.with("x"),
-        drop_x,
+        drop_x_content,
         motion.durations.tab_drag_indicator,
       );
+      let drop_x = group_clip_rect.min.x + (drop_x_content - segment_scroll_offset_x);
       let target_alpha = if motion.enabled && insertion_changed {
         1.0
       } else if motion.enabled {
