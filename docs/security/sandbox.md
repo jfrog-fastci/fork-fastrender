@@ -65,6 +65,20 @@ This is a security boundary:
 if the renderer can open sockets or arbitrary files, the OS sandbox becomes “best effort” instead of
 a hard isolation line.
 
+### Cargo feature implications (renderer builds)
+
+The sandbox boundary assumes the renderer does not even *have* in-process network/filesystem stacks.
+
+Repo reality:
+
+- Default crate features include `direct_network`, `direct_websocket`, and `direct_filesystem` (see
+  `Cargo.toml`). These are convenient for single-process/library use, but are **not** appropriate
+  for an OS-sandboxed renderer process.
+- For renderer-process builds, prefer disabling these features and using an IPC-backed fetcher /
+  WebSocket bridge.
+  - CI uses `--no-default-features --features renderer_minimal` to ensure the renderer can be built
+    without linking reqwest/ureq/tungstenite.
+
 ---
 
 ## Linux sandbox layering and order of operations
