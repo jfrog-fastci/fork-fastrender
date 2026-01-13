@@ -175,6 +175,41 @@ impl ChromeFrameDocument {
       .map(|frame| frame.pixmap)
   }
 
+  /// Returns `true` when the most recently prepared fragment tree contains any CSS animations or
+  /// transitions that require time-based sampling.
+  pub fn wants_ticks(&self) -> bool {
+    self.document.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    })
+  }
+
+  /// Advance the chrome document's animation timeline.
+  ///
+  /// This mirrors the worker-side tick protocol:
+  /// - When `now_ms` is `Some(t)`, CSS animations/transitions are sampled at `t` milliseconds since
+  ///   load by calling [`BrowserDocument::set_animation_time_ms`]. This only invalidates paint, so
+  ///   the next render can repaint from cached layout artifacts.
+  /// - When `now_ms` is `None`, real-time animation sampling is enabled and callers should only
+  ///   repaint when [`BrowserDocument::needs_animation_frame`] reports that the animation clock has
+  ///   advanced.
+  ///
+  /// Returns `true` when callers should render a new frame.
+  pub fn tick(&mut self, now_ms: Option<f32>) -> bool {
+    match now_ms {
+      Some(ms) => {
+        self.document.set_animation_time_ms(ms);
+        true
+      }
+      None => {
+        // Ensure explicit timelines are cleared so real-time sampling is active.
+        self.document.set_animation_time(None);
+        self.document.set_realtime_animations_enabled(true);
+        self.document.needs_animation_frame()
+      }
+    }
+  }
+
   pub fn address_bar_value(&mut self) -> String {
     let mut out: Option<String> = None;
     self.document.mutate_dom(|dom| {
