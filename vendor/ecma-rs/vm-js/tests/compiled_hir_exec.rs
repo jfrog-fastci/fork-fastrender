@@ -3791,6 +3791,40 @@ fn compiled_arrow_function_expression_body_use_strict_is_not_a_directive() -> Re
 }
 
 #[test]
+fn compiled_arrow_function_use_strict_is_strict_but_preserves_lexical_this() -> Result<(), VmError> {
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap)?;
+
+  // Arrow functions are strict-mode capable (via directive prologues), but must always preserve
+  // lexical `this`.
+  let script = CompiledScript::compile_script(
+    rt.heap_mut(),
+    "test.js",
+    r#"
+      let o = {
+        x: 1,
+        f: function() {
+          return (() => {
+            "use strict";
+            let this_ok = false;
+            try { this_ok = this.x === 1; } catch (e) {}
+            let threw = false;
+            try { y = 1; } catch (e) { threw = true; }
+            return this_ok && threw && (typeof y === "undefined");
+          })();
+        },
+      };
+      o.f();
+    "#,
+  )?;
+
+  let result = rt.exec_compiled_script(script)?;
+  assert_eq!(result, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
 fn compiled_strict_block_function_decls_are_block_scoped() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
