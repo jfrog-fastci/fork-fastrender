@@ -3018,6 +3018,15 @@ mod browser_app_tests {
   }
 
   #[test]
+  fn browser_tab_state_new_derives_site_key_from_initial_url() {
+    let tab = BrowserTabState::new(TabId(1), "https://example.com/".to_string());
+    assert_eq!(tab.renderer_site_key, Some(site("https://example.com/")));
+
+    let tab = BrowserTabState::new(TabId(2), "not a url".to_string());
+    assert_eq!(tab.renderer_site_key, None);
+  }
+
+  #[test]
   fn set_tab_renderer_updates_target_tab_and_is_noop_for_missing_tab() {
     let mut app = BrowserAppState::new();
 
