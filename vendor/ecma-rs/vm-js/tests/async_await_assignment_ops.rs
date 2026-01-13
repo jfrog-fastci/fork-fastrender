@@ -148,6 +148,44 @@ fn async_await_exponentiation_assignment_bigint_negative_exponent_throws_range_e
 }
 
 #[test]
+fn async_await_exponentiation_assignment_cannot_mix_bigint_and_number() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        let errors = [];
+        try {
+          let x = 2n;
+          x **= await Promise.resolve(2);
+          errors.push("no error");
+        } catch (e) {
+          errors.push(e && e.name);
+        }
+        try {
+          let y = 2;
+          y **= await Promise.resolve(2n);
+          errors.push("no error");
+        } catch (e) {
+          errors.push(e && e.name);
+        }
+        return errors.join("|");
+      }
+      f().then(v => out = v);
+      out
+    "#,
+  )?;
+  assert_eq!(value_to_string(&rt, value), "");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let value = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, value), "TypeError|TypeError");
+  Ok(())
+}
+
+#[test]
 fn async_await_bitwise_assignment_cannot_mix_bigint_and_number() -> Result<(), VmError> {
   let mut rt = new_runtime();
 
