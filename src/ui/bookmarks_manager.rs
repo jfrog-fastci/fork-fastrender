@@ -10,7 +10,9 @@ use std::path::Path;
 
 use crate::ui::motion::UiMotion;
 
-use super::{icon_button, icon_tinted, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon};
+use super::{
+  icon_button, icon_tinted, panel_search_field, BookmarkId, BookmarkNode, BookmarkStore, BrowserIcon,
+};
 
 #[derive(Debug, Clone)]
 pub enum BookmarksManagerAction {
@@ -431,57 +433,20 @@ fn search_bar(
   state: &mut BookmarksManagerState,
   out: &mut BookmarksManagerOutput,
 ) {
-  let search_id = ui.make_persistent_id("bookmarks_manager_search");
-  if state.request_focus_search {
-    // Apply focus *before* building the `TextEdit` so it takes effect in the same frame.
-    ui.memory_mut(|mem| mem.request_focus(search_id));
-    state.request_focus_search = false;
-    out.unfocus_page = true;
-  }
+  let search_out = panel_search_field(
+    ui,
+    "bookmarks_manager_search",
+    &mut state.search,
+    "Search bookmarks…",
+    &mut state.request_focus_search,
+    "Search bookmarks",
+  );
 
-  let mut clear_clicked = false;
-  let visuals = ui.visuals();
-  egui::Frame::none()
-    .fill(visuals.widgets.inactive.bg_fill)
-    .stroke(visuals.widgets.inactive.bg_stroke)
-    .rounding(visuals.widgets.inactive.rounding)
-    .inner_margin(egui::Margin::symmetric(10.0, 6.0))
-    .show(ui, |ui| {
-      ui.spacing_mut().item_spacing.x = ui.spacing().item_spacing.x.min(8.0);
-
-      icon_tinted(
-        ui,
-        BrowserIcon::Search,
-        ui.spacing().icon_width,
-        ui.visuals().weak_text_color(),
-      );
-
-      let resp = ui.add(
-        egui::TextEdit::singleline(&mut state.search)
-          .id(search_id)
-          .hint_text("Search bookmarks…")
-          .desired_width(f32::INFINITY)
-          .frame(false),
-      );
-      resp
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, "Search bookmarks"));
-      if resp.has_focus() || resp.clicked() {
-        out.unfocus_page = true;
-      }
-
-      if !state.search.trim().is_empty() {
-        let clear = icon_button(ui, BrowserIcon::Close, "Clear search", true);
-        clear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, "Clear search"));
-        if clear.clicked() {
-          clear_clicked = true;
-        }
-      }
-    });
-
-  if clear_clicked {
-    state.search.clear();
-    // Keep focus in the search field after clearing.
-    state.request_focus_search = true;
+  if search_out.focus_requested
+    || search_out.response.has_focus()
+    || search_out.response.clicked()
+    || search_out.cleared
+  {
     out.unfocus_page = true;
   }
 }
