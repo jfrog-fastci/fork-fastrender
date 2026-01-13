@@ -1543,6 +1543,15 @@ fn tab_ui(
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
+  let _ = ui
+    .ctx()
+    .accesskit_node_builder(response.id, |builder| {
+      builder.set_role(accesskit::Role::Tab);
+      builder.set_selected(is_active);
+      if !interactive {
+        builder.set_disabled();
+      }
+    });
   if interactive {
     super::show_tooltip_on_focus(ui, &response, title);
   }
@@ -1907,6 +1916,15 @@ fn pinned_tab_ui(
     let a11y_label = a11y_label.clone();
     move || egui::WidgetInfo::labeled(egui::WidgetType::Button, a11y_label.clone())
   });
+  let _ = ui
+    .ctx()
+    .accesskit_node_builder(response.id, |builder| {
+      builder.set_role(accesskit::Role::Tab);
+      builder.set_selected(is_active);
+      if closing {
+        builder.set_disabled();
+      }
+    });
   if !closing {
     super::show_tooltip_on_focus(ui, &response, title);
   }
@@ -5394,5 +5412,96 @@ mod tests {
       names.iter().any(|n| n == BrowserIcon::NewTab.a11y_label()),
       "expected New tab button name in AccessKit output.\n\nnames: {names:#?}\n\nsnapshot:\n{snapshot}"
     );
+  }
+
+  #[test]
+  fn tab_strip_tabs_have_accesskit_tab_role_and_selected_state() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(
+      BrowserTabState::new(tab_a, "https://a.example/".to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(tab_b, "https://b.example/".to_string()),
+      false,
+    );
+
+    // Ensure we cover both `pinned_tab_ui` and `tab_ui`.
+    assert!(app.pin_tab(tab_a));
+
+    let ctx = egui::Context::default();
+    ctx.enable_accesskit();
+
+    let find_tab_node = |output: &egui::FullOutput, name_prefix: &str| {
+      let update = output.platform_output.accesskit_update.as_ref().expect(
+        "egui did not emit an AccessKit update (did you forget ctx.enable_accesskit()?)",
+      );
+      let mut matches = update.nodes.iter().filter(|(_id, node)| {
+        node
+          .name()
+          .unwrap_or("")
+          .trim()
+          .starts_with(name_prefix)
+      });
+      let (id, node) = matches
+        .next()
+        .unwrap_or_else(|| panic!("expected AccessKit node with name prefix {name_prefix:?}"));
+      assert!(
+        matches.next().is_none(),
+        "expected a single AccessKit node with name prefix {name_prefix:?}"
+      );
+      (*id, node)
+    };
+
+    // Frame 1: tab A is active (selected).
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let output0 = ctx.end_frame();
+
+    let (tab_a_id_0, tab_a_node_0) = find_tab_node(&output0, "https://a.example/");
+    let (tab_b_id_0, tab_b_node_0) = find_tab_node(&output0, "https://b.example/");
+
+    assert_eq!(
+      tab_a_node_0.role(),
+      accesskit::Role::Tab,
+      "expected active tab to expose AccessKit Role::Tab"
+    );
+    assert_eq!(
+      tab_a_node_0.is_selected(),
+      Some(true),
+      "expected active tab to expose selected=true"
+    );
+    assert_eq!(
+      tab_b_node_0.role(),
+      accesskit::Role::Tab,
+      "expected inactive tab to expose AccessKit Role::Tab"
+    );
+    assert_eq!(
+      tab_b_node_0.is_selected(),
+      Some(false),
+      "expected inactive tab to expose selected=false"
+    );
+
+    // Frame 2: switch active tab and ensure selection follows without changing the tab node ids.
+    assert!(app.set_active_tab(tab_b));
+    begin_frame(&ctx, Vec::new());
+    let _ = render_tab_strip(&ctx, &mut app);
+    let output1 = ctx.end_frame();
+
+    let (tab_a_id_1, tab_a_node_1) = find_tab_node(&output1, "https://a.example/");
+    let (tab_b_id_1, tab_b_node_1) = find_tab_node(&output1, "https://b.example/");
+
+    assert_eq!(
+      tab_a_id_0, tab_a_id_1,
+      "expected tab A to keep a stable AccessKit id across selection changes"
+    );
+    assert_eq!(
+      tab_b_id_0, tab_b_id_1,
+      "expected tab B to keep a stable AccessKit id across selection changes"
+    );
+    assert_eq!(tab_a_node_1.is_selected(), Some(false));
+    assert_eq!(tab_b_node_1.is_selected(), Some(true));
   }
 }
