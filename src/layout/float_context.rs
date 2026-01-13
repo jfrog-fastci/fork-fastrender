@@ -477,11 +477,92 @@ struct FloatRangeSegment {
 }
 
 #[derive(Debug, Clone)]
+struct FloatRangeBlockMinCache {
+  /// Number of segments per block.
+  block_size: usize,
+  containing_left: f32,
+  containing_right: f32,
+  /// Absolute segment index of the best segment (min width, tie-breaker left_edge) for each block.
+  best_segment_indices: Vec<usize>,
+  /// Number of `segments` covered when `best_segment_indices` was last (re)computed.
+  covered_segments_len: usize,
+}
+
+impl FloatRangeBlockMinCache {
+  fn new(block_size: usize, containing_left: f32, containing_right: f32) -> Self {
+    Self {
+      block_size: block_size.max(1),
+      containing_left,
+      containing_right,
+      best_segment_indices: Vec::new(),
+      covered_segments_len: 0,
+    }
+  }
+
+  fn rebuild(&mut self, segments: &[FloatRangeSegment]) {
+    self.best_segment_indices.clear();
+    self.covered_segments_len = 0;
+    self.extend(segments);
+  }
+
+  fn extend(&mut self, segments: &[FloatRangeSegment]) {
+    let len = segments.len();
+    if len == 0 {
+      self.best_segment_indices.clear();
+      self.covered_segments_len = 0;
+      return;
+    }
+    if self.covered_segments_len > len {
+      self.rebuild(segments);
+      return;
+    }
+
+    let block_size = self.block_size;
+    let start_block = self.covered_segments_len / block_size;
+    let total_blocks = (len + block_size - 1) / block_size;
+
+    if self.best_segment_indices.len() < total_blocks {
+      self.best_segment_indices.resize(total_blocks, 0);
+    }
+
+    for block in start_block..total_blocks {
+      let start_idx = block * block_size;
+      let end_idx = ((block + 1) * block_size).min(len);
+      if start_idx >= end_idx {
+        continue;
+      }
+      let mut best_idx = start_idx;
+      let mut best_left = segments[best_idx].left_edge.max(self.containing_left);
+      let mut best_right = segments[best_idx].right_edge.min(self.containing_right);
+      let mut best_width = (best_right - best_left).max(0.0);
+      for idx in (start_idx + 1)..end_idx {
+        let seg = &segments[idx];
+        let left = seg.left_edge.max(self.containing_left);
+        let right = seg.right_edge.min(self.containing_right);
+        let width = (right - left).max(0.0);
+        if width < best_width - f32::EPSILON
+          || ((width - best_width).abs() < f32::EPSILON && left > best_left)
+        {
+          best_idx = idx;
+          best_left = left;
+          best_right = right;
+          best_width = width;
+        }
+      }
+      self.best_segment_indices[block] = best_idx;
+    }
+
+    self.covered_segments_len = len;
+  }
+}
+
+#[derive(Debug, Clone)]
 struct FloatRangeCache {
   float_count: usize,
   events_len: usize,
   sweep_state: FloatSweepState,
   segments: Vec<FloatRangeSegment>,
+  block_min_cache: Option<FloatRangeBlockMinCache>,
 }
 
 impl FloatRangeCache {
@@ -491,6 +572,7 @@ impl FloatRangeCache {
       events_len: 0,
       sweep_state: FloatSweepState::new(0, &[]),
       segments: Vec::new(),
+      block_min_cache: None,
     }
   }
 
@@ -502,6 +584,38 @@ impl FloatRangeCache {
     self.events_len = events.len();
     self.segments.clear();
     self.sweep_state = FloatSweepState::new(float_count, events);
+    self.block_min_cache = None;
+  }
+
+  fn invalidate_block_min_cache(&mut self) {
+    self.block_min_cache = None;
+  }
+
+  fn ensure_block_min_cache(&mut self, containing_left: f32, containing_right: f32) {
+    // The block-min cache is purely an optimization; if it's missing we can always fall back to a
+    // linear scan.
+    if self.segments.is_empty() || !containing_left.is_finite() || !containing_right.is_finite() {
+      self.block_min_cache = None;
+      return;
+    }
+
+    const BLOCK_SIZE: usize = 64;
+    let needs_rebuild = self.block_min_cache.as_ref().is_none_or(|cache| {
+      cache.block_size != BLOCK_SIZE
+        || cache.containing_left.to_bits() != containing_left.to_bits()
+        || cache.containing_right.to_bits() != containing_right.to_bits()
+        || cache.covered_segments_len > self.segments.len()
+    });
+    if needs_rebuild {
+      let mut cache = FloatRangeBlockMinCache::new(BLOCK_SIZE, containing_left, containing_right);
+      cache.rebuild(&self.segments);
+      self.block_min_cache = Some(cache);
+      return;
+    }
+
+    if let Some(cache) = self.block_min_cache.as_mut() {
+      cache.extend(&self.segments);
+    }
   }
 
   fn split_segment_at(&mut self, y: f32) -> bool {
@@ -565,6 +679,9 @@ impl FloatRangeCache {
     if !(overlap_start < overlap_end) {
       return;
     }
+
+    // Segment edits can invalidate any precomputed block-min cache.
+    self.invalidate_block_min_cache();
 
     // Ensure segment boundaries align with the new float's span.
     let mut split_count = 0u64;
@@ -654,6 +771,8 @@ pub struct FloatProfileStats {
   pub boundary_steps: u64,
   pub sweep_state_clones: u64,
   pub range_boundaries_scanned: u64,
+  pub max_range_boundaries_scanned_per_query: u64,
+  pub max_range_cache_segments_len: u64,
   pub range_cache_segment_splits: u64,
   pub range_cache_segment_merges: u64,
   pub active_left_prunes: u64,
@@ -669,6 +788,8 @@ static FLOAT_RANGE_QUERIES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_BOUNDARY_STEPS: AtomicU64 = AtomicU64::new(0);
 static FLOAT_SWEEP_STATE_CLONES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_BOUNDARIES_SCANNED: AtomicU64 = AtomicU64::new(0);
+static FLOAT_MAX_RANGE_BOUNDARIES_SCANNED_PER_QUERY: AtomicU64 = AtomicU64::new(0);
+static FLOAT_MAX_RANGE_CACHE_SEGMENTS_LEN: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_CACHE_SEGMENT_SPLITS: AtomicU64 = AtomicU64::new(0);
 static FLOAT_RANGE_CACHE_SEGMENT_MERGES: AtomicU64 = AtomicU64::new(0);
 static FLOAT_ACTIVE_LEFT_PRUNES: AtomicU64 = AtomicU64::new(0);
@@ -712,6 +833,42 @@ fn profile_count_sweep_state_clone() {
 fn profile_count_range_boundary_scanned(delta: u64) {
   if profile_enabled() {
     FLOAT_RANGE_BOUNDARIES_SCANNED.fetch_add(delta, AtomicOrdering::Relaxed);
+  }
+}
+
+fn profile_update_max_range_boundaries_scanned_per_query(value: u64) {
+  if !profile_enabled() {
+    return;
+  }
+  let mut current = FLOAT_MAX_RANGE_BOUNDARIES_SCANNED_PER_QUERY.load(AtomicOrdering::Relaxed);
+  while value > current {
+    match FLOAT_MAX_RANGE_BOUNDARIES_SCANNED_PER_QUERY.compare_exchange_weak(
+      current,
+      value,
+      AtomicOrdering::Relaxed,
+      AtomicOrdering::Relaxed,
+    ) {
+      Ok(_) => break,
+      Err(updated) => current = updated,
+    }
+  }
+}
+
+fn profile_update_max_range_cache_segments_len(value: u64) {
+  if !profile_enabled() {
+    return;
+  }
+  let mut current = FLOAT_MAX_RANGE_CACHE_SEGMENTS_LEN.load(AtomicOrdering::Relaxed);
+  while value > current {
+    match FLOAT_MAX_RANGE_CACHE_SEGMENTS_LEN.compare_exchange_weak(
+      current,
+      value,
+      AtomicOrdering::Relaxed,
+      AtomicOrdering::Relaxed,
+    ) {
+      Ok(_) => break,
+      Err(updated) => current = updated,
+    }
   }
 }
 
@@ -771,6 +928,8 @@ pub fn reset_float_profile_counters() {
   FLOAT_BOUNDARY_STEPS.store(0, AtomicOrdering::Relaxed);
   FLOAT_SWEEP_STATE_CLONES.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_BOUNDARIES_SCANNED.store(0, AtomicOrdering::Relaxed);
+  FLOAT_MAX_RANGE_BOUNDARIES_SCANNED_PER_QUERY.store(0, AtomicOrdering::Relaxed);
+  FLOAT_MAX_RANGE_CACHE_SEGMENTS_LEN.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_CACHE_SEGMENT_SPLITS.store(0, AtomicOrdering::Relaxed);
   FLOAT_RANGE_CACHE_SEGMENT_MERGES.store(0, AtomicOrdering::Relaxed);
   FLOAT_ACTIVE_LEFT_PRUNES.store(0, AtomicOrdering::Relaxed);
@@ -788,6 +947,9 @@ pub fn float_profile_stats() -> FloatProfileStats {
     boundary_steps: FLOAT_BOUNDARY_STEPS.load(AtomicOrdering::Relaxed),
     sweep_state_clones: FLOAT_SWEEP_STATE_CLONES.load(AtomicOrdering::Relaxed),
     range_boundaries_scanned: FLOAT_RANGE_BOUNDARIES_SCANNED.load(AtomicOrdering::Relaxed),
+    max_range_boundaries_scanned_per_query: FLOAT_MAX_RANGE_BOUNDARIES_SCANNED_PER_QUERY
+      .load(AtomicOrdering::Relaxed),
+    max_range_cache_segments_len: FLOAT_MAX_RANGE_CACHE_SEGMENTS_LEN.load(AtomicOrdering::Relaxed),
     range_cache_segment_splits: FLOAT_RANGE_CACHE_SEGMENT_SPLITS.load(AtomicOrdering::Relaxed),
     range_cache_segment_merges: FLOAT_RANGE_CACHE_SEGMENT_MERGES.load(AtomicOrdering::Relaxed),
     active_left_prunes: FLOAT_ACTIVE_LEFT_PRUNES.load(AtomicOrdering::Relaxed),
@@ -1156,6 +1318,7 @@ impl FloatContext {
     {
       cache.segments.clear();
       cache.sweep_state = FloatSweepState::new(cache.float_count, &self.events);
+      cache.invalidate_block_min_cache();
     }
 
     // Prime the sweep to `start_y` on the first use (or after a rebuild).
@@ -1380,6 +1543,7 @@ impl FloatContext {
     let mut cache = self.range_cache.borrow_mut();
     cache.ensure_current(self.float_map.len(), &self.events);
     self.ensure_range_cache_coverage(&mut cache, start, end);
+    profile_update_max_range_cache_segments_len(cache.segments.len() as u64);
 
     let start_idx = cache.segment_index(start);
     if end <= start {
@@ -1387,6 +1551,7 @@ impl FloatContext {
         let left_edge = seg.left_edge.max(containing_left);
         let right_edge = seg.right_edge.min(containing_right);
         profile_count_range_boundary_scanned(1);
+        profile_update_max_range_boundaries_scanned_per_query(1);
         return (left_edge, right_edge, seg.end_y);
       }
     }
@@ -1402,18 +1567,38 @@ impl FloatContext {
       .map(|seg| seg.end_y)
       .unwrap_or_else(|| self.next_float_boundary_after_internal(state, start));
 
+    let end_idx = if end.is_finite() {
+      match cache
+        .segments
+        .binary_search_by(|seg| seg.start_y.total_cmp(&end))
+      {
+        Ok(idx) | Err(idx) => idx,
+      }
+    } else {
+      cache.segments.len()
+    };
+
+    let segments_len = cache.segments.len();
+    let use_block_min = containing_left == 0.0
+      && containing_right.to_bits() == self.containing_block_width.to_bits()
+      && segments_len >= 256
+      && end_idx.saturating_sub(start_idx) >= 128;
+
+    if use_block_min {
+      cache.ensure_block_min_cache(containing_left, containing_right);
+    }
+
     let mut counter = 0usize;
     let mut scanned = 0u64;
-    for seg in cache.segments.iter().skip(start_idx) {
-      if seg.start_y >= end {
-        break;
-      }
+    let segments = &cache.segments;
+    let block_cache = cache.block_min_cache.as_ref();
 
+    let mut consider_segment = |seg: &FloatRangeSegment| -> bool {
       if let Err(RenderError::Timeout { elapsed, .. }) =
         check_active_periodic(&mut counter, 256, RenderStage::Layout)
       {
         self.record_timeout(elapsed);
-        break;
+        return false;
       }
 
       let left_edge = seg.left_edge.max(containing_left);
@@ -1429,10 +1614,70 @@ impl FloatContext {
         best_width = width;
         next_boundary = seg.end_y;
       }
+      true
+    };
+
+    'scan: {
+      if use_block_min {
+        if let Some(block_cache) = block_cache {
+          let block_size = block_cache.block_size;
+          let best_indices = &block_cache.best_segment_indices;
+
+          let mut idx = start_idx.min(end_idx);
+          while idx < end_idx && idx % block_size != 0 {
+            if !consider_segment(&segments[idx]) {
+              break 'scan;
+            }
+            idx += 1;
+          }
+
+          while idx + block_size <= end_idx {
+            let block = idx / block_size;
+            if let Some(&best_idx) = best_indices.get(block) {
+              if best_idx >= idx && best_idx < (idx + block_size).min(end_idx) {
+                if !consider_segment(&segments[best_idx]) {
+                  break 'scan;
+                }
+              } else {
+                // Fallback: block minima is missing or out of date, conservatively scan the block.
+                for scan_idx in idx..(idx + block_size).min(end_idx) {
+                  if !consider_segment(&segments[scan_idx]) {
+                    break 'scan;
+                  }
+                }
+              }
+            } else {
+              for scan_idx in idx..(idx + block_size).min(end_idx) {
+                if !consider_segment(&segments[scan_idx]) {
+                  break 'scan;
+                }
+              }
+            }
+            idx += block_size;
+          }
+
+          while idx < end_idx {
+            if !consider_segment(&segments[idx]) {
+              break 'scan;
+            }
+            idx += 1;
+          }
+
+          break 'scan;
+        }
+      }
+
+      // Linear scan fallback.
+      for idx in start_idx..end_idx {
+        if !consider_segment(&segments[idx]) {
+          break 'scan;
+        }
+      }
     }
 
     if scanned > 0 {
       profile_count_range_boundary_scanned(scanned);
+      profile_update_max_range_boundaries_scanned_per_query(scanned);
     }
 
     (best_left, best_right, next_boundary)
