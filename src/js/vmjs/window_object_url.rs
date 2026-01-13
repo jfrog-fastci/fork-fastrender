@@ -94,3 +94,64 @@ pub(crate) fn get_object_url(url: &str) -> Option<ObjectUrlEntry> {
     .unwrap_or_else(|poisoned| poisoned.into_inner());
   lock.entries.get(url).cloned()
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  struct RevokeOnDrop(Option<String>);
+
+  impl RevokeOnDrop {
+    fn new(url: String) -> Self {
+      Self(Some(url))
+    }
+
+    fn disarm(&mut self) {
+      self.0.take();
+    }
+
+    fn revoke(&mut self) {
+      if let Some(url) = self.0.take() {
+        revoke_object_url(&url);
+      }
+    }
+  }
+
+  impl Drop for RevokeOnDrop {
+    fn drop(&mut self) {
+      self.revoke();
+    }
+  }
+
+  #[test]
+  fn create_and_revoke_object_url_roundtrip() {
+    let url = create_object_url(
+      "https://example.com",
+      vec![1, 2, 3],
+      "text/plain".to_string(),
+    )
+    .expect("create_object_url should succeed");
+
+    let mut cleanup = RevokeOnDrop::new(url.clone());
+
+    assert!(
+      url.starts_with("blob:https://example.com/"),
+      "unexpected object URL: {url}"
+    );
+
+    let entry = get_object_url(&url).expect("object URL should be registered");
+    assert_eq!(entry.bytes, vec![1, 2, 3]);
+    assert_eq!(entry.content_type, "text/plain");
+    assert_eq!(entry.origin, "https://example.com");
+
+    revoke_object_url(&url);
+    assert!(get_object_url(&url).is_none());
+
+    cleanup.disarm();
+  }
+
+  #[test]
+  fn revoke_is_idempotent() {
+    revoke_object_url("blob:https://example.com/does-not-exist");
+  }
+}
