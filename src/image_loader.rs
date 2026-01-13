@@ -10774,6 +10774,13 @@ impl ImageCache {
             }
           } else {
             // Skip extension data sub-blocks.
+            //
+            // Many animated GIFs include a Netscape (or ANIMEXTS) Application Extension near the
+            // beginning of the file. Seeing that identifier is a strong indicator the image is
+            // animated, and (unlike scanning for the second frame) doesn't require skipping large
+            // compressed image data blocks.
+            let is_application_extension = label == 0xFF;
+            let mut is_first_sub_block = true;
             loop {
               let Some(size) = bytes.get(offset).copied().map(|b| b as usize) else {
                 return GifAnimationProbe::NeedMoreData;
@@ -10791,6 +10798,17 @@ impl ImageCache {
               if next > bytes.len() {
                 return GifAnimationProbe::NeedMoreData;
               }
+              if is_application_extension && is_first_sub_block && size == 11 {
+                // First sub-block is the 11-byte Application Identifier + Authentication Code.
+                // Common identifiers include:
+                // - NETSCAPE2.0 (loop count)
+                // - ANIMEXTS1.0 (alternate loop extension used by some encoders)
+                let ident = &bytes[offset..next];
+                if ident == b"NETSCAPE2.0" || ident == b"ANIMEXTS1.0" {
+                  return GifAnimationProbe::Determined(true);
+                }
+              }
+              is_first_sub_block = false;
               offset = next;
             }
           }
@@ -13955,6 +13973,84 @@ mod tests_inline {
     assert!(
       meta.is_animated,
       "expected GIF probe to detect multiple frames"
+    );
+  }
+
+  #[test]
+  fn gif_is_animated_detects_netscape_extension_from_prefix() {
+    fn insert_netscape_loop_extension(bytes: &mut Vec<u8>, loop_count: u16) -> usize {
+      // Insert the extension immediately after the global color table and return the insertion
+      // offset so the caller can take a prefix that includes the extension header.
+      if bytes.len() < 13 {
+        return 0;
+      }
+      let packed = bytes[10];
+      let mut offset = 13usize;
+      if packed & 0x80 != 0 {
+        let table_bits = (packed & 0x07) as usize;
+        let entries = 1usize << (table_bits + 1);
+        offset = offset.saturating_add(3usize.saturating_mul(entries));
+      }
+      if offset > bytes.len() {
+        return 0;
+      }
+
+      let extension = [
+        0x21,
+        0xFF,
+        0x0B,
+        b'N',
+        b'E',
+        b'T',
+        b'S',
+        b'C',
+        b'A',
+        b'P',
+        b'E',
+        b'2',
+        b'.',
+        b'0',
+        0x03,
+        0x01,
+        (loop_count & 0xFF) as u8,
+        (loop_count >> 8) as u8,
+        0x00,
+      ];
+      bytes.splice(offset..offset, extension);
+      offset
+    }
+
+    let mut bytes = Vec::new();
+    {
+      let red = RgbaImage::from_pixel(1, 1, ImageRgba([255, 0, 0, 255]));
+      let blue = RgbaImage::from_pixel(1, 1, ImageRgba([0, 0, 255, 255]));
+      let delay = Delay::from_numer_denom_ms(100, 1);
+
+      let mut encoder = GifEncoder::new(&mut bytes);
+      encoder
+        .encode_frame(Frame::from_parts(red, 0, 0, delay))
+        .expect("encode gif frame 0");
+      encoder
+        .encode_frame(Frame::from_parts(blue, 0, 0, delay))
+        .expect("encode gif frame 1");
+    }
+
+    let insert_offset = insert_netscape_loop_extension(&mut bytes, 0);
+    assert!(insert_offset > 0, "expected to insert application extension");
+
+    // Take a prefix that contains the application extension identifier, but not the rest of the
+    // file. This models an image probe prefix that is too small to reach the second frame.
+    let prefix_len = insert_offset + 3 + 11;
+    let prefix = bytes
+      .get(..prefix_len)
+      .expect("prefix should include full application identifier");
+
+    assert!(
+      matches!(
+        ImageCache::gif_is_animated(prefix),
+        GifAnimationProbe::Determined(true)
+      ),
+      "expected Netscape loop extension to be sufficient to treat the GIF as animated"
     );
   }
 
