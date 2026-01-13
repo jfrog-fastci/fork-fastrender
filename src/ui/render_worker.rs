@@ -1513,12 +1513,11 @@ fn build_page_accesskit_subtree_for_tab(
   Some(page_accesskit_subtree::accesskit_subtree_for_page(tab_id, &a11y_tree))
 }
 
-fn base_url_for_links<'a>(
-  last_base_url: Option<&'a str>,
-  last_committed_url: Option<&'a str>,
-) -> &'a str {
-  last_base_url
-    .or(last_committed_url)
+fn base_url_for_links(tab: &TabState) -> &str {
+  tab
+    .last_base_url
+    .as_deref()
+    .or(tab.last_committed_url.as_deref())
     .unwrap_or(about_pages::ABOUT_BASE_URL)
 }
 
@@ -4723,8 +4722,7 @@ impl BrowserRuntime {
     tab.last_pointer_pos_css = pointer_in_page.then_some(pos_css);
     let scroll = &tab.scroll_state;
     let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab);
 
     let (changed, hovered_url, cursor, tooltip, hovered_dom_node_id, hovered_dom_element_id) = {
       let Some(doc) = tab.document.as_mut() else {
@@ -5442,8 +5440,7 @@ impl BrowserRuntime {
 
     let pointer_buttons = tab.pointer_buttons;
 
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab);
     let document_url = tab
       .last_committed_url
       .as_deref()
@@ -6401,8 +6398,7 @@ impl BrowserRuntime {
     let js_cancel_snapshot = tab.cancel.snapshot_paint();
     let js_cancel_callback = js_cancel_snapshot.cancel_callback_for_paint(&tab.cancel);
 
-    let base_url =
-      base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+    let base_url = base_url_for_links(tab);
     let dpr = tab.dpr;
     let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
     let scroll = &tab.scroll_state;
@@ -7476,8 +7472,7 @@ impl BrowserRuntime {
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
         return;
       };
-      let base_url =
-        base_url_for_links(tab.last_base_url.as_deref(), tab.last_committed_url.as_deref());
+      let base_url = base_url_for_links(tab);
       let document_url = tab
         .last_committed_url
         .as_deref()
