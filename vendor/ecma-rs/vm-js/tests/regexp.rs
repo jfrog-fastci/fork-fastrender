@@ -476,6 +476,26 @@ fn regexp_engine_catastrophic_backtracking_is_interruptible() {
 }
 
 #[test]
+fn regexp_engine_lookbehind_catastrophic_backtracking_is_interruptible() {
+  let mut vm = Vm::new(VmOptions::default());
+  vm.set_budget(Budget {
+    fuel: Some(500),
+    deadline: None,
+    check_time_every: 1,
+  });
+  let heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+  let mut rt = JsRuntime::new(vm, heap).unwrap();
+
+  let err = rt
+    .exec_script(r#"var r = /(?<=^(a+)+$)/; r.test("!aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");"#)
+    .unwrap_err();
+  match err {
+    VmError::Termination(term) => assert_eq!(term.reason, TerminationReason::OutOfFuel),
+    other => panic!("expected termination, got {other:?}"),
+  }
+}
+
+#[test]
 fn regexp_compilation_respects_heap_limits() {
   // The runtime itself needs some headroom; use the default 4MiB heap limit but feed a large
   // enough pattern that compilation would exceed it.
