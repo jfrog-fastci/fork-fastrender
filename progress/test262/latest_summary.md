@@ -162,7 +162,9 @@ Mismatched cases by high-level bucket:
 | 19 | VmError::Unimplemented | 11 | `unimplemented: yield in expression type` |
 | 20 | exception/other | 10 | `#18: value === undefined. Actual:  value ===value` |
 
-Note: `invalid handle (vm-js/src/heap.rs:1911:16)` no longer appears in the curated report (0 occurrences in `target/js/test262*.json`). The previous snapshot had 24 such mismatches.
+Note: `invalid handle (vm-js/src/heap.rs:1911:16)` no longer appears in the curated report (0 occurrences in `target/js/test262*.json`). The previous snapshot had 24 such mismatches. This was fixed by the vm-js GC-rooting work in `6a155a00` (`fix(vm-js): root ArrayBuffer/DataView/TypedArray args across GC`).
+
+To sanity-check for nondeterminism, a `--jobs 1` run also had 0 `invalid handle` occurrences (report: `target/js/test262_curated_jobs1.json`), but hit 1 timeout: `language/statements/for-of/dstr/const-obj-ptrn-prop-id.js#strict`.
 
 ## Timed-out tests
 
