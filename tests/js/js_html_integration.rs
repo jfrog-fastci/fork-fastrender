@@ -658,6 +658,10 @@ fn p1_document_write_limit_per_call_bytes_exceeded_throws_rangeerror_and_parsing
     exc.contains("document.write exceeded max bytes per call"),
     "expected JS exception mentioning document.write per-call byte limit, got: {exc:?}"
   );
+  assert!(
+    exc.contains("RangeError"),
+    "expected document.write limit to surface as a RangeError, got: {exc:?}"
+  );
   Ok(())
 }
 
@@ -701,6 +705,10 @@ fn p1_document_write_limit_max_calls_exceeded_throws_rangeerror_and_is_determini
   assert!(
     exc.contains("document.write exceeded max call count"),
     "expected JS exception mentioning document.write call count limit, got: {exc:?}"
+  );
+  assert!(
+    exc.contains("RangeError"),
+    "expected document.write limit to surface as a RangeError, got: {exc:?}"
   );
   assert!(
     h.tab.dom().get_element_by_id("a").is_some(),
