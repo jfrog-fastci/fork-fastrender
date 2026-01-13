@@ -2238,11 +2238,13 @@ impl JsRuntime {
       let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
       env.set_source_info(source.clone(), 0, 0);
 
-      // Capture the evaluator's strict-mode flag after the async evaluation attempt. Class
-      // definition evaluation (and some other nested constructs) can temporarily toggle strictness
-      // and may suspend; the current strictness must be preserved in the async continuation so
-      // resumed execution uses the correct runtime semantics.
-      let body_eval: Result<(AsyncEval<Completion>, bool), VmError> = (|| {
+      // Capture the evaluator state after the async evaluation attempt.
+      //
+      // Some nested constructs can temporarily override runtime semantics (e.g. class definition
+      // evaluation forces strict mode; class static blocks override `this` / `new.target`) and may
+      // suspend. This state must be preserved in the async continuation so resumed execution uses
+      // the correct semantics.
+      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -2259,11 +2261,11 @@ impl JsRuntime {
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
         let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
-        Ok((eval, evaluator.strict))
+        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
       })();
 
       match body_eval {
-        Ok((AsyncEval::Complete(completion), _strict_at_suspend)) => {
+        Ok((AsyncEval::Complete(completion), _strict_at_suspend, _this_at_suspend, _new_target_at_suspend)) => {
           let promise_result = match completion {
             Completion::Normal(v) => {
               let v = v.unwrap_or(Value::Undefined);
@@ -2313,7 +2315,7 @@ impl JsRuntime {
           };
           promise_result
         }
-        Ok((AsyncEval::Suspend(mut suspend), strict_at_suspend)) => {
+        Ok((AsyncEval::Suspend(mut suspend), strict_at_suspend, this_at_suspend, new_target_at_suspend)) => {
           if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
             env.teardown(scope.heap_mut());
             for mut frame in suspend.frames {
@@ -2331,8 +2333,8 @@ impl JsRuntime {
             promise,
             cap.resolve,
             cap.reject,
-            global_this,
-            Value::Undefined,
+            this_at_suspend,
+            new_target_at_suspend,
             await_value,
           ]) {
             env.teardown(root_scope.heap_mut());
@@ -2427,8 +2429,8 @@ impl JsRuntime {
 
           // Create persistent roots for the async continuation.
           let values = [
-            global_this,
-            Value::Undefined,
+            this_at_suspend,
+            new_target_at_suspend,
             promise,
             cap.resolve,
             cap.reject,
@@ -2678,11 +2680,13 @@ impl JsRuntime {
       let mut env = RuntimeEnv::new_with_lexical_env(scope.heap_mut(), global_object, self.env.lexical_env())?;
       env.set_source_info(source.clone(), 0, 0);
 
-      // Capture the evaluator's strict-mode flag after the async evaluation attempt. Class
-      // definition evaluation (and some other nested constructs) can temporarily toggle strictness
-      // and may suspend; the current strictness must be preserved in the async continuation so
-      // resumed execution uses the correct runtime semantics.
-      let body_eval: Result<(AsyncEval<Completion>, bool), VmError> = (|| {
+      // Capture the evaluator state after the async evaluation attempt.
+      //
+      // Some nested constructs can temporarily override runtime semantics (e.g. class definition
+      // evaluation forces strict mode; class static blocks override `this` / `new.target`) and may
+      // suspend. This state must be preserved in the async continuation so resumed execution uses
+      // the correct semantics.
+      let body_eval: Result<(AsyncEval<Completion>, bool, Value, Value), VmError> = (|| {
         let mut evaluator = Evaluator {
           vm: &mut *vm_frame,
           host,
@@ -2699,11 +2703,11 @@ impl JsRuntime {
 
         evaluator.instantiate_script(&mut scope, &top.stx.body)?;
         let eval = async_eval_stmt_list(&mut evaluator, &mut scope, &top.stx.body)?;
-        Ok((eval, evaluator.strict))
+        Ok((eval, evaluator.strict, evaluator.this, evaluator.new_target))
       })();
 
       match body_eval {
-        Ok((AsyncEval::Complete(completion), _strict_at_suspend)) => {
+        Ok((AsyncEval::Complete(completion), _strict_at_suspend, _this_at_suspend, _new_target_at_suspend)) => {
           let promise_result = match completion {
             Completion::Normal(v) => {
               let v = v.unwrap_or(Value::Undefined);
@@ -2753,7 +2757,7 @@ impl JsRuntime {
           };
           promise_result
         }
-        Ok((AsyncEval::Suspend(mut suspend), strict_at_suspend)) => {
+        Ok((AsyncEval::Suspend(mut suspend), strict_at_suspend, this_at_suspend, new_target_at_suspend)) => {
           if let Err(err) = async_frames_push(&mut suspend.frames, AsyncFrame::RootScriptBody) {
             env.teardown(scope.heap_mut());
             for mut frame in suspend.frames {
@@ -2771,8 +2775,8 @@ impl JsRuntime {
             promise,
             cap.resolve,
             cap.reject,
-            global_this,
-            Value::Undefined,
+            this_at_suspend,
+            new_target_at_suspend,
             await_value,
           ]) {
             env.teardown(root_scope.heap_mut());
@@ -2867,8 +2871,8 @@ impl JsRuntime {
 
           // Create persistent roots for the async continuation.
           let values = [
-            global_this,
-            Value::Undefined,
+            this_at_suspend,
+            new_target_at_suspend,
             promise,
             cap.resolve,
             cap.reject,
@@ -12666,6 +12670,21 @@ enum AsyncFrame {
     func_root: RootId,
   },
 
+  /// Continue class evaluation after a static block statement list completes.
+  ///
+  /// Static blocks run after the element definition pass and may contain `await`, so they can
+  /// suspend and resume. This frame restores the outer class evaluation context and continues
+  /// executing any remaining static blocks.
+  ClassAfterStaticBlock {
+    members: *const Vec<Node<ClassMember>>,
+    next_index: usize,
+    func_root: RootId,
+    saved_this_root: RootId,
+    saved_new_target_root: RootId,
+    saved_lex: GcEnv,
+    saved_var_env: VarEnv,
+  },
+
   /// Continue a conditional expression after evaluating the test.
   CondAfterTest {
     expr: *const CondExpr,
@@ -13284,6 +13303,16 @@ fn async_teardown_frame(heap: &mut Heap, frame: &mut AsyncFrame) {
     AsyncFrame::TryAfterFinally { pending } => pending.teardown(heap),
     AsyncFrame::ComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::ClassAfterComputedKey { func_root, .. } => heap.remove_root(*func_root),
+    AsyncFrame::ClassAfterStaticBlock {
+      func_root,
+      saved_this_root,
+      saved_new_target_root,
+      ..
+    } => {
+      heap.remove_root(*func_root);
+      heap.remove_root(*saved_this_root);
+      heap.remove_root(*saved_new_target_root);
+    }
     AsyncFrame::CallComputedMemberAfterMember { base_root, .. } => heap.remove_root(*base_root),
     AsyncFrame::BinaryAfterRight { left_root, .. } => heap.remove_root(*left_root),
     AsyncFrame::AssignAfterRhsProperty { base_root, key_root } => {
@@ -13746,14 +13775,19 @@ pub(crate) fn async_resume_call(
 
       let frames = mem::take(&mut cont.frames);
       let resume_value = if is_reject { Err(arg0) } else { Ok(arg0) };
-      let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
-      // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
-      // evaluation forces strict mode). Persist the current strictness into the continuation so it
-      // is restored correctly across subsequent `await` suspensions.
-      cont.strict = evaluator.strict;
+       let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
+       // `Evaluator::strict` can change temporarily during evaluation (e.g. class definition
+       // evaluation forces strict mode). Persist the current strictness into the continuation so it
+       // is restored correctly across subsequent `await` suspensions.
+       cont.strict = evaluator.strict;
+       // `this` / `new.target` can also be overridden temporarily by nested constructs that can
+       // suspend (e.g. class static blocks). Persist them so resumed execution observes the correct
+       // values.
+       scope.heap_mut().set_root(cont.this_root, evaluator.this);
+       scope.heap_mut().set_root(cont.new_target_root, evaluator.new_target);
 
-      async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
-    })();
+       async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
+     })();
 
     let popped = vm.pop_execution_context();
     debug_assert_eq!(popped, Some(exec_ctx));
@@ -13779,6 +13813,9 @@ pub(crate) fn async_resume_call(
   let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value);
   // Persist strictness across suspensions (see comment in the exec_ctx branch above).
   cont.strict = evaluator.strict;
+  // Persist `this` / `new.target` across suspensions (see comment in the exec_ctx branch above).
+  scope.heap_mut().set_root(cont.this_root, evaluator.this);
+  scope.heap_mut().set_root(cont.new_target_root, evaluator.new_target);
 
   async_handle_body_result(vm, scope, host, hooks, id, cont, resolve, reject, result)
 }
@@ -13923,9 +13960,21 @@ fn expr_contains_await(expr: &Node<Expr>) -> bool {
 
     Expr::Class(class) => {
       class.stx.extends.as_ref().is_some_and(expr_contains_await)
-        || class.stx.members.iter().any(|member| match &member.stx.key {
-          ClassOrObjKey::Direct(_) => false,
-          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        || class.stx.members.iter().any(|member| {
+          let key_has_await = match &member.stx.key {
+            ClassOrObjKey::Direct(_) => false,
+            ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+          };
+          if key_has_await {
+            return true;
+          }
+ 
+          match &member.stx.val {
+            // Static blocks execute during class definition evaluation and may contain `await`.
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
+            // Function-valued members: the body is not evaluated at class creation time.
+            _ => false,
+          }
         })
     }
 
@@ -14133,9 +14182,19 @@ fn stmt_contains_await(stmt: &Node<Stmt>) -> bool {
     Stmt::ExportDefaultExpr(stmt) => expr_contains_await(&stmt.stx.expression),
     Stmt::ClassDecl(class) => {
       class.stx.extends.as_ref().is_some_and(expr_contains_await)
-        || class.stx.members.iter().any(|member| match &member.stx.key {
-          ClassOrObjKey::Direct(_) => false,
-          ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+        || class.stx.members.iter().any(|member| {
+          let key_has_await = match &member.stx.key {
+            ClassOrObjKey::Direct(_) => false,
+            ClassOrObjKey::Computed(expr) => expr_contains_await(expr),
+          };
+          if key_has_await {
+            return true;
+          }
+ 
+          match &member.stx.val {
+            ClassOrObjVal::StaticBlock(block) => block.stx.body.iter().any(stmt_contains_await),
+            _ => false,
+          }
         })
     }
     Stmt::Expr(expr_stmt) => expr_contains_await(&expr_stmt.stx.expr),
@@ -16387,20 +16446,8 @@ fn async_eval_class_members_from(
       )?;
     }
 
-    // Evaluate class static blocks in source order after all class elements have been defined.
-    //
-    // This matches the sync evaluator's `eval_class` behaviour and ECMAScript
-    // `ClassDefinitionEvaluation`.
-    for member in members {
-      if let ClassOrObjVal::StaticBlock(block) = &member.stx.val {
-        let mut block_scope = scope.reborrow();
-        evaluator
-          .eval_class_static_block(&mut block_scope, func_obj, &block.stx.body)
-          .map_err(|err| coerce_error_to_throw_for_async(evaluator.vm, &mut block_scope, err))?;
-      }
-    }
-
-    Ok(AsyncEval::Complete(Value::Object(func_obj)))
+    // Evaluate class static blocks in source order.
+    async_eval_class_static_blocks_from(evaluator, scope, members, 0, func_root)
   })();
 
   match res {
@@ -16414,6 +16461,149 @@ fn async_eval_class_members_from(
       Err(err)
     }
   }
+}
+
+fn async_eval_class_static_blocks_from(
+  evaluator: &mut Evaluator<'_>,
+  scope: &mut Scope<'_>,
+  members: &Vec<Node<ClassMember>>,
+  start_index: usize,
+  func_root: RootId,
+) -> Result<AsyncEval<Value>, VmError> {
+  let func_value = scope
+    .heap()
+    .get_root(func_root)
+    .ok_or(VmError::InvariantViolation("missing class constructor root"))?;
+  let Value::Object(func_obj) = func_value else {
+    return Err(VmError::InvariantViolation(
+      "class constructor root is not an object",
+    ));
+  };
+
+  for (idx, member) in members.iter().enumerate().skip(start_index) {
+    evaluator.tick()?;
+
+    let ClassOrObjVal::StaticBlock(block) = &member.stx.val else {
+      continue;
+    };
+
+    // Static blocks are evaluated as strict-mode "method" bodies with:
+    // - `this` bound to the class constructor object, and
+    // - `new.target` set to `undefined`.
+    //
+    // We implement this by:
+    // - saving the current evaluator context (`this`, `new.target`, lexical env, var env),
+    // - creating a fresh var env whose outer is the class lexical env,
+    // - creating a function-body lexical env whose outer is that var env,
+    // - instantiating + evaluating the statement list (which may suspend if it contains `await`),
+    // - restoring the outer context afterwards.
+    let mut block_scope = scope.reborrow();
+    block_scope.push_root(Value::Object(func_obj))?;
+
+    let saved_this = evaluator.this;
+    let saved_new_target = evaluator.new_target;
+    let saved_lex = evaluator.env.lexical_env;
+    let saved_var_env = evaluator.env.var_env();
+
+    // Root the saved values so they remain GC-safe even if we suspend (the async continuation's
+    // `this_root` / `new_target_root` will be updated to the block's overridden values).
+    block_scope.push_root(saved_this)?;
+    block_scope.push_root(saved_new_target)?;
+    let saved_this_root = block_scope.heap_mut().add_root(saved_this)?;
+    let saved_new_target_root = block_scope.heap_mut().add_root(saved_new_target)?;
+
+    evaluator.this = Value::Object(func_obj);
+    evaluator.new_target = Value::Undefined;
+
+    let var_env = block_scope.env_create(Some(saved_lex))?;
+    let body_lex = block_scope.env_create(Some(var_env))?;
+    evaluator.env.set_var_env(VarEnv::Env(var_env));
+    evaluator.env.set_lexical_env(block_scope.heap_mut(), body_lex);
+
+    // Hoist var/lexical/function declarations within the block before evaluating it.
+    evaluator.instantiate_stmt_list(&mut block_scope, &block.stx.body)?;
+
+    match async_eval_stmt_list(evaluator, &mut block_scope, &block.stx.body) {
+      Ok(AsyncEval::Complete(completion)) => {
+        // Restore outer context before continuing (static block execution is synchronous at the
+        // statement-list boundary regardless of completion type).
+        evaluator.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+        evaluator.env.set_var_env(saved_var_env);
+        evaluator.this = saved_this;
+        evaluator.new_target = saved_new_target;
+        block_scope.heap_mut().remove_root(saved_this_root);
+        block_scope.heap_mut().remove_root(saved_new_target_root);
+
+        match completion {
+          Completion::Normal(_) => continue,
+          Completion::Throw(thrown) => {
+            return Err(VmError::ThrowWithStack {
+              value: thrown.value,
+              stack: thrown.stack,
+            })
+          }
+          Completion::Return(_) => {
+            return Err(VmError::InvariantViolation(
+              "class static block produced Return completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Break(..) => {
+            return Err(VmError::InvariantViolation(
+              "class static block produced Break completion (early errors should prevent this)",
+            ))
+          }
+          Completion::Continue(..) => {
+            return Err(VmError::InvariantViolation(
+              "class static block produced Continue completion (early errors should prevent this)",
+            ))
+          }
+        }
+      }
+      Ok(AsyncEval::Suspend(mut suspend)) => {
+        // Preserve the static-block execution context across suspension; restore + continue only
+        // after the statement list completes.
+        let push_res = async_frames_push(
+          &mut suspend.frames,
+          AsyncFrame::ClassAfterStaticBlock {
+            members: members as *const Vec<Node<ClassMember>>,
+            next_index: idx.saturating_add(1),
+            func_root,
+            saved_this_root,
+            saved_new_target_root,
+            saved_lex,
+            saved_var_env,
+          },
+        );
+        if let Err(err) = push_res {
+          // Best-effort cleanup: tear down any rooted frames and restore the evaluator context so
+          // we don't leak roots or leave the evaluator in a mutated state when bubbling up OOM.
+          for mut frame in suspend.frames {
+            async_teardown_frame(block_scope.heap_mut(), &mut frame);
+          }
+          evaluator.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+          evaluator.env.set_var_env(saved_var_env);
+          evaluator.this = saved_this;
+          evaluator.new_target = saved_new_target;
+          block_scope.heap_mut().remove_root(saved_this_root);
+          block_scope.heap_mut().remove_root(saved_new_target_root);
+          return Err(err);
+        }
+        return Ok(AsyncEval::Suspend(suspend));
+      }
+      Err(err) => {
+        // Fatal error: restore context and drop temporary roots before bubbling the error up.
+        evaluator.env.set_lexical_env(block_scope.heap_mut(), saved_lex);
+        evaluator.env.set_var_env(saved_var_env);
+        evaluator.this = saved_this;
+        evaluator.new_target = saved_new_target;
+        block_scope.heap_mut().remove_root(saved_this_root);
+        block_scope.heap_mut().remove_root(saved_new_target_root);
+        return Err(err);
+      }
+    }
+  }
+
+  Ok(AsyncEval::Complete(Value::Object(func_obj)))
 }
 
 fn async_define_class_member(
@@ -23587,6 +23777,115 @@ fn async_resume_from_frames(
         AsyncState::Completion(_) => {
           return Err(VmError::InvariantViolation(
             "class computed key frame received completion state",
+          ))
+        }
+      },
+
+      AsyncFrame::ClassAfterStaticBlock {
+        members,
+        next_index,
+        func_root,
+        saved_this_root,
+        saved_new_target_root,
+        saved_lex,
+        saved_var_env,
+      } => match state {
+        AsyncState::Completion(completion) => {
+          let members = unsafe { &*members };
+
+          // Restore the outer evaluation context before continuing class static block evaluation.
+          let saved_this = scope
+            .heap()
+            .get_root(saved_this_root)
+            .ok_or(VmError::InvariantViolation(
+              "missing class static block saved this root",
+            ))?;
+          let saved_new_target =
+            scope
+              .heap()
+              .get_root(saved_new_target_root)
+              .ok_or(VmError::InvariantViolation(
+                "missing class static block saved new.target root",
+              ))?;
+
+          // Root the restored values for the duration of this resumption segment. The async
+          // continuation's `this_root` / `new_target_root` will be updated only after
+          // `async_resume_from_frames` returns, so ensure GC cannot collect these values while class
+          // evaluation continues.
+          if let Err(err) = scope.push_roots(&[saved_this, saved_new_target]) {
+            // Best-effort cleanup: this frame owns persistent roots that won't be torn down by the
+            // async frame drop guard after we've popped it.
+            scope.heap_mut().remove_root(saved_this_root);
+            scope.heap_mut().remove_root(saved_new_target_root);
+            scope.heap_mut().remove_root(func_root);
+            return Err(err);
+          }
+
+          evaluator.env.set_lexical_env(scope.heap_mut(), saved_lex);
+          evaluator.env.set_var_env(saved_var_env);
+          evaluator.this = saved_this;
+          evaluator.new_target = saved_new_target;
+          scope.heap_mut().remove_root(saved_this_root);
+          scope.heap_mut().remove_root(saved_new_target_root);
+
+          match completion {
+            Completion::Normal(_) => match async_eval_class_static_blocks_from(
+              evaluator,
+              scope,
+              members,
+              next_index,
+              func_root,
+            ) {
+              Ok(AsyncEval::Complete(v)) => {
+                scope.heap_mut().remove_root(func_root);
+                state = AsyncState::Expr(Ok(v));
+              }
+              Ok(AsyncEval::Suspend(mut suspend)) => {
+                suspend.frames.append(&mut frames);
+                return Ok(AsyncBodyResult::Await {
+                  await_value: suspend.await_value,
+                  frames: suspend.frames,
+                });
+              }
+              Err(err @ (VmError::Throw(_) | VmError::ThrowWithStack { .. })) => {
+                scope.heap_mut().remove_root(func_root);
+                state = AsyncState::Expr(Err(err));
+              }
+              Err(err) => {
+                scope.heap_mut().remove_root(func_root);
+                return Err(err);
+              }
+            },
+            Completion::Throw(thrown) => {
+              scope.heap_mut().remove_root(func_root);
+              state = AsyncState::Expr(Err(VmError::ThrowWithStack {
+                value: thrown.value,
+                stack: thrown.stack,
+              }));
+            }
+            Completion::Return(_) => {
+              scope.heap_mut().remove_root(func_root);
+              return Err(VmError::InvariantViolation(
+                "class static block produced Return completion (early errors should prevent this)",
+              ));
+            }
+            Completion::Break(..) => {
+              scope.heap_mut().remove_root(func_root);
+              return Err(VmError::InvariantViolation(
+                "class static block produced Break completion (early errors should prevent this)",
+              ));
+            }
+            Completion::Continue(..) => {
+              scope.heap_mut().remove_root(func_root);
+              return Err(VmError::InvariantViolation(
+                "class static block produced Continue completion (early errors should prevent this)",
+              ));
+            }
+          }
+        }
+        AsyncState::Expr(_) => {
+          return Err(VmError::InvariantViolation(
+            "class static block frame received expression state",
           ))
         }
       },
@@ -31079,14 +31378,20 @@ pub(crate) fn run_ecma_function(
         res.map(|_| (promise, evaluator.this))
       }
       Ok(AsyncBodyResult::Await { await_value, frames }) => {
+        // `this` / `new.target` can be temporarily overridden by nested constructs that can suspend
+        // (e.g. class static blocks). Capture their current values at the suspension point so the
+        // continuation resumes with the correct execution context.
+        let this_at_suspend = evaluator.this;
+        let new_target_at_suspend = evaluator.new_target;
+
         // Root all GC-managed values while we create persistent roots and schedule the resumption.
         let mut root_scope = scope.reborrow();
         if let Err(err) = root_scope.push_roots(&[
           promise,
           cap.resolve,
           cap.reject,
-          this,
-          new_target,
+          this_at_suspend,
+          new_target_at_suspend,
           await_value,
         ]) {
           evaluator.env.teardown(root_scope.heap_mut());
@@ -31179,8 +31484,8 @@ pub(crate) fn run_ecma_function(
 
         // Create persistent roots for the async continuation.
         let values = [
-          this,
-          new_target,
+          this_at_suspend,
+          new_target_at_suspend,
           promise,
           cap.resolve,
           cap.reject,
@@ -31683,11 +31988,17 @@ pub(crate) fn start_module_tla_evaluation(
       };
 
       // Root all GC-managed values while we create persistent roots and register the continuation.
+      //
+      // Note: `this` / `new.target` can be temporarily overridden by nested constructs that can
+      // suspend (e.g. class static blocks). Capture them so module resumption continues with the
+      // correct execution context.
+      let this_at_suspend = evaluator.this;
+      let new_target_at_suspend = evaluator.new_target;
       let mut root_scope = scope.reborrow();
       // Create persistent roots for dummy async continuation fields plus the awaited promise.
       let values = [
-        Value::Undefined,
-        Value::Undefined,
+        this_at_suspend,
+        new_target_at_suspend,
         Value::Undefined,
         Value::Undefined,
         Value::Undefined,
@@ -31800,6 +32111,19 @@ pub(crate) fn resume_module_tla_evaluation(
       scope.heap_mut().remove_root(root);
     }
 
+    let this = scope
+      .heap()
+      .get_root(cont.this_root)
+      .ok_or(VmError::InvariantViolation(
+        "module async continuation missing this root",
+      ))?;
+    let new_target = scope
+      .heap()
+      .get_root(cont.new_target_root)
+      .ok_or(VmError::InvariantViolation(
+        "module async continuation missing new.target root",
+      ))?;
+
     let source = cont.env.source();
     let (line, col) = source.line_col(0);
     let frame = StackFrame {
@@ -31816,8 +32140,8 @@ pub(crate) fn resume_module_tla_evaluation(
       hooks,
       env: &mut cont.env,
       strict: true,
-      this: Value::Undefined,
-      new_target: Value::Undefined,
+      this,
+      new_target,
       class_constructor: None,
       derived_constructor: false,
       this_initialized: true,
@@ -31830,6 +32154,9 @@ pub(crate) fn resume_module_tla_evaluation(
       mem::take(&mut cont.frames),
       resume_value,
     );
+    // Persist temporary `this` / `new.target` overrides across repeated suspensions.
+    scope.heap_mut().set_root(cont.this_root, evaluator.this);
+    scope.heap_mut().set_root(cont.new_target_root, evaluator.new_target);
 
     loop {
       match next {
@@ -31891,6 +32218,8 @@ pub(crate) fn resume_module_tla_evaluation(
             Err(VmError::Throw(reason) | VmError::ThrowWithStack { value: reason, .. }) => {
               // Treat PromiseResolve throw as an immediate throw completion at the await site.
               next = async_resume_from_frames(&mut evaluator, scope, frames, Err(reason));
+              scope.heap_mut().set_root(cont.this_root, evaluator.this);
+              scope.heap_mut().set_root(cont.new_target_root, evaluator.new_target);
               continue;
             }
             Err(err) => {
@@ -31922,6 +32251,8 @@ pub(crate) fn resume_module_tla_evaluation(
 pub(crate) struct ModuleAsyncContinuation {
   env: RuntimeEnv,
   frames: VecDeque<AsyncFrame>,
+  this_root: RootId,
+  new_target_root: RootId,
   awaited_promise_root: Option<RootId>,
 }
 
@@ -31937,6 +32268,8 @@ pub(crate) enum ModuleAsyncStep {
 
 pub(crate) fn module_async_teardown_continuation(scope: &mut Scope<'_>, mut cont: ModuleAsyncContinuation) {
   cont.env.teardown(scope.heap_mut());
+  scope.heap_mut().remove_root(cont.this_root);
+  scope.heap_mut().remove_root(cont.new_target_root);
   if let Some(root) = cont.awaited_promise_root.take() {
     scope.heap_mut().remove_root(root);
   }
@@ -31968,9 +32301,32 @@ pub(crate) fn run_module_async_start(
     // Wrap the continuation in an `Option` so we can `take()` it only when returning
     // `ModuleAsyncStep::Await`. This avoids borrow/move issues while still ensuring we can tear
     // down roots on error paths.
+    //
+    // Note: module evaluation can suspend inside nested constructs that temporarily override runtime
+    // semantics (e.g. class static blocks override `this` / `new.target`). Preserve `this` /
+    // `new.target` in persistent roots so resumption continues with the correct execution context.
+    let mut env = RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?;
+
+    let this_root = match scope.heap_mut().add_root(Value::Undefined) {
+      Ok(id) => id,
+      Err(err) => {
+        env.teardown(scope.heap_mut());
+        return Err(err);
+      }
+    };
+    let new_target_root = match scope.heap_mut().add_root(Value::Undefined) {
+      Ok(id) => id,
+      Err(err) => {
+        scope.heap_mut().remove_root(this_root);
+        env.teardown(scope.heap_mut());
+        return Err(err);
+      }
+    };
     let mut cont = Some(ModuleAsyncContinuation {
-      env: RuntimeEnv::new_with_var_env(scope.heap_mut(), global_object, module_env, module_env)?,
+      env,
       frames: VecDeque::new(),
+      this_root,
+      new_target_root,
       awaited_promise_root: None,
     });
     cont
@@ -31991,25 +32347,28 @@ pub(crate) fn run_module_async_start(
 
       let async_eval = {
         let cont = cont.as_mut().expect("module async continuation missing");
-         let mut evaluator = Evaluator {
-           vm: &mut *vm_frame,
-           host,
-           hooks,
-           env: &mut cont.env,
-           strict: true,
-           // Per ECMA-262, module top-level `this` is `undefined`.
-           this: Value::Undefined,
-           new_target: Value::Undefined,
-           class_constructor: None,
-           derived_constructor: false,
-           this_initialized: true,
-           this_root_idx: None,
-         };
-        async_eval_stmt_list(&mut evaluator, scope, stmts)?
+        let mut evaluator = Evaluator {
+          vm: &mut *vm_frame,
+          host,
+          hooks,
+          env: &mut cont.env,
+          strict: true,
+          // Per ECMA-262, module top-level `this` is `undefined`.
+          this: Value::Undefined,
+          new_target: Value::Undefined,
+          class_constructor: None,
+          derived_constructor: false,
+          this_initialized: true,
+          this_root_idx: None,
+        };
+        let eval = async_eval_stmt_list(&mut evaluator, scope, stmts)?;
+        // Capture `this` / `new.target` at the end of this execution segment (suspension boundary or
+        // completion) so it can be restored on resumption.
+        (eval, evaluator.this, evaluator.new_target)
       };
 
       match async_eval {
-        AsyncEval::Complete(completion) => match completion {
+        (AsyncEval::Complete(completion), _this_at_suspend, _new_target_at_suspend) => match completion {
           Completion::Normal(_) => {
             // Completed without suspension: immediately tear down the continuation (it owns the
             // module env roots).
@@ -32031,8 +32390,17 @@ pub(crate) fn run_module_async_start(
             "module evaluation produced Continue completion (early errors should prevent this)",
           )),
         },
-        AsyncEval::Suspend(mut suspend) => {
+        (AsyncEval::Suspend(mut suspend), this_at_suspend, new_target_at_suspend) => {
           async_frames_push(&mut suspend.frames, AsyncFrame::RootModuleBody)?;
+          scope
+            .heap_mut()
+            .set_root(cont.as_ref().expect("module async continuation missing").this_root, this_at_suspend);
+          scope
+            .heap_mut()
+            .set_root(
+              cont.as_ref().expect("module async continuation missing").new_target_root,
+              new_target_at_suspend,
+            );
           cont
             .as_mut()
             .expect("module async continuation missing")
@@ -32124,22 +32492,38 @@ pub(crate) fn run_module_async_resume(
 
     let body_result = {
       let cont = cont.as_mut().expect("module async continuation missing");
-       let mut evaluator = Evaluator {
-         vm: &mut *vm_frame,
-         host,
-         hooks,
-         env: &mut cont.env,
-         strict: true,
-         this: Value::Undefined,
-         new_target: Value::Undefined,
-         class_constructor: None,
-         derived_constructor: false,
-         this_initialized: true,
-         this_root_idx: None,
-       };
+      let this = scope
+        .heap()
+        .get_root(cont.this_root)
+        .ok_or(VmError::InvariantViolation(
+          "module async continuation missing this root",
+        ))?;
+      let new_target = scope
+        .heap()
+        .get_root(cont.new_target_root)
+        .ok_or(VmError::InvariantViolation(
+          "module async continuation missing new.target root",
+        ))?;
+      let mut evaluator = Evaluator {
+        vm: &mut *vm_frame,
+        host,
+        hooks,
+        env: &mut cont.env,
+        strict: true,
+        this,
+        new_target,
+        class_constructor: None,
+        derived_constructor: false,
+        this_initialized: true,
+        this_root_idx: None,
+      };
 
       let frames = mem::take(&mut cont.frames);
-      async_resume_from_frames(&mut evaluator, scope, frames, resume_value)?
+      let result = async_resume_from_frames(&mut evaluator, scope, frames, resume_value)?;
+      // Persist temporary `this` / `new.target` overrides across repeated suspensions.
+      scope.heap_mut().set_root(cont.this_root, evaluator.this);
+      scope.heap_mut().set_root(cont.new_target_root, evaluator.new_target);
+      result
     };
 
     match body_result {

@@ -71,3 +71,63 @@ fn async_class_evaluation_supports_static_blocks() -> Result<(), VmError> {
   assert_eq!(value_to_string(&rt, out), "s");
   Ok(())
 }
+
+#[test]
+fn async_class_static_block_can_await_and_preserves_this_and_new_target() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      async function f() {
+        class C {
+          static {
+            out += (this === C ? "t" : "f");
+            out += (new.target === undefined ? "u" : "n");
+            await Promise.resolve(0);
+            out += (this === C ? "t" : "f");
+            out += (new.target === undefined ? "u" : "n");
+          }
+        }
+        return out;
+      }
+      f().then(v => out = v);
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "tu");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "tutu");
+  Ok(())
+}
+
+#[test]
+fn script_await_in_class_static_block_runs_as_async_script() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+
+  rt.exec_script(
+    r#"
+      var out = "";
+      class C {
+        static {
+          out += "a";
+          await Promise.resolve(0);
+          out += "b";
+        }
+      }
+    "#,
+  )?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "a");
+
+  rt.vm.perform_microtask_checkpoint(&mut rt.heap)?;
+
+  let out = rt.exec_script("out")?;
+  assert_eq!(value_to_string(&rt, out), "ab");
+  Ok(())
+}

@@ -1635,16 +1635,21 @@ impl<'a, F: FnMut() -> Result<(), VmError>> EarlyErrorWalker<'a, F> {
   ) -> Result<(), VmError> {
     // Static initialization blocks introduce early-error boundaries:
     // - `return` is always invalid (they are not function bodies),
-    // - `await` is always invalid (even inside async functions or modules),
+    // - `await` follows the surrounding `await` context (async functions, modules, or async scripts),
     // - `yield` is always invalid (even inside generator functions),
     // - `break`/`continue` target resolution must not cross static-block boundaries.
     //
-    // Spec tests:
-    // - language/statements/class/static-init-invalid-{await,yield,return}.js
-    // - language/statements/{break,continue}/static-init-*.js
+    // Note: `await` is parsed as a keyword inside static blocks (see `parse-js`), but whether it is
+    // semantically permitted depends on the surrounding context. We model this by inheriting the
+    // caller's `await_allowed` flag rather than forcing it off.
+    let await_allowed = ctx.await_allowed;
     let saved = self.save_and_enter_function(
-      ctx, /* strict */ true, /* await_allowed */ false, /* yield_allowed */ false,
-      /* super_call_allowed */ false, /* arguments_allowed */ false,
+      ctx,
+      /* strict */ true,
+      /* await_allowed */ await_allowed,
+      /* yield_allowed */ false,
+      /* super_call_allowed */ false,
+      /* arguments_allowed */ false,
     );
     ctx.return_allowed = false;
     self.static_block_declared_name_early_errors(stmts)?;
