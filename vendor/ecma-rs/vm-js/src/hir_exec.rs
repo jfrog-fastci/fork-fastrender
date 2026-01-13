@@ -3634,21 +3634,7 @@ impl<'vm> HirEvaluator<'vm> {
               // Match the interpreter `exec.rs` semantics: negative shift counts reverse the shift
               // direction, and extremely large magnitudes saturate to `u64::MAX` (the underlying
               // BigInt ops can still report OOM if needed).
-              let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
-                Some(shift_i) => {
-                  let shift_mag: u128 = if shift_i == i128::MIN {
-                    1u128 << 127
-                  } else if shift_i < 0 {
-                    (-shift_i) as u128
-                  } else {
-                    shift_i as u128
-                  };
-                  let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
-                  (shift_i < 0, shift)
-                }
-                None => (b.is_negative(), u64::MAX),
-              };
-
+              let (shift_negative, shift) = bigint_shift_count(b);
               if shift_negative {
                 a.shr(shift)?
               } else {
@@ -3678,21 +3664,7 @@ impl<'vm> HirEvaluator<'vm> {
 
               // Match the interpreter `exec.rs` semantics: negative shift counts reverse the shift
               // direction, and extremely large magnitudes saturate to `u64::MAX`.
-              let (shift_negative, shift): (bool, u64) = match b.try_to_i128() {
-                Some(shift_i) => {
-                  let shift_mag: u128 = if shift_i == i128::MIN {
-                    1u128 << 127
-                  } else if shift_i < 0 {
-                    (-shift_i) as u128
-                  } else {
-                    shift_i as u128
-                  };
-                  let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
-                  (shift_i < 0, shift)
-                }
-                None => (b.is_negative(), u64::MAX),
-              };
-
+              let (shift_negative, shift) = bigint_shift_count(b);
               if shift_negative {
                 a.shl(shift)?
               } else {
@@ -4939,18 +4911,56 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::AssignOp::ShiftLeftAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_int32(ln).wrapping_shl(shift) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_int32(a).wrapping_shl(shift) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              let (shift_negative, shift) = bigint_shift_count(b);
+              if shift_negative {
+                a.shr(shift)?
+              } else {
+                a.shl(shift)?
+              }
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::ShiftRightAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        let shift = to_uint32(rn) & 0x1f;
-        Ok(Value::Number(to_int32(ln).wrapping_shr(shift) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            let shift = to_uint32(b) & 0x1f;
+            Ok(Value::Number(to_int32(a).wrapping_shr(shift) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              let (shift_negative, shift) = bigint_shift_count(b);
+              if shift_negative {
+                a.shl(shift)?
+              } else {
+                a.shr(shift)?
+              }
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::ShiftRightUnsignedAssign => {
         let mut scope = scope.reborrow();
@@ -4963,23 +4973,65 @@ impl<'vm> HirEvaluator<'vm> {
       hir_js::AssignOp::BitOrAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number((to_int32(ln) | to_int32(rn)) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) | to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_or(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::BitAndAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number((to_int32(ln) & to_int32(rn)) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) & to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_and(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       hir_js::AssignOp::BitXorAssign => {
         let mut scope = scope.reborrow();
         scope.push_roots(&[left, right])?;
-        let ln = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, left)?;
-        let rn = scope.to_number(self.vm, &mut *self.host, &mut *self.hooks, right)?;
-        Ok(Value::Number((to_int32(ln) ^ to_int32(rn)) as f64))
+        let ln = self.to_numeric(&mut scope, left)?;
+        let rn = self.to_numeric(&mut scope, right)?;
+        match (ln, rn) {
+          (NumericValue::Number(a), NumericValue::Number(b)) => {
+            Ok(Value::Number((to_int32(a) ^ to_int32(b)) as f64))
+          }
+          (NumericValue::BigInt(a), NumericValue::BigInt(b)) => {
+            let out = {
+              let a = scope.heap().get_bigint(a)?;
+              let b = scope.heap().get_bigint(b)?;
+              a.bitwise_xor(b)?
+            };
+            let out = scope.alloc_bigint(out)?;
+            Ok(Value::BigInt(out))
+          }
+          _ => Err(VmError::TypeError("Cannot mix BigInt and other types")),
+        }
       }
       _ => Err(VmError::Unimplemented(
         "compound assignment operator (hir-js compiled path)",
@@ -6549,6 +6601,28 @@ fn bigint_compare_number(
   } else {
     Ordering::Greater
   }))
+}
+
+fn bigint_shift_count(value: &crate::JsBigInt) -> (bool, u64) {
+  match value.try_to_i128() {
+    Some(shift_i) => {
+      // `(-i128::MIN)` overflows, so handle it explicitly.
+      let shift_mag: u128 = if shift_i == i128::MIN {
+        1u128 << 127
+      } else if shift_i < 0 {
+        (-shift_i) as u128
+      } else {
+        shift_i as u128
+      };
+      let shift = u64::try_from(shift_mag).unwrap_or(u64::MAX);
+      (shift_i < 0, shift)
+    }
+    // If the shift count does not fit into an i128, it is either extremely large or extremely
+    // negative. Saturate to `u64::MAX` so:
+    // - huge right shifts quickly produce 0/-1,
+    // - huge left shifts attempt to allocate and surface OOM.
+    None => (value.is_negative(), u64::MAX),
+  }
 }
 
 fn to_int32(n: f64) -> i32 {

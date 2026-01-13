@@ -5502,6 +5502,54 @@ fn compiled_bigint_exponent_assign_executes() -> Result<(), VmError> {
 }
 
 #[test]
+fn compiled_bigint_shift_left_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let x = 1n;
+      x <<= 2n;
+      x
+    "#,
+    4,
+  )
+}
+
+#[test]
+fn compiled_bigint_shift_right_assign_with_negative_count_shifts_left() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let x = 4n;
+      x >>= -1n;
+      x
+    "#,
+    8,
+  )
+}
+
+#[test]
+fn compiled_bigint_bitwise_and_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let x = 5n;
+      x &= 3n;
+      x
+    "#,
+    1,
+  )
+}
+
+#[test]
+fn compiled_bigint_bitwise_xor_assign_executes() -> Result<(), VmError> {
+  assert_compiled_script_bigint(
+    r#"
+      let x = 1n;
+      x ^= 3n;
+      x
+    "#,
+    2,
+  )
+}
+
+#[test]
 fn compiled_string_add_assign_executes() -> Result<(), VmError> {
   let vm = Vm::new(VmOptions::default());
   let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
