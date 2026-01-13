@@ -21,7 +21,7 @@ use cssparser::{serialize_identifier, Parser, ParserInput, Token};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use url::Url;
 
 #[cfg(test)]
@@ -3079,27 +3079,53 @@ pub fn infer_document_url_guess<'a>(html: &'a str, input_url: &'a str) -> Cow<'a
 }
 
 fn canonicalize_file_input_url<'a>(input_url: &'a str) -> Cow<'a, str> {
-  let mut input = Cow::Borrowed(input_url);
-  if input_url.starts_with("file://") && !input_url.starts_with("file:///") {
-    // file://relative/path.html
-    let rel = &input_url["file://".len()..];
-    if let Ok(canon) = std::fs::canonicalize(rel) {
-      if let Ok(url) = Url::from_file_path(&canon) {
-        input = Cow::Owned(url.to_string());
+  fn normalize_path_components(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+      match component {
+        Component::CurDir => {}
+        Component::ParentDir => {
+          normalized.pop();
+        }
+        Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        Component::Normal(part) => normalized.push(part),
       }
     }
-  } else if let Ok(url) = Url::parse(input_url) {
+    normalized
+  }
+
+  fn canonicalize_path_lexical(path: PathBuf) -> Option<String> {
+    let abs = if path.is_absolute() {
+      path
+    } else {
+      std::env::current_dir().ok()?.join(path)
+    };
+    let normalized = normalize_path_components(&abs);
+    Url::from_file_path(normalized)
+      .ok()
+      .map(|url| url.to_string())
+  }
+
+  // Prefer the WHATWG URL parser for standard file:// URLs (including `file://localhost/...`).
+  if let Ok(url) = Url::parse(input_url) {
     if url.scheme() == "file" {
       if let Ok(path) = url.to_file_path() {
-        if let Ok(canon) = path.canonicalize() {
-          if let Ok(url) = Url::from_file_path(&canon) {
-            input = Cow::Owned(url.to_string());
-          }
+        if let Some(url) = canonicalize_path_lexical(path) {
+          return Cow::Owned(url);
         }
       }
     }
   }
-  input
+
+  // Legacy `file://relative/path` form: treat the remainder as a local path, not an authority.
+  if input_url.starts_with("file://") && !input_url.starts_with("file:///") {
+    let rel = &input_url["file://".len()..];
+    if let Some(url) = canonicalize_path_lexical(PathBuf::from(rel)) {
+      return Cow::Owned(url);
+    }
+  }
+
+  Cow::Borrowed(input_url)
 }
 
 fn is_file_url(url: &str) -> bool {
@@ -5560,29 +5586,33 @@ mod tests {
   #[test]
   fn canonicalizes_relative_file_url_before_inference() {
     let html = "<html><head></head></html>";
-    let tmp = tempfile::tempdir().unwrap();
 
-    let rel = "fetches/html/news.ycombinator.com.html";
-    let abs_path = tmp.path().join(rel);
-    if let Some(parent) = abs_path.parent() {
-      std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(&abs_path, html).unwrap();
+    let rel_suffix = Path::new("fetches")
+      .join("html")
+      .join("news.ycombinator.com.html");
+    let input = "file://fetches/html/../html/./news.ycombinator.com.html";
 
-    let file_url = Url::from_file_path(&abs_path).unwrap().to_string();
-    let canonicalized = canonicalize_file_input_url(&file_url);
+    let canonicalized = canonicalize_file_input_url(input);
+    let parsed = Url::parse(canonicalized.as_ref()).expect("file URL");
+    assert_eq!(parsed.scheme(), "file");
+    let canonical_path = parsed.to_file_path().expect("file path");
+    assert!(canonical_path.is_absolute(), "expected absolute file path");
     assert!(
-      matches!(canonicalized, Cow::Owned(_)),
-      "expected file:// input to be canonicalized when the file exists"
+      canonical_path.ends_with(&rel_suffix),
+      "expected canonicalized path to end with {} (got {})",
+      rel_suffix.display(),
+      canonical_path.display()
     );
-    let canonical_path = Url::parse(canonicalized.as_ref())
-      .unwrap()
-      .to_file_path()
-      .unwrap();
-    assert_eq!(canonical_path, abs_path.canonicalize().unwrap());
+    assert!(
+      !canonical_path
+        .components()
+        .any(|c| matches!(c, Component::CurDir | Component::ParentDir)),
+      "expected dot-segments to be removed (got {})",
+      canonical_path.display()
+    );
 
-    let inferred = infer_base_url(html, &file_url);
-    // When the file exists locally, we still expect the HTTPS origin guess.
+    let inferred = infer_base_url(html, input);
+    // We still expect the HTTPS origin guess.
     assert_eq!(inferred, "https://news.ycombinator.com/");
   }
 

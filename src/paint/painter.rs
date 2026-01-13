@@ -20575,7 +20575,6 @@ mod tests {
   use crate::style::types::BorderImageSource;
   use crate::style::types::ClipPath;
   // `CaretAffinity` is used by selection/caret layout tests below.
-  use crate::text::caret::CaretAffinity;
   use crate::style::types::FilterShadow;
   use crate::style::types::ImageRendering;
   use crate::style::types::Isolation;
