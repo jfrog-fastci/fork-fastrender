@@ -16,6 +16,13 @@ fn actions(entries: &[PageContextMenuEntry]) -> Vec<PageContextMenuAction> {
     .collect()
 }
 
+fn checked_state(entries: &[PageContextMenuEntry], action: PageContextMenuAction) -> Option<bool> {
+  entries.iter().find_map(|entry| match entry {
+    PageContextMenuEntry::Action(item) if item.action == action => Some(item.checked),
+    _ => None,
+  })
+}
+
 #[test]
 fn context_menu_entries_include_image_actions_when_image_url_present() {
   let _lock = super::stage_listener_test_lock();
@@ -127,4 +134,36 @@ fn context_menu_entries_include_clipboard_actions_when_enabled() {
     Some(&PageContextMenuAction::SelectAll),
     "expected SelectAll as fourth action (got {actions:?})"
   );
+}
+
+#[test]
+fn context_menu_entries_set_checked_state_for_panel_toggles() {
+  let _lock = super::stage_listener_test_lock();
+  let bookmarks = BookmarkStore::default();
+
+  for (history_panel_open, bookmarks_panel_open) in [(true, false), (false, true)] {
+    let entries = build_page_context_menu_entries(PageContextMenuBuildInput {
+      link_url: None,
+      image_url: None,
+      page_url: Some("https://example.com/"),
+      bookmarks: &bookmarks,
+      history_panel_open,
+      bookmarks_panel_open,
+      can_copy: false,
+      can_cut: false,
+      can_paste: false,
+      can_select_all: false,
+    });
+
+    assert_eq!(
+      checked_state(&entries, PageContextMenuAction::ToggleHistoryPanel),
+      Some(history_panel_open),
+      "ToggleHistoryPanel checked state mismatch (history_panel_open={history_panel_open}, bookmarks_panel_open={bookmarks_panel_open})",
+    );
+    assert_eq!(
+      checked_state(&entries, PageContextMenuAction::ToggleBookmarksPanel),
+      Some(bookmarks_panel_open),
+      "ToggleBookmarksPanel checked state mismatch (history_panel_open={history_panel_open}, bookmarks_panel_open={bookmarks_panel_open})",
+    );
+  }
 }
