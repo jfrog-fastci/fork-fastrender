@@ -5870,6 +5870,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               if about_history_visible {
                 if let Some(active_tab) = win.app.browser_state.active_tab_id() {
                   win.app.trusted_about_rendered_urls.remove(&active_tab);
+                  win.app.trusted_about_prepared.remove(&active_tab);
                 }
               }
 
@@ -6633,6 +6634,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if about_bookmarks_visible {
           if let Some(active_tab) = win.app.browser_state.active_tab_id() {
             win.app.trusted_about_rendered_urls.remove(&active_tab);
+            win.app.trusted_about_prepared.remove(&active_tab);
           }
         }
 
@@ -6803,6 +6805,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if about_history_visible {
           if let Some(active_tab) = win.app.browser_state.active_tab_id() {
             win.app.trusted_about_rendered_urls.remove(&active_tab);
+            win.app.trusted_about_prepared.remove(&active_tab);
           }
         }
 
