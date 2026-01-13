@@ -4793,6 +4793,7 @@ impl BrowserRuntime {
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
     let preempt_cancel_callback = self.preempt_cancel_callback_for_job(tab_id);
     let request_for_retry = request.clone();
+    let runtime_toggles = Arc::clone(&self.runtime_toggles);
 
     let NavigationRequest {
       request,
