@@ -926,11 +926,22 @@ fn gpu_html() -> String {
 fn processes_html() -> String {
   let snapshot = about_page_snapshot();
 
+  #[derive(Default)]
+  struct RendererProcessGroup {
+    tabs: Vec<(Option<String>, u64)>,
+    sites: std::collections::BTreeSet<String>,
+  }
+
+  let mut windows = std::collections::BTreeSet::<String>::new();
+  let mut unknown_windows = 0usize;
+  let mut renderer_processes = std::collections::BTreeMap::<u64, RendererProcessGroup>::new();
+  let mut unassigned_tabs = 0usize;
+
   let mut rows = String::new();
   if snapshot.open_tabs.is_empty() {
     rows.push_str("<tr><td colspan=\"6\" class=\"empty\">No tab snapshot is available.</td></tr>");
   } else {
-    for tab in snapshot.open_tabs {
+    for tab in &snapshot.open_tabs {
       let safe_window = escape_html(tab.window_id.as_deref().unwrap_or("-"));
       let safe_url = escape_html(&tab.url);
       let site = tab
@@ -957,8 +968,75 @@ fn processes_html() -> String {
         </tr>",
         tab.tab_id, safe_url, safe_url
       ));
+
+      if let Some(window_id) = tab
+        .window_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+      {
+        windows.insert(window_id.to_string());
+      } else {
+        unknown_windows += 1;
+      }
+
+      match tab.renderer_process {
+        Some(process) => {
+          let group = renderer_processes.entry(process).or_default();
+          group.tabs.push((tab.window_id.clone(), tab.tab_id));
+          if let Some(site) = site {
+            group.sites.insert(site.to_string());
+          }
+        }
+        None => {
+          unassigned_tabs += 1;
+        }
+      }
     }
   }
+
+  let renderer_process_count = renderer_processes.len();
+  let mut process_rows = String::new();
+  if renderer_processes.is_empty() {
+    process_rows.push_str(
+      "<tr><td colspan=\"3\" class=\"empty\">No renderer processes are assigned yet.</td></tr>",
+    );
+  } else {
+    for (process_id, group) in renderer_processes {
+      let mut tabs_cell = String::new();
+      for (idx, (window_id, tab_id)) in group.tabs.iter().enumerate() {
+        if idx > 0 {
+          tabs_cell.push_str("<br>");
+        }
+        let safe_window = escape_html(window_id.as_deref().unwrap_or("-"));
+        tabs_cell.push_str(&format!("<code>{safe_window}:{tab_id}</code>"));
+      }
+
+      let sites_cell = if group.sites.is_empty() {
+        "<span class=\"muted\">(unknown)</span>".to_string()
+      } else {
+        let mut sites_cell = String::new();
+        for (idx, site) in group.sites.iter().enumerate() {
+          if idx > 0 {
+            sites_cell.push_str("<br>");
+          }
+          sites_cell.push_str(&format!("<code>{}</code>", escape_html(site)));
+        }
+        sites_cell
+      };
+
+      process_rows.push_str(&format!(
+        "<tr>
+          <td><code>{process_id}</code></td>
+          <td>{tabs_cell}</td>
+          <td>{sites_cell}</td>
+        </tr>"
+      ));
+    }
+  }
+
+  let total_tabs = snapshot.open_tabs.len();
+  let window_count = windows.len();
 
   about_layout_html(
     "Processes",
@@ -969,6 +1047,28 @@ fn processes_html() -> String {
         This page is a placeholder. It will eventually show renderer/network processes and the
         tab→process assignment used by FastRender&rsquo;s multiprocess model.
       </p>
+
+      <p class=\"summary\">
+        Tabs: <code>{total_tabs}</code>
+        · Windows: <code>{window_count}</code>
+        · Renderer processes: <code>{renderer_process_count}</code>
+        · Unassigned tabs: <code>{unassigned_tabs}</code>
+        · Tabs missing window id: <code>{unknown_windows}</code>
+      </p>
+
+      <h2>Renderer processes</h2>
+      <table class=\"proc-table\">
+        <thead>
+          <tr>
+            <th>Renderer</th>
+            <th>Tabs</th>
+            <th>Sites</th>
+          </tr>
+        </thead>
+        <tbody>
+          {process_rows}
+        </tbody>
+      </table>
 
       <h2>Tabs</h2>
       <table class=\"proc-table\">
@@ -989,6 +1089,8 @@ fn processes_html() -> String {
     ),
     r#"
 .sub { color: var(--about-muted); margin: 0 0 14px; }
+.summary { margin: 0 0 18px; }
+.summary code { font-weight: 650; }
 .proc-table {
   width: 100%;
   border-collapse: collapse;
