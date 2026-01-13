@@ -1930,6 +1930,94 @@ fn proxy_delete_trap_return_false(
   Ok(Value::Bool(false))
 }
 
+fn proxy_own_keys_trap_returns_x(
+  _vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Return `["x"]`.
+  let arr = scope.alloc_array(1)?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(arr))?;
+
+  let idx_key_s = scope.alloc_string("0")?;
+  scope.push_root(Value::String(idx_key_s))?;
+  let idx_key = vm_js::PropertyKey::from_string(idx_key_s);
+
+  let x_s = scope.alloc_string("x")?;
+  scope.push_root(Value::String(x_s))?;
+
+  scope.define_property(
+    arr,
+    idx_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::String(x_s),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(arr))
+}
+
+fn proxy_get_own_property_descriptor_trap_enumerable(
+  _vm: &mut Vm,
+  scope: &mut vm_js::Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: vm_js::GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  // Return `{ enumerable: true, configurable: true }`.
+  let desc = scope.alloc_object()?;
+
+  let mut scope = scope.reborrow();
+  scope.push_root(Value::Object(desc))?;
+
+  let enumerable_s = scope.alloc_string("enumerable")?;
+  scope.push_root(Value::String(enumerable_s))?;
+  let enumerable_key = vm_js::PropertyKey::from_string(enumerable_s);
+  scope.define_property(
+    desc,
+    enumerable_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: true,
+      },
+    },
+  )?;
+
+  let configurable_s = scope.alloc_string("configurable")?;
+  scope.push_root(Value::String(configurable_s))?;
+  let configurable_key = vm_js::PropertyKey::from_string(configurable_s);
+  scope.define_property(
+    desc,
+    configurable_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Bool(true),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(desc))
+}
+
 #[test]
 fn compiled_member_get_dispatches_proxy_get_trap() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
@@ -2090,6 +2178,124 @@ fn compiled_object_spread_dispatches_proxy_get_trap() -> Result<(), VmError> {
 
   // f(proxy) should return the proxy get-trap result (2), proving object spread performs `Get`
   // through the Proxy's `[[Get]]` internal method.
+  let result = vm.call_without_host(
+    &mut scope,
+    Value::Object(f),
+    Value::Undefined,
+    &[Value::Object(proxy)],
+  )?;
+  assert_eq!(result, Value::Number(2.0));
+  Ok(())
+}
+
+#[test]
+fn compiled_object_spread_dispatches_proxy_own_keys_trap() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let script = CompiledScript::compile_script(
+    &mut heap,
+    "test.js",
+    r#"
+      function f(o) {
+        let r = { ...o };
+        return r.x;
+      }
+    "#,
+  )?;
+  let f_body = find_function_body(&script, "f");
+
+  let mut vm = Vm::new(VmOptions::default());
+  let get_call_id = vm.register_native_call(proxy_get_trap)?;
+  let own_keys_call_id = vm.register_native_call(proxy_own_keys_trap_returns_x)?;
+  let gopd_call_id = vm.register_native_call(proxy_get_own_property_descriptor_trap_enumerable)?;
+
+  let mut scope = heap.scope();
+
+  // Target: {}
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target))?;
+
+  // Handler: { get, ownKeys, getOwnPropertyDescriptor }
+  let handler = scope.alloc_object()?;
+  scope.push_root(Value::Object(handler))?;
+
+  // get
+  let get_name = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_name))?;
+  let get_fn = scope.alloc_native_function(get_call_id, None, get_name, 3)?;
+  scope.push_root(Value::Object(get_fn))?;
+  let get_key_s = scope.alloc_string("get")?;
+  scope.push_root(Value::String(get_key_s))?;
+  let get_key = vm_js::PropertyKey::from_string(get_key_s);
+  scope.define_property(
+    handler,
+    get_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(get_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  // ownKeys
+  let own_keys_name = scope.alloc_string("ownKeys")?;
+  scope.push_root(Value::String(own_keys_name))?;
+  let own_keys_fn = scope.alloc_native_function(own_keys_call_id, None, own_keys_name, 1)?;
+  scope.push_root(Value::Object(own_keys_fn))?;
+  let own_keys_key_s = scope.alloc_string("ownKeys")?;
+  scope.push_root(Value::String(own_keys_key_s))?;
+  let own_keys_key = vm_js::PropertyKey::from_string(own_keys_key_s);
+  scope.define_property(
+    handler,
+    own_keys_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(own_keys_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  // getOwnPropertyDescriptor
+  let gopd_name = scope.alloc_string("getOwnPropertyDescriptor")?;
+  scope.push_root(Value::String(gopd_name))?;
+  let gopd_fn = scope.alloc_native_function(gopd_call_id, None, gopd_name, 2)?;
+  scope.push_root(Value::Object(gopd_fn))?;
+  let gopd_key_s = scope.alloc_string("getOwnPropertyDescriptor")?;
+  scope.push_root(Value::String(gopd_key_s))?;
+  let gopd_key = vm_js::PropertyKey::from_string(gopd_key_s);
+  scope.define_property(
+    handler,
+    gopd_key,
+    vm_js::PropertyDescriptor {
+      enumerable: true,
+      configurable: true,
+      kind: vm_js::PropertyKind::Data {
+        value: Value::Object(gopd_fn),
+        writable: true,
+      },
+    },
+  )?;
+
+  let proxy = scope.alloc_proxy(Some(target), Some(handler))?;
+  scope.push_root(Value::Object(proxy))?;
+
+  let f_name = scope.alloc_string("f")?;
+  let f = scope.alloc_user_function(
+    CompiledFunctionRef {
+      script,
+      body: f_body,
+    },
+    f_name,
+    1,
+  )?;
+
+  // If the spread correctly uses Proxy `ownKeys` + `getOwnPropertyDescriptor`, it will enumerate the
+  // synthetic key `"x"` and then read it via the Proxy get trap, returning 2.
   let result = vm.call_without_host(
     &mut scope,
     Value::Object(f),
