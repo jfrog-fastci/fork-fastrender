@@ -608,7 +608,7 @@ mod function_call_apply_bind_smoke {
   }
 }
 
-mod module_graph_loader_smoke {
+mod vmjs_module_loading_smoke {
   use std::collections::VecDeque;
   use vm_js::{
     load_requested_modules, HostDefined, Job, ModuleGraph, ModuleId, ModuleLoadPayload,
@@ -684,7 +684,7 @@ mod module_graph_loader_smoke {
   }
 
   #[test]
-  fn module_graph_loader_caches_loaded_modules_and_resolves_promise() -> Result<(), VmError> {
+  fn module_loading_caches_loaded_modules_and_resolves_promise() -> Result<(), VmError> {
     let mut rt = TestRealm::new()?;
     let mut scope = rt.heap.scope();
     let mut modules = ModuleGraph::default();
@@ -705,7 +705,7 @@ mod module_graph_loader_smoke {
     )?;
     scope.push_root(promise)?;
     let Value::Object(promise) = promise else {
-      panic!("expected module graph loader to return a Promise object");
+      panic!("expected module loading to return a Promise object");
     };
     assert_eq!(
       scope.heap().promise_state(promise)?,
@@ -770,7 +770,7 @@ mod module_graph_loader_smoke {
   }
 
   #[test]
-  fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), VmError> {
+  fn module_loading_rejects_duplicate_loaded_module_mismatch() -> Result<(), VmError> {
     let mut rt = TestRealm::new()?;
     let mut scope = rt.heap.scope();
     let mut modules = ModuleGraph::default();
@@ -796,7 +796,7 @@ mod module_graph_loader_smoke {
     )?;
     scope.push_root(promise)?;
     let Value::Object(promise) = promise else {
-      panic!("expected module graph loader to return a Promise object");
+      panic!("expected module loading to return a Promise object");
     };
     assert_eq!(scope.heap().promise_state(promise)?, PromiseState::Pending);
 
