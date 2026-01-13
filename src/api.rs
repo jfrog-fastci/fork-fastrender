@@ -35,6 +35,10 @@
 //! # }
 //! ```
 //!
+//! > Note: `FastRender::render_html` / `render_url` are **one-shot** renders and do not execute
+//! > author JavaScript (`<script>`). For JS + an event loop + long-lived DOM mutations, use
+//! > [`BrowserTab`] (see `docs/runtime_stacks.md` in the repository).
+//!
 //! # Architecture
 //!
 //! The FastRender API orchestrates the complete rendering pipeline:

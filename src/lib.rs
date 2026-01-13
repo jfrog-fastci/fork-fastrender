@@ -143,6 +143,10 @@
 //! # }
 //! ```
 //!
+//! > Note: `FastRender::render_html` / `render_url` are **one-shot** renders and do not execute
+//! > author JavaScript (`<script>`). For JS + an event loop + long-lived DOM mutations, use
+//! > [`BrowserTab`] (see `docs/runtime_stacks.md` in the repository).
+//!
 //! Note: `FastRender::new()` uses the built-in network-capable fetcher when the crate is compiled
 //! with the `direct_network` feature. Sandboxed/multiprocess renderer builds should disable
 //! `direct_network` and inject a custom [`resource::ResourceFetcher`] via
