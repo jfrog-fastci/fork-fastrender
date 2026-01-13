@@ -10571,8 +10571,10 @@ impl<'a> Evaluator<'a> {
     // `super[expr]` (SuperProperty) evaluation.
     //
     // Like `super.prop`, this uses `[[HomeObject]]` to resolve the super base and the current `this`
-    // binding as the receiver. Per ECMA-262, derived constructors must throw before evaluating the
-    // computed key expression when `this` is uninitialized.
+    // binding as the receiver.
+    //
+    // Per ECMA-262, derived constructors must throw before evaluating the computed key expression
+    // when `this` is uninitialized.
     if matches!(&*expr.object.stx, Expr::Super(_)) {
       if expr.optional_chaining {
         return Err(VmError::InvariantViolation(
@@ -12467,24 +12469,7 @@ impl<'a> Evaluator<'a> {
           // semantics).
           //
           // Spec: https://tc39.es/ecma262/#sec-delete-operator-runtime-semantics-evaluation
-          if let Value::Object(obj) = self.this {
-            if scope.heap().is_derived_constructor_state(obj) {
-              let state = scope.heap().get_derived_constructor_state(obj)?;
-              if state.this_value.is_none() {
-                return Err(throw_reference_error(
-                  self.vm,
-                  scope,
-                  "Must call super constructor in derived class before accessing 'this'",
-                )?);
-              }
-            } else if self.derived_constructor && !self.this_initialized {
-              return Err(throw_reference_error(
-                self.vm,
-                scope,
-                "Must call super constructor in derived class before accessing 'this'",
-              )?);
-            }
-          }
+          let _ = self.get_this_binding(scope)?;
           Err(
             // ECMA-262 `Evaluation` for the `delete` operator explicitly rejects Super References.
             //
@@ -12497,24 +12482,7 @@ impl<'a> Evaluator<'a> {
           // Evaluating a super property reference requires an initialized `this` binding. In
           // derived constructors before `super()`, this check happens before evaluating the
           // computed key expression.
-          if let Value::Object(obj) = self.this {
-            if scope.heap().is_derived_constructor_state(obj) {
-              let state = scope.heap().get_derived_constructor_state(obj)?;
-              if state.this_value.is_none() {
-                return Err(throw_reference_error(
-                  self.vm,
-                  scope,
-                  "Must call super constructor in derived class before accessing 'this'",
-                )?);
-              }
-            } else if self.derived_constructor && !self.this_initialized {
-              return Err(throw_reference_error(
-                self.vm,
-                scope,
-                "Must call super constructor in derived class before accessing 'this'",
-              )?);
-            }
-          }
+          let _ = self.get_this_binding(scope)?;
 
           // Ensure the computed key expression is evaluated (including `ToPropertyKey`
           // coercion) before throwing, per `super[expr]` evaluation semantics.
