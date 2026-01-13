@@ -200,12 +200,16 @@ impl VmHostHooks for TestHostHooks {
     _host_defined: HostDefined,
     payload: ModuleLoadPayload,
   ) -> Result<(), VmError> {
+    // `ModuleRequest` stores specifiers as `JsString` (UTF-16 code units). This host hook integration
+    // uses UTF-8 `String` keys for lookup and bookkeeping; the test specifiers are ASCII so lossy
+    // conversion is fine.
+    let specifier = module_request.specifier_utf8_lossy();
     self
       .import_referrers
-      .insert(module_request.specifier.clone(), referrer);
+      .insert(specifier.clone(), referrer);
     let module = *self
       .modules
-      .get(module_request.specifier.as_str())
+      .get(specifier.as_str())
       .ok_or_else(|| VmError::InvariantViolation("no module registered for specifier"))?;
     vm.finish_loading_imported_module(
       scope,
