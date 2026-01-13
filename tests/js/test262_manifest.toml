@@ -573,6 +573,14 @@ glob = "built-ins/Array/S15.4.1*.js"
 status = "pass"
 
 [[expectations]]
+glob = "built-ins/Array/from/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Array/isArray/**"
+status = "pass"
+
+[[expectations]]
 glob = "built-ins/Array/length/**"
 status = "pass"
 
@@ -582,6 +590,14 @@ status = "pass"
 
 [[expectations]]
 glob = "built-ins/Array/prototype/push/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Array/prototype/pop/**"
+status = "pass"
+
+[[expectations]]
+glob = "built-ins/Array/prototype/join/**"
 status = "pass"
 
 [[expectations]]
