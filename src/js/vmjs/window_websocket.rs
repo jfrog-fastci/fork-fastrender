@@ -975,12 +975,11 @@ fn websocket_send<Host: WindowRealmHost + 'static>(
   }
 }
 
-fn number_to_u16_wrapping(n: f64) -> u16 {
-  if !n.is_finite() {
-    return 0;
-  }
-  let n = n.trunc();
-  (n.rem_euclid(65536.0)) as u16
+fn is_valid_websocket_close_code(code: u16) -> bool {
+  // WHATWG WebSocket: `close(code, reason)` only allows status codes 1000 or 3000–4999.
+  // This rejects reserved/illegal codes such as 1004–1006 and 1015, and ensures we never send
+  // them on the wire.
+  code == 1000 || (3000..=4999).contains(&code)
 }
 
 fn websocket_close<Host: WindowRealmHost + 'static>(
@@ -1000,8 +999,22 @@ fn websocket_close<Host: WindowRealmHost + 'static>(
   let code: Option<u16> = if matches!(code_value, Value::Undefined | Value::Null) {
     None
   } else {
+    // Unlike WebIDL's `unsigned short` conversion (`ToUint16`), do not wrap values modulo 2^16.
+    // Treat NaN/±Infinity/negative/out-of-range as invalid so we don't send reserved/illegal close
+    // codes due to wrapping.
     let n = scope.to_number(vm, host, hooks, code_value)?;
-    Some(number_to_u16_wrapping(n))
+    if !n.is_finite() {
+      return Err(VmError::TypeError("WebSocket close code is invalid"));
+    }
+    let n = n.trunc();
+    if n < 0.0 || n > 65535.0 {
+      return Err(VmError::TypeError("WebSocket close code is invalid"));
+    }
+    let code = n as u16;
+    if !is_valid_websocket_close_code(code) {
+      return Err(VmError::TypeError("WebSocket close code is invalid"));
+    }
+    Some(code)
   };
 
   let reason: Option<String> = if matches!(reason_value, Value::Undefined | Value::Null) {
@@ -1474,7 +1487,12 @@ fn websocket_thread_main<Host: WindowRealmHost + 'static>(
           }
         }
         Ok(WsCommand::Close { code, reason }) => {
-          let code = code.unwrap_or(1000);
+          // Re-validate in the network/thread layer as well: treat the renderer as untrusted.
+          // Never emit reserved/illegal close codes on the wire.
+          let code = match code {
+            Some(code) if is_valid_websocket_close_code(code) => code,
+            Some(_) | None => 1000,
+          };
           let reason = reason.unwrap_or_default();
           closing = Some((code, reason.clone()));
           let frame = CloseFrame {
@@ -2373,5 +2391,169 @@ mod tests {
 
     server.join().expect("server thread panicked");
     Ok(())
+  }
+
+  fn websocket_close_code_test(code_expr: &str, expect_throw: bool) -> Result<()> {
+    let _lock = net_test_lock();
+    let Some(listener) = try_bind_localhost("websocket_close_code_test") else {
+      return Ok(());
+    };
+    listener.set_nonblocking(true).expect("set_nonblocking");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      loop {
+        match listener.accept() {
+          Ok((stream, _)) => {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+            let mut ws = tungstenite::accept(stream).expect("accept websocket");
+
+            // Wait for the client to close.
+            let read_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+              match ws.read_message() {
+                Ok(Message::Close(frame)) => {
+                  // Reply close.
+                  let _ = ws.close(frame);
+                  break;
+                }
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(ref err))
+                  if matches!(err.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) =>
+                {
+                  if Instant::now() >= read_deadline {
+                    panic!("server read timed out");
+                  }
+                }
+                Err(tungstenite::Error::ConnectionClosed) => break,
+                Err(err) => panic!("server read failed: {err}"),
+              }
+            }
+            break;
+          }
+          Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            if Instant::now() >= deadline {
+              panic!("accept timed out");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+          }
+          Err(e) => panic!("accept failed: {e}"),
+        }
+      }
+    });
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(&format!(
+      r#"
+      globalThis.__done = false;
+      globalThis.__ws_error = "";
+      globalThis.__threw = false;
+      globalThis.__throw_name = "";
+      globalThis.__state_after = -1;
+      globalThis.__ws = new WebSocket("ws://{addr}/");
+      const ws = globalThis.__ws;
+      ws.onopen = function () {{
+        try {{
+          ws.close({code_expr});
+        }} catch (e) {{
+          globalThis.__threw = true;
+          globalThis.__throw_name = String(e && e.name);
+        }}
+        globalThis.__state_after = ws.readyState;
+        // Ensure the connection is closed so the test doesn't leak threads even if the call threw.
+        if (globalThis.__threw) {{
+          ws.close(1000);
+        }}
+      }};
+      ws.onerror = function () {{
+        globalThis.__ws_error = "error";
+        globalThis.__done = true;
+      }};
+      ws.onclose = function () {{
+        globalThis.__done = true;
+      }};
+      "#,
+    ))?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+      let _ = host.run_until_idle(RunLimits {
+        max_tasks: 100,
+        max_microtasks: 1000,
+        max_wall_time: Some(Duration::from_millis(50)),
+      })?;
+
+      let done = get_global_prop_utf8(&mut host, "__done").unwrap_or_default();
+      if done == "true" {
+        break;
+      }
+      if Instant::now() >= deadline {
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__done").unwrap_or_default(),
+      "true",
+      "websocket test timed out"
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__ws_error").unwrap_or_default(),
+      "",
+      "unexpected websocket error"
+    );
+
+    assert_eq!(
+      get_global_prop_utf8(&mut host, "__threw").unwrap_or_default(),
+      expect_throw.to_string()
+    );
+
+    let throw_name = get_global_prop_utf8(&mut host, "__throw_name").unwrap_or_default();
+    if expect_throw {
+      assert_eq!(throw_name, "TypeError");
+    } else {
+      assert_eq!(throw_name, "");
+    }
+
+    let state_after = get_global_prop_utf8(&mut host, "__state_after").unwrap_or_default();
+    if expect_throw {
+      assert_eq!(
+        state_after,
+        WS_OPEN.to_string(),
+        "readyState changed after invalid close"
+      );
+    } else {
+      assert_eq!(state_after, WS_CLOSING.to_string());
+    }
+
+    server.join().expect("server thread panicked");
+    Ok(())
+  }
+
+  #[test]
+  fn websocket_close_code_1000_ok() -> Result<()> {
+    websocket_close_code_test("1000", false)
+  }
+
+  #[test]
+  fn websocket_close_code_1006_throws() -> Result<()> {
+    websocket_close_code_test("1006", true)
+  }
+
+  #[test]
+  fn websocket_close_code_negative_throws() -> Result<()> {
+    websocket_close_code_test("-1", true)
+  }
+
+  #[test]
+  fn websocket_close_code_out_of_range_throws() -> Result<()> {
+    websocket_close_code_test("70000", true)
   }
 }
