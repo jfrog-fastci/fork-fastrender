@@ -745,7 +745,7 @@ async fn ws_worker_task(
     }
   }
 
-  let _ = timeout(WS_SHUTDOWN_TIMEOUT, socket.close()).await;
+  let _ = timeout(WS_SHUTDOWN_TIMEOUT, socket.close(None)).await;
 
   let closing = close_info.unwrap_or((1000, "".to_string()));
   let _ = ws_msg_tx.try_send(WsThreadMsg::Event {
