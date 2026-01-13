@@ -1402,3 +1402,29 @@ fn regexp_lookbehind_mutual_recursive_backreferences_use_empty_for_unset_capture
     r#"["cacb","a",""]|["b","ac","ac"]|["x","aa"]|["x","aa"]"#
   );
 }
+
+#[test]
+fn regexp_lookbehind_ignore_case_backref_inside_lookbehind() {
+  // Adapted from test262 `lookBehind/back-references.js`.
+  //
+  // Regression test: Ensure ignoreCase comparisons in lookbehind use the same canonicalization as
+  // forward matching, including for backreferences and for captures created inside the lookbehind.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("abB".match(/(.)(?<=(\1\1))/i))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["B","B","bB"]"#);
+}
+
+#[test]
+fn regexp_lookbehind_ignore_case_cross_lookaround_captures() {
+  // Adapted from test262 `lookBehind/back-references.js`.
+  //
+  // Regression test: A capture from a lookahead must be visible to a subsequent lookbehind, and
+  // the backreference match performed inside the lookbehind must respect ignoreCase comparisons.
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(r#"JSON.stringify("abaBbAa".match(/(?=(\w))(?<=(\1))./i))"#)
+    .unwrap();
+  assert_eq!(as_utf8_lossy(&rt, value), r#"["b","b","B"]"#);
+}
