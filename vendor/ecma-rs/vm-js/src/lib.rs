@@ -271,6 +271,10 @@ mod class_inheritance_and_super_tests;
 #[path = "../tests/unit/object_literal_super.rs"]
 mod object_literal_super_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/class_field_initializers_super.rs"]
+mod class_field_initializers_super_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

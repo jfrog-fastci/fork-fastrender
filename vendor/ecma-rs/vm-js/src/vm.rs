@@ -2104,7 +2104,12 @@ impl Vm {
       // Using `extends null` ensures `super()` is syntactically permitted in constructor bodies
       // (which would otherwise be rejected in a non-derived `class { ... }` wrapper).
       EcmaFunctionKind::ClassMember => 21, // "(class extends null {".
-      EcmaFunctionKind::ClassFieldInitializer => 19, // "(function(){return ".
+      // Parse field initializer expressions as the body of a synthetic class *method*:
+      // `(class extends null {m(){return <snippet>;}})`.
+      //
+      // Field initializers have a lexical `super` binding (for `super.prop`, but not `super()`).
+      // Wrapping in a method body preserves that grammar context during lazy parsing.
+      EcmaFunctionKind::ClassFieldInitializer => 32, // "(class extends null {m(){return ".
     };
 
     self.ecma_functions.push(EcmaFunctionCode {
@@ -2238,14 +2243,17 @@ impl Vm {
       }
       EcmaFunctionKind::ClassFieldInitializer => {
         wrapped.clear();
-        // "(function(){return " + snippet + ";})"
-        let capacity = snippet.len().checked_add(24).ok_or(VmError::OutOfMemory)?;
+        // "(class extends null {m(){return " + snippet + ";}})"
+        //
+        // Wrapping as a class method (rather than a plain `function(){...}`) is required so `super`
+        // property references are parsed successfully inside the initializer expression.
+        let capacity = snippet.len().checked_add(36).ok_or(VmError::OutOfMemory)?;
         wrapped
           .try_reserve(capacity)
           .map_err(|_| VmError::OutOfMemory)?;
-        wrapped.push_str("(function(){return ");
+        wrapped.push_str("(class extends null {m(){return ");
         wrapped.push_str(snippet);
-        wrapped.push_str(";})");
+        wrapped.push_str(";}})");
         // Field initializers can contain `super` / `new.target` expressions provided by an enclosing
         // class body. Allow parsing them in a permissive enclosing-meta-property context.
         parse_top(self, &wrapped, script_opts, module_opts, true)?
@@ -2307,7 +2315,7 @@ impl Vm {
           ));
         }
       },
-      EcmaFunctionKind::Expr | EcmaFunctionKind::ClassFieldInitializer => match *stmt.stx {
+      EcmaFunctionKind::Expr => match *stmt.stx {
         Stmt::Expr(expr_stmt) => {
           let expr = expr_stmt.stx.expr;
           match *expr.stx {
@@ -2323,6 +2331,39 @@ impl Vm {
         _ => {
           return Err(VmError::Unimplemented(
             "ECMAScript function expression snippet did not parse as an expression statement",
+          ));
+        }
+      },
+      EcmaFunctionKind::ClassFieldInitializer => match *stmt.stx {
+        Stmt::Expr(expr_stmt) => {
+          let expr = expr_stmt.stx.expr;
+          match *expr.stx {
+            AstExpr::Class(class_expr) => {
+              let member = class_expr.stx.members.into_iter().next().ok_or(VmError::Unimplemented(
+                "ECMAScript class field initializer snippet did not contain any members",
+              ))?;
+              match member.stx.val {
+                ClassOrObjVal::Method(method) => {
+                  let ClassOrObjMethod { func } = *method.stx;
+                  func
+                }
+                _ => {
+                  return Err(VmError::Unimplemented(
+                    "ECMAScript class field initializer snippet did not parse as a method",
+                  ));
+                }
+              }
+            }
+            _ => {
+              return Err(VmError::Unimplemented(
+                "ECMAScript class field initializer snippet did not parse as a class expression",
+              ));
+            }
+          }
+        }
+        _ => {
+          return Err(VmError::Unimplemented(
+            "ECMAScript class field initializer snippet did not parse as an expression statement",
           ));
         }
       },
