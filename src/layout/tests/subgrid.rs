@@ -3139,7 +3139,9 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_horizontal() {
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
   subgrid_style.writing_mode = WritingMode::VerticalRl;
-  subgrid_style.direction = Direction::Rtl;
+  // Intentionally differ from the parent so we can assert that column subgrids inherit `direction`
+  // (inline base direction) across a writing-mode mismatch.
+  subgrid_style.direction = Direction::Ltr;
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_row_subgrid = true;
   subgrid_style.grid_column_start = 1;
@@ -3241,7 +3243,9 @@ fn subgrid_writing_mode_mismatch_rtl_keeps_parent_inline_axis_vertical() {
   let mut subgrid_style = ComputedStyle::default();
   subgrid_style.display = Display::Grid;
   subgrid_style.writing_mode = WritingMode::HorizontalTb;
-  subgrid_style.direction = Direction::Rtl;
+  // Intentionally differ from the parent so we can assert that column subgrids inherit `direction`
+  // (inline base direction) across a writing-mode mismatch.
+  subgrid_style.direction = Direction::Ltr;
   subgrid_style.grid_column_subgrid = true;
   subgrid_style.grid_row_subgrid = true;
   subgrid_style.grid_column_start = 1;
