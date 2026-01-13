@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+table {
+  border-collapse: collapse;
+}
+td,
+th {
+  border: 2px black solid;
+  padding: 4px;
+}
+th {
+  background-color: lightgray;
+}
+
+.experimental {
+  display: none;
+}
+
+.notice {
+  display: table-row;
+  font-weight: bold;
+  text-align: center;
+}
+
+@supports (writing-mode: sideways-lr) {
+  .experimental {
+    display: table-row;
+  }
+  .notice {
+    display: none;
+  }
+}
+
+.text1 td {
+  writing-mode: horizontal-tb;
+}
+
+.text2 td {
+  writing-mode: vertical-lr;
+}
+
+.text3 td {
+  writing-mode: vertical-rl;
+}
+
+.text4 td {
+  writing-mode: sideways-lr;
+}
+
+.text5 td {
+  writing-mode: sideways-rl;
+}
+</style>
+</head>
+<body>
+<table>
+  <caption>
+    Using multiple writing modes
+  </caption>
+  <thead>
+    <tr>
+      <th>Value</th>
+      <th>Vertical script</th>
+      <th>Horizontal (LTR) script</th>
+      <th>Horizontal (RTL) script</th>
+      <th>Mixed script</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="text1">
+      <th>horizontal-tb</th>
+      <td>我家没有电脑。</td>
+      <td>Example text</td>
+      <td>מלל ארוך לדוגמא</td>
+      <td>1994年に至っては</td>
+    </tr>
+    <tr class="text2">
+      <th>vertical-lr</th>
+      <td>我家没有电脑。</td>
+      <td>Example text</td>
+      <td>מלל ארוך לדוגמא</td>
+      <td>1994年に至っては</td>
+    </tr>
+    <tr class="text3">
+      <th>vertical-rl</th>
+      <td>我家没有电脑。</td>
+      <td>Example text</td>
+      <td>מלל ארוך לדוגמא</td>
+      <td>1994年に至っては</td>
+    </tr>
+    <tr class="experimental text4">
+      <th>sideways-lr</th>
+      <td>我家没有电脑。</td>
+      <td>Example text</td>
+      <td>מלל ארוך לדוגמא</td>
+      <td>1994年に至っては</td>
+    </tr>
+    <tr class="experimental text5">
+      <th>sideways-rl</th>
+      <td>我家没有电脑。</td>
+      <td>Example text</td>
+      <td>מלל ארוך לדוגמא</td>
+      <td>1994年に至っては</td>
+    </tr>
+  </tbody>
+</table>
+<p class="notice">
+  Your browser does not support the <code>sideways-lr</code> or
+  <code>sideways-rl</code> values.
+</p>
+</body>
+</html>

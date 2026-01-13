@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+.vertical-lr {
+  writing-mode: vertical-lr;
+}
+
+.rotated {
+  transform: rotate(180deg);
+}
+
+.sideways-lr {
+  writing-mode: sideways-lr;
+}
+
+.only-rotate {
+  inline-size: fit-content;
+  transform: rotate(-90deg);
+}
+
+table {
+  border-collapse: collapse;
+}
+td,
+th {
+  border: 2px black solid;
+  padding: 4px;
+}
+th {
+  background-color: lightgray;
+}
+span {
+  display: inline-block;
+  width: 1.5em;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+<table>
+  <caption>
+    Using writing-mode with transforms
+  </caption>
+  <thead>
+    <tr>
+      <th>Vertical LR</th>
+      <th>Vertical LR with transform</th>
+      <th>Sideways LR</th>
+      <th>Only rotate</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <span class="vertical-lr">我家没有电脑。</span>
+        <span class="vertical-lr">Example text</span>
+      </td>
+      <td>
+        <span class="vertical-lr rotated">我家没有电脑。</span>
+        <span class="vertical-lr rotated">Example text</span>
+      </td>
+      <td>
+        <span class="sideways-lr">我家没有电脑。</span>
+        <span class="sideways-lr">Example text</span>
+      </td>
+      <td>
+        <span class="only-rotate">我家没有电脑。</span>
+        <span class="only-rotate">Example text</span>
+      </td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>

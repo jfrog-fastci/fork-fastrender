@@ -194,6 +194,15 @@ pub fn run_import_page_fixture(mut args: ImportPageFixtureArgs) -> Result<()> {
     args.rewrite_scripts,
   )?;
 
+  let rewritten_html = rewrite_mdn_live_sample_iframes(
+    &rewritten_html,
+    &effective_base,
+    ReferenceContext::Html,
+    &mut catalog,
+    args.legacy_rewrite,
+    args.rewrite_scripts,
+  )?;
+
   catalog.fail_if_missing()?;
 
   if !args.allow_http_references {
@@ -795,6 +804,264 @@ fn rewrite_html(
   }
 
   Ok(rewritten)
+}
+
+#[derive(Default, Debug)]
+struct MdnLiveSampleBlocks {
+  html: Vec<String>,
+  css: Vec<String>,
+  js: Vec<String>,
+}
+
+fn mdn_parse_live_sample_id(class_value: &str) -> Option<String> {
+  class_value
+    .split_ascii_whitespace()
+    .find_map(|token| token.strip_prefix("live-sample---"))
+    .map(|id| id.to_string())
+}
+
+fn mdn_parse_brush_language(class_value: &str) -> Option<String> {
+  let tokens: Vec<&str> = class_value.split_ascii_whitespace().collect();
+  for (idx, token) in tokens.iter().enumerate() {
+    let lower = token.to_ascii_lowercase();
+    if lower == "brush:" {
+      if let Some(next) = tokens.get(idx + 1) {
+        return Some(next.trim_end_matches(';').to_ascii_lowercase());
+      }
+    } else if let Some(after) = lower.strip_prefix("brush:") {
+      let after = after.trim().trim_end_matches(';');
+      if !after.is_empty() {
+        return Some(after.to_ascii_lowercase());
+      }
+      if let Some(next) = tokens.get(idx + 1) {
+        return Some(next.trim_end_matches(';').to_ascii_lowercase());
+      }
+    }
+  }
+  None
+}
+
+fn mdn_build_live_sample_document(blocks: &MdnLiveSampleBlocks) -> String {
+  let html = blocks.html.join("\n");
+  let css = blocks.css.join("\n");
+  let js = blocks.js.join("\n");
+
+  fn push_with_trailing_newline(out: &mut String, s: &str) {
+    if s.is_empty() {
+      return;
+    }
+    out.push_str(s);
+    if !s.ends_with('\n') {
+      out.push('\n');
+    }
+  }
+
+  let mut out = String::new();
+  out.push_str("<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n");
+  if !css.trim().is_empty() {
+    out.push_str("<style>\n");
+    push_with_trailing_newline(&mut out, &css);
+    out.push_str("</style>\n");
+  }
+  out.push_str("</head>\n<body>\n");
+  push_with_trailing_newline(&mut out, &html);
+  if !js.trim().is_empty() {
+    out.push_str("<script>\n");
+    push_with_trailing_newline(&mut out, &js);
+    out.push_str("</script>\n");
+  }
+  out.push_str("</body>\n</html>\n");
+  out
+}
+
+/// MDN "live sample" pages embed the iframe source in `<pre class="... live-sample---<id>">`
+/// blocks, and use `about:blank` iframe placeholders that are normally populated by client-side JS.
+///
+/// When importing offline fixtures, generate a minimal HTML document for each referenced sample id
+/// (CSS + HTML + JS blocks) and rewrite the iframe to point at a deterministic local asset.
+fn rewrite_mdn_live_sample_iframes(
+  input: &str,
+  base_url: &Url,
+  ctx: ReferenceContext,
+  catalog: &mut AssetCatalog,
+  legacy_rewrite: bool,
+  rewrite_scripts: bool,
+) -> Result<String> {
+  fn capture_first_match<'t>(
+    caps: &'t regex::Captures<'t>,
+    groups: &[usize],
+  ) -> Option<regex::Match<'t>> {
+    groups.iter().find_map(|idx| caps.get(*idx))
+  }
+
+  let pre_block = Regex::new(
+    r#"(?is)<pre\b[^>]*\bclass\s*=\s*(?:"(?P<class_d>[^"]*)"|'(?P<class_s>[^']*)'|(?P<class_u>[^\s>]+))[^>]*>\s*<code\b[^>]*>(?P<code>.*?)</code>\s*</pre>"#,
+  )
+  .expect("mdn live sample pre regex must compile");
+
+  let mut samples: HashMap<String, MdnLiveSampleBlocks> = HashMap::new();
+  for caps in pre_block.captures_iter(input) {
+    let class = caps
+      .name("class_d")
+      .or_else(|| caps.name("class_s"))
+      .or_else(|| caps.name("class_u"))
+      .map(|m| m.as_str())
+      .unwrap_or_default();
+
+    if !class.contains("live-sample---") {
+      continue;
+    }
+
+    let Some(id) = mdn_parse_live_sample_id(class) else {
+      continue;
+    };
+    let Some(lang) = mdn_parse_brush_language(class) else {
+      continue;
+    };
+
+    let code_raw = caps
+      .name("code")
+      .map(|m| m.as_str())
+      .unwrap_or_default();
+    let code = decode_html_entities(code_raw);
+
+    let entry = samples.entry(id).or_default();
+    match lang.as_str() {
+      "html" => entry.html.push(code),
+      "css" => entry.css.push(code),
+      "js" | "javascript" => entry.js.push(code),
+      _ => {}
+    }
+  }
+
+  if samples.is_empty() {
+    return Ok(input.to_string());
+  }
+
+  let iframe_tag = Regex::new("(?is)<iframe\\b[^>]*>").expect("mdn iframe tag regex");
+  let attr_data_live_id =
+    Regex::new("(?is)(?:^|\\s)data-live-id\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("data-live-id regex");
+  let attr_src =
+    Regex::new("(?is)(?:^|\\s)src\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("src attr regex");
+
+  let mut generated: HashMap<String, String> = HashMap::new();
+
+  let mut out = String::with_capacity(input.len());
+  let mut last = 0usize;
+  for tag_match in iframe_tag.find_iter(input) {
+    let tag = tag_match.as_str();
+    let rewritten_tag = if let Some(id_caps) = attr_data_live_id.captures(tag) {
+      let live_id_raw = capture_first_match(&id_caps, &[1, 2, 3])
+        .map(|m| m.as_str())
+        .unwrap_or_default();
+      let live_id = decode_html_entities_if_needed(live_id_raw).trim().to_string();
+
+      let src_is_about_blank = attr_src
+        .captures(tag)
+        .and_then(|caps| capture_first_match(&caps, &[1, 2, 3]).map(|m| m.as_str().to_string()))
+        .map(|raw| {
+          let decoded = decode_html_entities_if_needed(&raw);
+          let trimmed = strip_wrapping_quotes(decoded.trim());
+          trimmed.eq_ignore_ascii_case("about:blank") || trimmed.is_empty()
+        })
+        .unwrap_or(true);
+
+      if src_is_about_blank {
+        if let Some(blocks) = samples.get(&live_id) {
+          // Only generate an asset if we have at least one block (MDN samples always have HTML/CSS,
+          // but keep the importer resilient to unexpected pages).
+          if !(blocks.html.is_empty() && blocks.css.is_empty() && blocks.js.is_empty()) {
+            let filename = if let Some(existing) = generated.get(&live_id) {
+              existing.clone()
+            } else {
+              let doc = mdn_build_live_sample_document(blocks);
+              let rewritten_doc = rewrite_html(
+                &doc,
+                base_url,
+                ReferenceContext::Css,
+                catalog,
+                legacy_rewrite,
+                rewrite_scripts,
+              )?;
+              let bytes = rewritten_doc.into_bytes();
+              let filename = format!("{}.html", hash_bytes(&bytes));
+
+              if let Some(existing_asset) = catalog.assets.get(&filename) {
+                if existing_asset.bytes != bytes {
+                  bail!(
+                    "hash collision while generating MDN live sample {} ({}); existing asset has different contents",
+                    live_id,
+                    filename
+                  );
+                }
+              } else {
+                catalog.assets.insert(
+                  filename.clone(),
+                  AssetData {
+                    filename: filename.clone(),
+                    bytes,
+                    content_type: Some("text/html".to_string()),
+                    source_url: format!("mdn-live-sample:{live_id}"),
+                  },
+                );
+              }
+
+              generated.insert(live_id.clone(), filename.clone());
+              filename
+            };
+
+            let new_src = match ctx {
+              ReferenceContext::Html => format!("{ASSETS_DIR}/{filename}"),
+              ReferenceContext::Css => filename,
+            };
+
+            // Rewrite src= if present, otherwise insert one.
+            if let Some(src_caps) = attr_src.captures(tag) {
+              if let Some(src_match) = capture_first_match(&src_caps, &[1, 2, 3]) {
+                let start = src_match.start();
+                let end = src_match.end();
+                format!("{}{}{}", &tag[..start], new_src, &tag[end..])
+              } else {
+                tag.to_string()
+              }
+            } else {
+              let mut tag = tag.to_string();
+              let Some(close_idx) = tag.rfind('>') else {
+                tag.to_string()
+              };
+              let mut insert_pos = close_idx;
+              let mut cursor = close_idx;
+              while cursor > 0 && tag.as_bytes()[cursor - 1].is_ascii_whitespace() {
+                cursor -= 1;
+              }
+              if cursor > 0 && tag.as_bytes()[cursor - 1] == b'/' {
+                insert_pos = cursor - 1;
+              }
+              tag.insert_str(insert_pos, &format!(" src=\"{new_src}\""));
+              tag
+            }
+          } else {
+            tag.to_string()
+          }
+        } else {
+          // Missing `<pre class="... live-sample---{id}">` blocks for this iframe; leave it alone.
+          tag.to_string()
+        }
+      } else {
+        tag.to_string()
+      }
+    } else {
+      tag.to_string()
+    };
+
+    out.push_str(&input[last..tag_match.start()]);
+    out.push_str(&rewritten_tag);
+    last = tag_match.end();
+  }
+  out.push_str(&input[last..]);
+  Ok(out)
 }
 
 fn apply_rewrite(
@@ -3443,4 +3710,81 @@ body{background:url("/bg.png");}
     );
     Ok(())
   }
-}
+
+  #[test]
+  fn mdn_live_sample_iframe_generation_rewrites_about_blank_iframe() -> Result<()> {
+    let base = Url::parse("https://example.test/")?;
+    let input = r#"<!doctype html>
+<pre class="brush: html notranslate live-sample---demo"><code>&lt;div id=&quot;box&quot;&gt;Hello&lt;/div&gt;</code></pre>
+<pre class="brush: css notranslate live-sample---demo"><code>#box { color: red; }</code></pre>
+<iframe class="sample-code-frame" src="about:blank" data-live-id="demo"></iframe>
+"#;
+
+    let expected_asset = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<style>\n#box { color: red; }\n</style>\n</head>\n<body>\n<div id=\"box\">Hello</div>\n</body>\n</html>\n";
+    let expected_filename = format!("{}.html", hash_bytes(expected_asset.as_bytes()));
+
+    let mut catalog = AssetCatalog::new(false);
+    let rewritten = rewrite_mdn_live_sample_iframes(
+      input,
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+      false,
+      false,
+    )?;
+
+    assert!(
+      rewritten.contains(&format!("src=\"assets/{expected_filename}\"")),
+      "expected iframe src to be rewritten to local asset, got: {rewritten}"
+    );
+    let asset = catalog
+      .assets
+      .get(&expected_filename)
+      .unwrap_or_else(|| panic!("missing generated asset {expected_filename}"));
+    assert_eq!(
+      String::from_utf8_lossy(&asset.bytes),
+      expected_asset,
+      "generated asset contents should match expected HTML"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn mdn_live_sample_iframe_generation_concatenates_multiple_css_blocks() -> Result<()> {
+    let base = Url::parse("https://example.test/")?;
+    let input = r#"<!doctype html>
+<pre class="brush: html notranslate live-sample---demo"><code>&lt;div id=&quot;a&quot;&gt;Hi&lt;/div&gt;</code></pre>
+<pre class="brush: css notranslate live-sample---demo"><code>#a { color: red; }</code></pre>
+<pre class="brush: css hidden notranslate live-sample---demo"><code>#b { color: blue; }</code></pre>
+<iframe class="sample-code-frame" src="about:blank" data-live-id="demo"></iframe>
+"#;
+
+    let expected_asset = "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<style>\n#a { color: red; }\n#b { color: blue; }\n</style>\n</head>\n<body>\n<div id=\"a\">Hi</div>\n</body>\n</html>\n";
+    let expected_filename = format!("{}.html", hash_bytes(expected_asset.as_bytes()));
+
+    let mut catalog = AssetCatalog::new(false);
+    let rewritten = rewrite_mdn_live_sample_iframes(
+      input,
+      &base,
+      ReferenceContext::Html,
+      &mut catalog,
+      false,
+      false,
+    )?;
+
+    assert!(
+      rewritten.contains(&format!("src=\"assets/{expected_filename}\"")),
+      "expected iframe src to be rewritten to local asset, got: {rewritten}"
+    );
+    let asset = catalog
+      .assets
+      .get(&expected_filename)
+      .unwrap_or_else(|| panic!("missing generated asset {expected_filename}"));
+    assert_eq!(
+      String::from_utf8_lossy(&asset.bytes),
+      expected_asset,
+      "generated asset contents should concatenate CSS blocks in document order"
+    );
+    Ok(())
+  }
+} 
