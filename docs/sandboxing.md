@@ -83,6 +83,8 @@ When debugging sandbox-related issues locally, you can disable the Windows rende
 - `FASTR_DISABLE_RENDERER_SANDBOX=1`, or
 - `FASTR_WINDOWS_RENDERER_SANDBOX=off`
 
+This is **for debugging only**: it removes the primary OS sandbox boundary for the renderer.
+
 When sandboxing is disabled, FastRender prints a **warning to stderr** so insecure runs are not
 silent.
 
