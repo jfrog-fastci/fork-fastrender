@@ -1,0 +1,256 @@
+use crate::{builtins, Heap, HeapLimits, JsRuntime, Job, RealmId, Value, Vm, VmError, VmHostHooks, VmOptions};
+
+#[derive(Default)]
+struct NoopHostHooks;
+
+impl VmHostHooks for NoopHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {
+    // Unit tests do not run the microtask queue.
+  }
+}
+
+fn new_runtime_with_tiny_gc() -> Result<JsRuntime, VmError> {
+  // Keep the heap small enough that allocations inside `valueOf` reliably trigger GC, but large
+  // enough for full realm + intrinsics initialization.
+  let vm = Vm::new(VmOptions::default());
+  let heap = Heap::new(HeapLimits::new(1024 * 1024, 1));
+  JsRuntime::new(vm, heap)
+}
+
+fn extract_fast_array_elems3(
+  rt: &mut JsRuntime,
+  array_val: Value,
+) -> Result<[Value; 3], VmError> {
+  let (_vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut scope = heap.scope();
+
+  // Root the array object while we read its fast elements.
+  scope.push_root(array_val)?;
+  let Value::Object(array_obj) = array_val else {
+    return Err(VmError::TypeError("expected array object"));
+  };
+
+  let a = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 0)?
+    .ok_or(VmError::TypeError("missing array[0]"))?;
+  let b = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 1)?
+    .ok_or(VmError::TypeError("missing array[1]"))?;
+  let c = scope
+    .heap()
+    .array_fast_own_data_element_value(array_obj, 2)?
+    .ok_or(VmError::TypeError("missing array[2]"))?;
+
+  Ok([a, b, c])
+}
+
+#[test]
+fn typed_array_ctor_roots_array_buffer_across_gc_in_toindex() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  // Construct argument objects in JS so `ToNumber` coercion can invoke user code.
+  // The `valueOf` allocates, forcing GC under the tiny heap threshold.
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(8);
+      const byteOffset = { valueOf() { ({});
+        return 0;
+      }};
+      const length = { valueOf() { return 4; } };
+      return [buf, byteOffset, length];
+    })()"#,
+  )?;
+
+  let [buf_val, byte_offset_val, length_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  // Call the builtin constructor directly (host context) without rooting args, to ensure the
+  // builtin itself roots the ArrayBuffer across `ToIndex(byteOffset)` coercion + GC.
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.uint8_array();
+  let new_target = Value::Object(callee);
+  let args = [buf_val, byte_offset_val, length_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::uint8_array_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected constructor to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(view_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "Uint8Array constructor returned non-object",
+    ));
+  };
+
+  // Validate `%TypedArray%.prototype` accessors.
+  let byte_length = builtins::typed_array_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(view_obj),
+    &[],
+  )?;
+  assert_eq!(byte_length, Value::Number(4.0));
+
+  let byte_offset = builtins::typed_array_prototype_byte_offset_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(view_obj),
+    &[],
+  )?;
+  assert_eq!(byte_offset, Value::Number(0.0));
+
+  let buffer = builtins::typed_array_prototype_buffer_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(view_obj),
+    &[],
+  )?;
+  let Value::Object(buffer_obj) = buffer else {
+    return Err(VmError::InvariantViolation(
+      "TypedArray.buffer getter returned non-object",
+    ));
+  };
+
+  // `buffer.byteLength` should reflect the original backing buffer size.
+  let buffer_byte_length = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(buffer_obj),
+    &[],
+  )?;
+  assert_eq!(buffer_byte_length, Value::Number(8.0));
+
+  Ok(())
+}
+
+#[test]
+fn data_view_ctor_roots_byte_length_across_gc_in_toindex() -> Result<(), VmError> {
+  let mut rt = new_runtime_with_tiny_gc()?;
+
+  let args_array = rt.exec_script(
+    r#"(() => {
+      const buf = new ArrayBuffer(8);
+      const byteOffset = { valueOf() { ({});
+        return 0;
+      }};
+      const byteLength = { valueOf() { return 4; } };
+      return [buf, byteOffset, byteLength];
+    })()"#,
+  )?;
+
+  let [buf_val, byte_offset_val, byte_length_val] = extract_fast_array_elems3(&mut rt, args_array)?;
+
+  let (vm, _realm, heap) = rt.vm_realm_and_heap_mut();
+  let mut host = ();
+  let mut hooks = NoopHostHooks::default();
+
+  let gc_before = heap.gc_runs();
+
+  let intr = vm.intrinsics().expect("intrinsics initialized");
+  let callee = intr.data_view();
+  let new_target = Value::Object(callee);
+  let args = [buf_val, byte_offset_val, byte_length_val];
+
+  let mut scope = heap.scope();
+  let out = builtins::data_view_constructor_construct(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    &args,
+    new_target,
+  )?;
+
+  assert!(
+    scope.heap().gc_runs() > gc_before,
+    "expected constructor to trigger GC under tiny heap limits"
+  );
+
+  let Value::Object(view_obj) = out else {
+    return Err(VmError::InvariantViolation(
+      "DataView constructor returned non-object",
+    ));
+  };
+
+  let byte_length = builtins::data_view_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(view_obj),
+    &[],
+  )?;
+  assert_eq!(byte_length, Value::Number(4.0));
+
+  let byte_offset = builtins::data_view_prototype_byte_offset_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(view_obj),
+    &[],
+  )?;
+  assert_eq!(byte_offset, Value::Number(0.0));
+
+  let buffer = builtins::data_view_prototype_buffer_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(view_obj),
+    &[],
+  )?;
+  let Value::Object(buffer_obj) = buffer else {
+    return Err(VmError::InvariantViolation(
+      "DataView.buffer getter returned non-object",
+    ));
+  };
+
+  let buffer_byte_length = builtins::array_buffer_prototype_byte_length_get(
+    vm,
+    &mut scope,
+    &mut host,
+    &mut hooks,
+    callee,
+    Value::Object(buffer_obj),
+    &[],
+  )?;
+  assert_eq!(buffer_byte_length, Value::Number(8.0));
+
+  Ok(())
+}
+

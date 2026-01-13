@@ -208,6 +208,10 @@ mod scf_tests;
 #[path = "../tests/unit/class_static_block_hir_exec.rs"]
 mod class_static_block_hir_exec_tests;
 
+#[cfg(test)]
+#[path = "../tests/unit/typed_array_dataview_rooting_gc.rs"]
+mod typed_array_dataview_rooting_gc_tests;
+
 pub use crate::handle::EnvRootId;
 
 pub use crate::agent::format_termination;

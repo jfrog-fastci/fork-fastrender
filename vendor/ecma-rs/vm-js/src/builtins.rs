@@ -3181,6 +3181,10 @@ pub fn array_buffer_constructor_construct(
   }
 
   let length_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let options_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  // Root the arguments eagerly. `ToNumber(length)` can invoke user code and trigger GC, which must
+  // not collect the (potentially unreachable) options object before we read `maxByteLength`.
+  scope.push_roots(&[length_val, options_val])?;
   let byte_length: usize = to_index_usize(
     vm,
     scope,
@@ -3195,8 +3199,7 @@ pub fn array_buffer_constructor_construct(
   //
   // Spec: https://tc39.es/ecma262/#sec-getarraybuffermaxbytelengthoption
   let mut requested_max_byte_length: Option<usize> = None;
-  if let Some(Value::Object(options_obj)) = args.get(1).copied() {
-    scope.push_root(Value::Object(options_obj))?;
+  if let Value::Object(options_obj) = options_val {
     let key_s = scope.alloc_string("maxByteLength")?;
     scope.push_root(Value::String(key_s))?;
     let key = PropertyKey::from_string(key_s);
@@ -3488,6 +3491,11 @@ pub fn array_buffer_prototype_slice(
   let Value::Object(obj) = this else {
     return Err(VmError::TypeError("ArrayBuffer.prototype.slice called on non-object"));
   };
+  // Root `obj` and slice arguments across argument coercion (`ToNumber`) which can invoke user code
+  // and trigger GC.
+  let begin = args.get(0).copied().unwrap_or(Value::Undefined);
+  let end = args.get(1).copied().unwrap_or(Value::Undefined);
+  scope.push_roots(&[Value::Object(obj), begin, end])?;
   let detached = scope
     .heap()
     .array_buffer_is_detached(obj)
@@ -3583,6 +3591,11 @@ fn typed_array_constructor_construct_impl(
   let mut scope = scope.reborrow();
   let bytes_per_element = kind.bytes_per_element();
   let arg0 = args.get(0).copied().unwrap_or(Value::Undefined);
+  let arg1 = args.get(1).copied().unwrap_or(Value::Undefined);
+  let arg2 = args.get(2).copied().unwrap_or(Value::Undefined);
+  // Root the relevant constructor arguments across coercion (`ToNumber` / `ToIntegerOrInfinity`)
+  // which can invoke user JS and trigger GC.
+  scope.push_roots(&[arg0, arg1, arg2])?;
 
   fn to_index_like(
     vm: &mut Vm,
@@ -3671,12 +3684,12 @@ fn typed_array_constructor_construct_impl(
         &mut scope,
         host,
         hooks,
-        args.get(1).copied().unwrap_or(Value::Undefined),
+        arg1,
         0,
         "TypedArray byteOffset must be a non-negative integer",
       )?;
 
-      let length_val = args.get(2).copied().unwrap_or(Value::Undefined);
+      let length_val = arg2;
       let length_opt = if matches!(length_val, Value::Undefined) {
         None
       } else {
@@ -4483,13 +4496,16 @@ pub fn data_view_constructor_construct(
   let Value::Object(buffer) = arg0 else {
     return Err(VmError::TypeError("DataView constructor expects an ArrayBuffer"));
   };
-  scope.push_root(Value::Object(buffer))?;
+  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
+  let byte_length_val = args.get(2).copied().unwrap_or(Value::Undefined);
+  // Root all arguments eagerly: `ToIndex(byteOffset)` can invoke user code and trigger GC, which
+  // must not collect the (potentially unreachable) `byteLength` value before we convert it.
+  scope.push_roots(&[Value::Object(buffer), byte_offset_val, byte_length_val])?;
   let buf_len = scope
     .heap()
     .array_buffer_byte_length(buffer)
     .map_err(|_| VmError::TypeError("DataView constructor expects an ArrayBuffer"))?;
 
-  let byte_offset_val = args.get(1).copied().unwrap_or(Value::Undefined);
   let byte_offset = to_index_from_value(vm, scope, host, hooks, byte_offset_val)?;
   // Per ECMAScript, DataView construction on a detached ArrayBuffer throws (even for a 0-length
   // view). The detachment check happens after ToIndex(byteOffset) conversion.
@@ -4504,7 +4520,6 @@ pub fn data_view_constructor_construct(
     return Err(VmError::RangeError("DataView view out of bounds"));
   }
 
-  let byte_length_val = args.get(2).copied().unwrap_or(Value::Undefined);
   let byte_length = if matches!(byte_length_val, Value::Undefined) {
     buf_len - byte_offset
   } else {
