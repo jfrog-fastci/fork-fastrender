@@ -600,6 +600,17 @@ fn reject_promise_from_vm_error(
   promise_reject(vm, host, hooks, scope, reason)
 }
 
+fn reject_promise_from_throw_completion_error(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  err: VmError,
+) -> Result<Value, VmError> {
+  let reason = vm_error_to_rejection_reason(vm, scope, err)?;
+  promise_reject(vm, host, hooks, scope, reason)
+}
+
 fn vm_error_to_rejection_reason(
   vm: &Vm,
   scope: &mut Scope<'_>,
@@ -1283,6 +1294,45 @@ pub fn async_iterator_close(
   scope: &mut Scope<'_>,
   record: &AsyncIteratorRecord,
 ) -> Result<Value, VmError> {
+  async_iterator_close_with_completion_kind(
+    vm,
+    host,
+    hooks,
+    scope,
+    record,
+    CloseCompletionKind::NonThrow,
+  )
+}
+
+/// `AsyncIteratorClose(iteratorRecord, completion)` (ECMA-262) (partial).
+///
+/// This is the completion-sensitive form of [`async_iterator_close`]. It implements the key
+/// suppression semantics of ECMA-262 `AsyncIteratorClose`:
+/// - Always attempts `GetMethod(iterator, "return")` and calls it when present.
+/// - If `completion_kind` is [`CloseCompletionKind::Throw`], any JavaScript exception thrown while
+///   getting/calling/awaiting `iterator.return` is suppressed (the incoming throw completion "wins")
+///   and the return-result type check is skipped.
+/// - If `completion_kind` is [`CloseCompletionKind::NonThrow`], closing errors reject/throw as
+///   normal and a non-object return result produces a TypeError.
+/// - Fatal VM errors (OOM/termination/etc) are never suppressed.
+///
+/// Returns a Promise that fulfills when the close operation completes (including waiting for the
+/// `iterator.return()` result to settle when present), or rejects with the close error when it is
+/// not suppressed.
+pub fn async_iterator_close_with_completion_kind(
+  vm: &mut Vm,
+  host: &mut dyn VmHost,
+  hooks: &mut dyn VmHostHooks,
+  scope: &mut Scope<'_>,
+  record: &AsyncIteratorRecord,
+  completion_kind: CloseCompletionKind,
+) -> Result<Value, VmError> {
+  if record.done {
+    return promise_resolve_undefined(vm, host, hooks, scope);
+  }
+
+  let suppress_throw = completion_kind == CloseCompletionKind::Throw;
+
   let mut scope = scope.reborrow();
   scope.push_root(record.iterator)?;
 
@@ -1296,8 +1346,14 @@ pub fn async_iterator_close(
     return_key,
   ) {
     Ok(m) => m,
-    Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut scope, err),
+    Err(err) => {
+      if suppress_throw && err.is_throw_completion() {
+        return promise_resolve_undefined(vm, host, hooks, &mut scope);
+      }
+      return reject_promise_from_throw_completion_error(vm, host, hooks, &mut scope, err);
+    }
   };
+
   let Some(return_method) = return_method else {
     return promise_resolve_undefined(vm, host, hooks, &mut scope);
   };
@@ -1312,7 +1368,12 @@ pub fn async_iterator_close(
     &[],
   ) {
     Ok(v) => v,
-    Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut scope, err),
+    Err(err) => {
+      if suppress_throw && err.is_throw_completion() {
+        return promise_resolve_undefined(vm, host, hooks, &mut scope);
+      }
+      return reject_promise_from_throw_completion_error(vm, host, hooks, &mut scope, err);
+    }
   };
 
   let awaited = match crate::promise_ops::promise_resolve_with_host_and_hooks(
@@ -1323,17 +1384,42 @@ pub fn async_iterator_close(
     return_result,
   ) {
     Ok(v) => v,
-    Err(err) => return reject_promise_from_vm_error(vm, host, hooks, &mut scope, err),
+    Err(err) => {
+      if suppress_throw && err.is_throw_completion() {
+        return promise_resolve_undefined(vm, host, hooks, &mut scope);
+      }
+      return reject_promise_from_throw_completion_error(vm, host, hooks, &mut scope, err);
+    }
   };
   scope.push_root(awaited)?;
 
   let on_fulfilled_call_id = vm.async_iterator_close_on_fulfilled_call_id()?;
   let on_rejected_call_id = vm.async_iterator_close_on_rejected_call_id()?;
+
+  // Slot 0 for both handlers:
+  // - onFulfilled: `check_object` (default true)
+  // - onRejected: `suppress` (default false)
+  let check_object = Value::Bool(!suppress_throw);
+  let suppress_rejection = Value::Bool(suppress_throw);
+
   let on_fulfilled_name = scope.alloc_string("")?;
-  let on_fulfilled = scope.alloc_native_function(on_fulfilled_call_id, None, on_fulfilled_name, 1)?;
+  let on_fulfilled = scope.alloc_native_function_with_slots(
+    on_fulfilled_call_id,
+    None,
+    on_fulfilled_name,
+    1,
+    &[check_object],
+  )?;
   scope.push_root(Value::Object(on_fulfilled))?;
+
   let on_rejected_name = scope.alloc_string("")?;
-  let on_rejected = scope.alloc_native_function(on_rejected_call_id, None, on_rejected_name, 1)?;
+  let on_rejected = scope.alloc_native_function_with_slots(
+    on_rejected_call_id,
+    None,
+    on_rejected_name,
+    1,
+    &[suppress_rejection],
+  )?;
   scope.push_root(Value::Object(on_rejected))?;
 
   let promise_capability =
@@ -1362,13 +1448,27 @@ pub fn async_iterator_close(
 
 pub(crate) fn async_iterator_close_on_fulfilled_call(
   _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let check_object = match scope.heap().get_function_native_slots(callee)?.get(0).copied() {
+    None => true,
+    Some(Value::Bool(b)) => b,
+    Some(_) => {
+      return Err(VmError::InvariantViolation(
+        "AsyncIteratorClose onFulfilled handler expected boolean slot 0",
+      ));
+    }
+  };
+
+  if !check_object {
+    return Ok(Value::Undefined);
+  }
+
   let v = args.get(0).copied().unwrap_or(Value::Undefined);
   if !matches!(v, Value::Object(_)) {
     return Err(VmError::TypeError(
@@ -1380,13 +1480,25 @@ pub(crate) fn async_iterator_close_on_fulfilled_call(
 
 pub(crate) fn async_iterator_close_on_rejected_call(
   _vm: &mut Vm,
-  _scope: &mut Scope<'_>,
+  scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
-  _callee: GcObject,
+  callee: GcObject,
   _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
+  let suppress = match scope.heap().get_function_native_slots(callee)?.get(0).copied() {
+    None => false,
+    Some(Value::Bool(b)) => b,
+    Some(_) => {
+      return Err(VmError::InvariantViolation(
+        "AsyncIteratorClose onRejected handler expected boolean slot 0",
+      ));
+    }
+  };
+  if suppress {
+    return Ok(Value::Undefined);
+  }
   let reason = args.get(0).copied().unwrap_or(Value::Undefined);
   Err(VmError::Throw(reason))
 }
