@@ -14538,6 +14538,70 @@ fn document_create_text_node_native(
   get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
 }
 
+fn document_create_cdata_section_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createCDATASection must be called on a document object",
+    ));
+  };
+
+  let document_id = ensure_document_handle_for_object(
+    vm,
+    scope,
+    document_obj,
+    "document.createCDATASection must be called on a document object",
+  )?;
+
+  let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let data_value = scope.heap_mut().to_string(data_value)?;
+  let data = scope
+    .heap()
+    .get_string(data_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  // https://dom.spec.whatwg.org/#dom-document-createcdatasection
+  //
+  // - Only XML documents can create CDATASection nodes.
+  // - The data must not contain the CDATA section end delimiter.
+  let mut dom_ptr =
+    dom_ptr_for_document_id_mut(vm, host, document_id).ok_or(VmError::TypeError(
+      "document.createCDATASection requires a DOM-backed document",
+    ))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom_mut = unsafe { dom_ptr.as_mut() };
+  if dom_mut.is_html_document() {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "NotSupportedError",
+      "",
+    )?));
+  }
+  if data.contains("]]>") {
+    return Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "InvalidCharacterError",
+      "",
+    )?));
+  }
+
+  // `dom2` does not currently distinguish between Text and CDATASection nodes; treat CDATASection
+  // as a Text node for DOM operations.
+  let node_id = dom_mut.create_text(&data);
+  let dom = unsafe { dom_ptr.as_ref() };
+  get_or_create_node_wrapper(vm, scope, document_obj, Some(dom), node_id)
+}
+
 fn document_create_comment_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -15123,6 +15187,212 @@ fn dom_parser_constructor_native(
   Err(VmError::TypeError(
     "DOMParser constructor cannot be invoked without 'new'",
   ))
+}
+
+fn document_constructor_construct_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _args: &[Value],
+  _new_target: Value,
+) -> Result<Value, VmError> {
+  // WHATWG DOM: `new Document()` returns a new windowless XML document (with scripting disabled).
+  let template_document_obj = vm
+    .user_data::<WindowRealmUserData>()
+    .and_then(|data| data.document_obj)
+    .ok_or(VmError::InvariantViolation(
+      "Document constructor requires window.document",
+    ))?;
+
+  let about_blank_s = scope.alloc_string(ABOUT_BLANK_URL)?;
+  scope.push_root(Value::String(about_blank_s))?;
+
+  // Keep the host document wrapper as the prototype so the returned object inherits the same
+  // handwritten Document surface (which is largely installed as own-properties on `window.document`).
+  let document_obj = scope.alloc_object_with_prototype(Some(template_document_obj))?;
+  scope.push_root(Value::Object(document_obj))?;
+
+  {
+    // Root while allocating property keys: string allocation can trigger GC.
+    let mut scope = scope.reborrow();
+    scope.push_root(Value::Object(document_obj))?;
+    scope.push_root(Value::String(about_blank_s))?;
+
+    let default_view_key = alloc_key(&mut scope, "defaultView")?;
+    scope.define_property(
+      document_obj,
+      default_view_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    let url_key = alloc_key(&mut scope, "URL")?;
+    scope.define_property(document_obj, url_key, data_desc(Value::String(about_blank_s)))?;
+
+    let location_key = alloc_key(&mut scope, "location")?;
+    scope.define_property(
+      document_obj,
+      location_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Null,
+          writable: false,
+        },
+      },
+    )?;
+
+    // Document.title (writable string shim, mirroring the host document).
+    let title_key = alloc_key(&mut scope, "title")?;
+    let title_s = scope.alloc_string("")?;
+    scope.push_root(Value::String(title_s))?;
+    scope.define_property(
+      document_obj,
+      title_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::String(title_s),
+          writable: true,
+        },
+      },
+    )?;
+
+    // Treat this as the canonical wrapper for `NodeId(0)` in its document.
+    let node_id_key = alloc_key(&mut scope, NODE_ID_KEY)?;
+    scope.define_property(document_obj, node_id_key, data_desc(Value::Number(0.0)))?;
+
+    let wrapper_document_key = alloc_key(&mut scope, WRAPPER_DOCUMENT_KEY)?;
+    scope.define_property(
+      document_obj,
+      wrapper_document_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Object(document_obj),
+          writable: false,
+        },
+      },
+    )?;
+  }
+
+  let document_id = gc_object_id(document_obj);
+
+  if let Some(platform) = dom_platform_mut(vm) {
+    // `DomPlatform::get_or_create_wrapper` sets up host slots, but we are creating the document
+    // wrapper object ourselves (to inherit instance properties from `template_document_obj`).
+    scope.heap_mut().object_set_host_slots(
+      document_obj,
+      HostSlots {
+        a: crate::js::dom_platform::DOM_WRAPPER_HOST_TAG,
+        b: 0,
+      },
+    )?;
+    platform.register_wrapper(
+      scope.heap(),
+      document_obj,
+      vm_js::WeakGcObject::from(document_obj),
+      NodeId::from_index(0),
+      DomInterface::Document,
+    );
+  } else {
+    return Err(VmError::TypeError("Illegal invocation"));
+  }
+
+  // Copy internal wrapper helper methods from the host document so node wrappers created for this
+  // document can reuse them.
+  copy_wrapper_shared_methods(scope, template_document_obj, document_obj)?;
+
+  // Create a DOMImplementation object for the new document by copying method functions from the
+  // host document's implementation object.
+  let impl_obj = {
+    let key = alloc_key(scope, "implementation")?;
+    match scope
+      .heap()
+      .object_get_own_data_property_value(template_document_obj, &key)?
+    {
+      Some(Value::Object(obj)) => obj,
+      _ => {
+        return Err(VmError::InvariantViolation(
+          "Document constructor requires document.implementation",
+        ))
+      }
+    }
+  };
+
+  let new_impl = scope.alloc_object()?;
+  scope.push_root(Value::Object(new_impl))?;
+
+  let dom_implementation_brand_key = alloc_key(scope, DOM_IMPLEMENTATION_BRAND_KEY)?;
+  scope.define_property(
+    new_impl,
+    dom_implementation_brand_key,
+    non_configurable_read_only_data_desc(Value::Bool(true)),
+  )?;
+
+  let impl_doc_id_key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_ID_KEY)?;
+  scope.define_property(
+    new_impl,
+    impl_doc_id_key,
+    non_configurable_read_only_data_desc(Value::Number(document_id as f64)),
+  )?;
+  let impl_doc_obj_key = alloc_key(scope, DOM_IMPLEMENTATION_DOCUMENT_OBJ_KEY)?;
+  scope.define_property(
+    new_impl,
+    impl_doc_obj_key,
+    non_configurable_read_only_data_desc(Value::Object(document_obj)),
+  )?;
+
+  for name in [
+    "hasFeature",
+    "createDocument",
+    "createDocumentType",
+    "createHTMLDocument",
+  ] {
+    let key = alloc_key(scope, name)?;
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(impl_obj, &key)?
+      .unwrap_or(Value::Undefined);
+    scope.define_property(new_impl, key, data_desc(value))?;
+  }
+
+  let implementation_key = alloc_key(scope, "implementation")?;
+  scope.define_property(
+    document_obj,
+    implementation_key,
+    read_only_data_desc(Value::Object(new_impl)),
+  )?;
+
+  let dom = dom2::Document::new_xml();
+
+  {
+    let data = vm
+      .user_data_mut::<WindowRealmUserData>()
+      .ok_or(VmError::TypeError("Illegal invocation"))?;
+    if data.owned_dom2_documents.borrow().contains_key(&document_id) {
+      return Err(VmError::InvariantViolation(
+        "Document constructor generated a duplicate document id",
+      ));
+    }
+    data
+      .owned_dom2_documents
+      .borrow_mut()
+      .insert(document_id, Box::new(dom));
+  }
+
+  Ok(Value::Object(document_obj))
 }
 
 fn dom_parser_constructor_construct_native(
@@ -43307,6 +43577,28 @@ fn init_window_globals(
     data_desc(Value::Object(create_text_node_func)),
   )?;
 
+  // document.createCDATASection
+  let create_cdata_section_key = alloc_key(&mut scope, "createCDATASection")?;
+  let create_cdata_section_call_id = vm.register_native_call(document_create_cdata_section_native)?;
+  let create_cdata_section_name = scope.alloc_string("createCDATASection")?;
+  scope.push_root(Value::String(create_cdata_section_name))?;
+  let create_cdata_section_func = scope.alloc_native_function(
+    create_cdata_section_call_id,
+    None,
+    create_cdata_section_name,
+    1,
+  )?;
+  scope.heap_mut().object_set_prototype(
+    create_cdata_section_func,
+    Some(realm.intrinsics().function_prototype()),
+  )?;
+  scope.push_root(Value::Object(create_cdata_section_func))?;
+  scope.define_property(
+    document_obj,
+    create_cdata_section_key,
+    data_desc(Value::Object(create_cdata_section_func)),
+  )?;
+
   // document.createComment
   let create_comment_key = alloc_key(&mut scope, "createComment")?;
   let create_comment_call_id = vm.register_native_call(document_create_comment_native)?;
@@ -45236,6 +45528,8 @@ fn init_window_globals(
     let illegal_ctor_call_id = vm.register_native_call(illegal_dom_constructor_native)?;
     let illegal_ctor_construct_id =
       vm.register_native_construct(illegal_dom_constructor_construct_native)?;
+    let document_ctor_construct_id =
+      vm.register_native_construct(document_constructor_construct_native)?;
 
     let node_proto = platform.prototype_for(DomInterface::Node);
     let document_type_proto = platform.prototype_for(DomInterface::DocumentType);
@@ -45353,9 +45647,14 @@ fn init_window_globals(
 
     // Element/Document/DocumentFragment/Text constructors.
     //
-    // Like Node, these interface objects exist for `instanceof` checks and interface object
-    // inheritance, but are not constructible in practice. When using WebIDL bindings, the generated
-    // constructors are expected to already exist on the global object.
+    // Most core DOM interface objects are not constructible in practice; we install "illegal"
+    // constructors for them in the handwritten backend so `instanceof` checks work.
+    //
+    // `Document` is a notable exception: it is constructible (`new Document()`), and we provide a
+    // minimal constructor implementation below.
+    //
+    // When using WebIDL bindings, the generated constructors are expected to already exist on the
+    // global object.
     let _element_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
       let element_ctor = make_illegal_ctor(&mut scope, "Element")?;
       scope.push_root(Value::Object(element_ctor))?;
@@ -45392,7 +45691,18 @@ fn init_window_globals(
     };
 
     let _document_ctor = if config.dom_bindings_backend == DomBindingsBackend::Handwritten {
-      let document_ctor = make_illegal_ctor(&mut scope, "Document")?;
+      // Unlike most DOM interface objects, `Document` is constructible (`new Document()`).
+      let name = scope.alloc_string("Document")?;
+      scope.push_root(Value::String(name))?;
+      let document_ctor = scope.alloc_native_function(
+        illegal_ctor_call_id,
+        Some(document_ctor_construct_id),
+        name,
+        0,
+      )?;
+      scope
+        .heap_mut()
+        .object_set_prototype(document_ctor, Some(realm.intrinsics().function_prototype()))?;
       scope.push_root(Value::Object(document_ctor))?;
       scope.define_property(
         document_ctor,
@@ -55053,6 +55363,52 @@ mod tests {
         if (comment.nodeValue !== "y") throw new Error(`expected comment nodeValue after set, got ${comment.nodeValue}`);
         xmlDoc.appendChild(pi);
         xmlDoc.appendChild(comment);
+        return true;
+      })()"#,
+    )?;
+
+    assert_eq!(result, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn document_constructor_creates_windowless_xml_document() -> Result<(), VmError> {
+    let mut host = new_host_document_state();
+    let mut realm = new_realm(WindowRealmConfig::new("https://example.com/"))?;
+
+    let result = exec_script_with_dom_host(
+      &mut realm,
+      &mut host,
+      r#"(() => {
+        const d = new Document();
+        if (d === document) throw new Error("expected new Document() to create a new Document");
+        if (d.defaultView !== null) throw new Error("expected new Document().defaultView to be null");
+        if (d.URL !== "about:blank") throw new Error(`expected about:blank URL, got ${d.URL}`);
+        if (d.contentType !== "application/xml") throw new Error(`expected application/xml, got ${d.contentType}`);
+
+        // createCDATASection is only supported for XML documents.
+        const cdata = d.createCDATASection("1234");
+        if (cdata.nodeValue !== "1234") throw new Error(`expected CDATA nodeValue, got ${cdata.nodeValue}`);
+
+        // Invalid CDATA payload should throw.
+        try {
+          d.createCDATASection("]]>");
+          throw new Error("expected InvalidCharacterError for ]]> payload");
+        } catch (e) {
+          if (e.name !== "InvalidCharacterError") throw e;
+        }
+
+        // HTML documents must reject createCDATASection.
+        try {
+          document.createCDATASection("x");
+          throw new Error("expected NotSupportedError from HTML document");
+        } catch (e) {
+          if (e.name !== "NotSupportedError") throw e;
+        }
+
+        // Appending across documents should adopt the node (used by Range WPT harness).
+        document.body.appendChild(cdata);
+        if (cdata.ownerDocument !== document) throw new Error("expected adopted ownerDocument");
         return true;
       })()"#,
     )?;
