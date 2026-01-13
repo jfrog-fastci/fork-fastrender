@@ -9597,6 +9597,18 @@ impl<'a> Evaluator<'a> {
     scope: &mut Scope<'_>,
     expr: &ComputedMemberExpr,
   ) -> Result<OptionalChainEval, VmError> {
+    // Evaluating a `super[expr]` property reference requires an initialized `this` binding.
+    //
+    // In derived constructors before `super()`, this check must happen **before** evaluating the
+    // computed key expression.
+    if matches!(&*expr.object.stx, Expr::Super(_)) && self.derived_constructor && !self.this_initialized {
+      return Err(throw_reference_error(
+        self.vm,
+        scope,
+        "Must call super constructor in derived class before accessing 'this'",
+      )?);
+    }
+
     let base = match self.eval_chain_base(scope, &expr.object)? {
       OptionalChainEval::Value(v) => v,
       OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
@@ -9668,6 +9680,21 @@ impl<'a> Evaluator<'a> {
             "optional chaining used in reference position",
           ));
         }
+
+        // Super property references (`super[expr]`) require an initialized `this` binding.
+        // In derived constructors before `super()`, this check happens before evaluating the
+        // computed key expression.
+        if matches!(&*member.stx.object.stx, Expr::Super(_))
+          && self.derived_constructor
+          && !self.this_initialized
+        {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+
         let base = self.eval_expr(scope, &member.stx.object)?;
         let mut key_scope = scope.reborrow();
         key_scope.push_root(base)?;
@@ -12136,6 +12163,21 @@ impl<'a> Evaluator<'a> {
       // Optional computed-member call (e.g. `obj?.[expr]()`): only applies when the optional-chain
       // computed member expression is directly in the call callee position (i.e. not parenthesized).
       Expr::ComputedMember(member) if member.stx.optional_chaining && !callee_is_parenthesized => {
+        // `super?.[expr](...)` is an early error, but super computed-member calls can still appear
+        // in this position when the callee is not optional-chained. For derived constructors
+        // before `super()`, evaluating a super property reference must throw before evaluating the
+        // computed key expression.
+        if matches!(&*member.stx.object.stx, Expr::Super(_))
+          && self.derived_constructor
+          && !self.this_initialized
+        {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+
         let base = match self.eval_chain_base(scope, &member.stx.object)? {
           OptionalChainEval::Value(v) => v,
           OptionalChainEval::ShortCircuit => return Ok(OptionalChainEval::ShortCircuit),
@@ -12203,6 +12245,17 @@ impl<'a> Evaluator<'a> {
       }
       // Ordinary computed-member call (e.g. `obj[expr]()`), but with optional-chain propagation.
       Expr::ComputedMember(member) if !member.stx.optional_chaining => {
+        if matches!(&*member.stx.object.stx, Expr::Super(_))
+          && self.derived_constructor
+          && !self.this_initialized
+        {
+          return Err(throw_reference_error(
+            self.vm,
+            scope,
+            "Must call super constructor in derived class before accessing 'this'",
+          )?);
+        }
+
         match self.eval_chain_base(scope, &member.stx.object)? {
           OptionalChainEval::Value(base) => {
             // In non-optional computed member access, the key expression is evaluated even if the

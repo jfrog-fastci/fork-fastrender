@@ -4459,9 +4459,6 @@ impl<'vm> HirEvaluator<'vm> {
             update_scope.push_root(Value::Object(home))?;
           }
 
-          let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
-          root_property_key(&mut update_scope, key)?;
-
           if self.derived_constructor && !self.this_initialized {
             return Err(throw_reference_error(
               self.vm,
@@ -4469,6 +4466,9 @@ impl<'vm> HirEvaluator<'vm> {
               "Must call super constructor in derived class before accessing 'this'",
             )?);
           }
+
+          let key = self.eval_object_key(&mut update_scope, body, &member.property)?;
+          root_property_key(&mut update_scope, key)?;
 
           let base = self.super_base_value(&mut update_scope)?;
           update_scope.push_root(base)?;
@@ -5517,10 +5517,9 @@ impl<'vm> HirEvaluator<'vm> {
 
     // Super property assignment targets: `super.x = v` / `super[expr] = v`.
     //
-    // Per spec order, the computed key is evaluated before checking `this` initialization. The
-    // actual `this` binding is required to create the SuperReference, so attempting to assign to a
-    // super property before `super()` in a derived constructor must throw a ReferenceError before
-    // evaluating the RHS.
+    // Evaluating a super property reference requires an initialized `this` binding. In derived
+    // constructors before `super()`, this check must happen **before** evaluating the computed key
+    // expression (and therefore before evaluating the RHS in ordinary assignment).
     let object_expr = self.get_expr(body, member.object)?;
     if matches!(object_expr.kind, hir_js::ExprKind::Super) {
       // Root receiver + home object while evaluating the key.
@@ -5531,9 +5530,6 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(Value::Object(home))?;
       }
 
-      let key = self.eval_object_key(&mut scope, body, &member.property)?;
-      root_property_key(&mut scope, key)?;
-
       if self.derived_constructor && !self.this_initialized {
         return Err(throw_reference_error(
           self.vm,
@@ -5541,6 +5537,9 @@ impl<'vm> HirEvaluator<'vm> {
           "Must call super constructor in derived class before accessing 'this'",
         )?);
       }
+
+      let key = self.eval_object_key(&mut scope, body, &member.property)?;
+      root_property_key(&mut scope, key)?;
 
       let base = self.super_base_value(&mut scope)?;
       return Ok(AssignmentReference::Super {
@@ -5825,9 +5824,6 @@ impl<'vm> HirEvaluator<'vm> {
                 scope.push_root(Value::Object(home))?;
               }
 
-              let key = self.eval_object_key(&mut scope, body, &member.property)?;
-              root_property_key(&mut scope, key)?;
-
               if self.derived_constructor && !self.this_initialized {
                 return Err(throw_reference_error(
                   self.vm,
@@ -5835,6 +5831,9 @@ impl<'vm> HirEvaluator<'vm> {
                   "Must call super constructor in derived class before accessing 'this'",
                 )?);
               }
+
+              let key = self.eval_object_key(&mut scope, body, &member.property)?;
+              root_property_key(&mut scope, key)?;
 
               let base = self.super_base_value(&mut scope)?;
               scope.push_root(base)?;
@@ -6035,9 +6034,6 @@ impl<'vm> HirEvaluator<'vm> {
                 scope.push_root(Value::Object(home))?;
               }
 
-              let key = self.eval_object_key(&mut scope, body, &member.property)?;
-              root_property_key(&mut scope, key)?;
-
               if self.derived_constructor && !self.this_initialized {
                 return Err(throw_reference_error(
                   self.vm,
@@ -6045,6 +6041,9 @@ impl<'vm> HirEvaluator<'vm> {
                   "Must call super constructor in derived class before accessing 'this'",
                 )?);
               }
+
+              let key = self.eval_object_key(&mut scope, body, &member.property)?;
+              root_property_key(&mut scope, key)?;
 
               let base = self.super_base_value(&mut scope)?;
               // Root base across `ToObject`, `[[Get]]`, RHS evaluation, and `[[Set]]`.
@@ -7349,11 +7348,8 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(Value::Object(home))?;
       }
 
-      // Spec order: evaluate the computed key before checking derived-constructor `this`
-      // initialization.
-      let key = self.eval_object_key(&mut scope, body, &member.property)?;
-      root_property_key(&mut scope, key)?;
-
+      // In derived constructors before `super()`, `super[expr]` must throw before evaluating `expr`
+      // if the `this` binding is still uninitialized.
       if self.derived_constructor && !self.this_initialized {
         return Err(throw_reference_error(
           self.vm,
@@ -7361,6 +7357,9 @@ impl<'vm> HirEvaluator<'vm> {
           "Must call super constructor in derived class before accessing 'this'",
         )?);
       }
+
+      let key = self.eval_object_key(&mut scope, body, &member.property)?;
+      root_property_key(&mut scope, key)?;
 
       let base = self.super_base_value(&mut scope)?;
       scope.push_root(base)?;
@@ -7447,10 +7446,8 @@ impl<'vm> HirEvaluator<'vm> {
         scope.push_root(Value::Object(home))?;
       }
 
-      // Spec order: evaluate computed key before checking derived-constructor `this` initialization.
-      let key = self.eval_object_key(&mut scope, body, &member.property)?;
-      root_property_key(&mut scope, key)?;
-
+      // In derived constructors before `super()`, `super[expr]` must throw before evaluating `expr`
+      // if the `this` binding is still uninitialized.
       if self.derived_constructor && !self.this_initialized {
         return Err(throw_reference_error(
           self.vm,
@@ -7458,6 +7455,9 @@ impl<'vm> HirEvaluator<'vm> {
           "Must call super constructor in derived class before accessing 'this'",
         )?);
       }
+
+      let key = self.eval_object_key(&mut scope, body, &member.property)?;
+      root_property_key(&mut scope, key)?;
 
       let base = self.super_base_value(&mut scope)?;
       scope.push_root(base)?;
@@ -8089,11 +8089,8 @@ impl<'vm> HirEvaluator<'vm> {
             scope.push_root(Value::Object(home))?;
           }
 
-          // Spec order: evaluate the computed key before checking derived-constructor `this`
-          // initialization.
-          let key = self.eval_object_key(&mut scope, body, &member.property)?;
-          root_property_key(&mut scope, key)?;
-
+          // In derived constructors before `super()`, `super[expr]` must throw before evaluating
+          // `expr` if the `this` binding is still uninitialized.
           if self.derived_constructor && !self.this_initialized {
             return Err(throw_reference_error(
               self.vm,
@@ -8101,6 +8098,9 @@ impl<'vm> HirEvaluator<'vm> {
               "Must call super constructor in derived class before accessing 'this'",
             )?);
           }
+
+          let key = self.eval_object_key(&mut scope, body, &member.property)?;
+          root_property_key(&mut scope, key)?;
 
           let base = self.super_base_value(&mut scope)?;
           scope.push_root(base)?;

@@ -4,6 +4,8 @@
 include = [
   "language/expressions/addition/**/*.js",
   "language/expressions/multiplication/**/*.js",
+  "language/expressions/super/prop-expr-uninitialized-this-*.js",
+  "language/statements/class/super/in-constructor-superproperty-evaluation.js",
 ]
 
 # Avoid module-only tests for now; the VM/harness integration will grow support
@@ -11,4 +13,3 @@ include = [
 exclude = [
   "**/*.module.js",
 ]
-
