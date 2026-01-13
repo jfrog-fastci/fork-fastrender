@@ -137,7 +137,26 @@ fn sequence_conversion_materializes_array_and_enforces_limits() -> Result<(), Vm
     err,
     intr.type_error_prototype(),
     "TypeError",
+    "Value is not iterable",
+  )?;
+
+  // ---- null / undefined throw during ToObject ----
+  let err = conversions::to_iterable_list(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::Null,
     "expected object for sequence",
+    |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected null to fail sequence conversion");
+  assert_thrown_error(
+    &mut rt,
+    &realm,
+    err,
+    intr.type_error_prototype(),
+    "TypeError",
+    "Cannot convert undefined or null to object",
   )?;
 
   // ---- length limit throws RangeError ----

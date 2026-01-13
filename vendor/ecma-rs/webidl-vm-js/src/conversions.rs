@@ -75,14 +75,41 @@ where
     Value,
   ) -> Result<Value, VmError>,
 {
-  let v = value;
-  let Value::Object(_obj) = v else {
-    return Err(rt.throw_type_error(expected_object_message));
+  let _ = expected_object_message;
+
+  // WebIDL sequence conversions use `GetMethod(V, @@iterator)`, which applies `ToObject(V)` under
+  // the hood. Accept primitives here by explicitly boxing them before iteration.
+  //
+  // Root `value` across `ToObject` (boxing may allocate/GC and `value` may contain GC handles).
+  rt.scope.push_root(value)?;
+
+  let obj = match value {
+    Value::Object(obj) => obj,
+    other => match rt.scope.to_object(&mut *rt.vm, host, hooks, other) {
+      Ok(obj) => obj,
+      // `ToObject` throws a TypeError for `null`/`undefined`. Convert internal `VmError::TypeError`
+      // into a catchable thrown `TypeError` object so tests can inspect it.
+      Err(VmError::TypeError(message)) => return Err(rt.throw_type_error(message)),
+      Err(err) => return Err(err),
+    },
   };
+
+  let v = Value::Object(obj);
   rt.scope.push_root(v)?;
 
-  let mut iterator_record =
-    vm_js::iterator::get_iterator(&mut *rt.vm, host, hooks, &mut rt.scope, v)?;
+  let mut iterator_record = match vm_js::iterator::get_iterator(
+    &mut *rt.vm,
+    host,
+    hooks,
+    &mut rt.scope,
+    v,
+  ) {
+    Ok(record) => record,
+    Err(VmError::TypeError("GetIterator: value is not iterable")) => {
+      return Err(rt.throw_type_error("Value is not iterable"));
+    }
+    Err(err) => return Err(err),
+  };
   rt.scope.push_root(iterator_record.iterator)?;
   rt.scope.push_root(iterator_record.next_method)?;
 
@@ -121,7 +148,9 @@ where
 ///
 /// This follows the WebIDL "js-to-record" algorithm shape:
 /// - `ToObject` is applied (primitives are accepted; `null`/`undefined` throw).
-/// - Only own enumerable **string** keys are included (symbols are ignored).
+/// - Only own enumerable **string** keys are included.
+/// - Enumerable **symbol** keys can throw, because record conversion performs `ToString(key)`
+///   (WebIDL `PropertyKeyToString`) and `ToString(Symbol)` throws a TypeError.
 ///
 /// The bindings layer representation used by the `vm-js` WebIDL backend is a JavaScript plain
 /// object containing the converted values.
@@ -171,11 +200,6 @@ where
 
   let mut entries: usize = 0;
   for key in keys {
-    // Record keys are strings; symbol keys are ignored.
-    let PropertyKey::String(_s) = key else {
-      continue;
-    };
-
     let Some(desc) = rt.scope.heap().object_get_own_property(input, &key)? else {
       continue;
     };
@@ -183,6 +207,25 @@ where
       continue;
     }
 
+    // WebIDL record conversion uses `PropertyKeyToString` / `ToString(key)`. Enumerable symbol keys
+    // therefore throw a TypeError (since `ToString(Symbol)` throws).
+    if let PropertyKey::Symbol(sym) = key {
+      // Root the symbol across `ToString` (it can allocate if `value` is object and invokes user
+      // code; Symbols don't, but keep the rooting discipline consistent).
+      rt.scope.push_root(Value::Symbol(sym))?;
+      match rt
+        .scope
+        .to_string(&mut *rt.vm, host, hooks, Value::Symbol(sym))
+      {
+        Ok(_) => {}
+        Err(VmError::TypeError(message)) => return Err(rt.throw_type_error(message)),
+        Err(err) => return Err(err),
+      };
+      // `ToString(Symbol)` always throws, so we should never reach here.
+      continue;
+    }
+
+    // Record keys are strings (symbol keys either throw above or were skipped as non-enumerable).
     if entries >= rt.limits().max_record_entries {
       return Err(rt.throw_range_error("record exceeds maximum entry count"));
     }
@@ -227,6 +270,13 @@ pub fn to_enum<'a>(
 
   let s = rt.scope.to_string(&mut *rt.vm, host, hooks, value)?;
   rt.scope.push_root(Value::String(s))?;
+
+  // WebIDL string conversions must enforce `max_string_code_units` (in UTF-16 code units).
+  let len = rt.scope.heap().get_string(s)?.as_code_units().len();
+  if len > rt.limits().max_string_code_units {
+    return Err(rt.throw_range_error("string exceeds maximum length"));
+  }
+
   let text = rt.scope.heap().get_string(s)?.to_utf8_lossy();
   if !allowed_values.iter().any(|v| *v == text.as_str()) {
     return Err(rt.throw_type_error(&format!(

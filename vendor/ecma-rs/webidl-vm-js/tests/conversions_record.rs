@@ -18,7 +18,7 @@ impl VmHostHooks for DummyHooks {
 }
 
 #[test]
-fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmError> {
+fn record_conversion_uses_to_object_and_errors_on_enumerable_symbol_keys() -> Result<(), VmError> {
   let mut vm = Vm::new(VmOptions::default());
   let mut heap = Heap::new(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
   let mut realm = Realm::new(&mut vm, &mut heap)?;
@@ -29,7 +29,12 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
 
   let mut rt = BindingsRuntime::from_scope(&mut vm, scope.reborrow());
 
-  // ---- record conversion ignores symbols + non-enumerable keys ----
+  let intr = rt
+    .vm
+    .intrinsics()
+    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
+
+  // ---- record conversion skips non-enumerable keys (including symbols) ----
   let input = rt.alloc_object()?;
 
   let a_key = rt.property_key("a")?;
@@ -48,10 +53,6 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
     DataPropertyAttributes::new(true, false, true),
   )?;
 
-  let intr = rt
-    .vm
-    .intrinsics()
-    .ok_or(VmError::Unimplemented("intrinsics not initialized"))?;
   let sym = intr.well_known_symbols().iterator;
   rt.scope.push_root(Value::Symbol(sym))?;
   let sym_key = PropertyKey::from_symbol(sym);
@@ -59,7 +60,7 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
     input,
     sym_key,
     Value::Number(2.0),
-    DataPropertyAttributes::new(true, true, true),
+    DataPropertyAttributes::new(true, false, true),
   )?;
 
   let out = conversions::to_record(
@@ -95,6 +96,32 @@ fn record_conversion_uses_to_object_and_ignores_symbol_keys() -> Result<(), VmEr
     .object_get_own_data_property_value(out_obj, &keys[0])?
     .unwrap_or(Value::Undefined);
   assert_eq!(v, Value::Number(1.0));
+
+  // ---- record conversion throws on enumerable symbol keys ----
+  let input2 = rt.alloc_object()?;
+  rt.define_data_property(
+    input2,
+    sym_key,
+    Value::Number(2.0),
+    DataPropertyAttributes::new(true, true, true),
+  )?;
+  let err = conversions::to_record(
+    &mut rt,
+    &mut dummy_host,
+    &mut hooks,
+    Value::Object(input2),
+    "expected object for record",
+    |_rt, _host, _hooks, v| Ok(v),
+  )
+  .expect_err("expected enumerable symbol key to throw");
+  let thrown = err.thrown_value().expect("expected thrown exception value");
+  let Value::Object(thrown_obj) = thrown else {
+    return Err(VmError::TypeError("expected thrown error to be an object"));
+  };
+  assert_eq!(
+    rt.scope.object_get_prototype(thrown_obj)?,
+    Some(intr.type_error_prototype())
+  );
 
   // ---- record conversion uses `ToObject` (primitives are accepted) ----
   let out2 = conversions::to_record(
