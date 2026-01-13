@@ -70,7 +70,8 @@ pub fn validate_chrome_navigation_url(url: &str) -> Result<(), ChromeApiError> {
 //
 // Keep the public path stable as `crate::js::chrome_api::*` (used by the DOM VM embedding and
 // chrome-frame helpers). The canonical vm-js implementation lives under `crate::js::vmjs_chrome_api`
-// (declared in `src/js/mod.rs`), so re-export it here rather than compiling the file twice.
+// (declared in `src/js/mod.rs`) to avoid a `js::chrome_api` module name collision, so re-export it
+// here rather than compiling the file twice.
 
 pub use super::vmjs_chrome_api::{
   install_chrome_api_bindings_vm_js, ChromeApiHost, ChromeCommand, MAX_CHROME_API_URL_CODE_UNITS,
