@@ -28,9 +28,6 @@ const PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY: usize = 0x0002_000F
 // Value for `PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY` (winbase.h).
 const PROCESS_CREATION_ALL_APPLICATION_PACKAGES_POLICY_BLOCK: u32 = 1;
 
-const ERROR_NOT_SUPPORTED: u32 = windows_sys::Win32::Foundation::ERROR_NOT_SUPPORTED;
-const ERROR_INVALID_PARAMETER: u32 = 87;
-
 /// Configuration for spawning a sandboxed Windows child process.
 #[derive(Debug)]
 pub struct SpawnConfig<'a> {
@@ -527,22 +524,25 @@ fn spawn_sandboxed_inner(
     Ok(())
   };
 
-  let create_process_with_optional_breakaway =
-    |create: &mut dyn FnMut(u32) -> std::result::Result<(), WinSandboxError>| {
-      if parent_in_job && needs_job {
-        match create(flags | CREATE_BREAKAWAY_FROM_JOB) {
-          Ok(()) => Ok(()),
-          Err(err)
-            if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) =>
-          {
-            create(flags)
-          }
-          Err(err) => Err(err),
+  let create_process_with_optional_breakaway = |create: &mut dyn FnMut(
+    u32,
+  )
+    -> std::result::Result<
+    (),
+    WinSandboxError,
+  >| {
+    if parent_in_job && needs_job {
+      match create(flags | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(()) => Ok(()),
+        Err(err) if matches!(err, WinSandboxError::Win32 { code, .. } if code == ERROR_ACCESS_DENIED) => {
+          create(flags)
         }
-      } else {
-        create(flags)
+        Err(err) => Err(err),
       }
-    };
+    } else {
+      create(flags)
+    }
+  };
 
   match create_process_with_optional_breakaway(&mut create_process_inner) {
     Ok(()) => {}
