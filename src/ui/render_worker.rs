@@ -2748,26 +2748,6 @@ impl BrowserRuntime {
     if request.url.is_empty() {
       return;
     }
-
-    // Test hook: allow integration tests to trigger a deterministic worker crash.
-    //
-    // This is opt-in via `FASTR_ENABLE_CRASH_URLS=1` so production builds cannot be crashed just by
-    // navigating to a `crash://...` URL.
-    //
-    // Restrict this to typed navigations so untrusted pages cannot crash the worker via link clicks.
-    #[cfg(feature = "browser_ui")]
-    if reason == NavigationReason::TypedUrl
-      && self.runtime_toggles.truthy("FASTR_ENABLE_CRASH_URLS")
-      && request
-        .url
-        .get(0..8)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("crash://"))
-    {
-      panic!(
-        "intentional crash triggered via internal navigation request to {}",
-        request.url
-      );
-    }
     match reason {
       NavigationReason::TypedUrl | NavigationReason::LinkClick => {
         self.begin_navigation(tab_id, request, reason, true);
