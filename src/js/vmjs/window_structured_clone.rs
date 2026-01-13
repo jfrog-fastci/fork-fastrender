@@ -2590,21 +2590,30 @@ mod tests {
   }
 
   #[test]
-  fn structured_clone_uint8_array_does_not_invoke_shadowed_buffer_getter() -> Result<(), VmError> {
+  fn structured_clone_uint8_array_does_not_invoke_shadowed_view_metadata_getters() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(
       "(() => {\
-         const ab = new ArrayBuffer(4);\
-         const u8 = new Uint8Array(ab);\
+         const ab = new ArrayBuffer(8);\
+         const u8 = new Uint8Array(ab, 2, 4);\
          u8[0] = 1; u8[1] = 2; u8[2] = 3; u8[3] = 4;\
+         const origByteOffset = u8.byteOffset;\
+         const origLength = u8.length;\
          Object.defineProperty(u8, 'buffer', { get() { throw 1; } });\
-         let threw = false;\
-         try { u8.buffer; } catch (e) { threw = e === 1; }\
-         if (!threw) return false;\
+         Object.defineProperty(u8, 'byteOffset', { get() { throw 2; } });\
+         Object.defineProperty(u8, 'length', { get() { throw 3; } });\
+         let threwBuffer = false;\
+         let threwByteOffset = false;\
+         let threwLength = false;\
+         try { u8.buffer; } catch (e) { threwBuffer = e === 1; }\
+         try { u8.byteOffset; } catch (e) { threwByteOffset = e === 2; }\
+         try { u8.length; } catch (e) { threwLength = e === 3; }\
+         if (!threwBuffer || !threwByteOffset || !threwLength) return false;\
          const c = structuredClone(u8);\
          if (!(c instanceof Uint8Array)) return false;\
          if (Object.getPrototypeOf(c) !== Uint8Array.prototype) return false;\
-         if (c.length !== 4) return false;\
+         if (c.length !== origLength) return false;\
+         if (c.byteOffset !== origByteOffset) return false;\
          if (c[0] !== 1 || c[1] !== 2 || c[2] !== 3 || c[3] !== 4) return false;\
          if (c.buffer === ab) return false;\
          return true;\
@@ -2615,23 +2624,33 @@ mod tests {
   }
 
   #[test]
-  fn structured_clone_data_view_does_not_invoke_shadowed_buffer_getter() -> Result<(), VmError> {
+  fn structured_clone_data_view_does_not_invoke_shadowed_view_metadata_getters() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
     let ok = realm.exec_script(
       "(() => {\
-         const ab = new ArrayBuffer(4);\
-         const dv = new DataView(ab);\
+         const ab = new ArrayBuffer(8);\
+         const dv = new DataView(ab, 1, 4);\
          dv.setUint8(0, 9);\
          dv.setUint8(1, 8);\
+         dv.setUint8(2, 7);\
+         dv.setUint8(3, 6);\
+         const origByteOffset = dv.byteOffset;\
+         const origByteLength = dv.byteLength;\
          Object.defineProperty(dv, 'buffer', { get() { throw 1; } });\
-         let threw = false;\
-         try { dv.buffer; } catch (e) { threw = e === 1; }\
-         if (!threw) return false;\
+         Object.defineProperty(dv, 'byteOffset', { get() { throw 2; } });\
+         Object.defineProperty(dv, 'byteLength', { get() { throw 3; } });\
+         let threwBuffer = false;\
+         let threwByteOffset = false;\
+         let threwByteLength = false;\
+         try { dv.buffer; } catch (e) { threwBuffer = e === 1; }\
+         try { dv.byteOffset; } catch (e) { threwByteOffset = e === 2; }\
+         try { dv.byteLength; } catch (e) { threwByteLength = e === 3; }\
+         if (!threwBuffer || !threwByteOffset || !threwByteLength) return false;\
          const c = structuredClone(dv);\
          if (!(c instanceof DataView)) return false;\
          if (Object.getPrototypeOf(c) !== DataView.prototype) return false;\
-         if (c.byteOffset !== 0 || c.byteLength !== 4) return false;\
-         if (c.getUint8(0) !== 9 || c.getUint8(1) !== 8) return false;\
+         if (c.byteOffset !== origByteOffset || c.byteLength !== origByteLength) return false;\
+         if (c.getUint8(0) !== 9 || c.getUint8(1) !== 8 || c.getUint8(2) !== 7 || c.getUint8(3) !== 6) return false;\
          if (c.buffer === ab) return false;\
          return true;\
        })()",
