@@ -38,6 +38,7 @@ If a document can’t be kept accurate, delete it and replace it with something 
 - Multiprocess threat model (renderer IPC trust boundary): [multiprocess_threat_model.md](multiprocess_threat_model.md)
 - Site isolation process model (per-origin, OOPIF; `file://` semantics): [site_isolation.md](site_isolation.md)
 - Linux IPC (shared memory + FD passing checklist): [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md)
+- Renderer sandbox entrypoint: [renderer_sandbox.md](renderer_sandbox.md)
 - Sandboxing overview (renderer process): [sandboxing.md](sandboxing.md)
 - Linux sandbox design (rlimits, fd hygiene, Landlock + seccomp): [security/sandbox.md](security/sandbox.md)
 - Windows renderer sandboxing: [windows_sandbox.md](windows_sandbox.md)
