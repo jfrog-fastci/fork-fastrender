@@ -9121,6 +9121,14 @@ impl App {
           // keyboard events to the page.
           self.page_has_focus = false;
         }
+        ChromeAction::SavePage => {
+          self.show_chrome_toast("Save not implemented yet");
+          self.window.request_redraw();
+        }
+        ChromeAction::PrintPage => {
+          self.show_chrome_toast("Print not implemented yet");
+          self.window.request_redraw();
+        }
         ChromeAction::FindQuery {
           tab_id,
           query,

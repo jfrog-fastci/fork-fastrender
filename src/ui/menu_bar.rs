@@ -26,6 +26,16 @@ const SHORTCUT_CLOSE_TAB: &str = "Cmd+W";
 const SHORTCUT_CLOSE_TAB: &str = "Ctrl+W";
 
 #[cfg(target_os = "macos")]
+const SHORTCUT_SAVE_PAGE: &str = "Cmd+S";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_SAVE_PAGE: &str = "Ctrl+S";
+
+#[cfg(target_os = "macos")]
+const SHORTCUT_PRINT: &str = "Cmd+P";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_PRINT: &str = "Ctrl+P";
+
+#[cfg(target_os = "macos")]
 const SHORTCUT_REOPEN_TAB: &str = "Cmd+Shift+T";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_REOPEN_TAB: &str = "Ctrl+Shift+T";
@@ -165,6 +175,23 @@ pub fn menu_bar_ui(
               commands.push(MenuCommand::NewTab);
               ui.close_menu();
             }
+
+            let save_page_resp = ui
+              .add_enabled(
+                false,
+                egui::Button::new("Save Page…").shortcut_text(SHORTCUT_SAVE_PAGE),
+              )
+              .on_disabled_hover_text("Not implemented yet");
+            save_page_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Save page (not implemented)")
+            });
+
+            let print_resp = ui
+              .add_enabled(false, egui::Button::new("Print…").shortcut_text(SHORTCUT_PRINT))
+              .on_disabled_hover_text("Not implemented yet");
+            print_resp.widget_info(|| {
+              egui::WidgetInfo::labeled(egui::WidgetType::Button, "Print page (not implemented)")
+            });
 
             let close_tab_resp = ui.add_enabled(
               can_close_tab,

@@ -51,6 +51,16 @@ pub enum ChromeAction {
   /// Toggle native window fullscreen mode.
   ToggleFullScreen,
   OpenFindInPage,
+  /// Save the current page (Ctrl/Cmd+S).
+  ///
+  /// Front-ends may implement this via a native save dialog. When unimplemented, it should surface a
+  /// clear user-facing notification.
+  SavePage,
+  /// Print the current page (Ctrl/Cmd+P).
+  ///
+  /// Front-ends may implement this via a native print dialog/preview. When unimplemented, it should
+  /// surface a clear user-facing notification.
+  PrintPage,
   /// Begin/update an active "find in page" query for a tab.
   FindQuery {
     tab_id: TabId,
@@ -261,7 +271,9 @@ fn egui_key_to_shortcuts_key(key: egui::Key) -> Option<Key> {
     egui::Key::L => Key::L,
     egui::Key::N => Key::N,
     egui::Key::O => Key::O,
+    egui::Key::P => Key::P,
     egui::Key::R => Key::R,
+    egui::Key::S => Key::S,
     egui::Key::T => Key::T,
     egui::Key::V => Key::V,
     egui::Key::W => Key::W,
@@ -947,6 +959,8 @@ pub fn chrome_ui_with_bookmarks(
     focus_address_bar,
     new_window,
     open_find_in_page,
+    save_page,
+    print_page,
     toggle_bookmarks_manager,
     toggle_downloads_panel,
     new_tab,
@@ -971,6 +985,8 @@ pub fn chrome_ui_with_bookmarks(
       let mut focus_address_bar = false;
       let mut new_window = false;
       let mut open_find_in_page = false;
+      let mut save_page = false;
+      let mut print_page = false;
       let mut toggle_bookmarks_manager = false;
       let mut toggle_downloads_panel = false;
       let mut new_tab = false;
@@ -1014,6 +1030,8 @@ pub fn chrome_ui_with_bookmarks(
           }
           ShortcutAction::NewWindow => new_window = true,
           ShortcutAction::FindInPage => open_find_in_page = true,
+          ShortcutAction::SavePage => save_page = true,
+          ShortcutAction::PrintPage => print_page = true,
           ShortcutAction::ToggleBookmarksManager => toggle_bookmarks_manager = true,
           ShortcutAction::ToggleDownloadsPanel => toggle_downloads_panel = true,
           ShortcutAction::NewTab => new_tab = true,
@@ -1043,6 +1061,8 @@ pub fn chrome_ui_with_bookmarks(
         focus_address_bar,
         new_window,
         open_find_in_page,
+        save_page,
+        print_page,
         toggle_bookmarks_manager,
         toggle_downloads_panel,
         new_tab,
@@ -1064,8 +1084,28 @@ pub fn chrome_ui_with_bookmarks(
     })
   } else {
     (
-      false, false, false, false, false, false, false, false, false, false, false, false, false,
-      false, false, None, None, false, false, None,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      None,
+      None,
+      false,
+      false,
+      None,
     )
   };
 
@@ -1123,6 +1163,12 @@ pub fn chrome_ui_with_bookmarks(
     actions.push(ChromeAction::OpenFindInPage);
     // Ctrl/Cmd+F should close the omnibox dropdown so it doesn't keep focus in the address bar.
     app.chrome.omnibox.reset();
+  }
+  if save_page {
+    actions.push(ChromeAction::SavePage);
+  }
+  if print_page {
+    actions.push(ChromeAction::PrintPage);
   }
   if toggle_bookmarks_manager {
     actions.push(ChromeAction::ToggleBookmarksManager);
@@ -4201,7 +4247,7 @@ mod tests {
     ctx.enable_accesskit();
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let output = ctx.end_frame();
 
     let names = a11y_test_util::accesskit_names_from_full_output(&output);
@@ -4234,7 +4280,7 @@ mod tests {
     ctx.enable_accesskit();
 
     begin_frame(&ctx, Vec::new());
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let output = ctx.end_frame();
 
     let nodes = a11y_test_util::accesskit_named_roles_from_full_output(&output);
@@ -4689,7 +4735,7 @@ mod tests {
     // Frame 1: focus the address bar.
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, vec![]);
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let _ = ctx.end_frame();
     assert!(app.chrome.address_bar_has_focus, "expected address bar to be focused");
 
@@ -4707,7 +4753,7 @@ mod tests {
         },
       }],
     );
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let _ = ctx.end_frame();
     assert!(app.chrome.tab_search.open, "expected tab search to be open");
     assert!(
@@ -4718,7 +4764,7 @@ mod tests {
     // Frame 3: press Escape to close the overlay. Focus should return to the address bar (or at
     // least egui should no longer think a hidden text edit has focus).
     begin_frame(&ctx, vec![key_press(egui::Key::Escape)]);
-    let _actions = chrome_ui(&ctx, &mut app, |_| None);
+    let _actions = chrome_ui(&ctx, &mut app, true, |_| None);
     let _ = ctx.end_frame();
     assert!(!app.chrome.tab_search.open, "expected tab search to be closed");
     assert!(
@@ -4920,6 +4966,42 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::OpenFindInPage)),
       "expected ChromeAction::OpenFindInPage, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_s_emits_save_page_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::S, modifiers);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::SavePage)),
+      "expected ChromeAction::SavePage, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_p_emits_print_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::P, modifiers);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::PrintPage)),
+      "expected ChromeAction::PrintPage, got {actions:?}"
     );
   }
 
@@ -6757,15 +6839,15 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![egui::Event::Text("example.com".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(
@@ -6780,7 +6862,7 @@ mod tests {
         },
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -6825,22 +6907,22 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     // Type something that matches tab_b's URL so OpenTabsProvider yields an ActivateTab suggestion.
     begin_frame(&ctx, vec![egui::Event::Text("example".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     // ArrowDown selects the primary suggestion first; ArrowDown again should select the open-tab
     // ("switch to tab") suggestion.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(
@@ -6855,7 +6937,7 @@ mod tests {
         },
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(
@@ -6898,17 +6980,17 @@ mod tests {
 
     app.chrome.request_focus_address_bar = true;
     begin_frame(&ctx, Vec::new());
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     // Type a search query (not URL-like) so the primary omnibox suggestion is a Search action.
     begin_frame(&ctx, vec![egui::Event::Text("cats".into())]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     // Select the primary suggestion.
     begin_frame(&ctx, vec![key_press(egui::Key::ArrowDown)]);
-    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     begin_frame(
@@ -6923,7 +7005,7 @@ mod tests {
         },
       }],
     );
-    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, |_| None);
+    let actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
     let _ = ctx.end_frame();
 
     assert!(

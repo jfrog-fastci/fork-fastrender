@@ -982,6 +982,8 @@ mod tests {
       Key::Equals,
       Key::Minus,
       Key::R,
+      Key::S,
+      Key::P,
       Key::Delete,
       Key::F11,
     ] {
