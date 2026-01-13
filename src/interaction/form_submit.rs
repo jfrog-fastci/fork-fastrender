@@ -1,10 +1,13 @@
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE, SVG_NAMESPACE};
+use crate::dom2;
 use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 
 use url::Url;
 
 use super::resolve_url;
 use super::InteractionState;
+use super::state::FileSelection;
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormSubmissionMethod {
@@ -64,6 +67,20 @@ pub struct FormSubmission {
   pub headers: Vec<(String, String)>,
   /// Request body for POST submissions.
   pub body: Option<Vec<u8>>,
+}
+
+/// Lookup interface for `<input type="file">` selections when building a `dom2` form submission.
+///
+/// `dom2` intentionally strips authored file input state from markup for security reasons, so hosts
+/// (interaction engines, UIs) must provide the user-selected files out-of-band.
+pub trait Dom2FileInputLookup {
+  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]>;
+}
+
+impl Dom2FileInputLookup for FxHashMap<dom2::NodeId, Vec<FileSelection>> {
+  fn files_for(&self, input: dom2::NodeId) -> Option<&[FileSelection]> {
+    self.get(&input).map(|v| v.as_slice())
+  }
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -966,4 +983,808 @@ pub fn form_submission_get_url(
     interaction_state,
   )?;
   (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
+}
+
+// --- dom2 --------------------------------------------------------------------
+
+fn is_html_element_tag_dom2(dom: &dom2::Document, node: dom2::NodeId, tag: &str) -> bool {
+  match &dom.node(node).kind {
+    dom2::NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } => dom.is_html_case_insensitive_namespace(namespace) && tag_name.eq_ignore_ascii_case(tag),
+    _ => false,
+  }
+}
+
+fn is_form_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "form")
+}
+
+fn is_input_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "input")
+}
+
+fn is_textarea_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "textarea")
+}
+
+fn is_select_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "select")
+}
+
+fn is_button_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "button")
+}
+
+fn get_attr_dom2<'a>(dom: &'a dom2::Document, node: dom2::NodeId, name: &str) -> Option<&'a str> {
+  dom.get_attribute(node, name).ok().flatten()
+}
+
+fn has_attr_dom2(dom: &dom2::Document, node: dom2::NodeId, name: &str) -> bool {
+  dom.has_attribute(node, name).ok().unwrap_or(false)
+}
+
+fn input_type_dom2<'a>(dom: &'a dom2::Document, node: dom2::NodeId) -> &'a str {
+  get_attr_dom2(dom, node, "type")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    .unwrap_or("text")
+}
+
+fn button_type_dom2<'a>(dom: &'a dom2::Document, node: dom2::NodeId) -> &'a str {
+  // HTML <button> defaults to submit.
+  get_attr_dom2(dom, node, "type")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    .unwrap_or("submit")
+}
+
+fn is_submit_control_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  (is_input_dom2(dom, node)
+    && (input_type_dom2(dom, node).eq_ignore_ascii_case("submit")
+      || input_type_dom2(dom, node).eq_ignore_ascii_case("image")))
+    || (is_button_dom2(dom, node) && button_type_dom2(dom, node).eq_ignore_ascii_case("submit"))
+}
+
+fn node_self_is_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  // `<template>` contents are always inert. In `dom2`, template elements are represented by
+  // `Node::inert_subtree=true`, so treat that flag as inert on the element itself and inherited by
+  // descendants via ancestor checks.
+  if dom.node(node).inert_subtree {
+    return true;
+  }
+
+  // Only elements and slots can carry attributes.
+  match &dom.node(node).kind {
+    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. } => {}
+    _ => return false,
+  }
+
+  if has_attr_dom2(dom, node, "inert") {
+    return true;
+  }
+  get_attr_dom2(dom, node, "data-fastr-inert")
+    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+fn is_effectively_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  let mut current = Some(node);
+  // Defensive bound against accidental cycles.
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+    if node_self_is_inert_dom2(dom, id) {
+      return true;
+    }
+    current = dom.parent_node(id);
+  }
+  false
+}
+
+fn is_html_fieldset_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "fieldset")
+}
+
+fn is_html_legend_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "legend")
+}
+
+fn is_fieldset_disabled_candidate_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_input_dom2(dom, node)
+    || is_select_dom2(dom, node)
+    || is_textarea_dom2(dom, node)
+    || is_button_dom2(dom, node)
+}
+
+fn fieldset_first_legend_child_dom2(dom: &dom2::Document, fieldset: dom2::NodeId) -> Option<dom2::NodeId> {
+  debug_assert!(is_html_fieldset_dom2(dom, fieldset));
+  let node = dom.node(fieldset);
+  node.children.iter().copied().find(|&child| {
+    dom.nodes().get(child.index()).is_some_and(|child_node| child_node.parent == Some(fieldset))
+      && is_html_legend_dom2(dom, child)
+  })
+}
+
+fn is_effectively_disabled_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  match &dom.node(node).kind {
+    dom2::NodeKind::Element { .. } | dom2::NodeKind::Slot { .. } => {}
+    _ => return false,
+  }
+
+  // `disabled` is a boolean attribute on form controls, but authors also use it on custom controls;
+  // for interaction treat it as authoritative on the element itself.
+  if has_attr_dom2(dom, node, "disabled") {
+    return true;
+  }
+
+  if !is_fieldset_disabled_candidate_dom2(dom, node) {
+    return false;
+  }
+
+  // Walk ancestors; `<fieldset disabled>` is the only ancestor-based disabledness we model (with the
+  // first-legend exception).
+  let mut ancestors: Vec<dom2::NodeId> = Vec::new();
+  let mut current = Some(node);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+    ancestors.push(id);
+
+    if is_html_fieldset_dom2(dom, id) && has_attr_dom2(dom, id, "disabled") {
+      match fieldset_first_legend_child_dom2(dom, id) {
+        Some(first_legend) => {
+          let in_first_legend = ancestors.iter().any(|&a| a == first_legend);
+          if !in_first_legend {
+            return true;
+          }
+        }
+        None => return true,
+      }
+    }
+
+    current = dom.parent_node(id);
+  }
+
+  false
+}
+
+fn is_disabled_or_inert_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_effectively_disabled_dom2(dom, node) || is_effectively_inert_dom2(dom, node)
+}
+
+fn tree_root_boundary_dom2(dom: &dom2::Document, node: dom2::NodeId) -> Option<dom2::NodeId> {
+  let mut current = Some(node);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    match &dom.node(id).kind {
+      dom2::NodeKind::Document { .. } | dom2::NodeKind::ShadowRoot { .. } => return Some(id),
+      _ => {}
+    }
+
+    current = dom.parent_node(id);
+  }
+  None
+}
+
+fn find_ancestor_form_dom2(dom: &dom2::Document, mut node: dom2::NodeId) -> Option<dom2::NodeId> {
+  let mut current = Some(node);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    if is_form_dom2(dom, id) {
+      return Some(id);
+    }
+
+    // Shadow roots are tree root boundaries for form owner resolution; do not walk out into the
+    // shadow host tree.
+    if matches!(
+      dom.node(id).kind,
+      dom2::NodeKind::ShadowRoot { .. } | dom2::NodeKind::Document { .. }
+    ) {
+      break;
+    }
+
+    current = dom.parent_node(id);
+  }
+  None
+}
+
+fn resolve_form_owner_dom2(dom: &dom2::Document, control: dom2::NodeId) -> Option<dom2::NodeId> {
+  let form_attr = get_attr_dom2(dom, control, "form")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty());
+  if let Some(form_id) = form_attr {
+    let root = tree_root_boundary_dom2(dom, control)?;
+    let referenced = dom.get_element_by_id_from(root, form_id)?;
+    return is_form_dom2(dom, referenced).then_some(referenced);
+  }
+
+  find_ancestor_form_dom2(dom, control)
+}
+
+fn collect_descendant_text_content_dom2(dom: &dom2::Document, root: dom2::NodeId) -> String {
+  let mut text = String::new();
+  let mut stack: Vec<dom2::NodeId> = vec![root];
+  let mut remaining = dom.nodes_len().saturating_add(1);
+
+  while let Some(node_id) = stack.pop() {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+
+    match &dom.node(node_id).kind {
+      dom2::NodeKind::Text { content } => text.push_str(content),
+      dom2::NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        if tag_name.eq_ignore_ascii_case("script")
+          && (namespace.is_empty() || namespace == HTML_NAMESPACE || namespace == SVG_NAMESPACE)
+        {
+          continue;
+        }
+      }
+      _ => {}
+    }
+
+    let node = dom.node(node_id);
+    for &child in node.children.iter().rev() {
+      if dom
+        .nodes()
+        .get(child.index())
+        .is_some_and(|child_node| child_node.parent == Some(node_id))
+      {
+        stack.push(child);
+      }
+    }
+  }
+
+  text
+}
+
+fn option_value_dom2(dom: &dom2::Document, option: dom2::NodeId) -> String {
+  if let Some(value) = get_attr_dom2(dom, option, "value") {
+    return value.to_string();
+  }
+  crate::dom::strip_and_collapse_ascii_whitespace(&collect_descendant_text_content_dom2(dom, option))
+}
+
+#[derive(Debug, Clone)]
+struct SelectOptionDom2 {
+  value: String,
+  selected: bool,
+  disabled: bool,
+}
+
+fn is_optgroup_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "optgroup")
+}
+
+fn is_option_dom2(dom: &dom2::Document, node: dom2::NodeId) -> bool {
+  is_html_element_tag_dom2(dom, node, "option")
+}
+
+fn option_disabled_dom2(dom: &dom2::Document, option: dom2::NodeId, select: dom2::NodeId) -> bool {
+  if has_attr_dom2(dom, option, "disabled") {
+    return true;
+  }
+  let mut current = dom.parent_node(option);
+  let mut remaining = dom.nodes_len().saturating_add(1);
+  while let Some(id) = current {
+    if remaining == 0 {
+      break;
+    }
+    remaining -= 1;
+    if id == select {
+      break;
+    }
+    if is_optgroup_dom2(dom, id) && has_attr_dom2(dom, id, "disabled") {
+      return true;
+    }
+    current = dom.parent_node(id);
+  }
+  false
+}
+
+fn collect_select_options_dom2(dom: &dom2::Document, select: dom2::NodeId) -> Vec<SelectOptionDom2> {
+  let mut out = Vec::new();
+  for option in dom.select_options(select) {
+    if !is_option_dom2(dom, option) {
+      continue;
+    }
+    out.push(SelectOptionDom2 {
+      value: option_value_dom2(dom, option),
+      selected: dom.option_selected(option).ok().unwrap_or(false),
+      disabled: option_disabled_dom2(dom, option, select),
+    });
+  }
+  out
+}
+
+fn action_url_for_form_dom2(
+  dom: &dom2::Document,
+  form: dom2::NodeId,
+  document_url: &str,
+  base_url: &str,
+) -> Option<String> {
+  let action_attr = get_attr_dom2(dom, form, "action")
+    .map(trim_ascii_whitespace)
+    .filter(|action| !action.is_empty());
+
+  match action_attr {
+    Some(action) => resolve_url(base_url, action),
+    None => {
+      let doc = trim_ascii_whitespace(document_url);
+      if !doc.is_empty() {
+        Some(doc.to_string())
+      } else {
+        let base = trim_ascii_whitespace(base_url);
+        (!base.is_empty()).then(|| base.to_string())
+      }
+    }
+  }
+}
+
+fn action_url_for_submission_dom2(
+  dom: &dom2::Document,
+  form: dom2::NodeId,
+  submitter: dom2::NodeId,
+  document_url: &str,
+  base_url: &str,
+) -> Option<String> {
+  let action_attr = get_attr_dom2(dom, submitter, "formaction")
+    .map(trim_ascii_whitespace)
+    .filter(|action| !action.is_empty());
+  match action_attr {
+    Some(action) => resolve_url(base_url, action),
+    None => action_url_for_form_dom2(dom, form, document_url, base_url),
+  }
+}
+
+fn method_for_form_dom2(dom: &dom2::Document, form: dom2::NodeId) -> FormSubmissionMethod {
+  get_attr_dom2(dom, form, "method")
+    .map(FormSubmissionMethod::parse)
+    .unwrap_or(FormSubmissionMethod::Get)
+}
+
+fn enctype_for_form_dom2(dom: &dom2::Document, form: dom2::NodeId) -> FormSubmissionEnctype {
+  get_attr_dom2(dom, form, "enctype")
+    .map(FormSubmissionEnctype::parse)
+    .unwrap_or(FormSubmissionEnctype::UrlEncoded)
+}
+
+fn method_for_submission_dom2(
+  dom: &dom2::Document,
+  form: dom2::NodeId,
+  submitter: dom2::NodeId,
+) -> FormSubmissionMethod {
+  get_attr_dom2(dom, submitter, "formmethod")
+    .map(FormSubmissionMethod::parse)
+    .unwrap_or_else(|| method_for_form_dom2(dom, form))
+}
+
+fn enctype_for_submission_dom2(
+  dom: &dom2::Document,
+  form: dom2::NodeId,
+  submitter: dom2::NodeId,
+) -> FormSubmissionEnctype {
+  get_attr_dom2(dom, submitter, "formenctype")
+    .map(FormSubmissionEnctype::parse)
+    .unwrap_or_else(|| enctype_for_form_dom2(dom, form))
+}
+
+fn collect_form_entries_dom2(
+  dom: &dom2::Document,
+  form_node_id: dom2::NodeId,
+  submitter_node_id: Option<dom2::NodeId>,
+  submitter_image_coords: Option<(i32, i32)>,
+  file_inputs: Option<&dyn Dom2FileInputLookup>,
+  out: &mut Vec<FormDataEntry>,
+) -> Option<()> {
+  // Spec-ish: successful controls are collected in tree order (document order), including form-
+  // associated elements outside the `<form>` subtree.
+  for node_id in dom.dom_connected_preorder() {
+    // Skip non-elements (including Document and ShadowRoot nodes).
+    match &dom.node(node_id).kind {
+      dom2::NodeKind::Element { .. } => {}
+      _ => continue,
+    }
+
+    // Skip disabled controls and inert subtrees.
+    if is_disabled_or_inert_dom2(dom, node_id) {
+      continue;
+    }
+
+    if !(is_input_dom2(dom, node_id) || is_textarea_dom2(dom, node_id) || is_select_dom2(dom, node_id)) {
+      continue;
+    }
+
+    if resolve_form_owner_dom2(dom, node_id) != Some(form_node_id) {
+      continue;
+    }
+
+    let Some(name) = get_attr_dom2(dom, node_id, "name")
+      .map(trim_ascii_whitespace)
+      .filter(|name| !name.is_empty())
+    else {
+      continue;
+    };
+
+    if is_input_dom2(dom, node_id) {
+      let ty = input_type_dom2(dom, node_id);
+
+      if ty.eq_ignore_ascii_case("checkbox") || ty.eq_ignore_ascii_case("radio") {
+        let checked = dom.input_checked(node_id).ok().unwrap_or(false);
+        if !checked {
+          continue;
+        }
+
+        // Checkbox/radio: default "on" when `value` attribute is missing.
+        let value_attr_present = get_attr_dom2(dom, node_id, "value").is_some();
+        let state_value = dom.input_value(node_id).ok().unwrap_or("");
+        let value = if value_attr_present {
+          state_value
+        } else if state_value.is_empty() {
+          "on"
+        } else {
+          state_value
+        };
+
+        out.push(FormDataEntry::Text {
+          name: name.to_string(),
+          value: value.to_string(),
+        });
+        continue;
+      }
+
+      if ty.eq_ignore_ascii_case("submit") {
+        // Only include the activated submitter.
+        continue;
+      }
+
+      if ty.eq_ignore_ascii_case("button") || ty.eq_ignore_ascii_case("reset") {
+        continue;
+      }
+
+      if ty.eq_ignore_ascii_case("image") {
+        continue;
+      }
+
+      if ty.eq_ignore_ascii_case("file") {
+        let files = file_inputs
+          .and_then(|store| store.files_for(node_id))
+          .unwrap_or(&[]);
+
+        if files.is_empty() {
+          // When no files are selected, submit an empty file entry.
+          out.push(FormDataEntry::File {
+            name: name.to_string(),
+            filename: String::new(),
+            content_type: "application/octet-stream".to_string(),
+            bytes: Vec::new(),
+          });
+        } else {
+          for file in files {
+            out.push(FormDataEntry::File {
+              name: name.to_string(),
+              filename: file.filename.clone(),
+              content_type: file.content_type.clone(),
+              bytes: file.bytes.clone(),
+            });
+          }
+        }
+        continue;
+      }
+
+      // For all other input types, use the live `dom2` input state value.
+      let value = dom.input_value(node_id).ok().unwrap_or("").to_string();
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value,
+      });
+      continue;
+    }
+
+    if is_textarea_dom2(dom, node_id) {
+      let value = dom.textarea_value(node_id).ok()?;
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value,
+      });
+      continue;
+    }
+
+    if is_select_dom2(dom, node_id) {
+      let multiple = has_attr_dom2(dom, node_id, "multiple");
+      let options = collect_select_options_dom2(dom, node_id);
+
+      if multiple {
+        for option in options {
+          if option.selected && !option.disabled {
+            out.push(FormDataEntry::Text {
+              name: name.to_string(),
+              value: option.value,
+            });
+          }
+        }
+      } else {
+        let mut chosen: Option<usize> = None;
+        for (idx, option) in options.iter().enumerate() {
+          if option.selected && !option.disabled {
+            chosen = Some(idx);
+          }
+        }
+
+        if chosen.is_none() {
+          for (idx, option) in options.iter().enumerate() {
+            if !option.disabled {
+              chosen = Some(idx);
+              break;
+            }
+          }
+        }
+
+        if let Some(chosen) = chosen {
+          if let Some(option) = options.get(chosen) {
+            out.push(FormDataEntry::Text {
+              name: name.to_string(),
+              value: option.value.clone(),
+            });
+          }
+        }
+      }
+
+      continue;
+    }
+  }
+
+  if let Some(submitter_node_id) = submitter_node_id {
+    // Include submitter name/value pair if it has a name.
+    if is_disabled_or_inert_dom2(dom, submitter_node_id) {
+      return None;
+    }
+
+    let name = get_attr_dom2(dom, submitter_node_id, "name")
+      .map(trim_ascii_whitespace)
+      .unwrap_or("");
+
+    if is_input_dom2(dom, submitter_node_id) && input_type_dom2(dom, submitter_node_id).eq_ignore_ascii_case("image") {
+      let (x, y) = submitter_image_coords.unwrap_or((0, 0));
+      let x_name = if name.is_empty() {
+        "x".to_string()
+      } else {
+        format!("{name}.x")
+      };
+      let y_name = if name.is_empty() {
+        "y".to_string()
+      } else {
+        format!("{name}.y")
+      };
+      out.push(FormDataEntry::Text {
+        name: x_name,
+        value: x.max(0).to_string(),
+      });
+      out.push(FormDataEntry::Text {
+        name: y_name,
+        value: y.max(0).to_string(),
+      });
+    } else if !name.is_empty() {
+      let value = get_attr_dom2(dom, submitter_node_id, "value").unwrap_or("");
+      out.push(FormDataEntry::Text {
+        name: name.to_string(),
+        value: value.to_string(),
+      });
+    }
+  }
+
+  Some(())
+}
+
+/// Compute an HTML form submission request using a live `dom2` document.
+///
+/// `form_node_id` must identify the `<form>` element being submitted. When `submitter_node_id` is
+/// provided, submitter-specific overrides (`formaction`, `formmethod`, `formenctype`) are applied and
+/// the submitter name/value pair (or image coordinates) is included in the form data set.
+pub fn form_submission_dom2(
+  dom: &dom2::Document,
+  form_node_id: dom2::NodeId,
+  submitter_node_id: Option<dom2::NodeId>,
+  submitter_image_coords: Option<(i32, i32)>,
+  document_url: &str,
+  base_url: &str,
+  file_inputs: Option<&dyn Dom2FileInputLookup>,
+) -> Option<FormSubmission> {
+  if !is_form_dom2(dom, form_node_id) {
+    return None;
+  }
+  if is_disabled_or_inert_dom2(dom, form_node_id) {
+    return None;
+  }
+
+  let (method, enctype, action_url) = match submitter_node_id {
+    Some(submitter) => {
+      if !is_submit_control_dom2(dom, submitter) {
+        return None;
+      }
+      if is_disabled_or_inert_dom2(dom, submitter) {
+        return None;
+      }
+      if resolve_form_owner_dom2(dom, submitter) != Some(form_node_id) {
+        return None;
+      }
+      (
+        method_for_submission_dom2(dom, form_node_id, submitter),
+        enctype_for_submission_dom2(dom, form_node_id, submitter),
+        action_url_for_submission_dom2(dom, form_node_id, submitter, document_url, base_url)?,
+      )
+    }
+    None => (
+      method_for_form_dom2(dom, form_node_id),
+      enctype_for_form_dom2(dom, form_node_id),
+      action_url_for_form_dom2(dom, form_node_id, document_url, base_url)?,
+    ),
+  };
+
+  let mut url = Url::parse(&action_url).ok()?;
+  // Form submission discards fragments.
+  url.set_fragment(None);
+
+  let mut entries: Vec<FormDataEntry> = Vec::new();
+  collect_form_entries_dom2(
+    dom,
+    form_node_id,
+    submitter_node_id,
+    submitter_image_coords,
+    file_inputs,
+    &mut entries,
+  )?;
+
+  match method {
+    FormSubmissionMethod::Get => {
+      let query = serialize_urlencoded(&entries)?;
+      if query.is_empty() {
+        url.set_query(None);
+      } else {
+        url.set_query(Some(&query));
+      }
+      Some(FormSubmission {
+        url: url.to_string(),
+        method,
+        headers: Vec::new(),
+        body: None,
+      })
+    }
+    FormSubmissionMethod::Post => {
+      let (body, content_type) = match enctype {
+        FormSubmissionEnctype::UrlEncoded => {
+          let encoded = serialize_urlencoded(&entries)?;
+          (
+            encoded.into_bytes(),
+            "application/x-www-form-urlencoded".to_string(),
+          )
+        }
+        FormSubmissionEnctype::MultipartFormData => {
+          let (body, boundary) = serialize_multipart_form_data(&entries);
+          (body, format!("multipart/form-data; boundary={boundary}"))
+        }
+        FormSubmissionEnctype::TextPlain => (serialize_text_plain(&entries), "text/plain".to_string()),
+      };
+
+      Some(FormSubmission {
+        url: url.to_string(),
+        method,
+        headers: vec![("Content-Type".to_string(), content_type)],
+        body: Some(body),
+      })
+    }
+  }
+}
+
+/// Compute an HTML form submission request for the given `<form>` without a submitter, using `dom2`.
+pub fn form_submission_without_submitter_dom2(
+  dom: &dom2::Document,
+  form_node_id: dom2::NodeId,
+  document_url: &str,
+  base_url: &str,
+  file_inputs: Option<&dyn Dom2FileInputLookup>,
+) -> Option<FormSubmission> {
+  form_submission_dom2(
+    dom,
+    form_node_id,
+    /* submitter */ None,
+    /* coords */ None,
+    document_url,
+    base_url,
+    file_inputs,
+  )
+}
+
+/// Build a GET form submission URL for the given submitter, using `dom2`.
+pub fn form_submission_get_url_dom2(
+  dom: &dom2::Document,
+  form_node_id: dom2::NodeId,
+  submitter_node_id: Option<dom2::NodeId>,
+  document_url: &str,
+  base_url: &str,
+  file_inputs: Option<&dyn Dom2FileInputLookup>,
+) -> Option<String> {
+  let submission = form_submission_dom2(
+    dom,
+    form_node_id,
+    submitter_node_id,
+    None,
+    document_url,
+    base_url,
+    file_inputs,
+  )?;
+  (submission.method == FormSubmissionMethod::Get).then_some(submission.url)
+}
+
+#[cfg(test)]
+mod dom2_tests {
+  use super::*;
+
+  #[test]
+  fn dom2_form_submission_respects_disabled_fieldset_checkedness_and_textarea_value() {
+    let html = concat!(
+      "<!doctype html>",
+      "<html><body>",
+      "<form id=\"f\" action=\"https://example.com/submit\">",
+      "  <fieldset disabled>",
+      "    <legend><input id=\"a\" name=\"a\" value=\"1\"></legend>",
+      "    <input id=\"b\" name=\"b\" value=\"2\">",
+      "  </fieldset>",
+      "  <input id=\"c\" type=\"checkbox\" name=\"c\" value=\"yes\">",
+      "  <input id=\"r1\" type=\"radio\" name=\"r\" value=\"1\">",
+      "  <input id=\"r2\" type=\"radio\" name=\"r\" value=\"2\">",
+      "  <textarea id=\"t\" name=\"t\">default</textarea>",
+      "</form>",
+      "</body></html>",
+    );
+
+    let mut doc = crate::dom2::parse_html(html).expect("parse dom2");
+    let form = doc.get_element_by_id("f").expect("form");
+    let checkbox = doc.get_element_by_id("c").expect("checkbox");
+    let radio2 = doc.get_element_by_id("r2").expect("radio");
+    let textarea = doc.get_element_by_id("t").expect("textarea");
+
+    // Simulate user interaction: checkedness/value are stored in dom2 internal state.
+    doc.set_input_checked(checkbox, true).unwrap();
+    doc.set_input_checked(radio2, true).unwrap();
+    doc.set_textarea_value(textarea, "edited").unwrap();
+
+    let submission = form_submission_without_submitter_dom2(
+      &doc,
+      form,
+      "https://example.com/page",
+      "https://example.com/page",
+      None,
+    )
+    .expect("submission");
+
+    assert_eq!(
+      submission.url,
+      "https://example.com/submit?a=1&c=yes&r=2&t=edited",
+      "expected: (1) first-legend input included and fieldset-disabled input excluded, (2) checkbox/radio use dom2 checkedness state, (3) textarea uses dom2 current value"
+    );
+  }
 }
