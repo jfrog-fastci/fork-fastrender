@@ -1434,10 +1434,13 @@ impl BrowserTabHost {
     }
 
     let outcome = (|| -> Result<Outcome> {
-      let mut remaining = self
-        .js_execution_options
-        .dom_parse_budget
-        .max_pump_iterations;
+      let dom_parse_budget = self.js_execution_options.dom_parse_budget;
+      let mut remaining = dom_parse_budget.max_pump_iterations;
+      let input_bytes_budget_enabled = dom_parse_budget.max_input_bytes_per_task.is_some();
+      let mut remaining_input_bytes = dom_parse_budget
+        .max_input_bytes_per_task
+        .map(|v| v.max(1))
+        .unwrap_or(usize::MAX);
       while remaining > 0 {
         // Flush any `document.write` / `document.writeln` data that was buffered during script
         // execution (or tasks) into the parser input stream before continuing.
@@ -1569,13 +1572,25 @@ impl BrowserTabHost {
         match yield_result {
           StreamingParserYield::NeedMoreInput => {
             if state.input_offset < state.input.len() {
-              let mut end = (state.input_offset + INPUT_CHUNK_BYTES).min(state.input.len());
+              if input_bytes_budget_enabled && remaining_input_bytes == 0 {
+                // Input-byte budget exhausted: yield back to the event loop so other queued tasks
+                // (notably async script fetch/execution) can run before we consume more input.
+                return Ok(Outcome::BudgetExhausted);
+              }
+
+              let mut end = (state.input_offset
+                + INPUT_CHUNK_BYTES.min(remaining_input_bytes))
+              .min(state.input.len());
               while end < state.input.len() && !state.input.is_char_boundary(end) {
                 end += 1;
               }
               debug_assert!(state.input.is_char_boundary(state.input_offset));
               debug_assert!(state.input.is_char_boundary(end));
-              state.parser.push_str(&state.input[state.input_offset..end]);
+              let slice = &state.input[state.input_offset..end];
+              state.parser.push_str(slice);
+              if input_bytes_budget_enabled {
+                remaining_input_bytes = remaining_input_bytes.saturating_sub(slice.len());
+              }
               state.input_offset = end;
               continue;
             }

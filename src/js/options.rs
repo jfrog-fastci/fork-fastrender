@@ -18,12 +18,24 @@ pub struct ParseBudget {
   /// Maximum number of [`crate::html::streaming_parser::StreamingHtmlParser::pump`] iterations
   /// performed in a single parse task.
   pub max_pump_iterations: usize,
+
+  /// Optional cap on how many **UTF-8 bytes of HTML input** may be fed into the streaming parser
+  /// during a single parse task.
+  ///
+  /// This provides a more predictable "amount of work" budget than `max_pump_iterations` alone:
+  /// a single `StreamingHtmlParser::pump()` call can represent very different work depending on the
+  /// structure of the buffered input.
+  ///
+  /// When `None` (the default), parsing is budgeted only by `max_pump_iterations` (backwards
+  /// compatible).
+  pub max_input_bytes_per_task: Option<usize>,
 }
 
 impl ParseBudget {
   pub fn new(max_pump_iterations: usize) -> Self {
     Self {
       max_pump_iterations: max_pump_iterations.max(1),
+      max_input_bytes_per_task: None,
     }
   }
 }
@@ -33,6 +45,7 @@ impl Default for ParseBudget {
     // Keep tasks small so other queued tasks (e.g. async script execution) can interleave.
     Self {
       max_pump_iterations: 64,
+      max_input_bytes_per_task: None,
     }
   }
 }

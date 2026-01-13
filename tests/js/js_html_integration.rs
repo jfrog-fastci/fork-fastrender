@@ -529,6 +529,44 @@ fn p1_async_classic_scripts_can_interleave_ahead_of_later_parser_scripts_when_fa
 }
 
 #[test]
+fn p1_async_classic_scripts_do_not_starve_on_large_text_chunk_with_input_byte_budget() -> Result<()> {
+  // Configure a huge pump-iteration budget (so the parser would otherwise consume the entire
+  // document in a single task) and a small input-byte budget to force regular yields based on the
+  // amount of HTML consumed.
+  let js_options = JsExecutionOptions {
+    dom_parse_budget: ParseBudget {
+      max_input_bytes_per_task: Some(8 * 1024),
+      ..ParseBudget::new(1_000_000)
+    },
+    ..JsExecutionOptions::default()
+  };
+  let mut h = Harness::new("https://example.invalid/p1_async_large_text_budget.html", js_options)?;
+
+  let big_text = "a".repeat(1024 * 1024);
+  h.register_html_source(&format!(
+    r#"<!doctype html><body>
+      <script async src="https://example.invalid/a.js"></script>
+      {big_text}
+      <script>console.log("inline");</script>
+    </body>"#
+  ));
+
+  // Navigate first so the parser discovers the async script before its source is registered. With
+  // the input-byte budget, parsing should yield early (before reaching the later inline script),
+  // allowing the async script fetch/execution tasks to run and interleave ahead of further parsing.
+  h.navigate()?;
+
+  h.register_script_source("https://example.invalid/a.js", r#"console.log("async");"#);
+  h.run_until_idle()?;
+
+  assert_eq!(
+    console_logs(&h.tab),
+    vec!["async".to_string(), "inline".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
 fn p1_dynamic_external_scripts_are_async_by_default() -> Result<()> {
   let js_options = JsExecutionOptions::default();
   let mut h = Harness::new("https://example.invalid/p1_dynamic_async_default.html", js_options)?;
