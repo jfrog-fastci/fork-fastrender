@@ -30,10 +30,20 @@ pub enum FrameOwnershipViolation {
     parent_frame_id: FrameId,
     token: SubframeToken,
   },
+  InvalidDiscoveredSubframeRect {
+    parent_frame_id: FrameId,
+    token: SubframeToken,
+    reason: InvalidSubframeRectReason,
+  },
   InvalidSubframe {
     parent_frame_id: FrameId,
     child_frame_id: FrameId,
     expected_parent_frame_id: Option<FrameId>,
+  },
+  InvalidSubframeTransform {
+    parent_frame_id: FrameId,
+    child_frame_id: FrameId,
+    reason: InvalidSubframeTransformReason,
   },
   ClipStackTooDeep {
     parent_frame_id: FrameId,
@@ -52,6 +62,19 @@ pub enum FrameOwnershipViolation {
     frame_id: FrameId,
     error: crate::CompositeError,
   },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSubframeTransformReason {
+  NonAxisAligned,
+  NonFinite,
+  ZeroScale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidSubframeRectReason {
+  NonFinite,
+  NegativeSize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +314,29 @@ impl BrowserIpcSecurityState {
         );
         return false;
       }
+      let t = subframe.transform;
+      let reason = if !t.is_axis_aligned() {
+        Some(InvalidSubframeTransformReason::NonAxisAligned)
+      } else if !t.a.is_finite() || !t.d.is_finite() || !t.e.is_finite() || !t.f.is_finite() {
+        Some(InvalidSubframeTransformReason::NonFinite)
+      } else if t.a == 0.0 || t.d == 0.0 {
+        Some(InvalidSubframeTransformReason::ZeroScale)
+      } else {
+        None
+      };
+      if let Some(reason) = reason {
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InvalidSubframeTransform {
+            parent_frame_id,
+            child_frame_id: child,
+            reason,
+          },
+        );
+        return false;
+      }
       let expected_parent = self.frame_parent.get(&child).copied();
       if expected_parent != Some(parent_frame_id) {
         self.protocol_violation(
@@ -340,6 +386,31 @@ impl BrowserIpcSecurityState {
           FrameOwnershipViolation::DuplicateSubframeToken {
             parent_frame_id,
             token: subframe.token,
+          },
+        );
+        return false;
+      }
+
+      let rect = subframe.rect;
+      let finite = rect.x.is_finite()
+        && rect.y.is_finite()
+        && rect.width.is_finite()
+        && rect.height.is_finite();
+      let negative = rect.width < 0.0 || rect.height < 0.0;
+      if !finite || negative {
+        let reason = if !finite {
+          InvalidSubframeRectReason::NonFinite
+        } else {
+          InvalidSubframeRectReason::NegativeSize
+        };
+        self.protocol_violation(
+          sender,
+          parent_frame_id,
+          message,
+          FrameOwnershipViolation::InvalidDiscoveredSubframeRect {
+            parent_frame_id,
+            token: subframe.token,
+            reason,
           },
         );
         return false;
@@ -800,6 +871,94 @@ mod tests {
     );
   }
 
+  #[test]
+  fn subframes_discovered_with_negative_rect_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::DiscoveredSubframe {
+          token: crate::SubframeToken(1),
+          navigation: crate::IframeNavigation::AboutBlank,
+          rect: crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: -1.0,
+            height: 1.0,
+          },
+          hit_testable: true,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::InvalidDiscoveredSubframeRect { reason: InvalidSubframeRectReason::NegativeSize, .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InvalidDiscoveredSubframeRect protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn subframes_discovered_with_nan_rect_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(10);
+    browser.assign_frame(parent, renderer);
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::SubframesDiscovered {
+        parent_frame_id: parent,
+        subframes: vec![crate::DiscoveredSubframe {
+          token: crate::SubframeToken(1),
+          navigation: crate::IframeNavigation::AboutBlank,
+          rect: crate::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: f32::NAN,
+            height: 1.0,
+          },
+          hit_testable: true,
+          referrer_policy: None,
+          sandbox_flags: crate::SandboxFlags::NONE,
+          opaque_origin: false,
+        }],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::SubframesDiscovered,
+          violation: FrameOwnershipViolation::InvalidDiscoveredSubframeRect { reason: InvalidSubframeRectReason::NonFinite, .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InvalidDiscoveredSubframeRect protocol event (events={events:?})"
+    );
+  }
+
   fn solid_buffer(rgba: [u8; 4]) -> FrameBuffer {
     FrameBuffer {
       width: 1,
@@ -1052,6 +1211,43 @@ mod tests {
         } if *process_id == renderer && *frame_id == parent
       )),
       "expected ClipStackTooDeep protocol event (events={events:?})"
+    );
+  }
+
+  #[test]
+  fn frame_ready_with_non_axis_aligned_transform_kills_sender() {
+    let mut browser = BrowserIpcSecurityState::default();
+    let renderer = RendererId(1);
+    let parent = FrameId(1);
+    let child = FrameId(2);
+    browser.assign_frame(parent, renderer);
+    browser.set_frame_parent(child, parent);
+
+    let mut info = simple_slot(child);
+    info.transform.b = 1.0;
+
+    browser.handle_renderer_message(
+      renderer,
+      RendererToBrowser::FrameReady {
+        frame_id: parent,
+        buffer: solid_buffer([0, 0, 0, 255]),
+        subframes: vec![info],
+      },
+    );
+
+    assert!(browser.is_process_terminated(renderer));
+    let events = browser.take_events();
+    assert!(
+      events.iter().any(|evt| matches!(
+        evt,
+        IpcSecurityEvent::ProtocolViolation {
+          process_id,
+          frame_id,
+          message: RendererToBrowserKind::FrameReady,
+          violation: FrameOwnershipViolation::InvalidSubframeTransform { reason: InvalidSubframeTransformReason::NonAxisAligned, .. },
+        } if *process_id == renderer && *frame_id == parent
+      )),
+      "expected InvalidSubframeTransform protocol event (events={events:?})"
     );
   }
 }
