@@ -1768,13 +1768,15 @@ impl<Host: 'static> EventLoop<Host> {
 
   fn clamp_timer_delay(&self, requested: Duration) -> Duration {
     const MIN_NESTED_DELAY: Duration = Duration::from_millis(4);
-    // HTML timer nesting clamping: once a chain of nested timers reaches depth 5, further timers
-    // are clamped to a minimum delay of 4ms.
-    // Note: `timer_nesting_level` is the nesting level of the *currently executing* timer task.
-    // When scheduling a new timer from inside a timer callback, the new timer's nesting level is
-    // `timer_nesting_level + 1`. The HTML spec clamps once the *new* nesting level exceeds 5, so
-    // we clamp when the current nesting level is already >= 5.
-    if self.timer_nesting_level >= 5 {
+    // HTML timer nesting clamping (HTML Standard: timer initialization steps,
+    // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timer-initialisation-steps):
+    // "If nesting level is greater than 5, and timeout is less than 4, then set timeout to 4."
+    //
+    // In this implementation, `timer_nesting_level` tracks the *currently executing* timer task's
+    // "timer nesting level" (and is reset to 0 for non-timer tasks). When a timer schedules
+    // another timer (including `setInterval` rescheduling itself), that scheduling observes the
+    // current task's nesting level and may clamp the requested delay.
+    if self.timer_nesting_level > 5 {
       requested.max(MIN_NESTED_DELAY)
     } else {
       requested
@@ -1957,7 +1959,11 @@ impl<Host: 'static> EventLoop<Host> {
         let delay = self.clamp_timer_delay(interval);
         let due = now.checked_add(delay).unwrap_or(Duration::MAX);
 
-        let nesting_level = self.timer_nesting_level.saturating_add(1);
+        // HTML timer initialization steps (see link above) create a new timer task each time an
+        // interval fires ("if repeat is true... perform the timer initialization steps again"),
+        // using the currently running timer task's nesting level as the basis and then
+        // incrementing it for the new task.
+        let next_nesting_level = nesting_level.saturating_add(1);
         let schedule_seq = self.next_timer_seq;
         self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
 
@@ -1970,7 +1976,7 @@ impl<Host: 'static> EventLoop<Host> {
         }
         timer.callback = Some(callback);
         timer.due = due;
-        timer.nesting_level = nesting_level;
+        timer.nesting_level = next_nesting_level;
         timer.schedule_seq = schedule_seq;
         self
           .timer_queue
@@ -3226,7 +3232,7 @@ mod tests {
   }
 
   #[test]
-  fn nested_timeouts_are_clamped_to_minimum_delay_after_five() -> Result<()> {
+  fn nested_timeouts_are_clamped_to_minimum_delay_when_nesting_level_exceeds_five() -> Result<()> {
     fn schedule(event_loop: &mut EventLoop<TestHost>, target: usize) -> Result<()> {
       event_loop.set_timeout(Duration::from_millis(0), move |host, event_loop| {
         host.count += 1;
@@ -3243,16 +3249,16 @@ mod tests {
     let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
     let mut host = TestHost::default();
 
-    // Run a chain of nested 0ms timeouts. Once a chain reaches 5 levels of nesting, further timers
-    // should be clamped to at least 4ms.
-    schedule(&mut event_loop, 6)?;
+    // Run a chain of nested 0ms timeouts. Once the timer nesting level is greater than 5, further
+    // timers should be clamped to at least 4ms.
+    schedule(&mut event_loop, 7)?;
 
-    // The first five timers should run immediately; the sixth should be clamped to 4ms.
+    // The first six timers should run immediately; the seventh should be clamped to 4ms.
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(host.count, 5);
+    assert_eq!(host.count, 6);
     assert_eq!(event_loop.timers.len(), 1);
     let due = event_loop
       .timers
@@ -3267,15 +3273,143 @@ mod tests {
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(host.count, 5);
+    assert_eq!(host.count, 6);
 
     clock.advance(Duration::from_millis(4));
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(host.count, 6);
+    assert_eq!(host.count, 7);
     assert_eq!(event_loop.timers.len(), 0);
+    Ok(())
+  }
+
+  #[test]
+  fn interval_0ms_is_clamped_once_nesting_level_exceeds_five() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      ticks: usize,
+      times: Vec<Duration>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop.set_interval(Duration::from_millis(0), |host, event_loop| {
+      host.ticks += 1;
+      host.times.push(event_loop.now());
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(
+        &mut host,
+        RunLimits {
+          max_tasks: 1024,
+          max_microtasks: 1024,
+          max_wall_time: None,
+        },
+      )?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    // The first six ticks run at the same virtual time; the next is clamped to 4ms.
+    assert_eq!(host.times, vec![Duration::from_millis(0); 6]);
+    assert_eq!(host.ticks, 6);
+
+    assert_eq!(event_loop.timers.len(), 1);
+    let interval = event_loop
+      .timers
+      .values()
+      .next()
+      .expect("expected interval to remain scheduled");
+    assert_eq!(interval.kind, TimerKind::Interval);
+    assert_eq!(interval.due, Duration::from_millis(4));
+    assert_eq!(interval.nesting_level, 7);
+
+    // Without advancing virtual time, the clamped interval should not tick again.
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.ticks, 6);
+
+    Ok(())
+  }
+
+  #[test]
+  fn interval_scheduled_from_nested_timeouts_is_clamped_immediately() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      timeouts: usize,
+      interval_ticks: usize,
+    }
+
+    fn schedule_timeout_chain_then_interval(
+      event_loop: &mut EventLoop<Host>,
+      target_timeouts: usize,
+    ) -> Result<()> {
+      event_loop.set_timeout(Duration::from_millis(0), move |host, event_loop| {
+        host.timeouts += 1;
+        if host.timeouts < target_timeouts {
+          schedule_timeout_chain_then_interval(event_loop, target_timeouts)?;
+        } else {
+          event_loop.set_interval(Duration::from_millis(0), |host, _event_loop| {
+            host.interval_ticks += 1;
+            Ok(())
+          })?;
+        }
+        Ok(())
+      })?;
+      Ok(())
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    // The interval is scheduled from within a nested timeout chain at nesting level 6 (>5), so its
+    // initial 0ms delay should be clamped to 4ms.
+    schedule_timeout_chain_then_interval(&mut event_loop, 6)?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_until_idle(
+        &mut host,
+        RunLimits {
+          max_tasks: 1024,
+          max_microtasks: 1024,
+          max_wall_time: None,
+        },
+      )?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.timeouts, 6);
+    assert_eq!(host.interval_ticks, 0);
+
+    assert_eq!(event_loop.timers.len(), 1);
+    let interval = event_loop.timers.values().next().unwrap();
+    assert_eq!(interval.kind, TimerKind::Interval);
+    assert_eq!(interval.due, Duration::from_millis(4));
+    assert_eq!(interval.nesting_level, 7);
+
+    // Once the clock reaches the due time, exactly one interval tick should run and reschedule.
+    clock.advance(Duration::from_millis(4));
+    assert_eq!(
+      event_loop.run_until_idle(
+        &mut host,
+        RunLimits {
+          max_tasks: 1024,
+          max_microtasks: 1024,
+          max_wall_time: None,
+        },
+      )?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.interval_ticks, 1);
     Ok(())
   }
 
@@ -4005,26 +4139,27 @@ mod tests {
     }
 
     #[test]
-    fn nested_timeout_delay_clamps_after_five_nesting_levels() -> Result<()> {
+    fn nested_timeout_delay_clamps_when_nesting_level_exceeds_five() -> Result<()> {
       let clock = Arc::new(VirtualClock::new());
       let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
 
-      // HTML timer clamping: after five nested timer callbacks, subsequent 0ms timers should be
-      // clamped to 4ms (virtual time doesn't advance unless the host moves it forward).
-      schedule_nested_timeout(&mut event_loop, 8)?;
+      // HTML timer clamping: once the timer nesting level is greater than 5, subsequent 0ms timers
+      // should be clamped to 4ms (virtual time doesn't advance unless the host moves it forward).
+      schedule_nested_timeout(&mut event_loop, 9)?;
 
       let mut host = Host::default();
       assert_eq!(
         event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
         RunUntilIdleOutcome::Idle
       );
-      assert_eq!(host.times, vec![Duration::from_millis(0); 5]);
+      assert_eq!(host.times, vec![Duration::from_millis(0); 6]);
 
       clock.advance(Duration::from_millis(4));
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
       assert_eq!(
         host.times,
         vec![
+          Duration::from_millis(0),
           Duration::from_millis(0),
           Duration::from_millis(0),
           Duration::from_millis(0),
@@ -4039,6 +4174,7 @@ mod tests {
       assert_eq!(
         host.times,
         vec![
+          Duration::from_millis(0),
           Duration::from_millis(0),
           Duration::from_millis(0),
           Duration::from_millis(0),
@@ -4054,6 +4190,7 @@ mod tests {
       assert_eq!(
         host.times,
         vec![
+          Duration::from_millis(0),
           Duration::from_millis(0),
           Duration::from_millis(0),
           Duration::from_millis(0),

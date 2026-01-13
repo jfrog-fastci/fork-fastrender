@@ -768,7 +768,7 @@ mod tests {
   }
 
   #[test]
-  fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
+  fn nested_timeouts_are_clamped_when_nesting_level_exceeds_five() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<JsVmHost>::with_clock(clock.clone());
     let mut host = JsVmHost::new(WebTime::default())?;
@@ -779,17 +779,17 @@ mod tests {
         event_loop,
         r#"
         let count = 0;
-        function tick() {
-          __log.push(count);
-          count++;
-          if (count < 6) setTimeout(tick, 0);
-        }
-        setTimeout(tick, 0);
-      "#,
+         function tick() {
+           __log.push(count);
+           count++;
+           if (count < 7) setTimeout(tick, 0);
+         }
+         setTimeout(tick, 0);
+       "#,
       )
     })?;
 
-    // The first 5 nested 0ms timeouts should run immediately. The 6th should be clamped to 4ms.
+    // The first 6 nested 0ms timeouts should run immediately. The 7th should be clamped to 4ms.
     assert_eq!(
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
@@ -802,6 +802,7 @@ mod tests {
         serde_json::Value::Number(2.into()),
         serde_json::Value::Number(3.into()),
         serde_json::Value::Number(4.into()),
+        serde_json::Value::Number(5.into()),
       ]
     );
 
@@ -811,7 +812,7 @@ mod tests {
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(read_log(&host)?.len(), 5);
+    assert_eq!(read_log(&host)?.len(), 6);
 
     // Now due.
     clock.advance(Duration::from_millis(1));
@@ -819,7 +820,7 @@ mod tests {
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(read_log(&host)?.len(), 6);
+    assert_eq!(read_log(&host)?.len(), 7);
     Ok(())
   }
 
