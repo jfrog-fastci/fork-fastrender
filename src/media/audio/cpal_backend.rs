@@ -1,4 +1,3 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Once, OnceLock, Weak};
 use std::thread::JoinHandle;
@@ -18,6 +17,7 @@ use crate::media::audio_engine::{
   AudioStreamHandle as IdleStreamHandle, DEFAULT_IDLE_TIMEOUT,
 };
 use super::limits::{MAX_BUFFERED_DURATION, MAX_CHANNELS, MAX_FRAMES_PER_PUSH, MAX_SAMPLE_RATE_HZ};
+use super::panic_guard::{guard_output_callback, AudioSample};
 use crate::media::audio::ring_buffer::{AudioRingBuffer, GainRamp};
 use super::mixer_decision::{decide_mixer_callback_action, MixerCallbackAction};
 use crate::media::audio_clock::InterpolatedAudioClock;
@@ -288,6 +288,14 @@ impl CpalAudioBackend {
     trace: TraceHandle,
   ) -> Result<Self, AudioError> {
     Self::new_with_config_and_device_and_trace(engine_cfg, DeviceSelector::Default, trace)
+  }
+
+  /// Returns whether the CPAL output callback has ever panicked.
+  ///
+  /// This is a sticky flag intended for telemetry and recovery logic; it is never reset.
+  #[must_use]
+  pub fn callback_panicked(&self) -> bool {
+    self.diagnostics.panic_in_callback.load(Ordering::Relaxed)
   }
 
   fn new_with_config_and_device_and_trace(
@@ -1312,7 +1320,7 @@ fn build_stream_typed<T>(
   trace: TraceHandle,
 ) -> Result<cpal::Stream, AudioError>
 where
-  T: OutputSample + cpal::SizedSample,
+  T: OutputSample + AudioSample + cpal::SizedSample,
 {
   use cpal::traits::DeviceTrait;
 
@@ -1358,7 +1366,7 @@ where
         // unpredictable RT callback state. Still advance the clock/counters so A/V sync doesn't
         // stall completely.
         if diagnostics.panic_in_callback.load(Ordering::Relaxed) {
-          output.fill(T::from_mixed_f32(0.0));
+          output.fill(T::SILENCE);
           if channels != 0 {
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);
@@ -1378,7 +1386,8 @@ where
           span.arg_u64("buffered_frames", stats.buffered_frames);
         }
 
-        let res = catch_unwind(AssertUnwindSafe(|| {
+        let did_panic =
+          guard_output_callback(output, &diagnostics.panic_in_callback, |output| {
           let ts = info.timestamp();
           let latency = ts.playback.duration_since(&ts.callback);
 
@@ -1405,7 +1414,7 @@ where
             }
             MixerCallbackAction::Silence | MixerCallbackAction::SilenceAndDrain => {
               // Fill output with silence without doing any per-sample mixing work.
-              output.fill(T::from_mixed_f32(0.0));
+              output.fill(T::SILENCE);
             }
           }
 
@@ -1457,12 +1466,9 @@ where
               estimated_latency_nanos.store(duration_to_nanos_u64(latency), Ordering::Relaxed);
             }
           }
-        }));
+        });
 
-        if res.is_err() {
-          diagnostics.set_panic_in_callback();
-          output.fill(T::from_mixed_f32(0.0));
-
+        if did_panic {
           if channels != 0 {
             let frames_u32 = u32::try_from(frames).unwrap_or(u32::MAX);
             last_callback_frames.store(frames_u32, Ordering::Relaxed);

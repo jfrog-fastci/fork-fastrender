@@ -32,6 +32,7 @@ mod config;
 mod cpal_backend;
 mod error;
 mod latency;
+mod panic_guard;
 pub mod engine;
 pub mod limits;
 mod mixer_decision;
