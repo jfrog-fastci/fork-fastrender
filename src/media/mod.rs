@@ -186,6 +186,7 @@ pub mod timestamp;
 pub mod timebase;
 pub mod yuv;
 
+pub use audio::{AudioStreamError, AudioStreamHandle};
 pub use audio_clock::InterpolatedAudioClock;
 pub use av_sync::AvSyncConfig;
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, PlaybackClock, RealAudioDeviceClock};

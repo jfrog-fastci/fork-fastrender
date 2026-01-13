@@ -49,6 +49,7 @@ pub mod queue;
 #[cfg(test)]
 pub mod preroll;
 pub mod resample;
+mod stream;
 pub mod test_signal;
 pub mod timed_queue;
 pub mod types;
@@ -78,6 +79,7 @@ pub use engine::{AudioEngine, AudioEngineSink, AudioEngineTestGuard, AudioGroupI
 pub use null_backend::NullAudioBackend;
 pub use ring_buffer::AudioRingBuffer;
 pub use queue::{pcm_f32_queue, PcmF32Queue, PcmF32QueueConsumer, PcmF32QueueProducer};
+pub use stream::{AudioStreamError, AudioStreamHandle};
 pub use timed_queue::{PopResult, PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
 
 pub use mixer::{AudioMixer, AudioStreamId, AudioStreamParams};
@@ -103,13 +105,6 @@ impl TimedAudioQueue {
     self.push_segment(chunk.into())
   }
 }
-
-/// Decoder-facing audio enqueue handle.
-///
-/// This is currently an alias for the producer side of a bounded SPSC PCM queue.
-///
-/// For timestamp-aware buffering (gaps/overlaps), use [`TimedAudioQueue`] instead.
-pub type AudioStreamHandle = PcmF32QueueProducer;
 
 #[cfg(any(feature = "audio_wav", test))]
 pub use wav_backend::WavAudioBackend;
