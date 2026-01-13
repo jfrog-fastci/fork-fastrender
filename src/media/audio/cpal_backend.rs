@@ -320,6 +320,19 @@ impl CpalAudioBackend {
 
       let mut last_frames_written = clock_for_fallback.frames_written();
       let mut last_progress_at = Instant::now();
+      let mut consecutive_unhealthy_restarts: usize = 0;
+
+      let enter_fallback = |now: Instant| {
+        let played = clock_for_fallback.now_at(now);
+        let start = now.checked_sub(played).unwrap_or(now);
+        let _ = thread_fallback_start.set(start);
+        thread_fell_back_to_null.store(true, Ordering::Release);
+        FALLBACK_WARN_ONCE.call_once(|| {
+          eprintln!(
+            "warning: CPAL output stream failed and could not be restarted; falling back to NullAudioBackend (silence)"
+          );
+        });
+      };
 
       loop {
         let now = Instant::now();
@@ -332,6 +345,7 @@ impl CpalAudioBackend {
           if frames_written != last_frames_written {
             last_frames_written = frames_written;
             last_progress_at = now;
+            consecutive_unhealthy_restarts = 0;
           } else {
             let callback_frames_hint = fixed_callback_frames.or_else(|| {
               let v = last_callback_frames_watchdog.load(Ordering::Relaxed);
@@ -348,6 +362,12 @@ impl CpalAudioBackend {
               stall_timeout = STREAM_STALL_TIMEOUT_MAX;
             }
             if now.duration_since(last_progress_at) >= stall_timeout {
+              consecutive_unhealthy_restarts =
+                consecutive_unhealthy_restarts.saturating_add(1);
+              if consecutive_unhealthy_restarts >= STREAM_RESTART_MAX_ATTEMPTS {
+                enter_fallback(now);
+                break;
+              }
               manager.request_restart(now);
               last_progress_at = now;
             }
@@ -359,6 +379,12 @@ impl CpalAudioBackend {
         if errors.pending.swap(false, Ordering::AcqRel)
           && matches!(manager.state(), RestartState::Running)
         {
+          consecutive_unhealthy_restarts =
+            consecutive_unhealthy_restarts.saturating_add(1);
+          if consecutive_unhealthy_restarts >= STREAM_RESTART_MAX_ATTEMPTS {
+            enter_fallback(now);
+            break;
+          }
           manager.request_restart(now);
           last_progress_at = now;
         }
@@ -370,15 +396,7 @@ impl CpalAudioBackend {
           last_frames_written = clock_for_fallback.frames_written();
         }
         if out.entered_fallback {
-          let played = clock_for_fallback.now_at(now);
-          let start = now.checked_sub(played).unwrap_or(now);
-          let _ = thread_fallback_start.set(start);
-          thread_fell_back_to_null.store(true, Ordering::Release);
-          FALLBACK_WARN_ONCE.call_once(|| {
-            eprintln!(
-              "warning: CPAL output stream failed and could not be restarted; falling back to NullAudioBackend (silence)"
-            );
-          });
+          enter_fallback(now);
           break;
         }
 
