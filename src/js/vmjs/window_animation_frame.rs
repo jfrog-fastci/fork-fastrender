@@ -572,7 +572,7 @@ mod tests {
         let _ = ctx.call(job_hooks, Value::Object(job_cb), Value::Object(global), &[])?;
         Ok(())
       },
-    );
+    )?;
     hooks.host_enqueue_promise_job(job, None);
 
     Ok(Value::Undefined)

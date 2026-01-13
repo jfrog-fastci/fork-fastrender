@@ -120,7 +120,7 @@ fn microtask_checkpoint_terminates_and_discards_remaining_jobs() -> Result<(), V
   let mut job1 = Job::new(JobKind::Promise, move |ctx, hooks| {
     ctx.call(hooks, tick_fn_value, Value::Undefined, &[])?;
     Ok(())
-  });
+  })?;
   job1.push_root(tick_fn_root);
 
   // Second job has a Rust-side side effect but does not call into the VM (so it won't tick).
@@ -129,7 +129,7 @@ fn microtask_checkpoint_terminates_and_discards_remaining_jobs() -> Result<(), V
   let job2 = Job::new(JobKind::Promise, move |_ctx, _hooks| {
     counter_for_job2.fetch_add(1, Ordering::SeqCst);
     Ok(())
-  });
+  })?;
 
   vm.microtask_queue_mut().enqueue_promise_job(job1, None);
   vm.microtask_queue_mut().enqueue_promise_job(job2, None);

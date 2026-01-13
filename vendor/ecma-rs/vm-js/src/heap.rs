@@ -1065,7 +1065,7 @@ impl Heap {
         // registry's own `[[CleanupCallback]]`.
         let _ = ctx.call(host, Value::Object(cleanup_some), Value::Object(registry), &[])?;
         Ok(())
-      })
+      })?
       .with_roots(roots);
 
       hooks.host_enqueue_promise_job(job, realm);

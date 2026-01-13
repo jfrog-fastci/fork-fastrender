@@ -100,33 +100,33 @@ impl VmJobContext for RootingContext {
   }
 }
 
-fn enqueue_three_jobs(host: &mut dyn VmHostHooks, sink: Arc<Mutex<Vec<u8>>>) {
+fn enqueue_three_jobs(host: &mut dyn VmHostHooks, sink: Arc<Mutex<Vec<u8>>>) -> Result<(), VmError> {
   for i in 1..=3u8 {
     let sink = sink.clone();
-    host.host_enqueue_promise_job(
-      Job::new(JobKind::Promise, move |_ctx, _host| {
-        sink.lock().unwrap().push(i);
-        Ok(())
-      }),
-      None,
-    );
+    let job = Job::new(JobKind::Promise, move |_ctx, _host| {
+      sink.lock().unwrap().push(i);
+      Ok(())
+    })?;
+    host.host_enqueue_promise_job(job, None);
   }
+  Ok(())
 }
 
 #[test]
-fn promise_jobs_can_be_run_in_fifo_order() {
+fn promise_jobs_can_be_run_in_fifo_order() -> Result<(), VmError> {
   let sink = Arc::new(Mutex::new(Vec::new()));
 
   // Ensure the host hook API is object-safe and ergonomic by exercising it behind a trait object.
   let mut host = TestHost::default();
-  enqueue_three_jobs(&mut host, sink.clone());
+  enqueue_three_jobs(&mut host, sink.clone())?;
 
   let mut ctx = TestContext::default();
   while let Some(job) = host.queue.pop_front() {
-    job.run(&mut ctx, &mut host).unwrap();
+    job.run(&mut ctx, &mut host)?;
   }
 
   assert_eq!(&*sink.lock().unwrap(), &[1, 2, 3]);
+  Ok(())
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn unrooted_job_captures_can_be_collected_before_run() -> Result<(), VmError> {
         // If this job attempted to use `obj` after a GC, it could observe a stale handle.
         let _ = obj;
         Ok(())
-      }),
+      })?,
       None,
     );
   }
@@ -167,7 +167,7 @@ fn rooted_job_keeps_values_alive_until_run_and_then_allows_collection() -> Resul
     let mut scope = ctx.heap.scope();
     obj = scope.alloc_object()?;
   }
-  let mut job = Job::new(JobKind::Promise, move |_ctx, _host| Ok(()));
+  let mut job = Job::new(JobKind::Promise, move |_ctx, _host| Ok(()))?;
   job.add_root(&mut ctx, Value::Object(obj))?;
   host.host_enqueue_promise_job(job, None);
 
@@ -196,7 +196,7 @@ fn job_discard_removes_roots_without_running() -> Result<(), VmError> {
     let mut scope = ctx.heap.scope();
     obj = scope.alloc_object()?;
   }
-  let mut job = Job::new(JobKind::Promise, move |_ctx, _host| Ok(()));
+  let mut job = Job::new(JobKind::Promise, move |_ctx, _host| Ok(()))?;
   job.add_root(&mut ctx, Value::Object(obj))?;
   host.host_enqueue_promise_job(job, None);
 
@@ -226,7 +226,7 @@ fn job_run_removes_roots_even_on_error() -> Result<(), VmError> {
     obj = scope.alloc_object()?;
   }
   let mut job =
-    Job::new(JobKind::Promise, move |_ctx, _host| Err(VmError::Unimplemented("job failed")));
+    Job::new(JobKind::Promise, move |_ctx, _host| Err(VmError::Unimplemented("job failed")))?;
   job.add_root(&mut ctx, Value::Object(obj))?;
   host.host_enqueue_promise_job(job, None);
 
@@ -395,7 +395,7 @@ fn job_can_invoke_host_call_job_callback() -> Result<(), VmError> {
   let mut job = Job::new(JobKind::Promise, move |ctx, host| {
     host.host_call_job_callback(ctx, &callback, this_argument, &arguments)?;
     Ok(())
-  });
+  })?;
   // Ensure the callback stays live until the job runs.
   job.add_root(&mut ctx, Value::Object(callback_obj))?;
 

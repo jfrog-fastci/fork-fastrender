@@ -17,7 +17,8 @@ fn microtask_job_erroring(
 ) -> Result<(), VmError> {
   let remaining = MICROTASK_ERRORS_REMAINING.fetch_sub(1, Ordering::Relaxed);
   if remaining > 1 {
-    host.host_enqueue_promise_job(Job::new(JobKind::Promise, microtask_job_erroring), None);
+    let job = Job::new(JobKind::Promise, microtask_job_erroring)?;
+    host.host_enqueue_promise_job(job, None);
   }
   Err(VmError::TypeError("microtask job error"))
 }
@@ -56,7 +57,7 @@ impl VmJobContext for DummyJobContext {
 fn usage() -> ! {
   eprintln!("usage: oom_harness <scenario> <len_code_units> <filler_bytes>");
   eprintln!(
-    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions"
+    "  scenario: eval | function | generator | generator_invoke | number | parseFloat | regexp_compile | regexp | arrayMap | allocStringU16SpareCap | jobQueue | stackTrace | throw_string_format | getPrototypeOf_proxy_chain | setPrototypeOf_cycle_check | moduleLink | moduleGraph | labelEarlyError | microtask_checkpoint_errors | moduleGetExportedNames | captureStack | internalPromiseReactions | promiseJob | generatorInstance"
   );
   process::exit(2);
 }
@@ -127,7 +128,14 @@ fn main() {
     const MAX_JOBS: usize = 10_000_000;
     while count < MAX_JOBS {
       // Use a capture-less closure so `Job::new` does not allocate a heap box for it (ZST).
-      let job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()));
+      let job = match Job::new(JobKind::Promise, |_ctx, _host| Ok(())) {
+        Ok(job) => job,
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: failed to allocate job: {err:?}");
+          process::exit(1);
+        }
+      };
       match queue.try_push(job) {
         Ok(()) => count += 1,
         Err(VmError::OutOfMemory) => process::exit(0),
@@ -154,7 +162,15 @@ fn main() {
 
     let mut queue = MicrotaskQueue::new();
     if len_code_units != 0 {
-      queue.enqueue_promise_job(Job::new(JobKind::Promise, microtask_job_erroring), None);
+      let job = match Job::new(JobKind::Promise, microtask_job_erroring) {
+        Ok(job) => job,
+        Err(VmError::OutOfMemory) => process::exit(0),
+        Err(err) => {
+          eprintln!("oom_harness: failed to allocate microtask job: {err:?}");
+          process::exit(1);
+        }
+      };
+      queue.enqueue_promise_job(job, None);
     }
 
     let mut ctx = DummyJobContext;
@@ -731,6 +747,18 @@ fn main() {
       };
       agent.run_script(source_name, script, Budget::unlimited(1), None)
     }
+    "promiseJob" => {
+      // Trigger Promise job creation (`HostEnqueuePromiseJob` / microtask job boxing).
+      let script = "Promise.resolve().then(() => 0)";
+      let _keep = &filler;
+      agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
+    }
+    "generatorInstance" => {
+      // Trigger generator object creation and continuation boxing.
+      let script = "(function*(){ yield 1; })().next()";
+      let _keep = &filler;
+      agent.run_script("oom_harness.js", script, Budget::unlimited(1), None)
+    }
     "eval"
     | "function"
     | "generator"
@@ -814,6 +842,11 @@ fn main() {
 
   match result {
     Err(VmError::OutOfMemory) => process::exit(0),
+    // For job/continuation allocations we primarily care about avoiding process aborts under
+    // allocator OOM. Some environments may have enough headroom under the chosen RLIMIT settings for
+    // the scenario to succeed; treat success and other (catchable) errors as acceptable outcomes.
+    Ok(_) if scenario == "promiseJob" || scenario == "generatorInstance" => process::exit(0),
+    Err(_) if scenario == "promiseJob" || scenario == "generatorInstance" => process::exit(0),
     Err(VmError::Syntax(_)) if scenario == "labelEarlyError" => process::exit(0),
     Err(VmError::Throw(_) | VmError::ThrowWithStack { .. }) if scenario == "captureStack" => {
       process::exit(0)

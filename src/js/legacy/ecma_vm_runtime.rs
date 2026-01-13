@@ -1748,7 +1748,8 @@ mod tests {
             (*host_ptr).state.log.push("job1");
           });
           Ok(())
-        }),
+        })
+        .unwrap(),
         Some(host.realm_id),
       );
 
@@ -1758,7 +1759,8 @@ mod tests {
             (*host_ptr).state.log.push("job2");
           });
           Ok(())
-        }),
+        })
+        .unwrap(),
         Some(host.realm_id),
       );
     }
@@ -1784,15 +1786,13 @@ mod tests {
         (*host_ptr).realm_id
       });
 
-      hooks.host_enqueue_promise_job(
-        Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
-          ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
-            (*host_ptr).state.log.push("micro");
-          });
-          Ok(())
-        }),
-        Some(realm_id),
-      );
+      let job = Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
+        ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+          (*host_ptr).state.log.push("micro");
+        });
+        Ok(())
+      })?;
+      hooks.host_enqueue_promise_job(job, Some(realm_id));
 
       Ok(Value::Undefined)
     }

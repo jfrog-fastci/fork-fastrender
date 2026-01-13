@@ -218,3 +218,17 @@ fn capture_stack_does_not_abort_on_oom() {
   // Capturing the VM stack for `ThrowWithStack` must not abort the process under allocator OOM.
   run_oom_harness("captureStack", 0);
 }
+
+#[test]
+fn promise_job_creation_does_not_abort_on_oom() {
+  // Enqueuing a Promise job (`HostEnqueuePromiseJob`) boxes an internal job closure. Ensure this
+  // allocation is fallible under RLIMIT_AS pressure (no process abort on allocator OOM).
+  run_oom_harness("promiseJob", 1);
+}
+
+#[test]
+fn generator_instance_creation_does_not_abort_on_oom() {
+  // Creating a generator object boxes a `GeneratorContinuation`. Ensure this is a fallible
+  // allocation under RLIMIT_AS pressure (no process abort on allocator OOM).
+  run_oom_harness("generatorInstance", 1);
+}

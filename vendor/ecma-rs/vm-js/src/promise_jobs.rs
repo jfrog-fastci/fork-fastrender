@@ -50,7 +50,7 @@ pub fn new_promise_reaction_job(
       )),
       Err(e) => Err(e),
     }
-  });
+  })?;
 
   // Jobs are opaque closures and are not traced by the GC; explicitly root captured handles until
   // the job runs.
@@ -111,7 +111,7 @@ pub fn new_promise_resolve_thenable_job(
       }
       Err(e) => Err(e),
     }
-  });
+  })?;
 
   // Root all captured handles until the job runs.
   //

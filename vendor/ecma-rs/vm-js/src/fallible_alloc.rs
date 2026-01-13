@@ -10,9 +10,9 @@ use std::alloc::alloc;
 /// under extreme memory pressure (e.g. a small RLIMIT_AS), we need box allocations to be
 /// recoverable.
 pub(crate) fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
-  let size = mem::size_of::<T>();
-  if size == 0 {
-    // ZST boxes don't allocate; they can't fail.
+  // `alloc` with a zero-sized layout is allowed to return null. Avoid misclassifying that as OOM by
+  // delegating to `Box::new`, which does not allocate for ZSTs.
+  if mem::size_of::<T>() == 0 {
     return Ok(Box::new(value));
   }
 
@@ -28,4 +28,3 @@ pub(crate) fn box_try_new_vm<T>(value: T) -> Result<Box<T>, VmError> {
     Ok(Box::from_raw(raw))
   }
 }
-

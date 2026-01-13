@@ -1,9 +1,9 @@
 use crate::destructure::{bind_assignment_target, bind_pattern, BindingKind};
 use crate::error_object::new_error;
+use crate::fallible_alloc::box_try_new_vm;
 use crate::for_in::ForInEnumerator;
 use crate::heap::{GeneratorContinuation, GeneratorState, Trace, Tracer};
 use crate::iterator;
-use crate::fallible_alloc::box_try_new_vm;
 use crate::tick::vec_try_extend_from_slice_with_ticks;
 use crate::{
   EnvRootId, ExecutionContext, GcBigInt, GcEnv, GcObject, GcString, Heap, ModuleGraph, ModuleId,

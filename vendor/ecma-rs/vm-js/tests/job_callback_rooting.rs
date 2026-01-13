@@ -97,7 +97,7 @@ fn job_roots_callback_until_run_then_releases() -> Result<(), VmError> {
       let _ = stored;
       Ok(())
     },
-  );
+  )?;
 
   // Correct pattern: when queueing work that will later observe/call the callback, root the
   // callback object for the lifetime of the queued job.

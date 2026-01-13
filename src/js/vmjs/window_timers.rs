@@ -2785,7 +2785,7 @@ mod tests {
   #[test]
   fn auto_discard_job_cell_does_not_panic_when_heap_ptr_missing() {
     let heap_alive = Arc::new(AtomicBool::new(true));
-    let job = Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(()));
+    let job = Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(())).unwrap();
     let cell = AutoDiscardJobCell {
       job: Some(job),
       heap_ptr: None,
@@ -3143,20 +3143,16 @@ mod tests {
     // that does the same. This regression test ensures hooks created for nested Promise jobs still
     // expose the WebIDL bindings host slot via `VmHostHooks::as_any_mut`.
     let binding_value = Value::Object(binding_obj);
-    hooks.host_enqueue_promise_job(
-      vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+    let job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+      ctx.call(hooks, binding_value, Value::Undefined, &[])?;
+      let job2 = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
         ctx.call(hooks, binding_value, Value::Undefined, &[])?;
-        hooks.host_enqueue_promise_job(
-          vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
-            ctx.call(hooks, binding_value, Value::Undefined, &[])?;
-            Ok(())
-          }),
-          None,
-        );
         Ok(())
-      }),
-      None,
-    );
+      })?;
+      hooks.host_enqueue_promise_job(job2, None);
+      Ok(())
+    })?;
+    hooks.host_enqueue_promise_job(job, None);
 
     Ok(Value::Undefined)
   }
@@ -3306,13 +3302,11 @@ mod tests {
     record_promise_job_log(heap_ptr, "timeout");
 
     let heap_ptr_for_job = heap_ptr;
-    hooks.host_enqueue_promise_job(
-      vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
-        record_promise_job_log(heap_ptr_for_job, "job");
-        Ok(())
-      }),
-      None,
-    );
+    let job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+      record_promise_job_log(heap_ptr_for_job, "job");
+      Ok(())
+    })?;
+    hooks.host_enqueue_promise_job(job, None);
 
     record_promise_job_log(heap_ptr, "timeout_end");
     Ok(Value::Undefined)
@@ -5795,7 +5789,8 @@ mod tests {
         vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
           log1.lock().unwrap().push("job1");
           Ok(())
-        }),
+        })
+        .unwrap(),
         None,
       );
       let log2 = Arc::clone(&log_for_task);
@@ -5803,7 +5798,8 @@ mod tests {
         vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
           log2.lock().unwrap().push("job2");
           Ok(())
-        }),
+        })
+        .unwrap(),
         None,
       );
       if let Some(err) = hooks.finish(host.window_realm()?.heap_mut()) {
@@ -5842,16 +5838,15 @@ mod tests {
         log_for_job1.lock().unwrap().push("job1");
 
         let log_for_job2 = Arc::clone(&log_for_job1);
-        hooks.host_enqueue_promise_job(
-          vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
-            log_for_job2.lock().unwrap().push("job2");
-            Ok(())
-          }),
-          None,
-        );
+        let job2 = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+          log_for_job2.lock().unwrap().push("job2");
+          Ok(())
+        })?;
+        hooks.host_enqueue_promise_job(job2, None);
 
         Ok(())
-      }),
+      })
+      .unwrap(),
       None,
     );
 
@@ -5877,7 +5872,8 @@ mod tests {
       let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
         ran.store(true, Ordering::Relaxed);
         Ok(())
-      });
+      })
+      .unwrap();
       let heap = host.window.heap_mut();
       let mut ctx = HeapRootContext { heap };
       let root = job.add_root(&mut ctx, Value::Null).unwrap();
@@ -5889,7 +5885,8 @@ mod tests {
       let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
         ran.store(true, Ordering::Relaxed);
         Ok(())
-      });
+      })
+      .unwrap();
       let heap = host.window.heap_mut();
       let mut ctx = HeapRootContext { heap };
       let root = job.add_root(&mut ctx, Value::Undefined).unwrap();
@@ -5940,7 +5937,8 @@ mod tests {
     hooks.host_enqueue_promise_job(
       vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
         Err(vm_js::VmError::TypeError("boom"))
-      }),
+      })
+      .unwrap(),
       None,
     );
     assert!(hooks.finish(host.window.heap_mut()).is_none());
@@ -6132,7 +6130,8 @@ mod tests {
     let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
       ctx.call(hooks, Value::Object(callback_func), Value::Undefined, &[])?;
       Ok(())
-    });
+    })
+    .unwrap();
     {
       let heap = host.window.heap_mut();
       let mut ctx = HeapRootContext { heap };
@@ -6304,7 +6303,8 @@ mod tests {
     let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
       hooks.host_call_job_callback(ctx, &job_callback, Value::Undefined, &[])?;
       Ok(())
-    });
+    })
+    .unwrap();
     {
       let heap = host.window.heap_mut();
       let mut ctx = HeapRootContext { heap };

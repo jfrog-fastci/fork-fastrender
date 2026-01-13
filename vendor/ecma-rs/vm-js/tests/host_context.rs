@@ -65,13 +65,11 @@ fn enqueue_vm_microtask_job(
   // Intentionally enqueue onto the VM-owned microtask queue (instead of the supplied host hooks).
   // The script execution entry points should drain this queue into the provided hooks as a safety
   // net.
-  vm.microtask_queue_mut().host_enqueue_promise_job(
-    Job::new(JobKind::Promise, move |_ctx, _host| {
-      counter.fetch_add(1, Ordering::SeqCst);
-      Ok(())
-    }),
-    None,
-  );
+  let job = Job::new(JobKind::Promise, move |_ctx, _host| {
+    counter.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  })?;
+  vm.microtask_queue_mut().host_enqueue_promise_job(job, None);
   Ok(Value::Undefined)
 }
 

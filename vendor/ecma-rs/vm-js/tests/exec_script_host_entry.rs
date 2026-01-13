@@ -49,13 +49,11 @@ fn enqueue_vm_microtask_job(
   // Intentionally enqueue onto the VM-owned microtask queue (instead of the supplied host hooks).
   // Script execution should preserve this even though it temporarily moves the queue out of the VM
   // to satisfy Rust borrow constraints.
-  vm.microtask_queue_mut().enqueue_promise_job(
-    Job::new(JobKind::Promise, move |_ctx, _host| {
-      counter.fetch_add(1, Ordering::SeqCst);
-      Ok(())
-    }),
-    None,
-  );
+  let job = Job::new(JobKind::Promise, move |_ctx, _host| {
+    counter.fetch_add(1, Ordering::SeqCst);
+    Ok(())
+  })?;
+  vm.microtask_queue_mut().enqueue_promise_job(job, None);
 
   Ok(Value::Undefined)
 }

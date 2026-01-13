@@ -6104,7 +6104,7 @@ fn enqueue_promise_reaction_job(
         }
       }
     }
-  });
+  })?;
 
   // Root captured GC values while creating persistent roots: `Heap::add_root` can trigger a GC.
   // The resulting `RootId`s are transferred to the job so it can clean them up on run/discard.
@@ -6350,7 +6350,7 @@ fn resolve_promise(
       }
       Err(e) => Err(e),
     }
-  });
+  })?;
 
   // Root captured GC values while creating persistent roots: `Heap::add_root` can trigger a GC.
   // The resulting `RootId`s are transferred to the job so it can clean them up on run/discard.
@@ -13939,7 +13939,7 @@ fn enqueue_async_generator_job(
   let job = Job::new(JobKind::Promise, move |ctx, host| {
     let _ = ctx.call(host, Value::Object(resume), Value::Undefined, &[])?;
     Ok(())
-  });
+  })?;
 
   // Root the callback while creating the persistent root: `add_root` can trigger GC.
   let mut root_scope = scope.reborrow();

@@ -208,7 +208,7 @@ mod tests {
 
     // Ensure we have at least one queued job that will return an error during the checkpoint.
     queue.enqueue_promise_job(
-      Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job failed"))),
+      Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job failed")))?,
       None,
     );
 
@@ -219,7 +219,7 @@ mod tests {
       scope.alloc_object()?
     };
     let weak = WeakGcObject::from(obj);
-    let mut rooted_job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()));
+    let mut rooted_job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()))?;
     rooted_job.add_root(&mut ctx, Value::Object(obj))?;
     queue.enqueue_promise_job(rooted_job, None);
 

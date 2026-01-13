@@ -69,7 +69,7 @@ fn fifo_ordering_is_preserved() -> Result<(), VmError> {
       Job::new(JobKind::Promise, move |_ctx, _host| {
         sink.lock().unwrap().push(i);
         Ok(())
-      }),
+      })?,
       None,
     );
   }
@@ -93,16 +93,14 @@ fn microtasks_queued_by_microtasks_run_in_the_same_checkpoint() -> Result<(), Vm
       sink_for_job1.lock().unwrap().push(1);
 
       let sink_for_job2 = sink_for_job1.clone();
-      host.host_enqueue_promise_job(
-        Job::new(JobKind::Promise, move |_ctx, _host| {
-          sink_for_job2.lock().unwrap().push(2);
-          Ok(())
-        }),
-        None,
-      );
+      let job2 = Job::new(JobKind::Promise, move |_ctx, _host| {
+        sink_for_job2.lock().unwrap().push(2);
+        Ok(())
+      })?;
+      host.host_enqueue_promise_job(job2, None);
 
       Ok(())
-    }),
+    })?,
     None,
   );
 
@@ -124,7 +122,7 @@ fn microtask_checkpoint_reentrancy_guard_prevents_recursion() -> Result<(), VmEr
   let job2 = Job::new(JobKind::Promise, move |_ctx, _host| {
     log_for_job2.lock().unwrap().push("job2");
     Ok(())
-  });
+  })?;
 
   queue.enqueue_promise_job(
     Job::new(JobKind::Promise, move |ctx, host| {
@@ -145,7 +143,7 @@ fn microtask_checkpoint_reentrancy_guard_prevents_recursion() -> Result<(), VmEr
 
       log_for_job1.lock().unwrap().push("job1_after");
       Ok(())
-    }),
+    })?,
     None,
   );
 
@@ -171,7 +169,7 @@ fn jobs_keep_values_alive_until_run_when_rooted() -> Result<(), VmError> {
   };
   let weak = WeakGcObject::from(obj);
 
-  let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()));
+  let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()))?;
   job.add_root(&mut ctx, Value::Object(obj))?;
 
   queue.enqueue_promise_job(job, None);
@@ -199,7 +197,7 @@ fn checkpoint_continues_after_errors_and_collects_them() -> Result<(), VmError> 
   let log_for_ok = log.clone();
 
   queue.enqueue_promise_job(
-    Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job1 failed"))),
+    Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job1 failed")))?,
     None,
   );
 
@@ -207,12 +205,12 @@ fn checkpoint_continues_after_errors_and_collects_them() -> Result<(), VmError> 
     Job::new(JobKind::Promise, move |_ctx, _host| {
       log_for_ok.lock().unwrap().push("job2");
       Ok(())
-    }),
+    })?,
     None,
   );
 
   queue.enqueue_promise_job(
-    Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job3 failed"))),
+    Job::new(JobKind::Promise, |_ctx, _host| Err(VmError::Unimplemented("job3 failed")))?,
     None,
   );
 
@@ -238,7 +236,7 @@ fn checkpoint_stops_after_termination_and_discards_remaining_jobs() -> Result<()
         TerminationReason::OutOfFuel,
         Vec::new(),
       )))
-    }),
+    })?,
     None,
   );
 
@@ -246,7 +244,7 @@ fn checkpoint_stops_after_termination_and_discards_remaining_jobs() -> Result<()
     Job::new(JobKind::Promise, move |_ctx, _host| {
       *counter_for_job2.lock().unwrap() += 1;
       Ok(())
-    }),
+    })?,
     None,
   );
 
@@ -273,7 +271,7 @@ fn cancel_all_discards_jobs_and_unregisters_roots() -> Result<(), VmError> {
   };
   let weak = WeakGcObject::from(obj);
 
-  let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()));
+  let mut job = Job::new(JobKind::Promise, |_ctx, _host| Ok(()))?;
   job.add_root(&mut ctx, Value::Object(obj))?;
   queue.enqueue_promise_job(job, None);
 

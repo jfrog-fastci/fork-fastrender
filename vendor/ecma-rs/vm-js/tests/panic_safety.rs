@@ -58,7 +58,8 @@ fn job_run_converts_panics_to_errors() {
 
   let job = Job::new(JobKind::Promise, |_ctx, _host| -> Result<(), VmError> {
     panic!("boom");
-  });
+  })
+  .unwrap();
 
   let result =
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run(&mut ctx, &mut host)));
@@ -199,4 +200,3 @@ fn compile_script_never_panics_on_adversarial_inputs() -> Result<(), VmError> {
 
   Ok(())
 }
-

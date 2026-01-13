@@ -26,6 +26,7 @@
 //! queue is **host-owned**; this crate only provides the job representation.
 
 use crate::heap::{Trace, Tracer};
+use crate::fallible_alloc::box_try_new_vm;
 use crate::{
   GcObject, ImportMetaProperty, ModuleGraph, ModuleId, PropertyKey, RootId, Scope, Value, Vm, VmError,
 };
@@ -182,12 +183,19 @@ impl Job {
   pub fn new(
     kind: JobKind,
     run: impl FnOnce(&mut dyn VmJobContext, &mut dyn VmHostHooks) -> JobResult + Send + 'static,
-  ) -> Self {
-    Self {
+  ) -> Result<Self, VmError> {
+    // `Box::new` aborts the process on allocator OOM; use a fallible allocator so this error can
+    // propagate as `VmError::OutOfMemory`.
+    let run = box_try_new_vm(run)?;
+    // Coerce `Box<F>` into a trait object without allocating.
+    let run: Box<
+      dyn FnOnce(&mut dyn VmJobContext, &mut dyn VmHostHooks) -> JobResult + Send + 'static,
+    > = run;
+    Ok(Self {
       kind,
       roots: Vec::new(),
-      run: Some(Box::new(run)),
-    }
+      run: Some(run),
+    })
   }
 
   /// Adds a persistent root that will be automatically removed when the job is run or discarded.
@@ -333,7 +341,7 @@ impl Drop for Job {
 ///   // Later: _host.host_call_job_callback(_ctx, &job_callback, ...)?;
 ///   let _ = job_callback.callback();
 ///   Ok(())
-/// });
+/// })?;
 ///
 /// // IMPORTANT: keep `callback_obj` alive until the queued job runs.
 /// job.add_root(&mut ctx, Value::Object(callback_obj))?;
