@@ -1410,7 +1410,10 @@ mod tests {
   use std::sync::Mutex;
   use std::time::Duration;
 
-  use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, WAIT_OBJECT_0, WAIT_TIMEOUT};
+  use windows_sys::Win32::Foundation::{
+    GetHandleInformation, SetHandleInformation, ERROR_INSUFFICIENT_BUFFER, HANDLE_FLAG_INHERIT,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
+  };
   use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
   use windows_sys::Win32::Security::{
     GetTokenInformation, TokenCapabilities, TokenIsAppContainer, TOKEN_GROUPS,
@@ -1452,6 +1455,42 @@ mod tests {
       match self.prev.take() {
         Some(value) => std::env::set_var(self.key, value),
         None => std::env::remove_var(self.key),
+      }
+    }
+  }
+
+  struct HandleInheritGuard {
+    saved: Vec<(HANDLE, u32)>,
+  }
+
+  impl HandleInheritGuard {
+    fn new(handles: &[HANDLE]) -> Self {
+      let mut saved = Vec::with_capacity(handles.len());
+      for handle in handles {
+        if *handle == 0 {
+          continue;
+        }
+        let mut flags: u32 = 0;
+        let ok = unsafe { GetHandleInformation(*handle, &mut flags) };
+        if ok == 0 {
+          continue;
+        }
+        saved.push((*handle, flags));
+        let _ = unsafe { SetHandleInformation(*handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+      }
+      Self { saved }
+    }
+  }
+
+  impl Drop for HandleInheritGuard {
+    fn drop(&mut self) {
+      for (handle, flags) in self.saved.drain(..) {
+        let inherit = if (flags & HANDLE_FLAG_INHERIT) != 0 {
+          HANDLE_FLAG_INHERIT
+        } else {
+          0
+        };
+        let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, inherit) };
       }
     }
   }
@@ -1583,12 +1622,18 @@ mod tests {
           "expected AppContainer token to NOT have internetClient capability ({INTERNET_CLIENT_CAPABILITY_SID}); token={token:?}"
         );
 
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-        let connect = TcpStream::connect_timeout(&addr, Duration::from_secs(2));
-        assert!(
-          connect.is_err(),
-          "expected AppContainer sandbox child to be unable to connect to localhost; token={token:?}, connect={connect:?}"
-        );
+        if port != 0 {
+          let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+          let connect = TcpStream::connect_timeout(&addr, Duration::from_secs(2));
+          assert!(
+            connect.is_err(),
+            "expected AppContainer sandbox child to be unable to connect to localhost; token={token:?}, connect={connect:?}"
+          );
+        } else {
+          eprintln!(
+            "skipping localhost connect assertion in sandbox child: parent could not bind localhost"
+          );
+        }
         return;
       }
 
@@ -1606,12 +1651,30 @@ mod tests {
     let _disable_guard = EnvVarGuard::remove(ENV_DISABLE_RENDERER_SANDBOX);
     let _windows_guard = EnvVarGuard::remove(ENV_WINDOWS_RENDERER_SANDBOX);
 
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind test TCP listener");
-    let port = listener
-      .local_addr()
-      .expect("listener local addr")
-      .port()
-      .to_string();
+    let mut listener: Option<TcpListener> = None;
+    let port = match TcpListener::bind(("127.0.0.1", 0)) {
+      Ok(bound) => {
+        let port = bound
+          .local_addr()
+          .expect("listener local addr")
+          .port()
+          .to_string();
+        listener = Some(bound);
+        port
+      }
+      Err(err)
+        if matches!(
+          err.kind(),
+          io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
+        ) =>
+      {
+        eprintln!(
+          "skipping localhost connect assertion in sandbox unit test: cannot bind localhost: {err}"
+        );
+        "0".to_string()
+      }
+      Err(err) => panic!("bind test TCP listener: {err}"),
+    };
 
     let _child_guard = EnvVarGuard::set(CHILD_ENV, "1");
     let _port_guard = EnvVarGuard::set(PORT_ENV, port);
@@ -1628,13 +1691,17 @@ mod tests {
 
     let stdout = std::io::stdout().as_raw_handle();
     let stderr = std::io::stderr().as_raw_handle();
-    let mut handles = Vec::new();
+    let mut handles: Vec<RawHandle> = Vec::new();
+    let mut to_make_inheritable: Vec<HANDLE> = Vec::new();
     if !stdout.is_null() {
       handles.push(stdout);
+      to_make_inheritable.push(stdout as HANDLE);
     }
     if !stderr.is_null() && stderr != stdout {
       handles.push(stderr);
+      to_make_inheritable.push(stderr as HANDLE);
     }
+    let _inherit_guard = HandleInheritGuard::new(&to_make_inheritable);
 
     let child = spawn_sandboxed(&exe, &args, &handles).expect("spawn sandboxed child process");
     let exit_code = wait_for_exit_code(child.process.as_raw_handle() as HANDLE)
