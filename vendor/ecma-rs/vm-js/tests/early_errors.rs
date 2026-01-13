@@ -278,6 +278,17 @@ fn escaped_yield_as_class_name_is_syntax_error() {
 }
 
 #[test]
+fn escaped_yield_in_class_extends_expression_is_syntax_error() {
+  // Class definitions are strict-mode code; the `extends` (heritage) expression is evaluated in
+  // that strict context as well.
+  let mut rt = new_runtime();
+  let err = rt
+    .exec_script(r#"class C extends (\u0079ield = 1) {}"#)
+    .unwrap_err();
+  assert!(matches!(err, VmError::Syntax(_)));
+}
+
+#[test]
 fn eval_early_errors_are_catchable_syntax_error() {
   let mut rt = new_runtime();
   let value = rt
