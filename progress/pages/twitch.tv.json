@@ -16,7 +16,7 @@
     "layout": 3.0249549714285715,
     "paint": 16.133093180952383
   },
-  "notes": "",
+  "notes": "Twitch bootstrap shell with nav placeholders + loading spinner; real content requires JS.\nVery small diff is acceptable (minor raster/AA noise).",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 117,

@@ -14,7 +14,7 @@
     "layout": 5.993791090909091,
     "paint": 12.986547363636364
   },
-  "notes": "",
+  "notes": "Curated static DOM for NHK (live homepage is JS-rendered); fixture provides representative layout/images + Japanese text shaping/line-breaking sample.\nChrome baseline matches closely; any remaining diff is negligible raster noise.\nIntended for typography/layout coverage rather than live homepage fidelity.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 0,

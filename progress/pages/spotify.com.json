@@ -16,7 +16,7 @@
     "layout": 0.9995647916666668,
     "paint": 14.993471875
   },
-  "notes": "",
+  "notes": "Spotify Web Player bootstrap shell; mostly empty DOM when JS is disabled.\nDiff≈0 expected; real playback UI requires JS.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 0,

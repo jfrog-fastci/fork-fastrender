@@ -14,7 +14,7 @@
     "layout": 2.0036964666666663,
     "paint": 14.025875266666665
   },
-  "notes": "",
+  "notes": "JS-required shell; <noscript> says Pinterest doesn't work unless you turn on JavaScript.\nDiff≈0 expected (simple message/empty shell); real site content requires JS.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 0,

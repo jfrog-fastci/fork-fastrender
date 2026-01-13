@@ -14,7 +14,7 @@
     "layout": 14.040132480286742,
     "paint": 28.080264960573484
   },
-  "notes": "",
+  "notes": "YouTube fixture is skeleton/placeholder markup (watch-page-skeleton); minimal content without JS.\nRemaining diff is tiny (perceptual≈0) and dominated by minor raster/background shade differences.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 1551,

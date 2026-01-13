@@ -16,7 +16,7 @@
     "layout": 1.007006422222222,
     "paint": 12.084077066666666
   },
-  "notes": "",
+  "notes": "JS-driven SPA shell; with scripts disabled the body is effectively empty (div#root only).\nDiff≈0 expected because fixture is mostly blank; not representative of the live MSN homepage.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 0,

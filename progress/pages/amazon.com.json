@@ -14,7 +14,7 @@
     "layout": 35.80435143310058,
     "paint": 54.09697412876881
   },
-  "notes": "",
+  "notes": "AWS WAF bot-check interstitial; fixture renders the <noscript> JavaScript-disabled verify-you're-not-a-robot message (not the real Amazon homepage).\nNear-identical to Chrome baseline; any remaining diff is minor raster/text AA noise.\nRequires JS/cookies to proceed past WAF.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 0,

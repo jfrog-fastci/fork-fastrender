@@ -16,7 +16,7 @@
     "layout": 3.001534442307692,
     "paint": 19.009718134615387
   },
-  "notes": "",
+  "notes": "X/Twitter noscript unsupported/JS-disabled error page (JavaScript is not available…); hides #react-root.\nVery small diff is acceptable (minor raster differences); not representative of the real timeline UI.",
   "accuracy": {
     "baseline": "chrome",
     "diff_pixels": 462,

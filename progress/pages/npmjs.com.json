@@ -14,7 +14,7 @@
     "layout": 8.503830855,
     "paint": 22.67688228
   },
-  "notes": "",
+  "notes": "Cloudflare bot-check interstitial (Just a moment…); <noscript> asks to enable JavaScript and cookies.\nDiff≈0 expected because the page is a simple static challenge; not representative of npm content pages.",
   "auto_notes": "cached_html_status=403",
   "accuracy": {
     "baseline": "chrome",
