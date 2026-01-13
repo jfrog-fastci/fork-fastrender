@@ -108,6 +108,13 @@ struct TabPinAnim {
   from_unpinned_tab_width: f32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TabDragLiftOut {
+  tab_id: TabId,
+  /// Preview rect *before* lift/scale is applied (so lift-out can animate back to rest).
+  base_rect: Rect,
+}
+
 fn tab_strip_scroll_clamp(
   ctx: &egui::Context,
   motion: UiMotion,
@@ -1947,6 +1954,7 @@ pub(super) fn tab_strip_ui(
     .data_mut(|d| d.insert_temp(last_active_id_key, active_id));
   let snapshot_key = ui.make_persistent_id("tab_strip_layout_snapshot");
   let anim_key = ui.make_persistent_id("tab_strip_pin_anim");
+  let drag_lift_out_key = ui.make_persistent_id("tab_strip_drag_lift_out");
 
   let prev_snapshot = ctx
     .data(|d| d.get_temp::<Option<TabStripLayoutSnapshot>>(snapshot_key))
@@ -3575,6 +3583,102 @@ pub(super) fn tab_strip_ui(
     }
   }
 
+  // Optional: animate the drag ghost settling back down after a drop inside the strip.
+  //
+  // The drag preview is normally only rendered while `dragging_tab_id` is `Some`, so to get a
+  // visible lift-out we store the base preview rect at drop time and keep rendering it for the
+  // duration of `tab_drag_lift` while animating `t: 1 → 0`.
+  if app.chrome.dragging_tab_id.is_none() {
+    let lift_out = ctx
+      .data(|d| d.get_temp::<Option<TabDragLiftOut>>(drag_lift_out_key))
+      .unwrap_or(None);
+    if let Some(lift_out) = lift_out {
+      let tab_id = lift_out.tab_id;
+      let tab = match app.tab(tab_id) {
+        Some(tab) => Some(tab),
+        None => {
+          ctx.data_mut(|d| d.insert_temp(drag_lift_out_key, None::<TabDragLiftOut>));
+          None
+        }
+      };
+
+      if let Some(tab) = tab {
+        let lift_id = egui::Id::new(("tab_drag_lift", tab_id));
+        let lift_t = motion.animate_bool(ctx, lift_id, false, motion.durations.tab_drag_lift);
+
+        // Animation finished (or reduced motion): drop the transient state and skip drawing.
+        if lift_t <= 1e-3 {
+          ctx.data_mut(|d| d.insert_temp(drag_lift_out_key, None::<TabDragLiftOut>));
+        } else {
+          // Keep repainting while the lift-out is in progress.
+          if motion.enabled && ctx.style().animation_time > 0.0 {
+            ctx.request_repaint();
+          }
+
+          let lift = Vec2::new(0.0, -DRAG_PREVIEW_LIFT_Y * lift_t);
+          let mut preview_rect = lift_out.base_rect.translate(lift);
+          let scale = 1.0 + (DRAG_PREVIEW_SCALE - 1.0) * lift_t;
+          preview_rect =
+            Rect::from_center_size(preview_rect.center(), preview_rect.size() * scale.max(0.01));
+
+          let preview_favicon_tex = favicon_for_tab(tab_id);
+          let preview_is_active = active_id == Some(tab_id);
+          let preview_id = egui::Id::new("tab_strip_drag_preview");
+          egui::Area::new(preview_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(preview_rect.min)
+            .interactable(false)
+            .show(&ctx, |ui| {
+              ui.set_clip_rect(ui.ctx().screen_rect());
+              ui.allocate_space(preview_rect.size());
+              let visuals = ui.style().visuals.clone();
+              let rounding = visuals.widgets.inactive.rounding;
+              let mut shadow = visuals.popup_shadow;
+              shadow.extrusion *= lift_t;
+              shadow.color = with_alpha(shadow.color, lift_t);
+              paint_popup_shadow(ui.painter(), preview_rect, rounding, shadow);
+
+              if tab.pinned {
+                pinned_tab_preview_ui(
+                  ui,
+                  motion,
+                  tab,
+                  preview_is_active,
+                  preview_rect,
+                  preview_favicon_tex,
+                );
+              } else {
+                let group_color = tab
+                  .group
+                  .and_then(|gid| app.tab_groups.get(&gid))
+                  .map(|g| group_color_egui(g.color));
+                unpinned_tab_preview_ui(
+                  ui,
+                  motion,
+                  tab,
+                  preview_is_active,
+                  can_close_tabs,
+                  preview_rect,
+                  preview_favicon_tex,
+                  group_color,
+                );
+              }
+            });
+        }
+      }
+    }
+  } else {
+    // If the user starts another drag while a lift-out is in progress, kill the old ghost
+    // immediately (avoid overlapping drag previews).
+    let has_lift_out = ctx
+      .data(|d| d.get_temp::<Option<TabDragLiftOut>>(drag_lift_out_key))
+      .unwrap_or(None)
+      .is_some();
+    if has_lift_out {
+      ctx.data_mut(|d| d.insert_temp(drag_lift_out_key, None::<TabDragLiftOut>));
+    }
+  }
+
   // Drag-to-detach: dragging far enough away from the tab strip (or releasing outside the strip)
   // should detach the tab into a new window.
   if let Some(dragging_tab_id) = app.chrome.dragging_tab_id {
@@ -3599,9 +3703,50 @@ pub(super) fn tab_strip_ui(
 
     if detach_on_drag || detach_on_release {
       actions.push(ChromeAction::DetachTab(dragging_tab_id));
+      // Don't animate a lift-out in this window when detaching.
+      ctx.data_mut(|d| d.insert_temp(drag_lift_out_key, None::<TabDragLiftOut>));
       app.chrome.clear_tab_drag();
-    } else if release_pos.is_some() {
-      // Regular drop inside the strip: clear transient drag state.
+    } else if let Some(pos) = release_pos {
+      // Regular drop inside the strip: keep the ghost alive briefly so it can settle back down.
+      if motion_enabled && motion.durations.tab_drag_lift > 0.0 {
+        let dragging_is_pinned = app.tab(dragging_tab_id).is_some_and(|tab| tab.pinned);
+        let preview_size = app
+          .chrome
+          .drag_start_tab_rect
+          .map(|r| r.size())
+          .unwrap_or_else(|| {
+            Vec2::new(
+              if dragging_is_pinned {
+                PINNED_TAB_WIDTH
+              } else {
+                sizing.tab_width
+              },
+              TAB_HEIGHT,
+            )
+          });
+        let delta = app
+          .chrome
+          .drag_start_pointer_pos
+          .map(|start| pos - start)
+          .unwrap_or_default();
+        let base_rect = app
+          .chrome
+          .drag_start_tab_rect
+          .map(|rect| rect.translate(delta))
+          .unwrap_or_else(|| Rect::from_center_size(pos, preview_size));
+        ctx.data_mut(|d| {
+          d.insert_temp(
+            drag_lift_out_key,
+            Some(TabDragLiftOut {
+              tab_id: dragging_tab_id,
+              base_rect,
+            }),
+          );
+        });
+      } else {
+        ctx.data_mut(|d| d.insert_temp(drag_lift_out_key, None::<TabDragLiftOut>));
+      }
+
       app.chrome.clear_tab_drag();
     }
   }
