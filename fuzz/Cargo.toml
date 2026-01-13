@@ -118,6 +118,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "site_key"
+path = "fuzz_targets/site_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "process_assignment"
+path = "fuzz_targets/process_assignment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ipc_messages"
 path = "fuzz_targets/ipc_messages.rs"
 test = false
