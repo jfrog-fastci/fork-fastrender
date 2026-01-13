@@ -801,7 +801,7 @@ fn bookmarks_list(
 
   frame.show(ui, |ui| {
     let store_revision = store.revision();
-    let query = state.search.trim().to_string();
+    let query = state.search.trim();
     let open_rev = state.folder_open_revision;
 
     if store.roots.is_empty() {
@@ -826,24 +826,21 @@ fn bookmarks_list(
       None => true,
     };
 
-    if needs_rebuild {
-      let rows = build_visible_rows(ui.ctx(), store, &query);
-      state.list_cache = Some(BookmarksListCache {
-        store_revision,
-        search_query: query.clone(),
-        folder_open_revision: open_rev,
-        rows,
-      });
-    }
-
     // Move the cache out temporarily so row rendering can mutably borrow `state` without fighting
     // Rust's borrow checker.
-    let mut cache = state.list_cache.take().unwrap_or(BookmarksListCache {
-      store_revision,
-      search_query: query.clone(),
-      folder_open_revision: open_rev,
-      rows: Vec::new(),
-    });
+    let mut cache = if needs_rebuild {
+      BookmarksListCache {
+        store_revision,
+        search_query: query.to_string(),
+        folder_open_revision: open_rev,
+        rows: build_visible_rows(ui.ctx(), store, query),
+      }
+    } else {
+      state
+        .list_cache
+        .take()
+        .expect("list cache present when not rebuilding")
+    };
 
     if !query.is_empty() && cache.rows.is_empty() {
       let empty = panel_empty_state(
