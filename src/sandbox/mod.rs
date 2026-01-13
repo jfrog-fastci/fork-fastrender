@@ -622,6 +622,22 @@ pub enum MacosSandboxError {
 /// - selects sane defaults (strict by default on macOS),
 /// - returns a structured status that callers can treat as best-effort in dev or fail-closed in prod.
 pub fn apply_macos_sandbox_from_env() -> Result<MacosSandboxStatus, MacosSandboxError> {
+  // Ensure the common debug escape hatches (used by tests and local debugging) also affect this
+  // higher-level macOS-only API. The underlying Seatbelt wrapper in `macos.rs` will skip sandboxing
+  // when these are set, but we want to avoid returning `Applied` in that case.
+  #[cfg(target_os = "macos")]
+  {
+    if macos_renderer_sandbox_disabled_via_env() {
+      // Reuse the macOS module's one-time warning so insecure runs are not silent.
+      let _ = macos::apply_strict_sandbox();
+      return Ok(MacosSandboxStatus::NotApplied {
+        mode: MacosSandboxMode::Off,
+        source: MacosSandboxSource::EnvVar,
+        reason: MacosSandboxNotAppliedReason::ModeOff,
+      });
+    }
+  }
+
   let default_enabled = cfg!(target_os = "macos");
 
   let sandbox_env = match std::env::var(config::ENV_RENDERER_SANDBOX) {
@@ -945,6 +961,10 @@ mod tests {
 mod tests {
   #[cfg(target_os = "macos")]
   mod macos {
+    use super::super::{
+      apply_macos_sandbox_from_env, MacosSandboxMode, MacosSandboxNotAppliedReason,
+      MacosSandboxStatus,
+    };
     use super::super::apply_pure_computation_sandbox;
     use std::io::Write;
     use std::process::Command;
@@ -987,6 +1007,49 @@ mod tests {
           .windows(SENTINEL.len())
           .any(|window| window == SENTINEL),
         "expected sandbox child to write sentinel to stdout; got stdout={}, stderr={} ",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+      );
+    }
+
+    #[test]
+    fn apply_macos_sandbox_from_env_respects_debug_disable_escape_hatch() {
+      const CHILD_ENV: &str = "FASTR_TEST_APPLY_MACOS_SANDBOX_FROM_ENV_CHILD";
+
+      if std::env::var_os(CHILD_ENV).is_some() {
+        // The escape hatch should bypass parsing invalid FASTR_RENDERER_SANDBOX values and should
+        // report `NotApplied` rather than claiming the sandbox is installed.
+        let status =
+          apply_macos_sandbox_from_env().expect("apply_macos_sandbox_from_env should not error");
+        match status {
+          MacosSandboxStatus::NotApplied { mode, reason, .. } => {
+            assert_eq!(mode, MacosSandboxMode::Off);
+            assert_eq!(reason, MacosSandboxNotAppliedReason::ModeOff);
+          }
+          other => panic!("expected NotApplied due to debug escape hatch, got {other:?}"),
+        }
+        return;
+      }
+
+      let exe = std::env::current_exe().expect("current test exe path");
+      let test_name =
+        "sandbox::tests::macos::apply_macos_sandbox_from_env_respects_debug_disable_escape_hatch";
+      let output = Command::new(exe)
+        .env(CHILD_ENV, "1")
+        // Disable sandboxing via the common escape hatch.
+        .env(super::super::macos::ENV_DISABLE_RENDERER_SANDBOX, "1")
+        // Set an intentionally invalid value: we should not surface a config parse error when
+        // sandboxing is disabled.
+        .env(super::super::config::ENV_RENDERER_SANDBOX, "invalid-value")
+        .arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .output()
+        .expect("spawn sandbox-env child process");
+
+      assert!(
+        output.status.success(),
+        "sandbox-env child should exit successfully (stdout={}, stderr={})",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
       );
