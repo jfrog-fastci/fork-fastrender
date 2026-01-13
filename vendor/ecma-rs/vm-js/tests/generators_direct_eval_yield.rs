@@ -303,3 +303,76 @@ fn generator_direct_eval_var_decl_creates_local_binding_across_yield() {
     .unwrap();
   assert_eq!(value, Value::Bool(true));
 }
+
+#[test]
+fn generator_direct_eval_with_yield_argument_sees_this_value() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          // Global binding visible to indirect eval.
+          var x = 2;
+          var obj = {
+            x: 123,
+            *g(){ return eval(yield 0); }
+          };
+          var it = obj.g();
+          it.next();
+          var r = it.next("this.x");
+          ok = r.done === true && r.value === 123;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_parenthesized_eval_with_yield_argument_sees_global_this() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          var x = 2;
+          var obj = {
+            x: 123,
+            *g(){ return (eval)(yield 0); }
+          };
+          var it = obj.g();
+          it.next();
+          var r = it.next("this.x");
+          // Parenthesized eval is indirect, so `this` inside eval code is the global object.
+          ok = r.done === true && r.value === 2;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn generator_direct_eval_with_yield_argument_sees_arguments_object() {
+  let mut rt = new_runtime();
+  let value = rt
+    .exec_script(
+      r#"
+        var ok = false;
+        try {
+          function* g(a){ return eval(yield 0); }
+          var it = g(123);
+          it.next();
+          var r = it.next("arguments[0]");
+          ok = r.done === true && r.value === 123;
+        } catch (e) { ok = false; }
+        ok
+      "#,
+    )
+    .unwrap();
+  assert_eq!(value, Value::Bool(true));
+}
