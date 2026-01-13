@@ -129,6 +129,11 @@ pub mod input_mapping;
 #[cfg(feature = "browser_ui")]
 pub mod input_routing;
 
+// AccessKit action routing for FastRender-rendered documents (screen reader "press", "set value",
+// etc).
+#[cfg(feature = "browser_ui")]
+pub mod fast_accesskit_actions;
+
 #[cfg(feature = "browser_ui")]
 pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 

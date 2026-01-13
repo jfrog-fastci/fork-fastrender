@@ -4705,6 +4705,95 @@ impl InteractionEngine {
     changed
   }
 
+  /// Replace the full value of a text control (`<input>`/`<textarea>`) as if the user edited it.
+  ///
+  /// This is similar to `text_input`, but replaces the entire value instead of inserting at the
+  /// caret/selection, and it supports setting the value to the empty string.
+  pub fn set_text_control_value(&mut self, dom: &mut DomNode, node_id: usize, value: &str) -> bool {
+    let mut index = DomIndexMut::new(dom);
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+
+    let is_input_text = is_text_input(node);
+    let is_textarea = is_textarea(node);
+    if !(is_input_text || is_textarea) {
+      return false;
+    }
+
+    if node_or_ancestor_is_inert(&index, node_id) || node_is_disabled(&index, node_id) {
+      return false;
+    }
+    if node_is_readonly(&index, node_id) {
+      return false;
+    }
+
+    self.ensure_form_default_snapshot_for_control(&index, node_id);
+
+    let current = if is_textarea {
+      textarea_value_for_editing(node)
+    } else {
+      node.get_attribute_ref("value").unwrap_or("").to_string()
+    };
+    let current_len = current.chars().count();
+
+    // Any direct value mutation cancels an in-progress IME preedit string.
+    let mut changed = self.ime_cancel_internal();
+
+    // Capture the current caret/selection state for undo snapshots.
+    let mut edit = self.text_edit.unwrap_or(TextEditState {
+      node_id,
+      caret: current_len,
+      caret_affinity: CaretAffinity::Downstream,
+      selection_anchor: None,
+      preferred_x: None,
+    });
+    if edit.node_id != node_id {
+      edit = TextEditState {
+        node_id,
+        caret: current_len,
+        caret_affinity: CaretAffinity::Downstream,
+        selection_anchor: None,
+        preferred_x: None,
+      };
+    }
+    edit.caret = edit.caret.min(current_len);
+    edit.selection_anchor = edit.selection_anchor.map(|a| a.min(current_len));
+
+    if value != current {
+      self.record_text_undo_snapshot(node_id, &current, &edit);
+    }
+
+    let Some(node_mut) = index.node_mut(node_id) else {
+      return changed;
+    };
+
+    let changed_value = if is_input_text {
+      set_node_attr(node_mut, "value", value)
+    } else {
+      set_node_attr(node_mut, "data-fastr-value", value)
+    };
+    changed |= changed_value;
+    if changed_value {
+      changed |= self.mark_user_validity(node_id);
+    }
+
+    // Keep caret state in sync for focused controls.
+    if self.state.focused == Some(node_id) {
+      let len = value.chars().count();
+      self.text_edit = Some(TextEditState {
+        node_id,
+        caret: len,
+        caret_affinity: CaretAffinity::Downstream,
+        selection_anchor: None,
+        preferred_x: None,
+      });
+      changed |= self.sync_text_edit_paint_state();
+    }
+
+    changed
+  }
+
   pub fn focused_node_id(&self) -> Option<usize> {
     self.state.focused
   }
