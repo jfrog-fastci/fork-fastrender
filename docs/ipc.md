@@ -85,9 +85,12 @@ transport/codec yet:
     - carry large pixel buffers out-of-band as FD attachments (`SCM_RIGHTS`).
   - Linux SHM primitives live in [`src/ipc/shm.rs`](../src/ipc/shm.rs) (`memfd_create` + `mmap` +
     best-effort seals).
-- **Browser ↔ network (today):**
-  - `src/resource/ipc_fetcher.rs` uses a `TcpStream` to a local “network process” endpoint, framed
-    as `u32_le length` + payload, serialized with JSON (`serde_json`).
+- **Renderer ↔ network (today / legacy JSON ResourceFetcher proxy):**
+  - `src/resource/ipc_fetcher.rs` implements `IpcResourceFetcher`, a renderer-side `ResourceFetcher`
+    proxy that connects to a local “network process” endpoint over `TcpStream`, framed as
+    `u32_le length` + payload, serialized with JSON (`serde_json`).
+  - It performs an auth-token handshake (`IPC_AUTH_TOKEN_ENV`) and enforces per-direction frame caps
+    (`IPC_MAX_INBOUND_FRAME_BYTES`, `IPC_MAX_OUTBOUND_FRAME_BYTES`) plus per-field limits.
   - See: [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs).
 - **Browser ↔ network (prototype `network` subprocess):**
   - The `network` binary ([`src/bin/network.rs`](../src/bin/network.rs)) uses JSON framing helpers in
@@ -198,7 +201,7 @@ These caps are **security limits**; do not increase casually. Keep the sender + 
 |---|---:|---|
 | Browser ↔ renderer (stdio + bincode, dev) | 64 MiB | `fastrender_ipc::MAX_IPC_MESSAGE_BYTES` in [`crates/fastrender-ipc/src/lib.rs`](../crates/fastrender-ipc/src/lib.rs) (checked in [`crates/fastrender-renderer/src/main.rs`](../crates/fastrender-renderer/src/main.rs)) |
 | Generic framing helper (`read_frame`/`write_frame`) | 8 MiB | `crate::ipc::framing::MAX_IPC_MESSAGE_BYTES` in [`src/ipc/framing.rs`](../src/ipc/framing.rs) |
-| Browser ↔ network (`IpcResourceFetcher`, JSON over TCP) | 128 MiB | `IPC_MAX_FRAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer ↔ network (`IpcResourceFetcher`, JSON over TCP) | 8 MiB inbound / 80 MiB outbound | `IPC_MAX_INBOUND_FRAME_BYTES` / `IPC_MAX_OUTBOUND_FRAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Browser ↔ network (`network` subprocess prototype, JSON over TCP) | **UNBOUNDED (unsafe)** | `src/network_process/ipc.rs` frames are length-prefixed but do not enforce a maximum (allocates based on declared length) |
 
 Repo reality warning: the prototype network subprocess framing helpers in
@@ -220,6 +223,11 @@ Additional (important) size limits that sit *on top* of framing:
 | File input / drag-and-drop max files per message (browser→renderer) | 16 | `FILE_INPUT_MAX_FILES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop file name bytes (browser→renderer) | 256 bytes | `FILE_INPUT_MAX_NAME_BYTES` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
 | File input / drag-and-drop total file size metadata (browser→renderer) | 512 MiB | `FILE_INPUT_MAX_TOTAL_BYTES_META` in [`src/ipc/protocol/renderer.rs`](../src/ipc/protocol/renderer.rs) |
+| Renderer↔network URL string max (`IpcResourceFetcher`) | 1 MiB | `IPC_MAX_URL_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network header count max (`IpcResourceFetcher`) | 1024 | `IPC_MAX_HEADER_COUNT` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network header name bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_HEADER_NAME_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network header value bytes (`IpcResourceFetcher`) | 16 KiB | `IPC_MAX_HEADER_VALUE_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
+| Renderer↔network auth token bytes (`IpcResourceFetcher`) | 1024 bytes | `IPC_MAX_AUTH_TOKEN_BYTES` in [`src/resource/ipc_fetcher.rs`](../src/resource/ipc_fetcher.rs) |
 | Browser↔network URL string max | 1 MiB | `MAX_URL_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Browser↔network cookie string max | 4 KiB | `MAX_COOKIE_STRING_BYTES` in [`src/ipc/protocol/network.rs`](../src/ipc/protocol/network.rs) |
 | Linux shared memory hard ceiling | 256 MiB | `MAX_SHM_SIZE` in [`src/ipc/shm.rs`](../src/ipc/shm.rs) |
