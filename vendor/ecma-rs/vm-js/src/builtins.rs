@@ -18967,7 +18967,8 @@ pub fn string_prototype_repeat(
 ) -> Result<Value, VmError> {
   let mut scope = scope.reborrow();
 
-  let s = scope.to_string(vm, host, hooks, this)?;
+  let o = crate::spec_ops::require_object_coercible(this)?;
+  let s = scope.to_string(vm, host, hooks, o)?;
   scope.push_root(Value::String(s))?;
 
   let count_val = args.get(0).copied().unwrap_or(Value::Undefined);
