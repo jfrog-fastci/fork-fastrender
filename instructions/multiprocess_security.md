@@ -103,6 +103,7 @@ Beyond process-per-tab, consider site isolation:
 - Different origins get different processes
 - Prevents Spectre-style cross-origin attacks
 - Chrome's model: one process per site (not per tab)
+- See [`docs/site_isolation.md`](../docs/site_isolation.md) for FastRender’s intended process assignment policy (MVP + planned evolution).
 
 FastRender's intended per-origin process assignment + OOPIF semantics are specified in:
 - [`docs/site_isolation.md`](../docs/site_isolation.md) (normative)

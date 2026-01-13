@@ -24,6 +24,44 @@ Related:
   intended to be treated as **normative** once site isolation lands (so future work stays
   consistent).
 
+## Policy overview (MVP → site isolation)
+
+This repo will likely evolve through two related policies:
+
+### Current MVP: process-per-tab
+
+- **New tab → new renderer process.**
+- All navigations and iframes for that tab remain in that one process (no process swaps, no OOPIF).
+- Goal: simplest multiprocess boundary with strong cross-tab crash/security isolation.
+
+### Planned: process-per-`SiteKey`
+
+- The browser derives a `SiteKey` for every committed document.
+- **Tabs/frames with the same `SiteKey` may share a renderer process.**
+- **Navigating to a different `SiteKey` may swap the tab/frame into a different renderer process.**
+  - Once process swaps exist, **session history must live in the browser process** (not only in the renderer),
+    otherwise back/forward cannot survive renderer replacement.
+- Special URL handling is security-critical:
+  - `about:` internal pages must not share processes with arbitrary web content.
+  - `about:blank` / `about:srcdoc` inherit from their initiator.
+  - `data:` uses an opaque key (unique; never shared).
+  - `file:` is isolated from network sites and is expected to be brokered by the browser process.
+
+### How this differs from Chrome’s “SiteInstance”
+
+Chrome’s model is more complex than “site → process”:
+
+- Chrome uses **SiteInstance** objects scoped to a **BrowsingInstance** (session history/opener graph), not a single global site key.
+- Chrome supports **out-of-process iframes (OOPIF)** as a mature feature set.
+
+FastRender’s initial model is intentionally simpler:
+
+- `SiteKey` is derived directly from the destination URL (plus an initiator for inheriting URLs).
+- A browser-owned `FrameTree` is the routing authority.
+- A `RendererProcessRegistry` maps `SiteKey -> process`.
+
+If FastRender later needs Chrome-like opener/session-history semantics, we may need to introduce a BrowsingInstance/SiteInstance concept. Until then, `SiteKey` is the source of truth for process assignment.
+
 ---
 
 ## 0) Scope and threat model
@@ -46,15 +84,51 @@ Non-goals for this doc:
 
 ## 1) Definitions
 
+### `Tab`
+
+A **tab** is a browser-UI concept: a handle to a top-level browsing context.
+
+In a multiprocess model with process swaps, a tab’s **session history** (back/forward list) must live in the **browser process**.
+The renderer process should be treated as replaceable.
+
+### Renderer process
+
+A **renderer process** is an OS process that runs *untrusted* web content (HTML/CSS/JS) and produces pixels.
+
+It is expected to be sandboxed and to communicate with the browser process via IPC.
+
+One renderer process may host:
+
+- **MVP**: one tab (process-per-tab).
+- **Future**: multiple tabs/frames for the same `SiteKey` (process-per-`SiteKey`).
+
+### `OriginKey` (origin key)
+
+An **OriginKey** identifies a document’s security origin (same-origin policy / storage partitioning boundary).
+
+For “network” schemes (`http`, `https`, `ws`, `wss`) this is the tuple:
+
+```
+(scheme, host, port)
+```
+
+Some documents have an **opaque origin** (unique, not equal to any other origin).
+
 ### 1.1 `SiteKey`
 
 `SiteKey` is the *process assignment key*: all documents with the same `SiteKey` are allowed to
 share a renderer process.
 
-**FastRender’s model is “process-per-origin” for network origins**:
+**Planned default (site-keyed):**
 
-- For `http`/`https`: `SiteKey` is the tuple `(scheme, host, port)` using the effective port.
-- For other schemes we either map to a stable bucket (`file://`) or to an *opaque* key (unique).
+- For `http`/`https`: `SiteKey` is a **schemeful site**: `(scheme, registrable_domain)` (ports ignored).
+  - If a host has no registrable domain (e.g. IP literals, `localhost`), use the host itself as the `registrable_domain`.
+
+**Optional stricter mode (origin-keyed):**
+
+- Derive `SiteKey` directly from `OriginKey`: `(scheme, host, port)` using the effective port.
+
+For other schemes we either map to a stable bucket (`file://`) or to an *opaque* key (unique).
 
 Recommended representation:
 
@@ -62,7 +136,11 @@ Recommended representation:
 /// The grouping key used for renderer process assignment.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SiteKey {
-    /// Network origins: https://example.com:443
+    /// Network "sites" (schemeful site): https://example.com
+    /// (ports are intentionally ignored)
+    Site { scheme: String, registrable_domain: String },
+
+    /// Optional: strict origin isolation, matching `OriginKey`.
     Origin { scheme: String, host: String, port: u16 },
 
     /// All file:// documents currently share one site bucket.
@@ -177,6 +255,20 @@ fn derive_site_key(url: &Url, initiator_site: Option<&SiteKey>) -> SiteKey
 
 ### 2.1 Network origins (`http`, `https`)
 
+Planned default (site-keyed / schemeful-site):
+
+```
+SiteKey::Site {
+  scheme: url.scheme().lowercase(),
+  registrable_domain: effective_registrable_domain(url.host_str()),
+}
+```
+
+where `effective_registrable_domain` is the host’s eTLD+1 (and for hosts without a registrable
+domain such as IP literals / `localhost`, it returns the host itself).
+
+Optional strict mode (origin-keyed):
+
 ```
 SiteKey::Origin {
   scheme: url.scheme().lowercase(),
@@ -191,6 +283,13 @@ All `file://` documents currently map to `SiteKey::File`.
 
 This is intentionally simple and matches FastRender’s current resource-origin behavior (see
 `DocumentOrigin::same_origin` in `src/resource.rs`).
+
+Security notes / rationale:
+
+- `file:` content often represents local secrets, and file reads should be brokered by the browser process.
+- `SiteKey::File` must **never** share a renderer process with network `SiteKey`s (`http(s)`).
+- If we later tighten `file:` origin semantics (e.g. make each `file:` navigation opaque/unique), update this section
+  and add tests so we don’t accidentally re-enable `file:`/web co-hosting.
 
 ### 2.3 `about:blank`
 
@@ -347,8 +446,13 @@ Rule (normative):
 
 Effects:
 
-- Navigating from `https://a.example/` → `https://b.example/` triggers a **process swap**.
-- Navigating within the same origin (including fragment-only changes) stays in-process.
+- Navigating from `https://a.test/` → `https://b.test/` (different `SiteKey`) triggers a **process swap**.
+- Navigating within the same `SiteKey` (including fragment-only changes) stays in-process.
+
+History note:
+
+- Once cross-site process swaps exist, the browser process must own session history; renderers can crash or be replaced
+  as part of navigation.
 
 ### 3.3 Iframe creation and navigation
 
@@ -367,42 +471,43 @@ Process assignment must observe these URL rules:
     in `src/paint/display_list_renderer/tests/display_list/iframe.rs`.)
 - Else: resolve `src` relative to the parent document base URL.
 
-#### 3.3.2 Same-origin iframe
+#### 3.3.2 Same-`SiteKey` iframe (in-process)
 
 Definition:
 
-- “Same-origin iframe” means `derive_site_key(iframe_url, Some(parent_site)) == parent_site`.
+- “Same-`SiteKey` iframe” means `derive_site_key(iframe_url, Some(parent_site)) == parent_site`.
   - This includes `about:blank` and `about:srcdoc` iframes (both inherit the parent).
 
 Rule (normative):
 
-- Same-origin iframes **must be in the same renderer process** as the parent frame.
+- Same-`SiteKey` iframes **must be in the same renderer process** as the parent frame.
 
 Reason:
-- Same-origin JS access requires shared memory and fast DOM access; keeping it in-process avoids
-  expensive cross-process plumbing for the “default web” case.
+- This is the direct expression of “process-per-`SiteKey`”: if two frames have the same `SiteKey`, they co-reside.
+- Note: same-origin scripting is determined by `OriginKey`, which is typically *stricter* than `SiteKey`. Sharing a
+  process does not make two documents same-origin; it only affects memory co-residency.
 
 Implementation note:
 - The browser still assigns a distinct `FrameId` (it’s a separate browsing context), but
   `FrameTree.process` for the child equals the parent’s process.
 
-#### 3.3.3 Cross-origin iframe (OOPIF)
+#### 3.3.3 Cross-`SiteKey` iframe (OOPIF)
 
 Definition:
 
-- “Cross-origin iframe” means `derive_site_key(iframe_url, Some(parent_site)) != parent_site`.
-  - This includes `data:` iframes, which are always opaque and therefore cross-origin.
+- “Cross-`SiteKey` iframe” means `derive_site_key(iframe_url, Some(parent_site)) != parent_site`.
+  - This includes `data:` iframes, which are always opaque and therefore cross-site.
 
 Rule (normative):
 
-- Cross-origin iframes **must be placed in a different renderer process**, assigned by the target
+- Cross-`SiteKey` iframes **must be placed in a different renderer process**, assigned by the target
   `SiteKey`.
-- Multiple cross-origin iframes with the same `SiteKey` may share the same renderer process (one
+- Multiple cross-`SiteKey` iframes with the same `SiteKey` may share the same renderer process (one
   process per SiteKey).
 
 Lifecycle note:
-- A cross-origin iframe can later navigate to the parent’s origin, at which point it becomes
-  same-site and may transition to the parent process (a subframe process swap).
+- A cross-`SiteKey` iframe can later navigate such that its derived `SiteKey` equals the parent’s, at which point it
+  becomes same-`SiteKey` and may transition to the parent process (a subframe process swap).
 
 ---
 
@@ -577,7 +682,8 @@ Write an integration harness that can:
 
 1. Start a browser process in headless mode.
 2. Start N renderer processes.
-3. Serve test pages from multiple origins (use distinct hostnames or ports).
+3. Serve test pages from multiple sites/origins.
+   - Prefer distinct hostnames/registrable domains; do not rely on port differences if the active `SiteKey` policy ignores ports.
 4. Assert observable state:
    - frame tree shape (FrameId parent/child),
    - `SiteKey` per frame,
@@ -586,7 +692,7 @@ Write an integration harness that can:
 Must-have cases:
 
 - Top-level `https://a` with cross-origin iframe `https://b` → different renderer processes.
-- Same-origin iframe `https://a` inside `https://a` → same renderer process.
+- Same-`SiteKey` iframe `https://a` inside `https://a` → same renderer process.
 - `srcdoc` iframe inherits parent process.
 - `data:` iframe gets its own `Opaque` site and therefore a separate process.
 
@@ -619,9 +725,9 @@ Document inserts <iframe src="https://b.test/">
 ```
 
 Expected:
-- Root frame `SiteKey = a` → process `P(a)`
-- Child frame `SiteKey = b` → process `P(b)`
-- Browser compositor embeds `P(b)` surface into `P(a)` output at the iframe content box.
+- Root frame `SiteKey = a.test` → process `P(a.test)`
+- Child frame `SiteKey = b.test` → process `P(b.test)`
+- Browser compositor embeds `P(b.test)` surface into `P(a.test)` output at the iframe content box.
 
 ### Example B: missing `src` defaults to `about:blank`
 
@@ -631,7 +737,7 @@ https://a.test/ contains <iframe></iframe>
 
 Expected:
 - Iframe URL is `about:blank`
-- `about:blank` inherits `a` → iframe runs in `P(a)` (same process as parent)
+- `about:blank` inherits `a.test` → iframe runs in `P(a.test)` (same process as parent)
 
 ### Example C: `data:` iframe
 
@@ -641,5 +747,28 @@ https://a.test/ contains <iframe src="data:text/html,hello"></iframe>
 
 Expected:
 - Iframe `SiteKey = Opaque(x)` → process `P(Opaque(x))`
-- Cross-origin relative to parent, therefore OOPIF
-- If process quota prevents creating `P(Opaque(x))`, navigation fails; do not reuse `P(a)`.
+- Cross-`SiteKey` relative to parent, therefore OOPIF
+- If process quota prevents creating `P(Opaque(x))`, navigation fails; do not reuse `P(a.test)`.
+
+---
+
+## 8) Security notes (what this protects / what it doesn’t)
+
+### Protects against
+
+- **Renderer compromise containment**:
+  - process-per-tab (MVP) prevents a compromised renderer from reading memory/state belonging to other tabs.
+  - process-per-`SiteKey` (future) additionally prevents cross-site memory observation within a single tab over time
+    (via process swaps).
+- **Spectre-style cross-site attacks** (once per-site isolation is implemented): reducing cross-site co-residency reduces
+  the value of microarchitectural side channels.
+- **Stability**: a renderer crash only takes down the frames/tabs hosted in that renderer process.
+
+### Does not protect against
+
+- Bugs in the **browser process** or in IPC validation (the browser remains trusted and high-value).
+- Same-site attacks: if multiple origins map to the same `SiteKey`, they can still observe each other via shared-process
+  memory if co-hosted.
+- Side channels that cross process boundaries (timing attacks, shared OS resources) without additional mitigations.
+- Network/transport-layer attacks (TLS validation, request smuggling, etc.)—handled by the network stack and the
+  browser’s security checks.
