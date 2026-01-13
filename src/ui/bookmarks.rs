@@ -2427,4 +2427,75 @@ mod tests {
     assert_eq!(global, win_a);
     assert_eq!(win_b, win_a);
   }
+
+  #[test]
+  fn reorder_root_with_deltas_uses_compact_delta_for_single_move() {
+    let mut store = BookmarkStore::default();
+    let a = store
+      .add("https://a.example/".to_string(), Some("A".to_string()), None)
+      .unwrap();
+    let b = store
+      .add("https://b.example/".to_string(), Some("B".to_string()), None)
+      .unwrap();
+    let c = store
+      .add("https://c.example/".to_string(), Some("C".to_string()), None)
+      .unwrap();
+    let d = store
+      .add("https://d.example/".to_string(), Some("D".to_string()), None)
+      .unwrap();
+
+    let mut deltas = Vec::new();
+    store
+      .reorder_root_with_deltas(&[a, c, d, b], &mut deltas)
+      .unwrap();
+
+    assert_eq!(
+      deltas,
+      vec![BookmarkDelta::ReorderAfter {
+        id: b,
+        parent: None,
+        after_id: d
+      }],
+      "expected compact reorder delta"
+    );
+
+    let mut other = BookmarkStore::default();
+    // Mirror the pre-reorder state by replaying the corresponding creation deltas.
+    let mut bootstrap = Vec::new();
+    other
+      .add_with_deltas(
+        "https://a.example/".to_string(),
+        Some("A".to_string()),
+        None,
+        &mut bootstrap,
+      )
+      .unwrap();
+    other
+      .add_with_deltas(
+        "https://b.example/".to_string(),
+        Some("B".to_string()),
+        None,
+        &mut bootstrap,
+      )
+      .unwrap();
+    other
+      .add_with_deltas(
+        "https://c.example/".to_string(),
+        Some("C".to_string()),
+        None,
+        &mut bootstrap,
+      )
+      .unwrap();
+    other
+      .add_with_deltas(
+        "https://d.example/".to_string(),
+        Some("D".to_string()),
+        None,
+        &mut bootstrap,
+      )
+      .unwrap();
+
+    other.apply_deltas(&deltas).unwrap();
+    assert_eq!(other.roots, vec![a, c, d, b]);
+  }
 }
