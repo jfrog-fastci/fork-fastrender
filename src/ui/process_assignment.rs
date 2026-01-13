@@ -256,6 +256,46 @@ impl ProcessAssignmentState {
     events
   }
 
+  /// Handle a renderer process exiting unexpectedly (crash/termination).
+  ///
+  /// This detaches all tabs currently mapped to `process`, clears process/site bookkeeping so future
+  /// assignments can recreate a replacement process, and returns the affected tabs in sorted order.
+  ///
+  /// If `process` is unknown to the state machine, this is a no-op and returns an empty vector.
+  pub fn handle_process_exit(&mut self, process: RendererProcessId) -> Vec<TabId> {
+    let mut affected_tabs: Vec<TabId> = self
+      .tab_to_process
+      .iter()
+      .filter_map(|(&tab_id, &pid)| (pid == process).then_some(tab_id))
+      .collect();
+
+    for tab_id in &affected_tabs {
+      self.tab_to_process.remove(tab_id);
+    }
+
+    self.process_refcount.remove(&process);
+
+    if let Some(site) = self.process_to_site.remove(&process) {
+      if self.site_to_process.get(&site).copied() == Some(process) {
+        self.site_to_process.remove(&site);
+      }
+    }
+
+    // Defensive cleanup: `process_to_site` is the authoritative reverse map, but ensure we remove
+    // any stray values even if invariants were already violated.
+    let stale_sites: Vec<SiteKey> = self
+      .site_to_process
+      .iter()
+      .filter_map(|(site, &pid)| (pid == process).then(|| site.clone()))
+      .collect();
+    for site in stale_sites {
+      self.site_to_process.remove(&site);
+    }
+
+    affected_tabs.sort_by_key(|tab| tab.0);
+    affected_tabs
+  }
+
   pub fn site_for_process(&self, process: RendererProcessId) -> Option<&SiteKey> {
     self.site_lock(process)
   }
@@ -435,5 +475,58 @@ mod tests {
     assert!(state.process_refcount.get(&proc).is_none());
     assert!(state.process_to_site.get(&proc).is_none());
     assert!(state.site_to_process.is_empty());
+  }
+
+  #[test]
+  fn per_tab_process_exit_detaches_only_affected_tab() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerTab);
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+
+    let (proc_a, _events_a) = state.attach_tab(tab_a, "https://a.example/").unwrap();
+    let (proc_b, _events_b) = state.attach_tab(tab_b, "https://b.example/").unwrap();
+
+    assert_ne!(proc_a, proc_b);
+    assert_eq!(state.process_for_tab(tab_a), Some(proc_a));
+    assert_eq!(state.process_for_tab(tab_b), Some(proc_b));
+
+    let affected = state.handle_process_exit(proc_a);
+    assert_eq!(affected, vec![tab_a]);
+
+    assert_eq!(state.process_for_tab(tab_a), None);
+    assert_eq!(state.process_for_tab(tab_b), Some(proc_b));
+    assert!(state.process_refcount.get(&proc_a).is_none());
+    assert!(state.process_to_site.get(&proc_a).is_none());
+
+    // Closing a crashed tab should be safe/no-op.
+    assert!(state.detach_tab(tab_a).is_empty());
+  }
+
+  #[test]
+  fn per_site_key_process_exit_detaches_all_tabs_and_clears_site_mapping() {
+    let mut state = ProcessAssignmentState::new(ProcessModel::PerSiteKey);
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+
+    let (proc_a, _events_a) = state.attach_tab(tab_a, "https://example.com/").unwrap();
+    let (proc_b, _events_b) = state
+      .attach_tab(tab_b, "https://example.com/some/path")
+      .unwrap();
+
+    assert_eq!(proc_a, proc_b);
+    assert_eq!(state.site_to_process.get(&site("https://example.com/")).copied(), Some(proc_a));
+
+    let affected = state.handle_process_exit(proc_a);
+    assert_eq!(affected, vec![tab_a, tab_b]);
+
+    assert_eq!(state.process_for_tab(tab_a), None);
+    assert_eq!(state.process_for_tab(tab_b), None);
+    assert!(state.process_refcount.get(&proc_a).is_none());
+    assert!(state.process_to_site.get(&proc_a).is_none());
+    assert!(state.site_to_process.is_empty());
+
+    // Detaching after a crash should be safe/no-op.
+    assert!(state.detach_tab(tab_a).is_empty());
+    assert!(state.detach_tab(tab_b).is_empty());
   }
 }
