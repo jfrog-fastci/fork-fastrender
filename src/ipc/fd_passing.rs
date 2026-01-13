@@ -5,11 +5,15 @@
 //! - It treats `MSG_CTRUNC` as a hard error.
 //! - It validates ancillary data layout before reading it.
 //! - It closes any received file descriptors on error to avoid leaks.
+//! - On Linux/Android, it uses `recvmsg(MSG_CMSG_CLOEXEC)` so received descriptors are atomically
+//!   marked `FD_CLOEXEC` (no exec-race FD leaks).
 
 use std::io;
 
 #[cfg(unix)]
 use std::os::unix::io::{OwnedFd, RawFd};
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+use std::os::unix::io::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::io::FromRawFd;
 
@@ -206,9 +210,14 @@ fn recv_msg_inner(
     msg_flags: 0,
   };
 
+  #[cfg(any(target_os = "linux", target_os = "android"))]
+  let recv_flags = libc::MSG_CMSG_CLOEXEC;
+  #[cfg(not(any(target_os = "linux", target_os = "android")))]
+  let recv_flags = 0;
+
   // SAFETY: `recvmsg` writes into the provided iovec + control buffers. All pointers remain valid
   // for the duration of the call.
-  let read_len = unsafe { libc::recvmsg(sock_fd, &mut hdr, 0) };
+  let read_len = unsafe { libc::recvmsg(sock_fd, &mut hdr, recv_flags) };
   if read_len < 0 {
     return Err(RecvMsgError::Io(io::Error::last_os_error()));
   }
@@ -231,7 +240,21 @@ fn recv_msg_inner(
       return Err(RecvMsgError::InvalidFd { fd });
     }
     // SAFETY: fds returned in SCM_RIGHTS are newly-created, owned by this process.
-    owned_fds.push(unsafe { OwnedFd::from_raw_fd(fd) });
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+      let flags = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_GETFD) };
+      if flags < 0 {
+        return Err(RecvMsgError::Io(io::Error::last_os_error()));
+      }
+      if (flags & libc::FD_CLOEXEC) == 0 {
+        let rc = unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+        if rc < 0 {
+          return Err(RecvMsgError::Io(io::Error::last_os_error()));
+        }
+      }
+    }
+    owned_fds.push(owned);
   }
 
   // On any error after this point, dropping `owned_fds` closes all received descriptors.
@@ -365,6 +388,36 @@ mod fd_passing_edge_cases {
       Some(libc::EPIPE),
       "expected EPIPE, got {err:?}"
     );
+  }
+
+  #[test]
+  fn received_fds_are_cloexec() {
+    let (sender, receiver) = UnixDatagram::pair().expect("socketpair");
+
+    let mut fds = [0; 2];
+    // SAFETY: `pipe2` writes two fds on success.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), 0) };
+    assert_eq!(rc, 0, "pipe2 failed: {}", io::Error::last_os_error());
+    // SAFETY: pipe2 returns owned fds.
+    let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+
+    send_fds(&sender, b"z", &[read.as_raw_fd()]);
+    drop(read);
+
+    let msg = recv_msg(receiver.as_raw_fd(), 1).expect("recv_msg");
+    assert_eq!(msg.fds.len(), 1);
+    let got = msg.fds[0].as_raw_fd();
+
+    let flags = unsafe { libc::fcntl(got, libc::F_GETFD) };
+    assert!(flags >= 0, "fcntl(F_GETFD) failed: {}", io::Error::last_os_error());
+    assert_ne!(
+      flags & libc::FD_CLOEXEC,
+      0,
+      "expected received fd to have FD_CLOEXEC set"
+    );
+
+    drop(msg);
+    drop(write);
   }
 
   #[test]

@@ -332,19 +332,19 @@ Security invariants:
      - stored in a clearly-owned structure, or
      - closed before returning from the receive handler.
 6. **CLOEXEC everywhere.**
-   - Create sockets with `SOCK_CLOEXEC` where possible.
-   - Prefer receiving FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
-     - Do not rely on a follow-up `fcntl(FD_CLOEXEC)` in another step (TOCTOU footgun).
-   - Repo reality:
-     - `src/ipc/ancillary.rs::recv_fd` uses `MSG_CMSG_CLOEXEC` on Linux for single-FD transfers.
-     - `src/ipc/frame_slots.rs` uses `MSG_CMSG_CLOEXEC` for seqpacket messages with FD sets.
-     - `src/ipc/fd_passing.rs` currently calls `recvmsg` with flags `0` (no `MSG_CMSG_CLOEXEC`), so
-       call sites must ensure received FDs are CLOEXEC or upgrade the helper.
+    - Create sockets with `SOCK_CLOEXEC` where possible.
+    - Prefer receiving FDs with `recvmsg(MSG_CMSG_CLOEXEC)` so `FD_CLOEXEC` is applied **atomically**.
+      - Do not rely on a follow-up `fcntl(FD_CLOEXEC)` in another step (TOCTOU footgun).
+    - Repo reality:
+      - `src/ipc/ancillary.rs::recv_fd` uses `MSG_CMSG_CLOEXEC` on Linux for single-FD transfers.
+      - `src/ipc/frame_slots.rs` uses `MSG_CMSG_CLOEXEC` for seqpacket messages with FD sets.
+      - `src/ipc/fd_passing.rs` uses `MSG_CMSG_CLOEXEC` on Linux/Android and sets `FD_CLOEXEC`
+        best-effort on other Unix platforms.
 7. **Include at least one byte of real payload data when sending FDs.**
-   - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
-     “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
-     include at least one byte of non-ancillary data.
-   - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
+    - On Linux, `SCM_RIGHTS` control messages are associated with a received datagram/packet. Sending
+      “FD-only” control messages without accompanying payload bytes is a well-known footgun; always
+      include at least one byte of non-ancillary data.
+    - See also: [ipc_linux_fd_passing.md](ipc_linux_fd_passing.md).
 
 Why this matters:
 

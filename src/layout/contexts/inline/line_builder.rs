@@ -1694,6 +1694,7 @@ impl TextItem {
         .saturating_sub(1)
         .min(run.glyphs.len().saturating_sub(1));
       let glyph = &mut run.glyphs[glyph_idx];
+      let glyph = &mut run.glyphs[glyph_idx];
 
       match axis {
         InlineAxis::Horizontal => {
