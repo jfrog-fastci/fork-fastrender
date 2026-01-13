@@ -203,3 +203,77 @@ fn for_of_body_const_is_instantiated_per_iteration() -> Result<(), VmError> {
   assert_eq!(value, Value::Bool(true));
   Ok(())
 }
+
+#[test]
+fn for_body_let_closure_captures_per_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var fns = [];
+      for (var i = 0; i < 3; ++i) {
+        let x = i;
+        fns.push(function() { return x; });
+      }
+      fns[0]() === 0 && fns[1]() === 1 && fns[2]() === 2
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn for_in_body_let_closure_captures_per_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var obj = { a: 1, b: 2 };
+      var fns = [];
+      for (var k in obj) {
+        let x = k;
+        fns.push(function() { return x; });
+      }
+      var r0 = fns[0]();
+      var r1 = fns[1]();
+      (r0 === "a" && r1 === "b") || (r0 === "b" && r1 === "a")
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn for_of_body_let_closure_captures_per_iteration() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      var fns = [];
+      for (var v of [0, 1, 2]) {
+        let x = v;
+        fns.push(function() { return x; });
+      }
+      fns[0]() === 0 && fns[1]() === 1 && fns[2]() === 2
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn for_body_restores_lex_env_on_throw() -> Result<(), VmError> {
+  let mut rt = new_runtime();
+  let value = rt.exec_script(
+    r#"
+      (function(x) {
+        try {
+          for (var i = 0; i < 10; ++i) {
+            let x = "inner" + i;
+            throw i;
+          }
+        } catch (e) {}
+        return x === "outer";
+      })("outer")
+    "#,
+  )?;
+  assert_eq!(value, Value::Bool(true));
+  Ok(())
+}
