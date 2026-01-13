@@ -2484,26 +2484,39 @@ fn make_idle_deadline_object(
   //
   // Preserve determinism/safety by only consulting own *data* properties (no getters, no proxies),
   // walking the prototype chain manually.
+  let own_data_value = |obj: vm_js::GcObject, key: &PropertyKey| -> Result<Option<Value>, VmError> {
+    match scope.heap().object_get_own_data_property_value(obj, key) {
+      Ok(value) => Ok(value),
+      // Best-effort: ignore non-data properties so we don't trip over user-installed getters.
+      Err(VmError::PropertyNotData) => Ok(None),
+      Err(err) => Err(err),
+    }
+  };
   let idle_deadline_ctor_key = alloc_key(&mut scope, "IdleDeadline")?;
   let mut cursor = Some(global_obj);
   let idle_deadline_ctor = loop {
     let Some(obj) = cursor else { break None };
-    if let Some(Value::Object(ctor)) = scope
-      .heap()
-      .object_get_own_data_property_value(obj, &idle_deadline_ctor_key)?
-    {
+    if let Some(Value::Object(ctor)) = own_data_value(obj, &idle_deadline_ctor_key)? {
       break Some(ctor);
     }
-    cursor = scope.object_get_prototype(obj)?;
+    cursor = match scope.object_get_prototype(obj) {
+      Ok(next) => next,
+      // Best-effort: if the prototype chain is hostile (revoked Proxy, cycle, etc.), fall back to a
+      // plain object rather than throwing from requestIdleCallback.
+      Err(VmError::OutOfMemory) => return Err(VmError::OutOfMemory),
+      Err(_) => break None,
+    };
   };
   if let Some(idle_deadline_ctor) = idle_deadline_ctor {
     scope.push_root(Value::Object(idle_deadline_ctor))?;
     let prototype_key = alloc_key(&mut scope, "prototype")?;
-    if let Some(Value::Object(proto)) = scope
-      .heap()
-      .object_get_own_data_property_value(idle_deadline_ctor, &prototype_key)?
-    {
-      scope.heap_mut().object_set_prototype(obj, Some(proto))?;
+    if let Some(Value::Object(proto)) = own_data_value(idle_deadline_ctor, &prototype_key)? {
+      if let Err(err) = scope.heap_mut().object_set_prototype(obj, Some(proto)) {
+        // Best-effort: ignore hostile prototype chains.
+        if matches!(err, VmError::OutOfMemory) {
+          return Err(err);
+        }
+      }
     }
   }
 
@@ -3202,6 +3215,37 @@ mod tests {
 
     host.run_until_idle(RunLimits::unbounded())?;
 
+    let ok = host.exec_script("globalThis.__ok")?;
+    assert_eq!(ok, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn request_idle_callback_deadline_prototype_lookup_is_best_effort() -> crate::error::Result<()> {
+    let dom = crate::dom2::parse_html("<!doctype html><html><body></body></html>")?;
+    let mut host = crate::js::WindowHost::new(dom, "https://example.com/")?;
+
+    host.exec_script(
+      r#"
+      globalThis.__called = false;
+      globalThis.__ok = false;
+      Object.defineProperty(globalThis, 'IdleDeadline', {
+        get() {
+          globalThis.__called = true;
+          throw new Error('getter should not be invoked');
+        },
+        configurable: true,
+      });
+      requestIdleCallback(() => {
+        globalThis.__ok = true;
+      });
+      "#,
+    )?;
+
+    host.run_until_idle(RunLimits::unbounded())?;
+
+    let called = host.exec_script("globalThis.__called")?;
+    assert_eq!(called, Value::Bool(false));
     let ok = host.exec_script("globalThis.__ok")?;
     assert_eq!(ok, Value::Bool(true));
     Ok(())
