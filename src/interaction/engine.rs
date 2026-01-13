@@ -116,6 +116,10 @@ pub enum KeyAction {
   ArrowRight,
   WordLeft,
   WordRight,
+  /// Move caret left by one word boundary, extending selection (Ctrl/Cmd/Alt+Shift+ArrowLeft).
+  WordSelectLeft,
+  /// Move caret right by one word boundary, extending selection (Ctrl/Cmd/Alt+Shift+ArrowRight).
+  WordSelectRight,
   ShiftArrowLeft,
   ShiftArrowRight,
   ArrowUp,
@@ -7884,9 +7888,17 @@ impl InteractionEngine {
             }
           }
         }
-        KeyAction::WordLeft | KeyAction::WordRight => {
-          let move_left = matches!(key, KeyAction::WordLeft);
-          if let Some((start, end)) = edit.selection() {
+        KeyAction::WordLeft
+        | KeyAction::WordRight
+        | KeyAction::WordSelectLeft
+        | KeyAction::WordSelectRight => {
+          let move_left = matches!(key, KeyAction::WordLeft | KeyAction::WordSelectLeft);
+          let extend_selection =
+            matches!(key, KeyAction::WordSelectLeft | KeyAction::WordSelectRight);
+
+          if let Some((start, end)) = edit.selection().filter(|_| !extend_selection) {
+            // When a selection exists and Shift is *not* held, collapse to the edge in the direction
+            // of travel before moving further (matching native behaviour).
             let (next, next_affinity) = if move_left {
               (start, CaretAffinity::Downstream)
             } else {
@@ -7912,10 +7924,10 @@ impl InteractionEngine {
               edit.set_caret_with_affinity_and_maybe_extend_selection(
                 next,
                 edit.caret_affinity,
-                false,
+                extend_selection,
               );
             } else {
-              edit.set_caret_and_maybe_extend_selection(next, false);
+              edit.set_caret_and_maybe_extend_selection(next, extend_selection);
             }
           }
         }
@@ -8565,6 +8577,8 @@ impl InteractionEngine {
       | KeyAction::ArrowRight
       | KeyAction::WordLeft
       | KeyAction::WordRight
+      | KeyAction::WordSelectLeft
+      | KeyAction::WordSelectRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
       | KeyAction::ShiftHome
@@ -9015,6 +9029,8 @@ impl InteractionEngine {
       | KeyAction::ArrowRight
       | KeyAction::WordLeft
       | KeyAction::WordRight
+      | KeyAction::WordSelectLeft
+      | KeyAction::WordSelectRight
       | KeyAction::ShiftArrowLeft
       | KeyAction::ShiftArrowRight
       | KeyAction::ShiftHome

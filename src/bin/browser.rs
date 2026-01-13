@@ -9921,26 +9921,32 @@ impl App {
           return;
         }
 
-        if !self.modifiers.shift() {
-          let word_mod = if cfg!(target_os = "macos") {
-            alt_only
-          } else {
-            self.modifiers.ctrl() && !self.modifiers.alt()
-          };
-          if word_mod && matches!(key, VirtualKeyCode::Left) {
-            self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
-              tab_id,
-              key: fastrender::interaction::KeyAction::WordLeft,
-            });
-            return;
-          }
-          if word_mod && matches!(key, VirtualKeyCode::Right) {
-            self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
-              tab_id,
-              key: fastrender::interaction::KeyAction::WordRight,
-            });
-            return;
-          }
+        let word_mod = if cfg!(target_os = "macos") {
+          alt_only
+        } else {
+          self.modifiers.ctrl() && !self.modifiers.alt()
+        };
+        if word_mod && matches!(key, VirtualKeyCode::Left) {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: if self.modifiers.shift() {
+              fastrender::interaction::KeyAction::WordSelectLeft
+            } else {
+              fastrender::interaction::KeyAction::WordLeft
+            },
+          });
+          return;
+        }
+        if word_mod && matches!(key, VirtualKeyCode::Right) {
+          self.send_worker_msg(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: if self.modifiers.shift() {
+              fastrender::interaction::KeyAction::WordSelectRight
+            } else {
+              fastrender::interaction::KeyAction::WordRight
+            },
+          });
+          return;
         }
 
         let word_delete_mod = if cfg!(target_os = "macos") {

@@ -19,6 +19,15 @@ fn find_element_by_id<'a>(dom: &'a DomNode, element_id: &str) -> &'a DomNode {
   panic!("expected element with id={element_id:?}");
 }
 
+fn node_id_by_id_attr(dom: &DomNode, element_id: &str) -> usize {
+  let node = find_element_by_id(dom, element_id);
+  let ids = fastrender::dom::enumerate_dom_ids(dom);
+  ids
+    .get(&(node as *const DomNode))
+    .copied()
+    .unwrap_or_else(|| panic!("expected preorder id for element with id={element_id:?}"))
+}
+
 fn insert_at_char_idx(original: &str, idx: usize, insert: &str) -> String {
   let mut out = String::with_capacity(original.len().saturating_add(insert.len()));
   out.extend(original.chars().take(idx));
@@ -363,6 +372,130 @@ fn word_left_moves_by_word_and_typing_inserts_at_word_boundary() -> Result<()> {
 
   let input = find_element_by_id(controller.document().dom(), "txt");
   assert_eq!(input.get_attribute_ref("value"), Some("hello Xworld"));
+  Ok(())
+}
+
+#[test]
+fn word_shift_arrow_extends_selection_by_word_in_input() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #txt { position: absolute; left: 0; top: 0; width: 280px; height: 40px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <input id="txt" value="hello world">
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the input.
+  let click = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Move caret to the start of "world".
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordRight))?;
+
+  // Ctrl/Cmd/Alt+Shift+ArrowRight: select the next word ("world").
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectRight))?;
+  let input_id = node_id_by_id_attr(controller.document().dom(), "txt");
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(input_id)
+    .expect("expected text edit state for input");
+  assert_eq!(edit.selection, Some((6, 11)));
+
+  // Collapse back to the word start, then select the previous word.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectLeft))?;
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(input_id)
+    .expect("expected text edit state for input");
+  assert_eq!(edit.selection, Some((0, 6)));
+
+  Ok(())
+}
+
+#[test]
+fn word_shift_arrow_extends_selection_by_word_in_textarea() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (400, 160);
+  let url = "https://example.com/index.html";
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #ta { position: absolute; left: 0; top: 0; width: 280px; height: 80px; font-family: "Noto Sans Mono"; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <textarea id="ta">hello world</textarea>
+      </body>
+    </html>
+  "#;
+
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    support::deterministic_renderer(),
+    tab_id,
+    html,
+    url,
+    viewport_css,
+    1.0,
+  )?;
+  let _ = controller.handle_message(support::request_repaint(tab_id, RepaintReason::Explicit))?;
+
+  // Focus the textarea.
+  let click = (10.0, 20.0);
+  let _ = controller.handle_message(support::pointer_down(tab_id, click, PointerButton::Primary))?;
+  let _ = controller.handle_message(support::pointer_up(tab_id, click, PointerButton::Primary))?;
+
+  // Move caret to the start of "world".
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::Home))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordRight))?;
+
+  // Select the next word ("world").
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectRight))?;
+  let ta_id = node_id_by_id_attr(controller.document().dom(), "ta");
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(ta_id)
+    .expect("expected text edit state for textarea");
+  assert_eq!(edit.selection, Some((6, 11)));
+
+  // Collapse back to the word start, then select the previous word.
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::ArrowLeft))?;
+  let _ = controller.handle_message(support::key_action(tab_id, KeyAction::WordSelectLeft))?;
+  let edit = controller
+    .interaction_state()
+    .text_edit_for(ta_id)
+    .expect("expected text edit state for textarea");
+  assert_eq!(edit.selection, Some((0, 6)));
+
   Ok(())
 }
 
