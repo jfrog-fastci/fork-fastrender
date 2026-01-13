@@ -129,10 +129,18 @@ Avoid filesystem-backed UNIX sockets (paths under `/tmp`, etc.) inside the rende
 - they usually involve `bind(2)` / `connect(2)` / `listen(2)` / `accept(2)` which a renderer seccomp
   policy may intentionally block.
 
-FastRender’s Linux renderer seccomp sandbox is already oriented toward this style: it allows
-`socketpair(2)` for local IPC but denies many “network-like” socket syscalls. Prefer creating the
-socketpair in the browser (trusted) process and inheriting/passing the connected FD into the
-renderer before the sandbox is applied.
+FastRender’s Linux renderer seccomp sandbox supports this style, but it depends on the configured
+`NetworkPolicy`:
+
+- `NetworkPolicy::DenyAllSockets` (**default**) denies `socket(2)` and `socketpair(2)` entirely.
+  - In this mode, renderer-side code should generally rely on **inherited** Unix socket endpoints
+    from the browser (created before the sandbox is applied).
+- `NetworkPolicy::AllowUnixSocketsOnly` allows creating Unix-domain sockets (`AF_UNIX`) while still
+  denying AF_INET/AF_INET6/etc.
+  - Use this only when the renderer genuinely needs to create additional Unix sockets at runtime.
+
+In both cases, prefer creating the main `socketpair()` in the browser (trusted) process and
+inheriting/passing the connected FD into the renderer before the sandbox is applied.
 
 Note: FD passing itself requires `sendmsg(2)` / `recvmsg(2)` (for `SCM_RIGHTS`). If those syscalls
 are blocked by the renderer sandbox, either:
