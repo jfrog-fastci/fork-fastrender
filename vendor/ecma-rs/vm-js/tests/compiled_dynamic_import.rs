@@ -436,3 +436,75 @@ fn compiled_script_dynamic_import_works() -> Result<(), VmError> {
   Ok(())
 }
 
+#[test]
+fn compiled_function_dynamic_import_works() -> Result<(), VmError> {
+  let mut rt = new_runtime()?;
+
+  let m_record = SourceTextModuleRecord::parse(&mut rt.heap, "export const x = 1;")?;
+  let m = rt.modules_mut().add_module(m_record);
+
+  let mut hooks = SyncImportHooks::new();
+  hooks.register_module("m.js", m);
+
+  let script = CompiledScript::compile_script(
+    &mut rt.heap,
+    "test.js",
+    r#"
+      function f() {
+        return import('m.js');
+      }
+      var p = f();
+    "#,
+  )?;
+
+  let mut dummy_host = ();
+  rt.exec_compiled_script_with_host_and_hooks(&mut dummy_host, &mut hooks, script)?;
+
+  // Read `p` off the global object.
+  let promise_obj = {
+    let global = rt.realm().global_object();
+    let mut scope = rt.heap.scope();
+    let key = PropertyKey::from_string(scope.alloc_string("p")?);
+    let promise_value = scope.get_with_host_and_hooks(
+      &mut rt.vm,
+      &mut dummy_host,
+      &mut hooks,
+      global,
+      key,
+      Value::Object(global),
+    )?;
+    let Value::Object(obj) = promise_value else {
+      panic!("import() should assign a Promise object to global `p`");
+    };
+    assert_eq!(scope.heap().promise_state(obj)?, PromiseState::Pending);
+    obj
+  };
+
+  hooks.perform_microtask_checkpoint(&mut rt)?;
+
+  assert_eq!(rt.heap.promise_state(promise_obj)?, PromiseState::Fulfilled);
+  let ns_value = rt
+    .heap
+    .promise_result(promise_obj)?
+    .expect("fulfilled promise should have a result");
+  let Value::Object(ns_obj) = ns_value else {
+    panic!("dynamic import promise should fulfill to an object");
+  };
+
+  // Namespace should expose `x === 1`.
+  let mut scope = rt.heap.scope();
+  let x_key = PropertyKey::from_string(scope.alloc_string("x")?);
+  let x_value = scope.get_with_host_and_hooks(
+    &mut rt.vm,
+    &mut dummy_host,
+    &mut hooks,
+    ns_obj,
+    x_key,
+    Value::Object(ns_obj),
+  )?;
+  assert!(matches!(x_value, Value::Number(n) if n == 1.0));
+
+  drop(scope);
+  hooks.teardown_jobs(&mut rt);
+  Ok(())
+}
