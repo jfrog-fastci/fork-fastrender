@@ -777,6 +777,10 @@ fn bench_flex_measure_hot_path(c: &mut Criterion) {
   }
 
   let mut group = c.benchmark_group("layout_hotspots_flex_measure");
+  // Keep the overall measurement window bounded under the micro Criterion configuration.
+  // Linear sampling can choose an increasing iterations/sample schedule that exceeds the target
+  // time for these medium-weight layout passes.
+  group.sampling_mode(SamplingMode::Flat);
   group.bench_function("flex_layout_single_pass", |b| {
     b.iter(|| {
       let fragments = engine
