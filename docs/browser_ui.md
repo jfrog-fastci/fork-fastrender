@@ -891,6 +891,13 @@ For machine-readable UI responsiveness metrics (frame times during scroll/resize
 navigation TTFP), enable JSONL perf logging:
 
 ```bash
+# Convenience wrapper: runs under run_limited, sets FASTR_PERF_LOG=1, and tees stdout JSONL to a file.
+scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+```
+
+Manual invocation (equivalent, but requires setting env vars / output paths yourself):
+
+```bash
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser

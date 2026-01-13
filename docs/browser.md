@@ -187,6 +187,9 @@ Most renderer debug knobs are environment variables; the canonical list is
 To capture machine-readable browser responsiveness metrics:
 
 ```bash
+scripts/capture_browser_perf_log.sh --url about:test-scroll --out target/browser_perf.jsonl
+
+# Manual invocation:
 FASTR_PERF_LOG=1 FASTR_PERF_LOG_OUT=target/browser_perf.jsonl \
   bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
