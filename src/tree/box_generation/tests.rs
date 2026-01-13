@@ -3361,6 +3361,53 @@ fn video_src_prefers_source_type_prefix() {
 }
 
 #[test]
+fn video_src_prefers_source_type_with_codecs() {
+  let html = "<html><body><video>
+    <source src=\"fallback.mp4\">
+    <source src=\"preferred.webm\" type=\"video/webm; codecs=vp9\">
+  </video></body></html>";
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  fn find_video_src(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+        return Some(src.clone());
+      }
+    }
+    node.children.iter().find_map(find_video_src)
+  }
+
+  assert_eq!(
+    find_video_src(&box_tree.root).as_deref(),
+    Some("preferred.webm")
+  );
+}
+
+#[test]
+fn video_src_prefers_playable_source_type_by_can_play_type() {
+  let html = r#"<html><body><video>
+    <source src="bad.webm" type="video/webm; codecs=bogus">
+    <source src="good.mp4" type='video/mp4; codecs="avc1.42E01E, mp4a.40.2"'>
+  </video></body></html>"#;
+  let dom = crate::dom::parse_html(html).expect("parse");
+  let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+  let box_tree = generate_box_tree(&styled);
+
+  fn find_video_src(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+        return Some(src.clone());
+      }
+    }
+    node.children.iter().find_map(find_video_src)
+  }
+
+  assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("good.mp4"));
+}
+
+#[test]
 fn audio_src_prefers_source_type_prefix() {
   let html = "<html><body><audio controls>
     <source src=\"wrong.mp3\" type=\"video/mp4\">

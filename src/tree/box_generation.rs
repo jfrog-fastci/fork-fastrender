@@ -7651,107 +7651,6 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
   is_supported_object_mime(type_attr)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MediaElementKind {
-  Video,
-  Audio,
-}
-
-fn media_src_is_unusable(src: &str) -> bool {
-  let trimmed = trim_ascii_whitespace(src);
-  if trimmed.is_empty() || trimmed.starts_with('#') {
-    return true;
-  }
-  const ABOUT_BLANK: &str = "about:blank";
-  if trimmed
-    .get(..ABOUT_BLANK.len())
-    .is_some_and(|head| head.eq_ignore_ascii_case(ABOUT_BLANK))
-  {
-    return matches!(
-      trimmed.as_bytes().get(ABOUT_BLANK.len()),
-      None | Some(b'#') | Some(b'?')
-    );
-  }
-  false
-}
-
-fn media_src_from_source_children(
-  styled: &StyledNode,
-  kind: MediaElementKind,
-  media_ctx: Option<&MediaContext>,
-) -> Option<String> {
-  let preferred_prefix = match kind {
-    MediaElementKind::Video => "video/",
-    MediaElementKind::Audio => "audio/",
-  };
-
-  let mut first_any: Option<String> = None;
-  for child in &styled.children {
-    let Some(tag) = child.node.tag_name() else {
-      continue;
-    };
-    if !tag.eq_ignore_ascii_case("source") {
-      continue;
-    }
-
-    let Some(src_attr) = child.node.get_attribute_ref("src") else {
-      continue;
-    };
-    let src_trimmed = trim_ascii_whitespace(src_attr);
-    if src_trimmed.is_empty() {
-      continue;
-    }
-
-    if let Some(media_attr) = child.node.get_attribute_ref("media") {
-      let media_trimmed = trim_ascii_whitespace(media_attr);
-      if !media_trimmed.is_empty() {
-        if let Ok(queries) = MediaQuery::parse_list(media_trimmed) {
-          if let Some(media_ctx) = media_ctx {
-            if !media_ctx.evaluate_list(&queries) {
-              continue;
-            }
-          }
-        }
-      }
-    }
-
-    if first_any.is_none() {
-      first_any = Some(src_trimmed.to_string());
-    }
-
-    // Prefer sources whose type hints match the parent element. This preserves some semantics from
-    // HTML media selection without needing full codec/`media` evaluation.
-    if let Some(type_attr) = child.node.get_attribute_ref("type") {
-      let type_trimmed = trim_ascii_whitespace(type_attr);
-      if type_trimmed
-        .get(..preferred_prefix.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(preferred_prefix))
-      {
-        return Some(src_trimmed.to_string());
-      }
-    }
-  }
-
-  first_any
-}
-
-fn effective_media_src(
-  styled: &StyledNode,
-  kind: MediaElementKind,
-  media_ctx: Option<&MediaContext>,
-) -> String {
-  let src = styled
-    .node
-    .get_attribute_ref("src")
-    .map(trim_ascii_whitespace)
-    .unwrap_or("");
-  if !media_src_is_unusable(src) {
-    return src.to_string();
-  }
-
-  media_src_from_source_children(styled, kind, media_ctx).unwrap_or_default()
-}
-
 fn parse_html_dimension_attr(raw: Option<&str>) -> Option<f32> {
   // HTML "dimension" content attributes (e.g. `<img width>`, `<iframe height>`) are defined as
   // non-negative integers in *CSS pixels*.
@@ -7870,7 +7769,11 @@ fn create_replaced_box_from_styled(
     }
   } else if tag.eq_ignore_ascii_case("video") {
     let media_ctx = options.media_context();
-    let src = effective_media_src(styled, MediaElementKind::Video, media_ctx.as_ref());
+    let src = crate::html::media::effective_media_src(
+      styled,
+      crate::html::media::MediaElementKind::Video,
+      media_ctx.as_ref(),
+    );
     let mut poster = styled
       .node
       .get_attribute_ref("poster")
@@ -7893,7 +7796,11 @@ fn create_replaced_box_from_styled(
     }
   } else if tag.eq_ignore_ascii_case("audio") {
     let media_ctx = options.media_context();
-    let src = effective_media_src(styled, MediaElementKind::Audio, media_ctx.as_ref());
+    let src = crate::html::media::effective_media_src(
+      styled,
+      crate::html::media::MediaElementKind::Audio,
+      media_ctx.as_ref(),
+    );
     ReplacedType::Audio { src }
   } else if tag.eq_ignore_ascii_case("canvas") {
     ReplacedType::Canvas
