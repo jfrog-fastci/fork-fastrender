@@ -8086,6 +8086,72 @@ mod unit_tests {
   }
 
   #[test]
+  fn convolve_matrix_kernel_unit_length_scales_in_object_bounding_box_units() {
+    let cache = ImageCache::new();
+    let svg = |kernel_unit_length: Option<&str>| {
+      let ku_attr = kernel_unit_length
+        .map(|v| format!(" kernelUnitLength=\"{v}\""))
+        .unwrap_or_default();
+      format!(
+        "<svg xmlns='http://www.w3.org/2000/svg'>
+           <filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='objectBoundingBox'
+                   x='0' y='0' width='8' height='1' color-interpolation-filters='sRGB'>
+             <feConvolveMatrix order='2 1' kernelMatrix='0.5 0.5'{ku_attr} edgeMode='duplicate'/>
+           </filter>
+         </svg>"
+      )
+    };
+    let filter_step_1 =
+      parse_filter_definition(&svg(Some("0.125 1")), Some("f"), &cache).expect("filter");
+    let filter_step_2 =
+      parse_filter_definition(&svg(Some("0.25 1")), Some("f"), &cache).expect("filter");
+
+    // Source has a sharp edge: black, black, white, white, white, white, white, white.
+    let mut src = new_pixmap(8, 1).unwrap();
+    for x in 0..8 {
+      let v = if x < 2 { 0 } else { 255 };
+      src.pixels_mut()[x] = PremultipliedColorU8::from_rgba(v, v, v, 255).unwrap();
+    }
+    let bbox = Rect::from_xywh(0.0, 0.0, 8.0, 1.0);
+
+    let mut out_step_1 = src.clone();
+    apply_svg_filter(filter_step_1.as_ref(), &mut out_step_1, 1.0, bbox).unwrap();
+    let mut out_step_2 = src.clone();
+    apply_svg_filter(filter_step_2.as_ref(), &mut out_step_2, 1.0, bbox).unwrap();
+
+    let px_step_1 = out_step_1.pixel(0, 0).unwrap();
+    let px_step_2 = out_step_2.pixel(0, 0).unwrap();
+
+    assert_eq!(
+      (
+        px_step_1.red(),
+        px_step_1.green(),
+        px_step_1.blue(),
+        px_step_1.alpha()
+      ),
+      (0, 0, 0, 255),
+      "expected kernelUnitLength=0.125 to sample adjacent black pixel (0.125 * bbox_width=1px)"
+    );
+
+    // `primitiveUnits="objectBoundingBox"` means the x component of kernelUnitLength is relative to
+    // the bbox width. With bbox width 8 and kernelUnitLength x=0.25, we should sample 2px away
+    // (matching the earlier userSpaceOnUse test).
+    let expected = 128u8;
+    assert!(
+      (px_step_2.red() as i32 - expected as i32).abs() <= 1
+        && (px_step_2.green() as i32 - expected as i32).abs() <= 1
+        && (px_step_2.blue() as i32 - expected as i32).abs() <= 1,
+      "expected kernelUnitLength=0.25 in objectBoundingBox units to sample from white pixel two units away (got {:?})",
+      (
+        px_step_2.red(),
+        px_step_2.green(),
+        px_step_2.blue(),
+        px_step_2.alpha()
+      )
+    );
+  }
+
+  #[test]
   fn convolve_matrix_respects_cancel_callback() {
     let (deadline, calls) = deadline_after_first_check();
     let pixmap = new_pixmap(1, 1).unwrap();
