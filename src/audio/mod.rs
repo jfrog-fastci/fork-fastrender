@@ -244,10 +244,27 @@ impl AudioMixer {
     let mut master = self.master.lock();
     let frames = out.len() / self.channels;
     for frame in 0..frames {
-      let gain = master.gain();
+      let gain_raw = master.gain();
+      let gain = if gain_raw.is_finite() && (gain_raw == 0.0 || gain_raw.is_normal()) {
+        gain_raw
+      } else {
+        0.0
+      };
       let base = frame * self.channels;
       for ch in 0..self.channels {
-        out[base + ch] *= gain;
+        let idx = base + ch;
+        let sample = out[idx];
+        let sample = if sample.is_finite() && (sample == 0.0 || sample.is_normal()) {
+          sample
+        } else {
+          0.0
+        };
+        let scaled = sample * gain;
+        out[idx] = if scaled.is_finite() && (scaled == 0.0 || scaled.is_normal()) {
+          scaled
+        } else {
+          0.0
+        };
       }
       master.advance_frame();
     }
@@ -443,14 +460,39 @@ impl AudioStreamInner {
     //   behaves like a stalled clock, not a drifting one).
     // - When paused, we return early above so we neither drain the queue nor advance the clock.
     for frame in 0..frames_to_mix {
-      let gain = state.volume.gain() * state.group_volume.gain();
+      let gain_raw = state.volume.gain() * state.group_volume.gain();
+      // Treat non-finite/denormal gains as silence so we never poison the mix. Still drain queued
+      // samples so muting/corruption does not behave like pausing.
+      let gain = if gain_raw.is_finite() && (gain_raw == 0.0 || gain_raw.is_normal()) {
+        gain_raw
+      } else {
+        0.0
+      };
       let out_base = frame * self.channels;
       for ch in 0..self.channels {
         // The queue length check above guarantees availability, but keep this robust.
         let Some(sample) = state.queue.pop_front() else {
           break;
         };
-        out[out_base + ch] += sample * gain;
+        // Avoid NaN poisoning / denormal slow paths by dropping non-normal samples before they
+        // reach the hot multiply/add loop.
+        if !sample.is_normal() {
+          continue;
+        }
+        if gain == 0.0 {
+          continue;
+        }
+        let scaled = sample * gain;
+        if !scaled.is_normal() {
+          continue;
+        }
+
+        let out_idx = out_base + ch;
+        let cur = out[out_idx];
+        if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+          out[out_idx] = 0.0;
+        }
+        out[out_idx] += scaled;
       }
       state.volume.advance_frame();
       state.group_volume.advance_frame();

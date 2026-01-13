@@ -100,6 +100,10 @@ impl AudioMixer {
         }
         let scaled = src * gain;
         if scaled.is_normal() {
+          let cur = *dst;
+          if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+            *dst = 0.0;
+          }
           *dst += scaled;
         }
       }
@@ -154,6 +158,10 @@ impl AudioMixer {
         }
         let scaled = src * gain;
         if scaled.is_normal() {
+          let cur = *dst;
+          if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+            *dst = 0.0;
+          }
           *dst += scaled;
         }
       }

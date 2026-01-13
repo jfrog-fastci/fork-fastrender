@@ -145,6 +145,13 @@ impl AudioRingBuffer {
         if sample.is_normal() {
           let scaled = sample * gain;
           if scaled.is_normal() {
+            // If earlier mixing produced a subnormal/NaN/Inf at this slot, reset it to silence
+            // before accumulating so it doesn't poison the rest of the mix and doesn't trigger
+            // denormal slow paths.
+            let cur = dst[i];
+            if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+              dst[i] = 0.0;
+            }
             dst[i] += scaled;
           }
         }
@@ -155,7 +162,12 @@ impl AudioRingBuffer {
         if sample.is_normal() {
           let scaled = sample * gain;
           if scaled.is_normal() {
-            dst[first + i] += scaled;
+            let idx = first + i;
+            let cur = dst[idx];
+            if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+              dst[idx] = 0.0;
+            }
+            dst[idx] += scaled;
           }
         }
       }
@@ -224,6 +236,10 @@ impl AudioRingBuffer {
           if sample.is_normal() {
             let scaled = sample * gain;
             if scaled.is_normal() {
+              let cur = dst[dst_idx];
+              if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+                dst[dst_idx] = 0.0;
+              }
               dst[dst_idx] += scaled;
             }
           }
@@ -246,7 +262,7 @@ impl AudioRingBuffer {
 
 #[cfg(test)]
 mod tests {
-  use super::AudioRingBuffer;
+  use super::{AudioRingBuffer, GainRamp};
 
   #[test]
   fn ring_buffer_roundtrip() {
@@ -283,6 +299,25 @@ mod tests {
     let mut out = vec![0.0; 3];
     rb.pop_add_into(&mut out, 1.0);
     assert_eq!(out, vec![0.0, 0.0, 1.0]);
+  }
+
+  #[test]
+  fn ring_buffer_ramped_mix_drops_nan_and_subnormal_samples() {
+    let rb = AudioRingBuffer::new(8);
+    let sub = f32::from_bits(1);
+    assert!(!sub.is_normal());
+    assert_eq!(rb.push(&[f32::NAN, sub, 1.0, 2.0]), 4);
+
+    let mut ramp = GainRamp {
+      current_gain: 1.0,
+      target_gain: 1.0,
+      step: 0.0,
+      frames_remaining: 0,
+    };
+
+    let mut out = vec![0.0; 4];
+    rb.pop_add_into_ramped(&mut out, 1, &mut ramp);
+    assert_eq!(out, vec![0.0, 0.0, 1.0, 2.0]);
   }
   #[test]
   fn ring_buffer_drains_when_gain_is_zero() {

@@ -227,6 +227,10 @@ impl MixerState {
         }
         let scaled = sample * gain;
         if scaled.is_normal() {
+          let cur = dst[i];
+          if !cur.is_finite() || (cur != 0.0 && !cur.is_normal()) {
+            dst[i] = 0.0;
+          }
           dst[i] += scaled;
         }
       }
