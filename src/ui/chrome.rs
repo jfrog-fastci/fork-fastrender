@@ -1396,10 +1396,23 @@ pub fn chrome_ui_with_bookmarks(
         },
       );
 
+      // Secondary-click on the address bar in display mode should open a context menu (Copy URL,
+      // etc.) without promoting the pill into edit mode.
+      //
+      // In egui, a pointer click can also assign keyboard focus. If the display pill receives focus
+      // it will be promoted into the `TextEdit` on the following frame (see `display_focus` above),
+      // which is not desired for a context-menu gesture. Explicitly surrender focus on secondary
+      // clicks to preserve the current UX (right click opens menu, primary click enters editing).
+      let context_menu_click = !show_text_edit_initial && bar_response.secondary_clicked();
+      if context_menu_click {
+        bar_response.surrender_focus();
+      }
+
       // When the address bar gains focus in display mode (e.g. via Tab), immediately open the real
       // text field so subsequent typing works (and so we don't drop a batched Tab+Text input frame).
       let activated_by_keyboard = keyboard_activate(ui, &bar_response);
       let activated_display_mode = !show_text_edit_initial
+        && !context_menu_click
         && (bar_response.clicked() || bar_response.has_focus() || activated_by_keyboard);
       if activated_display_mode {
         app.chrome.request_focus_address_bar = true;
@@ -2108,6 +2121,37 @@ pub fn chrome_ui_with_bookmarks(
         };
         bar_response = bar_response.on_hover_text(tooltip.clone());
         show_tooltip_on_focus(ui, &bar_response, tooltip.as_str());
+
+        // Address bar display-mode context menu (right click / context-menu key).
+        let can_copy_url = !active_url_trim.is_empty();
+        let copy_domain = can_copy_url
+          .then(|| Url::parse(active_url_trim).ok().and_then(|url| url.host_str().map(str::to_string)))
+          .flatten();
+        bar_response.context_menu(|ui| {
+          ui.set_min_width(140.0);
+
+          let copy_url_btn = ui.add_enabled(can_copy_url, egui::Button::new("Copy URL"));
+          copy_url_btn.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy URL")
+          });
+          if copy_url_btn.clicked() {
+            ui.ctx()
+              .output_mut(|o| o.copied_text = active_url_trim.to_string());
+            ui.close_menu();
+          }
+
+          let copy_domain_btn =
+            ui.add_enabled(copy_domain.is_some(), egui::Button::new("Copy domain"));
+          copy_domain_btn.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, "Copy domain")
+          });
+          if copy_domain_btn.clicked() {
+            if let Some(domain) = copy_domain.clone() {
+              ui.ctx().output_mut(|o| o.copied_text = domain);
+            }
+            ui.close_menu();
+          }
+        });
       }
       if let Some(response) = text_edit_response {
         // When the omnibox dropdown is open, keep keyboard focus in the address bar so keyboard
@@ -8159,6 +8203,50 @@ frame={idx} repaint_after={:?}\n",
       "expected address bar to be editing"
     );
     assert_address_bar_select_all(&ctx, address_bar_id, end);
+  }
+
+  #[test]
+  fn address_bar_display_mode_context_menu_copy_url_sets_clipboard_text() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    let url = "https://example.com/path".to_string();
+    app.push_tab(BrowserTabState::new(tab_id, url.clone()), true);
+    let ctx = egui::Context::default();
+
+    // Frame 0: render once so the chrome stores test rects.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+    let address_bar_rect = expect_temp_rect(&ctx, "chrome_address_bar_rect");
+
+    // Frame 1: right-click the address bar to open the context menu.
+    begin_frame(&ctx, right_click_at(address_bar_rect.center()));
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let _ = ctx.end_frame();
+    assert!(
+      !app.chrome.address_bar_has_focus && !app.chrome.address_bar_editing,
+      "expected right-click to keep the address bar in display mode"
+    );
+
+    // Frame 2: render again so the popup contents appear.
+    begin_frame(&ctx, Vec::new());
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let output = ctx.end_frame();
+
+    let copy_url_text_pos = find_text_pos(&output.shapes, "Copy URL").unwrap_or_else(|| {
+      let texts = collect_text_strings(&output.shapes);
+      panic!("expected Copy URL menu item; found texts: {texts:?}");
+    });
+
+    // Frame 3: click the "Copy URL" menu item.
+    begin_frame(
+      &ctx,
+      left_click_at(copy_url_text_pos + egui::vec2(1.0, 1.0)),
+    );
+    let _actions = chrome_ui_with_bookmarks(&ctx, &mut app, None, true, |_| None);
+    let output = ctx.end_frame();
+
+    assert_eq!(output.platform_output.copied_text, url);
   }
 
   #[test]
