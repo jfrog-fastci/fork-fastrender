@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 use super::clock::MediaClock;
+use super::DecodedAudioChunk;
 use crate::media::audio_clock::InterpolatedAudioClock;
 
 mod config;
@@ -58,6 +59,24 @@ pub use timed_queue::{PushError, ReadResult, TimedAudioQueue, TimedAudioSegment}
 
 pub use mixer::{AudioMixer, AudioStreamId, AudioStreamParams};
 pub use types::{AudioBuffer, AudioSamples, ChannelLayout, SampleFormat};
+
+impl From<DecodedAudioChunk> for TimedAudioSegment {
+  fn from(chunk: DecodedAudioChunk) -> Self {
+    Self {
+      start_pts: Duration::from_nanos(chunk.pts_ns),
+      samples: chunk.samples,
+      channels: chunk.channels,
+      sample_rate: chunk.sample_rate_hz,
+    }
+  }
+}
+
+impl TimedAudioQueue {
+  /// Convenience helper for pushing a decoded PCM chunk with an explicit PTS.
+  pub fn push_decoded_chunk(&mut self, chunk: DecodedAudioChunk) -> Result<(), PushError> {
+    self.push_segment(chunk.into())
+  }
+}
 
 /// Decoder-facing audio enqueue handle.
 ///
