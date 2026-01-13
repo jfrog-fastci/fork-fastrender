@@ -8116,12 +8116,20 @@ impl BrowserRuntime {
     }
   }
 
-  // Intentionally a helper (no `&self`) so it can be called while holding `tab: &mut TabState`
-  // borrowed from `self.tabs` without triggering borrow-checker errors (E0502).
-  fn sync_js_tab_for_committed_navigation(
+  // Intentionally a helper (no `&self`) so it can be called while borrowing `self.tabs` elsewhere
+  // without triggering borrow-checker errors (E0502).
+  //
+  // Navigates (or creates) the per-tab JS-capable `BrowserTab` to `committed_url`, then snapshots
+  // its `dom2` tree into the renderer document's `dom1` so parse-time `<script>` mutations can
+  // affect the first paint.
+  //
+  // Returns the renderer preorder → dom2 NodeId mapping (plus the JS DOM generation + effective
+  // base URL) when a JS DOM snapshot was produced.
+  fn navigate_js_tab_and_sync_dom_for_committed_navigation(
     runtime_toggles: &Arc<RuntimeToggles>,
     tab_id: TabId,
-    tab: &mut TabState,
+    js_tab: &mut Option<BrowserTab>,
+    doc: &mut BrowserDocument,
     committed_url: &str,
     viewport_css: (u32, u32),
     dpr: f32,
@@ -8129,7 +8137,7 @@ impl BrowserRuntime {
     cancel_callback: Option<Arc<crate::render_control::CancelCallback>>,
     debug_log_enabled: bool,
     msgs: &mut Vec<WorkerToUi>,
-  ) {
+  ) -> Option<(crate::dom2::RendererDomMapping, u64, Option<String>)> {
     fn prewarm_js_tab_renderer_preorder_mapping(
       tab_id: TabId,
       js_tab: &mut BrowserTab,
@@ -8174,34 +8182,14 @@ impl BrowserRuntime {
     // `BrowserTab` navigations are powered by the resource fetcher (http/file/data); it does not
     // know how to fetch internal `about:` pages rendered by the UI worker.
     if about_pages::is_about_url(committed_url) {
-      tab.js_tab = None;
-      tab.js_dom_mapping_generation = 0;
-      tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_log_last.clear();
-      tab.js_dom_dirty = false;
-      tab.js_dom_mutation_generation = 0;
-      return;
+      *js_tab = None;
+      return None;
     }
-    let Some(doc) = tab.document.as_ref() else {
-      tab.js_tab = None;
-      tab.js_dom_mapping_generation = 0;
-      tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_log_last.clear();
-      tab.js_dom_dirty = false;
-      tab.js_dom_mutation_generation = 0;
-      return;
-    };
 
     let cancel_check = cancel_callback.clone();
     // If the navigation has already been cancelled/preempted, avoid doing any JS work.
     if cancel_check.as_ref().is_some_and(|cb| cb()) {
-      tab.js_tab = None;
-      tab.js_dom_mapping_generation = 0;
-      tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_log_last.clear();
-      tab.js_dom_dirty = false;
-      tab.js_dom_mutation_generation = 0;
-      return;
+      return None;
     }
 
     let mut options = RenderOptions::default()
@@ -8215,66 +8203,43 @@ impl BrowserRuntime {
     let blank_html =
       "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
 
-    if let Some(js_tab) = tab.js_tab.as_mut() {
-      if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
-        let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
-        tab.js_tab = None;
-        tab.js_dom_mapping_generation = 0;
-        tab.js_dom_mapping = None;
-        tab.js_dom_mapping_miss_log_last.clear();
-        tab.js_dom_dirty = false;
-        tab.js_dom_mutation_generation = 0;
-        if debug_log_enabled && !cancelled {
-          let kind = if err.is_timeout() { "timed out" } else { "failed" };
-          msgs.push(WorkerToUi::DebugLog {
-            tab_id,
-            line: format!("js tab navigation to {committed_url} {kind}: {err}"),
-          });
-        }
-      } else {
-        tab.js_dom_dirty = false;
-        // Keep the JS tab's view state (scroll) in sync with the UI worker so DOM APIs like
-        // `document.elementFromPoint` reflect the same viewport as the rendered document.
-        js_tab.set_scroll_state(tab.scroll_state.clone());
-        tab.js_dom_mutation_generation = js_tab.dom().mutation_generation();
-        prewarm_js_tab_renderer_preorder_mapping(tab_id, js_tab, debug_log_enabled, msgs);
-      }
-      // Navigation replaces the JS document, invalidating any preorder→NodeId mapping cache.
-      tab.js_dom_mapping_generation = 0;
-      tab.js_dom_mapping = None;
-      tab.js_dom_mapping_miss_log_last.clear();
-      return;
-    }
-
     // We need to pass the (possibly deadline-bounded) `RenderOptions` into both:
     // - JS tab construction (which parses the initial HTML), and
     // - the subsequent navigation.
     //
     // This ensures JS-capable navigations are bounded by the same cooperative cancellation/timeout
     // mechanisms used for renderer navigations.
-    let mut js_tab = match BrowserTab::from_html_with_document_url_and_fetcher(
-      blank_html,
-      about_pages::ABOUT_BLANK,
-      options.clone(),
-      VmJsBrowserTabExecutor::default(),
-      fetcher,
-    ) {
-      Ok(tab) => tab,
-      Err(err) => {
-        let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
-        if debug_log_enabled && !cancelled {
-          let kind = if err.is_timeout() { "timed out" } else { "failed" };
-          msgs.push(WorkerToUi::DebugLog {
-            tab_id,
-            line: format!("js tab init for {committed_url} {kind}: {err}"),
-          });
+    if js_tab.is_none() {
+      let tab = match BrowserTab::from_html_with_document_url_and_fetcher(
+        blank_html,
+        about_pages::ABOUT_BLANK,
+        options.clone(),
+        VmJsBrowserTabExecutor::default(),
+        fetcher,
+      ) {
+        Ok(tab) => tab,
+        Err(err) => {
+          let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
+          if debug_log_enabled && !cancelled {
+            let kind = if err.is_timeout() { "timed out" } else { "failed" };
+            msgs.push(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("js tab init for {committed_url} {kind}: {err}"),
+            });
+          }
+          return None;
         }
-        return;
-      }
+      };
+      *js_tab = Some(tab);
+    }
+
+    let Some(tab) = js_tab.as_mut() else {
+      return None;
     };
 
-    if let Err(err) = js_tab.navigate_to_url(committed_url, options) {
+    if let Err(err) = tab.navigate_to_url(committed_url, options) {
       let cancelled = cancel_check.as_ref().is_some_and(|cb| cb());
+      *js_tab = None;
       if debug_log_enabled && !cancelled {
         let kind = if err.is_timeout() { "timed out" } else { "failed" };
         msgs.push(WorkerToUi::DebugLog {
@@ -8282,17 +8247,40 @@ impl BrowserRuntime {
           line: format!("js tab navigation to {committed_url} {kind}: {err}"),
         });
       }
-      return;
+      return None;
     }
-    js_tab.set_scroll_state(tab.scroll_state.clone());
-    prewarm_js_tab_renderer_preorder_mapping(tab_id, &mut js_tab, debug_log_enabled, msgs);
-    let generation = js_tab.dom().mutation_generation();
-    tab.js_tab = Some(js_tab);
-    tab.js_dom_mapping_generation = 0;
-    tab.js_dom_mapping = None;
-    tab.js_dom_mapping_miss_log_last.clear();
-    tab.js_dom_dirty = false;
-    tab.js_dom_mutation_generation = generation;
+
+    prewarm_js_tab_renderer_preorder_mapping(tab_id, tab, debug_log_enabled, msgs);
+
+    // Snapshot dom2 → dom1 so parse-time JS mutations are reflected in the first paint.
+    let dom2 = tab.dom();
+    let generation = dom2.mutation_generation();
+    let (mut dom_snapshot, mapping) =
+      match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let snapshot = dom2.to_renderer_dom_with_mapping();
+        (snapshot.dom, snapshot.mapping)
+      })) {
+        Ok(snapshot) => snapshot,
+        Err(_) => {
+          if debug_log_enabled {
+            msgs.push(WorkerToUi::DebugLog {
+              tab_id,
+              line: "panic while snapshotting JS DOM into renderer DOM".to_string(),
+            });
+          }
+          *js_tab = None;
+          return None;
+        }
+      };
+    dom2.project_form_control_state_into_renderer_dom_snapshot(&mut dom_snapshot, &mapping);
+    if !dom_tree_eq(doc.dom(), &dom_snapshot) {
+      doc.mutate_dom(|dom| {
+        *dom = dom_snapshot;
+        true
+      });
+    }
+    let new_base_url = crate::html::document_base_url(doc.dom(), Some(committed_url));
+    Some((mapping, generation, new_base_url))
   }
 
   // Run a single bounded JS "pump" after a navigation commits, then (best-effort) sync the JS DOM
@@ -8439,7 +8427,22 @@ impl BrowserRuntime {
 
     // Pull what we need out of `TabState` so we can release the borrow while running the expensive
     // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
-    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, cancel, doc, current_site_key) = {
+    let (
+      snapshot,
+      paint_snapshot,
+      viewport_css,
+      dpr,
+      initial_scroll,
+      cancel,
+      doc,
+      current_site_key,
+      js_tab,
+      js_dom_mapping_generation,
+      js_dom_mapping,
+      js_dom_mapping_miss_log_last,
+      js_dom_dirty,
+      js_dom_mutation_generation,
+    ) = {
       let tab = self.tabs.get_mut(&tab_id)?;
       let doc = tab.document.take();
       if doc.is_none() {
@@ -8457,8 +8460,20 @@ impl BrowserRuntime {
         tab.cancel.clone(),
         doc,
         tab.site_key.clone(),
+        tab.js_tab.take(),
+        std::mem::take(&mut tab.js_dom_mapping_generation),
+        tab.js_dom_mapping.take(),
+        std::mem::take(&mut tab.js_dom_mapping_miss_log_last),
+        std::mem::take(&mut tab.js_dom_dirty),
+        std::mem::take(&mut tab.js_dom_mutation_generation),
       )
     };
+    let mut js_tab = js_tab;
+    let mut js_dom_mapping_generation = js_dom_mapping_generation;
+    let mut js_dom_mapping = js_dom_mapping;
+    let mut js_dom_mapping_miss_log_last = js_dom_mapping_miss_log_last;
+    let mut js_dom_dirty = js_dom_dirty;
+    let mut js_dom_mutation_generation = js_dom_mutation_generation;
     // Capture the original URL before any redirects/mutations for history bookkeeping.
     let original_url = request.url.clone();
 
@@ -8473,6 +8488,12 @@ impl BrowserRuntime {
           };
           tab.loading = false;
           tab.pending_history_entry = false;
+          tab.js_tab = js_tab;
+          tab.js_dom_mapping_generation = js_dom_mapping_generation;
+          tab.js_dom_mapping = js_dom_mapping;
+          tab.js_dom_mapping_miss_log_last = js_dom_mapping_miss_log_last;
+          tab.js_dom_dirty = js_dom_dirty;
+          tab.js_dom_mutation_generation = js_dom_mutation_generation;
           tab.history.mark_committed();
           return Some(JobOutput {
             tab_id,
@@ -8510,7 +8531,16 @@ impl BrowserRuntime {
     // Fail fast for unsupported schemes before we allocate a new renderer for a site swap.
     if !about_pages::is_about_url(&original_url) {
       if let Err(err) = validate_user_navigation_url_scheme(&original_url) {
-        let _ = self.reinsert_document(tab_id, doc);
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          doc,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return None;
         };
@@ -8549,7 +8579,16 @@ impl BrowserRuntime {
         Ok(doc) => doc,
         Err(err) => {
           if let Some(fallback) = fallback_doc {
-            let _ = self.reinsert_document(tab_id, fallback);
+            let _ = self.reinsert_document_and_js_state(
+              tab_id,
+              fallback,
+              js_tab,
+              js_dom_mapping_generation,
+              js_dom_mapping,
+              js_dom_mapping_miss_log_last,
+              js_dom_dirty,
+              js_dom_mutation_generation,
+            );
           }
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return None;
@@ -8593,7 +8632,7 @@ impl BrowserRuntime {
     // Prepare/navigation stage
     // -----------------------------
 
-    let (reported_final_url, base_url) = if about_pages::is_about_url(&original_url) {
+    let (reported_final_url, mut base_url) = if about_pages::is_about_url(&original_url) {
       let html = about_pages::html_for_about_url(&original_url).unwrap_or_else(|| {
         about_pages::error_page_html(
           "Unknown about page",
@@ -8620,9 +8659,27 @@ impl BrowserRuntime {
             // New navigation superseded this attempt.
             if !snapshot.is_still_current_for_prepare(&cancel) {
               if let Some(fallback) = fallback_doc {
-                let _ = self.reinsert_document(tab_id, fallback);
+                let _ = self.reinsert_document_and_js_state(
+                  tab_id,
+                  fallback,
+                  js_tab,
+                  js_dom_mapping_generation,
+                  js_dom_mapping,
+                  js_dom_mapping_miss_log_last,
+                  js_dom_dirty,
+                  js_dom_mutation_generation,
+                );
               } else {
-                let _ = self.reinsert_document(tab_id, doc);
+                let _ = self.reinsert_document_and_js_state(
+                  tab_id,
+                  doc,
+                  js_tab,
+                  js_dom_mapping_generation,
+                  js_dom_mapping,
+                  js_dom_mapping_miss_log_last,
+                  js_dom_dirty,
+                  js_dom_mutation_generation,
+                );
               }
               return None;
             }
@@ -8631,21 +8688,66 @@ impl BrowserRuntime {
               tab.pending_navigation = Some(request_for_retry);
             }
             if let Some(fallback) = fallback_doc {
-              let _ = self.reinsert_document(tab_id, fallback);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                fallback,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             } else {
-              let _ = self.reinsert_document(tab_id, doc);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                doc,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             }
             return None;
           }
           if !snapshot.is_still_current_for_prepare(&cancel) {
             if let Some(fallback) = fallback_doc {
-              let _ = self.reinsert_document(tab_id, fallback);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                fallback,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             } else {
-              let _ = self.reinsert_document(tab_id, doc);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                doc,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             }
             return None;
           }
-          let _ = self.reinsert_document(tab_id, doc);
+          let _ = self.reinsert_document_and_js_state(
+            tab_id,
+            doc,
+            js_tab,
+            js_dom_mapping_generation,
+            js_dom_mapping,
+            js_dom_mapping_miss_log_last,
+            js_dom_dirty,
+            js_dom_mutation_generation,
+          );
           return self.run_navigation_error(
             tab_id,
             &original_url,
@@ -8683,9 +8785,27 @@ impl BrowserRuntime {
           if prepare_cancel_callback() {
             if !snapshot.is_still_current_for_prepare(&cancel) {
               if let Some(fallback) = fallback_doc {
-                let _ = self.reinsert_document(tab_id, fallback);
+                let _ = self.reinsert_document_and_js_state(
+                  tab_id,
+                  fallback,
+                  js_tab,
+                  js_dom_mapping_generation,
+                  js_dom_mapping,
+                  js_dom_mapping_miss_log_last,
+                  js_dom_dirty,
+                  js_dom_mutation_generation,
+                );
               } else {
-                let _ = self.reinsert_document(tab_id, doc);
+                let _ = self.reinsert_document_and_js_state(
+                  tab_id,
+                  doc,
+                  js_tab,
+                  js_dom_mapping_generation,
+                  js_dom_mapping,
+                  js_dom_mapping_miss_log_last,
+                  js_dom_dirty,
+                  js_dom_mutation_generation,
+                );
               }
               return None;
             }
@@ -8693,23 +8813,68 @@ impl BrowserRuntime {
               tab.pending_navigation = Some(request_for_retry);
             }
             if let Some(fallback) = fallback_doc {
-              let _ = self.reinsert_document(tab_id, fallback);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                fallback,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             } else {
-              let _ = self.reinsert_document(tab_id, doc);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                doc,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             }
             return None;
           }
           if !snapshot.is_still_current_for_prepare(&cancel) {
             if let Some(fallback) = fallback_doc {
-              let _ = self.reinsert_document(tab_id, fallback);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                fallback,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             } else {
-              let _ = self.reinsert_document(tab_id, doc);
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                doc,
+                js_tab,
+                js_dom_mapping_generation,
+                js_dom_mapping,
+                js_dom_mapping_miss_log_last,
+                js_dom_dirty,
+                js_dom_mutation_generation,
+              );
             }
             return None;
           }
 
           // Restore the document before delegating to the navigation-error renderer.
-          let _ = self.reinsert_document(tab_id, doc);
+          let _ = self.reinsert_document_and_js_state(
+            tab_id,
+            doc,
+            js_tab,
+            js_dom_mapping_generation,
+            js_dom_mapping,
+            js_dom_mapping_miss_log_last,
+            js_dom_dirty,
+            js_dom_mutation_generation,
+          );
           return self.run_navigation_error(tab_id, &original_url, &err.to_string(), snapshot);
         }
       }
@@ -8718,9 +8883,27 @@ impl BrowserRuntime {
     // If a new navigation was initiated while we were preparing, treat this result as cancelled.
     if !snapshot.is_still_current_for_prepare(&cancel) {
       if let Some(fallback) = fallback_doc {
-        let _ = self.reinsert_document(tab_id, fallback);
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          fallback,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
       } else {
-        let _ = self.reinsert_document(tab_id, doc);
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          doc,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
       }
       return None;
     }
@@ -8747,7 +8930,27 @@ impl BrowserRuntime {
       // Drop the untrusted renderer/document and restore the previously committed document (if any)
       // while we restart navigation in the correct process.
       if let Some(fallback) = fallback_doc {
-        let _ = self.reinsert_document(tab_id, fallback);
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          fallback,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
+      } else if let Some(tab) = self.tabs.get_mut(&tab_id) {
+        // In the no-fallback case, we intentionally drop the untrusted renderer/document (so the
+        // restarted navigation runs in a fresh renderer). Still restore the previous JS tab state
+        // so we don't accidentally clear JS state when a navigation is restarted due to site
+        // isolation.
+        tab.js_tab = js_tab;
+        tab.js_dom_mapping_generation = js_dom_mapping_generation;
+        tab.js_dom_mapping = js_dom_mapping;
+        tab.js_dom_mapping_miss_log_last = js_dom_mapping_miss_log_last;
+        tab.js_dom_dirty = js_dom_dirty;
+        tab.js_dom_mutation_generation = js_dom_mutation_generation;
       }
 
       let Some(tab) = self.tabs.get_mut(&tab_id) else {
@@ -8807,6 +9010,9 @@ impl BrowserRuntime {
     doc.set_navigation_urls(Some(committed_url.clone()), base_url.clone());
     doc.set_document_url_without_invalidation(Some(committed_url.clone()));
 
+    let mut msgs = Vec::new();
+    let mut js_prepaint_synced = false;
+
     // Compute initial scroll state (including fragment navigations like `#target`).
     let mut scroll_state = ScrollState::with_viewport(Point::new(
       initial_scroll.map(|(x, _)| x).unwrap_or(0.0),
@@ -8836,6 +9042,49 @@ impl BrowserRuntime {
       }
     }
     doc.set_scroll_state(scroll_state.clone());
+
+    // ---------------------------------------------------------------------------
+    // JS-aware DOM snapshot before first paint
+    // ---------------------------------------------------------------------------
+    //
+    // `BrowserDocument` parsing does not execute scripts during HTML parsing, so the prepared DOM
+    // may not include parse-time mutations from inline/external `<script>` tags. Best-effort:
+    // navigate a JS-capable `BrowserTab`, then snapshot its mutable dom2 tree back into this
+    // renderer's immutable DOM before we compute the first frame.
+    if !about_pages::is_about_url(&committed_url) {
+      if let Some((mapping, generation, new_base_url)) =
+        Self::navigate_js_tab_and_sync_dom_for_committed_navigation(
+          &self.runtime_toggles,
+          tab_id,
+          &mut js_tab,
+          &mut doc,
+          &committed_url,
+          viewport_css,
+          dpr,
+          options.timeout,
+          options.cancel_callback.clone(),
+          self.debug_log_enabled,
+          &mut msgs,
+        )
+      {
+        js_dom_mapping_generation = generation;
+        js_dom_mapping = Some(mapping);
+        js_dom_mapping_miss_log_last.clear();
+        js_dom_dirty = false;
+        js_dom_mutation_generation = generation;
+        if new_base_url != base_url {
+          base_url = new_base_url;
+          doc.set_navigation_urls(Some(committed_url.clone()), base_url.clone());
+        }
+        js_prepaint_synced = true;
+      } else if js_tab.is_none() {
+        js_dom_mapping_generation = 0;
+        js_dom_mapping = None;
+        js_dom_mapping_miss_log_last.clear();
+        js_dom_dirty = false;
+        js_dom_mutation_generation = 0;
+      }
+    }
 
     // -----------------------------
     // Initial interaction state (autofocus)
@@ -8867,6 +9116,14 @@ impl BrowserRuntime {
           scroll_state = next_scroll;
           doc.set_scroll_state(scroll_state.clone());
         }
+      }
+    }
+
+    // Keep the JS tab's view state (scroll) in sync with the UI worker so DOM APIs like
+    // `document.elementFromPoint` reflect the same viewport as the rendered document.
+    if js_prepaint_synced {
+      if let Some(js_tab) = js_tab.as_mut() {
+        js_tab.set_scroll_state(scroll_state.clone());
       }
     }
 
@@ -8927,19 +9184,59 @@ impl BrowserRuntime {
         }
       }
     };
-
-    let mut msgs = Vec::new();
-
     let painted = match painted {
       Ok(Some(frame)) => Some(frame),
       Ok(None) => None,
       Err(err) => {
         // If a new navigation was initiated while we were painting, drop this result silently.
         if !snapshot.is_still_current_for_prepare(&cancel) {
-          if let Some(fallback) = fallback_doc {
-            let _ = self.reinsert_document(tab_id, fallback);
+          // Do not commit the JS tab snapshot when the navigation itself is superseded.
+          if js_prepaint_synced && !about_pages::is_about_url(&committed_url) {
+            if let Some(fallback) = fallback_doc {
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                fallback,
+                None,
+                0,
+                None,
+                HashMap::new(),
+                false,
+                0,
+              );
+            } else {
+              let _ = self.reinsert_document_and_js_state(
+                tab_id,
+                doc,
+                None,
+                0,
+                None,
+                HashMap::new(),
+                false,
+                0,
+              );
+            }
+          } else if let Some(fallback) = fallback_doc {
+            let _ = self.reinsert_document_and_js_state(
+              tab_id,
+              fallback,
+              js_tab,
+              js_dom_mapping_generation,
+              js_dom_mapping,
+              js_dom_mapping_miss_log_last,
+              js_dom_dirty,
+              js_dom_mutation_generation,
+            );
           } else {
-            let _ = self.reinsert_document(tab_id, doc);
+            let _ = self.reinsert_document_and_js_state(
+              tab_id,
+              doc,
+              js_tab,
+              js_dom_mapping_generation,
+              js_dom_mapping,
+              js_dom_mapping_miss_log_last,
+              js_dom_dirty,
+              js_dom_mutation_generation,
+            );
           }
           return None;
         }
@@ -8947,7 +9244,6 @@ impl BrowserRuntime {
         // If only paint was bumped (e.g. scroll/viewport change) while the initial paint was
         // in-flight, treat this as a cancelled paint rather than a navigation failure.
         if paint_cancel_callback() || !paint_snapshot.is_still_current_for_paint(&cancel) {
-          let runtime_toggles = Arc::clone(&self.runtime_toggles);
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return None;
           };
@@ -8963,19 +9259,21 @@ impl BrowserRuntime {
           tab.last_base_url = base_url.clone();
           tab.site_key = Some(site_key_for_navigation(&committed_url, None));
           tab.site_mismatch_restarts = 0;
-
-          Self::sync_js_tab_for_committed_navigation(
-            &runtime_toggles,
-            tab_id,
-            tab,
-            &committed_url,
-            viewport_css,
-            dpr,
-            options.timeout,
-            options.cancel_callback.clone(),
-            self.debug_log_enabled,
-            &mut msgs,
-          );
+          if about_pages::is_about_url(&committed_url) || !js_prepaint_synced {
+            tab.js_tab = None;
+            tab.js_dom_mapping_generation = 0;
+            tab.js_dom_mapping = None;
+            tab.js_dom_mapping_miss_log_last.clear();
+            tab.js_dom_dirty = false;
+            tab.js_dom_mutation_generation = 0;
+          } else {
+            tab.js_tab = js_tab;
+            tab.js_dom_mapping_generation = js_dom_mapping_generation;
+            tab.js_dom_mapping = js_dom_mapping;
+            tab.js_dom_mapping_miss_log_last = js_dom_mapping_miss_log_last;
+            tab.js_dom_dirty = js_dom_dirty;
+            tab.js_dom_mutation_generation = js_dom_mutation_generation;
+          }
 
           let _ = Self::pump_js_once_and_sync_dom_after_committed_navigation(tab_id, tab, &mut msgs);
 
@@ -9023,7 +9321,7 @@ impl BrowserRuntime {
           });
         }
 
-        let _ = self.reinsert_document(tab_id, doc);
+        let _ = self.reinsert_document_and_js_state(tab_id, doc, None, 0, None, HashMap::new(), false, 0);
         return self.run_navigation_error(
           tab_id,
           &original_url,
@@ -9035,10 +9333,53 @@ impl BrowserRuntime {
 
     // If a new navigation was initiated while we were painting, drop the result.
     if !snapshot.is_still_current_for_prepare(&cancel) {
-      if let Some(fallback) = fallback_doc {
-        let _ = self.reinsert_document(tab_id, fallback);
+      // Do not commit the JS tab snapshot when the navigation itself is superseded.
+      if js_prepaint_synced && !about_pages::is_about_url(&committed_url) {
+        if let Some(fallback) = fallback_doc {
+          let _ = self.reinsert_document_and_js_state(
+            tab_id,
+            fallback,
+            None,
+            0,
+            None,
+            HashMap::new(),
+            false,
+            0,
+          );
+        } else {
+          let _ = self.reinsert_document_and_js_state(
+            tab_id,
+            doc,
+            None,
+            0,
+            None,
+            HashMap::new(),
+            false,
+            0,
+          );
+        }
+      } else if let Some(fallback) = fallback_doc {
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          fallback,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
       } else {
-        let _ = self.reinsert_document(tab_id, doc);
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          doc,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
       }
       return None;
     }
@@ -9083,15 +9424,57 @@ impl BrowserRuntime {
 
     // If a new navigation was initiated while we were fetching the favicon, drop the result.
     if !snapshot.is_still_current_for_prepare(&cancel) {
-      if let Some(fallback) = fallback_doc {
-        let _ = self.reinsert_document(tab_id, fallback);
+      // Do not commit the JS tab snapshot when the navigation itself is superseded.
+      if js_prepaint_synced && !about_pages::is_about_url(&committed_url) {
+        if let Some(fallback) = fallback_doc {
+          let _ = self.reinsert_document_and_js_state(
+            tab_id,
+            fallback,
+            None,
+            0,
+            None,
+            HashMap::new(),
+            false,
+            0,
+          );
+        } else {
+          let _ = self.reinsert_document_and_js_state(
+            tab_id,
+            doc,
+            None,
+            0,
+            None,
+            HashMap::new(),
+            false,
+            0,
+          );
+        }
+      } else if let Some(fallback) = fallback_doc {
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          fallback,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
       } else {
-        let _ = self.reinsert_document(tab_id, doc);
+        let _ = self.reinsert_document_and_js_state(
+          tab_id,
+          doc,
+          js_tab,
+          js_dom_mapping_generation,
+          js_dom_mapping,
+          js_dom_mapping_miss_log_last,
+          js_dom_dirty,
+          js_dom_mutation_generation,
+        );
       }
       return None;
     }
 
-    let runtime_toggles = Arc::clone(&self.runtime_toggles);
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
     };
@@ -9116,19 +9499,21 @@ impl BrowserRuntime {
     tab.last_base_url = base_url.clone();
     tab.site_key = Some(site_key_for_navigation(&committed_url, None));
     tab.site_mismatch_restarts = 0;
-
-    Self::sync_js_tab_for_committed_navigation(
-      &runtime_toggles,
-      tab_id,
-      tab,
-      &committed_url,
-      viewport_css,
-      dpr,
-      options.timeout,
-      options.cancel_callback.clone(),
-      self.debug_log_enabled,
-      &mut msgs,
-    );
+    if about_pages::is_about_url(&committed_url) || !js_prepaint_synced {
+      tab.js_tab = None;
+      tab.js_dom_mapping_generation = 0;
+      tab.js_dom_mapping = None;
+      tab.js_dom_mapping_miss_log_last.clear();
+      tab.js_dom_dirty = false;
+      tab.js_dom_mutation_generation = 0;
+    } else {
+      tab.js_tab = js_tab;
+      tab.js_dom_mapping_generation = js_dom_mapping_generation;
+      tab.js_dom_mapping = js_dom_mapping;
+      tab.js_dom_mapping_miss_log_last = js_dom_mapping_miss_log_last;
+      tab.js_dom_dirty = js_dom_dirty;
+      tab.js_dom_mutation_generation = js_dom_mutation_generation;
+    }
 
     let js_dom_changed =
       Self::pump_js_once_and_sync_dom_after_committed_navigation(tab_id, tab, &mut msgs);
@@ -9724,6 +10109,28 @@ impl BrowserRuntime {
     tab.document = Some(doc);
     Some(())
   }
+
+  fn reinsert_document_and_js_state(
+    &mut self,
+    tab_id: TabId,
+    doc: BrowserDocument,
+    js_tab: Option<BrowserTab>,
+    js_dom_mapping_generation: u64,
+    js_dom_mapping: Option<crate::dom2::RendererDomMapping>,
+    js_dom_mapping_miss_log_last: HashMap<&'static str, Instant>,
+    js_dom_dirty: bool,
+    js_dom_mutation_generation: u64,
+  ) -> Option<()> {
+    let tab = self.tabs.get_mut(&tab_id)?;
+    tab.document = Some(doc);
+    tab.js_tab = js_tab;
+    tab.js_dom_mapping_generation = js_dom_mapping_generation;
+    tab.js_dom_mapping = js_dom_mapping;
+    tab.js_dom_mapping_miss_log_last = js_dom_mapping_miss_log_last;
+    tab.js_dom_dirty = js_dom_dirty;
+    tab.js_dom_mutation_generation = js_dom_mutation_generation;
+    Some(())
+  }
 }
 
 fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
@@ -10168,10 +10575,14 @@ mod js_tab_navigation_deadlines_tests {
     let cancel_callback: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
 
     let mut msgs = Vec::new();
-    BrowserRuntime::sync_js_tab_for_committed_navigation(
+    let Some(doc) = tab.document.as_mut() else {
+      panic!("expected BrowserDocument");
+    };
+    let _ = BrowserRuntime::navigate_js_tab_and_sync_dom_for_committed_navigation(
       &runtime_toggles,
       tab_id,
-      &mut tab,
+      &mut tab.js_tab,
+      doc,
       "data:text/html,ok",
       (1, 1),
       1.0,
@@ -10208,10 +10619,14 @@ mod js_tab_navigation_deadlines_tests {
     );
 
     let mut msgs = Vec::new();
-    BrowserRuntime::sync_js_tab_for_committed_navigation(
+    let Some(doc) = tab.document.as_mut() else {
+      panic!("expected BrowserDocument");
+    };
+    let _ = BrowserRuntime::navigate_js_tab_and_sync_dom_for_committed_navigation(
       &runtime_toggles,
       tab_id,
-      &mut tab,
+      &mut tab.js_tab,
+      doc,
       "data:text/html,ok",
       (1, 1),
       1.0,
