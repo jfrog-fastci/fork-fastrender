@@ -919,7 +919,7 @@ pub fn install_window_blob_bindings(
     slice_call_id,
     None,
     slice_name,
-    2,
+    0,
     &[Value::Number(realm_id.to_raw() as f64)],
   )?;
   scope.push_root(Value::Object(slice_fn))?;
@@ -1184,11 +1184,11 @@ mod tests {
   }
 
   #[test]
-  fn blob_slice_length_is_two() -> Result<(), VmError> {
+  fn blob_slice_length_is_zero() -> Result<(), VmError> {
     let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
 
     let v = realm.exec_script("Blob.prototype.slice.length")?;
-    assert_eq!(v, Value::Number(2.0));
+    assert_eq!(v, Value::Number(0.0));
 
     realm.teardown();
     Ok(())
