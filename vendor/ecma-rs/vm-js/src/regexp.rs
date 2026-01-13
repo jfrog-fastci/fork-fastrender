@@ -4242,8 +4242,31 @@ impl<'a> Parser<'a> {
             }
           }
           x if x == (b's' as u16) || x == (b'S' as u16) => {
-            // Match the same code units as `CharClassItem::Space`.
-            for u in [0x0009u16, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020, 0x00A0, 0xFEFF] {
+            // Match the same code units as `CharClassItem::Space`:
+            // ECMA-262 `WhiteSpace ∪ LineTerminator`
+            // (https://tc39.es/ecma262/#sec-characterclassescape).
+            for u in [
+              // WhiteSpace
+              0x0009u16, // Tab
+              0x000Bu16, // VT
+              0x000Cu16, // FF
+              0x0020u16, // Space
+              0x00A0u16, // NBSP
+              0x1680u16, // Ogham space mark
+              0x202Fu16, // Narrow NBSP
+              0x205Fu16, // Medium mathematical space
+              0x3000u16, // Ideographic space
+              0xFEFFu16, // BOM
+              // LineTerminator
+              0x000Au16, // LF
+              0x000Du16, // CR
+              0x2028u16, // Line separator
+              0x2029u16, // Paragraph separator
+            ] {
+              set.insert_char(u);
+            }
+            for u in 0x2000u16..=0x200Au16 {
+              // En quad..Hair space
               set.insert_char(u);
             }
             if x == (b'S' as u16) {
@@ -5443,7 +5466,7 @@ impl ProgramBuilder {
 #[cfg(test)]
 mod regexp_unicode_sets_tests {
   use super::*;
-  use crate::{HeapLimits, JsRuntime, Value, Vm, VmOptions};
+  use crate::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
 
   fn eval_bool(rt: &mut JsRuntime, script: &str) -> Result<bool, VmError> {
     match rt.exec_script(script)? {
@@ -5454,42 +5477,90 @@ mod regexp_unicode_sets_tests {
 
   #[test]
   fn regexp_space_escape_matches_ecma_whitespace_and_line_terminators() -> Result<(), VmError> {
-    let vm = Vm::new(VmOptions::default());
     let heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
-    let mut rt = JsRuntime::new(vm, heap)?;
 
-    // WhiteSpace (ECMA-262):
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u0009"))"#)?); // Tab
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000B"))"#)?); // VT
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000C"))"#)?); // FF
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u0020"))"#)?); // Space
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u00A0"))"#)?); // No-break space
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u1680"))"#)?); // Ogham space mark
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2000"))"#)?); // En quad
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u200A"))"#)?); // Hair space
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u202F"))"#)?); // Narrow no-break space
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u205F"))"#)?); // Medium mathematical space
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u3000"))"#)?); // Ideographic space
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\uFEFF"))"#)?); // BOM
+    let exec_mem = RegExpExecMemoryBudget::new(1024 * 1024);
+    fn matches_one(
+      prog: &RegExpProgram,
+      flags: RegExpFlags,
+      exec_mem: &RegExpExecMemoryBudget,
+      unit: u16,
+    ) -> Result<bool, VmError> {
+      let input = [unit];
+      let mut tick = || Ok(());
+      Ok(
+        prog
+          .exec_at(&input, 0, flags, &mut tick, exec_mem, None)?
+          .is_some(),
+      )
+    }
 
-    // Line terminators.
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000A"))"#)?); // LF
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u000D"))"#)?); // CR
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2028"))"#)?);
-    assert!(eval_bool(&mut rt, r#"(/\s/.test("\u2029"))"#)?);
+    let none = RegExpFlags::default();
+    let v = RegExpFlags {
+      unicode_sets: true,
+      ..RegExpFlags::default()
+    };
 
-    // Negation (\S) is the complement of the `\s` set.
-    assert!(eval_bool(&mut rt, r#"(/\S/.test("a"))"#)?);
-    assert!(!eval_bool(&mut rt, r#"(/\S/.test("\u2000"))"#)?); // En quad
-    assert!(!eval_bool(&mut rt, r#"(/\S/.test("\u000A"))"#)?); // LF
+    // `\s` / `\S` as plain character class escapes.
+    let re_s = compile_regexp(&[b'\\' as u16, b's' as u16], none, &heap).expect("compile \\s");
+    let re_not_s =
+      compile_regexp(&[b'\\' as u16, b'S' as u16], none, &heap).expect("compile \\S");
+    // `\s` / `\S` inside `/v` UnicodeSets mode character classes.
+    let re_v_s =
+      compile_regexp(&[b'[' as u16, b'\\' as u16, b's' as u16, b']' as u16], v, &heap)
+        .expect("compile [\\s] with /v");
+    let re_v_not_s =
+      compile_regexp(&[b'[' as u16, b'\\' as u16, b'S' as u16, b']' as u16], v, &heap)
+        .expect("compile [\\S] with /v");
+
+    // WhiteSpace ∪ LineTerminator (ECMA-262):
+    for u in [
+      // WhiteSpace
+      0x0009u16, // Tab
+      0x000Bu16, // VT
+      0x000Cu16, // FF
+      0x0020u16, // Space
+      0x00A0u16, // NBSP
+      0x1680u16, // Ogham space mark
+      0x202Fu16, // Narrow NBSP
+      0x205Fu16, // Medium mathematical space
+      0x3000u16, // Ideographic space
+      0xFEFFu16, // BOM
+      // LineTerminator
+      0x000Au16, // LF
+      0x000Du16, // CR
+      0x2028u16, // Line separator
+      0x2029u16, // Paragraph separator
+    ] {
+      assert!(matches_one(&re_s, none, &exec_mem, u)?);
+      assert!(!matches_one(&re_not_s, none, &exec_mem, u)?);
+      assert!(matches_one(&re_v_s, v, &exec_mem, u)?);
+      assert!(!matches_one(&re_v_not_s, v, &exec_mem, u)?);
+    }
+    for u in 0x2000u16..=0x200Au16 {
+      assert!(matches_one(&re_s, none, &exec_mem, u)?);
+      assert!(!matches_one(&re_not_s, none, &exec_mem, u)?);
+      assert!(matches_one(&re_v_s, v, &exec_mem, u)?);
+      assert!(!matches_one(&re_v_not_s, v, &exec_mem, u)?);
+    }
+
+    // Negation is the complement of the `\s` set.
+    assert!(!matches_one(&re_s, none, &exec_mem, b'a' as u16)?);
+    assert!(matches_one(&re_not_s, none, &exec_mem, b'a' as u16)?);
+    assert!(!matches_one(&re_v_s, v, &exec_mem, b'a' as u16)?);
+    assert!(matches_one(&re_v_not_s, v, &exec_mem, b'a' as u16)?);
 
     // A common "Unicode whitespace" code point that is *not* in the ECMAScript `\s` set.
-    assert!(!eval_bool(&mut rt, r#"(/\s/.test("\u200B"))"#)?);
-    assert!(eval_bool(&mut rt, r#"(/\S/.test("\u200B"))"#)?);
+    assert!(!matches_one(&re_s, none, &exec_mem, 0x200B)?);
+    assert!(matches_one(&re_not_s, none, &exec_mem, 0x200B)?);
+    assert!(!matches_one(&re_v_s, v, &exec_mem, 0x200B)?);
+    assert!(matches_one(&re_v_not_s, v, &exec_mem, 0x200B)?);
     // Mongolian vowel separator: historically treated as whitespace in some contexts, but **not**
     // in the ECMAScript `\s` set.
-    assert!(!eval_bool(&mut rt, r#"(/\s/.test("\u180E"))"#)?);
-    assert!(eval_bool(&mut rt, r#"(/\S/.test("\u180E"))"#)?);
+    assert!(!matches_one(&re_s, none, &exec_mem, 0x180E)?);
+    assert!(matches_one(&re_not_s, none, &exec_mem, 0x180E)?);
+    assert!(!matches_one(&re_v_s, v, &exec_mem, 0x180E)?);
+    assert!(matches_one(&re_v_not_s, v, &exec_mem, 0x180E)?);
 
     Ok(())
   }
