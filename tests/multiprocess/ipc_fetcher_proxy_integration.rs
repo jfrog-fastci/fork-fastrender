@@ -262,9 +262,9 @@ fn ipc_fetcher_cookies_round_trip_between_fetch_and_cookie_header_value() {
     }
   });
 
-  // Fetch, cookie_header_value, fetch.
-  // cookie_header_value (empty), fetch, cookie_header_value, fetch.
-  let ipc_handle = spawn_network_process(ipc_listener, 4);
+  // cookie_header_value (empty), fetch, cookie_header_value, store_cookie_from_document,
+  // cookie_header_value, fetch.
+  let ipc_handle = spawn_network_process(ipc_listener, 6);
 
   let fetcher =
     IpcResourceFetcher::new_with_auth_token(ipc_addr.to_string(), TEST_AUTH_TOKEN).expect("connect ipc fetcher");
@@ -290,6 +290,15 @@ fn ipc_fetcher_cookies_round_trip_between_fetch_and_cookie_header_value() {
     "expected cookie_header_value to contain a=b, got {cookies:?}"
   );
 
+  fetcher.store_cookie_from_document(&url, "c=d; Path=/");
+  let cookies = fetcher
+    .cookie_header_value(&url)
+    .expect("cookie_header_value should be Some for valid URL");
+  assert!(
+    cookies.contains("a=b") && cookies.contains("c=d"),
+    "expected cookie_header_value to contain a=b and c=d, got {cookies:?}"
+  );
+
   let res2 = fetcher.fetch(&url).expect("second fetch");
   assert_eq!(res2.bytes, b"second");
 
@@ -302,8 +311,8 @@ fn ipc_fetcher_cookies_round_trip_between_fetch_and_cookie_header_value() {
     .expect("second http request capture")
     .unwrap_or_default();
   assert!(
-    second_cookie.contains("a=b"),
-    "expected second HTTP request to include Cookie: a=b, got {second_cookie:?}"
+    second_cookie.contains("a=b") && second_cookie.contains("c=d"),
+    "expected second HTTP request to include Cookie: a=b and c=d, got {second_cookie:?}"
   );
 
   drop(fetcher);
@@ -410,7 +419,6 @@ fn ipc_fetcher_store_cookie_from_document_oversize_is_not_sent_over_ipc() {
   let ipc_handle = thread::spawn(move || {
     let (mut stream, _) = ipc_listener.accept().unwrap();
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-
     // Auth handshake must precede any other IPC request.
     let hello_bytes = read_frame(&mut stream).expect("read ipc hello frame");
     let hello: IpcRequest = serde_json::from_slice(&hello_bytes).expect("decode ipc hello request");

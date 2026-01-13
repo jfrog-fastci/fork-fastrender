@@ -502,7 +502,17 @@ pub fn validate_ipc_request(request: &IpcRequest) -> std::result::Result<(), Str
     | IpcRequest::ReadCacheArtifact { url, .. }
     | IpcRequest::WriteCacheArtifact { url, .. }
     | IpcRequest::RemoveCacheArtifact { url, .. } => validate_ipc_url(url),
-    IpcRequest::StoreCookieFromDocument { url, .. } => validate_ipc_url(url),
+    IpcRequest::StoreCookieFromDocument { url, cookie_string } => {
+      validate_ipc_url(url)?;
+      if cookie_string.len() > MAX_COOKIE_BYTES {
+        return Err(format!(
+          "cookie_string exceeds max length ({} > {})",
+          cookie_string.len(),
+          MAX_COOKIE_BYTES
+        ));
+      }
+      Ok(())
+    }
     IpcRequest::FetchWithRequest { req }
     | IpcRequest::FetchWithRequestAndValidation { req, .. }
     | IpcRequest::FetchPartialWithRequest { req, .. }
