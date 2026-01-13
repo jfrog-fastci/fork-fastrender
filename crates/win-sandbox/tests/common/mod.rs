@@ -72,9 +72,7 @@ pub(crate) fn require_appcontainer_profile(test_name: &str) -> bool {
       true
     }
     Err(err) if should_skip_appcontainer_error(&err) => {
-      eprintln!(
-        "skipping {test_name}: AppContainer profile could not be ensured ({err})"
-      );
+      eprintln!("skipping {test_name}: AppContainer profile could not be ensured ({err})");
       false
     }
     Err(err) => panic!(

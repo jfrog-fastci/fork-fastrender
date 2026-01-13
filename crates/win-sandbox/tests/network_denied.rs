@@ -5,7 +5,7 @@ mod common;
 use std::ffi::c_void;
 use std::ffi::OsString;
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::windows::process::ExitStatusExt;
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 const CHILD_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_CHILD";
+const PORT_ENV: &str = "FASTR_TEST_WIN_APPCONTAINER_NETWORK_PORT";
 
 const WSAEACCES: i32 = 10013;
 
@@ -175,8 +176,12 @@ fn appcontainer_denies_network() {
       );
     }
 
-    let addr = SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 80));
-    let timeout = Duration::from_millis(200);
+    let port: u16 = std::env::var(PORT_ENV)
+      .expect("child process missing sandbox port env var")
+      .parse()
+      .expect("parse sandbox port env var");
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let timeout = Duration::from_secs(2);
     match TcpStream::connect_timeout(&addr, timeout) {
       Ok(_) => panic!(
         "unexpectedly connected to {addr} from AppContainer with no capabilities (network escape?)"
@@ -203,8 +208,31 @@ fn appcontainer_denies_network() {
   static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   let _guard = ENV_LOCK.lock().unwrap();
 
+  let listener = match TcpListener::bind("127.0.0.1:0") {
+    Ok(listener) => listener,
+    Err(err)
+      if matches!(
+        err.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
+      ) =>
+    {
+      eprintln!(
+        "skipping win-sandbox AppContainer network denial test: cannot bind localhost: {err}"
+      );
+      return;
+    }
+    Err(err) => panic!("bind test TCP listener: {err}"),
+  };
+  let port = listener
+    .local_addr()
+    .expect("listener local addr")
+    .port()
+    .to_string();
+
   let prev_child = std::env::var_os(CHILD_ENV);
   std::env::set_var(CHILD_ENV, "1");
+  let prev_port = std::env::var_os(PORT_ENV);
+  std::env::set_var(PORT_ENV, &port);
   let prev_threads = std::env::var_os("RUST_TEST_THREADS");
   std::env::set_var("RUST_TEST_THREADS", "1");
 
@@ -221,10 +249,15 @@ fn appcontainer_denies_network() {
   let handle = child.process.as_raw();
   let status = wait_process(handle, 20_000).expect("wait for sandboxed child");
   assert!(status.success(), "sandboxed child failed (exit={status})");
+  drop(listener);
 
   match prev_child {
     Some(value) => std::env::set_var(CHILD_ENV, value),
     None => std::env::remove_var(CHILD_ENV),
+  }
+  match prev_port {
+    Some(value) => std::env::set_var(PORT_ENV, value),
+    None => std::env::remove_var(PORT_ENV),
   }
   match prev_threads {
     Some(value) => std::env::set_var("RUST_TEST_THREADS", value),
