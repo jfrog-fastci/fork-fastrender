@@ -3,10 +3,13 @@ use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock};
 
-use super::{frames_to_duration, AudioBackend, AudioClock, AudioSink, AudioStreamConfig};
+use super::{
+  frames_to_duration, AudioBackend, AudioClock, AudioOutputInfo, AudioSink, AudioStreamConfig,
+};
 use crate::media::audio_clock::InterpolatedAudioClock;
 use super::ring_buffer::AudioRingBuffer;
 
@@ -101,6 +104,15 @@ impl WavAudioBackend {
 impl AudioBackend for WavAudioBackend {
   fn output_config(&self) -> AudioStreamConfig {
     self.config
+  }
+
+  fn output_info(&self) -> AudioOutputInfo {
+    AudioOutputInfo {
+      config: self.config,
+      callback_frames: None,
+      estimated_output_latency: Duration::ZERO,
+      backend_name: "wav",
+    }
   }
 
   fn clock(&self) -> AudioClock {
