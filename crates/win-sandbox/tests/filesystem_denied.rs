@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use win_sandbox::mitigations;
 use win_sandbox::{is_appcontainer_supported, RendererSandbox};
 use windows_sys::Win32::Foundation::HANDLE;
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND};
+use windows_sys::Win32::Foundation::{
+  CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
+};
 use windows_sys::Win32::Security::{GetTokenInformation, TokenIsAppContainer, TOKEN_QUERY};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
@@ -170,7 +172,10 @@ fn run_child() -> ! {
       let raw = err.raw_os_error();
       let allowed = matches!(
         raw,
-        Some(code) if code == ERROR_ACCESS_DENIED as i32 || code == ERROR_FILE_NOT_FOUND as i32
+        Some(code)
+          if code == ERROR_ACCESS_DENIED as i32
+            || code == ERROR_PATH_NOT_FOUND as i32
+            || code == ERROR_FILE_NOT_FOUND as i32
       );
       if allowed {
         std::process::exit(0);
