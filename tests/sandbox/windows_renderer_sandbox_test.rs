@@ -26,9 +26,14 @@ use windows_sys::Win32::System::Threading::{
   GetCurrentProcess, GetExitCodeProcess, TerminateProcess, WaitForSingleObject,
 };
 
-const FILE_NETWORK_TEST_NAME: &str = concat!(module_path!(), "::appcontainer_denies_filesystem_and_network");
-const JOB_KILL_TEST_NAME: &str =
-  concat!(module_path!(), "::job_object_kill_on_close_terminates_child");
+const FILE_NETWORK_TEST_NAME: &str = concat!(
+  module_path!(),
+  "::appcontainer_denies_filesystem_and_network"
+);
+const JOB_KILL_TEST_NAME: &str = concat!(
+  module_path!(),
+  "::job_object_kill_on_close_terminates_child"
+);
 
 /// The well-known capability SID for `internetClient`.
 ///
@@ -391,21 +396,31 @@ fn appcontainer_denies_filesystem_and_network() {
       }
     }
 
-    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
-    match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-      Ok(_) => {
-        panic!("expected AppContainer sandbox to deny TcpStream::connect to 127.0.0.1:{port}")
+    if port != 0 {
+      let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+      match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+        Ok(_) => {
+          panic!("expected AppContainer sandbox to deny TcpStream::connect to 127.0.0.1:{port}")
+        }
+        Err(err) => {
+          assert!(
+            err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(10013),
+            "expected connect to fail with PermissionDenied/WSAEACCES(10013), got {err:?}"
+          );
+        }
       }
-      Err(err) => {
-        assert!(
-          err.kind() == std::io::ErrorKind::PermissionDenied || err.raw_os_error() == Some(10013),
-          "expected connect to fail with PermissionDenied/WSAEACCES(10013), got {err:?}"
-        );
-      }
+    } else {
+      eprintln!(
+        "skipping localhost connect assertion in sandbox child: parent could not bind localhost"
+      );
     }
 
     return;
   }
+
+  // Serialize network-heavy tests to keep CI deterministic. Take this lock first to avoid lock-order
+  // inversions with helpers that also take the global env lock.
+  let _net_guard = crate::common::net_test_lock();
 
   // This test is AppContainer-specific; skip on older Windows versions where AppContainer APIs are
   // unavailable and the sandbox falls back to restricted-token mode.
@@ -430,8 +445,13 @@ fn appcontainer_denies_filesystem_and_network() {
     std::fs::read_to_string(&file_path).expect("parent should be able to read probe file");
   assert_eq!(parent_contents, "fastrender sandbox probe");
 
-  let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind localhost listener");
-  let port = listener.local_addr().expect("listener addr").port();
+  let listener = crate::common::try_bind_localhost(
+    "appcontainer_denies_filesystem_and_network (network portion)",
+  );
+  let port = listener
+    .as_ref()
+    .and_then(|listener| listener.local_addr().ok().map(|addr| addr.port()))
+    .unwrap_or(0);
 
   let exe = std::env::current_exe().expect("current test executable path");
   let args = vec![
