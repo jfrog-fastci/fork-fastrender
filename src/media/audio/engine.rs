@@ -1,0 +1,372 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
+
+use parking_lot::Mutex;
+
+use super::{audio_engine_config, AudioBackend, AudioEngineConfig, AudioSink, AudioStreamConfig};
+
+/// Identifier for a logical group of sinks (e.g. a browser tab).
+///
+/// Groups have their own volume and mute state that are applied on top of the per-sink volume and
+/// the engine master volume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AudioGroupId(u64);
+
+#[derive(Debug)]
+struct AudioGroupState {
+  volume_bits: AtomicU32,
+  muted: AtomicBool,
+}
+
+impl AudioGroupState {
+  fn new() -> Self {
+    Self {
+      volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      muted: AtomicBool::new(false),
+    }
+  }
+
+  fn set_volume(&self, volume: f32) {
+    let volume = sanitize_volume(volume);
+    self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+  }
+
+  fn volume(&self) -> f32 {
+    f32::from_bits(self.volume_bits.load(Ordering::Relaxed))
+  }
+
+  fn set_muted(&self, muted: bool) {
+    self.muted.store(muted, Ordering::Relaxed);
+  }
+
+  fn muted(&self) -> bool {
+    self.muted.load(Ordering::Relaxed)
+  }
+}
+
+#[derive(Debug)]
+struct GroupingState {
+  master_volume_bits: AtomicU32,
+  master_muted: AtomicBool,
+  next_group_id: AtomicU64,
+  groups: Mutex<HashMap<AudioGroupId, Arc<AudioGroupState>>>,
+  sinks: Mutex<Vec<Weak<AudioEngineSinkInner>>>,
+}
+
+impl GroupingState {
+  fn new() -> Self {
+    Self {
+      master_volume_bits: AtomicU32::new(1.0f32.to_bits()),
+      master_muted: AtomicBool::new(false),
+      next_group_id: AtomicU64::new(1),
+      groups: Mutex::new(HashMap::new()),
+      sinks: Mutex::new(Vec::new()),
+    }
+  }
+
+  fn master_volume(&self) -> f32 {
+    f32::from_bits(self.master_volume_bits.load(Ordering::Relaxed))
+  }
+
+  fn master_muted(&self) -> bool {
+    self.master_muted.load(Ordering::Relaxed)
+  }
+
+  fn update_all_sink_volumes(&self) {
+    let sinks: Vec<Arc<AudioEngineSinkInner>> = {
+      let mut guard = self.sinks.lock();
+      let mut strong = Vec::with_capacity(guard.len());
+      guard.retain(|weak| {
+        if let Some(inner) = weak.upgrade() {
+          strong.push(inner);
+          true
+        } else {
+          false
+        }
+      });
+      strong
+    };
+
+    for sink in sinks {
+      sink.apply_effective_volume();
+    }
+  }
+
+  fn update_group_sink_volumes(&self, group: AudioGroupId) {
+    let sinks: Vec<Arc<AudioEngineSinkInner>> = {
+      let mut guard = self.sinks.lock();
+      let mut strong = Vec::with_capacity(guard.len());
+      guard.retain(|weak| {
+        if let Some(inner) = weak.upgrade() {
+          strong.push(inner);
+          true
+        } else {
+          false
+        }
+      });
+      strong
+    };
+
+    for sink in sinks {
+      if sink.group == group {
+        sink.apply_effective_volume();
+      }
+    }
+  }
+}
+
+/// High-level audio engine that owns an output backend and its configuration.
+///
+/// This is the intended entry point for media playback code. It centralizes all tunables and
+/// provides a consistent configuration surface across different backends.
+///
+/// Grouping semantics:
+/// - Streams/sinks can be assigned to a logical [`AudioGroupId`] (e.g. browser tab).
+/// - Each group has its own volume and mute state.
+/// - A master volume/mute applies on top of every group.
+/// - The final gain applied to each sink is: `final_gain = master * group * sink` (with mute
+///   states forcing the gain to 0).
+///
+/// Important: muting must **not** behave like pausing. Even when `final_gain` is 0, the underlying
+/// backend sinks must continue draining queued audio so device time and ended/backpressure
+/// semantics remain correct.
+pub struct AudioEngine {
+  config: Arc<AudioEngineConfig>,
+  backend: Arc<dyn AudioBackend>,
+  grouping: Arc<GroupingState>,
+}
+
+impl AudioEngine {
+  /// Create an [`AudioEngine`] using a "best effort" backend selection policy.
+  #[must_use]
+  pub fn new_best_effort(config: Arc<AudioEngineConfig>) -> Self {
+    let backend = <dyn AudioBackend>::new_best_effort_with_config(&config);
+    Self::new_with_backend(config, Arc::from(backend))
+  }
+
+  /// Construct an engine with an explicitly provided backend.
+  ///
+  /// This is primarily intended for deterministic unit tests.
+  #[must_use]
+  pub fn new_with_backend(config: Arc<AudioEngineConfig>, backend: Arc<dyn AudioBackend>) -> Self {
+    Self {
+      config,
+      backend,
+      grouping: Arc::new(GroupingState::new()),
+    }
+  }
+
+  /// Convenience constructor that uses the currently active configuration.
+  ///
+  /// By default this parses `FASTR_AUDIO_*` environment variables, but unit tests can install an
+  /// override via [`super::set_audio_engine_config`].
+  #[must_use]
+  pub fn init_from_env() -> Self {
+    Self::new_best_effort(audio_engine_config())
+  }
+
+  #[must_use]
+  pub fn config(&self) -> &AudioEngineConfig {
+    &self.config
+  }
+
+  #[must_use]
+  pub fn backend(&self) -> &dyn AudioBackend {
+    &*self.backend
+  }
+
+  #[must_use]
+  pub fn output_config(&self) -> AudioStreamConfig {
+    self.backend.output_config()
+  }
+
+  /// Create a new group (e.g. a browser tab).
+  #[must_use]
+  pub fn create_group(&self) -> AudioGroupId {
+    let id = AudioGroupId(self.grouping.next_group_id.fetch_add(1, Ordering::Relaxed));
+    self
+      .grouping
+      .groups
+      .lock()
+      .insert(id, Arc::new(AudioGroupState::new()));
+    id
+  }
+
+  /// Create a new sink within an existing group.
+  #[must_use]
+  pub fn create_sink_in_group(&self, group: AudioGroupId) -> AudioEngineSink {
+    let group_state = {
+      let groups = self.grouping.groups.lock();
+      groups
+        .get(&group)
+        .cloned()
+        .expect("AudioGroupId must be created by AudioEngine::create_group")
+    };
+
+    let backend_sink = self.backend.create_sink();
+    let inner = Arc::new(AudioEngineSinkInner {
+      backend_sink,
+      grouping: Arc::downgrade(&self.grouping),
+      group,
+      group_state,
+      sink_volume_bits: AtomicU32::new(1.0f32.to_bits()),
+    });
+
+    // Apply initial volume before publishing so the sink starts at the correct gain.
+    inner.apply_effective_volume();
+
+    self.grouping.sinks.lock().push(Arc::downgrade(&inner));
+    AudioEngineSink { inner }
+  }
+
+  pub fn set_master_volume(&self, volume: f32) {
+    let volume = sanitize_volume(volume);
+    self
+      .grouping
+      .master_volume_bits
+      .store(volume.to_bits(), Ordering::Relaxed);
+    self.grouping.update_all_sink_volumes();
+  }
+
+  pub fn set_master_muted(&self, muted: bool) {
+    self.grouping.master_muted.store(muted, Ordering::Relaxed);
+    self.grouping.update_all_sink_volumes();
+  }
+
+  pub fn set_group_volume(&self, group: AudioGroupId, volume: f32) {
+    let group_state = {
+      let groups = self.grouping.groups.lock();
+      groups.get(&group).cloned()
+    };
+
+    if let Some(state) = group_state {
+      state.set_volume(volume);
+      self.grouping.update_group_sink_volumes(group);
+    }
+  }
+
+  pub fn set_group_muted(&self, group: AudioGroupId, muted: bool) {
+    let group_state = {
+      let groups = self.grouping.groups.lock();
+      groups.get(&group).cloned()
+    };
+
+    if let Some(state) = group_state {
+      state.set_muted(muted);
+      self.grouping.update_group_sink_volumes(group);
+    }
+  }
+}
+
+/// A sink created by [`AudioEngine`] that applies master + group gain on top of its own volume.
+pub struct AudioEngineSink {
+  inner: Arc<AudioEngineSinkInner>,
+}
+
+impl std::fmt::Debug for AudioEngineSink {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("AudioEngineSink")
+      .field("group", &self.inner.group)
+      .finish()
+  }
+}
+
+struct AudioEngineSinkInner {
+  backend_sink: Box<dyn AudioSink>,
+  grouping: Weak<GroupingState>,
+  group: AudioGroupId,
+  group_state: Arc<AudioGroupState>,
+  sink_volume_bits: AtomicU32,
+}
+
+impl AudioEngineSinkInner {
+  fn sink_volume(&self) -> f32 {
+    f32::from_bits(self.sink_volume_bits.load(Ordering::Relaxed))
+  }
+
+  fn set_sink_volume(&self, volume: f32) {
+    let volume = sanitize_volume(volume);
+    self.sink_volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+  }
+
+  fn apply_effective_volume(&self) {
+    let Some(grouping) = self.grouping.upgrade() else {
+      return;
+    };
+
+    let gain = if grouping.master_muted() || self.group_state.muted() {
+      0.0
+    } else {
+      grouping.master_volume() * self.group_state.volume() * self.sink_volume()
+    };
+
+    self.backend_sink.set_volume(gain);
+  }
+}
+
+impl AudioSink for AudioEngineSink {
+  fn config(&self) -> AudioStreamConfig {
+    self.inner.backend_sink.config()
+  }
+
+  fn push_interleaved_f32(&self, samples: &[f32]) -> usize {
+    self.inner.backend_sink.push_interleaved_f32(samples)
+  }
+
+  fn set_volume(&self, volume: f32) {
+    self.inner.set_sink_volume(volume);
+    self.inner.apply_effective_volume();
+  }
+}
+
+fn sanitize_volume(volume: f32) -> f32 {
+  if volume.is_finite() {
+    volume.clamp(0.0, 1.0)
+  } else {
+    0.0
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::media::audio::NullAudioBackend;
+
+  fn all_near(samples: &[f32], expected: f32) -> bool {
+    samples
+      .iter()
+      .all(|sample| (*sample - expected).abs() < 1e-6)
+  }
+
+  #[test]
+  fn audio_groups_muted_group_outputs_silence_but_still_drains_and_advances_clock() {
+    let backend = Arc::new(NullAudioBackend::new_deterministic());
+    let engine = AudioEngine::new_with_backend(audio_engine_config(), backend.clone());
+
+    let group = engine.create_group();
+    let sink = engine.create_sink_in_group(group);
+
+    let cfg = engine.output_config();
+    let channels = usize::from(cfg.channels.max(1));
+    let frames = 512;
+    let samples = vec![1.0f32; frames * channels];
+
+    assert_eq!(sink.push_interleaved_f32(&samples), samples.len());
+
+    let frames_before = backend.clock().frames();
+
+    engine.set_group_muted(group, true);
+    let out0 = backend.render(frames);
+    assert!(all_near(&out0, 0.0));
+
+    let frames_after = backend.clock().frames();
+    assert_eq!(frames_after - frames_before, frames as u64);
+
+    // Unmute: previously queued audio should have been drained while muted, so nothing should play.
+    engine.set_group_muted(group, false);
+    let out1 = backend.render(frames);
+    assert!(all_near(&out1, 0.0));
+  }
+}
+

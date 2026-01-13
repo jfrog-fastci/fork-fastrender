@@ -31,6 +31,7 @@ mod config;
 #[cfg(feature = "audio_cpal")]
 mod cpal_backend;
 mod latency;
+pub mod engine;
 pub mod limits;
 mod null_backend;
 mod ring_buffer;
@@ -60,6 +61,7 @@ pub use latency::{
   duration_to_frames_ceil, duration_to_frames_floor, frames_to_duration, latency_from_timestamps,
 };
 pub use drift::{DriftController, DriftControllerConfig, DriftResampler};
+pub use engine::{AudioEngine, AudioEngineSink, AudioGroupId};
 pub use null_backend::NullAudioBackend;
 pub use queue::{pcm_f32_queue, PcmF32Queue, PcmF32QueueConsumer, PcmF32QueueProducer};
 pub use timed_queue::{PopResult, PushError, ReadResult, TimedAudioQueue, TimedAudioSegment};
@@ -652,42 +654,7 @@ impl dyn AudioBackend {
     Box::new(NullAudioBackend::new_with_defaults(cfg.default_sample_rate_hz, cfg.default_channels))
   }
 }
-/// High-level audio engine that owns an output backend and its configuration.
-///
-/// This is the intended entry point for media playback code. It centralizes all tunables and
-/// provides a consistent configuration surface across different backends.
-pub struct AudioEngine {
-  config: Arc<AudioEngineConfig>,
-  backend: Box<dyn AudioBackend>,
-}
 
-impl AudioEngine {
-  /// Create an [`AudioEngine`] using a "best effort" backend selection policy.
-  #[must_use]
-  pub fn new_best_effort(config: Arc<AudioEngineConfig>) -> Self {
-    let backend = <dyn AudioBackend>::new_best_effort_with_config(&config);
-    Self { config, backend }
-  }
-
-  /// Convenience constructor that uses the currently active configuration.
-  ///
-  /// By default this parses `FASTR_AUDIO_*` environment variables, but unit tests can install an
-  /// override via [`set_audio_engine_config`].
-  #[must_use]
-  pub fn init_from_env() -> Self {
-    Self::new_best_effort(audio_engine_config())
-  }
-
-  #[must_use]
-  pub fn config(&self) -> &AudioEngineConfig {
-    &self.config
-  }
-
-  #[must_use]
-  pub fn backend(&self) -> &dyn AudioBackend {
-    &*self.backend
-  }
-}
 impl PcmF32QueueProducer {
   /// Push decoder-provided PCM samples in a variety of common formats/layouts.
   ///
