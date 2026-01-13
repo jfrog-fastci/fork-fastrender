@@ -1674,10 +1674,12 @@ pub fn invoke_callback_function(
 /// Invoke a callback interface value.
 ///
 /// Web IDL callback interfaces are "dual" objects: they may be either callable (functions) or
-/// objects with callable members (e.g. `handleEvent` for `EventListener`).
+/// objects with callable operation members (e.g. `handleEvent` for `EventListener`, `acceptNode`
+/// for `NodeFilter`).
 ///
 /// - If `callback` is callable, it is invoked with `this = this_for_callable`.
-/// - Otherwise, `callback.handleEvent(...args)` is invoked with `this = callback`.
+/// - Otherwise, the callback's operation method is invoked with `this = callback` (`handleEvent`
+///   is preferred; `acceptNode` is used as a fallback when `handleEvent` is missing).
 ///
 /// Promise jobs enqueued by the callback are routed via `hooks`.
 pub fn invoke_callback_interface(

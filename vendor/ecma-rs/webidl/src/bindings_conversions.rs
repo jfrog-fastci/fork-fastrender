@@ -933,7 +933,8 @@ pub fn convert_to_interface_opaque<R: WebIdlJsRuntime>(
 /// Invoke a previously-converted callback interface value.
 ///
 /// - If `callback` is callable, it is called with `this = undefined`.
-/// - Otherwise, it is treated as an object and `callback.handleEvent(...args)` is invoked.
+/// - Otherwise, it is treated as an object and its callback operation method is invoked
+///   (`handleEvent` is preferred; `acceptNode` is used as a fallback when `handleEvent` is missing).
 pub fn invoke_callback_interface<R: WebIdlJsRuntime>(
   rt: &mut R,
   callback: R::JsValue,
