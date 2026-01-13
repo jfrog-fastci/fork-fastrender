@@ -103,7 +103,7 @@ mod tests {
 #[cfg(feature = "browser_ui")]
 use crate::ui::BookmarkStore;
 
-#[cfg(feature = "browser_ui")]
+#[cfg(any(test, feature = "browser_ui"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageContextMenuAction {
   OpenLinkInNewTab(String),
@@ -114,6 +114,33 @@ pub enum PageContextMenuAction {
   ToggleHistoryPanel,
   ToggleBookmarksPanel,
   Reload,
+}
+
+/// Returns the accessibility label for a page context menu action.
+///
+/// Visible menu text is intentionally kept stable (and may not encode state), so for "toggle"
+/// actions we include the current checked state in the a11y label.
+#[cfg(any(test, feature = "browser_ui"))]
+pub fn format_page_context_menu_a11y_label(
+  base_label: &str,
+  action: &PageContextMenuAction,
+  checked: bool,
+) -> String {
+  match action {
+    PageContextMenuAction::ToggleHistoryPanel => {
+      if checked { "History panel: shown" } else { "History panel: hidden" }.to_string()
+    }
+    PageContextMenuAction::ToggleBookmarksPanel => {
+      if checked { "Bookmarks panel: shown" } else { "Bookmarks panel: hidden" }.to_string()
+    }
+    PageContextMenuAction::BookmarkLink(_) => {
+      if checked { "Bookmark link: on" } else { "Bookmark link: off" }.to_string()
+    }
+    PageContextMenuAction::BookmarkPage(_) => {
+      if checked { "Bookmark page: on" } else { "Bookmark page: off" }.to_string()
+    }
+    _ => base_label.to_string(),
+  }
 }
 
 #[cfg(feature = "browser_ui")]
@@ -197,6 +224,101 @@ pub fn build_page_context_menu_entries(
   }));
 
   out
+}
+
+#[cfg(test)]
+mod a11y_label_tests {
+  use super::*;
+
+  #[test]
+  fn format_page_context_menu_a11y_label_includes_toggle_state() {
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Show History",
+        &PageContextMenuAction::ToggleHistoryPanel,
+        true
+      ),
+      "History panel: shown"
+    );
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Show History",
+        &PageContextMenuAction::ToggleHistoryPanel,
+        false
+      ),
+      "History panel: hidden"
+    );
+
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Show Bookmarks",
+        &PageContextMenuAction::ToggleBookmarksPanel,
+        true
+      ),
+      "Bookmarks panel: shown"
+    );
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Show Bookmarks",
+        &PageContextMenuAction::ToggleBookmarksPanel,
+        false
+      ),
+      "Bookmarks panel: hidden"
+    );
+  }
+
+  #[test]
+  fn format_page_context_menu_a11y_label_includes_bookmark_state() {
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Bookmark Page",
+        &PageContextMenuAction::BookmarkPage("https://example.com".into()),
+        true
+      ),
+      "Bookmark page: on"
+    );
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Bookmark Page",
+        &PageContextMenuAction::BookmarkPage("https://example.com".into()),
+        false
+      ),
+      "Bookmark page: off"
+    );
+
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Bookmark Link",
+        &PageContextMenuAction::BookmarkLink("https://example.com".into()),
+        true
+      ),
+      "Bookmark link: on"
+    );
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Bookmark Link",
+        &PageContextMenuAction::BookmarkLink("https://example.com".into()),
+        false
+      ),
+      "Bookmark link: off"
+    );
+  }
+
+  #[test]
+  fn format_page_context_menu_a11y_label_preserves_non_toggle_labels() {
+    assert_eq!(
+      format_page_context_menu_a11y_label("Reload", &PageContextMenuAction::Reload, false),
+      "Reload"
+    );
+    assert_eq!(
+      format_page_context_menu_a11y_label(
+        "Copy Link Address",
+        &PageContextMenuAction::CopyLinkAddress("https://example.com".into()),
+        false
+      ),
+      "Copy Link Address"
+    );
+  }
 }
 
 #[cfg(feature = "browser_ui")]

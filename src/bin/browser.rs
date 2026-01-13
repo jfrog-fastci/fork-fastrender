@@ -5064,6 +5064,7 @@ impl App {
       icon: BrowserIcon,
       label: String,
       action: PageContextMenuAction,
+      checked: bool,
     }
 
     #[derive(Clone)]
@@ -5104,6 +5105,7 @@ impl App {
             icon,
             label: item.label.to_string(),
             action: item.action,
+            checked: item.checked,
           }));
         }
       }
@@ -5280,7 +5282,11 @@ impl App {
               egui::Sense::click(),
             );
             response.widget_info({
-              let label = item.label.clone();
+              let label = fastrender::ui::context_menu::format_page_context_menu_a11y_label(
+                &item.label,
+                &item.action,
+                item.checked,
+              );
               move || egui::WidgetInfo::labeled(egui::WidgetType::Button, label.clone())
             });
 
