@@ -95,10 +95,15 @@ Suites are small TOML/JSON files that select tests by:
 - include globs (`include = [...]`)
 - exclude globs (`exclude = [...]`)
 
-The runner ships with a built-in suite at `suites/smoke.toml`, usable via:
+The runner ships with built-in suites:
+
+- `smoke`: minimal non-module smoke suite (`suites/smoke.toml`)
+- `modules_smoke`: curated ES module smoke suite (`suites/modules_smoke.toml`)
 
 ```bash
 bash scripts/cargo_agent.sh run -p test262-semantic -- --suite smoke
+# Module tests (import/export/import.meta/module early errors):
+bash scripts/cargo_agent.sh run -p test262-semantic -- --suite modules_smoke --list
 ```
 
 There is also an initial module-focused suite at `suites/modules_smoke.toml`:

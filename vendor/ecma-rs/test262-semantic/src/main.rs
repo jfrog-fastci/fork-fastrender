@@ -18,6 +18,27 @@ mod validate;
 
 const DEFAULT_TEST262_DIR: &str = "test262-semantic/data";
 
+fn resolve_default_test262_dir(dir: PathBuf) -> PathBuf {
+  // `test262-semantic` is used both from the `ecma-rs` workspace root (where the
+  // `test262-semantic/data` submodule path exists) and from within the crate directory (where it
+  // doesn't).
+  //
+  // Make the default work in both places while still erroring out cleanly for non-default,
+  // user-provided paths.
+  if dir.join("test").is_dir() {
+    return dir;
+  }
+
+  if dir == PathBuf::from(DEFAULT_TEST262_DIR) {
+    let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data");
+    if fallback.join("test").is_dir() {
+      return fallback;
+    }
+  }
+
+  dir
+}
+
 fn default_jobs() -> usize {
   // Keep defaults conservative to avoid runaway memory usage when/if parallel
   // execution is enabled.
@@ -156,7 +177,8 @@ fn try_main() -> Result<ExitCode> {
       ReportCommand::Compare(args) => report::run_cli(args),
     },
     Some(Command::List(args)) => {
-      let tests = discover_tests(&args.test262_dir)?;
+      let test262_dir = resolve_default_test262_dir(args.test262_dir);
+      let tests = discover_tests(&test262_dir)?;
       println!("{}", tests.len());
       Ok(ExitCode::SUCCESS)
     }
@@ -164,9 +186,10 @@ fn try_main() -> Result<ExitCode> {
   }
 }
 
-fn run_cli(cli: RunArgs) -> Result<ExitCode> {
+fn run_cli(mut cli: RunArgs) -> Result<ExitCode> {
   let _ = cli.jobs;
 
+  cli.test262_dir = resolve_default_test262_dir(cli.test262_dir);
   let discovered = discover_tests(&cli.test262_dir)?;
   let selected = select_tests_from_cli(&discovered, &cli)?;
   let filter = build_filter(cli.filter.as_deref())?;

@@ -753,8 +753,12 @@ impl VmJsExecutor {
 
     let is_async = case.metadata.flags.iter().any(|flag| flag == "async");
 
+    // Keep `max_stack_depth` conservative: the `vm-js` interpreter still uses host recursion
+    // heavily enough that very deep call stacks can overflow the native stack before the default
+    // `VmOptions::max_stack_depth` guard triggers (even on the enlarged test thread stack).
     let vm = Vm::new(VmOptions {
       interrupt_flag: Some(Arc::clone(cancel)),
+      max_stack_depth: 256,
       ..VmOptions::default()
     });
     let heap = Heap::new(self.heap_limits);
@@ -1995,7 +1999,8 @@ f(2000);
     assert_eq!(js.phase, ExecPhase::Runtime);
     assert_eq!(js.typ.as_deref(), Some("RangeError"));
     assert!(
-      js.message.contains("stack overflow"),
+      js.message.to_ascii_lowercase().contains("stack overflow")
+        || js.message.to_ascii_lowercase().contains("call stack"),
       "expected stack overflow message, got: {}",
       js.message
     );
