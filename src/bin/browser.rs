@@ -6967,6 +6967,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let show_safe_mode_toast = matches!(source, StartupSessionSource::SafeMode);
   let bookmarks_path = fastrender::ui::bookmarks_path();
   let history_path = fastrender::ui::history_path();
+  let downloads_path = fastrender::ui::downloads_path();
 
   // Startup toasts are only meaningful for the windowed UI. Headless modes exit before any window
   // is created, so avoid even formatting the user-facing messages.
@@ -7071,6 +7072,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       fastrender::ui::GlobalHistoryStore::default()
     }
   };
+  let downloads = match fastrender::ui::load_downloads(&downloads_path) {
+    Ok(outcome) => outcome.value,
+    Err(err) => {
+      eprintln!(
+        "failed to load downloads from {}: {err}",
+        downloads_path.display()
+      );
+      if record_startup_profile_notifications {
+        if let Some(msg) =
+          fastrender::ui::startup_notifications::format_profile_store_load_failure_toast(
+            "downloads",
+            &downloads_path,
+            &err,
+          )
+        {
+          startup_profile_toast_kind = Some(match startup_profile_toast_kind {
+            Some(existing) => max_toast_kind(existing, fastrender::ui::ToastKind::Warning),
+            None => fastrender::ui::ToastKind::Warning,
+          });
+          startup_profile_notifications.push(msg);
+        }
+      }
+      fastrender::ui::DownloadsState::default()
+    }
+  };
+
   let startup_profile_toast_text = if startup_profile_notifications.is_empty() {
     None
   } else {
@@ -7261,7 +7288,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut cpu_sampler = ProcessCpuSampler::new(perf_log_writer.clone(), hud_enabled);
   let mut rss_sampler = ProcessRssSampler::new(perf_log_writer.clone(), hud_enabled);
 
-  // Keep a single profile autosave worker (bookmarks/history) across all windows.
+  // Keep a single profile autosave worker (bookmarks/history/downloads) across all windows.
   let (
     profile_autosave_tx,
     mut profile_autosave,
@@ -7270,6 +7297,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   ) = match fastrender::ui::ProfileAutosaveHandle::spawn_with_error_channel(
     bookmarks_path.clone(),
     history_path.clone(),
+    downloads_path.clone(),
   ) {
     Ok((handle, error_rx)) => (Some(handle.sender()), Some(handle), Some(error_rx), None),
     Err(err) => {
@@ -7290,7 +7318,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // We merge per-window worker messages into this store keyed by `DownloadId`. This relies on the
   // invariant that `DownloadId` values are process-unique across all workers/windows (see
   // `ui::messages::NEXT_DOWNLOAD_ID` / `DownloadId::new`).
-  let mut global_downloads = fastrender::ui::DownloadsState::default();
+  let mut global_downloads = downloads;
 
   // Throttle/clamp expensive "clone full store" history autosave updates.
   //
@@ -7627,6 +7655,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       download_dir.clone(),
       global_bookmarks.clone(),
       global_history.clone(),
+      global_downloads.clone(),
     )?;
     app.browser_state.downloads = global_downloads.clone();
     app.profile_autosave_tx = profile_autosave_tx.clone();
@@ -8057,6 +8086,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
               global_history.clone(),
             ));
           }
+          // Downloads are not synced via deltas across windows; merge the per-window lists so we
+          // persist a complete snapshot on shutdown.
+          let mut merged_downloads = fastrender::ui::DownloadsState::default();
+          for win in windows.values() {
+            merged_downloads
+              .downloads
+              .extend(win.app.browser_state.downloads.downloads.clone());
+          }
+          let _ =
+            tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(merged_downloads));
         }
         autosave.shutdown_with_timeout(std::time::Duration::from_millis(500));
       } else {
@@ -8072,6 +8111,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           eprintln!(
             "failed to save history to {}: {err}",
             history_path.display()
+          );
+        }
+        let mut merged_downloads = fastrender::ui::DownloadsState::default();
+        for win in windows.values() {
+          merged_downloads
+            .downloads
+            .extend(win.app.browser_state.downloads.downloads.clone());
+        }
+        if let Err(err) = fastrender::ui::save_downloads_atomic(&downloads_path, &merged_downloads) {
+          eprintln!(
+            "failed to save downloads to {}: {err}",
+            downloads_path.display()
           );
         }
       }
@@ -8292,8 +8343,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // under pathological message floods (e.g. debug-log spam) we don't monopolize the UI thread
         // and starve input/resize/OS events.
         let mut session_dirty = false;
-        let mut needs_follow_up_wake_any = false;
         let mut downloads_changed_any = false;
+        let mut needs_follow_up_wake_any = false;
         // Aggregate visit deltas across drained windows so we can forward them to the profile
         // autosave worker in a single message.
         let mut history_deltas_for_autosave: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
@@ -8301,6 +8352,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         for window_id in window_order.iter().copied() {
           let mut request_redraw = false;
           let mut history_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
+          let mut downloads_changed = false;
+          let mut needs_follow_up_wake = false;
 
           if let Some(win) = windows.get_mut(&window_id) {
             // Skip windows with no pending worker work. The worker's wake callback sets this flag
@@ -8389,6 +8442,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 QueuedMsg::Clipboard(update) => win.app.handle_worker_clipboard_update(update),
               };
               request_redraw |= result.request_redraw;
+              downloads_changed |= result.downloads_changed;
               history_deltas.extend(result.history_deltas);
             }
 
@@ -8511,6 +8565,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 session_revision_after,
               );
           }
+
+          downloads_changed_any |= downloads_changed;
 
           // Propagate history updates immediately so subsequent windows process their worker
           // messages against the latest global store (avoids lost history entries when multiple
@@ -8653,6 +8709,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           for win in windows.values_mut() {
             win.app.browser_state.downloads = global_downloads.clone();
             win.app.schedule_worker_redraw(now);
+          }
+        }
+
+        if downloads_changed_any {
+          if let Some(tx) = profile_autosave_tx.as_ref() {
+            let mut merged_downloads = fastrender::ui::DownloadsState::default();
+            for win in windows.values() {
+              merged_downloads
+                .downloads
+                .extend(win.app.browser_state.downloads.downloads.clone());
+            }
+            let _ = tx.send(fastrender::ui::AutosaveMsg::UpdateDownloads(merged_downloads));
           }
         }
 
@@ -8823,6 +8891,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .get(&from_id)
           .map(|win| win.app.download_dir.clone())
           .unwrap_or_else(|| download_dir.clone());
+        let seed_downloads = windows
+          .get(&from_id)
+          .map(|win| win.app.browser_state.downloads.clone())
+          .unwrap_or_else(|| global_downloads.clone());
 
         let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
         let theme_accent = applied_appearance
@@ -8947,6 +9019,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           inherited_download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
+          seed_downloads,
         ) {
           Ok(app) => app,
           Err(err) => {
@@ -9031,6 +9104,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           .get(&from_id)
           .map(|win| win.app.download_dir.clone())
           .unwrap_or_else(|| download_dir.clone());
+        let seed_downloads = windows
+          .get(&from_id)
+          .map(|win| win.app.browser_state.downloads.clone())
+          .unwrap_or_else(|| global_downloads.clone());
 
         let applied_appearance = global_appearance.clone().with_env_overrides(appearance_env);
         let theme_accent = applied_appearance
@@ -9155,6 +9232,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           inherited_download_dir.clone(),
           global_bookmarks.clone(),
           global_history.clone(),
+          seed_downloads,
         ) {
           Ok(app) => app,
           Err(err) => {
@@ -14055,6 +14133,7 @@ enum SuppressReceivedCharacter {
 struct WorkerMessageResult {
   request_redraw: bool,
   history_deltas: Vec<fastrender::ui::HistoryVisitDelta>,
+  downloads_changed: bool,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -14595,6 +14674,7 @@ impl App {
     download_dir: std::path::PathBuf,
     bookmarks: fastrender::ui::BookmarkStore,
     history: fastrender::ui::GlobalHistoryStore,
+    downloads: fastrender::ui::DownloadsState,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     // Enable OS IME integration (WindowEvent::Ime) so the page can handle non-Latin input methods.
     // Egui manages IME for chrome text fields; we forward IME events to the page when appropriate.
@@ -14786,6 +14866,7 @@ impl App {
     let mut browser_state = fastrender::ui::BrowserAppState::new();
     browser_state.history = history;
     browser_state.seed_visited_from_history();
+    browser_state.downloads = downloads;
 
     let search_suggest_wake: std::sync::Arc<dyn Fn() + Send + Sync> = {
       // `SearchSuggestService` is winit-agnostic, so bridge back into the event loop via a callback.
@@ -18254,6 +18335,7 @@ impl App {
         return WorkerMessageResult {
           request_redraw: false,
           history_deltas: Vec::new(),
+          downloads_changed: false,
         };
       }
     }
@@ -18338,6 +18420,7 @@ impl App {
     WorkerMessageResult {
       request_redraw: true,
       history_deltas: Vec::new(),
+      downloads_changed: false,
     }
   }
 
@@ -18361,6 +18444,7 @@ impl App {
         return WorkerMessageResult {
           request_redraw: true,
           history_deltas: Vec::new(),
+          downloads_changed: false,
         };
       }
       fastrender::ui::WorkerToUi::RequestOpenInNewWindow { tab_id, url } => {
@@ -18391,6 +18475,7 @@ impl App {
         return WorkerMessageResult {
           request_redraw: true,
           history_deltas: Vec::new(),
+          downloads_changed: false,
         };
       }
       #[cfg(feature = "browser_ui")]
@@ -18444,6 +18529,7 @@ impl App {
       return WorkerMessageResult {
         request_redraw: false,
         history_deltas: Vec::new(),
+        downloads_changed: false,
       };
     };
     if let fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } = &msg {
@@ -18480,6 +18566,7 @@ impl App {
       return WorkerMessageResult {
         request_redraw: false,
         history_deltas: Vec::new(),
+        downloads_changed: false,
       };
     }
 
@@ -18650,6 +18737,7 @@ impl App {
 
     let mut request_redraw = false;
     let mut history_deltas: Vec<fastrender::ui::HistoryVisitDelta> = Vec::new();
+    let mut downloads_changed = false;
 
     if let fastrender::ui::WorkerToUi::DebugLog { tab_id, line } = &msg {
       let safe = fastrender::ui::untrusted::sanitize_untrusted_text(
@@ -19057,6 +19145,7 @@ impl App {
       self.sync_about_open_tabs_snapshot();
     }
     history_deltas.append(&mut update.history_deltas);
+    downloads_changed |= update.downloads_changed;
 
     let has_frame_ready = update.frame_ready.is_some();
 
@@ -19262,6 +19351,7 @@ impl App {
     WorkerMessageResult {
       request_redraw,
       history_deltas,
+      downloads_changed,
     }
   }
 
@@ -22076,12 +22166,25 @@ impl App {
     }
 
     for (tab_id, download_id) in output.cancel_requests {
+      let tab_id = if tab_id.0 == 0 {
+        self.browser_state.active_tab_id().unwrap_or(tab_id)
+      } else {
+        tab_id
+      };
       let _ = self.send_worker_msg(UiToWorker::CancelDownload {
         tab_id,
         download_id,
       });
     }
     for (tab_id, url, filename_hint) in output.retry_requests {
+      let tab_id = if tab_id.0 == 0 {
+        let Some(tab_id) = self.browser_state.active_tab_id() else {
+          continue;
+        };
+        tab_id
+      } else {
+        tab_id
+      };
       let _ = self.send_worker_msg(UiToWorker::StartDownload {
         tab_id,
         url,

@@ -1,4 +1,4 @@
-//! Browser UI bookmarks + history persistence.
+//! Browser UI profile persistence (bookmarks/history/downloads).
 //!
 //! This module is the single authoritative implementation for:
 //! - Determining persistence paths (`*_path` helpers)
@@ -9,18 +9,149 @@
 //! in lockstep.
 
 use crate::ui::bookmarks::BookmarkStore;
+use crate::ui::browser_app::{DownloadEntry, DownloadStatus, DownloadsState};
 use crate::ui::global_history::{GlobalHistoryEntry, GlobalHistoryStore};
+use crate::ui::messages::{DownloadId, TabId};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 const BOOKMARKS_ENV_PATH: &str = "FASTR_BROWSER_BOOKMARKS_PATH";
 const HISTORY_ENV_PATH: &str = "FASTR_BROWSER_HISTORY_PATH";
+const DOWNLOADS_ENV_PATH: &str = "FASTR_BROWSER_DOWNLOADS_PATH";
 
 const BOOKMARKS_FILE_NAME: &str = "fastrender_bookmarks.json";
 const HISTORY_FILE_NAME: &str = "fastrender_history.json";
+const DOWNLOADS_FILE_NAME: &str = "fastrender_downloads.json";
 
 const HISTORY_VERSION: u32 = 1;
+const DOWNLOADS_VERSION: u32 = 1;
+
+// Keep the downloads file bounded so a long-lived profile does not grow without limit.
+const MAX_PERSISTED_DOWNLOADS: usize = 500;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PersistedDownloadStatus {
+  Completed,
+  Failed,
+  Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersistedDownloadEntry {
+  pub url: String,
+  #[serde(default)]
+  pub file_name: String,
+  pub path: PathBuf,
+  pub status: PersistedDownloadStatus,
+  /// Unix epoch milliseconds when the download started, when known.
+  #[serde(default)]
+  pub started_at_ms: Option<u64>,
+  /// Unix epoch milliseconds when the download finished/cancelled, when known.
+  #[serde(default)]
+  pub finished_at_ms: Option<u64>,
+}
+
+/// Versioned on-disk downloads schema.
+///
+/// The in-memory UI model is [`DownloadsState`] (which is intentionally not versioned); this
+/// wrapper is the authoritative persisted schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PersistedDownloadsStore {
+  pub version: u32,
+  #[serde(default)]
+  pub entries: Vec<PersistedDownloadEntry>,
+}
+
+impl Default for PersistedDownloadsStore {
+  fn default() -> Self {
+    Self {
+      version: DOWNLOADS_VERSION,
+      entries: Vec::new(),
+    }
+  }
+}
+
+impl PersistedDownloadsStore {
+  fn sanitized(mut self) -> Self {
+    self.version = DOWNLOADS_VERSION;
+    self.entries.retain(|e| !e.url.trim().is_empty());
+
+    // Dedup by (path, url), keeping the newest occurrence (last-in-file wins).
+    use std::collections::HashSet;
+    let mut seen: HashSet<(PathBuf, String)> = HashSet::new();
+    let mut deduped_rev: Vec<PersistedDownloadEntry> = Vec::with_capacity(self.entries.len());
+    for entry in self.entries.into_iter().rev() {
+      let key = (entry.path.clone(), entry.url.clone());
+      if seen.insert(key) {
+        deduped_rev.push(entry);
+      }
+    }
+    deduped_rev.reverse();
+    self.entries = deduped_rev;
+
+    if self.entries.len() > MAX_PERSISTED_DOWNLOADS {
+      let overflow = self.entries.len() - MAX_PERSISTED_DOWNLOADS;
+      self.entries.drain(0..overflow);
+    }
+    self
+  }
+
+  pub fn from_state(state: &DownloadsState) -> Self {
+    Self {
+      version: DOWNLOADS_VERSION,
+      entries: state
+        .downloads
+        .iter()
+        .filter_map(|d| {
+          let status = match d.status {
+            DownloadStatus::Completed => PersistedDownloadStatus::Completed,
+            DownloadStatus::Cancelled => PersistedDownloadStatus::Cancelled,
+            DownloadStatus::Failed { .. } => PersistedDownloadStatus::Failed,
+            // Do not persist in-progress downloads across restart.
+            DownloadStatus::InProgress { .. } => return None,
+          };
+
+          Some(PersistedDownloadEntry {
+            url: d.url.clone(),
+            file_name: d.file_name.clone(),
+            path: d.path.clone(),
+            status,
+            started_at_ms: d.started_at_ms,
+            finished_at_ms: d.finished_at_ms,
+          })
+        })
+        .collect(),
+    }
+    .sanitized()
+  }
+
+  pub fn into_state(self) -> DownloadsState {
+    let mut out = DownloadsState::default();
+    out.downloads = self
+      .entries
+      .into_iter()
+      .map(|e| DownloadEntry {
+        download_id: DownloadId::new(),
+        // Downloads restored from disk are not associated with any active tab; UIs should pick a
+        // reasonable tab id (e.g. active tab) when retrying.
+        tab_id: TabId(0),
+        url: e.url,
+        file_name: e.file_name,
+        path: e.path,
+        status: match e.status {
+          PersistedDownloadStatus::Completed => DownloadStatus::Completed,
+          PersistedDownloadStatus::Cancelled => DownloadStatus::Cancelled,
+          PersistedDownloadStatus::Failed => DownloadStatus::Failed { error: String::new() },
+        },
+        started_at_ms: e.started_at_ms,
+        finished_at_ms: e.finished_at_ms,
+      })
+      .collect();
+    out
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadSource {
@@ -124,6 +255,16 @@ pub fn history_path() -> PathBuf {
   profile_path(HISTORY_ENV_PATH, HISTORY_FILE_NAME)
 }
 
+/// Determine the on-disk downloads file location.
+///
+/// Order of precedence:
+/// 1. `FASTR_BROWSER_DOWNLOADS_PATH` env var (used by tests).
+/// 2. A deterministic per-user config file (via `directories`).
+/// 3. Fallback to `./fastrender_downloads.json` in the current working directory.
+pub fn downloads_path() -> PathBuf {
+  profile_path(DOWNLOADS_ENV_PATH, DOWNLOADS_FILE_NAME)
+}
+
 /// Attempt to read + parse a bookmarks file.
 ///
 /// Missing files return [`LoadSource::Empty`] rather than an error.
@@ -170,6 +311,29 @@ pub fn load_history(path: &Path) -> Result<LoadOutcome<GlobalHistoryStore>, Stri
   })
 }
 
+/// Attempt to read + parse a downloads file.
+///
+/// Missing files return [`LoadSource::Empty`] rather than an error.
+pub fn load_downloads(path: &Path) -> Result<LoadOutcome<DownloadsState>, String> {
+  let data = match std::fs::read_to_string(path) {
+    Ok(data) => data,
+    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+      return Ok(LoadOutcome {
+        source: LoadSource::Empty,
+        value: DownloadsState::default(),
+      })
+    }
+    Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
+  };
+
+  let store =
+    parse_downloads_json(&data).map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+  Ok(LoadOutcome {
+    source: LoadSource::Disk,
+    value: store,
+  })
+}
+
 /// Parse a bookmarks JSON payload (canonical `BookmarkStore` or legacy schemas) into the in-memory
 /// [`BookmarkStore`] model.
 pub fn parse_bookmarks_json(raw: &str) -> Result<BookmarkStore, String> {
@@ -178,7 +342,7 @@ pub fn parse_bookmarks_json(raw: &str) -> Result<BookmarkStore, String> {
 }
 
 /// Parse a history JSON payload (v1 or legacy schemas) into the in-memory [`GlobalHistoryStore`] model.
-  pub fn parse_history_json(raw: &str) -> Result<GlobalHistoryStore, String> {
+pub fn parse_history_json(raw: &str) -> Result<GlobalHistoryStore, String> {
     #[derive(Debug, Clone, Deserialize)]
     struct HeadlessHistoryEntry {
       url: String,
@@ -233,6 +397,18 @@ pub fn parse_bookmarks_json(raw: &str) -> Result<BookmarkStore, String> {
   })
 }
 
+/// Parse a downloads JSON payload (v1 schema) into the in-memory [`DownloadsState`] model.
+pub fn parse_downloads_json(raw: &str) -> Result<DownloadsState, String> {
+  let parsed: PersistedDownloadsStore = serde_json::from_str(raw).map_err(|err| err.to_string())?;
+  if parsed.version != DOWNLOADS_VERSION {
+    return Err(format!(
+      "unsupported downloads version {}; expected {}",
+      parsed.version, DOWNLOADS_VERSION
+    ));
+  }
+  Ok(parsed.sanitized().into_state())
+}
+
 /// Write the bookmarks file atomically (write temp file + rename).
 pub fn save_bookmarks_atomic(path: &Path, bookmarks: &BookmarkStore) -> Result<(), String> {
   save_json_atomic(path, bookmarks)
@@ -241,6 +417,12 @@ pub fn save_bookmarks_atomic(path: &Path, bookmarks: &BookmarkStore) -> Result<(
 /// Write the history file atomically (write temp file + rename).
 pub fn save_history_atomic(path: &Path, history: &GlobalHistoryStore) -> Result<(), String> {
   let persisted = PersistedGlobalHistoryStore::from_store(history);
+  save_json_atomic(path, &persisted)
+}
+
+/// Write the downloads file atomically (write temp file + rename).
+pub fn save_downloads_atomic(path: &Path, downloads: &DownloadsState) -> Result<(), String> {
+  let persisted = PersistedDownloadsStore::from_state(downloads);
   save_json_atomic(path, &persisted)
 }
 
@@ -322,10 +504,24 @@ mod tests {
   }
 
   #[test]
+  fn downloads_path_env_override_wins() {
+    let mut env = HashMap::new();
+    env.insert(
+      DOWNLOADS_ENV_PATH,
+      OsString::from("/tmp/fastr_downloads_override.json"),
+    );
+    assert_eq!(
+      profile_path_from_lookup(DOWNLOADS_ENV_PATH, DOWNLOADS_FILE_NAME, |k| env.get(k).cloned()),
+      PathBuf::from("/tmp/fastr_downloads_override.json")
+    );
+  }
+
+  #[test]
   fn load_missing_files_returns_empty_store() {
     let dir = tempfile::tempdir().unwrap();
     let bookmarks_path = dir.path().join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let bookmarks = load_bookmarks(&bookmarks_path).unwrap();
     assert_eq!(bookmarks.source, LoadSource::Empty);
@@ -334,6 +530,10 @@ mod tests {
     let history = load_history(&history_path).unwrap();
     assert_eq!(history.source, LoadSource::Empty);
     assert_eq!(history.value, GlobalHistoryStore::default());
+
+    let downloads = load_downloads(&downloads_path).unwrap();
+    assert_eq!(downloads.source, LoadSource::Empty);
+    assert_eq!(downloads.value, DownloadsState::default());
   }
 
   #[test]
@@ -341,6 +541,7 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let bookmarks_path = dir.path().join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let mut bookmarks = BookmarkStore::default();
     assert!(bookmarks.toggle("https://a.example/", Some("a")));
@@ -356,6 +557,33 @@ mod tests {
     });
     save_history_atomic(&history_path, &history).unwrap();
 
+    let mut downloads = DownloadsState::default();
+    downloads.downloads.push(DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id: TabId(1),
+      url: "https://example.com/file.zip".to_string(),
+      file_name: "file.zip".to_string(),
+      path: PathBuf::from("/tmp/file.zip"),
+      status: DownloadStatus::Completed,
+      started_at_ms: Some(1),
+      finished_at_ms: Some(2),
+    });
+    // In-progress downloads should not be persisted.
+    downloads.downloads.push(DownloadEntry {
+      download_id: DownloadId(2),
+      tab_id: TabId(2),
+      url: "https://example.com/inprogress".to_string(),
+      file_name: "inprogress.bin".to_string(),
+      path: PathBuf::from("/tmp/inprogress.bin"),
+      status: DownloadStatus::InProgress {
+        received_bytes: 5,
+        total_bytes: Some(10),
+      },
+      started_at_ms: Some(3),
+      finished_at_ms: None,
+    });
+    save_downloads_atomic(&downloads_path, &downloads).unwrap();
+
     let loaded_bookmarks: BookmarkStore =
       serde_json::from_str(&std::fs::read_to_string(&bookmarks_path).unwrap()).unwrap();
     assert_eq!(loaded_bookmarks, bookmarks);
@@ -363,6 +591,13 @@ mod tests {
     let loaded_history: PersistedGlobalHistoryStore =
       serde_json::from_str(&std::fs::read_to_string(&history_path).unwrap()).unwrap();
     assert_eq!(loaded_history, PersistedGlobalHistoryStore::from_store(&history));
+
+    let loaded_downloads: PersistedDownloadsStore =
+      serde_json::from_str(&std::fs::read_to_string(&downloads_path).unwrap()).unwrap();
+    assert_eq!(
+      loaded_downloads,
+      PersistedDownloadsStore::from_state(&downloads)
+    );
   }
 
   #[test]
@@ -435,5 +670,24 @@ mod tests {
     // Unsupported versions should error (do not silently ignore the version field).
     let unsupported = r#"{"version":999,"entries":[]}"#;
     assert!(parse_history_json(unsupported).is_err());
+  }
+
+  #[test]
+  fn downloads_schema_versioning_and_roundtrip() {
+    // Canonical v1 schema.
+    let v1 = r#"{"version":1,"entries":[{"url":"https://example.com/","file_name":"a.bin","path":"/tmp/a.bin","status":"completed","started_at_ms":1,"finished_at_ms":2}]}"#;
+    let store = parse_downloads_json(v1).unwrap();
+    assert_eq!(store.downloads.len(), 1);
+    let entry = &store.downloads[0];
+    assert_eq!(entry.url, "https://example.com/");
+    assert_eq!(entry.file_name, "a.bin");
+    assert_eq!(entry.path, PathBuf::from("/tmp/a.bin"));
+    assert!(matches!(entry.status, DownloadStatus::Completed));
+    assert_eq!(entry.started_at_ms, Some(1));
+    assert_eq!(entry.finished_at_ms, Some(2));
+
+    // Unsupported versions should error.
+    let unsupported = r#"{"version":999,"entries":[]}"#;
+    assert!(parse_downloads_json(unsupported).is_err());
   }
 }

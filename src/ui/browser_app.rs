@@ -51,6 +51,20 @@ pub(crate) const CLOSED_TAB_STACK_CAPACITY: usize = 20;
 const MAX_DOWNLOAD_ENTRIES: usize = 500;
 const CRASH_REASON_MAX_CHARS: usize = 200;
 
+fn system_time_to_unix_ms(now: SystemTime) -> u64 {
+  now
+    .duration_since(SystemTime::UNIX_EPOCH)
+    .map(|d| {
+      let ms = d.as_millis();
+      if ms > u64::MAX as u128 {
+        u64::MAX
+      } else {
+        ms as u64
+      }
+    })
+    .unwrap_or(0)
+}
+
 static NEXT_TAB_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
 fn derive_site_key_from_url(url: &str) -> Option<SiteKey> {
@@ -327,6 +341,10 @@ pub struct DownloadEntry {
   /// are UTF-16). Downloads panel UI is rendered every frame, so cache it per entry.
   pub path_display: String,
   pub status: DownloadStatus,
+  /// Unix epoch milliseconds when the download was initiated, when known.
+  pub started_at_ms: Option<u64>,
+  /// Unix epoch milliseconds when the download completed/failed/cancelled, when known.
+  pub finished_at_ms: Option<u64>,
 }
 
 impl DownloadEntry {
@@ -357,12 +375,13 @@ mod download_entry_retry_tests {
       status: DownloadStatus::Failed {
         error: "network error".to_string(),
       },
+      started_at_ms: None,
+      finished_at_ms: None,
     };
 
     assert_eq!(entry.retry_request(), (tab_id, url, Some(file_name)));
   }
 }
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DownloadsState {
   pub downloads: Vec<DownloadEntry>,
@@ -529,6 +548,8 @@ impl DownloadsState {
             received_bytes: 0,
             total_bytes: *total_bytes,
           },
+          started_at_ms: None,
+          finished_at_ms: None,
         });
         true
       }
@@ -590,6 +611,10 @@ pub struct AppUpdate {
   /// restore the user near where they were. Windowed UI front-ends are expected to throttle session
   /// autosaves based on this flag rather than saving on every scroll/frame.
   pub scroll_session_dirty: bool,
+  /// Whether the downloads list has a new terminal entry (completed/failed/cancelled).
+  ///
+  /// Front-ends that persist downloads to disk can use this to decide when to flush new snapshots.
+  pub downloads_changed: bool,
   /// Recommended full window title for the host window.
   pub set_window_title: Option<String>,
   /// A new pixmap is ready for upload; the state model does not store pixel buffers.
@@ -3639,21 +3664,34 @@ impl BrowserAppState {
         // model does not store clipboard contents.
         update.request_redraw = true;
       }
-      msg @ WorkerToUi::DownloadStarted { tab_id, .. } => {
+      msg @ WorkerToUi::DownloadStarted {
+        tab_id,
+        download_id,
+        ..
+      } => {
         // Renderer-driven downloads are untrusted in a multi-process world. Only accept new
         // downloads for known tabs so compromised renderers can't grow memory by inventing tab ids.
         if self.tab(tab_id).is_some() && self.downloads.apply_worker_msg(&msg) {
+          if let Some(entry) = self.downloads.get_mut(download_id) {
+            entry.started_at_ms.get_or_insert(system_time_to_unix_ms(now));
+            entry.finished_at_ms = None;
+          }
           self.bump_session_revision();
           update.request_redraw = true;
         }
       }
       msg @ WorkerToUi::DownloadProgress { .. } => {
         if self.downloads.apply_worker_msg(&msg) {
+          self.bump_session_revision();
           update.request_redraw = true;
         }
       }
-      msg @ WorkerToUi::DownloadFinished { .. } => {
+      msg @ WorkerToUi::DownloadFinished { download_id, .. } => {
         if self.downloads.apply_worker_msg(&msg) {
+          if let Some(entry) = self.downloads.get_mut(download_id) {
+            entry.finished_at_ms = Some(system_time_to_unix_ms(now));
+          }
+          update.downloads_changed = true;
           self.bump_session_revision();
           update.request_redraw = true;
         }
@@ -3844,6 +3882,8 @@ mod browser_app_tests {
       path: std::path::PathBuf::from(format!("file-{download_id}")),
       path_display: format!("file-{download_id}"),
       status,
+      started_at_ms: None,
+      finished_at_ms: None,
     }
   }
 

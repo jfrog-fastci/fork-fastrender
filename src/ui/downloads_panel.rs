@@ -1082,6 +1082,8 @@ mod tests {
       path: PathBuf::from("/tmp/example"),
       path_display: "/tmp/example".to_string(),
       status: DownloadStatus::Completed,
+      started_at_ms: Some(1),
+      finished_at_ms: Some(2),
     }
   }
 

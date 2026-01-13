@@ -380,9 +380,10 @@ pub use panel_widgets::{
 };
 pub use profile_autosave::{AutosaveMsg, ProfileAutosaveError, ProfileAutosaveHandle};
 pub use profile_persistence::{
-  bookmarks_path, history_path, load_bookmarks, load_history, parse_bookmarks_json,
-  parse_history_json, save_bookmarks_atomic, save_history_atomic, LoadOutcome, LoadSource,
-  PersistedGlobalHistoryStore,
+  bookmarks_path, downloads_path, history_path, load_bookmarks, load_downloads, load_history,
+  parse_bookmarks_json, parse_downloads_json, parse_history_json, save_bookmarks_atomic,
+  save_downloads_atomic, save_history_atomic, LoadOutcome, LoadSource, PersistedDownloadEntry,
+  PersistedDownloadStatus, PersistedDownloadsStore, PersistedGlobalHistoryStore,
 };
 
 // NOTE: `ChromeFrameDocument` is re-exported from `crate::chrome_frame` above.

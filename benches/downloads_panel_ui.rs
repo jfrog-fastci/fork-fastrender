@@ -37,6 +37,12 @@ fn synthetic_downloads(count: usize) -> Vec<DownloadEntry> {
     } else {
       DownloadStatus::Completed
     };
+    let started_at_ms = Some(idx as u64);
+    let finished_at_ms = if matches!(status, DownloadStatus::InProgress { .. }) {
+      None
+    } else {
+      Some(idx as u64 + 1)
+    };
     out.push(DownloadEntry {
       download_id: DownloadId(idx as u64 + 1),
       tab_id: TabId(1),
@@ -44,6 +50,8 @@ fn synthetic_downloads(count: usize) -> Vec<DownloadEntry> {
       file_name: format!("file-{idx}.bin"),
       path: PathBuf::from(format!("/tmp/file-{idx}.bin")),
       status,
+      started_at_ms,
+      finished_at_ms,
     });
   }
   out

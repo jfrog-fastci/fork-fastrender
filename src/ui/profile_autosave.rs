@@ -1,28 +1,32 @@
-use crate::ui::profile_persistence::{save_bookmarks_atomic, save_history_atomic};
+use crate::ui::profile_persistence::{
+  save_bookmarks_atomic, save_downloads_atomic, save_history_atomic,
+};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::bookmarks::{BookmarkDelta, BookmarkStore};
+use super::browser_app::DownloadsState;
 use super::global_history::{GlobalHistoryStore, HistoryVisitDelta};
 #[cfg(test)]
 use super::global_history::GlobalHistoryEntry;
 
 const DEFAULT_BOOKMARKS_DEBOUNCE: Duration = Duration::from_secs(1);
 const DEFAULT_HISTORY_DEBOUNCE: Duration = Duration::from_secs(8);
+const DEFAULT_DOWNLOADS_DEBOUNCE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileAutosaveError {
   Bookmarks { path: String, message: String },
   History { path: String, message: String },
 }
-
 #[derive(Debug)]
 pub enum AutosaveMsg {
   UpdateBookmarks(BookmarkStore),
   ApplyBookmarkDeltas(Vec<BookmarkDelta>),
   UpdateHistory(GlobalHistoryStore),
   ApplyHistoryVisitDeltas(Vec<HistoryVisitDelta>),
+  UpdateDownloads(DownloadsState),
   /// Test hook: force an immediate write of the latest pending snapshots.
   Flush(mpsc::Sender<()>),
   Shutdown,
@@ -43,26 +47,36 @@ impl ProfileAutosaveHandle {
     self.tx.send(msg)
   }
 
-  pub fn spawn(bookmarks_path: PathBuf, history_path: PathBuf) -> Result<Self, String> {
+  pub fn spawn(
+    bookmarks_path: PathBuf,
+    history_path: PathBuf,
+    downloads_path: PathBuf,
+  ) -> Result<Self, String> {
     Self::spawn_with_debounce(
       bookmarks_path,
       history_path,
+      downloads_path,
       DEFAULT_BOOKMARKS_DEBOUNCE,
       DEFAULT_HISTORY_DEBOUNCE,
+      DEFAULT_DOWNLOADS_DEBOUNCE,
     )
   }
 
   pub fn spawn_with_debounce(
     bookmarks_path: PathBuf,
     history_path: PathBuf,
+    downloads_path: PathBuf,
     bookmarks_debounce: Duration,
     history_debounce: Duration,
+    downloads_debounce: Duration,
   ) -> Result<Self, String> {
     Self::spawn_with_debounce_impl(
       bookmarks_path,
       history_path,
+      downloads_path,
       bookmarks_debounce,
       history_debounce,
+      downloads_debounce,
       None,
     )
   }
@@ -70,27 +84,34 @@ impl ProfileAutosaveHandle {
   pub fn spawn_with_error_channel(
     bookmarks_path: PathBuf,
     history_path: PathBuf,
+    downloads_path: PathBuf,
   ) -> Result<(Self, mpsc::Receiver<ProfileAutosaveError>), String> {
     Self::spawn_with_debounce_with_error_channel(
       bookmarks_path,
       history_path,
+      downloads_path,
       DEFAULT_BOOKMARKS_DEBOUNCE,
       DEFAULT_HISTORY_DEBOUNCE,
+      DEFAULT_DOWNLOADS_DEBOUNCE,
     )
   }
 
   pub fn spawn_with_debounce_with_error_channel(
     bookmarks_path: PathBuf,
     history_path: PathBuf,
+    downloads_path: PathBuf,
     bookmarks_debounce: Duration,
     history_debounce: Duration,
+    downloads_debounce: Duration,
   ) -> Result<(Self, mpsc::Receiver<ProfileAutosaveError>), String> {
     let (error_tx, error_rx) = mpsc::channel::<ProfileAutosaveError>();
     let handle = Self::spawn_with_debounce_impl(
       bookmarks_path,
       history_path,
+      downloads_path,
       bookmarks_debounce,
       history_debounce,
+      downloads_debounce,
       Some(error_tx),
     )?;
     Ok((handle, error_rx))
@@ -99,8 +120,10 @@ impl ProfileAutosaveHandle {
   fn spawn_with_debounce_impl(
     bookmarks_path: PathBuf,
     history_path: PathBuf,
+    downloads_path: PathBuf,
     bookmarks_debounce: Duration,
     history_debounce: Duration,
+    downloads_debounce: Duration,
     error_tx: Option<mpsc::Sender<ProfileAutosaveError>>,
   ) -> Result<Self, String> {
     let (tx, rx) = mpsc::channel::<AutosaveMsg>();
@@ -111,8 +134,10 @@ impl ProfileAutosaveHandle {
           rx,
           bookmarks_path,
           history_path,
+          downloads_path,
           bookmarks_debounce,
           history_debounce,
+          downloads_debounce,
           error_tx,
         );
       })
@@ -168,8 +193,10 @@ fn autosave_worker_main(
   rx: mpsc::Receiver<AutosaveMsg>,
   bookmarks_path: PathBuf,
   history_path: PathBuf,
+  downloads_path: PathBuf,
   bookmarks_debounce: Duration,
   history_debounce: Duration,
+  downloads_debounce: Duration,
   error_tx: Option<mpsc::Sender<ProfileAutosaveError>>,
 ) {
   // Keep an in-memory snapshot of bookmarks so we can apply incremental deltas without cloning the
@@ -200,16 +227,22 @@ fn autosave_worker_main(
       }
     };
   let mut history_dirty = false;
+  let mut pending_downloads: Option<DownloadsState> = None;
   let mut next_bookmarks_write: Option<Instant> = None;
   let mut next_history_write: Option<Instant> = None;
+  let mut next_downloads_write: Option<Instant> = None;
 
   loop {
     let now = Instant::now();
-    let next_deadline = match (next_bookmarks_write, next_history_write) {
-      (Some(a), Some(b)) => Some(a.min(b)),
-      (Some(a), None) => Some(a),
-      (None, Some(b)) => Some(b),
-      (None, None) => None,
+    let next_deadline = match (next_bookmarks_write, next_history_write, next_downloads_write) {
+      (Some(a), Some(b), Some(c)) => Some(a.min(b).min(c)),
+      (Some(a), Some(b), None) => Some(a.min(b)),
+      (Some(a), None, Some(c)) => Some(a.min(c)),
+      (None, Some(b), Some(c)) => Some(b.min(c)),
+      (Some(a), None, None) => Some(a),
+      (None, Some(b), None) => Some(b),
+      (None, None, Some(c)) => Some(c),
+      (None, None, None) => None,
     };
 
     let msg = match next_deadline {
@@ -244,28 +277,37 @@ fn autosave_worker_main(
           next_history_write = Some(Instant::now() + history_debounce);
         }
       }
+      Ok(AutosaveMsg::UpdateDownloads(downloads)) => {
+        pending_downloads = Some(downloads);
+        next_downloads_write = Some(Instant::now() + downloads_debounce);
+      }
       Ok(AutosaveMsg::Flush(done_tx)) => {
         flush_pending(
           &bookmarks_path,
           &history_path,
+          &downloads_path,
           &bookmarks_state,
           &mut bookmarks_dirty,
           &history_state,
           &mut history_dirty,
+          &mut pending_downloads,
           error_tx.as_ref(),
         );
         next_bookmarks_write = None;
         next_history_write = None;
+        next_downloads_write = None;
         let _ = done_tx.send(());
       }
       Ok(AutosaveMsg::Shutdown) => {
         flush_pending(
           &bookmarks_path,
           &history_path,
+          &downloads_path,
           &bookmarks_state,
           &mut bookmarks_dirty,
           &history_state,
           &mut history_dirty,
+          &mut pending_downloads,
           error_tx.as_ref(),
         );
         break;
@@ -302,6 +344,18 @@ fn autosave_worker_main(
           history_dirty = false;
           next_history_write = None;
         }
+
+        if next_downloads_write.is_some_and(|t| now >= t) {
+          if let Some(downloads) = pending_downloads.take() {
+            if let Err(err) = save_downloads_atomic(&downloads_path, &downloads) {
+              eprintln!(
+                "failed to autosave downloads to {}: {err}",
+                downloads_path.display()
+              );
+            }
+          }
+          next_downloads_write = None;
+        }
       }
       Err(mpsc::RecvTimeoutError::Disconnected) => break,
     }
@@ -311,10 +365,12 @@ fn autosave_worker_main(
 fn flush_pending(
   bookmarks_path: &Path,
   history_path: &Path,
+  downloads_path: &Path,
   bookmarks_state: &BookmarkStore,
   bookmarks_dirty: &mut bool,
   history_state: &GlobalHistoryStore,
   history_dirty: &mut bool,
+  pending_downloads: &mut Option<DownloadsState>,
   error_tx: Option<&mpsc::Sender<ProfileAutosaveError>>,
 ) {
   if *bookmarks_dirty {
@@ -345,22 +401,36 @@ fn flush_pending(
     }
     *history_dirty = false;
   }
+
+  if let Some(downloads) = pending_downloads.take() {
+    if let Err(err) = save_downloads_atomic(downloads_path, &downloads) {
+      eprintln!(
+        "failed to autosave downloads to {}: {err}",
+        downloads_path.display()
+      );
+    }
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::ui::profile_persistence::PersistedGlobalHistoryStore;
+  use crate::ui::messages::{DownloadId, TabId};
+  use crate::ui::profile_persistence::{PersistedDownloadsStore, PersistedGlobalHistoryStore};
+  use std::path::PathBuf;
 
   #[test]
   fn flush_writes_last_update() {
     let dir = tempfile::tempdir().unwrap();
     let bookmarks_path = dir.path().join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let autosave = ProfileAutosaveHandle::spawn_with_debounce(
       bookmarks_path.clone(),
       history_path.clone(),
+      downloads_path.clone(),
+      Duration::from_secs(3600),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
     )
@@ -401,6 +471,35 @@ mod tests {
       }))
       .unwrap();
 
+    let mut downloads_a = DownloadsState::default();
+    downloads_a.downloads.push(crate::ui::browser_app::DownloadEntry {
+      download_id: DownloadId(1),
+      tab_id: TabId(1),
+      url: "https://a.example/file".to_string(),
+      file_name: "file".to_string(),
+      path: PathBuf::from("/tmp/a"),
+      status: crate::ui::browser_app::DownloadStatus::Completed,
+      started_at_ms: Some(1),
+      finished_at_ms: Some(2),
+    });
+    let mut downloads_b = DownloadsState::default();
+    downloads_b.downloads.push(crate::ui::browser_app::DownloadEntry {
+      download_id: DownloadId(2),
+      tab_id: TabId(2),
+      url: "https://b.example/file".to_string(),
+      file_name: "file".to_string(),
+      path: PathBuf::from("/tmp/b"),
+      status: crate::ui::browser_app::DownloadStatus::Cancelled,
+      started_at_ms: Some(3),
+      finished_at_ms: Some(4),
+    });
+    autosave
+      .send(AutosaveMsg::UpdateDownloads(downloads_a))
+      .unwrap();
+    autosave
+      .send(AutosaveMsg::UpdateDownloads(downloads_b.clone()))
+      .unwrap();
+
     autosave.flush(Duration::from_millis(500)).unwrap();
 
     let saved_bookmarks: BookmarkStore =
@@ -418,6 +517,10 @@ mod tests {
     }];
     assert_eq!(saved_history, PersistedGlobalHistoryStore::from_store(&expected));
 
+    let saved_downloads: PersistedDownloadsStore =
+      serde_json::from_str(&std::fs::read_to_string(&downloads_path).unwrap()).unwrap();
+    assert_eq!(saved_downloads, PersistedDownloadsStore::from_state(&downloads_b));
+
     autosave.shutdown_with_timeout(Duration::from_millis(500));
   }
 
@@ -426,10 +529,13 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let bookmarks_path = dir.path().join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let autosave = ProfileAutosaveHandle::spawn_with_debounce(
       bookmarks_path.clone(),
       history_path.clone(),
+      downloads_path.clone(),
+      Duration::from_secs(3600),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
     )
@@ -449,6 +555,8 @@ mod tests {
 
     // History file should not exist (no history updates were sent).
     assert!(!history_path.exists());
+    // Downloads file should not exist (no downloads updates were sent).
+    assert!(!downloads_path.exists());
   }
 
   #[test]
@@ -456,10 +564,13 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let bookmarks_path = dir.path().join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let autosave = ProfileAutosaveHandle::spawn_with_debounce(
       bookmarks_path.clone(),
       history_path,
+      downloads_path,
+      Duration::from_secs(3600),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
     )
@@ -494,10 +605,13 @@ mod tests {
     let dir = tempfile::tempdir().unwrap();
     let bookmarks_path = dir.path().join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let autosave = ProfileAutosaveHandle::spawn_with_debounce(
       bookmarks_path,
       history_path.clone(),
+      downloads_path,
+      Duration::from_secs(3600),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
     )
@@ -561,10 +675,13 @@ mod tests {
 
     let bookmarks_path = not_a_dir.join("bookmarks.json");
     let history_path = dir.path().join("history.json");
+    let downloads_path = dir.path().join("downloads.json");
 
     let (autosave, error_rx) = ProfileAutosaveHandle::spawn_with_debounce_with_error_channel(
       bookmarks_path.clone(),
       history_path,
+      downloads_path,
+      Duration::from_secs(3600),
       Duration::from_secs(3600),
       Duration::from_secs(3600),
     )
