@@ -278,8 +278,10 @@ Notes:
 
 If the parent process is already running inside a Windows Job (common in CI/supervisors):
 
-- `src/sandbox/windows.rs::spawn_sandboxed` (and `win_sandbox::renderer::RendererSandbox`) may try
+- `src/sandbox/windows.rs::spawn_sandboxed` and `win_sandbox::renderer::RendererSandbox` may try
   `CREATE_BREAKAWAY_FROM_JOB` first, then retry without breakaway on `ERROR_ACCESS_DENIED`.
+- The lower-level `win_sandbox::spawn_sandboxed` and `win_sandbox::restricted_token::spawn_with_token`
+  helpers also implement this retry behavior when a `Job` is requested (`SpawnConfig.job != None`).
 - Assigning the child to our new Job can still fail (nested jobs/breakaway restrictions).
   - **Default:** fail closed. The spawner terminates the child process and returns an error (so we
     don’t silently lose `kill-on-close` / active-process limits).
@@ -287,9 +289,10 @@ If the parent process is already running inside a Windows Job (common in CI/supe
     (`SandboxedChild.job == None`) and prints a warning: **kill-on-close + active process limit are
     not enforced**.
 
-Note: `win_sandbox::spawn_sandboxed` (the low-level `CreateProcessW` helper) does not currently
-implement `CREATE_BREAKAWAY_FROM_JOB` retry logic or a “jobless” mode. If you set `SpawnConfig.job`,
-it returns an error if process creation fails due to job/nested-job restrictions.
+Note: the “jobless” fallback mode is only implemented by the higher-level spawners
+(`src/sandbox/windows.rs` and `win_sandbox::renderer::RendererSandbox`) when explicitly opted in. The
+low-level `win_sandbox::{spawn_sandboxed, restricted_token::spawn_with_token}` helpers return an
+error if the process cannot be created/assigned under the requested job.
 
 ## Handle inheritance allowlisting (critical)
 
@@ -438,12 +441,14 @@ When this opt-in is enabled, we fall back to a “best-effort” sandbox:
 Then we spawn the child using `CreateProcessAsUserW` with the restricted primary token (see
 `src/sandbox/windows.rs::spawn_restricted_token`).
 
-Important pitfall (restricted-token spawns that disable broad groups, like `crates/win-sandbox`):
+Important pitfall (restricted-token spawns):
 
 - If `lpCurrentDirectory` is left as `NULL`, Windows inherits the parent’s CWD. When `BUILTIN\\Users`
-  (or similar broad groups) are disabled in the restricted token, that inherited directory may no
-  longer be accessible, causing `CreateProcessAsUserW` to fail with `ERROR_ACCESS_DENIED` (or leaving
-  the child in a “weird” working directory).
+  (or similar broad groups) are disabled in the restricted token **or** when the token runs at Low
+  IL, that inherited directory may no longer be accessible, causing `CreateProcessAsUserW` to fail
+  with `ERROR_ACCESS_DENIED` (or leaving the child in a “weird” working directory).
+- `src/sandbox/windows.rs::spawn_restricted_token` avoids this by setting `lpCurrentDirectory` to the
+  executable’s parent directory (best-effort) and falling back to `C:\\Windows\\System32`.
 - `crates/win-sandbox::restricted_token::spawn_with_token` avoids this by setting an explicit current
   directory: `SpawnConfig.current_dir` if provided, otherwise `SpawnConfig.exe.parent()` (best-effort
   “if the image is loadable, the directory is usually traversable too”).
