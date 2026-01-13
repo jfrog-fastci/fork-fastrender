@@ -114,6 +114,12 @@ Beyond process-per-tab, consider site isolation:
 - Chrome's model: one process per site (not per tab)
 - See [`docs/site_isolation.md`](../docs/site_isolation.md) for FastRender’s intended process assignment policy (MVP + planned evolution).
 
+Defense-in-depth note:
+- Even with correct browser-side process assignment, renderer processes should enforce a *process-level*
+  site/origin lock so cross-site `Navigate` cannot be committed inside a locked renderer due to a bug or
+  compromised renderer logic. See the `SiteLock` / `SetSiteLock` IPC described in
+  [`docs/site_isolation.md`](../docs/site_isolation.md).
+
 FastRender's intended per-origin process assignment + OOPIF semantics are specified in:
 - [`docs/site_isolation.md`](../docs/site_isolation.md) (normative)
 
