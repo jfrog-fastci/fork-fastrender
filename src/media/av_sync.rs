@@ -9,15 +9,14 @@
 //! This is intentionally small and deterministic so it can be used from both real playback code and
 //! deterministic tests. The intended timing model is documented in `docs/media_clocking.md`.
 
-use crate::debug::runtime;
 use std::time::Duration;
 
 /// Environment variable override for [`AvSyncConfig::in_sync_window`].
-pub const ENV_AV_SYNC_TOLERANCE_MS: &str = "FASTR_AV_SYNC_TOLERANCE_MS";
+pub const ENV_AVSYNC_IN_SYNC_MS: &str = "FASTRENDER_AVSYNC_IN_SYNC_MS";
 /// Environment variable override for [`AvSyncConfig::drop_late_threshold`].
-pub const ENV_AV_SYNC_MAX_LATE_MS: &str = "FASTR_AV_SYNC_MAX_LATE_MS";
+pub const ENV_AVSYNC_DROP_LATE_MS: &str = "FASTRENDER_AVSYNC_DROP_LATE_MS";
 /// Environment variable override for [`AvSyncConfig::delay_early_threshold`].
-pub const ENV_AV_SYNC_MAX_EARLY_MS: &str = "FASTR_AV_SYNC_MAX_EARLY_MS";
+pub const ENV_AVSYNC_DELAY_EARLY_MS: &str = "FASTRENDER_AVSYNC_DELAY_EARLY_MS";
 
 /// Default `AvSyncConfig.in_sync_window`, in milliseconds.
 pub const DEFAULT_AV_SYNC_TOLERANCE_MS: u64 = 20;
@@ -52,31 +51,35 @@ impl Default for AvSyncConfig {
 }
 
 impl AvSyncConfig {
-  /// Load A/V sync thresholds from environment variables, falling back to defaults.
+  /// Load A/V sync thresholds from the process environment.
   ///
-  /// Invalid values are ignored (defaults remain in effect) and will emit a warning.
+  /// Environment variables are optional; invalid values are ignored and the defaults remain in
+  /// effect.
   pub fn from_env() -> Self {
-    let toggles = runtime::runtime_toggles();
-    Self::from_env_vars(|key| toggles.get(key).map(ToString::to_string))
+    Self::from_env_overrides(
+      std::env::var(ENV_AVSYNC_IN_SYNC_MS).ok().as_deref(),
+      std::env::var(ENV_AVSYNC_DROP_LATE_MS).ok().as_deref(),
+      std::env::var(ENV_AVSYNC_DELAY_EARLY_MS).ok().as_deref(),
+    )
   }
 
-  fn from_env_vars(mut get: impl FnMut(&str) -> Option<String>) -> Self {
+  fn from_env_overrides(
+    in_sync_ms: Option<&str>,
+    drop_late_ms: Option<&str>,
+    delay_early_ms: Option<&str>,
+  ) -> Self {
     let mut out = Self::default();
-    out.in_sync_window = parse_env_duration_ms_or_default(
-      get(ENV_AV_SYNC_TOLERANCE_MS),
-      DEFAULT_AV_SYNC_TOLERANCE_MS,
-      ENV_AV_SYNC_TOLERANCE_MS,
-    );
-    out.drop_late_threshold = parse_env_duration_ms_or_default(
-      get(ENV_AV_SYNC_MAX_LATE_MS),
-      DEFAULT_AV_SYNC_MAX_LATE_MS,
-      ENV_AV_SYNC_MAX_LATE_MS,
-    );
-    out.delay_early_threshold = parse_env_duration_ms_or_default(
-      get(ENV_AV_SYNC_MAX_EARLY_MS),
-      DEFAULT_AV_SYNC_MAX_EARLY_MS,
-      ENV_AV_SYNC_MAX_EARLY_MS,
-    );
+
+    if let Ok(Some(ms)) = parse_env_ms(in_sync_ms) {
+      out.in_sync_window = Duration::from_millis(ms);
+    }
+    if let Ok(Some(ms)) = parse_env_ms(drop_late_ms) {
+      out.drop_late_threshold = Duration::from_millis(ms);
+    }
+    if let Ok(Some(ms)) = parse_env_ms(delay_early_ms) {
+      out.delay_early_threshold = Duration::from_millis(ms);
+    }
+
     out
   }
 }
@@ -107,33 +110,6 @@ fn parse_env_ms(raw: Option<&str>) -> Result<Option<u64>, ParseEnvMsError> {
 
   let parsed: u64 = parsed.try_into().map_err(|_| ParseEnvMsError::TooLarge)?;
   Ok(Some(parsed))
-}
-
-fn parse_env_duration_ms_or_default(
-  raw: Option<String>,
-  default_ms: u64,
-  key: &'static str,
-) -> Duration {
-  let Some(raw) = raw else {
-    return Duration::from_millis(default_ms);
-  };
-
-  match parse_env_ms(Some(raw.as_str())) {
-    Ok(Some(ms)) => Duration::from_millis(ms),
-    Ok(None) => Duration::from_millis(default_ms),
-    Err(err) => {
-      let reason = match err {
-        ParseEnvMsError::Invalid => "not a valid integer",
-        ParseEnvMsError::Negative => "must be >= 0",
-        ParseEnvMsError::TooLarge => "value does not fit in u64",
-      };
-      eprintln!(
-        "[fastrender] Ignoring invalid {}={:?} ({}); using default {}ms",
-        key, raw, reason, default_ms
-      );
-      Duration::from_millis(default_ms)
-    }
-  }
 }
 
 /// What the video renderer should do with a candidate decoded frame.
@@ -275,6 +251,7 @@ mod tests {
   fn parse_env_ms_parses_u64_values() {
     assert_eq!(parse_env_ms(Some("0")), Ok(Some(0)));
     assert_eq!(parse_env_ms(Some("5")), Ok(Some(5)));
+    assert_eq!(parse_env_ms(Some("+5")), Ok(Some(5)));
     assert_eq!(parse_env_ms(Some("1_000")), Ok(Some(1000)));
     assert_eq!(parse_env_ms(Some("  42  ")), Ok(Some(42)));
   }
@@ -291,16 +268,42 @@ mod tests {
   }
 
   #[test]
-  fn av_sync_config_from_env_vars_applies_overrides() {
-    let vars = std::collections::HashMap::from([
-      (ENV_AV_SYNC_TOLERANCE_MS, "10"),
-      (ENV_AV_SYNC_MAX_LATE_MS, "200"),
-    ]);
+  fn av_sync_env_defaults_when_unset() {
+    let cfg = AvSyncConfig::from_env_overrides(None, None, None);
+    assert_eq!(cfg, AvSyncConfig::default());
+  }
 
-    let cfg = AvSyncConfig::from_env_vars(|k| vars.get(k).map(|v| (*v).to_string()));
+  #[test]
+  fn av_sync_env_parses_valid_values() {
+    let cfg = AvSyncConfig::from_env_overrides(Some("5"), Some("6"), Some("7"));
+    assert_eq!(cfg.in_sync_window, Duration::from_millis(5));
+    assert_eq!(cfg.drop_late_threshold, Duration::from_millis(6));
+    assert_eq!(cfg.delay_early_threshold, Duration::from_millis(7));
+  }
 
-    assert_eq!(cfg.in_sync_window, ms(10));
-    assert_eq!(cfg.drop_late_threshold, ms(200));
-    assert_eq!(cfg.delay_early_threshold, ms(DEFAULT_AV_SYNC_MAX_EARLY_MS));
+  #[test]
+  fn av_sync_env_parses_whitespace_plus_and_underscores() {
+    let cfg = AvSyncConfig::from_env_overrides(Some(" +1_000 "), Some("\t80"), Some("40\n"));
+    assert_eq!(cfg.in_sync_window, Duration::from_millis(1000));
+    assert_eq!(cfg.drop_late_threshold, Duration::from_millis(80));
+    assert_eq!(cfg.delay_early_threshold, Duration::from_millis(40));
+  }
+
+  #[test]
+  fn av_sync_env_ignores_invalid_values() {
+    let default = AvSyncConfig::default();
+    let cfg = AvSyncConfig::from_env_overrides(Some("nope"), Some("-1"), Some(""));
+    assert_eq!(cfg.in_sync_window, default.in_sync_window);
+    assert_eq!(cfg.drop_late_threshold, default.drop_late_threshold);
+    assert_eq!(cfg.delay_early_threshold, default.delay_early_threshold);
+  }
+
+  #[test]
+  fn av_sync_env_ignores_invalid_independently() {
+    let default = AvSyncConfig::default();
+    let cfg = AvSyncConfig::from_env_overrides(Some("21"), Some("broken"), Some("41"));
+    assert_eq!(cfg.in_sync_window, Duration::from_millis(21));
+    assert_eq!(cfg.drop_late_threshold, default.drop_late_threshold);
+    assert_eq!(cfg.delay_early_threshold, Duration::from_millis(41));
   }
 }

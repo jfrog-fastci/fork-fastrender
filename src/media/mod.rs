@@ -36,6 +36,7 @@ pub mod pipeline;
 pub mod timebase;
 
 pub use audio_clock::InterpolatedAudioClock;
+pub use av_sync::AvSyncConfig;
 pub use clock::{AudioDeviceClock, AudioStreamClock, MediaClock, RealAudioDeviceClock};
 pub use master_clock::{ClockSource, MasterClock};
 pub use mp4::{Mp4Demuxer, Mp4Sample, Mp4Track, SeekMethod};

@@ -1147,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_macos_sandbox_from_env_respects_debug_disable_escape_hatch() {
+  fn apply_macos_sandbox_from_env_respects_debug_disable_escape_hatch() {
       const CHILD_ENV: &str = "FASTR_TEST_APPLY_MACOS_SANDBOX_FROM_ENV_CHILD";
 
       if std::env::var_os(CHILD_ENV).is_some() {
