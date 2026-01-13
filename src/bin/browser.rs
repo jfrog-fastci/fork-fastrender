@@ -16381,9 +16381,23 @@ impl App {
       .show(kind, text.to_string(), now, TOAST_DEFAULT_TTL);
   }
 
-  fn render_chrome_toast(&mut self, ctx: &egui::Context) {
+  fn chrome_toast_style(
+    kind: fastrender::ui::ToastKind,
+    theme_colors: &fastrender::ui::theme::BrowserThemeColors,
+  ) -> (egui::Color32, fastrender::ui::BrowserIcon) {
     use fastrender::ui::ToastKind;
 
+    match kind {
+      ToastKind::Info => (theme_colors.accent, fastrender::ui::BrowserIcon::Info),
+      ToastKind::Warning => (
+        theme_colors.warn,
+        fastrender::ui::BrowserIcon::WarningInsecure,
+      ),
+      ToastKind::Error => (theme_colors.danger, fastrender::ui::BrowserIcon::Error),
+    }
+  }
+
+  fn render_chrome_toast(&mut self, ctx: &egui::Context) {
     let Some(toast) = self.chrome_toast.toast() else {
       self.chrome_toast_rect = None;
       return;
@@ -16404,14 +16418,7 @@ impl App {
     // Nudge upward so it doesn't overlap the warning toast when both are visible.
     let anchor_offset = egui::vec2(-margin - right_inset, -margin - bottom_inset - 56.0);
 
-    let (stroke_color, icon) = match toast_kind {
-      ToastKind::Info => (theme_colors.accent, fastrender::ui::BrowserIcon::Info),
-      ToastKind::Warning => (
-        theme_colors.warn,
-        fastrender::ui::BrowserIcon::WarningInsecure,
-      ),
-      ToastKind::Error => (theme_colors.danger, fastrender::ui::BrowserIcon::Error),
-    };
+    let (stroke_color, icon) = Self::chrome_toast_style(toast_kind, &theme_colors);
 
     let toast_id = egui::Id::new("fastr_chrome_toast");
     let popup = egui::Area::new(toast_id)
@@ -25851,6 +25858,41 @@ fn resolve_cursor_pos_points_for_mouse_input(
 fn clear_page_focus_for_unknown_cursor_pos(page_has_focus: &mut bool, cursor_in_page: &mut bool) {
   *page_has_focus = false;
   *cursor_in_page = false;
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod chrome_toast_style_tests {
+  use super::App;
+  use egui::Color32;
+  use fastrender::ui::theme::BrowserThemeColors;
+  use fastrender::ui::{BrowserIcon, ToastKind};
+
+  #[test]
+  fn maps_toast_kind_to_icon_and_stroke_color() {
+    let colors = BrowserThemeColors {
+      bg: Color32::BLACK,
+      surface: Color32::BLACK,
+      raised: Color32::BLACK,
+      text_primary: Color32::BLACK,
+      text_secondary: Color32::BLACK,
+      border: Color32::BLACK,
+      accent: Color32::from_rgb(0xAA, 0x00, 0x00),
+      danger: Color32::from_rgb(0xBB, 0x00, 0x00),
+      warn: Color32::from_rgb(0xCC, 0x00, 0x00),
+    };
+
+    let (stroke, icon) = App::chrome_toast_style(ToastKind::Info, &colors);
+    assert_eq!(stroke, colors.accent);
+    assert_eq!(icon, BrowserIcon::Info);
+
+    let (stroke, icon) = App::chrome_toast_style(ToastKind::Warning, &colors);
+    assert_eq!(stroke, colors.warn);
+    assert_eq!(icon, BrowserIcon::WarningInsecure);
+
+    let (stroke, icon) = App::chrome_toast_style(ToastKind::Error, &colors);
+    assert_eq!(stroke, colors.danger);
+    assert_eq!(icon, BrowserIcon::Error);
+  }
 }
 
 #[cfg(all(test, feature = "browser_ui"))]

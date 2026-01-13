@@ -316,9 +316,9 @@ mod tests {
     let ttl = Duration::from_secs(2);
     let t0 = Instant::now();
 
-    state.show(ToastKind::Info, "Hello", t0, ttl);
+    state.show(ToastKind::Error, "Hello", t0, ttl);
     let toast = state.toast().expect("toast should exist");
-    assert_eq!(toast.kind, ToastKind::Info);
+    assert_eq!(toast.kind, ToastKind::Error);
     assert_eq!(toast.text, "Hello");
     assert_eq!(state.next_deadline(), Some(t0 + ttl));
 
