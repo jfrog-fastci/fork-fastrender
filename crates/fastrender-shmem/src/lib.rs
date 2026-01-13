@@ -510,8 +510,17 @@ fn open_posix_shm(id: &str, len: usize) -> io::Result<File> {
   // SAFETY: we just opened `fd` and transfer ownership to `File`.
   let file = unsafe { File::from_raw_fd(fd) };
 
-  // Ensure the backing region is large enough before mapping.
-  truncate_fd(file.as_raw_fd(), len)?;
+  // Validate the backing region size before mapping. Mapping past the end of a shared-memory object
+  // can cause SIGBUS on access.
+  let actual_len = fd_len(file.as_raw_fd())?;
+  if actual_len != len {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!(
+        "posix shm size mismatch for id={id}: expected {len} bytes, got {actual_len} bytes"
+      ),
+    ));
+  }
 
   Ok(file)
 }
@@ -543,6 +552,28 @@ impl Drop for PosixUnlinkGuard {
       }
     }
   }
+}
+
+#[cfg(unix)]
+fn fd_len(fd: RawFd) -> io::Result<usize> {
+  let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
+  // SAFETY: `fstat` writes a fully-initialized `stat` on success.
+  let rc = unsafe { libc::fstat(fd, st.as_mut_ptr()) };
+  if rc != 0 {
+    return Err(io::Error::last_os_error());
+  }
+  // SAFETY: initialized by successful `fstat`.
+  let st = unsafe { st.assume_init() };
+  let size: u64 = st
+    .st_size
+    .try_into()
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "posix shm size overflow"))?;
+  usize::try_from(size).map_err(|_| {
+    io::Error::new(
+      io::ErrorKind::InvalidData,
+      "posix shm size does not fit in usize",
+    )
+  })
 }
 
 #[cfg(unix)]
