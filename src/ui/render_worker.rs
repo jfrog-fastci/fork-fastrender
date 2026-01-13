@@ -82,22 +82,44 @@ static UI_WORKER_RENDERER_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "browser_ui")]
 static UI_WORKER_SCROLL_HOVER_SYNC_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Global counter for how many times the UI worker used the scroll-blit fast path (test hook).
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_SCROLL_BLIT_USED_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Global counter for how many times the UI worker *wanted* to use scroll blit but had to fall back
+/// because animation time advanced since the last painted frame (test hook).
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Returns the number of renderers built by the UI worker so far (test hook).
 #[cfg(feature = "browser_ui")]
 pub fn renderer_build_count_for_test() -> usize {
   UI_WORKER_RENDERER_BUILD_COUNT.load(Ordering::Relaxed)
 }
 
-/// Reset the per-process renderer build counter (test hook).
-#[cfg(feature = "browser_ui")]
-pub fn reset_renderer_build_count_for_test() {
-  UI_WORKER_RENDERER_BUILD_COUNT.store(0, Ordering::Relaxed);
-}
-
 /// Returns the number of scroll-induced hover syncs executed so far (test hook).
 #[cfg(feature = "browser_ui")]
 pub fn scroll_hover_sync_count_for_test() -> usize {
   UI_WORKER_SCROLL_HOVER_SYNC_COUNT.load(Ordering::Relaxed)
+}
+
+/// Returns the number of scroll-blit paints performed by the UI worker so far (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn scroll_blit_used_count_for_test() -> usize {
+  UI_WORKER_SCROLL_BLIT_USED_COUNT.load(Ordering::Relaxed)
+}
+
+/// Returns the number of times scroll blit was disabled due to animation-time instability (test
+/// hook).
+#[cfg(feature = "browser_ui")]
+pub fn scroll_blit_disabled_due_to_animation_time_count_for_test() -> usize {
+  UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the per-process renderer build counter (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_renderer_build_count_for_test() {
+  UI_WORKER_RENDERER_BUILD_COUNT.store(0, Ordering::Relaxed);
 }
 
 /// Reset the per-process scroll-induced hover sync counter (test hook).
@@ -156,6 +178,13 @@ pub fn tick_delta_total_for_test(tab_id: TabId) -> Duration {
     .lock()
     .unwrap_or_else(|err| err.into_inner());
   stats.get(&tab_id).map(|s| s.delta_total).unwrap_or_default()
+}
+
+/// Reset scroll-blit counters (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_scroll_blit_stats_for_test() {
+  UI_WORKER_SCROLL_BLIT_USED_COUNT.store(0, Ordering::Relaxed);
+  UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT.store(0, Ordering::Relaxed);
 }
 
 /// Navigation URL that triggers the UI worker crash test when opted in.
@@ -813,6 +842,11 @@ struct TabState {
   force_repaint: bool,
 
   tick_time: Duration,
+  /// Tick-time (animation sampling time) of the last `FrameReady` emitted for this tab.
+  ///
+  /// This is used to gate scroll-blit fast paths: if animation sampling time has advanced since the
+  /// last painted frame, a scroll-blit would reuse stale pixels in the overlapping region.
+  last_painted_tick_time: Duration,
   media: TabMediaWakeState,
 
   /// Site key (origin) of the last successfully committed navigation.
@@ -870,6 +904,7 @@ impl TabState {
       needs_repaint: false,
       force_repaint: false,
       tick_time: Duration::ZERO,
+      last_painted_tick_time: Duration::ZERO,
       media: TabMediaWakeState::default(),
       site_key: None,
       site_mismatch_restarts: 0,
@@ -2441,6 +2476,14 @@ struct JobOutput {
   tab_id: TabId,
   snapshot: CancelSnapshot,
   snapshot_kind: SnapshotKind,
+  /// Tick time (animation timeline time) used for the paint that produced this output, if a frame
+  /// was rendered.
+  ///
+  /// This is tracked separately from `TabState.tick_time` because the worker drains messages (and
+  /// may process additional ticks) *after* rendering but before deciding whether to emit the
+  /// output. We must record the tick time associated with the actual painted pixels so scroll-blit
+  /// gating compares against the correct last-emitted frame.
+  painted_tick_time: Option<Duration>,
   msgs: Vec<WorkerToUi>,
 }
 
@@ -2707,6 +2750,7 @@ impl BrowserRuntime {
         continue;
       }
 
+      let painted_tick_time = output.painted_tick_time;
       for msg in output.msgs {
         // `DebugLog` traffic can be very high volume. When the UI has not opted in, suppress it
         // entirely so we don't waste wakeups/channel traffic on messages that will never be shown.
@@ -2717,6 +2761,9 @@ impl BrowserRuntime {
           WorkerToUi::FrameReady { tab_id, frame } => {
             if let Some(tab) = self.tabs.get_mut(tab_id) {
               tab.last_reported_scroll_state = frame.scroll_state.clone();
+              if let Some(tick_time) = painted_tick_time {
+                tab.last_painted_tick_time = tick_time;
+              }
             }
           }
           WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
@@ -10166,6 +10213,7 @@ impl BrowserRuntime {
         // recovered-from-crash tab), reset tick time so the new document's timeline starts at 0.
         tab.tick_time = Duration::ZERO;
         tab.tick_coalesce = false;
+        tab.last_painted_tick_time = Duration::ZERO;
       }
       (
         tab.cancel.snapshot_prepare(),
@@ -10221,6 +10269,7 @@ impl BrowserRuntime {
             tab_id,
             snapshot,
             snapshot_kind: SnapshotKind::Prepare,
+            painted_tick_time: None,
             msgs: vec![
               WorkerToUi::NavigationFailed {
                 tab_id,
@@ -10273,6 +10322,7 @@ impl BrowserRuntime {
           tab_id,
           snapshot,
           snapshot_kind: SnapshotKind::Prepare,
+          painted_tick_time: None,
           msgs: vec![
             WorkerToUi::NavigationFailed {
               tab_id,
@@ -10381,6 +10431,7 @@ impl BrowserRuntime {
             tab_id,
             snapshot,
             snapshot_kind: SnapshotKind::Prepare,
+            painted_tick_time: None,
             msgs: vec![
               WorkerToUi::NavigationFailed {
                 tab_id,
@@ -10753,6 +10804,7 @@ impl BrowserRuntime {
           tab_id,
           snapshot,
           snapshot_kind: SnapshotKind::Prepare,
+          painted_tick_time: None,
           msgs: vec![
             WorkerToUi::NavigationFailed {
               tab_id,
@@ -11029,6 +11081,7 @@ impl BrowserRuntime {
           tab.interaction = interaction;
           tab.tick_time = Duration::ZERO;
           tab.tick_coalesce = false;
+          tab.last_painted_tick_time = Duration::ZERO;
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
           tab.site_key = Some(site_key_for_navigation(&committed_url, None));
@@ -11092,6 +11145,7 @@ impl BrowserRuntime {
             tab_id,
             snapshot,
             snapshot_kind: SnapshotKind::Prepare,
+            painted_tick_time: None,
             msgs,
           });
         }
@@ -11270,6 +11324,7 @@ impl BrowserRuntime {
     tab.interaction = interaction;
     tab.tick_time = Duration::ZERO;
     tab.tick_coalesce = false;
+    tab.last_painted_tick_time = Duration::ZERO;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
     tab.site_key = Some(site_key_for_navigation(&committed_url, None));
@@ -11416,6 +11471,7 @@ impl BrowserRuntime {
       tab_id,
       snapshot,
       snapshot_kind: SnapshotKind::Prepare,
+      painted_tick_time: emitted_frame.then_some(tab.tick_time),
       msgs,
     })
   }
@@ -11463,6 +11519,7 @@ impl BrowserRuntime {
           if let Some(tab) = self.tabs.get_mut(&tab_id) {
             tab.tick_time = Duration::ZERO;
             tab.tick_coalesce = false;
+            tab.last_painted_tick_time = Duration::ZERO;
             tab.document = Some(doc);
           }
         }
@@ -11476,6 +11533,7 @@ impl BrowserRuntime {
             tab_id,
             snapshot,
             snapshot_kind: SnapshotKind::Prepare,
+            painted_tick_time: None,
             msgs: vec![
               WorkerToUi::NavigationFailed {
                 tab_id,
@@ -11526,6 +11584,7 @@ impl BrowserRuntime {
         tab_id,
         snapshot,
         snapshot_kind: SnapshotKind::Prepare,
+        painted_tick_time: None,
         msgs: vec![
           WorkerToUi::NavigationFailed {
             tab_id,
@@ -11571,6 +11630,7 @@ impl BrowserRuntime {
           tab_id,
           snapshot,
           snapshot_kind: SnapshotKind::Prepare,
+          painted_tick_time: None,
           msgs: vec![
             WorkerToUi::NavigationFailed {
               tab_id,
@@ -11597,6 +11657,7 @@ impl BrowserRuntime {
           tab_id,
           snapshot,
           snapshot_kind: SnapshotKind::Prepare,
+          painted_tick_time: None,
           msgs: vec![
             WorkerToUi::NavigationFailed {
               tab_id,
@@ -11622,6 +11683,7 @@ impl BrowserRuntime {
     tab.js_dom_mutation_generation = 0;
     tab.tick_time = Duration::ZERO;
     tab.tick_coalesce = false;
+    tab.last_painted_tick_time = Duration::ZERO;
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_painted_scroll_state = Some(tab.scroll_state.clone());
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
@@ -11693,6 +11755,7 @@ impl BrowserRuntime {
       tab_id,
       snapshot,
       snapshot_kind: SnapshotKind::Prepare,
+      painted_tick_time: Some(tab.tick_time),
       msgs,
     })
   }
@@ -11743,6 +11806,26 @@ impl BrowserRuntime {
           }
         }
       }
+    }
+
+    let painted_tick_time = tab.tick_time;
+    let mut force = force;
+
+    // Scroll-blit fast paths must be disabled when animation sampling time has advanced since the
+    // last painted frame. Otherwise we'd reuse pixels from the previous animation time in the
+    // overlapping region and only repaint the newly exposed scroll stripes.
+    let wants_ticks = tab
+      .document
+      .as_ref()
+      .is_some_and(document_wants_ticks);
+    let should_disable_scroll_blit_for_animation_time =
+      is_scroll && !force && wants_ticks && tab.tick_time != tab.last_painted_tick_time;
+    if should_disable_scroll_blit_for_animation_time {
+      #[cfg(feature = "browser_ui")]
+      UI_WORKER_SCROLL_BLIT_DISABLED_ANIMATION_TIME_COUNT.fetch_add(1, Ordering::Relaxed);
+      // Treat this paint as a forced repaint so any scroll-blit optimization paths fall back to a
+      // full repaint.
+      force = true;
     }
 
     let snapshot = tab.cancel.snapshot_paint();
@@ -11827,6 +11910,7 @@ impl BrowserRuntime {
       }
     }
 
+    let did_paint = painted.is_some();
     let mut viewport_scrolled = false;
     if let Some(frame) = painted {
       tab.scroll_state = frame.scroll_state.clone();
@@ -11923,6 +12007,7 @@ impl BrowserRuntime {
       tab_id,
       snapshot,
       snapshot_kind: SnapshotKind::Paint,
+      painted_tick_time: did_paint.then_some(painted_tick_time),
       msgs,
     })
   }

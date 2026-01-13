@@ -230,6 +230,7 @@ mod ui_worker_event_handler_properties;
 mod ui_worker_scroll_state_early;
 mod ui_worker_scroll_update_dedup;
 mod ui_worker_scroll_hover_coalescing;
+mod ui_worker_scroll_blit_animation_time;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_fixed_scroll_hit_test;
 mod ui_worker_pointer_hit_test_dedup;
