@@ -570,7 +570,7 @@ impl BoxGenerator {
   }
 
   fn create_text_box(&self, node: &DOMNode) -> BoxNode {
-    let text = node.text.as_ref().unwrap().clone();
+    let text = node.text.clone().unwrap_or_default();
     let box_node = BoxNode::new_text(node.style.clone(), text);
 
     if self.config.include_debug_info {
@@ -842,6 +842,30 @@ mod tests {
     assert!(dom.is_text());
     assert!(!dom.is_element());
     assert_eq!(dom.text, Some("Hello".to_string()));
+  }
+
+  #[test]
+  fn test_create_text_box_missing_text() {
+    let generator = BoxGenerator::new();
+
+    let dom = DOMNode {
+      tag_name: None,
+      id: None,
+      classes: Vec::new(),
+      style: default_style(),
+      text: None,
+      children: Vec::new(),
+      intrinsic_size: None,
+      src: None,
+      alt: None,
+      srcset: None,
+      poster: None,
+      srcdoc: None,
+    };
+
+    let text_box = generator.create_text_box(&dom);
+    assert!(text_box.is_text());
+    assert_eq!(text_box.text(), Some(""));
   }
 
   #[test]
