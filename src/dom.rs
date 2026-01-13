@@ -5014,7 +5014,11 @@ fn convert_handle_to_node(
           let borrowed = template_contents.borrow();
           match &*borrowed {
             Some(content) => (true, Some(content.clone()), content.children.borrow().len()),
-            None => (true, None, 0),
+            // Non-HTML `<template>` elements (e.g. in the SVG/MathML namespaces) are not treated as
+            // inert HTML templates and store their children on the element itself, not in
+            // `template_contents`. Fall back to the normal child list when `template_contents` is
+            // absent to avoid dropping real children.
+            None => (false, None, handle.children.borrow().len()),
           }
         } else {
           (false, None, handle.children.borrow().len())
@@ -11106,6 +11110,55 @@ mod tests {
       }
       other => panic!("expected element node, got {:?}", other),
     }
+  }
+
+  #[test]
+  fn parse_html_preserves_svg_template_children() {
+    let dom = parse_html("<!doctype html><svg><template><g id=hit></g></template></svg>")
+      .expect("parse html");
+
+    let hit = find_element_by_id(&dom, "hit").expect("expected element with id=hit");
+
+    fn build_path_to_node<'a>(
+      node: &'a DomNode,
+      target: *const DomNode,
+      path: &mut Vec<&'a DomNode>,
+    ) -> bool {
+      path.push(node);
+      if node as *const DomNode == target {
+        return true;
+      }
+      for child in node.children.iter() {
+        if build_path_to_node(child, target, path) {
+          return true;
+        }
+      }
+      path.pop();
+      false
+    }
+
+    let mut path = Vec::new();
+    assert!(
+      build_path_to_node(&dom, hit as *const DomNode, &mut path),
+      "expected to find a path from the root to the hit node"
+    );
+
+    let template = path
+      .iter()
+      .rev()
+      .find(|node| matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("template")))
+      .copied()
+      .expect("expected <template> ancestor for SVG hit element");
+
+    assert_eq!(
+      template.namespace(),
+      Some(SVG_NAMESPACE),
+      "expected nearest <template> ancestor to be in the SVG namespace"
+    );
+    assert!(
+      !template.template_contents_are_inert(),
+      "non-HTML <template> elements must not be treated as inert template contents"
+    );
   }
 
   #[test]
