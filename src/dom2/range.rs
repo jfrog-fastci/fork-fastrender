@@ -350,6 +350,90 @@ impl Document {
     })
   }
 
+  /// Return the stringification of `range` per the WHATWG DOM Range stringifier.
+  ///
+  /// Spec: https://dom.spec.whatwg.org/#dom-range-stringifier
+  pub fn range_to_string(&self, range: RangeId) -> DomResult<String> {
+    let range = self.range(range)?;
+    let start = range.start;
+    let end = range.end;
+
+    if start == end {
+      return Ok(String::new());
+    }
+
+    let range_root = self.tree_root_for_range(start.node);
+    if self.tree_root_for_range(end.node) != range_root {
+      // Range endpoints are required to stay within the same tree root. If invariants are broken
+      // (e.g. due to a bug elsewhere), fail closed rather than traversing across roots.
+      return Ok(String::new());
+    }
+
+    // If both endpoints are in the same Text node, return the substring between offsets.
+    if start.node == end.node {
+      let node = self.node_checked(start.node)?;
+      if matches!(&node.kind, NodeKind::Text { .. }) {
+        return self.substring_character_data_for_range(
+          start.node,
+          start.offset,
+          end.offset.saturating_sub(start.offset),
+        );
+      }
+    }
+
+    let mut out = String::new();
+
+    // If start node is a Text node, append the substring from the start offset to the end.
+    {
+      let node = self.node_checked(start.node)?;
+      if matches!(&node.kind, NodeKind::Text { .. }) {
+        let len = self.node_length(start.node)?;
+        if start.offset < len {
+          out.push_str(&self.substring_character_data_for_range(
+            start.node,
+            start.offset,
+            len.saturating_sub(start.offset),
+          )?);
+        }
+      }
+    }
+
+    // For each Text node contained in the range, in tree order, append its data.
+    //
+    // We traverse the range's tree root and filter by containment checks rather than attempting to
+    // step from the start boundary to the end boundary. This is sufficient for WPT coverage and
+    // avoids subtle shadow-root traversal pitfalls (`dom2` stores ShadowRoot nodes as children of
+    // their host elements for renderer traversal).
+    let mut stack: Vec<NodeId> = vec![range_root];
+    while let Some(node_id) = stack.pop() {
+      let node = self.node_checked(node_id)?;
+      if let NodeKind::Text { content } = &node.kind {
+        if self.is_node_contained_in_range(node_id, start, end)? {
+          out.push_str(content);
+        }
+      }
+
+      // Pre-order traversal: push children in reverse order.
+      for &child in node.children.iter().rev() {
+        // Shadow-root aware: never traverse across different tree roots.
+        if self.tree_root_for_range(child) == range_root {
+          stack.push(child);
+        }
+      }
+    }
+
+    // If end node is a Text node, append the substring from the start of the node to the end
+    // offset.
+    {
+      let node = self.node_checked(end.node)?;
+      if matches!(&node.kind, NodeKind::Text { .. }) && end.offset > 0 {
+        out.push_str(&self.substring_character_data_for_range(end.node, 0, end.offset)?);
+      }
+    }
+
+    Ok(out)
+  }
+
   pub fn range_set_start(&mut self, range: RangeId, node: NodeId, offset: usize) -> DomResult<()> {
     self.range_set_start_or_end(range, node, offset, /* is_start */ true)
   }
@@ -1318,5 +1402,30 @@ impl Document {
         range.end.offset = range.end.offset.saturating_add(1);
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::super::parse_html;
+
+  #[test]
+  fn substring_character_data_for_range_uses_code_unit_offsets() {
+    // 😀 is a single Unicode scalar value but encoded as a surrogate pair in UTF-16.
+    let mut doc: super::Document = parse_html("<!doctype html><html></html>").unwrap();
+    let text = doc.create_text("x😀y");
+
+    assert_eq!(
+      doc.substring_character_data_for_range(text, 0, 1).unwrap(),
+      "x"
+    );
+    assert_eq!(
+      doc.substring_character_data_for_range(text, 1, 2).unwrap(),
+      "😀"
+    );
+    assert_eq!(
+      doc.substring_character_data_for_range(text, 3, 1).unwrap(),
+      "y"
+    );
   }
 }

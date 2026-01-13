@@ -34218,6 +34218,104 @@ fn range_set_end_native(
   }
 }
 
+fn range_select_node_contents_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+
+  let node_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let node_key = dom_platform_mut(vm)
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+    .require_node_handle(scope.heap(), node_value)
+    .map_err(|_| VmError::TypeError("Illegal invocation"))?;
+  if node_key.document_id != handle.document_id {
+    return Err(VmError::Throw(make_dom_exception(vm, scope, "WrongDocumentError", "")?));
+  }
+
+  let result = if is_host_document_id(vm, handle.document_id) {
+    mutate_dom_for_vm_host(host, |dom| {
+      let end_offset = match dom.node_length(node_key.node_id) {
+        Ok(v) => v,
+        Err(err) => return (Err(err), false),
+      };
+      let result = dom
+        .range_set_start(handle.range_id, node_key.node_id, 0)
+        .and_then(|_| dom.range_set_end(handle.range_id, node_key.node_id, end_offset));
+      (result, false)
+    })
+    .ok_or(VmError::TypeError("Illegal invocation"))?
+  } else {
+    let Some(mut dom_ptr) = dom_ptr_for_document_id_mut(vm, host, handle.document_id) else {
+      return Err(VmError::TypeError("Illegal invocation"));
+    };
+    // SAFETY: `dom_ptr` points at the `dom2::Document` backing this document ID, and we have
+    // exclusive access for the duration of this native call.
+    let dom = unsafe { dom_ptr.as_mut() };
+
+    let result = dom
+      .node_length(node_key.node_id)
+      .and_then(|end_offset| {
+        dom
+          .range_set_start(handle.range_id, node_key.node_id, 0)
+          .and_then(|_| dom.range_set_end(handle.range_id, node_key.node_id, end_offset))
+      });
+    // Owned documents: skip MutationObserver microtask scheduling.
+    let _ = dom.take_mutation_observer_microtask_needed();
+    result
+  };
+
+  match result {
+    Ok(()) => Ok(Value::Undefined),
+    Err(dom2::DomError::IndexSizeError) => {
+      Err(VmError::Throw(make_dom_exception(vm, scope, "IndexSizeError", "")?))
+    }
+    Err(dom2::DomError::InvalidNodeType) => Err(VmError::Throw(make_dom_exception(
+      vm,
+      scope,
+      "InvalidNodeTypeError",
+      "",
+    )?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  }
+}
+
+fn range_to_string_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let handle = range_handle_from_this(vm, scope, this, "Illegal invocation")?;
+  let dom_ptr = dom_ptr_for_document_id_read(vm, host, handle.document_id)
+    .ok_or(VmError::TypeError("Illegal invocation"))?;
+  // SAFETY: `dom_ptr` is valid for the duration of this native call.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let s = match dom.range_to_string(handle.range_id) {
+    Ok(s) => s,
+    Err(dom2::DomError::InvalidNodeType) => {
+      return Err(VmError::Throw(make_dom_exception(
+        vm,
+        scope,
+        "InvalidNodeTypeError",
+        "",
+      )?));
+    }
+    Err(err) => return Err(VmError::Throw(make_dom_exception(vm, scope, err.code(), "")?)),
+  };
+
+  Ok(Value::String(scope.alloc_string(&s)?))
+}
+
 fn range_compare_boundary_points_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -47332,6 +47430,36 @@ fn init_window_globals(
       scope.push_root(Value::Object(set_end_func))?;
       let set_end_key = alloc_key(&mut scope, "setEnd")?;
       scope.define_property(range_proto, set_end_key, data_desc(Value::Object(set_end_func)))?;
+
+      // Range.prototype.selectNodeContents
+      {
+        let call_id = vm.register_native_call(range_select_node_contents_native)?;
+        let name_s = scope.alloc_string("selectNodeContents")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 1)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "selectNodeContents")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
+
+      // Range.prototype.toString
+      {
+        let call_id = vm.register_native_call(range_to_string_native)?;
+        let name_s = scope.alloc_string("toString")?;
+        scope.push_root(Value::String(name_s))?;
+        let func = scope.alloc_native_function(call_id, None, name_s, 0)?;
+        scope.heap_mut().object_set_prototype(
+          func,
+          Some(realm.intrinsics().function_prototype()),
+        )?;
+        scope.push_root(Value::Object(func))?;
+        let key = alloc_key(&mut scope, "toString")?;
+        scope.define_property(range_proto, key, data_desc(Value::Object(func)))?;
+      }
 
       // Range.prototype.compareBoundaryPoints.
       {

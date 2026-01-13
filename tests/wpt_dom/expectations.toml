@@ -349,6 +349,12 @@ status = "skip"
 reason = "Crash regression HTML does not use testharness.js (runner expects testharness tests)."
 
 [[expectations]]
+id = "dom/ranges/Range-stringifier.html"
+backend = "vmjs"
+status = "pass"
+reason = "Range stringifier implemented (Range.prototype.toString + dom2 traversal)."
+
+[[expectations]]
 glob = "dom/ranges/*.html"
 backend = "quickjs"
 status = "xfail"
