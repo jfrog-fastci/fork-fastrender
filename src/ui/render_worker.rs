@@ -1808,6 +1808,40 @@ impl BrowserRuntime {
       }
     }
 
+    fn flush_scroll_ops(
+      runtime: &mut BrowserRuntime,
+      pending_scroll_to: &mut HashMap<TabId, (f32, f32)>,
+      pending_scroll_delta: &mut HashMap<TabId, (f32, f32)>,
+    ) {
+      if pending_scroll_to.is_empty() && pending_scroll_delta.is_empty() {
+        return;
+      }
+
+      // Deterministic ordering avoids test flakiness when multiple tabs are scrolling.
+      let mut tab_ids: Vec<TabId> = pending_scroll_to
+        .keys()
+        .chain(pending_scroll_delta.keys())
+        .copied()
+        .collect();
+      tab_ids.sort_by_key(|tab_id| tab_id.0);
+      tab_ids.dedup();
+
+      for tab_id in tab_ids {
+        if let Some(pos_css) = pending_scroll_to.remove(&tab_id) {
+          runtime.handle_message(UiToWorker::ScrollTo { tab_id, pos_css });
+        }
+        if let Some(delta_css) = pending_scroll_delta.remove(&tab_id) {
+          if delta_css != (0.0, 0.0) {
+            runtime.handle_message(UiToWorker::Scroll {
+              tab_id,
+              delta_css,
+              pointer_css: None,
+            });
+          }
+        }
+      }
+    }
+
     // Coalesce viewport updates so we only apply the latest viewport/dpr per tab before the next
     // paint. UI-side throttling exists, but if the worker is busy (layout/paint), multiple viewport
     // updates can still queue up.
@@ -1822,19 +1856,74 @@ impl BrowserRuntime {
       TabId,
       ((f32, f32), PointerButton, crate::ui::PointerModifiers),
     > = HashMap::new();
+
     // Find-in-page query updates can arrive on every keystroke. If the render worker is busy (heavy
     // page / slow paint), many `FindQuery` messages can backlog in the unbounded channel. Rebuilding
     // the find index for each intermediate query is wasted work, so coalesce to the latest query per
     // tab.
     let mut pending_find_queries: HashMap<TabId, (String, bool)> = HashMap::new();
 
+    // Coalesce scroll messages so the worker does not fall behind when the UI emits many scroll
+    // updates (e.g. scrollbar thumb drags, rapid programmatic scrolling).
+    //
+    // - `ScrollTo` is last-wins per tab.
+    // - `Scroll { pointer_css: None }` is summed per tab.
+    //
+    // Other messages act as barriers: before handling any non-scroll message, flush the pending
+    // scroll state changes in a deterministic order.
+    let mut pending_scroll_to: HashMap<TabId, (f32, f32)> = HashMap::new();
+    let mut pending_scroll_delta: HashMap<TabId, (f32, f32)> = HashMap::new();
+
     while let Some(msg) = self.try_recv_message() {
       match msg {
+        UiToWorker::ScrollTo { tab_id, pos_css } => {
+          flush_pending(
+            self,
+            &mut pending_viewport,
+            &mut pending_pointer_moves,
+            &mut pending_find_queries,
+          );
+          // A later `ScrollTo` overrides any earlier relative scroll deltas.
+          pending_scroll_delta.remove(&tab_id);
+          pending_scroll_to.insert(tab_id, pos_css);
+        }
+        UiToWorker::Scroll {
+          tab_id,
+          delta_css,
+          pointer_css,
+        } => {
+          if pointer_css.is_some() {
+            flush_pending(
+              self,
+              &mut pending_viewport,
+              &mut pending_pointer_moves,
+              &mut pending_find_queries,
+            );
+            flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
+            self.handle_message(UiToWorker::Scroll {
+              tab_id,
+              delta_css,
+              pointer_css,
+            });
+            continue;
+          }
+
+          flush_pending(
+            self,
+            &mut pending_viewport,
+            &mut pending_pointer_moves,
+            &mut pending_find_queries,
+          );
+          let entry = pending_scroll_delta.entry(tab_id).or_insert((0.0, 0.0));
+          entry.0 += delta_css.0;
+          entry.1 += delta_css.1;
+        }
         UiToWorker::ViewportChanged {
           tab_id,
           viewport_css,
           dpr,
         } => {
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_viewport.insert(tab_id, (viewport_css, dpr));
         }
         UiToWorker::PointerMove {
@@ -1843,6 +1932,7 @@ impl BrowserRuntime {
           button,
           modifiers,
         } => {
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_pointer_moves.insert(tab_id, (pos_css, button, modifiers));
         }
         UiToWorker::FindQuery {
@@ -1850,9 +1940,11 @@ impl BrowserRuntime {
           query,
           case_sensitive,
         } => {
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           pending_find_queries.insert(tab_id, (query, case_sensitive));
         }
         other => {
+          flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
           flush_pending(
             self,
             &mut pending_viewport,
@@ -1864,6 +1956,7 @@ impl BrowserRuntime {
       }
     }
 
+    flush_scroll_ops(self, &mut pending_scroll_to, &mut pending_scroll_delta);
     flush_pending(
       self,
       &mut pending_viewport,
