@@ -993,22 +993,9 @@ fn best_effort_site_for_url(url: &str) -> String {
   if trimmed.is_empty() {
     return "unknown".to_string();
   }
-  let parsed = match url::Url::parse(trimmed) {
-    Ok(url) => url,
-    Err(_) => return "unknown".to_string(),
-  };
-
-  match parsed.scheme() {
-    "http" | "https" => parsed
-      .host_str()
-      .map(str::to_string)
-      .unwrap_or_else(|| "unknown".to_string()),
-    // Use the full `about:*` URL for best-effort display, matching the `SiteKey` behaviour for
-    // hostless schemes.
-    "about" => parsed.to_string(),
-    "file" => "file".to_string(),
-    other => other.to_string(),
-  }
+  crate::ui::SiteKey::from_url(trimmed)
+    .map(|key| key.to_string())
+    .unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn processes_html(full_url: &str) -> String {
@@ -2197,11 +2184,11 @@ mod tests {
 
     let html = html_for_about_url(ABOUT_PROCESSES).unwrap();
     assert!(
-      html.contains("<td><code>example.com</code></td>"),
+      html.contains("<td><code>https://example.com</code></td>"),
       "expected about:processes to render site column for https URLs, got: {html}"
     );
     assert!(
-      html.contains("<td><code>file</code></td>"),
+      html.contains("<td><code>file:///tmp/a.html</code></td>"),
       "expected about:processes to render site column for file URLs, got: {html}"
     );
     assert!(
