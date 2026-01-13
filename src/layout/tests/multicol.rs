@@ -1241,6 +1241,146 @@ fn grid_item_avoid_column_moves_to_next_column_when_it_fits() {
 }
 
 #[test]
+fn avoid_flex_item_moves_to_next_column() {
+  // `break-inside: avoid` should behave like `avoid-column` in a column fragmentation context.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(200.0));
+  parent_style.height = Some(Length::px(100.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Column;
+  let flex_style = Arc::new(flex_style);
+
+  let mut item1_style = ComputedStyle::default();
+  item1_style.height = Some(Length::px(70.0));
+  item1_style.flex_shrink = 0.0;
+  let mut item1 = BoxNode::new_block(
+    Arc::new(item1_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+  item1.id = 710;
+
+  let mut item2_style = ComputedStyle::default();
+  item2_style.break_inside = BreakInside::Avoid;
+  item2_style.flex_shrink = 0.0;
+  let item2_style = Arc::new(item2_style);
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.height = Some(Length::px(30.0));
+  let inner_style = Arc::new(inner_style);
+  let inner_a = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+  let inner_b = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+
+  let mut item2 = BoxNode::new_block(
+    item2_style,
+    FormattingContextType::Block,
+    vec![inner_a, inner_b],
+  );
+  item2.id = 711;
+
+  let mut flex = BoxNode::new_block(
+    flex_style,
+    FormattingContextType::Flex,
+    vec![item1.clone(), item2.clone()],
+  );
+  flex.id = 712;
+
+  let parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![flex.clone()],
+  );
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  let item2_frags = fragments_with_id(&fragment, item2.id);
+  assert_eq!(
+    item2_frags.len(),
+    1,
+    "break-inside: avoid flex item should not split across columns when it fits"
+  );
+  assert_eq!(
+    item2_frags[0].fragmentainer.column_index,
+    Some(1),
+    "expected avoided flex item to be placed in column 2"
+  );
+}
+
+#[test]
+fn tall_avoid_column_flex_item_may_fragment() {
+  // `break-inside: avoid-column` should not prevent fragmentation when the flex item is taller
+  // than the column fragmentainer.
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(200.0));
+  parent_style.height = Some(Length::px(100.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Column;
+  let flex_style = Arc::new(flex_style);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.break_inside = BreakInside::AvoidColumn;
+  item_style.flex_shrink = 0.0;
+  let item_style = Arc::new(item_style);
+
+  // 120px tall item inside 100px-tall columns, with a legal internal break at 60px so the engine
+  // can split it.
+  let mut inner_style = ComputedStyle::default();
+  inner_style.height = Some(Length::px(60.0));
+  let inner_style = Arc::new(inner_style);
+  let inner_a = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+  let inner_b = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, vec![]);
+
+  let mut item =
+    BoxNode::new_block(item_style, FormattingContextType::Block, vec![inner_a, inner_b]);
+  item.id = 720;
+
+  let flex = BoxNode::new_block(
+    flex_style,
+    FormattingContextType::Flex,
+    vec![item.clone()],
+  );
+  let parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![flex.clone()],
+  );
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  let item_frags = fragments_with_id(&fragment, item.id);
+  assert!(
+    item_frags.len() >= 2,
+    "expected tall avoid-column flex item to fragment across columns"
+  );
+  let columns: std::collections::HashSet<_> = item_frags
+    .iter()
+    .map(|frag| frag.fragmentainer.column_index)
+    .collect();
+  assert!(
+    columns.contains(&Some(0)) && columns.contains(&Some(1)),
+    "expected fragments to span at least columns 0 and 1, got {columns:?}"
+  );
+}
+
+#[test]
 fn float_that_fits_is_not_split_or_clipped_across_columns() {
   let mut parent_style = ComputedStyle::default();
   parent_style.width = Some(Length::px(200.0));
