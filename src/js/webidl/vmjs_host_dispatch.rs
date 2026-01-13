@@ -57,6 +57,8 @@ const INTERNAL_NODE_CHILDREN_KEY: &str = "__fastrender_node_children";
 const INTERNAL_HTML_COLLECTION_PROTOTYPE_KEY: &str = "__fastrender_html_collection_prototype";
 // Must match `window_realm::HTML_COLLECTION_ROOT_KEY`.
 const INTERNAL_HTML_COLLECTION_ROOT_KEY: &str = "__fastrender_html_collection_root";
+// Must match `window_realm::NODE_LIST_PROTOTYPE_KEY`.
+const INTERNAL_NODE_LIST_PROTOTYPE_KEY: &str = "__fastrender_node_list_prototype";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UrlSearchParamsIteratorKind {
@@ -1649,6 +1651,88 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok(None) => Ok(Value::Null),
           Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
         }
+      }
+      ("Document", "querySelectorAll", 0) => {
+        let document_obj = Self::require_receiver_object(receiver)?;
+        scope.push_root(Value::Object(document_obj))?;
+
+        let document_id = {
+          let platform = require_dom_platform_mut(vm)?;
+          platform
+            .require_document_handle(scope.heap(), Value::Object(document_obj))?
+            .document_id
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let node_list_proto_key = key_from_str(scope, INTERNAL_NODE_LIST_PROTOTYPE_KEY)?;
+        let node_list_proto = match scope
+          .heap()
+          .object_get_own_data_property_value(document_obj, &node_list_proto_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "missing NodeList prototype for Document.querySelectorAll",
+            ))
+          }
+        };
+
+        let result: Result<Vec<(NodeId, DomInterface)>, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::query_selector_all(host, &selectors, None).map(|nodes| {
+            host.with_dom(|dom| {
+              nodes
+                .into_iter()
+                .map(|node_id| {
+                  let primary = if node_id.index() >= dom.nodes_len() {
+                    DomInterface::Node
+                  } else {
+                    DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                  };
+                  (node_id, primary)
+                })
+                .collect()
+            })
+          }))
+        })?;
+
+        let nodes = match result {
+          Ok(nodes) => nodes,
+          Err(err) => return Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        };
+
+        let list_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(list_obj))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(list_obj, Some(node_list_proto))?;
+
+        for (idx, (node_id, primary)) in nodes.iter().copied().enumerate() {
+          let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+            scope,
+            document_id,
+            node_id,
+            primary,
+          )?;
+          scope.push_root(Value::Object(wrapper))?;
+
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          scope.define_property(
+            list_obj,
+            idx_key,
+            data_property(Value::Object(wrapper), true, true, true),
+          )?;
+        }
+
+        let length_key = key_from_str(scope, "length")?;
+        scope.define_property(
+          list_obj,
+          length_key,
+          data_property(Value::Number(nodes.len() as f64), true, false, false),
+        )?;
+
+        Ok(Value::Object(list_obj))
       }
       ("Document", "documentElement", 0) => {
         let document_obj = Self::require_receiver_object(receiver)?;
@@ -4014,6 +4098,101 @@ impl<Host: WindowRealmHost + DomHost + 'static> WebIdlBindingsHost for VmJsWebId
           Ok(None) => Ok(Value::Null),
           Err(err) => Err(self.dom_exception_to_vm_error(vm, scope, err)),
         }
+      }
+      ("Element", "querySelectorAll", 0) => {
+        let receiver = receiver.unwrap_or(Value::Undefined);
+        let Value::Object(element_obj) = receiver else {
+          return Err(VmError::TypeError("Illegal invocation"));
+        };
+
+        let (document_id, element_id) = {
+          let platform = require_dom_platform_mut(vm)?;
+          let handle = platform.require_element_handle(scope.heap(), Value::Object(element_obj))?;
+          (handle.document_id, handle.node_id)
+        };
+
+        // WebIDL wrapper objects store a back-reference to their owning `Document` wrapper; use the
+        // realm's per-document NodeList prototype so `instanceof NodeList` works.
+        let wrapper_document_key = key_from_str(scope, INTERNAL_WRAPPER_DOCUMENT_KEY)?;
+        let document_obj = match scope
+          .heap()
+          .object_get_own_data_property_value(element_obj, &wrapper_document_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => return Err(VmError::TypeError("Illegal invocation")),
+        };
+        scope.push_root(Value::Object(document_obj))?;
+
+        let node_list_proto_key = key_from_str(scope, INTERNAL_NODE_LIST_PROTOTYPE_KEY)?;
+        let node_list_proto = match scope
+          .heap()
+          .object_get_own_data_property_value(document_obj, &node_list_proto_key)?
+        {
+          Some(Value::Object(obj)) => obj,
+          _ => {
+            return Err(VmError::InvariantViolation(
+              "missing NodeList prototype for Element.querySelectorAll",
+            ))
+          }
+        };
+
+        let selectors =
+          js_string_to_rust_string(scope, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+        let result: Result<Vec<(NodeId, DomInterface)>, DomException> = self.with_dom_host(vm, |host| {
+          Ok(dom2_bindings::query_selector_all(host, &selectors, Some(element_id)).map(|nodes| {
+            host.with_dom(|dom| {
+              nodes
+                .into_iter()
+                .map(|node_id| {
+                  let primary = if node_id.index() >= dom.nodes_len() {
+                    DomInterface::Node
+                  } else {
+                    DomInterface::primary_for_node_kind(&dom.node(node_id).kind)
+                  };
+                  (node_id, primary)
+                })
+                .collect()
+            })
+          }))
+        })?;
+
+        let nodes = match result {
+          Ok(nodes) => nodes,
+          Err(err) => return Err(self.dom_exception_to_vm_error(vm, scope, err)),
+        };
+
+        let list_obj = scope.alloc_object()?;
+        scope.push_root(Value::Object(list_obj))?;
+        scope
+          .heap_mut()
+          .object_set_prototype(list_obj, Some(node_list_proto))?;
+
+        for (idx, (node_id, primary)) in nodes.iter().copied().enumerate() {
+          let wrapper = require_dom_platform_mut(vm)?.get_or_create_wrapper_for_document_id(
+            scope,
+            document_id,
+            node_id,
+            primary,
+          )?;
+          scope.push_root(Value::Object(wrapper))?;
+
+          let idx_key = key_from_str(scope, &idx.to_string())?;
+          scope.define_property(
+            list_obj,
+            idx_key,
+            data_property(Value::Object(wrapper), true, true, true),
+          )?;
+        }
+
+        let length_key = key_from_str(scope, "length")?;
+        scope.define_property(
+          list_obj,
+          length_key,
+          data_property(Value::Number(nodes.len() as f64), true, false, false),
+        )?;
+
+        Ok(Value::Object(list_obj))
       }
       ("Element", "getBoundingClientRect", 0) => {
         let (node_id, _obj) = require_element_receiver(vm, scope, receiver)?;
