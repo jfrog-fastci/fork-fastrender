@@ -989,6 +989,7 @@ fn test262_create_realm(
     Ok(obj) => obj,
     Err(err) => {
       realm.teardown(scope.heap_mut());
+      vm.teardown_realm(scope.heap_mut(), realm_id);
       let _ = vm.load_realm_state(scope.heap_mut(), caller_realm);
       return Err(err);
     }
@@ -997,7 +998,9 @@ fn test262_create_realm(
 
   // Store the realm so its persistent roots can be torn down after the test completes.
   if test262_hooks.created_realms.try_reserve(1).is_err() {
+    let realm_id = realm.id();
     realm.teardown(scope.heap_mut());
+    vm.teardown_realm(scope.heap_mut(), realm_id);
     let _ = vm.load_realm_state(scope.heap_mut(), caller_realm);
     return Err(VmError::OutOfMemory);
   }
@@ -1331,7 +1334,9 @@ fn drain_microtasks_into_hooks(runtime: &mut vm_js::JsRuntime, hooks: &mut Test2
 
 fn teardown_created_realms(runtime: &mut vm_js::JsRuntime, hooks: &mut Test262ModuleHooks) {
   for realm in hooks.created_realms.iter_mut() {
+    let realm_id = realm.id();
     realm.teardown(&mut runtime.heap);
+    runtime.vm.teardown_realm(&mut runtime.heap, realm_id);
   }
   hooks.created_realms.clear();
 }
