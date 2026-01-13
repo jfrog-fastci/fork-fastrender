@@ -588,6 +588,24 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   let dom2 = js_tab.dom();
   let generation = dom2.mutation_generation();
 
+  // When we replace the renderer DOM snapshot, renderer preorder ids can shift. Preserve focus by
+  // remapping from the currently focused renderer preorder id → stable dom2 NodeId → new renderer
+  // preorder id.
+  let prev_focused_preorder = tab.interaction.focused_node_id();
+  let prev_focus_visible = tab.interaction.interaction_state().focus_visible;
+  let prev_focused_dom2_node = prev_focused_preorder.and_then(|focused_preorder| {
+    tab
+      .js_dom_mapping
+      .as_ref()
+      .and_then(|mapping| mapping.node_id_for_preorder(focused_preorder))
+      .or_else(|| {
+        // Fallback: if the focused element has an `id=` attribute, use it as a stable handle.
+        let element_id = dom_node_by_preorder_id(doc.dom(), focused_preorder)
+          .and_then(|node| node.get_attribute_ref("id"));
+        element_id.and_then(|id| dom2.get_element_by_id(id))
+      })
+  });
+
   // Converting the live `dom2` tree into the renderer's DOM snapshot can be expensive and may panic
   // if `to_renderer_dom` hits an internal consistency bug. Keep it isolated so a single bad page
   // does not crash the UI worker thread.
@@ -622,10 +640,17 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   // - option.selected -> selected.
   dom2.project_form_control_state_into_renderer_dom_snapshot(&mut dom_snapshot, &mapping);
 
+  let next_focused_preorder = prev_focused_dom2_node.and_then(|id| mapping.preorder_for_node_id(id));
+
   // Replace the renderer document's DOM in-place so we preserve its configured viewport/dpr/scroll
   // state/animation clock.
   doc.mutate_dom(|dom| {
     *dom = dom_snapshot;
+    if prev_focused_preorder.is_some() {
+      let _ = tab
+        .interaction
+        .focus_node_id(dom, next_focused_preorder, prev_focus_visible);
+    }
     true
   });
   if let Some(committed_url) = tab.last_committed_url.as_deref() {
@@ -639,6 +664,7 @@ fn sync_render_dom_from_js_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender
   }
   tab.js_dom_mapping_generation = generation;
   tab.js_dom_mapping = Some(mapping);
+  tab.js_dom_mapping_miss_log_last.clear();
   tab.js_dom_dirty = false;
   tab.js_dom_mutation_generation = generation;
 
