@@ -1836,6 +1836,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         app.browser_state.appearance = startup_appearance.clone();
 
         app.startup(session_window);
+        // For a detached-tab window, match typical browser UX by keeping keyboard focus in the page
+        // rather than stealing it for the address bar (unlike a fresh `about:newtab` window).
+        app.page_has_focus = true;
+        app.browser_state.chrome.request_focus_address_bar = false;
+        app.browser_state.chrome.request_select_all_address_bar = false;
+        app.browser_state.chrome.address_bar_editing = false;
+        app.browser_state.chrome.address_bar_has_focus = false;
 
         let window_id = app.window.id();
         let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
