@@ -531,6 +531,93 @@ pub fn apply_renderer_sandbox(mode: MacosSandboxMode) -> io::Result<()> {
   }
 
   #[test]
+  fn seatbelt_renderer_system_fonts_denies_filesystem_writes() {
+    const ENV_TEMP_TARGET: &str = "FASTR_TEST_MACOS_SANDBOX_WRITE_DENIED_TEMP_TARGET";
+    const ENV_HOME_TARGET: &str = "FASTR_TEST_MACOS_SANDBOX_WRITE_DENIED_HOME_TARGET";
+
+    let is_child = std::env::var_os(CHILD_ENV).is_some();
+    if is_child {
+      let temp_target = std::env::var_os(ENV_TEMP_TARGET)
+        .map(std::path::PathBuf::from)
+        .expect("child missing temp target env var");
+      let home_target = std::env::var_os(ENV_HOME_TARGET)
+        .map(std::path::PathBuf::from)
+        .expect("child missing home target env var");
+
+      apply_renderer_sandbox(MacosSandboxMode::RendererSystemFonts)
+        .expect("apply renderer-system-fonts sandbox profile");
+
+      let temp_err = std::fs::write(&temp_target, b"fastrender sandbox write test")
+        .expect_err("expected sandbox to deny writes under temp_dir");
+      assert!(
+        is_permission_error(&temp_err),
+        "expected sandbox to deny writes under temp_dir (path={}, err={temp_err:?})",
+        temp_target.display()
+      );
+
+      let home_err = std::fs::write(&home_target, b"fastrender sandbox write test")
+        .expect_err("expected sandbox to deny writes under $HOME");
+      assert!(
+        is_permission_error(&home_err),
+        "expected sandbox to deny writes under $HOME (path={}, err={home_err:?})",
+        home_target.display()
+      );
+
+      return;
+    }
+
+    let temp_target = std::env::temp_dir().join(format!(
+      "fastrender_sandbox_write_test_{}_temp.txt",
+      std::process::id()
+    ));
+
+    let home_dir = std::env::var_os("HOME")
+      .map(std::path::PathBuf::from)
+      .expect("HOME should be set for sandbox write test");
+    let caches_dir = home_dir.join("Library").join("Caches");
+    let home_target = if caches_dir.is_dir() {
+      caches_dir.join(format!(
+        "fastrender_sandbox_write_test_{}_home.txt",
+        std::process::id()
+      ))
+    } else {
+      home_dir.join(format!(
+        "fastrender_sandbox_write_test_{}_home.txt",
+        std::process::id()
+      ))
+    };
+
+    // Best-effort cleanup in case the host environment already has a stale file from a previous run
+    // (writes should fail once the sandbox is active, so cleanup must happen before/after via the
+    // unsandboxed parent).
+    let _ = std::fs::remove_file(&temp_target);
+    let _ = std::fs::remove_file(&home_target);
+
+    let exe = std::env::current_exe().expect("current test exe path");
+    let test_name =
+      "sandbox::macos::tests::seatbelt_renderer_system_fonts_denies_filesystem_writes";
+    let output = Command::new(exe)
+      .env(CHILD_ENV, "1")
+      .env(ENV_TEMP_TARGET, &temp_target)
+      .env(ENV_HOME_TARGET, &home_target)
+      .arg("--exact")
+      .arg(test_name)
+      .arg("--nocapture")
+      .output()
+      .expect("spawn child test process");
+
+    let _ = std::fs::remove_file(&temp_target);
+    let _ = std::fs::remove_file(&home_target);
+
+    assert!(
+      output.status.success(),
+      "child process should exit successfully (stdout={}, stderr={})",
+      String::from_utf8_lossy(&output.stdout),
+      String::from_utf8_lossy(&output.stderr)
+    );
+  }
+
+  #[test]
   fn seatbelt_pure_computation_blocks_process_spawn() {
     let is_child = std::env::var_os(CHILD_ENV).is_some();
     if is_child {
