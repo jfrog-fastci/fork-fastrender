@@ -5435,6 +5435,42 @@ mod tests {
     // After GC, the rooted object should no longer be live.
     heap.collect_garbage();
     assert_eq!(weak.upgrade(&heap), None);
+
+    Ok(())
+  }
+
+  #[test]
+  fn derived_constructor_without_super_throws_reference_error() -> Result<(), VmError> {
+    let vm = Vm::new(VmOptions::default());
+    let heap = Heap::new(crate::HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut rt = crate::JsRuntime::new(vm, heap)?;
+
+    let value = rt.exec_script(
+      r#"
+        var name;
+        try {
+          class A {}
+          class B extends A { constructor() { } }
+          new B();
+          name = "no";
+        } catch (e) {
+          name = e.name;
+        }
+        name
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "ReferenceError");
+
+    // A derived constructor may return an object explicitly without calling `super()`.
+    let value = rt.exec_script(
+      r#"
+        class A {}
+        class B extends A { constructor() { return {}; } }
+        typeof new B()
+      "#,
+    )?;
+    assert_eq!(value_to_string(&rt, value), "object");
+
     Ok(())
   }
 }
