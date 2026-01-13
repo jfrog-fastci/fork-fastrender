@@ -30,6 +30,10 @@ This doc is a short, “what exists today” guide for:
   - Entry point: `build_accessibility_tree` (returns `AccessibilityNode`).
   - Output schema: [`AccessibilityNode`](../src/accessibility.rs) is `Serialize` and is what
     `dump_a11y` prints as JSON.
+    - `AccessibilityNode.node_id` is the renderer’s 1-indexed pre-order id for the originating DOM
+      node. It is intentionally **not** part of the stable JSON output (`#[serde(skip)]`), but it is
+      used internally for mapping (for example the keys in `WorkerToUi::PageAccessibility.bounds_css`
+      match these preorder ids).
   - Input: styled DOM (`StyledNode`) + optional [`InteractionState`](../src/interaction/state.rs) to
     populate dynamic state such as focus/selection (when available).
 
