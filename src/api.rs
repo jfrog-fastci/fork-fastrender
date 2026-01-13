@@ -22685,6 +22685,7 @@ mod tests {
 
     let styled = StyledNode {
       node_id: 7,
+      subtree_size: 1,
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "div".to_string(),
@@ -22751,6 +22752,7 @@ mod tests {
 
     let styled = StyledNode {
       node_id: 7,
+      subtree_size: 1,
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "div".to_string(),
@@ -23509,6 +23511,7 @@ mod tests {
 
     let styled = StyledNode {
       node_id: 1,
+      subtree_size: 2,
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "div".to_string(),
@@ -23540,6 +23543,7 @@ mod tests {
       slotted_node_ids: Vec::new(),
       children: vec![StyledNode {
         node_id: 7,
+        subtree_size: 1,
         node: DomNode {
           node_type: DomNodeType::Element {
             tag_name: "div".to_string(),
@@ -23640,6 +23644,7 @@ mod tests {
 
     let styled = StyledNode {
       node_id: 1,
+      subtree_size: 2,
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "div".to_string(),
@@ -23671,6 +23676,7 @@ mod tests {
       slotted_node_ids: Vec::new(),
       children: vec![StyledNode {
         node_id: 7,
+        subtree_size: 1,
         node: DomNode {
           node_type: DomNodeType::Element {
             tag_name: "div".to_string(),
@@ -23773,6 +23779,7 @@ mod tests {
 
     let node_a = StyledNode {
       node_id: 7,
+      subtree_size: 1,
       node: base_node.clone(),
       styles: style_a,
       starting_styles: Default::default(),
@@ -23800,6 +23807,7 @@ mod tests {
 
     let node_b = StyledNode {
       node_id: 7,
+      subtree_size: 1,
       node: base_node,
       styles: style_b,
       starting_styles: Default::default(),

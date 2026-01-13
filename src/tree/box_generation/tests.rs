@@ -26,6 +26,7 @@ fn default_style() -> Arc<ComputedStyle> {
 fn styled_element(tag: &str) -> StyledNode {
   StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: DomNode {
       node_type: DomNodeType::Element {
         tag_name: tag.to_string(),
@@ -812,6 +813,7 @@ fn box_generation_reuses_computed_style_arcs() {
   };
   let text_node = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: text_dom,
     styles: Arc::clone(&text_style),
     starting_styles: StartingStyleSet::default(),
@@ -847,6 +849,7 @@ fn box_generation_reuses_computed_style_arcs() {
   };
   let root_node = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: root_dom,
     styles: Arc::clone(&root_style),
     starting_styles: StartingStyleSet::default(),
@@ -916,6 +919,7 @@ fn generate_box_tree_includes_marker_from_marker_styles() {
   };
   let text_node = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: text_dom.clone(),
     styles: Arc::new(ComputedStyle::default()),
     starting_styles: StartingStyleSet::default(),
@@ -952,6 +956,7 @@ fn generate_box_tree_includes_marker_from_marker_styles() {
 
   let li = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: li_dom,
     styles: Arc::new(li_style),
     starting_styles: StartingStyleSet::default(),
@@ -1997,6 +2002,7 @@ fn select_option_text_ignores_script_descendants() {
   fn styled_text(content: &str) -> StyledNode {
     StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: DomNode {
         node_type: DomNodeType::Text {
           content: content.to_string(),
@@ -3605,6 +3611,7 @@ fn fallback_marker_resets_box_model_but_inherits_color() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -3686,6 +3693,7 @@ fn marker_styles_keep_text_decorations_and_shadows() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -3761,6 +3769,7 @@ fn marker_styles_preserve_text_transform() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -3819,6 +3828,7 @@ fn pseudo_content_respects_quotes_property() {
   let base_style = ComputedStyle::default();
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -3900,6 +3910,7 @@ fn pseudo_content_supports_attr_counter_and_image() {
   let base_style = ComputedStyle::default();
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -3979,6 +3990,7 @@ fn pseudo_content_url_does_not_treat_nbsp_as_empty() {
   let base_style = ComputedStyle::default();
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4048,6 +4060,7 @@ fn marker_content_url_does_not_treat_nbsp_as_empty() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -4257,6 +4270,7 @@ fn before_counter_increment_affects_descendant_generated_content() {
 
   let child = StyledNode {
     node_id: 2,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "span".to_string(),
@@ -4291,6 +4305,7 @@ fn before_counter_increment_affects_descendant_generated_content() {
 
   let parent = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4325,6 +4340,7 @@ fn before_counter_increment_affects_descendant_generated_content() {
 
   let root = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4386,6 +4402,7 @@ fn display_contents_nodes_affect_counters() {
 
   let contents_node = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4420,6 +4437,7 @@ fn display_contents_nodes_affect_counters() {
 
   let probe_node = StyledNode {
     node_id: 2,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4454,6 +4472,7 @@ fn display_contents_nodes_affect_counters() {
 
   let root = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4516,6 +4535,7 @@ fn pseudo_element_content_none_does_not_affect_counters() {
 
   let child = StyledNode {
     node_id: 2,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "span".to_string(),
@@ -4550,6 +4570,7 @@ fn pseudo_element_content_none_does_not_affect_counters() {
 
   let parent = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4584,6 +4605,7 @@ fn pseudo_element_content_none_does_not_affect_counters() {
 
   let root = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4651,6 +4673,7 @@ fn marker_content_none_does_not_affect_counters() {
 
   let child = StyledNode {
     node_id: 2,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "span".to_string(),
@@ -4685,6 +4708,7 @@ fn marker_content_none_does_not_affect_counters() {
 
   let li = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -4719,6 +4743,7 @@ fn marker_content_none_does_not_affect_counters() {
 
   let root = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4787,6 +4812,7 @@ fn marker_counter_increment_affects_list_item_descendants() {
 
   let child = StyledNode {
     node_id: 2,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "span".to_string(),
@@ -4821,6 +4847,7 @@ fn marker_counter_increment_affects_list_item_descendants() {
 
   let li = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -4855,6 +4882,7 @@ fn marker_counter_increment_affects_list_item_descendants() {
 
   let root = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4913,6 +4941,7 @@ fn after_counter_increment_occurs_after_descendants() {
 
   let mk_counter_span = |node_id: usize| StyledNode {
     node_id,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "span".to_string(),
@@ -4951,6 +4980,7 @@ fn after_counter_increment_occurs_after_descendants() {
 
   let target = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -4985,6 +5015,7 @@ fn after_counter_increment_occurs_after_descendants() {
 
   let sibling = StyledNode {
     node_id: 3,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "p".to_string(),
@@ -5019,6 +5050,7 @@ fn after_counter_increment_occurs_after_descendants() {
 
   let root = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -5083,6 +5115,7 @@ fn marker_content_resolves_structured_content() {
   let base_style = ComputedStyle::default();
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5141,6 +5174,7 @@ fn marker_uses_string_list_style_type() {
   let style = Arc::new(style);
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5202,6 +5236,7 @@ fn marker_uses_symbols_list_style_type() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5262,6 +5297,7 @@ fn disclosure_closed_marker_points_right_in_ltr() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5322,6 +5358,7 @@ fn disclosure_closed_marker_points_left_in_rtl() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5379,6 +5416,7 @@ fn disc_marker_has_space_suffix() {
   let style = Arc::new(style);
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5445,6 +5483,7 @@ fn marker_uses_custom_counter_style_definition() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5503,6 +5542,7 @@ fn decimal_marker_has_dot_suffix() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5571,6 +5611,7 @@ fn custom_counter_style_prefix_suffix_descriptors_are_used_for_marker() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5644,6 +5685,7 @@ fn custom_counter_style_extends_inherits_prefix_suffix_for_marker() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5714,6 +5756,7 @@ fn custom_counter_style_extends_cycle_falls_back_to_decimal_marker() {
 
   let styled = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5776,6 +5819,7 @@ fn unordered_list_decimal_starts_at_one() {
 
   let mk_li = |node_id: usize| StyledNode {
     node_id,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5810,6 +5854,7 @@ fn unordered_list_decimal_starts_at_one() {
 
   let ul = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ul".to_string(),
@@ -5882,6 +5927,7 @@ fn ordered_list_start_attribute_sets_initial_counter() {
 
   let mk_li = |text: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -5918,6 +5964,7 @@ fn ordered_list_start_attribute_sets_initial_counter() {
     slotted_node_ids: Vec::new(),
     children: vec![StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dom::DomNode {
         node_type: dom::DomNodeType::Text {
           content: text.to_string(),
@@ -5951,6 +5998,7 @@ fn ordered_list_start_attribute_sets_initial_counter() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: ol_dom,
     styles: ol_style,
     starting_styles: StartingStyleSet::default(),
@@ -6017,6 +6065,7 @@ fn ordered_list_defaults_start_at_one() {
 
   let mk_li = |text: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6053,6 +6102,7 @@ fn ordered_list_defaults_start_at_one() {
     slotted_node_ids: Vec::new(),
     children: vec![StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dom::DomNode {
         node_type: dom::DomNodeType::Text {
           content: text.to_string(),
@@ -6086,6 +6136,7 @@ fn ordered_list_defaults_start_at_one() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: ol_dom,
     styles: ol_style,
     starting_styles: StartingStyleSet::default(),
@@ -6144,6 +6195,7 @@ fn list_item_implicit_increment_survives_counter_increment_none() {
 
   let text_node = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Text {
         content: content.to_string(),
@@ -6176,6 +6228,7 @@ fn list_item_implicit_increment_survives_counter_increment_none() {
 
   let li = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6210,6 +6263,7 @@ fn list_item_implicit_increment_survives_counter_increment_none() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -6282,6 +6336,7 @@ fn list_item_implicit_increment_survives_counter_increment_other_counter() {
 
   let text_node = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Text {
         content: content.to_string(),
@@ -6314,6 +6369,7 @@ fn list_item_implicit_increment_survives_counter_increment_other_counter() {
 
   let li = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6348,6 +6404,7 @@ fn list_item_implicit_increment_survives_counter_increment_other_counter() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -6438,6 +6495,7 @@ fn display_none_list_items_do_not_increment_list_item_counter() {
 
   let text_node = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Text {
         content: content.to_string(),
@@ -6470,6 +6528,7 @@ fn display_none_list_items_do_not_increment_list_item_counter() {
 
   let li = |content: &str, hidden: bool| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6508,6 +6567,7 @@ fn display_none_list_items_do_not_increment_list_item_counter() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -6587,6 +6647,7 @@ fn reversed_ordered_list_counts_down() {
 
   let mk_li = |text: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6623,6 +6684,7 @@ fn reversed_ordered_list_counts_down() {
     slotted_node_ids: Vec::new(),
     children: vec![StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dom::DomNode {
         node_type: dom::DomNodeType::Text {
           content: text.to_string(),
@@ -6656,6 +6718,7 @@ fn reversed_ordered_list_counts_down() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: ol_dom,
     styles: ol_style,
     starting_styles: StartingStyleSet::default(),
@@ -6718,6 +6781,7 @@ fn reversed_list_default_start_ignores_display_none_items() {
 
   let text_node = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Text {
         content: content.to_string(),
@@ -6750,6 +6814,7 @@ fn reversed_list_default_start_ignores_display_none_items() {
 
   let li = |content: &str, hidden: bool| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6788,6 +6853,7 @@ fn reversed_list_default_start_ignores_display_none_items() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -6865,6 +6931,7 @@ fn reversed_list_default_start_counts_items_inside_display_contents_lists() {
 
   let nested_li = StyledNode {
     node_id: 4,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6899,6 +6966,7 @@ fn reversed_list_default_start_counts_items_inside_display_contents_lists() {
 
   let nested_ol = StyledNode {
     node_id: 3,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -6933,6 +7001,7 @@ fn reversed_list_default_start_counts_items_inside_display_contents_lists() {
 
   let li1 = StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -6967,6 +7036,7 @@ fn reversed_list_default_start_counts_items_inside_display_contents_lists() {
 
   let li2 = StyledNode {
     node_id: 2,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7001,6 +7071,7 @@ fn reversed_list_default_start_counts_items_inside_display_contents_lists() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -7073,6 +7144,7 @@ fn li_value_attribute_sets_counter_for_that_item() {
 
   let mk_li = |text: &str, value: Option<&str>| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7111,6 +7183,7 @@ fn li_value_attribute_sets_counter_for_that_item() {
     slotted_node_ids: Vec::new(),
     children: vec![StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dom::DomNode {
         node_type: dom::DomNodeType::Text {
           content: text.to_string(),
@@ -7144,6 +7217,7 @@ fn li_value_attribute_sets_counter_for_that_item() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: ol_dom,
     styles: ol_style,
     starting_styles: StartingStyleSet::default(),
@@ -7214,6 +7288,7 @@ fn reversed_list_value_attribute_counts_down_from_value() {
 
   let mk_li = |text: &str, value: Option<&str>| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7252,6 +7327,7 @@ fn reversed_list_value_attribute_counts_down_from_value() {
     slotted_node_ids: Vec::new(),
     children: vec![StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dom::DomNode {
         node_type: dom::DomNodeType::Text {
           content: text.to_string(),
@@ -7285,6 +7361,7 @@ fn reversed_list_value_attribute_counts_down_from_value() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: ol_dom,
     styles: ol_style,
     starting_styles: StartingStyleSet::default(),
@@ -7346,6 +7423,7 @@ fn reversed_list_ignores_nested_items_for_default_start() {
 
   let nested_ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -7377,6 +7455,7 @@ fn reversed_list_ignores_nested_items_for_default_start() {
     slotted_node_ids: Vec::new(),
     children: vec![StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dom::DomNode {
         node_type: dom::DomNodeType::Element {
           tag_name: "li".to_string(),
@@ -7413,6 +7492,7 @@ fn reversed_list_ignores_nested_items_for_default_start() {
       slotted_node_ids: Vec::new(),
       children: vec![StyledNode {
         node_id: 0,
+        subtree_size: 1,
         node: dom::DomNode {
           node_type: dom::DomNodeType::Text {
             content: "inner".to_string(),
@@ -7456,6 +7536,7 @@ fn reversed_list_ignores_nested_items_for_default_start() {
 
   let outer_li = |child: StyledNode| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7490,6 +7571,7 @@ fn reversed_list_ignores_nested_items_for_default_start() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: ol_dom,
     styles: ol_style.clone(),
     starting_styles: StartingStyleSet::default(),
@@ -7515,6 +7597,7 @@ fn reversed_list_ignores_nested_items_for_default_start() {
     children: vec![
       outer_li(StyledNode {
         node_id: 0,
+        subtree_size: 1,
         node: dom::DomNode {
           node_type: dom::DomNodeType::Text {
             content: "outer1".to_string(),
@@ -7586,6 +7669,7 @@ fn reversed_list_skips_menu_items_for_default_start() {
 
   let text_node = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Text {
         content: content.to_string(),
@@ -7618,6 +7702,7 @@ fn reversed_list_skips_menu_items_for_default_start() {
 
   let li = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7652,6 +7737,7 @@ fn reversed_list_skips_menu_items_for_default_start() {
 
   let menu = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "menu".to_string(),
@@ -7686,6 +7772,7 @@ fn reversed_list_skips_menu_items_for_default_start() {
 
   let ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -7754,6 +7841,7 @@ fn nested_list_resets_increment_to_default() {
 
   let text_node = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Text {
         content: content.to_string(),
@@ -7786,6 +7874,7 @@ fn nested_list_resets_increment_to_default() {
 
   let mk_li = |content: &str| StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7820,6 +7909,7 @@ fn nested_list_resets_increment_to_default() {
 
   let inner_ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -7854,6 +7944,7 @@ fn nested_list_resets_increment_to_default() {
 
   let outer_li = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "li".to_string(),
@@ -7888,6 +7979,7 @@ fn nested_list_resets_increment_to_default() {
 
   let outer_ol = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: dom::DomNode {
       node_type: dom::DomNodeType::Element {
         tag_name: "ol".to_string(),
@@ -8656,6 +8748,7 @@ fn deep_box_generation_does_not_overflow_stack() {
 
   let mut node = StyledNode {
     node_id: depth,
+    subtree_size: 1,
     node: DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -8689,8 +8782,10 @@ fn deep_box_generation_does_not_overflow_stack() {
   };
 
   for node_id in (0..depth).rev() {
+    let child = node;
     node = StyledNode {
       node_id,
+      subtree_size: child.subtree_size.saturating_add(1),
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "div".to_string(),
@@ -8720,7 +8815,7 @@ fn deep_box_generation_does_not_overflow_stack() {
       meter_even_less_good_value_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
-      children: vec![node],
+      children: vec![child],
     };
   }
 
@@ -8739,6 +8834,7 @@ fn deep_select_form_control_generation_does_not_overflow_stack() {
 
   let mut option = StyledNode {
     node_id: depth + 1,
+    subtree_size: 1,
     node: DomNode {
       node_type: DomNodeType::Element {
         tag_name: "option".to_string(),
@@ -8776,8 +8872,10 @@ fn deep_select_form_control_generation_does_not_overflow_stack() {
   };
 
   for node_id in (1..=depth).rev() {
+    let child = option;
     option = StyledNode {
       node_id,
+      subtree_size: child.subtree_size.saturating_add(1),
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "optgroup".to_string(),
@@ -8807,12 +8905,13 @@ fn deep_select_form_control_generation_does_not_overflow_stack() {
       meter_even_less_good_value_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
-      children: vec![option],
+      children: vec![child],
     };
   }
 
   let select = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: DomNode {
       node_type: DomNodeType::Element {
         tag_name: "select".to_string(),
@@ -8925,6 +9024,7 @@ fn required_select_with_disabled_selected_placeholder_remains_selected_and_inval
 
   let placeholder_text = StyledNode {
     node_id: 0,
+    subtree_size: 1,
     node: DomNode {
       node_type: DomNodeType::Text {
         content: "Choose".to_string(),

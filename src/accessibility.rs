@@ -4512,6 +4512,7 @@ mod tests {
     ) -> StyledNode {
       StyledNode {
         node_id,
+        subtree_size: 1,
         node: DomNode {
           node_type,
           children: Vec::new(),
@@ -4667,6 +4668,7 @@ mod tests {
     let styles = Arc::new(ComputedStyle::default());
     let svg_details = StyledNode {
       node_id: 1,
+      subtree_size: 1,
       node: DomNode {
         node_type: DomNodeType::Element {
           tag_name: "details".to_string(),

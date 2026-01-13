@@ -657,6 +657,7 @@ impl BoxGenerator {
     };
     let dummy_styled = crate::style::cascade::StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: dummy_dom,
       styles: style.clone(),
       starting_styles: StartingStyleSet::default(),

@@ -10977,6 +10977,11 @@ fn seed_flat_tree_inheritance_cache_from_reuse_map(
 pub struct StyledNode {
   /// Stable identifier for this node within the DOM traversal (pre-order index).
   pub node_id: usize,
+  /// Number of styled nodes in the subtree rooted at this node, including this node.
+  ///
+  /// This is cached so that incremental style passes can advance the global pre-order counter in
+  /// O(1) when reusing previously-styled subtrees (see `try_reuse_styled_subtree`).
+  pub subtree_size: usize,
   /// Shallow copy of the DOM node. The styled tree structure is represented by `children`;
   /// `node.children` is intentionally left empty to avoid duplicating the DOM subtree.
   pub node: DomNode,
@@ -11029,6 +11034,7 @@ impl Clone for StyledNode {
     fn clone_shallow(node: &StyledNode) -> StyledNode {
       StyledNode {
         node_id: node.node_id,
+        subtree_size: node.subtree_size,
         node: node.node.clone(),
         styles: Arc::clone(&node.styles),
         starting_styles: node.starting_styles.clone(),
@@ -11160,7 +11166,27 @@ fn filter_starting_rules<'a>(
   }
 }
 
+// Unit-test-only counter tracking how many times `count_styled_nodes` is invoked. Thread-local so
+// parallel tests don't interfere.
+#[cfg(test)]
+thread_local! {
+  static COUNT_STYLED_NODES_CALLS: std::cell::Cell<u64> = std::cell::Cell::new(0);
+}
+
+#[cfg(test)]
+fn reset_count_styled_nodes_call_count() {
+  COUNT_STYLED_NODES_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn count_styled_nodes_call_count() -> u64 {
+  COUNT_STYLED_NODES_CALLS.with(|calls| calls.get())
+}
+
 fn count_styled_nodes(node: &StyledNode) -> usize {
+  #[cfg(test)]
+  COUNT_STYLED_NODES_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+
   let mut count = 0usize;
   let mut stack: Vec<&StyledNode> = Vec::new();
   stack.push(node);
@@ -12257,6 +12283,7 @@ pub fn apply_styles_with_media_target_and_imports_cached(
 fn fallback_styled_tree(dom: &DomNode) -> StyledNode {
   StyledNode {
     node_id: 1,
+    subtree_size: 1,
     node: DomNode {
       node_type: dom.node_type.clone(),
       children: Vec::new(),
@@ -18173,13 +18200,12 @@ fn try_reuse_styled_subtree(
   }
   let ptr = map.get(&node_id)?;
   let reused_ref = unsafe { &**ptr };
-  let reused_size = count_styled_nodes(reused_ref);
-  if reused_size > 1 {
-    let advance = reused_size.saturating_sub(1);
-    *node_counter = (*node_counter).saturating_add(advance);
-  }
+  let reused_size = reused_ref.subtree_size;
+  debug_assert!(reused_size > 0, "StyledNode::subtree_size must include self");
+  let advance = reused_size.saturating_sub(1);
+  *node_counter = (*node_counter).saturating_add(advance);
   if let Some(counter) = reuse_counter.as_deref_mut() {
-    *counter += reused_size;
+    *counter = (*counter).saturating_add(reused_size);
   }
   Some(reused_ref.clone())
 }
@@ -18921,8 +18947,12 @@ fn apply_styles_internal_with_ancestors<'a>(
       }
     }
 
+    let subtree_size = children
+      .iter()
+      .fold(1usize, |acc, child| acc.saturating_add(child.subtree_size));
     let styled = StyledNode {
       node_id,
+      subtree_size,
       node: node.clone_without_children(),
       styles,
       starting_styles,
@@ -21657,6 +21687,7 @@ mod tests {
 
     let mut target = StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: base_dom.clone(),
       styles: Arc::clone(&base_style),
       starting_styles: StartingStyleSet::default(),
@@ -21683,8 +21714,11 @@ mod tests {
     };
 
     for node_id in 1..=depth {
+      let child = target;
+      let subtree_size = child.subtree_size.saturating_add(1);
       target = StyledNode {
         node_id,
+        subtree_size,
         node: base_dom.clone(),
         styles: Arc::clone(&base_style),
         starting_styles: StartingStyleSet::default(),
@@ -21707,7 +21741,7 @@ mod tests {
         meter_even_less_good_value_styles: None,
         assigned_slot: None,
         slotted_node_ids: Vec::new(),
-        children: vec![target],
+        children: vec![child],
       };
     }
 
@@ -21746,6 +21780,128 @@ mod tests {
   }
 
   #[test]
+  fn reuse_deep_subtree_advances_node_counter_without_count_traversal() {
+    // Reusing a styled subtree should not require an O(subtree) traversal just to advance the
+    // pre-order node counter. Regression test for `try_reuse_styled_subtree` accidentally calling
+    // `count_styled_nodes` on the reused subtree.
+    let depth = 20_000usize;
+
+    let base_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: String::new(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: Vec::new(),
+    };
+
+    let base_style = Arc::new(ComputedStyle::default());
+    let mut tree = StyledNode {
+      node_id: depth + 1,
+      subtree_size: 1,
+      node: base_dom.clone(),
+      styles: Arc::clone(&base_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      placeholder_styles: None,
+      file_selector_button_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      progress_bar_styles: None,
+      progress_value_styles: None,
+      meter_bar_styles: None,
+      meter_optimum_value_styles: None,
+      meter_suboptimum_value_styles: None,
+      meter_even_less_good_value_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: Vec::new(),
+    };
+
+    // Build a single-child chain with valid pre-order numbering (1..=depth+1).
+    for node_id in (1..=depth).rev() {
+      let child = tree;
+      tree = StyledNode {
+        node_id,
+        subtree_size: child.subtree_size.saturating_add(1),
+        node: base_dom.clone(),
+        styles: Arc::clone(&base_style),
+        starting_styles: StartingStyleSet::default(),
+        before_styles: None,
+        after_styles: None,
+        marker_styles: None,
+        placeholder_styles: None,
+        file_selector_button_styles: None,
+        footnote_call_styles: None,
+        footnote_marker_styles: None,
+        first_line_styles: None,
+        first_letter_styles: None,
+        slider_thumb_styles: None,
+        slider_track_styles: None,
+        progress_bar_styles: None,
+        progress_value_styles: None,
+        meter_bar_styles: None,
+        meter_optimum_value_styles: None,
+        meter_suboptimum_value_styles: None,
+        meter_even_less_good_value_styles: None,
+        assigned_slot: None,
+        slotted_node_ids: Vec::new(),
+        children: vec![child],
+      };
+    }
+
+    assert_eq!(tree.node_id, 1);
+    assert_eq!(tree.subtree_size, depth + 1);
+
+    let mut reuse_map: HashMap<usize, *const StyledNode> = HashMap::new();
+    reuse_map.insert(tree.node_id, &tree as *const StyledNode);
+    let container_scope: HashSet<usize> = HashSet::new();
+
+    // Simulate the counter state inside `apply_styles_internal_with_ancestors`: the root node id
+    // has already been allocated before attempting reuse.
+    let mut node_counter = 2usize;
+    let mut reused_nodes = 0usize;
+    let mut reuse_counter_opt = Some(&mut reused_nodes);
+
+    reset_count_styled_nodes_call_count();
+    let reused = try_reuse_styled_subtree(
+      1,
+      &mut node_counter,
+      Some(&container_scope),
+      Some(&reuse_map),
+      &mut reuse_counter_opt,
+    )
+    .expect("expected subtree reuse");
+
+    assert_eq!(
+      count_styled_nodes_call_count(),
+      0,
+      "expected subtree reuse to advance the node counter without calling count_styled_nodes"
+    );
+    assert_eq!(reused.subtree_size, depth + 1);
+    assert_eq!(
+      node_counter,
+      1 + (depth + 1),
+      "expected node_counter to advance past the reused subtree"
+    );
+    assert_eq!(reused_nodes, depth + 1);
+
+    // Spot-check that cloned nodes preserve pre-order ids without needing to traverse via
+    // `count_styled_nodes`.
+    let mut cursor = &reused;
+    for expected_id in 1..=3 {
+      assert_eq!(cursor.node_id, expected_id);
+      cursor = cursor.children.first().expect("expected chain child");
+    }
+  }
+
+  #[test]
   fn attach_starting_styles_copies_snapshot_fields() {
     let node = DomNode {
       node_type: DomNodeType::Element {
@@ -21762,6 +21918,7 @@ mod tests {
 
     let mut target = StyledNode {
       node_id: 1,
+      subtree_size: 1,
       node: node.clone(),
       styles: Arc::new(after_change.clone()),
       starting_styles: StartingStyleSet::default(),
@@ -21789,6 +21946,7 @@ mod tests {
 
     let starting_tree = StyledNode {
       node_id: 1,
+      subtree_size: 1,
       node,
       styles: Arc::new(after_change),
       starting_styles: StartingStyleSet {

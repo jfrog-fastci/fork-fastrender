@@ -16039,6 +16039,7 @@ mod tests {
   fn styled_element(tag: &str) -> crate::style::cascade::StyledNode {
     crate::style::cascade::StyledNode {
       node_id: 0,
+      subtree_size: 1,
       node: crate::dom::DomNode {
         node_type: crate::dom::DomNodeType::Element {
           tag_name: tag.to_string(),
