@@ -69,6 +69,9 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
   - Default: disabled (sandbox failures return an error; no silent downgrade).
   - `crates/win-sandbox`: used by `RendererSandboxMode::new_default()` to avoid silently disabling
     sandboxing on unsupported hosts.
+  - `crates/win-sandbox`: also used by `win_sandbox::renderer::RendererSandbox::new_default()`; when
+    enabled it may allow the helper to run with AppContainer disabled and/or continue jobless if job
+    assignment fails.
   - `fastrender::sandbox::windows::spawn_sandboxed(...)`: when set to `1`, Windows sandbox spawning
     may fall back to weaker sandboxing (restricted token) or an unsandboxed spawn.
 - `FASTR_MACOS_RENDERER_SANDBOX=pure-computation|system-fonts|off` – **macOS-only**: override the Seatbelt renderer profile used by `src/sandbox/macos.rs`.
