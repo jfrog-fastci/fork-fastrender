@@ -141,6 +141,10 @@ pub struct FrameNode {
   pub parent: Option<FrameId>,
   pub site: SiteKey,
   pub url: String,
+  /// Whether this frame should be treated as having an opaque origin regardless of URL.
+  ///
+  /// This is currently used for sandboxed iframes where `allow-same-origin` is not present.
+  pub force_opaque_origin: bool,
   pub process_id: RendererProcessId,
   pub embedding: Option<FrameEmbedding>,
   children_by_subframe: HashMap<SubframeId, FrameId>,
@@ -153,6 +157,7 @@ impl FrameNode {
       parent: None,
       site,
       url,
+      force_opaque_origin: false,
       process_id,
       embedding: None,
       children_by_subframe: HashMap::new(),
@@ -165,6 +170,7 @@ impl FrameNode {
     site: SiteKey,
     url: String,
     process_id: RendererProcessId,
+    force_opaque_origin: bool,
     embedding: FrameEmbedding,
   ) -> Self {
     Self {
@@ -172,6 +178,7 @@ impl FrameNode {
       parent: Some(parent),
       site,
       url,
+      force_opaque_origin,
       process_id,
       embedding: Some(embedding),
       children_by_subframe: HashMap::new(),
@@ -498,7 +505,7 @@ where
           .map(|node| {
             (
               node.process_id,
-              node.url.as_str() != subframe.url,
+              node.url.as_str() != subframe.url || node.force_opaque_origin != subframe.force_opaque_origin,
               node.embedding.as_ref().map(|e| (e.rect, e.parent_dpr)),
               node.site.clone(),
             )
@@ -552,6 +559,7 @@ where
             child_node.site = child_site.clone();
             child_node.process_id = new_process;
             child_node.url = subframe.url.clone();
+            child_node.force_opaque_origin = subframe.force_opaque_origin;
           }
 
           self.send_to_process(
@@ -585,6 +593,7 @@ where
           if let Some(child_node) = self.frame_tree.frame_mut(child_frame_id) {
             child_node.url = subframe.url.clone();
             child_node.site = child_site.clone();
+            child_node.force_opaque_origin = subframe.force_opaque_origin;
           }
           self.send_to_process(
             current_process,
@@ -629,6 +638,7 @@ where
             child_site.clone(),
             subframe.url.clone(),
             process_id,
+            subframe.force_opaque_origin,
             embedding.clone(),
           ),
         );
@@ -896,6 +906,7 @@ mod tests {
         SiteKey::Opaque(2),
         "https://child.test/".to_string(),
         RendererProcessId::new(2),
+        false,
         FrameEmbedding {
           rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
           clip: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
@@ -933,6 +944,7 @@ mod tests {
         SiteKey::Opaque(2),
         "https://child.test/".to_string(),
         RendererProcessId::new(2),
+        false,
         FrameEmbedding {
           rect: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
           clip: Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
@@ -1260,6 +1272,105 @@ mod tests {
         .expect("child2 still exists")
         .process_id,
       child2_process
+    );
+  }
+
+  #[test]
+  fn changing_force_opaque_origin_triggers_process_swap_without_url_change() {
+    let log: Arc<Mutex<HashMap<RendererProcessId, Vec<BrowserToRendererFrame>>>> =
+      Arc::new(Mutex::new(HashMap::new()));
+    let terminate_count = Arc::new(AtomicUsize::new(0));
+
+    let spawner = FakeSpawner::new(Arc::clone(&log), Arc::clone(&terminate_count));
+    let processes = RendererProcessRegistry::new(spawner);
+    let mut browser = SubframesController::new(processes);
+    browser.set_max_subframes_per_parent(8);
+
+    let root = browser.create_root_frame("https://parent.test/");
+    let parent_process = browser
+      .frame_tree
+      .frame(root)
+      .expect("root frame exists")
+      .process_id;
+
+    // Non-sandboxed `about:srcdoc` inherits the parent site key and stays in the same process.
+    let subframe_normal = test_subframe(1, "about:srcdoc", 10.0, 10.0);
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![subframe_normal],
+    });
+    assert_eq!(browser.processes.process_count(), 1);
+
+    let child_frame = browser
+      .frame_tree
+      .frame(root)
+      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .expect("child frame exists");
+    assert_eq!(
+      browser
+        .frame_tree
+        .frame(child_frame)
+        .expect("child node exists")
+        .process_id,
+      parent_process,
+      "expected non-sandboxed srcdoc iframe to share the parent process"
+    );
+
+    // Now toggle the iframe to an opaque origin (sandbox without allow-same-origin). Even though the
+    // URL is unchanged, the browser must treat the origin change as a navigation boundary and move
+    // the frame to an isolated process.
+    let mut subframe_opaque = test_subframe(1, "about:srcdoc", 10.0, 10.0);
+    subframe_opaque.force_opaque_origin = true;
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![subframe_opaque],
+    });
+
+    let child_frame_after = browser
+      .frame_tree
+      .frame(root)
+      .and_then(|n| n.child_frame_id(SubframeId::new(1)))
+      .expect("child still exists");
+    assert_eq!(child_frame_after, child_frame, "expected FrameId stability across updates");
+
+    let child_process_isolated = browser
+      .frame_tree
+      .frame(child_frame_after)
+      .expect("child node exists")
+      .process_id;
+    assert_ne!(
+      child_process_isolated, parent_process,
+      "expected opaque-origin iframe to be isolated into a separate process"
+    );
+    assert_eq!(
+      browser.processes.process_count(),
+      2,
+      "expected a new renderer process to be spawned for the opaque-origin iframe"
+    );
+
+    // Toggle back to non-opaque: should move the frame back to the parent process and terminate the
+    // now-unused isolated renderer.
+    let subframe_back = test_subframe(1, "about:srcdoc", 10.0, 10.0);
+    browser.handle_renderer_message(RendererToBrowserFrame::SubframesDiscovered {
+      parent_frame_id: root,
+      parent_dpr: 1.0,
+      subframes: vec![subframe_back],
+    });
+    assert_eq!(browser.processes.process_count(), 1);
+    assert_eq!(
+      terminate_count.load(Ordering::Relaxed),
+      1,
+      "expected the isolated process to be terminated when the frame returns to the parent process"
+    );
+    assert_eq!(
+      browser
+        .frame_tree
+        .frame(child_frame)
+        .expect("child still exists")
+        .process_id,
+      parent_process
     );
   }
 
